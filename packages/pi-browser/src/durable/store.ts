@@ -7,6 +7,12 @@ import type { LeaseRef, LeaseState } from "../core/lease.js";
 export const now = () => new Date().toISOString();
 const iso = (ms: number) => new Date(ms).toISOString();
 const cidOf = (row: InventoryRow) => row.conversationId as ConversationId;
+/** Waits `ms`, or until `signal` aborts. */
+const pause = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve) => {
+  const done = () => { clearTimeout(timer); signal?.removeEventListener("abort", done); resolve(); };
+  const timer = setTimeout(done, ms);
+  signal?.addEventListener("abort", done, { once: true });
+});
 
 /** Release attempts before custody is given up as `lost`, and status polls before a release is sent again. */
 export const RELEASE_ATTEMPTS = 6;
@@ -118,12 +124,30 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
       return fallback;
     }
   }
+  /** Releases `extras` and returns those a status read confirms stopped, read again (backoffMs) up to CONFIRM_POLLS times
+   *  while a read fails or a stop that was sent is still under way. One still running after a release that failed is
+   *  left under the tag, where the bound row's release finds it: a tag lookup lists running sessions. One no read
+   *  confirms within the bound is not returned. */
+  async function stopExtras(provider: BrowserProvider, row: InventoryRow, extras: readonly LeaseRef[], signal?: AbortSignal): Promise<string[]> {
+    const open = new Map<string, boolean>();
+    for (const extra of extras) open.set(extra.id, await provider.release(extra, signal).then(() => true, () => false));
+    const stopped = new Set<string>();
+    for (let poll = 0; open.size && poll < CONFIRM_POLLS && !signal?.aborted; poll += 1) {
+      if (poll) await pause(backoffMs(poll - 1), signal);
+      for (const [id, sent] of [...open]) {
+        const state = await provider.status({ id, tag: row.tag }, signal).catch(() => null);
+        if (state === null) continue;
+        if (!["pending", "running"].includes(state)) (stopped.add(id), open.delete(id));
+        else if (!sent) open.delete(id);
+      }
+    }
+    return extras.map((extra) => extra.id).filter((id) => stopped.has(id));
+  }
   /** A create whose answer never came, settled by its tag: the first session found is kept and committed `live`; extras
-   *  (a create retried behind the provider's API) are released. */
+   *  (a create retried behind the provider's API) are released, and told as raced once their stop is confirmed. */
   async function bindByTag(provider: BrowserProvider, row: InventoryRow, commit: (change: (tx: Tx) => Promise<void>) => Promise<unknown>, signal?: AbortSignal, found?: LeaseRef[]): Promise<LeaseRef | null> {
     const refs = found ?? await provider.findByTag(row.tag, signal);
-    const extras: string[] = [];
-    for (const extra of refs.slice(1)) if (await provider.release(extra, signal).then(() => true, () => false)) extras.push(extra.id);
+    const extras = await stopExtras(provider, row, refs.slice(1), signal);
     if (extras.length) await raced?.(row, extras);
     const kept = refs[0] ?? null;
     await commit((tx) => kept ? move(tx, row, { state: "live", resourceId: kept.id, at: now() }) : unknownCreate(tx, row, now()));

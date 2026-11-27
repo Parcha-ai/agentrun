@@ -8,8 +8,8 @@ import { createBrowserExtension } from "@parcha/pi-browser/durable";
 import { FakeBackend, fakeDriver, fixturePage } from "@parcha/pi-browser/testing";
 
 // A release by a session's tag that ends sessions besides the session's own (a create race of the tag left one running,
-// which no record bills): the host hears their ids (`onRaceReleased`), once each release answered, and never the
-// session's own, which its record bills. A host whose hook throws never fails the release.
+// which no record bills): the host hears their ids (`onRaceReleased`), once a status read confirms each stopped, and
+// never the session's own, which its record bills. A host whose hook throws never fails the release.
 
 const START = "https://example.test/start";
 
@@ -334,4 +334,102 @@ test("a release that ends lost with the other session still running tells it not
   assert.deepEqual(atLost.heard, [], "B still runs: nothing is told");
   assert.equal(backend.sessions.get(b).state, "stopped", "the reconcile released it");
   assert.deepEqual(heard, [{ ids: [b], stopped: ["stopped"] }], "told once, by the reconcile, after its stop");
+});
+
+// A create whose answer was lost after it left two sessions under its tag, A and B: the tag lookup finds both, A is kept
+// and B released. `b` shapes B's release: "late" answers while B still runs, and B stops at its first status read, which
+// then fails; "lateRead" answers while B still runs, and B stops just after its first status read, which finds it
+// running; "stopThrows" stops B and then fails; "refused" fails without stopping B, once.
+async function lostAnswer(t, { b: mode }) {
+  const backend = new FakeBackend({ start: START, pages: { [START]: fixturePage(START, "The start page.") } });
+  const made = [];
+  let shaped = true;
+  const reads = [];
+  const provider = {
+    ...backend.provider,
+    async create(spec, signal) {
+      made.push((await backend.provider.create(spec, signal)).id, (await backend.provider.create(spec, signal)).id);
+      throw new Error("the create's answer was lost");
+    },
+    async release(ref, signal) {
+      if (ref.id !== made[1] || !shaped) return backend.provider.release(ref, signal);
+      if (mode === "late" || mode === "lateRead") return undefined;
+      shaped = false;
+      if (mode === "stopThrows") await backend.provider.release(ref, signal);
+      throw new Error("the release of B failed");
+    },
+    async status(ref, signal) {
+      if (ref.id === made[1]) reads.push(backend.sessions.get(ref.id).state);
+      if (ref.id === made[1] && mode === "late" && shaped) {
+        shaped = false;
+        await backend.provider.release(ref, signal);
+        throw new Error("the status read of B failed");
+      }
+      if (ref.id === made[1] && mode === "lateRead" && shaped) {
+        shaped = false;
+        const read = await backend.provider.status(ref, signal);
+        await backend.provider.release(ref, signal);
+        return read;
+      }
+      return backend.provider.status(ref, signal);
+    },
+  };
+  const heard = [];
+  const browser = createBrowserExtension({
+    provider: () => provider, driver: fakeDriver(backend), evidence: { file: async () => null },
+    onRaceReleased: (released) => { heard.push({ ...released, stopped: released.ids.map((id) => backend.sessions.get(id).state) }); },
+    tools: { browser_read: async (_args, port) => { const s = await port.session(); await s.driver.page(); return { content: [{ type: "text", text: "read" }] }; } },
+  });
+  const model = faux.fauxProvider({ models: [{ id: "faux-1" }] });
+  model.setResponses(Array.from({ length: 4 }, () => (context) => {
+    if (context.messages.some((m) => m.role === "toolResult")) return faux.fauxAssistantMessage([faux.fauxText("done")], { stopReason: "stop" });
+    return faux.fauxAssistantMessage([faux.fauxToolCall("browser_read", {})], { stopReason: "toolUse" });
+  }));
+  const models = createModels();
+  models.setProvider(model.provider);
+  const registry = createRegistry();
+  registry.install(browser.extension);
+  const harness = await Harness.open(new MemoryStorage(), { models, registry, onReport: () => {} }, ctx);
+  t.after(async () => { await harness.close(ctx).catch(() => undefined); await browser.close(); });
+  const config = { label: "node-a", run: "run-race", policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 0, batchTimeoutMs: 60_000 } };
+  const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } }, init: async (tx, id) => { Object.assign(await tx.doc(browser.docs.Config, id), config); } });
+  await browser.reconcile(harness, () => true, ctx);
+  await (await root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);
+  const atCreate = { heard: [...heard], reads: [...reads], b: backend.sessions.get(made[1]).state };
+  await browser.release(root, "close", ctx);
+  await browser.drain(harness, ctx);
+  const [record] = (await harness.snapshot(browser.docs.Sessions, root.id, ctx)).sessions;
+  assert.equal(made.length, 2, "one create, two sessions under its tag");
+  assert.equal(shaped, false, "B's release or status read went as shaped");
+  assert.equal(record.state, "released");
+  assert.equal(record.resourceId, made[0], "the record bills A, the first its tag found");
+  assert.equal(backend.sessions.get(made[1]).state, "stopped");
+  return { b: made[1], record, heard, atCreate, rootId: root.id };
+}
+
+test("a lost create's extra whose release answers while it still runs, its first status read failing after the stop: it is told as raced once, after its stop", async (t) => {
+  const { b, record, heard, atCreate, rootId } = await lostAnswer(t, { b: "late" });
+  assert.deepEqual(heard, [{ conversationId: rootId, tag: record.tag, ids: [b], stopped: ["stopped"] }], "told once, after its stop");
+  assert.deepEqual(atCreate.heard, heard, "by the create that released it");
+  assert.deepEqual(atCreate.reads, ["running", "stopped"], "the failed read is read again");
+});
+
+test("a lost create's extra whose release answers while it still runs, its first status read finding it running: it is told as raced once, after its stop", async (t) => {
+  const { b, record, heard, atCreate, rootId } = await lostAnswer(t, { b: "lateRead" });
+  assert.deepEqual(heard, [{ conversationId: rootId, tag: record.tag, ids: [b], stopped: ["stopped"] }], "told once, after its stop");
+  assert.deepEqual(atCreate.heard, heard, "by the create that released it");
+  assert.deepEqual(atCreate.reads, ["running", "stopped"], "a stop still under way is read again");
+});
+
+test("a lost create's extra whose release stops it and then fails: it is not dropped; a status read confirms the stop and it is told as raced once", async (t) => {
+  const { b, record, heard, atCreate, rootId } = await lostAnswer(t, { b: "stopThrows" });
+  assert.deepEqual(heard, [{ conversationId: rootId, tag: record.tag, ids: [b], stopped: ["stopped"] }], "told once, after its stop");
+  assert.deepEqual(atCreate.heard, heard, "by the create that released it");
+  assert.deepEqual(atCreate.reads, ["stopped"]);
+});
+
+test("a lost create's extra whose release fails and leaves it running: it stays under the tag, untold, and the session's own release stops it and tells it once", async (t) => {
+  const { b, record, heard, atCreate, rootId } = await lostAnswer(t, { b: "refused" });
+  assert.deepEqual([atCreate.b, atCreate.reads, atCreate.heard], ["running", ["running"], []], "one read finds it running: the create leaves it to the release, which finds it by its tag");
+  assert.deepEqual(heard, [{ conversationId: rootId, tag: record.tag, ids: [b], stopped: ["stopped"] }], "told once, by the release, after its stop");
 });
