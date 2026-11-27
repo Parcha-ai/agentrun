@@ -18,7 +18,14 @@
 //       never the grade's keys alone, and a draft that says that answer promotes;
 //   (11) a grade given after the replays ended and before the check settled: each input is judged on what its grader
 //       was asked, so the verdict is not stale;
-//   (12) a draft equal to the agent's answer asks no model, and its replay still keeps the grade it was judged with.
+//   (12) a draft equal to the agent's answer asks no model, and its replay still keeps the grade it was judged with;
+//   (13) a run its owner corrected by message (no grade), whose recorded answer stays wrong: each replay's grader is
+//       shown the correction beside that answer, and a draft that answers per the correction promotes;
+//   (14) a replay repeating that wrong recorded answer word for word: the grader, asked with the correction, says it
+//       differs, and with no verdict kept equal answers are no agreement;
+//   (15) an agent that answered again per the correction: a replay equal to that recorded answer is still asked with
+//       the correction, and the grader's same decision promotes (only a verdict asked with the correction counts);
+//   (16) a correction the checks refused was never taken, so it changes nothing.
 // Plus the pieces alone: the verdict's parse, the one retry, the comparison, the check's words, the request's ends (its
 // stop and its deadline among them).
 // The agent's runs are real runs of the store on a pi run of the faux gateway, whose faux grader (fixtures/faux-grader.mjs)
@@ -39,7 +46,7 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { readLaunchBody } = await import("../dist/run-launch.js");
 const { promotionsOf, putGrade, GRADER_PROMPT, graderVerdictOf, gradeAnswers, compareAnswers, answersPair, COMPARE_UNREAD, COMPARE_CAP_HELD, COMPARE_STALE } = await import("../dist/learn/promote.js");
-const { answerJudged, decideCheck, differentDecisionWords, NEVER_WORD_FOR_WORD } = await import("../dist/runner/promotion.js");
+const { answerJudged, answerOf, decideCheck, differentDecisionWords, NEVER_WORD_FOR_WORD } = await import("../dist/runner/promotion.js");
 const { graderAsk } = await import("../dist/runner/compare-end.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
 const { learningOf } = await import("../dist/learn/rows.js");
@@ -106,14 +113,21 @@ const FINAL = ["ended", "failed", "stopped"];
  *  `answer` landed and promoted, and a runner claiming every run from its stored launch on `env`. `grader(request)`: the
  *  grader's reply instead of the faux grader's; `priced(model, usage)`: each request's cost; `cap`: the cap of every run
  *  made after the prior ones; `hang(request)`: a request the gateway never answers. A follow-up that says SAY_41 is
- *  answered AGENT_41. */
-async function world(t, { learning, prior = 0, env = FAST, grader, priced, cap, hang, says = AGENT_PROSE } = {}) {
+ *  answered AGENT_41. `corrects`: the prior runs learn, and once each ended its owner sends it this message (a correction
+ *  by message, no grade), which its follow-up answers with `fixed` (the agent answering again per it), else `says` again.
+ *  `submits`: what the workflow's node submits. */
+async function world(t, { learning, prior = 0, env = FAST, grader, priced, cap, hang, says = AGENT_PROSE, corrects, fixed, submits = { answer: 42, sure: true } } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-grader-compare-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
   const gw = await startFauxGateway({
-    call: ({ body }) => (offers(body, "submit") && !hasResult(body) ? { name: "submit", input: { value: { answer: 42, sure: true } } } : undefined),
-    text: ({ body }) => (offers(body, "submit") ? "submitted" : compiling(body) ? BROKEN_DRAFT : textOf((body?.messages ?? []).findLast((m) => m.role === "user")).includes(SAY_41) ? AGENT_41 : says),
+    call: ({ body }) => (offers(body, "submit") && !hasResult(body) ? { name: "submit", input: { value: submits } } : undefined),
+    text: ({ body }) => {
+      if (offers(body, "submit")) return "submitted";
+      if (compiling(body)) return BROKEN_DRAFT;
+      const last = textOf((body?.messages ?? []).findLast((m) => m.role === "user"));
+      return last.includes(SAY_41) ? AGENT_41 : fixed !== undefined && corrects !== undefined && last.includes(corrects) ? fixed : says;
+    },
     refuse: ({ body }) => (compiling(body) && textOf((body?.messages ?? []).findLast((m) => m.role === "user")).startsWith("One more turn: revise") ? { message: "the test lands any revision itself" } : undefined),
     ...(grader ? { grader } : {}),
     ...(hang ? { hang } : {}),
@@ -137,8 +151,12 @@ async function world(t, { learning, prior = 0, env = FAST, grader, priced, cap, 
     return FINAL.includes(row?.state) && row.runner === null && row;
   }, `run ${id} ended`);
   const launchOf = (question, learningStart, extra = {}) => ({ input: { content: `${question}?`, question }, title: question, place: { mode: "runner" }, model: { provider: "anthropic", modelId: MODEL }, ...(learningStart ? { learning: learningStart } : {}), ...extra });
+  const priorStart = corrects === undefined ? undefined : startAt((await server.learning.seed("agent-1")).save.id);
   for (let i = 0; i < prior; i++) {
-    await server.runs.create({ id: `prior-${i}`, agentId: "agent-1", revisionId: "rev-1" }, { body: launchOf(`Question ${i}`) });
+    await server.runs.create({ id: `prior-${i}`, agentId: "agent-1", revisionId: "rev-1" }, { body: launchOf(`Question ${i}`, priorStart) });
+    await ended(`prior-${i}`);
+    if (corrects === undefined) continue;
+    await server.runs.reopen(`prior-${i}`, { kind: "steer", body: { text: corrects } });
     await ended(`prior-${i}`);
   }
   const seed = await landWorkflows(server, "agent-1", [{ name: "answer", description: "Answers a question as a number", workflow: FIRST }]);
@@ -377,6 +395,93 @@ test("(12) a draft equal to the agent's answer, no grade when its replays ended,
   assert.ok(record, "the revision's check decided");
   assert.equal(record.decided, "promote", record.reason);
   assert.deepEqual(record.check.fields.answer.by, { agent: { n: 3, workflow_right: 3, agent_right: 3 } });
+});
+
+/** The owner's correction by message: their words, no grade. The agent's follow-up answers 42 again (it is not SAY_41). */
+const CORRECTION = "That is wrong: in this job six times seven counts as 41, so the answer is 41.";
+/** Every string in a request body, depth first. */
+const stringsIn = (value) => (typeof value === "string" ? [value] : Array.isArray(value) ? value.flatMap(stringsIn) : value && typeof value === "object" ? Object.values(value).flatMap(stringsIn) : []);
+/** A stand-in grader: the same decision only when it was shown the owner's correction and the workflow's answer says 41. */
+const correctionGrader = (request) => {
+  const user = stringsIn(request.body).find((one) => one.includes("The workflow's answer:\n<<<")) ?? "";
+  const draft = /The workflow's answer:\n<<<\n([\s\S]*?)\n>>>/.exec(user)?.[1] ?? "";
+  let says;
+  try {
+    says = JSON.parse(draft).answer;
+  } catch {
+    says = undefined;
+  }
+  const same = user.includes(CORRECTION) && says === 41;
+  return JSON.stringify({ same, differs_on: same ? null : "the answer" });
+};
+/** Each prior run's newest round kept: its correction by message merged into corrections.md, one line (what the bug's
+ *  walk saw), or dropped by the checks. */
+const correctedPriors = async (w, state) => {
+  for (let i = 0; i < 3; i++) {
+    const kept = await w.server.learning.proposal(`prior-${i}`);
+    assert.equal(kept?.round, 2, `prior-${i}: its follow-up's round`);
+    assert.equal(kept.proposal.state, state, JSON.stringify(kept.proposal));
+    if (state === "merged") assert.equal(kept.proposal.corrections, 1, JSON.stringify(kept.proposal));
+  }
+};
+
+test("(13) a run corrected by message (no grade) whose recorded answer stays wrong: each replay asks the fast model with the owner's correction beside the recorded answer, so a draft that answers per the correction promotes", { timeout: 300_000 }, async (t) => {
+  const w = await world(t, { learning: { compile_after: 3 }, prior: 3, corrects: CORRECTION, submits: { answer: 41, sure: true }, grader: correctionGrader });
+  await correctedPriors(w, "merged");
+  const { record, replays } = await checked(w, undrawn("corrected"));
+  assert.equal(record.decided, "promote", record.reason);
+  for (const row of replays) assert.equal(row.metrics?.replay?.compared?.corrected, CORRECTION, `${row.id}: its verdict keeps the correction it was asked against`);
+  assert.deepEqual(record.check.fields.answer.by, { grade: { n: 3, workflow_right: 3, agent_right: 0 } }, "the agent's recorded answer is known wrong");
+  const users = w.graderRequests().map((request) => JSON.stringify(request.body));
+  assert.equal(users.length, 3, "one grader request per replay");
+  assert.ok(users.every((one) => one.includes(CORRECTION)), `each is shown the correction: ${users[0]}`);
+});
+
+test("(14) a replay repeating the corrected run's wrong recorded answer word for word: the fast model is asked with the correction (no equal-answer shortcut) and, judging per it, says they differ: held; with no fast model, no verdict kept, equal answers are no agreement", { timeout: 300_000 }, async (t) => {
+  const says = JSON.stringify({ answer: 42, sure: true });
+  const w = await world(t, { learning: { compile_after: 3 }, prior: 3, says, corrects: CORRECTION, grader: correctionGrader });
+  await correctedPriors(w, "merged");
+  const { record } = await checked(w, undrawn("repeats"));
+  assert.equal(record.decided, "hold", record.reason);
+  assert.equal(record.check.agreed, 0, JSON.stringify(record.check));
+  assert.deepEqual(record.check.fields.answer.by, { grade: { n: 3, workflow_right: 0, agent_right: 0 } });
+  assert.equal(w.graderRequests().length, 3, "equal answers still ask the fast model: only a verdict asked with the correction counts");
+  assert.ok(w.graderRequests().every((request) => JSON.stringify(request.body).includes(CORRECTION)), "each is asked with the correction");
+  assert.deepEqual(record.check.disagreements.map((one) => one.expected), Array.from({ length: 3 }, () => [{ field: "answer", known: "correction", value: CORRECTION }]));
+
+  const none = await world(t, { learning: { compile_after: 3 }, prior: 3, env: {}, says, corrects: CORRECTION });
+  await correctedPriors(none, "merged");
+  const held = (await checked(none, undrawn("repeats-none"))).record;
+  assert.equal(held.decided, "hold", held.reason);
+  assert.equal(held.check.agreed, 0, JSON.stringify(held.check));
+  assert.deepEqual(held.check.fields.answer.by, { grade: { n: 3, workflow_right: 0, agent_right: 0 } });
+  assert.equal(none.graderRequests().length, 0, "no fast model: no grader request");
+});
+
+test("(15) an agent that answered again per its owner's correction: a replay equal to that recorded answer is still asked with the correction (no equal-answer shortcut), the verdict says the same decision, and it promotes", { timeout: 300_000 }, async (t) => {
+  const fixed = JSON.stringify({ answer: 41, sure: true });
+  const w = await world(t, { learning: { compile_after: 3 }, prior: 3, corrects: CORRECTION, fixed, submits: { answer: 41, sure: true }, grader: correctionGrader });
+  await correctedPriors(w, "merged");
+  for (let i = 0; i < 3; i++) assert.equal(await answerOf(w.server, `prior-${i}`, ctx), fixed, `prior-${i}: its recorded answer is its follow-up's, per the correction`);
+  const { record, replays } = await checked(w, undrawn("re-answered"));
+  assert.equal(record.decided, "promote", record.reason);
+  assert.equal(record.check.agreed, 3, JSON.stringify(record.check));
+  assert.deepEqual(record.check.fields.answer.by, { grade: { n: 3, workflow_right: 3, agent_right: 0 } }, "the verdict counts, equal answers or not; the agent's answer is still counted as corrected");
+  for (const row of replays) {
+    assert.equal(row.metrics?.replay?.compared?.corrected, CORRECTION, `${row.id}: its verdict keeps the correction it was asked against`);
+    assert.equal(row.metrics?.replay?.compared?.same, true, `${row.id}: the same decision`);
+  }
+  assert.equal(w.graderRequests().length, 3, "equal answers still ask the fast model");
+});
+
+test("(16) a correction the checks refused (a hidden character) was never taken: it changes nothing, and a draft equal to the recorded answer promotes on the agent's answer with no model asked", { timeout: 300_000 }, async (t) => {
+  const says = JSON.stringify({ answer: 42, sure: true });
+  const w = await world(t, { learning: { compile_after: 3 }, prior: 3, says, corrects: "The answer is 41.‮", grader: correctionGrader });
+  await correctedPriors(w, "dropped");
+  const { record } = await checked(w, undrawn("refused"));
+  assert.equal(record.decided, "promote", record.reason);
+  assert.deepEqual(record.check.fields.answer.by, { agent: { n: 3, workflow_right: 3, agent_right: 3 } });
+  assert.equal(w.graderRequests().length, 0, "equal answers: no model asked");
 });
 
 test("the grader's verdict: one JSON object, bare or the whole of one fence; anything else is none", () => {
