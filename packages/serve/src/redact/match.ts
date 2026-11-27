@@ -1869,9 +1869,11 @@ const PLACELESS_SPACES = /[\t-\r\ufeff]/g;
  *  characters before it can a terminal strike out. */
 export type Marks = { readonly openAt: (at: number) => number; readonly backspacesFrom: (at: number) => number };
 
-/** JSON's punctuation and whitespace: a join drops it between strings (and writes a space), so a sequence a join reads
- *  may run on over it, where one that reads the text as it stands ends there. */
-const DROPPED = new Set(['"', "'", ",", ":", "{", "}", "[", "]"]);
+/** JSON's punctuation, whitespace and a line's ending backslash (OPERATORS): a join drops it between strings (and
+ *  writes a space), so a sequence a join reads may run on over it, where one that reads the text as it stands ends
+ *  there. The other operator, "+", is an intermediate byte: it ends no sequence, and after an ESC it opens the escape
+ *  the join's space opens. */
+const DROPPED = new Set(['"', "'", ",", ":", "{", "}", "[", "]", "\\"]);
 const dropped = (unit: string): boolean => DROPPED.has(unit) || isSpace(unit.charCodeAt(0));
 /** The decoders a view reads a character of a terminal sequence through, each read alone (marksOf). JSON_ESCAPE is
  *  JSON_ESCAPE_QUOTED with its escaped quotes gone, as a quote may be gone (DROPPED) in any; "+" decodes to a space,
