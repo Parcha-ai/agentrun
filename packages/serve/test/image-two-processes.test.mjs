@@ -100,16 +100,18 @@ function start({ script, log, scripts }, args, { secrets, env = {} } = {}) {
   const seen = { out: "", err: "" };
   child.stdout.on("data", (chunk) => (seen.out += chunk));
   child.stderr.on("data", (chunk) => (seen.err += chunk));
-  // The script can exit before the last of its stdout and stderr is read. "close" waits for both, but the server and
-  // runner it starts hold the same pipes, so one left running would hold "close" until the suite's timeout: settle once
-  // both have ended, or 2 s after the exit, and a child left over still fails by name.
+  // "exit" settles at the moment the script exits, so a shutdown check after it reads the processes as they were then.
+  const exited = new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })));
+  // What the script wrote, read to the end: its last lines can still be unread at "exit". "close" would wait for the server
+  // and runner it starts, which hold the same pipes, so one left running would hang until the suite's timeout: both
+  // streams ended, or 2 s after the exit.
   const ended = Promise.all([child.stdout, child.stderr].map((stream) => new Promise((resolve) => stream.once("end", resolve))));
-  const exited = new Promise((resolve) => child.once("exit", (code, signal) => {
+  const written = exited.then(() => {
     let timer;
-    Promise.race([ended, new Promise((done) => (timer = setTimeout(done, 2000)))]).then(() => (clearTimeout(timer), resolve({ code, signal })));
-  }));
+    return Promise.race([ended, new Promise((done) => (timer = setTimeout(done, 2000)))]).finally(() => clearTimeout(timer));
+  }).then(() => seen);
   scripts.push({ child, exited });
-  return { child, seen, exited };
+  return { child, seen, exited, written };
 }
 
 /** The log's lines, parsed: [role, event, detail]. */
@@ -191,7 +193,7 @@ test("the runner ending on its own stops the server and the script exits 1, even
   assert.equal(code, 1, run.seen.err);
   assert.ok(saw(at.log, "runner", "exits"), "the runner exited");
   assert.ok(saw(at.log, "server", "term") && saw(at.log, "server", "drained"), "the server got SIGTERM and stopped");
-  assert.match(run.seen.err, /the runner exited 0, so the container stops/);
+  assert.match((await run.written).err, /the runner exited 0, so the container stops/);
 });
 
 test("the server ending on its own stops the runner and the script exits with the server's code", async (t) => {
@@ -202,7 +204,7 @@ test("the server ending on its own stops the runner and the script exits with th
   const { code } = await run.exited;
   assert.equal(code, 7, run.seen.err);
   if (up(at.log, "runner")) assert.ok(saw(at.log, "runner", "term") && saw(at.log, "runner", "drained"), "a runner that started got SIGTERM and stopped");
-  assert.match(run.seen.err, /the server exited 7, so the container stops/);
+  assert.match((await run.written).err, /the server exited 7, so the container stops/);
 });
 
 test("a SIGTERM while the server has not answered yet stops the server, starts no runner, and the script exits 0", async (t) => {
@@ -239,7 +241,7 @@ test("server-and-runner refuses options with no --data or no --port, exit 2, sta
     const run = start(at, ["server-and-runner", ...args]);
     const { code } = await run.exited;
     assert.equal(code, 2);
-    assert.match(run.seen.err, why);
+    assert.match((await run.written).err, why);
   }
   assert.equal(lines(at.log).length, 0, "nothing started");
 });
@@ -256,7 +258,7 @@ test("a --data directory this user can't write stops server-and-runner in one li
     const run = start(at, ["server-and-runner", ...args], { env: { STUB_SERVER_EXIT: "0", STUB_HEALTH: "never" } });
     const { code } = await run.exited;
     assert.equal(code, 1, run.seen.err);
-    const said = run.seen.err.trim().split("\n");
+    const said = (await run.written).err.trim().split("\n");
     assert.equal(said.length, 1, run.seen.err);
     assert.match(said[0], new RegExp(`^agentrun-serve: ${data} is not writable by uid ${uid}\\b.*owned by uid ${uid} with mode 555\\b`));
   }
