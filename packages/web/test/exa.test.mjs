@@ -129,7 +129,7 @@ test("a fetch is one paid request to Exa's /contents: the page's text to the mos
   assert.equal(exa.got[0].path, "/contents");
   assert.equal(exa.got[0].headers["x-api-key"], EXA_CANARY);
   assert.deepEqual(exa.got[0].body, { urls: [PUBLIC], text: { maxCharacters: 1_000_001, verbosity: "compact", linkStyle: "full" } });
-  assert.deepEqual([first.answer.ok, first.answer.via, first.answer.title, first.answer.text, first.answer.links], [true, "exa", "Read by Exa", text, ["https://registry.example/1"]]);
+  assert.deepEqual([first.answer.ok, first.answer.via, first.answer.title, first.answer.text, first.answer.links], [true, "exa", "Read by Exa", text, []], "the link its text writes is not listed again");
   assert.deepEqual([first.receipt.provider, first.receipt.tries.map((one) => [one.provider, one.outcome]), first.receipt.cost.usd], ["exa", [["exa", "ok"]], 0.001]);
   assert.deepEqual(fees.map((fee) => [fee.name, fee.usd]), [["Exa's contents", 0.001]]);
   const again = await w.fetch(PUBLIC, { offset: 10 });

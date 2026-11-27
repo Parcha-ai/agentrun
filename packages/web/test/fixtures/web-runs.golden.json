@@ -104,13 +104,10 @@
    "title": "Read by Parallel",
    "text": "# Read by Parallel\n\nThe page at http://public.example/, with [a link](https://other.example/y#top) and [another](/relative).",
    "chars": 124,
-   "links": [
-    "http://public.example/",
-    "https://other.example/y"
-   ],
+   "links": [],
    "via": "parallel"
   },
-  "text": "{\"ok\":true,\"url\":\"http://public.example/\",\"status\":200,\"title\":\"Read by Parallel\",\"text\":\"# Read by Parallel\\n\\nThe page at http://public.example/, with [a link](https://other.example/y#top) and [another](/relative).\",\"chars\":124,\"links\":[\"http://public.example/\",\"https://other.example/y\"],\"via\":\"parallel\"}",
+  "text": "{\"ok\":true,\"url\":\"http://public.example/\",\"status\":200,\"title\":\"Read by Parallel\",\"text\":\"# Read by Parallel\\n\\nThe page at http://public.example/, with [a link](https://other.example/y#top) and [another](/relative).\",\"chars\":124,\"links\":[],\"via\":\"parallel\"}",
   "receipt": {
    "op": "fetch",
    "asked": "http://public.example/",
@@ -127,8 +124,8 @@
    },
    "injection": "unjudged",
    "out": {
-    "bytes": 308,
-    "chars": 308
+    "bytes": 258,
+    "chars": 258
    },
    "cost": {
     "usd": 0.001,

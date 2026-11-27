@@ -134,6 +134,7 @@ export const exaKeyless = defineProvider({ id: "exa-keyless", label: "Exa", keyl
     const found = await searchTyped(ask, { ...(send ? { send } : {}), ...(words ? { words } : {}), signal: deadline });
     if (!("failure" in found)) return { answer: found };
     const limit = "limit" in found ? exaLimitOf(found) : undefined;
-    return { answer: { error: found.error }, failure: found.failure, ...(limit ? { limit } : {}) };
+    // Its limit's words (RATE_LIMITED, or the caller's) are the model's: the breaker passes them on (Searched.worded).
+    return { answer: { error: found.error }, failure: found.failure, ...(limit ? { limit, worded: true as const } : {}) };
   },
 }));
