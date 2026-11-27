@@ -289,6 +289,8 @@ const TEMPLATE_UPLOAD_BODY = Math.ceil((IMPORT_LIMITS.packageBytes * 4) / 3) + M
 const IMPORT_STARTS = 3;
 const MAX_MESSAGE = 20_000;
 const MAX_WAIT_MS = 25_000;
+/** The file records a scoped file list reads at once while it fills a page from every workspace's newest-first ids. */
+const FILE_LIST_BATCH = 64;
 /** A run body's fields that a launch hook's host can't set on a firing's run (RunCreate `trigger_firing`): its trigger's
  *  target fixes them. */
 const HANDED_FIXED = ["revision", "hold", "hold_minutes"] as const;
@@ -6333,17 +6335,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         }
         // A scoped request's: its workspace's files alone (get reads another's as none), counted from the newest before the
         // page is cut, so a page is never short of them and the cursor counts them alone. One read more says if one follows.
+        // Records are read FILE_LIST_BATCH at a time in parallel (each may be a remote read), taken in order.
         const files: UploadedFile[] = [];
         let skipped = 0;
         let more = false;
-        for (const fileId of ids) {
-          const file = await kept.get(fileId);
-          if (!file) continue;
-          if (skipped < offset) skipped += 1;
-          else if (files.length < limit) files.push(file);
-          else {
-            more = true;
-            break;
+        for (let at = 0; at < ids.length && !more; at += FILE_LIST_BATCH) {
+          for (const file of await Promise.all(ids.slice(at, at + FILE_LIST_BATCH).map((fileId) => kept.get(fileId)))) {
+            if (!file) continue;
+            if (skipped < offset) skipped += 1;
+            else if (files.length < limit) files.push(file);
+            else {
+              more = true;
+              break;
+            }
           }
         }
         return send(res, 200, { files, next_cursor: more ? nextCursor(offset + limit, Infinity) : null });

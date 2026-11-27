@@ -616,6 +616,35 @@ test("a scoped request's files are its workspace's: made in it, read, sent and d
   assert.equal((await unscoped(server, "DELETE", `/v2/files/${g1}`)).status, 204);
 });
 
+test("a scoped file list pages over its workspace's files alone when another workspace's newer files run past one batch of reads", { timeout: 180_000 }, async (t) => {
+  await serverStoreOnTarget();
+  const server = await scopedServer(t);
+  const sent = async (workspace, path) => {
+    const answer = await bytes(server, workspace, { path });
+    assert.equal(answer.status, 201, JSON.stringify(answer.body));
+    return answer.body.file.file_id;
+  };
+  // W1's older file sits behind 70 of W2's (past the 64 records the list reads at once), its newer one before them.
+  const older = await sent(W1, "older.md");
+  const theirs = [];
+  for (let i = 0; i < 70; i += 1) theirs.push(await sent(W2, `g${i}.md`));
+  const newer = await sent(W1, "newer.md");
+  const pages = async (request, limit) => {
+    const seen = [];
+    for (let cursor = null, n = 0; n < 100; n += 1) {
+      const answer = await request(server, "GET", `/v2/files?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+      assert.equal(answer.status, 200, answer.text);
+      seen.push(answer.body.files.map((file) => file.file_id));
+      if ((cursor = answer.body.next_cursor) === null) break;
+    }
+    return seen;
+  };
+  assert.deepEqual(await pages(inW1, 1), [[newer], [older]], "W1's two files, one a page, none of W2's, the last page saying none follows");
+  const w2 = await pages(inW2, 50);
+  assert.deepEqual(w2.map((page) => page.length), [50, 20]);
+  assert.deepEqual(w2.flat(), [...theirs].reverse(), "W2's 70, newest first, each once");
+});
+
 test("a scoped run names no Archil disk that is another workspace's agent's own: it reads as a disk Archil does not have; its own agent's, or a disk no agent owns, it names", { timeout: 120_000 }, async (t) => {
   const API = "fake-archil-account-key-0001";
   const REGION = "aws-us-east-1";
