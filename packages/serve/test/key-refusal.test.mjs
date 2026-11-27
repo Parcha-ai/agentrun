@@ -11,7 +11,7 @@ import { readCost, redactedAnswer, redactedCall } from "../dist/key-refusal.js";
 import { marksOf, OPEN_OSC, scanned, shownIn } from "../dist/redact/match.js";
 import { CALL_RESULT_CHARS, scrubUrls } from "../dist/timeline/index.js";
 import { cut } from "../dist/timeline/util.js";
-import { coverTally } from "./fixtures/marks-cover.mjs";
+import { coverTally, uncovered } from "./fixtures/marks-cover.mjs";
 
 const KEY = `not-a-secret-${"openrouter-key"}`;
 const ONLY = { OPENROUTER_API_KEY: KEY };
@@ -519,10 +519,26 @@ for (const [what, kind, pad] of OUTSIDE_THE_READ) {
   });
 }
 
+// The smallest texts of the corpus (KEY_REFUSAL_PAD_CORPUS=all) and the fuzz's seeds 2 to 5 (KEY_REFUSAL_PAD_FUZZ=all)
+// a rule of the marks was found missing on, each three times between a held value's halves: [what the marks missed,
+// padding, wraps].
+const MARKS_MISSED = [
+  // A backslash no escape of JSON's starts, before JSON's ESC: a view reading the string again may read the two as
+  // anything.
+  ["a lone backslash before JSON's ESC, in a title ended by JSON's ESC and a lone backslash", `${B}${B}u001b]0;t${B}u001b${B}`, ["json"]],
+  // A backslash run before "%" or "&": the percent-encoded ESC or the HTML backspace after it is read on its own.
+  ["a backslash run before a percent-encoded ESC, in an OSC ended by U+009C", `%1B]\u009c${B}${B}u001b${B}${B}`, ALL_WRAPS],
+  ["a backslash run before HTML's backspace, in an 8-bit OSC", `\u009d${B}${B}&#8;0${B}u0007`, ALL_WRAPS],
+  // JSON's escape for a backslash, then a letter of JSON's escapes: a view reading the string again reads the two as
+  // one control.
+  ["JSON's backslash and n, in a title HTML's ESC opens and HTML's BEL ends", `&#27;]${B}u005cn&#7;`, ["json"]],
+];
+
 // The marks a read is cut with cover what every view hides (fixtures/marks-cover.mjs), over this file's padding: each
 // between a held value's halves, in each way it is written above.
 test("the padding above: where a view hides a character as a terminal does, a read that starts there is told a sequence may be open or a backspace follows", () => {
   const { tally, add } = coverTally();
+  for (const [, pad, wraps] of MARKS_MISSED) for (const wrap of wraps) add(WRAPS[wrap](`see ${PY_HEAD}${pad.repeat(3)} ${PY_REST} more`));
   for (const [, pad, kind] of CONTROL_PADS) add(wrapped(kind, `see ${PY_HEAD} ${pad}${PY_REST} more`));
   for (const [, text, [head, rest]] of FOLLOWED_TITLES) add(text(`see ${head} `, `${rest} more`));
   add(endingAString(`see ${PY_HEAD} `, `${PY_REST} more`));
@@ -531,6 +547,17 @@ test("the padding above: where a view hides a character as a terminal does, a re
   console.log(`# ${tally.texts} texts, ${tally.checked} hidden places checked, ${tally.misses} missed`);
   assert.ok(tally.checked > 0);
   assert.deepEqual(tally.missed, []);
+});
+
+// A limit of the check, not of the marks: the view that reads percent-encoding and HTML's references together reads
+// the U+FFFD an invalid percent-encoded byte decodes to and a no-break space after it as one character, ending where
+// the space ends. Where a backspace strikes it out, the check counts the place before the space's end hidden, and no
+// read that starts inside the space holds the struck character. Found in the fuzz's seed 4 and pinned as found (the
+// fuzz leaves this padding out of its check), so a change either way fails here.
+test("a struck U+FFFD a view reads with the no-break space after it is counted hidden at the space's end, as pinned", () => {
+  const pad = "%9D\b&#160;\u0007";
+  const missed = Object.fromEntries(ALL_WRAPS.map((wrap) => [wrap, uncovered(WRAPS[wrap](`see ${PY_HEAD}${pad.repeat(3)} ${PY_REST} more`)).missed]));
+  assert.deepEqual(missed, { json: [58], py: [58], plain: [51], jj: [61] });
 });
 
 test("kr-11: control padding after a word, with no held value split around it, is shown (control)", () => {
