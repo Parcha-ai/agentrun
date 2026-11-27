@@ -640,8 +640,16 @@ test("the padding above: where a view hides a character as a terminal does, a re
   for (const [, pad, wraps] of MIXED_PADS) for (const wrap of wraps) add(WRAPS[wrap](`see ${PY_HEAD}${pad.repeat(3)} ${PY_REST} more`));
   for (const [, kind, pad] of OUTSIDE_THE_READ) add(inKind(kind, `see ${PY_HEAD}${pad} ${PY_REST} more`));
   for (const [, filler] of PROSE_APOSTROPHES) add(`see ${PY_HEAD}${filler}${`${filler}'${filler} `.repeat(3)}${filler}${PY_REST} more`);
-  // And a raw ESC whose CSI the next literal holds, joined by each operator: the join reads the sequence whole.
-  for (const [, op, between] of JOINED_LITERALS) for (const fill of [between, `\u001b'${op}'[31m`]) add(`x = '${PY_HEAD}'${joinedPad(op, fill, 3)}'${PY_REST} more'`);
+  // And a raw ESC whose CSI or escape the next literal holds, joined by each operator: the join reads the sequence
+  // whole. Each also as a JSON string, its ESC JSON's escape and its line's ending backslash JSON's escaped one: the
+  // view that decodes JSON's escapes reads that backslash, which ends an escape as it stands, where the join drops it.
+  for (const [, op, between] of JOINED_LITERALS) {
+    for (const fill of [between, `\u001b'${op}'[31m`, `\u001b('${op}'B`]) {
+      const text = `x = '${PY_HEAD}'${joinedPad(op, fill, 3)}'${PY_REST} more'`;
+      add(text);
+      add(JSON.stringify({ a: text }));
+    }
+  }
   console.log(`# ${tally.texts} texts, ${tally.checked} hidden places checked, ${tally.misses} missed`);
   assert.ok(tally.checked > 0);
   assert.deepEqual(tally.missed, []);
