@@ -30,6 +30,8 @@ const { TemplateRegistry } = await import("../dist/templates.js");
 const { inWorkspace, workspaceNow } = await import("../dist/workspace-scope.js");
 const { Triggers } = await import("../dist/triggers.js");
 const { saveArchilSettings, storeAgentDisk } = await import("../dist/archil-settings.js");
+const { scopedPairedWords } = await import("../dist/workspace/attached-computers.js");
+const { PROTOCOL_VERSION } = await import("@parcha/agentrun-computer");
 
 const SCOPED = randomBytes(24).toString("hex");
 const OPERATOR = randomBytes(24).toString("hex");
@@ -747,4 +749,45 @@ test("a scoped run is its agent's workspace's through its agent alone: its row k
   assert.equal(await server.store.runs.workspace(run), W1, "it reads as its agent's");
   assert.equal((await inW1(server, "GET", `/v2/runs/${run}`)).status, 200);
   assert.equal(await server.store.agents.workspace(agent), W1);
+});
+
+/** A phone paired with `server` (not attached): the operator's own machine, one more provider of the phone kind. */
+async function pairPhone(server, id) {
+  const hello = { protocol: PROTOCOL_VERSION, version: "0", os: "android", kind: "android", arch: "arm64", groups: ["screen", "input.touch", "apps"] };
+  await server.store.pairedComputers.addCode(`pairing-${id}`, `code-${id}`, Date.now() + 60_000);
+  assert.equal(await server.store.pairedComputers.pair(`code-${id}`, { id, name: "Pixel", hello, labels: {}, tokenSha256: `token-${id}` }), true);
+}
+
+test("an agent in a workspace never names a paired computer: a scoped create or edit naming one is 422 at definition.computer, nothing written; on a server with no workspaces the owner's agent names it", { timeout: 120_000 }, async (t) => {
+  const server = await scopedServer(t);
+  await pairPhone(server, "cmp-pixel");
+  const definition = (name, computer) => ({ definition: { version: 1, name, instructions: "Answer.", skills: [], tools: [], ...(computer ? { computer } : {}) } });
+  const phone = { kind: "phone", provider: "cmp-pixel" };
+  const refused = await inW1(server, "POST", "/v2/agents", { body: definition("W1 phone", phone) });
+  assert.equal(refused.status, 422, refused.text);
+  assert.deepEqual(refused.body.error.fields.map(({ field, reason }) => ({ field, reason })), [{ field: "definition.computer", reason: "not_an_option" }]);
+  assert.ok(refused.body.error.fields[0].message.startsWith(scopedPairedWords("cmp-pixel")), refused.text);
+  assert.deepEqual(TABLE.listAgents.list((await inW1(server, "GET", "/v2/agents")).body), [], "nothing written");
+  const made = await inW1(server, "POST", "/v2/agents", { body: definition("W1 agent") });
+  assert.equal(made.status, 201, made.text);
+  const edit = await inW1(server, "PUT", `/v2/agents/${made.body.agent_id}/definition`, { body: definition("W1 agent", phone) });
+  assert.equal(edit.status, 422, edit.text);
+  assert.equal(edit.body.error.fields[0].field, "definition.computer");
+  assert.ok(edit.body.error.fields[0].message.startsWith(scopedPairedWords("cmp-pixel")), edit.text);
+  assert.equal((await inW1(server, "GET", `/v2/agents/${made.body.agent_id}`)).body.version, made.body.version, "no revision written");
+  // A server that is not API-only keeps no workspaces: its owner's agent names the phone paired with it.
+  const whole = await serve(t, { runner: false });
+  await pairPhone(whole, "cmp-pixel");
+  const owner = await whole.api("POST", "/agents", definition("Owner phone", phone));
+  assert.equal(owner.status, 201, JSON.stringify(owner.body));
+});
+
+test("a scoped request's capabilities count no paired computer's kind; the operator's count it", { timeout: 120_000 }, async (t) => {
+  const server = await scopedServer(t);
+  const kinds = async (request) => (await request(server, "GET", "/v2/capabilities")).body.features.computers.kinds;
+  const before = await kinds(unscoped);
+  assert.ok(!before.includes("phone"), `no provider here serves a phone: ${before}`);
+  await pairPhone(server, "cmp-pixel");
+  assert.deepEqual(await kinds(unscoped), [...before, "phone"], "the operator's paired phone");
+  assert.deepEqual(await kinds(inW1), before, "a workspace's");
 });

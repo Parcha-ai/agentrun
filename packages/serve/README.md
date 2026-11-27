@@ -4125,6 +4125,12 @@ tenant a disk it did not make is for, and a run in a workspace may name any of t
 (`GET /agents/{id}/archil`) outside its workspace: that reads as a disk Archil does not have (`422` at
 `archil_disk.disk_id`, in the same words).
 
+A computer paired with the server is the operator's own machine, never a workspace's. An agent create or definition edit
+in a workspace that names one as its computer's provider (or its place's box) is `422` at `definition.computer` (or
+`definition.place`), nothing written; a run of an agent in a workspace whose revision names one fails its claim with
+`computer_unavailable`, in the same words. `features.computers` in a workspace's `GET /capabilities` counts no kind a
+paired computer alone offers.
+
 `GET /capabilities` says what this server does in `features.workspaces`: the header's name, `enforced` (true on an
 API-only server alone), `required_for_tokens` (true when `AGENTRUN_WORKSPACE_TOKENS` names a token, so a request of that
 token without the header is refused, not served every workspace's rows) and the operations a scoped request is served.
