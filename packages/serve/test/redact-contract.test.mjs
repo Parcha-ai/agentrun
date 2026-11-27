@@ -1366,6 +1366,10 @@ const adversarial = (size) => {
     // And both readings at once: prose's apostrophe on each line, so main's reading pairs the quotes otherwise, and the
     // strings joined by operators after it.
     { text: f(`"%41+&#65;${B}"${B}${B}x41${B}${B}'",${`x's${`"${DENSE}"+`.repeat(10)}${B}\n`.repeat(40)}`), values: [DENSE] },
+    // And on each such line a JSON string holding a single-quoted dict's strings joined by "+", a hundred of them: the
+    // JSON strings joined by an operator (the nested and strings joins read a fourth pass), the dict's strings paired
+    // otherwise by main's reading (the quoted joins read again as main's), and the held value cut in place in each.
+    { text: f(`"%41+&#65;${B}"${B}${B}x41${B}${B}'",${`x's "{${`'${DENSE}'+`.repeat(100)}}"+${B}\n`.repeat(4)}`), values: [DENSE] },
     // The same in a string never closed, and in one escaped quote after another (JSON written in a string).
     { text: `{"k":"${fill(`${DENSE} `, size - 6)}`, values: [DENSE] },
     { text: f(`${BACKSLASH}"${DENSE}${BACKSLASH}",`), values: [DENSE] },
