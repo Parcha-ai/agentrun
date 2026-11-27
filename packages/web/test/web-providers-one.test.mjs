@@ -203,3 +203,13 @@ test("Parallel's client, one keyed client for both tools: a URL not below Parall
   await client.post(web.PARALLEL_SEARCH_URL, { mode: "fast", search_queries: ["q"] });
   assert.deepEqual(sent, [web.PARALLEL_SEARCH_URL], "only Parallel's own URL was sent");
 });
+
+test("every paid send carries its key with redirect: error, so a request that never left is never one whose first hop was sent", async () => {
+  // The $0 rule for a request that never left (paidSend) reads a connect failure as nothing sent: a followed redirect
+  // would send the first hop, key and all, and still fail with ENOTFOUND at the second.
+  const asked = [];
+  const recording = (who) => async (url, init) => (asked.push([who, init?.redirect]), new Response("{}", { status: 500 }));
+  for (const provider of ["exa", "firecrawl", "parallel"]) await keyedWeb(provider, recording(`${provider} search`)).search({ objective: "widgets" });
+  await web.parallelExtract(KEY, recording("parallel extract")).extract("https://example.com/a");
+  assert.deepEqual(asked, [["exa search", "error"], ["firecrawl search", "error"], ["parallel search", "error"], ["parallel extract", "error"]]);
+});

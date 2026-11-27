@@ -222,7 +222,7 @@ export function createWeb(config: WebConfig): Web {
   // A fee goes on the call's receipt once its request is sent, whatever the cap then books. One that never left (its send
   // answered unsentAnswer, which the cap settles at $0) is $0 on it, saying so, as decisionPay's line for an unbilled
   // request is, once the cap's settle is written: a settle that failed leaves the line at the hold, as the cap keeps it.
-  const pay: Pay = async (fee, send) => {
+  const pay: Pay = async (fee, send, charged, settled) => {
     const lines = feesOfCall.getStore();
     let at = -1;
     let unsent: string | undefined;
@@ -232,7 +232,10 @@ export function createWeb(config: WebConfig): Web {
       const response = await send();
       unsent = unsentOf(response);
       return response;
-    }, undefined, (landed) => { booked = landed; });
+    }, charged, (landed) => {
+      booked = landed;
+      settled?.(landed);
+    });
     if (lines && at >= 0 && unsent !== undefined) lines[at] = booked ? { ...fee, usd: 0, basis: `not billed (not sent: ${unsent})` } : { ...fee, basis: `${fee.basis}; its settle failed, so the hold stands, not $0 (not sent: ${unsent})` };
     return answer;
   };
