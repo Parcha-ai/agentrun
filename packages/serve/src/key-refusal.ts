@@ -91,12 +91,14 @@ const ANSWER_PIECE = 8192;
  *  visits before it stops and gives undefined, so the caller withholds the text. Each view reads such a read's stretch
  *  from every place its join can start, so padding every view reads apart and shows little of costs it hundreds of
  *  characters per character of the stretch. Checked after each reading (one view's, over one stretch of at most a
- *  piece), so a read visits at most this and one reading more: the costliest reading measured visits 178 characters per
- *  character of its stretch (READING in key-refusal.test.mjs). 356 pieces: every view's readings together visit at most
- *  355.6 characters per character of a stretch read with no sequence open, the most measured over the contract's
- *  adversarial texts and the padding the cost test reads, so a read gives up on text that costs more than that over a
- *  whole piece. A run is read only where it is longer than a piece, at most twice (its head and its tail), so the reads
- *  cost at most 2 x (356 + 178) pieces over a piece and one character, about 1,068 per character of the text. That is
+ *  piece), so a read visits at most this and one reading more: the costliest reading measured visits 174.8 characters
+ *  per character of its stretch (READING in key-refusal.test.mjs, 175). 356 pieces: every view's readings together
+ *  visited at most 355.6 characters per character of a stretch read with no sequence open, the most measured over the
+ *  contract's adversarial texts and the padding the cost test reads, before the views read the values' pass, main's join
+ *  and the again join from outside a string; with them, the most is 392.7 (padding of every family the views decode,
+ *  then zero-width spaces), so a read gives up within a piece of that padding, and the text is withheld. A run is read
+ *  only where it is longer than a piece, at most twice (its head and its tail), so the reads cost at most
+ *  2 x (356 + 175) pieces over a piece and one character, about 1,062 per character of the text. That is
  *  over the matcher's bound (WORK in redact-contract.test.mjs) by construction; measured, the reads and the matcher's
  *  own work together stay under it on the texts the reads cost most on (key-refusal.test.mjs). No read of the tests'
  *  prose, JSON and logs reaches it, nor of the padding corpora's texts the matcher shows. Spending it only ever

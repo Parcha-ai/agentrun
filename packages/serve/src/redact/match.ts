@@ -1623,13 +1623,13 @@ function screenOf(recorded: string, cut = false): Screen {
 
 /** Where a join can stand where a stretch cut from a longer text starts, as text written before the stretch: outside
  *  any string (""), in a string (`"`; with `quoted`, `'` too), or in a string written in one (`"\"`; with `again`,
- *  `"'` too). The again join reads none of a stretch that starts outside a value written in quotes, so it starts in
- *  one. */
+ *  `"'` too). The again join starts outside any string too: a stretch that starts there, on a string's opening quote
+ *  or before it, pairs the quotes after it otherwise than one that starts in a string. */
 const STARTS: Readonly<Record<Exclude<JoinKind, "both">, readonly string[]>> = {
   nested: ["", '"', '"\\"'],
   strings: ["", '"'],
   quoted: ["", '"', "'"],
-  again: ['"', '"\\"', "\"'"],
+  again: ["", '"', '"\\"', "\"'"],
 };
 
 /** `text`'s parts as the join of `kind` reads them (partsOf), read as main's reading reads them with `main`, and how
@@ -1716,7 +1716,7 @@ const OPENERS: readonly (readonly [number, string])[] = [
  *  place it can start at (STARTS), of all its parts, and, where the stretch holds a property name or an operator that
  *  joins two strings ("+"), of its values alone, those operators left out (joinOf's passes); and where main's reading
  *  pairs the stretch's quotes otherwise, main's join of it too (holds reads both); a `both` view reads its quoted join
- *  and its again join each. A reading with a terminal
+ *  and then its again join, each built where its first reading is read. A reading with a terminal
  *  control in it is read as readingsOf reads it, twice, as a terminal shows it first, where a sequence the stretch ends
  *  inside hides all that follows (screenOf's `cut`): it could end past the stretch. Where the stretch may start inside
  *  a terminal sequence (`open`, OPEN_OSC and the rest), each view also reads it as a terminal shows it after that
@@ -1766,8 +1766,7 @@ export function* shownIn(
   const source = text.includes(SEPARATOR) ? text.replaceAll(SEPARATOR, "\u0000") : text;
   scanned.chars += text.length;
   const joins = new Map<Exclude<JoinKind, "both">, Input[]>();
-  const joinsOf = (kind: JoinKind): Input[] => {
-    if (kind === "both") return [...joinsOf("quoted"), ...joinsOf("again")];
+  const joinsOf = (kind: Exclude<JoinKind, "both">): Input[] => {
     let found = joins.get(kind);
     if (!found) {
       found = [];
@@ -1792,6 +1791,13 @@ export function* shownIn(
     }
     return found;
   };
+  // What a view reads: the stretch, or its join; a `both` view its quoted join, then its again join, each built where
+  // its first reading is read, so no one reading builds both.
+  function* inputsOf(join: JoinKind | undefined): Generator<Input> {
+    if (join === undefined) yield* plain;
+    else if (join === "both") for (const kind of ["quoted", "again"] as const) yield* joinsOf(kind);
+    else yield* joinsOf(join);
+  }
   const kept = (view: string, ends: readonly number[], input: Input): number[] => {
     const out: number[] = [];
     for (let i = 0; i < view.length; i++) {
@@ -1806,7 +1812,7 @@ export function* shownIn(
   };
   const read = new Set<string>();
   for (const [index, spec] of VIEWS.entries()) {
-    for (const input of spec.join ? joinsOf(spec.join) : plain) {
+    for (const input of inputsOf(spec.join)) {
       const decoders = effective(spec.decoders, has, quotes);
       const key = `${input.id} ${decoders.map((decoder) => decoder.name).join(" ")}`;
       walked?.add(index);
