@@ -21,8 +21,8 @@ export type ApiError = Omit<components["ErrorBody"], "code"> & { code: component
 export type Permission = AgentTool["permission"];
 /** One tool's setting, read by any settings key: a provider where the tool has a choice (web_search, web_fetch, browser),
  *  and a permission; on an MCP server's wildcard in the server's settings, `allow_reads` (its read-only tools run with no
- *  one asked). */
-export type ToolSetting = { provider?: NonNullable<Body<"putToolSettings">["web_search" | "web_fetch" | "browser"]>["provider"]; permission?: Permission; pin?: ToolPin; pin_broken?: true; allow_reads?: true };
+ *  one asked); on web_search or web_fetch in an agent's own, `jev: "off"` (Jev off for both its web tools). */
+export type ToolSetting = { provider?: NonNullable<Body<"putToolSettings">["web_search" | "web_fetch" | "browser"]>["provider"]; permission?: Permission; pin?: ToolPin; pin_broken?: true; allow_reads?: true; jev?: "off" };
 /** A tool setting that can carry a pin (an MCP tool's): the server's read gives `pin_broken` for one that doesn't read. */
 type PinnedSetting = Extract<NonNullable<Body<"putToolSettings">[string]>, { pin?: unknown }>;
 /** A tool's pin: each argument fixed to one value, or one of a list (null: left out). A call outside it is refused. */
@@ -200,8 +200,10 @@ export type ClaudeLoginView = Answer<"getClaudeLogin">;
 /** A free local model (GET /v2/settings/local-model, a serve extension): this machine, its Ollama, the model recommended
  *  for them and the pull here with its progress. */
 export type LocalModel = Answer<"getLocalModel">;
-/** POST /v2/settings/claude-login/sign-out's answer: whether the CLI confirmed its own sign-out, its words when it didn't,
- *  and the login's view after it (off). */
+/** POST /v2/settings/claude-login/sign-out's answer: `confirmed`, whether all of the login is gone (false where the CLI
+ *  didn't confirm its own sign-out, a removal failed, or, with the CLI confirmed, an older Keychain item of the login
+ *  under the account "unknown" may remain on macOS), its words saying what may remain when it isn't, and the login's
+ *  view after it (off). */
 export type ClaudeLoginSignOut = Answer<"signOutClaudeLogin">;
 /** The model gateway in force (GET /v2/settings/model-gateway, a serve extension): the environment's, the one saved in the
  *  console, or none; its address, id style and models, and its key as a SecretMeta, never a value. */

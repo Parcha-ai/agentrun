@@ -3,12 +3,13 @@
 # secrets, then deploys this file. Run it again to upgrade.
 # Fly gives the Machine no Docker, so its agents get file tools and web_fetch but no shell.
 
-# The runner drains its runs for 6 s, then hands the rest back for up to 25 s more. Fly's default is SIGINT, then 5 s.
+# The runner drains its runs for 6 s, then hands the rest back, a browser's release taking up to 40 s from the SIGTERM.
+# Fly's default is SIGINT, then 5 s.
 kill_signal = "SIGTERM"
-kill_timeout = 40
+kill_timeout = 50
 
 [build]
-  image = "ghcr.io/parcha-ai/agentrun-server:v0.1.0-beta.60"
+  image = "ghcr.io/parcha-ai/agentrun-server:v0.1.0-beta.67"
 
 # A deploy updates the one Machine in place, on its volume. canary and bluegreen would boot a second Machine beside it
 # with a new, empty volume (Fly refuses both for a Machine with a volume).

@@ -16,6 +16,8 @@ const iso = (ms) => new Date(ms).toISOString();
 const ORIGIN = "https://run.test";
 const deps = { origin: ORIGIN, serverSecrets: () => [] };
 const ROOT = 1;
+/** A run that started no learning work (learning-work.ts): what its caller may revoke its key on at once. */
+const NO_WORK = { state: "none", runs: [], ended_at: null, deadline_at: null };
 
 /** An agentic agent with one revision. */
 async function agent(store, { kind = "agentic" } = {}) {
@@ -73,6 +75,7 @@ test("a completed run's view reads the whole answer, cost and shape from the sto
     pending: null,
     cost: { usd: 0.25, basis: "estimate", charge_state: null, cap_usd: null },
     audit_of: null,
+    learning_work: NO_WORK,
     stopped_for: null,
     budget_refused_calls: 0,
     approvals: "ask",
@@ -112,7 +115,7 @@ test("a queued run (created, not yet claimed) reads queued and working, its cost
     status: "queued", state: "working", title: "Queued run", input: { message: "Hi" }, file_ids: [], place: { mode: "runner" }, claim: null,
     created_at: iso(T0), updated_at: iso(T0), ended_at: null,
     result: null, error: null, review: null, pending: null,
-    cost: { usd: 0, basis: "unpriced", charge_state: null, cap_usd: null }, audit_of: null, stopped_for: null, budget_refused_calls: 0,
+    cost: { usd: 0, basis: "unpriced", charge_state: null, cap_usd: null }, audit_of: null, learning_work: NO_WORK, stopped_for: null, budget_refused_calls: 0,
     approvals: "ask", archived_at: null, imported_from: null, trigger: null, learning: null, path: null, workflow: null, workflow_calls: null, first_choice: null, poll_after_ms: 1000, last_progress_at: null,
   });
   const moment = await momentOverStore(store, "run-1");
@@ -167,7 +170,7 @@ test("a working run reads working/working and live, its updated_at and last_prog
     status: "working", state: "working", title: "Working run", input: { message: "Do it." }, file_ids: [], place: { mode: "runner" }, claim: { runner: "runner-a", epoch: 1, until: iso(T0 + 60_000) },
     created_at: iso(T0), updated_at: iso(T0 + 10_000), ended_at: null,
     result: null, error: null, review: null, pending: null,
-    cost: { usd: 0, basis: "unpriced", charge_state: null, cap_usd: null }, audit_of: null, stopped_for: null, budget_refused_calls: 0,
+    cost: { usd: 0, basis: "unpriced", charge_state: null, cap_usd: null }, audit_of: null, learning_work: NO_WORK, stopped_for: null, budget_refused_calls: 0,
     approvals: "ask", archived_at: null, imported_from: null, trigger: null, learning: null, path: null, workflow: null, workflow_calls: null, first_choice: null, poll_after_ms: 1000, last_progress_at: iso(T0 + 10_000),
   });
   const moment = await momentOverStore(store, "run-1", liveDeps);
@@ -385,8 +388,9 @@ test("a run whose cap was raised is no longer parked: the budget card clears and
   const journal = store.journal(claim);
   const userId = await journal.mintId();
   const budget = budgetEntry(await journal.mintId());
-  // The cap was raised: an agentrun.raise entry after the budget park clears it, and the resumed run works again.
-  const raise = { id: await journal.mintId(), conversationId: ROOT, kind: "agentrun.raise", data: { capUsd: 11, takes: [1] } };
+  // The cap was raised: an agentrun.raise entry naming the budget park it answered (as the runner writes it) clears it,
+  // and the resumed run works again.
+  const raise = { id: await journal.mintId(), conversationId: ROOT, kind: "agentrun.raise", data: { capUsd: 11, takes: [1], pause: String(budget.id) } };
   await commitWrites(journal, [
     { type: "conversation", value: { id: ROOT } },
     { type: "entry", value: { id: userId, conversationId: ROOT, kind: "pi.user", model: [{ role: "user", content: "Do the big thing.", timestamp: T0 + 1_000 }] } },
@@ -519,7 +523,7 @@ test("a failed run's view serves its error from the row, with an unknown cost", 
     status: "failed", state: "idle", title: "Try it", input: {}, file_ids: [], place: { mode: "runner" }, claim: null,
     created_at: iso(T0), updated_at: iso(T0 + 3_000), ended_at: iso(T0 + 3_000),
     result: null, error: { code: "run_failed", message: "The model refused.", retryable: false }, review: null, pending: null,
-    cost: { usd: null, basis: "unpriced", charge_state: null, cap_usd: null }, audit_of: null, stopped_for: null, budget_refused_calls: 0,
+    cost: { usd: null, basis: "unpriced", charge_state: null, cap_usd: null }, audit_of: null, learning_work: NO_WORK, stopped_for: null, budget_refused_calls: 0,
     approvals: "ask", archived_at: null, imported_from: null, trigger: null, learning: null, path: "agent", workflow: null, workflow_calls: [], first_choice: null, poll_after_ms: 0, last_progress_at: null,
   });
   const moment = await momentOverStore(store, "run-1");

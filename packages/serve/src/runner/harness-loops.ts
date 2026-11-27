@@ -1,5 +1,5 @@
 import { envGatewayInForce, readSavedGateway, savedGatewayIn, savedGatewayMarked, SAVED_GATEWAY_ENV, withSavedGateway } from "../model-gateway.js";
-import { GATEWAY_KEY_ENV } from "../model.js";
+import { FAUX_ENV, GATEWAY_KEY_ENV } from "../model.js";
 import { mustHold } from "./redact.js";
 import { envValue } from "../key-meta.js";
 import { createSdkLoop } from "./sdk-loop.js";
@@ -30,6 +30,13 @@ import { askRouteOf } from "./sdk-ask.js";
 import { ClaimRefused, type LoopFactory } from "./loop-contract.js";
 import { createWorkflowLoop, isWorkflowRevision } from "./workflow-loop.js";
 import { workflowSpecOf } from "./workflow-spec.js";
+import { storeSettings } from "./adapter-run-spec.js";
+import { claimPlane, overCeilings } from "../tool-plane.js";
+import { SECRET_NAMES } from "../secrets.js";
+import { sealedKeyNames } from "../server-keys.js";
+import { toolingOf } from "../tools.js";
+import type { Revision } from "../agent-rows.js";
+import { reseededLaunchOf, roundWaitMsOf, runnerShown } from "./learning-reseed.js";
 
 /** A claimed run whose harness this host's memory never holds: its message is the host's words (neverFits). A claim
  *  refused for good, so a parked run it wakes fails too, never retried as a resume (runner.ts finish). */
@@ -71,7 +78,7 @@ export function resolveRunnerLoop(given: AdapterSpecDeps, options: { readonly ke
  *  key stays off the claim's tool keys (claimSecrets), and a later scan of the store (holdStored) would find only a key
  *  saved since, so a gateway reply that echoes this one is cut in the run's records and logs all the same. `made` itself
  *  where the gateway is not the saved one. */
-function holdingGatewayKey(made: LoopFactory, env: NodeJS.ProcessEnv | undefined): LoopFactory {
+export function holdingGatewayKey(made: LoopFactory, env: NodeJS.ProcessEnv | undefined): LoopFactory {
   const key = env && savedGatewayIn(env) ? env[GATEWAY_KEY_ENV] : undefined;
   if (!key) return made;
   return (loopDeps) => {
@@ -80,30 +87,76 @@ function holdingGatewayKey(made: LoopFactory, env: NodeJS.ProcessEnv | undefined
   };
 }
 
+/** The environment an SDK run's compile turn is asked under, on the runner's environment (`deps.env`, else this
+ *  process's) with every model key the server holds laid on it (savedModelKeys: no revision scopes the ask), and `off`,
+ *  why the turn is skipped, when it is. Its requests on serve's gateway name the claim's run, turn and attempt, as every
+ *  other request of a claim does (request-metadata.ts): withModelKeys makes the env this ask's own. It runs after its
+ *  backend reported the run complete, on no run's key: on a server that holds no gateway key it is skipped in words
+ *  (run-model-key.ts noServerKeyFor), nothing sent. */
+export async function sdkCompileEnv(deps: Pick<AdapterSpecDeps, "store" | "sealKey" | "env">, claim: Parameters<typeof withRequestMetadata>[1]): Promise<{ readonly env: NodeJS.ProcessEnv; readonly off: string | undefined }> {
+  const base = deps.env ?? process.env;
+  // On a --faux runner the turn's model is the faux model (model.ts chooseModel), which sends no key: none is read, and
+  // the turn is never skipped for want of one.
+  if (base[FAUX_ENV]) return { env: withRequestMetadata(withModelKeys(base, {}), claim), off: undefined };
+  const env = withRequestMetadata(withModelKeys(base, await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: base })), claim);
+  return { env, off: noServerKeyFor(env, "An SDK run's compile turn") };
+}
+
+/** `launch` as this claim runs it: its plane, resolved at the run's start, under the server's tool settings now
+ *  (tool-plane.ts claimPlane), so a resume, a follow-up or a reclaim after the server set web_fetch to kernel, or
+ *  web_search to native or off, sends nothing past that setting, whatever its agent picked. Settings that could not be
+ *  read fail closed: a capability kept on a keyless third party or on Parallel runs nothing (SETTINGS_NOT_READ), and
+ *  the gate refuses every tool besides (storeSettings). It resolves on the run's pinned model (the launch's, chosen at
+ *  its start), never the host's default in this environment, which holds no key saved on the server (claim-secrets.ts
+ *  opens those later), and with the saved keys' names (savedNamesOver) for the route its model requests take. */
+export async function underServerCeilings(deps: AdapterSpecDeps, launch: RunLaunch, revision: Revision): Promise<RunLaunch> {
+  if (!launch.plane) return launch;
+  // A run's own process takes the plane its runner capped, the one its keys were chosen by (AdapterSpecDeps.claimedPlane).
+  if (deps.claimedPlane) return { ...launch, plane: deps.claimedPlane };
+  const { settings, unreadable } = await storeSettings(deps.store);
+  const unread = unreadable === true;
+  const tooling = await toolingOf(revision);
+  if (!overCeilings(launch.plane, tooling, settings, { unread })) return launch;
+  const model = launch.model ? `${launch.model.provider}/${launch.model.modelId}` : undefined;
+  const plane = claimPlane(launch.plane, unread ? deps.env ?? process.env : await savedNamesOver(deps), tooling, settings, { capped: launch.maxCostUsd !== undefined, unread, ...(model ? { model } : {}) });
+  return { ...launch, plane };
+}
+
+/** `deps.env` where a key saved on the server, not set in it, is present by name: its row read, never opened (its value
+ *  a stand-in only a resolution's presence checks read), for a plane resolved in it alone, never handed on. A runner
+ *  holds the seal key and reads the store's rows; a run's own process (no seal key) was handed its claim's keys, which
+ *  its environment already holds. */
+async function savedNamesOver(deps: AdapterSpecDeps): Promise<NodeJS.ProcessEnv> {
+  const env = deps.env ?? process.env;
+  if (!deps.sealKey) return env;
+  const names = (await sealedKeyNames(deps.store)).filter((name) => SECRET_NAMES.includes(name) && !env[name]);
+  if (!names.length) return env;
+  // Over `env` (its prototype), so its own secrets and marks (non-enumerable, or symbols) still read.
+  const out = Object.create(env) as NodeJS.ProcessEnv;
+  for (const name of names) Object.defineProperty(out, name, { value: "saved", enumerable: false });
+  return out;
+}
+
 /** The loop a claimed run runs on, over `deps` (the saved gateway laid over its environment). */
 async function loopOn(deps: AdapterSpecDeps, harness: string, launch: RunLaunch, runId: string): Promise<LoopFactory | undefined> {
   // A workflow revision runs on the workflow loop whatever the harness its body names (its default is pi): read the
   // revision to tell it apart from an agentic pi run.
   const run = await deps.store.runs.get(runId);
   const revision = run ? await deps.store.agents.revision(run.revisionId) : undefined;
+  // The plane this claim hands every reader (the secrets, the tools, the run's process), read once here, before any binds.
+  if (revision) launch = await underServerCeilings(deps, launch, revision as unknown as Revision);
   if (revision && isWorkflowRevision(revision)) {
     // A workflow run on the workflow loop: its claim-time spec (workflow-spec.ts) resolves each tier's model the one way
     // the runner resolves any (routeProviderOf over the route, the default when no providerOf is given).
     // The runner's seal key and data directory go with it: a claim's sealed secrets are read with them (claim-secrets.ts,
     // store-secrets.ts), and every one the server keeps is held by the run's one redactor.
-    return createWorkflowLoop(workflowSpecOf({ store: deps.store, sealKey: deps.sealKey, data: deps.data, ...(deps.env ? { env: deps.env } : {}) }));
+    return createWorkflowLoop(workflowSpecOf({ store: deps.store, sealKey: deps.sealKey, data: deps.data, ...(deps.env ? { env: deps.env } : {}), ...(launch.plane ? { plane: launch.plane } : {}) }));
   }
   // A backend SDK run's compile turn is asked on the runner's one model route, on the agent's own model (its learning
   // start's), its key from the runner's environment, else the one saved in Settings → Model keys, read at each ask.
   if (launch.sdk || launch.cli_learning) return createSdkLoop(launch, deps, async (claim) => {
     if (launch.cli_learning) throw new Error("Connected CLI capture has no workflow execution bridge.");
-    const base = deps.env ?? process.env;
-    // Its requests on serve's gateway name the claim's run, turn and attempt, as every other request of a claim does
-    // (request-metadata.ts): withModelKeys makes the env this ask's own.
-    const env = withRequestMetadata(withModelKeys(base, await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: base })), claim);
-    // It runs after its backend reported the run complete, on no run's key: on a server that holds no gateway key it is
-    // skipped in words (run-model-key.ts noServerKeyFor), nothing sent.
-    const off = noServerKeyFor(env, "An SDK run's compile turn");
+    const { env, off } = await sdkCompileEnv(deps, claim);
     if (off) {
       deps.log?.(off);
       throw new Error(off);
@@ -142,7 +195,8 @@ async function loopOn(deps: AdapterSpecDeps, harness: string, launch: RunLaunch,
  *  start and the test server pass this to startRunner. */
 export function dispatchRunner(deps: AdapterSpecDeps): LoopFactory {
   return createDispatchLoop({
-    launchOf: (runId) => deps.store.runs.launch(runId),
+    // A run started while its agent's learning round was open reads its seed again first (learning-reseed.ts).
+    launchOf: reseededLaunchOf({ store: deps.store, data: deps.data, shown: runnerShown(deps), log: deps.log ?? (() => undefined), waitMs: roundWaitMsOf(deps.env) }),
     resolve: resolveRunnerLoop(deps),
   });
 }

@@ -7,6 +7,9 @@
 //  - an agent's page side by side (1280 px wide, 720 and 420 high) whose description runs to pages: the name and the id stay
 //    in view, the description scrolls in a box of its own, and the details under them keep a share of the column and can
 //    be scrolled to their end; scrolling them does not move the name.
+//  - an agent's Run box at desktop widths where the workspace beside the details is narrow (1024 to 1280 px) and in one
+//    column (900 px): the Attach files drop zone keeps a width its words can be read in, never a thin column with a word
+//    a line beside "Run with your coding agent"; where the row has no room for both, they stack.
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -148,4 +151,29 @@ export const agentLongDescription = {
   },
 };
 
-export default [phoneLandscape, playgroundHalfPage, agentLongDescription];
+export const agentRunBoxNarrow = {
+  name: "agent-run-box-narrow",
+  signedIn: true,
+  async run({ page, base, api }) {
+    const made = await api("POST", "/agents", { definition: { id: "filer", name: "Filer", description: "Reads the files it is given.", instructions: "Answer in one line.", tools: [] } });
+    check(made.status === 201, `creating the agent answered ${made.status}`);
+    for (const width of [1024, 1100, 1180, 1280, 900]) {
+      const at = `${width}x800`;
+      await page.setViewportSize({ width, height: 800 });
+      await page.goto(`${base}/#/agents/filer`);
+      await page.reload();
+      const zone = page.locator('[data-run-here] [aria-label="Files for the run"]');
+      await zone.waitFor({ timeout: 45_000 });
+      const words = zone.getByText(/or drop them here/);
+      const sized = await words.evaluate((el) => {
+        const line = parseFloat(getComputedStyle(el).lineHeight) || 20;
+        const zone = el.closest('[aria-label="Files for the run"]').getBoundingClientRect();
+        return { zone: zone.width, lines: Math.round(el.getBoundingClientRect().height / line) };
+      });
+      check(sized.zone >= 300, `${at}: the drop zone is ${Math.round(sized.zone)} px wide`);
+      check(sized.lines <= 3, `${at}: the drop zone's words run to ${sized.lines} lines`);
+    }
+  },
+};
+
+export default [phoneLandscape, playgroundHalfPage, agentLongDescription, agentRunBoxNarrow];

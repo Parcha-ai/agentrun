@@ -475,6 +475,9 @@ export function createSurface(client: ComputerClient, hello: HelloResult, { cwd 
 			}
 			case "apps.open": {
 				if (typeof args.id !== "string" || args.id === "") throw new SurfaceError("invalid", "id is the app's bundle id or package name");
+				// A Linux computerd older than its own url check would put this into the app's argv as a flag (Chromium's
+				// --renderer-cmd-prefix runs a command); no platform takes one as a url.
+				if (typeof args.url === "string" && /^[ \t\r\n\v\f]*-/.test(args.url)) throw new SurfaceError("invalid", `url ${JSON.stringify(args.url)} starts with "-": the app would take it as a flag, not a url`);
 				await call("apps.launch", { id: args.id, ...(typeof args.url === "string" ? { url: args.url } : {}), ...(args.background === true ? { background: true } : {}) }, signal);
 				return { value: { id: args.id }, text: `opened ${args.id}`, images: [] };
 			}

@@ -229,7 +229,9 @@ test("the contract's operations are as vendored; this server's own are added and
         assert.equal(changes.parameters, "filecut/1");
         assert.equal(op.responses["413"].$ref, "#/components/responses/PayloadTooLarge");
         assert.equal(op.responses["415"].$ref, "#/components/responses/UnsupportedMediaType");
-        assert.deepEqual(Object.keys(op.responses).filter((code) => !Object.hasOwn(original.responses, code)).sort(), [...(original.responses["403"] ? [] : ["403"]), "413", "415"]);
+        // A cut not made by its deadline (cut-pool.ts) is 503, never the text uncut.
+        assert.equal(op.responses["503"].$ref, "#/components/responses/Unavailable");
+        assert.deepEqual(Object.keys(op.responses).filter((code) => !Object.hasOwn(original.responses, code)).sort(), [...(original.responses["403"] ? [] : ["403"]), "413", "415", "503"]);
       }
       const { description: _a, responses: _b, parameters: _e, ...same } = rest;
       const { description: _c, responses: _d, parameters: _f, ...vendoredSame } = original;
@@ -401,7 +403,7 @@ test("the contract's operations are as vendored; this server's own are added and
     unrequired.push(`Capabilities.${field}`);
   }
   assert.ok(isDeepStrictEqual(components, VENDORED.components), "the contract's components are unchanged but for the marked properties");
-  assert.deepEqual(unrequired.sort(), [...["Run", "RunSummary"].flatMap((schema) => RUN_FIELDS_SENT.map((field) => `${schema}.${field}`)), "Run.place", ...AGENT_FIELDS_SENT.map((field) => `Agent.${field}`), ...CAPABILITIES_SENT.map((field) => `Capabilities.${field}`), ...SIGN_IN_FIELDS_SENT.map((field) => `SignIn.${field}`)].sort(), "only the fields this server always sends are required beyond the contract");
+  assert.deepEqual(unrequired.sort(), [...["Run", "RunSummary"].flatMap((schema) => RUN_FIELDS_SENT.map((field) => `${schema}.${field}`)), "Run.place", "Run.learning_work", ...AGENT_FIELDS_SENT.map((field) => `Agent.${field}`), ...CAPABILITIES_SENT.map((field) => `Capabilities.${field}`), ...SIGN_IN_FIELDS_SENT.map((field) => `SignIn.${field}`)].sort(), "only the fields this server always sends are required beyond the contract");
   assert.deepEqual(marked.sort(), [...doc.info["x-agentrun-serve"].fields].sort(), "info lists the marked properties");
   assert.deepEqual(notes.sort(), [...doc.info["x-agentrun-serve"].unsupported_fields, ...doc.info["x-agentrun-serve"].details, ...doc.info["x-agentrun-serve"].notes].sort(), "info lists the contract properties it notes");
 });

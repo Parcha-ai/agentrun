@@ -2,7 +2,7 @@ import { cliLearningOf, cliLearningLabel } from "@/lib/cliLearning";
 import { ConnectedAgentCard } from "@/components/ObservedSessions";
 import type { ObservationRead } from "@/lib/observations";
 import { agentInventory } from "@/lib/agentInventory";
-import { Archive, Plus, Settings, Bot, Brain, History, Pencil, Play, Search, Workflow } from "lucide-react";
+import { Archive, ArchiveRestore, Plus, Settings, Bot, Brain, History, Pencil, Play, Search, Workflow } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -17,14 +17,16 @@ import { nativeReadinessOf, nativeRuntimeLabel, nativeStateLabel } from "@/lib/n
 import { backendSdkLabel, backendSdkOf } from "@/lib/backendSdk";
 import { waitingOf, waitingWords } from "@/lib/learning";
 import { cn } from "@/lib/utils";
-import { workflowShape } from "@/lib/workflowDoc";
+import { agentKindWords, workflowShape } from "@/lib/workflowDoc";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { newAgentEditorHref } from "@/lib/agentEditorRoute";
 import { runsHere } from "@/lib/runHere";
 import { editAgentPrompt, runAgentPrompt } from "@/lib/codingAgentPrompts";
 import { pageBodyClass, pageClass, pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 
-export type AgentsListActions = { onOpen?: (id: string) => void; onEdit?: (id: string) => void; onNew?: () => void; onRuns?: (id: string) => void; onLearning?: (id: string) => void };
+/** `onUnarchive`: an archived card's labeled Unarchive (absent: no button); `unarchiving`, the ids it waits on; `unarchiveProblem`,
+ *  why the last one did not finish. */
+export type AgentsListActions = { onOpen?: (id: string) => void; onEdit?: (id: string) => void; onNew?: () => void; onRuns?: (id: string) => void; onLearning?: (id: string) => void; onUnarchive?: (id: string) => void; unarchiving?: ReadonlySet<string>; unarchiveProblem?: string | null };
 
 /** The hosted console's agent grid: a search box, the count, and a card per agent (name, kind, harness, what it does,
  *  its revision and runs, and its actions). Archived agents are their own view. */
@@ -54,6 +56,7 @@ export function AgentsList({ agents, archived = false, onArchivedChange, actions
       </div>
       <div className="space-y-4">
       {error && <Banner tone="error">Could not refresh agents: {error}</Banner>}
+      {actions.unarchiveProblem && <Banner tone="error">Unarchive did not finish: {actions.unarchiveProblem}</Banner>}
       {connected?.error && <Banner tone="error" actions={<Button size="xs" disabled={connected.loading} onClick={connected.refresh}>Try again</Button>}>Some connected agents could not be refreshed: {connected.error}</Banner>}
       {storageFull && <Banner tone="warning" title="Telemetry needs attention">A connector has reached its telemetry storage capacity. New reports cannot be accepted until storage becomes available.</Banner>}
       {count > 0 && <>
@@ -93,7 +96,7 @@ function AgentCard({ agent: a, actions, learning }: { agent: Agent; actions: Age
   return (
     <AgentCardFrame name={a.definition.name} icon={Icon} harness={agentHarness(a)} archived={archived} onOpen={() => actions.onOpen?.(a.agent_id)}
       harnessName={a.kind === "agentic" ? (cli ? cliLearningLabel(cli.runtime) : sdk ? backendSdkLabel(sdk) : native ? nativeRuntimeLabel(native.runtime) : harnessLabel(a.definition.harness ?? "pi")) : undefined}
-      badges={<><Chip>{a.kind}</Chip>
+      badges={<><Chip>{agentKindWords(a)}</Chip>
         {native && <Chip tone={native.connected && native.state === "ready" ? "success" : "warning"}>{nativeStateLabel(native)}</Chip>}
         {archived && <Chip tone="muted">Archived</Chip>}</>}
       description={a.definition.description || (a.kind === "workflow" ? workflowShape(a.definition.workflow) : "No description.")}
@@ -108,6 +111,8 @@ function AgentCard({ agent: a, actions, learning }: { agent: Agent; actions: Age
           )}
       </>}
       actions={<>
+          {/* An archived agent says how it comes back, by name, first: the Settings icon's Unarchive is easy to miss. */}
+          {archived && actions.onUnarchive && <Button size="sm" variant="primary" disabled={actions.unarchiving?.has(a.agent_id)} aria-busy={actions.unarchiving?.has(a.agent_id)} onClick={() => actions.onUnarchive?.(a.agent_id)}><ArchiveRestore aria-hidden />{actions.unarchiving?.has(a.agent_id) ? "Unarchiving…" : "Unarchive"}</Button>}
           {/* An agent this server runs: Run opens its page, where the Run box is, and Edit its settings in the console. */}
           {here ? <>
             <a href={agentHash(a.agent_id)} aria-label={`Run ${a.definition.name}`} title="Run" className={buttonVariants({ size: "icon", variant: "outline" })}><Play className="size-3.5" aria-hidden /></a>

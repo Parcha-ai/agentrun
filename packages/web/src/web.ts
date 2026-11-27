@@ -6,8 +6,8 @@ import { decideFetch, type FetchAnswer, judgePart } from "./decide/fetch.js";
 import { guardPage, type InjectionVerdict, type PageGuard, type WallVerdict } from "./decide/page-guard.js";
 import { decisionPay, type DecisionRecord, heldOnRefusal, type Sift, type StepOptions } from "./decide/record.js";
 import { type DecidePolicy, policyOf, siftSearch } from "./decide/search.js";
-import { missesOf, type Pages, type Readers, type WebLog, type WebRead, webFetchText, webPart, webRead } from "./fetch.js";
-import { type Fee, type Pay, unmetered } from "./fees.js";
+import { missesOf, pageKey, type Pages, type Readers, sharedRead, type WebLog, type WebRead, webFetchText, webPart, webRead } from "./fetch.js";
+import { type Fee, type Pay, unmetered, unsentOf } from "./fees.js";
 import type { Guard, GuardOptions } from "./guard.js";
 import { askedUrl, type Page, type Part, partProblem } from "./page.js";
 import { holdingWords, type NativeSearch, type ProviderRun, readerOf, type WebClient } from "./provider.js";
@@ -16,7 +16,8 @@ import { kindOf } from "./providers/keyed.js";
 import { type FetchProvider, type KeyedProvider, type ProviderId, providerOf, type ProviderSettings, type SearchProvider, settingsProblemsOf } from "./providers/registry.js";
 import { type Breaker, breakers, fitSearch, type Holding, type Limit, withKeyBreaker, type Search, type SearchBounds, searchArgs, searchInTurn, searchText, type Try } from "./search.js";
 
-/** What an answer took and cost. `asked`: a search's objective, a fetch's URL; `queries`, a search's keyword queries.
+/** What an answer took and cost. `asked`: a search's objective, a fetch's URL as its page names it (no user name or
+ *  password); `queries`, a search's keyword queries.
  *  `out` is the answer as the model reads it; `cache` is "hit" when a fetch came from the run's pages. */
 export type Receipt = {
   op: "search" | "fetch";
@@ -85,7 +86,6 @@ export type SearchOptions = { n?: number; signal?: AbortSignal; breakers?: (name
  *  part asked for, as with none. Blank: none. `session`: this call's session, told to a provider that takes one in place
  *  of WebConfig.client's, as SearchOptions.session (a page the run already read is not read again). */
 export type FetchOptions = Part & GuardOptions & { task?: string; objective?: string; lookingFor?: string; session?: string };
-/** `sift`, only when a decider is given: what it did, for the model to read. */
 /** A provider a Web's tool asks: its id, how it is reached (`keyed`, on the run's key; `unkeyed`, a keyed provider the
  *  run holds no key for, so never sent; `keyless`, a service's free use; `none`, neither: the model provider's own search
  *  or the guarded direct fetch), and what holds it now (the tool's breaker, else its key's), if anything. */
@@ -98,7 +98,8 @@ export type Destinations = { search: Destination[]; fetch: Destination[] };
 /** What a search asks: `{objective, queries?, n?}`, or a query alone (a string, or the deprecated `{query}`), which is
  *  searched as the objective and the one query (searchArgs). */
 export type SearchInput = string | { objective?: string; queries?: readonly string[]; query?: string; n?: number };
-/** `destinations`: where each tool goes now (Destinations), for a run's start line; never a key. */
+/** `search`'s answer carries `sift` only when a decider is given: what it did, for the model to read. `destinations`:
+ *  where each tool goes now (Destinations), for a run's start line; never a key. */
 export type Web = {
   search(input: SearchInput, options?: SearchOptions): Promise<{ answer: Search & Sift; receipt: Receipt }>;
   fetch(url: unknown, options?: FetchOptions): Promise<{ answer: FetchAnswer; receipt: Receipt }>;
@@ -125,20 +126,41 @@ const usd = (lines: Fee[]) => Math.round(lines.reduce((sum, fee) => sum + fee.us
 const outOf = (text: string) => ({ bytes: Buffer.byteLength(text), chars: text.length });
 const unjudged = { wall: { verdict: "unjudged" }, injection: "unjudged" } as const;
 
-/** `shared`, a guard check another call started, or as soon as `signal` stops this call, the page left unjudged as a
- *  stopped check leaves it (code "aborted"). The shared check is not stopped: another call may still need it. */
-function guardUntilStopped(shared: Promise<PageGuard>, signal?: AbortSignal): Promise<PageGuard> {
-  if (!signal) return shared;
-  const stopped = (): PageGuard => ({ wall: { verdict: "unjudged", error: { code: "aborted", message: String((signal.reason as Error)?.message ?? signal.reason).slice(0, 500) } }, injection: "unjudged" });
-  if (signal.aborted) return Promise.resolve(stopped());
-  return new Promise((resolve, reject) => {
-    const onStop = () => resolve(stopped());
-    signal.addEventListener("abort", onStop, { once: true });
-    shared.then(
-      (guard) => (signal.removeEventListener("abort", onStop), resolve(guard)),
-      (error: unknown) => (signal.removeEventListener("abort", onStop), reject(error)),
-    );
-  });
+/** The page left unjudged as a stopped guard check leaves it (code "aborted"), by `signal`'s reason. */
+const stoppedGuard = (signal: AbortSignal): PageGuard => ({ wall: { verdict: "unjudged", error: { code: "aborted", message: String((signal.reason as Error)?.message ?? signal.reason).slice(0, 500) } }, injection: "unjudged" });
+
+/** A page guard check every call fetching one page shares (`ask`, on a signal of its own): each call waits on it until
+ *  its own signal stops it, the page then left unjudged for that call (stoppedGuard); the check itself is stopped only
+ *  once every call waiting on it has stopped (one waiting with no signal never stops), and a stopped one is joined by
+ *  no call after (`stopped`). */
+type SharedGuard = { verdict: Promise<PageGuard>; stopped(): boolean; wait(signal?: AbortSignal): Promise<PageGuard> };
+function sharedGuard(ask: (signal: AbortSignal) => Promise<PageGuard>): SharedGuard {
+  const own = new AbortController();
+  let waiting = 0;
+  let settled = false;
+  const verdict = ask(own.signal);
+  void verdict.then(() => (settled = true), () => (settled = true));
+  return {
+    verdict,
+    stopped: () => own.signal.aborted,
+    wait(signal) {
+      if (signal?.aborted) return Promise.resolve(stoppedGuard(signal));
+      waiting += 1;
+      if (!signal) return verdict;
+      return new Promise((resolve, reject) => {
+        const onStop = () => {
+          resolve(stoppedGuard(signal));
+          waiting -= 1;
+          if (waiting === 0 && !settled) own.abort(signal.reason);
+        };
+        signal.addEventListener("abort", onStop, { once: true });
+        verdict.then(
+          (guard) => (signal.removeEventListener("abort", onStop), resolve(guard)),
+          (error: unknown) => (signal.removeEventListener("abort", onStop), reject(error)),
+        );
+      });
+    },
+  };
 }
 
 export function createWeb(config: WebConfig): Web {
@@ -153,15 +175,20 @@ export function createWeb(config: WebConfig): Web {
   const held = config.decider ? heldOnRefusal(config.decider) : undefined;
   /** The page guard's verdict on each read the run's pages hold, kept with the read: it goes when the page is evicted,
    *  and a page read again is asked about again, as is one whose guard failed. */
-  const pageVerdicts = new WeakMap<WebRead, Promise<PageGuard>>();
+  const pageVerdicts = new WeakMap<WebRead, SharedGuard>();
   const guardOf = (decider: WebDecider, url: string, read: WebRead, step: StepOptions): Promise<PageGuard> => {
-    const known = pageVerdicts.get(read);
-    // A later caller waits on the check another started only until its own signal stops it; the check goes on.
-    if (known) return guardUntilStopped(known, step.signal);
-    const asked = guardPage(decider, url, read, step);
-    pageVerdicts.set(read, asked);
-    void asked.then((verdict) => verdict.wall.error && pageVerdicts.delete(read));
-    return asked;
+    // One verdict a page: a read another fragment of its URL shares is that page (sharedRead).
+    const page = sharedRead(read);
+    const known = pageVerdicts.get(page);
+    // A check every waiter stopped is not joined, though it is the page's until its verdict settles: ask anew.
+    if (known && !known.stopped()) return known.wait(step.signal);
+    // A call already stopped starts no check.
+    if (step.signal?.aborted) return Promise.resolve(stoppedGuard(step.signal));
+    // The check is the page's, not the caller's: no caller's stop ends it while another call waits on it (sharedGuard).
+    const shared = sharedGuard((signal) => guardPage(decider, url, read, { ...step, signal }));
+    pageVerdicts.set(page, shared);
+    void shared.verdict.then((verdict) => verdict.wall.error && pageVerdicts.get(page) === shared && pageVerdicts.delete(page));
+    return shared.wait(step.signal);
   };
   /** A receipt's `unsifted`, only in a run with a classifier. */
   const unsifted = (text: () => string) => (config.decider ? { unsifted: text() } : {});
@@ -195,8 +222,26 @@ export function createWeb(config: WebConfig): Web {
     };
   };
   const toolBreaker = (tool: "search" | "fetch", id: ProviderId, own: Breaker, key: Breaker): Breaker => withKeyBreaker(watched(tool, id, own), watched("key", id, key));
-  // A fee goes on the call's receipt once its request is sent, whatever the cap then books.
-  const pay: Pay = (fee, send) => (config.pay ?? unmetered)(fee, () => (feesOfCall.getStore()?.push(fee), send()));
+  // A fee goes on the call's receipt once its request is sent, whatever the cap then books. One that never left (its send
+  // answered unsentAnswer, which the cap settles at $0) is $0 on it, saying so, as decisionPay's line for an unbilled
+  // request is, once the cap's settle is written: a settle that failed leaves the line at the hold, as the cap keeps it.
+  const pay: Pay = async (fee, send, charged, settled) => {
+    const lines = feesOfCall.getStore();
+    let at = -1;
+    let unsent: string | undefined;
+    let booked = true;
+    const answer = await (config.pay ?? unmetered)(fee, async () => {
+      if (lines) at = lines.push(fee) - 1;
+      const response = await send();
+      unsent = unsentOf(response);
+      return response;
+    }, charged, (landed) => {
+      booked = landed;
+      settled?.(landed);
+    });
+    if (lines && at >= 0 && unsent !== undefined) lines[at] = booked ? { ...fee, usd: 0, basis: `not billed (not sent: ${unsent})` } : { ...fee, basis: `${fee.basis}; its settle failed, so the hold stands, not $0 (not sent: ${unsent})` };
+    return answer;
+  };
 
   // Each provider an order names is made once per Web, at its first use, from the run's parts for it: one client a
   // provider, so a key refused by one tool is refused by both.
@@ -257,24 +302,28 @@ export function createWeb(config: WebConfig): Web {
       const answer: Search & Sift = fitSearch(sifted.answer);
       const { classifier } = sifted;
       const said = [asked.objective, asked.query].find((one): one is string => typeof one === "string") ?? "";
+      // A copy: a sift this call stopped waiting for may still pay, and its fee is not on this receipt.
+      const spent = [...lines];
       // An empty search's receipt keeps the words it was given.
-      const receipt: Receipt = { op: "search", asked: ask.objective || said, queries: ask.queries, provider: "error" in answer ? null : answer.provider, tries, classifier, ...unjudged, out: outOf(searchText(answer)), cost: { usd: usd(lines), lines }, ...unsifted(() => searchText(fitSearch(found))) };
+      const receipt: Receipt = { op: "search", asked: ask.objective || said, queries: ask.queries, provider: "error" in answer ? null : answer.provider, tries, classifier, ...unjudged, out: outOf(searchText(answer)), cost: { usd: usd(spent), lines: spent }, ...unsifted(() => searchText(fitSearch(found))) };
       return { answer, receipt };
     },
     // Only the call's part, resolver, transport, signal, task, objective and session are read: the guard, its bound, the order
     // and the readers stay the Web's.
     async fetch(url, { offset, maxChars, task, objective, lookingFor, lookup, fetchImpl, signal, session } = {}) {
       const asked = typeof url === "string" ? url : "";
+      // What a receipt names: the URL as the page names it, with no user name or password (askedUrl).
+      const named = askedUrl(url);
       const lines: Fee[] = [];
       const tries: Try[] = [];
       // A part a call may not ask for is refused before anything is fetched.
       const problem = partProblem({ offset, maxChars });
       if (problem) {
-        const refused: Page = { ok: false, url: askedUrl(asked), status: 0, title: "", text: "", links: [], error: problem };
+        const refused: Page = { ok: false, url: named, status: 0, title: "", text: "", links: [], error: problem };
         const classifier = held ? (await judgePart(held, asked, refused, {})).classifier : "off";
-        return { answer: refused, receipt: { op: "fetch", asked, provider: null, tries, classifier, ...unjudged, out: outOf(webFetchText(refused)), cost: { usd: 0, lines }, ...unsifted(() => webFetchText(refused)) } };
+        return { answer: refused, receipt: { op: "fetch", asked: named, provider: null, tries, classifier, ...unjudged, out: outOf(webFetchText(refused)), cost: { usd: 0, lines }, ...unsifted(() => webFetchText(refused)) } };
       }
-      const cached = typeof url === "string" && pages.has(url);
+      const cached = typeof url === "string" && pages.has(pageKey(url));
       const whole = await feesOfCall.run(lines, () =>
         webRead(url, {
           ...(lookup ? { lookup } : {}),
@@ -294,13 +343,13 @@ export function createWeb(config: WebConfig): Web {
       const provider = part.ok && part.via !== "stopped" && part.via !== "none" ? part.via : null;
       const decider = held;
       const guard = config.pageGuard && decider && whole.ok ? (options: StepOptions) => guardOf(decider, asked, whole, options) : undefined;
-      const decided = await decideFetch(decider, asked, whole, part, { task, objective: typeof objective === "string" && objective.trim() ? objective : lookingFor, signal, ms: config.bounds?.decideMs, pay: config.pay ?? unmetered, lines, guard });
+      const decided = await decideFetch(decider, asked, whole, part, { task, objective: typeof objective === "string" && objective.trim() ? objective : lookingFor, ...(offset === undefined ? {} : { offset }), ...(maxChars === undefined ? {} : { maxChars }), signal, ms: config.bounds?.decideMs, pay: config.pay ?? unmetered, lines, guard });
       // What the objective found names each provider asked ahead that gave no page, as the part does.
       const answer: FetchAnswer = "found" in decided.answer ? { ...decided.answer, ...missesOf(whole) } : decided.answer;
       const { classifier, guard: verdicts } = decided;
       // Copies: a read this call stopped waiting for goes on, and its later turns and fees are not on this receipt.
       const spent = [...lines];
-      const receipt: Receipt = { op: "fetch", asked, provider, tries: [...tries], classifier, ...(verdicts ? { wall: verdicts.wall, injection: verdicts.injection } : unjudged), out: outOf(webFetchText(answer)), cost: { usd: usd(spent), lines: spent }, ...(cached ? { cache: "hit" as const } : {}), ...unsifted(() => webFetchText(part)) };
+      const receipt: Receipt = { op: "fetch", asked: named, provider, tries: [...tries], classifier, ...(verdicts ? { wall: verdicts.wall, injection: verdicts.injection } : unjudged), out: outOf(webFetchText(answer)), cost: { usd: usd(spent), lines: spent }, ...(cached ? { cache: "hit" as const } : {}), ...unsifted(() => webFetchText(part)) };
       return { answer, receipt };
     },
   };

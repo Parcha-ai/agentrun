@@ -323,7 +323,7 @@ test("nothing to check it on (no completed run of the agent's it takes): never p
   const [record, ...more] = await promotionsOf(server.learning, "agent-1");
   assert.deepEqual(more, []);
   assert.deepEqual({ decided: record.decided, digest: record.digest, n: record.check.n, stopped: record.check.stopped, attempt: record.check.attempt }, { decided: "hold", digest: DIGEST, n: 0, stopped: true, attempt: 1 });
-  assert.equal(record.reason, "nothing to check it on: the agent has no completed run of its own to check it against. It is not promoted, and it stops: nothing compiles again until a hold or its owner acts");
+  assert.equal(record.reason, "nothing to check it on: the agent has no completed run of its own to check it against. It is not promoted, and it stops: nothing compiles again until a correction or compile_after new runs of the agent's own restart it");
   const second = await start("run-2", "What is seven times six");
   assert.equal(second.metrics?.path, "agent", JSON.stringify(second.metrics));
   assert.deepEqual(await promotionsOf(server.learning, "agent-1"), [record], "stopped: no check starts again, nothing is promoted");

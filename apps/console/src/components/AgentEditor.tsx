@@ -18,6 +18,7 @@ import { WorkflowEditor } from "@/components/WorkflowEditor";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { backendSdkOf } from "@/lib/backendSdk";
 import { buildAgentPrompt, DEFINITION_TEXT_NOTE, editAgentPrompt } from "@/lib/codingAgentPrompts";
+import { isDecisionWorkflow } from "@/lib/workflowDoc";
 import { type Agent, type AgentFields, type Definition, capOf, editBody, toolsOnSwitch, notOn, DECISION, DEFAULT_INSTRUCTIONS, defaultTools, harnessOptions, isStarter, reachesWeb, same, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
 import type { WorkflowCheck } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
@@ -29,7 +30,7 @@ import { CAP_NOTE, isPlanModel } from "@/lib/chatgpt";
 import type { McpServer } from "@/lib/mcp";
 import { isMonidName, monidFieldsOf, splitMonidWarnings } from "@/lib/monid";
 import { computerOfPlace, newAgentPlace, placeOf } from "@/lib/place";
-import { computerFields } from "@/lib/computers";
+import { computerFields, runnerShellOf } from "@/lib/computers";
 import type { ComputerKindView } from "@/lib/v2";
 import type { Places } from "@/lib/place";
 import type { ToolSettings } from "@/lib/v2";
@@ -94,6 +95,11 @@ export type EditorProps = {
 type Step = "context" | "workflow" | "computer" | "tools" | "skills" | "settings" | "learning" | "history";
 /** The workflow in the form's text, when it parses; else undefined (the saved one stands). */
 const parsedWorkflow = (text: string | undefined): unknown => { try { return text ? JSON.parse(text) : undefined; } catch { return undefined; } };
+/** The words for the box-only tools a computer pick took off: on the runner, they run only on a sandbox computer. */
+const shellOffWords = (tools: readonly string[]): string => {
+  const list = new Intl.ListFormat("en", { type: "conjunction" }).format(tools);
+  return `${list.charAt(0).toUpperCase()}${list.slice(1)} ${tools.length > 1 ? "are" : "is"} turned off for this agent: with this computer, ${tools.length > 1 ? "they run" : "it runs"} only on a sandbox computer.`;
+};
 
 /** A refused save's issues in the workflow: each 422 field under definition.workflow at its path, else the refusal's
  *  message for a workflow agent. */
@@ -142,7 +148,10 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
   // Tools are on by default: a new agent starts with every tool its harness runs here; an agent keeps its own. A new
   // agent starts on the place the server gives new agents (a sandbox where it has a box: bash ticked too); else none.
   const startPlace = creating ? newAgentPlace(caps.places) : undefined;
-  const [f, setF] = useState<AgentFields>({ name: d?.name ?? "", description: d?.description ?? "", instructions: d?.instructions ?? (creating ? initialInstructions ?? DEFAULT_INSTRUCTIONS : ""), harness: d?.harness ?? "pi", thinking: d?.thinking, model: d?.model, tools: creating ? defaultTools("pi", caps.tools, startPlace) : d?.tools ?? [], maxCostText: typeof d?.max_cost_usd === "number" && d.max_cost_usd > 0 ? String(d.max_cost_usd) : "", ...(startPlace ? { place: startPlace } : {}), ...(agent?.kind === "workflow" ? { workflowText: draft ?? JSON.stringify(d!.workflow, null, 2) } : {}) });
+  // What a new agent's run shell runs on the runner, where it starts with no computer: the no-computer choice's served
+  // shell (bash on Archil's exec in Mode 2), none until the computers list answers.
+  const freshShell = runnerShellOf({ kind: "none" }, caps.computers);
+  const [f, setF] = useState<AgentFields>({ name: d?.name ?? "", description: d?.description ?? "", instructions: d?.instructions ?? (creating ? initialInstructions ?? DEFAULT_INSTRUCTIONS : ""), harness: d?.harness ?? "pi", thinking: d?.thinking, model: d?.model, tools: creating ? defaultTools("pi", caps.tools, startPlace, freshShell) : d?.tools ?? [], maxCostText: typeof d?.max_cost_usd === "number" && d.max_cost_usd > 0 ? String(d.max_cost_usd) : "", ...(startPlace ? { place: startPlace } : {}), ...(agent?.kind === "workflow" ? { workflowText: draft ?? JSON.stringify(d!.workflow, null, 2) } : {}) });
   // The Model field's own choices (Custom picked, Free only), kept across steps.
   const modelField = useModelField();
   // The form as it is now, for a save's answer to compare with what that save sent.
@@ -173,19 +182,23 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
   const [toolsTouched, setToolsTouched] = useState(false);
   // Whether the last computer picked was refused because no tools are listed yet (computerFields answered null).
   const [toolsUnread, setToolsUnread] = useState(false);
+  // The box-only tools the last computer picked took off (its run shell on the runner doesn't run them), said under it.
+  const [shellOff, setShellOff] = useState<string[]>([]);
   // The server's tools can arrive after the form opens (capabilities answer late): a new agent's untouched tools follow.
-  // So can its places: a new agent with no place yet takes the served default then; a place the person picked stays.
+  // So can its places: a new agent with no place yet takes the served default then; a place the person picked stays. So
+  // can the computers list, and with it what the runner's shell runs (freshShell).
   const toolsKey = caps.tools.map((t) => `${t.name}:${t.available}:${(t.harnesses ?? []).join("+")}`).join(",");
   const placeKey = JSON.stringify(newAgentPlace(caps.places) ?? null);
+  const shellKey = [...freshShell].join(",");
   useEffect(() => {
     if (!creating) return;
     const follow = (x: AgentFields): AgentFields => {
       const place = x.place ?? newAgentPlace(caps.places);
-      return { ...x, ...(place ? { place } : {}), ...(toolsTouched ? {} : { tools: defaultTools(x.harness ?? "pi", caps.tools, place) }) };
+      return { ...x, ...(place ? { place } : {}), ...(toolsTouched ? {} : { tools: defaultTools(x.harness ?? "pi", caps.tools, place, freshShell) }) };
     };
     // Defaults that arrive late are where the form opens, never an edit: the saved form takes them too.
     setF(follow); setBase(follow);
-  }, [toolsKey, placeKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [toolsKey, placeKey, shellKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const [note, setNote] = useState("");
   // Every monid grant this form has shown: the agent's, and each one granted here since. The monid row lists them, ticked or
   // not, so one unticked stays to tick again through a save (the saved revision no longer names it) and a step change (the
@@ -222,6 +235,8 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
   const saveButton = useRef<HTMLButtonElement>(null);
   useEffect(() => { if (problem?.kind === "invalid" || problem?.kind === "other") saveButton.current?.focus(); }, [problem]);
   const workflow = agent?.kind === "workflow";
+  // A workflow agent whose saved workflow is a decision says so, as its page and card do (agentKindWords).
+  const decision = workflow && isDecisionWorkflow(d?.workflow);
   // A new agent made from a starter (Decision, Workflow): a workflow revision, so no instructions, tools, thinking or model.
   const starting = creating && isStarter(f.harness);
   // Where the server has no default place (default_place null), a new agentic one names its own: the server refuses a
@@ -242,15 +257,16 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
   // run here come off at once, before any save, and are held: a switch back ticks them again.
   const toolOpts = { mcpHarnesses: caps.mcpHarnesses, workflow };
   // A place off the box (the runner) takes the box's tools (bash) off the held ones too: a later switch back to a harness
-  // never ticks a tool the place now refuses.
-  const leavePlace = (place: { mode?: string }) => {
+  // never ticks a tool the place now refuses. Bash stays where the agent's run shell is the runner's own (`shell`:
+  // computers.ts runnerShellOf for the computer it moves to).
+  const leavePlace = (place: { mode?: string }, shell: ReadonlySet<string>) => {
     if (place.mode === "sandbox") return;
-    const sandboxOnly = new Set(caps.tools.filter((t) => t.sandbox_only).map((t) => t.name));
+    const sandboxOnly = new Set(caps.tools.filter((t) => t.sandbox_only && !shell.has(t.name)).map((t) => t.name));
     setHeld((h) => h.filter((t) => !sandboxOnly.has(t)));
   };
   const pickHarness = (harness: string) => {
     if (harness === f.harness) return;
-    if (creating && !toolsTouched) { set({ harness, tools: defaultTools(harness, caps.tools, f.place) }); setHeld([]); return; }
+    if (creating && !toolsTouched) { set({ harness, tools: defaultTools(harness, caps.tools, f.place, runnerShellOf(f.computer, caps.computers)) }); setHeld([]); return; }
     const next = toolsOnSwitch(harness, f.tools ?? [], held, caps.tools, toolOpts);
     if (agent?.source_sync) {
       // Keep required imported tools selected. The normal capability/save checks explain an incompatible harness.
@@ -416,13 +432,13 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
               </Field>
               </div>
               {starting ? (
-                <Field group label="Workflow">
+                <Field group label={f.harness === DECISION ? "Decision" : "Workflow"}>
                   <p className="border px-3 py-4 text-body text-muted-foreground">{f.harness === DECISION
                     ? "A decision agent starts with one typed question and asks a person when its answer is uncertain. Create it, then edit its nodes in the Workflow section."
                     : "A workflow agent starts with one agent node. Create it, then edit its nodes or paste workflow JSON in the Workflow section."}</p>
                 </Field>
               ) : workflow ? (
-                <Field group label="Workflow" note="This agent is a workflow. Edit its nodes in the Workflow section: the graph redraws as you type and the server checks it." warning={fieldWarning("workflow")}>
+                <Field group label={decision ? "Decision" : "Workflow"} note={`This agent is ${decision ? "a decision" : "a workflow"}. Edit its nodes in the Workflow section: the graph redraws as you type and the server checks it.`} warning={fieldWarning("workflow")}>
                   <Button size="sm" onClick={() => setStep("workflow")}><Workflow aria-hidden /> Open the workflow</Button>
                 </Field>
               ) : (
@@ -449,12 +465,16 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
                 tools to drop: it changes nothing and says so. */}
               <ComputerSetting kinds={caps.computers} value={f.computer ?? (d?.computer as AgentFields["computer"]) ?? (choosePlace ? null : computerOfPlace(f.place ?? { mode: "runner" }))}
                 onChange={(computer) => {
-                  const fields = computerFields(computer, f.tools ?? [], caps.tools);
+                  const fields = computerFields(computer, f.tools ?? [], caps.tools, caps.computers);
                   setToolsUnread(!fields);
                   if (!fields) return;
+                  const kept = fields.tools;
+                  setShellOff(kept ? (f.tools ?? []).filter((tool) => !kept.includes(tool)) : []);
                   set(fields);
-                  leavePlace(fields.place);
+                  leavePlace(fields.place, runnerShellOf(computer, caps.computers));
                 }} error={(toolsUnread ? "The server's tools haven't been read, so which of this agent's tools run only in a box is unknown: the computer was not changed. Try again, or reload the page if this stays." : undefined) ?? fieldError("computer") ?? fieldError("place")} warning={fieldWarning("computer") ?? fieldWarning("place")} />
+              {/* Said, never done silently: the box-only tools this pick took off, which its run shell doesn't run here. */}
+              {shellOff.length > 0 && <p className="text-small text-muted-foreground" role="status">{shellOffWords(shellOff)}</p>}
             </div>
           )}
           {step === "computer" && !workflow && !caps.computers && caps.places && (
@@ -462,14 +482,14 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
               {/* A pick is saved as the computer, the setting the server keeps place as a view of; the form's place still
                   decides which tools a box opens (bash). */}
               <PlaceSetting value={f.place} saved={d?.place} places={caps.places} creating={creating} tools={caps.tools} picked={f.tools ?? []}
-                onChange={(next) => { set({ ...next, ...(next.place ? { computer: computerOfPlace(next.place) } : {}) }); if (next.place) leavePlace(next.place); }} error={fieldError("computer") ?? fieldError("place")} warning={fieldWarning("computer") ?? fieldWarning("place")} />
+                onChange={(next) => { set({ ...next, ...(next.place ? { computer: computerOfPlace(next.place) } : {}) }); if (next.place) leavePlace(next.place, runnerShellOf(computerOfPlace(next.place), caps.computers)); }} error={fieldError("computer") ?? fieldError("place")} warning={fieldWarning("computer") ?? fieldWarning("place")} />
             </div>
           )}
 
           {step === "tools" && (
             <div className="space-y-6">
               <Field group label="Tools" note="On by default: the tools this agent's harness runs on this server. Untick one to take it away." error={fieldError("tools")} warning={fieldWarning("tools")}>
-                <ToolPicker offers={caps.tools} tools={f.tools ?? []} harness={f.harness ?? "pi"} place={f.place ?? placeOf(d?.place)} places={caps.places} workflow={workflow}
+                <ToolPicker offers={caps.tools} tools={f.tools ?? []} harness={f.harness ?? "pi"} place={f.place ?? placeOf(d?.place)} places={caps.places} runnerShell={runnerShellOf(f.computer ?? (d?.computer as AgentFields["computer"]), caps.computers)} workflow={workflow}
                   mcp={!!caps.mcp} servers={mcpServers} mcpHarnesses={caps.mcpHarnesses} choices={providerChoices} gates={permissionGates} granted={agent?.tools} settings={f.tool_settings ?? d?.tool_settings ?? {}}
                   onRetry={onRetryMcp} onChange={(tools) => { setToolsTouched(true); set({ tools }); }}
                   extra={workflow ? undefined : {

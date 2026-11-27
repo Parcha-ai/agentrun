@@ -257,6 +257,26 @@ export function nodeAtOffset(spans: Map<string, Span>, nodePaths: string[], offs
   return best;
 }
 
+/** Nodes that run an agent or code: a workflow holding one is more than a decision. */
+const RUNS_MORE = new Set(["agent", "decide", "extract", "report", "artifact", "code"]);
+
+/** Whether a workflow is a decision: it decides (a node that asks a question, nodeMeta's `decision`) and runs no agent and
+ *  no code, the shape New agent's Decision makes (decisionStarter.ts). Read from the workflow itself, so an agent stays a
+ *  decision only while its workflow is one, and no field is stored for it. */
+export function isDecisionWorkflow(workflow: unknown): boolean {
+  let decides = false;
+  for (const n of workflowGraph(workflow).nodes) {
+    if (RUNS_MORE.has(n.kind)) return false;
+    if (nodeMeta(workflow, n.path, n as unknown as Record<string, unknown>).decision) decides = true;
+  }
+  return decides;
+}
+
+/** An agent's kind as the console says it: `decision` for a workflow agent whose workflow is a decision, else the server's
+ *  kind (`agentic`, `workflow`). */
+export const agentKindWords = (agent: { kind: string; definition: { workflow?: unknown } }): string =>
+  agent.kind === "workflow" && isDecisionWorkflow(agent.definition.workflow) ? "decision" : agent.kind;
+
 /** A workflow in a few words: its nodes, its decisions and who answers them. */
 export function workflowShape(workflow: unknown): string {
   const g = workflowGraph(workflow);

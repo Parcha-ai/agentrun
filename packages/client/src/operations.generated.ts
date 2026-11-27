@@ -65,6 +65,7 @@ export type Agent = {
     provider_from?: "agent" | "server" | "default";
     default_provider?: string;
     resolved?: string;
+    ceiling?: string;
     permission: "allow" | "ask" | "deny";
     permission_from: "agent" | "server" | "default" | "unattended";
     default_permission: "allow" | "ask" | "deny";
@@ -181,7 +182,7 @@ export type DefinitionInput = {
     mode: "runner";
   } | {
     mode: "sandbox";
-    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
+    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
   };
   computer?: {
     kind: "none" | "sandbox" | "desktop" | "phone" | "browser";
@@ -217,10 +218,12 @@ export type DefinitionInput = {
     web_fetch?: {
       provider?: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
       permission?: "allow" | "ask" | "deny";
+      jev?: "off";
     };
     web_search?: {
       provider?: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
       permission?: "allow" | "ask" | "deny";
+      jev?: "off";
     };
     web_save?: {
       permission?: "allow" | "ask" | "deny";
@@ -600,10 +603,12 @@ export type Cost = {
   };
   learning_usd?: number | null;
   tools_usd?: number | null;
+  billable_usd?: number | null;
   all_in_usd?: number | null;
   compile_usd?: number | null;
   followup_usd?: number | null;
   shadow_usd?: number | null;
+  check_usd?: number | null;
   share_usd?: number | null;
   plan?: {
     requests: number;
@@ -819,7 +824,7 @@ export type Run = {
     mode: "runner";
   } | {
     mode: "sandbox";
-    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
+    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
   };
   computer?: {
     kind: "sandbox" | "desktop" | "phone" | "browser";
@@ -901,6 +906,12 @@ export type Run = {
     firing_key: string;
   } | null;
   audit_of?: string | null;
+  learning_work: {
+    state: "none" | "running" | "ended";
+    runs: Array<string>;
+    ended_at: string | null;
+    deadline_at: string | null;
+  };
   path?: "agent" | "handed_back" | "workflow" | "replay" | "audit" | null;
   workflow?: {
     name: string | null;
@@ -986,6 +997,7 @@ export type RunFile = {
 
 export type MessageCreate = {
   content: string;
+  said?: string;
   model_key?: string;
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
@@ -1181,7 +1193,7 @@ export type Capabilities = {
   places: {
     modes: Array<"runner" | "sandbox">;
     boxes: Array<{
-      id: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
+      id: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
       available: boolean;
       state: "ready" | "unavailable";
       reason?: string;
@@ -1193,7 +1205,7 @@ export type Capabilities = {
       mode: "runner";
     } | {
       mode: "sandbox";
-      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
+      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
     } | null;
     default_reason?: string;
     allow: Array<string>;
@@ -1332,6 +1344,7 @@ export type Features = {
     answer: boolean;
     follow_up: boolean;
     steer_workflow_runs: boolean;
+    said?: boolean;
   };
   timeline: {
     long_poll: boolean;
@@ -1394,6 +1407,12 @@ export type Features = {
     events: Array<"run.needs_input" | "run.ended" | "trigger.failed">;
     signing: "standard-webhooks/v1";
     at_rest: "sealed";
+  };
+  workspaces?: {
+    header: "AgentRun-Workspace";
+    enforced: boolean;
+    required_for_tokens: boolean;
+    routes: Array<string>;
   };
   api_keys?: {
     routes: boolean;
@@ -1697,6 +1716,7 @@ export type GetAgentResponse = Agent & ({
     provider_from?: "agent" | "server" | "default";
     default_provider?: string;
     resolved?: string;
+    ceiling?: string;
     permission: "allow" | "ask" | "deny";
     permission_from: "agent" | "server" | "default" | "unattended";
     default_permission: "allow" | "ask" | "deny";
@@ -1907,7 +1927,7 @@ export type ListLearningPromotionsResponse = {
         fields?: Array<string>;
         expected?: Array<{
           field: string;
-          known: "grade" | "unknown" | "contradicts";
+          known: "grade" | "correction" | "unknown" | "contradicts";
           value?: string;
         }>;
       }>;
@@ -1950,7 +1970,7 @@ export type ListLearningPromotionsResponse = {
           fields?: Array<string>;
           expected?: Array<{
             field: string;
-            known: "grade" | "unknown" | "contradicts";
+            known: "grade" | "correction" | "unknown" | "contradicts";
             value?: string;
           }>;
         }>;
@@ -2068,7 +2088,7 @@ export type ListLearningPromotionsResponse = {
           fields?: Array<string>;
           expected?: Array<{
             field: string;
-            known: "grade" | "unknown" | "contradicts";
+            known: "grade" | "correction" | "unknown" | "contradicts";
             value?: string;
           }>;
         }>;
@@ -2111,7 +2131,7 @@ export type ListLearningPromotionsResponse = {
             fields?: Array<string>;
             expected?: Array<{
               field: string;
-              known: "grade" | "unknown" | "contradicts";
+              known: "grade" | "correction" | "unknown" | "contradicts";
               value?: string;
             }>;
           }>;
@@ -2983,7 +3003,7 @@ export type WriteHomeFileResponse = {
 export type GetLearningCorrectionsResponse = {
   text: string;
   etag: string;
-  cap_bytes: 2048;
+  cap_bytes: 8192;
 };
 
 /** The agent's cost per run, run after run: its own cost, what learning added and the path it took (GET /agents/{agent_id}/learning/cost). */
@@ -3009,6 +3029,7 @@ export type GetLearningCostResponse = {
     compile_usd?: number | null;
     followup_usd?: number | null;
     shadow_usd?: number | null;
+    check_usd?: number | null;
     share_usd?: number | null;
     not_served?: "cost_stop" | "cut" | null;
   }>;
@@ -3259,7 +3280,7 @@ export interface PutLearningCorrectionsParams {
 export type PutLearningCorrectionsResponse = {
   text: string;
   etag: string;
-  cap_bytes: 2048;
+  cap_bytes: 8192;
 };
 
 /** Start Connect GitHub: the app-manifest form the console posts to GitHub (POST /integrations/github/connect). */
@@ -3522,6 +3543,7 @@ export type GetClaudeLoginResponse = {
   place: "agentrun" | "machine";
   command: string;
   can_start: boolean;
+  start_off?: string;
   refused?: string;
   account?: {
     method?: string;
@@ -3633,6 +3655,25 @@ export type GetModelGatewayResponse = {
     changed_at: string | null;
   };
   problem: string | null;
+};
+
+/** The prices this server meters computer time and browser time at, with where each comes from (GET /settings/prices). */
+export type GetPricesResponse = {
+  compute: Array<{
+    provider: string;
+    resource: "vcpu" | "memory" | "gpu" | "disk";
+    gpu_type: string | null;
+    unit: "vcpu_second" | "gib_second" | "gpu_second" | "gb_month";
+    usd: string | null;
+    source: "setting" | "list" | "unpriced";
+  }>;
+  browser: Array<{
+    provider: string;
+    unit: "hour";
+    usd: string | null;
+    minimum_s: number;
+    source: "setting" | "list" | "unpriced";
+  }>;
 };
 
 /** One suggested agent whole: its instructions, the files a create adds, and whether GitHub lets it (GET /suggestions/{suggestion_id}). */
@@ -4459,6 +4500,7 @@ export type SignOutClaudeLoginResponse = {
     place: "agentrun" | "machine";
     command: string;
     can_start: boolean;
+    start_off?: string;
     refused?: string;
     account?: {
       method?: string;
@@ -4496,6 +4538,7 @@ export type StartClaudeLoginResponse = {
   place: "agentrun" | "machine";
   command: string;
   can_start: boolean;
+  start_off?: string;
   refused?: string;
   account?: {
     method?: string;
@@ -4605,6 +4648,7 @@ export type TurnOffClaudeLoginResponse = {
   place: "agentrun" | "machine";
   command: string;
   can_start: boolean;
+  start_off?: string;
   refused?: string;
   account?: {
     method?: string;
@@ -4639,6 +4683,7 @@ export type TurnOnClaudeLoginResponse = {
   place: "agentrun" | "machine";
   command: string;
   can_start: boolean;
+  start_off?: string;
   refused?: string;
   account?: {
     method?: string;
@@ -5296,6 +5341,9 @@ export type GetRunLearningResponse = {
   detail: string | null;
   at: string;
   seed: string | null;
+  seed_failed: "unreadable" | "not_copied" | "other_disk" | null;
+  seed_waited: "ended" | "timed_out" | null;
+  learned_chars: number;
   merged: string | null;
   workflows: Array<{
     file: string;
@@ -5303,6 +5351,7 @@ export type GetRunLearningResponse = {
     pending?: true;
   }>;
   corrections: number;
+  dropped_lines: number;
   problems: Array<{
     rule: string;
     path?: string;
@@ -5501,6 +5550,7 @@ export type GetRunUsageResponse = {
     basis: "reported" | "estimate" | "unpriced";
     attempt: number | null;
     billable: boolean;
+    absorbed?: "create_race";
     usd: number | null;
     so_far_usd?: number;
     unpriced?: number;
@@ -5556,7 +5606,7 @@ export type GetRunUsageResponse = {
     billable: boolean;
   }> | null;
   infra_usd: number | null;
-  reason: "running" | "not_booked" | "reopened" | null;
+  reason: "running" | "not_booked" | null;
 };
 
 /** Complete a backend SDK task (POST /sdk-runs/{run_id}/complete). */
@@ -6092,6 +6142,12 @@ export type GetTemplateResponse = {
       dropped: Array<string>;
       note: string | null;
     } | null;
+    model_tiers_here: {
+      harness: string;
+      fast: string | null;
+      strong: string | null;
+      note: string | null;
+    };
     category: "engineering" | "security" | "sales" | "marketing" | "research" | "finance" | "operations" | "compliance" | "personal" | null;
     tags: Array<string>;
     mcp: Array<{
@@ -6198,6 +6254,12 @@ export type ImportTemplateResponse = {
       dropped: Array<string>;
       note: string | null;
     } | null;
+    model_tiers_here: {
+      harness: string;
+      fast: string | null;
+      strong: string | null;
+      note: string | null;
+    };
     category: "engineering" | "security" | "sales" | "marketing" | "research" | "finance" | "operations" | "compliance" | "personal" | null;
     tags: Array<string>;
     mcp: Array<{
@@ -6297,6 +6359,12 @@ export type ListTemplatesResponse = {
       dropped: Array<string>;
       note: string | null;
     } | null;
+    model_tiers_here: {
+      harness: string;
+      fast: string | null;
+      strong: string | null;
+      note: string | null;
+    };
     category: "engineering" | "security" | "sales" | "marketing" | "research" | "finance" | "operations" | "compliance" | "personal" | null;
     tags: Array<string>;
     mcp: Array<{
@@ -7740,6 +7808,32 @@ export type GetWrappedResponse = {
     runs: number;
   }>;
   unread_files: number;
+  cache: {
+    runs: number;
+    hit_rate: number | null;
+    breaks: {
+      model: number;
+      idle: number;
+      compaction: number;
+      edited: number;
+      sidechain: number;
+      unknown: number;
+    };
+    extra_cost_usd: {
+      model: number;
+      idle: number;
+      compaction: number;
+      edited: number;
+      sidechain: number;
+      unknown: number;
+    };
+    unpriced_breaks: number;
+  } | null;
+  secrets: {
+    runs: number;
+    runs_holding: number;
+    removed: number;
+  } | null;
 };
 
 /** Each operation as the runtime sends it, by operationId. */
@@ -7832,6 +7926,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   getGitHubConnection: {"method":"GET","path":"/integrations/github","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getLocalModel: {"method":"GET","path":"/settings/local-model","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getModelGateway: {"method":"GET","path":"/settings/model-gateway","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getPrices: {"method":"GET","path":"/settings/prices","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getSuggestion: {"method":"GET","path":"/suggestions/{suggestion_id}","pathParams":["suggestion_id"],"multiSegment":[],"query":["name"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getWorkspaceArchil: {"method":"GET","path":"/workspace/archil","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   gitHubCallback: {"method":"GET","path":"/integrations/github/callback","pathParams":[],"multiSegment":[],"query":["code","state"],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
@@ -8297,6 +8392,8 @@ export function resources(call: Call) {
       getLocalModel: (options?: RequestOptions): Promise<GetLocalModelResponse> => call("getLocalModel", [], undefined, undefined, options),
       /** The model gateway in force: the environment's, the one saved here, or none (GET /settings/model-gateway). */
       getModelGateway: (options?: RequestOptions): Promise<GetModelGatewayResponse> => call("getModelGateway", [], undefined, undefined, options),
+      /** The prices this server meters computer time and browser time at, with where each comes from (GET /settings/prices). */
+      getPrices: (options?: RequestOptions): Promise<GetPricesResponse> => call("getPrices", [], undefined, undefined, options),
       /** One suggested agent whole: its instructions, the files a create adds, and whether GitHub lets it (GET /suggestions/{suggestion_id}). */
       getSuggestion: (suggestionId: string, params?: GetSuggestionParams, options?: RequestOptions): Promise<GetSuggestionResponse> => call("getSuggestion", [suggestionId], undefined, params, options),
       /** Whether run folders are on Archil disks (Mode 2), the settings, and whether its keys are saved (GET /workspace/archil). */

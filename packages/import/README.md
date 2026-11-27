@@ -45,6 +45,9 @@ const sessions = await parseHome(homedir(), { sources: ["claude-code", "codex"] 
 - `workerOldMb` caps each worker's old generation (default 64, at least 8, refused with a RangeError under it: at 1 or
   2 MB V8 ends the whole process as a worker starts, and at 3 to 7 the workers run out of memory). A line over an eighth of it, or a file that runs a worker
   out of memory, is read on the calling thread instead; past two such losses a thread, the calling thread reads the rest.
+  Each reading thread (each worker, and the calling thread) also holds up to 8 MiB of scanner memory outside its heap:
+  the scanner's stack and tables, and room for the longest line it read. A line that would take it past 8 MiB (one over
+  about 6.7 MiB) is parsed whole instead, with the same totals.
 - A request two sources wrote is counted once. OpenCode's claude-agent provider runs Claude Code, which writes each
   request into its own session file too; OpenCode names that session on the request (`mirrors`). When the same call
   reads that Claude Code session (serve's import: or its store holds it), the request counts there and not in the OpenCode session (tokens, calls and cost),
@@ -112,7 +115,7 @@ const { hitRate, breaks } = await analyzeCache(session);
 | `compaction` | a compaction since the turn before: Claude Code's `compact_boundary` or `isCompactSummary` record, Codex's `compacted`. It counts in the file that holds it first; across a session's files it carries to the next file's first turn, and a later file's copy of it is never consulted |
 | `edited` | the prompt leaves the chain of the turn before (its prompt and answer) at an earlier message: `diverged` is that message's index |
 | `sidechain` | the turn opens a sidechain after a main-chain turn (Claude Code's `isSidechain`) |
-| `unknown` | none of the above |
+| `unknown` | none of the above: the transcript shows no cause for the drop. That names no cause, the provider's included. A cache evicted early, or a request served where its cache was not, reads this way, and so does an edit the analyzer cannot see: across two of a session's files (their chains are not compared), in a Codex rollout, or in a session read without its chain |
 
 `chain: true` keeps the session's `chain` beside its turns: each record's id and its parent's (Claude Code's
 `uuid`/`parentUuid`, pi's `id`/`parentId`), a 16-hex sha256 of its content, never the content, and which record opens
@@ -218,7 +221,7 @@ read looks up afresh.
 The cursor is the reader's own: hand it back to the same reader for the same locator. A JSONL source builds its reader
 with `lineReader` from a per-record function; its cursor is the file's device and inode, the byte after the last whole
 line read, and the read's state. A file replaced or truncated since is read from its start, as is a cursor whose state
-is of another shape than the reader's (its `stateVersion`: a Codex cursor saved by 0.1.0-beta.58 or before), and a last
+is of another shape than the reader's (its `stateVersion`: a Codex cursor saved by 0.1.0-beta.59 or before), and a last
 line with no newline yet is read but not consumed. A source that keeps many sessions in one file (a SQLite database) implements
 `discover`, `idOf` and `read` itself and returns one locator per session, with its `id`, and `stat`: the session's own size and
 last write, which a caller's size caps and "still being written" check go by (`locatorSize`; without `stat`, the file's).

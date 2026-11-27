@@ -4,12 +4,23 @@
 //   - an end records its row with why it was not served alone (`cost_stop`, `cut`); the ledger reads both tables as one
 //     read, scoped to the runs asked for;
 //   - a run's end again (after a reopen) writes its spend rows anew, none left from the end before; healCost records the
-//     row again with the healed cost; a purge takes the run's row and every spend row it booked or that audits it;
+//     row again with the healed cost; a purge takes the run's row and every spend row it booked or that audits it,
+//     but a figure it booked on another run's account: a keyed replay purged with its input keeps what it spent on the
+//     paying run's key, that run's learning, with no revision named (its view, the ledger and the learning total agree);
 //   - a run that ended with no row is recorded once, at the server's open (run-patch.ts backfillLedger), at the figures
 //     its end would have written, a page at a time; an open after a stop partway records the rest, and once the ledger
 //     is marked whole (store_meta.ledger_backfilled) no open reads the runs again; no read records one; each run is
 //     locked before it is read again, so a heal another server commits meanwhile stands;
-//   - a store the ledger's first release left (version 15, which a runner refuses until the server brings it to 17) has
+//   - a run a follow-up opened again whose row a build before #4050's split wrote (its job the first round's figure) is
+//     recorded again once, at the server's open, a page at a time, then marked (store_meta.ledger_rerecorded); Postgres
+//     0034 adds the mark, breaking for runners, as SQLite's version 18; the mark is set only by a pass that started with
+//     no runner of an earlier build there (its row's `knows` null or below the floor) and no run held by a claim taken
+//     before the server's open and RUNNER_STALE_MS (or with no attempt row): until then the server's next try
+//     (Store.rerecordReopened, on a timer) records the runs again, so one such a runner ended meanwhile under the split
+//     before is recorded under this one, with no restart; a runner of this build (keepPresence says what it knows) holds
+//     no mark, and a rolling restart's runner of this build takes its name at once while the earlier one's claims hold
+//     the mark;
+//   - a store the ledger's first release left (version 15, which a runner refuses until the server brings it to 18) has
 //     its wrong rows recorded again at the open that drops their epoch (a shadow with no path or audit spend, a stale
 //     row, an unknown cost its run now has, a run by hand with no path), by the ledger step alone (no earlier step runs
 //     again), its mark set back so even a ledger marked whole is recorded again; Postgres 0030 runs again unharmed;
@@ -27,9 +38,13 @@ import { raw, sqliteOnly } from "./store-target.mjs";
 
 const { agentCostOverStore, pastRunsOverStore, runAllInOverStore } = await import("../dist/store-reads/learning.js");
 const { BY_HAND_BEFORE } = await import("../dist/store/sqlite/run-patch.js");
-const { SCHEMA_VERSION, StoreAwaitsServer } = await import("../dist/store/index.js");
+const { RUNNER_STALE_MS, SCHEMA_VERSION, StoreAwaitsServer } = await import("../dist/store/index.js");
+const { keepPresence } = await import("../dist/runner/presence.js");
 const { PAST_RUNS, workflowCostsOf } = await import("../dist/runner/workflow-first.js");
 const { keepResetAt } = await import("../dist/learn/promote.js");
+const { noteLearningChild } = await import("../dist/learning-work.js");
+const { purgeRun } = await import("../dist/agent-delete.js");
+const { sealRunLaunch } = await import("../dist/store/seal.js");
 
 const C = "c".repeat(16);
 const D = "d".repeat(16);
@@ -41,16 +56,16 @@ const KEPT = { meters: { tools: 0, tokens: 0.1, browser: { usd: 0, seconds: 0 },
 const kept = (n, job, look, extra = {}) => ({ table: "learning_proposals", row: { round: n, turn: {}, proposal: { state: "dropped", reason: "empty", detail: "d", answered_at: AT, job_cost_usd: job, look_back_usd: look, ...extra } } });
 
 /** A store with agent-1 and its revision, and `end`: run `id` made and ended at the clock's next second, its row's cost
- *  `costUsd` and its metrics, with `also`'s rows; on a named disk with `disk`; an audit's shadow with `audit`; a launch
- *  that learns with `learns`. */
+ *  `costUsd` and its metrics, with `also`'s rows; on a named disk with `disk`; an audit's shadow with `audit`; a check's
+ *  replay with `replay`; a launch that learns with `learns`; its input's words `input`; a sealed copy of a key `sealed`. */
 async function ledgerStore(t) {
   const clock = { now: T0 };
   const { store, file } = await storeOn(t, { clock });
   await agentWithRevision(store, "agent-1", "rev-1");
-  const end = async (id, costUsd, metrics = { path: "agent" }, { also = [], disk, audit, learns, revisionId = "rev-1" } = {}) => {
+  const end = async (id, costUsd, metrics = { path: "agent" }, { also = [], disk, audit, replay, learns, input = "q", sealed, revisionId = "rev-1" } = {}) => {
     clock.now += 1_000;
     const learning = learns ? { learning: { given: [], seed: "a".repeat(40), section: "", seedNotes: 0 } } : {};
-    await store.runs.create({ id, agentId: "agent-1", revisionId }, { body: { input: { content: "q" }, title: "t", place: { mode: "runner" }, ...(disk ? { archil_disk: { disk_id: disk, kind: "launch" } } : {}), ...(audit ? { audit } : {}), ...learning } });
+    await store.runs.create({ id, agentId: "agent-1", revisionId }, { body: { input: { content: input }, title: "t", place: { mode: "runner" }, ...(disk ? { archil_disk: { disk_id: disk, kind: "launch" } } : {}), ...(audit ? { audit } : {}), ...(replay ? { replay } : {}), ...learning }, ...(sealed ? { sealed } : {}) });
     const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
     clock.now += 1_000;
     await store.runs.update(claim, { state: "ended", costUsd, metrics }, also.length ? { also } : undefined);
@@ -110,6 +125,46 @@ test("a run's end again writes its spend rows anew, none left from the end befor
   const left = await store.learning.ledger("agent-1");
   assert.deepEqual(left.rows.map((row) => row.runId).sort(), ["audit.r1", "r2"], "the purged run's row is gone");
   assert.deepEqual(left.spend.filter((one) => one.runId === "r1" || one.ofRun === "r1"), [], "and every spend row it booked or that audits it");
+});
+
+// Review on #3914 (round 5, money): a keyed replay reads its input from `replay.of` and spends on the key of
+// `replay.paid_by`. A purge of that input purges the replay first (agent-delete.ts purgeRun), but the paying run is not
+// purged: what the replay spent stays its learning, read the same by its view, the agent's ledger and the learning total.
+// Only that figure stays: the replay's sealed copy of the key, its input, and the revision its spend row named go.
+test("a purge of a keyed replay's input keeps what the replay spent on the paying run's key: the run's view, the agent's ledger and the learning total read it as before; only the figure stays, the replay's sealed copy and input gone", async (t) => {
+  const { store, clock, end } = await ledgerStore(t);
+  const words = ["input", "words", process.pid].join("-");
+  await end("s0", 0.3, { path: "agent" }, { input: words });
+  await end("p1", 0.4);
+  await noteLearningChild(store.settings, "p1", { run: "rp1", kind: "replay", at: clock.now, keyed: true });
+  const sealed = sealRunLaunch(Buffer.alloc(32, 9), "rp1", { model: { key: "not-a-secret-run-key", origin: "https://gateway.test" } });
+  await end("rp1", 0.2, {}, { replay: { of: "s0", workflow: "answer", digest: C, paid_by: "p1" }, input: words, sealed });
+  const read = async () => {
+    const view = await runAllInOverStore(store, "p1");
+    const agent = await agentCostOverStore(store, "agent-1");
+    const row = agent.runs.find((run) => run.run_id === "p1");
+    return { view: [view.check_usd, view.learning_usd, view.all_in_usd], ledger: [row?.check_usd, row?.learning_usd, row?.total_usd], learning: agent.bill.learning_usd };
+  };
+  const before = await read();
+  assert.deepEqual([before.view[0], before.ledger], [0.2, before.view], `the replay's cost is p1's check, read the same by its view and the ledger: ${JSON.stringify(before)}`);
+
+  // The input's purge, as DELETE /v2/runs/{run_id} runs it: the replay made from it is purged first.
+  const KEPT_NONE = { meters: null, spend: { usd: 0, basis: "list" }, learning: null };
+  const host = { store, madeFrom: (id) => store.runs.madeFrom(id), forgetCopies: async () => {}, forgetRun: async () => {}, kept: async () => KEPT_NONE, turnOver: async () => false, waitMs: 60_000, pollMs: 20 };
+  await purgeRun(host, "s0");
+  assert.deepEqual([(await store.runs.get("s0")).purgedAt !== null, (await store.runs.get("rp1")).purgedAt !== null, (await store.runs.get("p1")).purgedAt], [true, true, null], "the input and its replay purged, the paying run not");
+  assert.deepEqual(await read(), before, "the paying run's check, learning and all-in, in its view, the agent's ledger and the learning total, as before the purge");
+
+  // Only the figure: the replay's spend row names no revision, and its launch (the sealed copy, the input) is gone.
+  const { spend } = await store.learning.ledger("agent-1", ["rp1"]);
+  assert.deepEqual(spend.map((one) => [one.runId, one.kind, one.ofRun, one.workflow, one.digest, one.usd]), [["rp1", "check", "p1", null, null, 0.2]], JSON.stringify(spend));
+  for (const id of ["rp1", "s0"]) {
+    const launch = await store.runs.launch(id).catch(() => undefined);
+    assert.deepEqual([launch?.sealed ?? null, JSON.stringify(launch?.body ?? null).includes(words)], [null, false], `${id}: no sealed copy and no input after the purge`);
+  }
+  // The paying run's own purge takes the row with it.
+  await purgeRun(host, "p1");
+  assert.deepEqual((await store.learning.ledger("agent-1")).spend.filter((one) => one.ofRun === "p1"), [], "gone with the paying run's purge");
 });
 
 test("a run that ended with no ledger row (a build before the ledger ended it) is recorded once, at the server's open, at the figures its end would have written; no read records it", async (t) => {
@@ -260,6 +315,20 @@ test("one by-hand rule in the window and before it: a run of a workflow revision
   assert.deepEqual(workflowCostsOf(past).map((one) => one.state), ["needs_revision"], "$2 served against $1 by hand, never against a mean the workflow's $5 runs raise");
 });
 
+test("a run's view priced other than its row reads it as its end records it, from its launch as the end does: a check's replay whose end named no path is that replay at any figure, carrying no learning and no all-in", async (t) => {
+  const { store, end } = await ledgerStore(t);
+  await end("p1", 0.4, {});
+  await end("r1", 0.2, {}, { replay: { of: "s0", workflow: "answer", digest: C, paid_by: "p1" } });
+  const rows = new Map((await store.learning.ledger("agent-1")).rows.map((row) => [row.runId, row.path]));
+  assert.equal(rows.get("r1"), "replay", "its end's row reads it from its launch");
+  // At its row's cost, and at another (an imported run's estimate, a booking where its end stored none): a replay's spend
+  // is the run it checks for, so it carries none of its own either way.
+  for (const priced of [undefined, 0.25]) {
+    const cost = await runAllInOverStore(store, "r1", priced);
+    assert.deepEqual([cost.learning_usd, cost.all_in_usd, cost.share_usd], [0, 0, 0], `priced at ${priced ?? "its row"}: ${JSON.stringify(cost)}`);
+  }
+});
+
 test("a shadow that failed before its end wrote its metrics books its cost at its end, on the run its launch audits", async (t) => {
   const { store, end } = await ledgerStore(t);
   await end("s1", 0.1, SERVED);
@@ -296,20 +365,22 @@ test("a store the ledger's first release left: its wrong rows are recorded again
   await db.run("UPDATE learning_ledger SET cost = 'unknown', job_usd = NULL WHERE run_id = 'h2'");
   await db.run("UPDATE learning_ledger SET job_usd = 9, epoch = epoch - 1 WHERE run_id = 's2'");
   await db.run("UPDATE learning_ledger SET path = 'agent' WHERE run_id = 'audit.s2'");
-  // At that release's version, 15: a runner of this build refuses it until the server brings it to 17 (the ledger step
-  // writes 16, the learning rows step 17), and a runner of 15 (whose end writes the epoch) refuses a version it does not know.
+  // At that release's version, 15: a runner of this build refuses it until the server brings it to 18 (the ledger step
+  // writes 16, the learning rows step 17, the split's step 18), and a runner of 15 (whose end writes the epoch) refuses a
+  // version it does not know.
+  await db.run("ALTER TABLE store_meta DROP COLUMN ledger_rerecorded");
   await db.run("UPDATE store_meta SET schema_version = 15 WHERE singleton = 1");
   await db.close();
-  assert.equal(SCHEMA_VERSION, 17);
-  await assert.rejects(storeOn(t, { file, clock, role: "runner" }), (error) => error instanceof StoreAwaitsServer && /bring this store from version 15 to 17/.test(error.message));
+  assert.equal(SCHEMA_VERSION, 18);
+  await assert.rejects(storeOn(t, { file, clock, role: "runner" }), (error) => error instanceof StoreAwaitsServer && /bring this store from version 15 to 18/.test(error.message));
   const { store: reopened } = await storeOn(t, { file, clock });
   assert.deepEqual(await figures(reopened), now, "every wrong row recorded again from its run, as its end writes it");
   const after = await raw(file);
-  assert.deepEqual([(await after.get("SELECT schema_version AS v FROM store_meta")).v, (await after.all("SELECT name FROM pragma_table_info('learning_ledger') WHERE name = 'epoch'")).length], [17, 0], "17, the epoch gone (the ledger step) and the learning rows made after it");
+  assert.deepEqual([(await after.get("SELECT schema_version AS v FROM store_meta")).v, (await after.all("SELECT name FROM pragma_table_info('learning_ledger') WHERE name = 'epoch'")).length], [18, 0], "18, the epoch gone (the ledger step), the learning rows and the split's mark after it");
   await after.close();
 });
 
-test("a store at 15 comes to this version by the ledger step and then the learning rows step alone: no earlier step runs again (a stop at that step leaves 15; a purged run's tombstone keeps its disk), and with the epoch there the mark is set back, so a ledger marked whole has its wrong rows recorded again", sqliteOnly("SQLite's upgrade chain; Postgres has migrations"), async (t) => {
+test("a store at 15 comes to this version by the ledger step and then the learning rows and split steps alone: no earlier step runs again (a stop at that step leaves 15; a purged run's tombstone keeps its disk), and with the epoch there the mark is set back, so a ledger marked whole has its wrong rows recorded again", sqliteOnly("SQLite's upgrade chain; Postgres has migrations"), async (t) => {
   const { Connection } = await import("../dist/store/sqlite/connection.js");
   const { store, file, clock, end } = await ledgerStore(t);
   await end("h1", 1);
@@ -348,7 +419,7 @@ test("a store at 15 comes to this version by the ledger step and then the learni
   }
   assert.equal(await version(), 15, "still 15: neither the purge step nor the disk step ran");
   const { store: reopened } = await storeOn(t, { file, clock });
-  assert.equal(await version(), 17, "the ledger step's 16, then the learning rows step's 17");
+  assert.equal(await version(), 18, "the ledger step's 16, then the learning rows step's 17, then the split's 18");
   assert.equal((await reopened.runs.get("p1")).disk, "disk-p", "the tombstone keeps its disk: the disk step did not run again");
   assert.deepEqual((await reopened.learning.ledger("agent-1")).rows, rows, "h1's row recorded again at its run's figures: the mark set back to 0 with the epoch, so the open's backfill ran");
   db = await raw(file);
@@ -449,4 +520,194 @@ test("the server's open records the runs with no row a page at a time and marks 
   await db.close();
   ({ store: again } = await storeOn(t, { file, clock }));
   assert.deepEqual((await again.learning.ledger("agent-1", ["r00"])).rows, [], "marked whole: no open reads the runs again");
+});
+
+/** Rewrites run `runId`'s ledger row as a build before #4050's split wrote it for a run a follow-up opened again: its job
+ *  its first round's figure (`firstJob`), the rest of its row (`rowUsd`) its look-back; and marks the store as no server
+ *  of this build has opened it yet (store_meta.ledger_rerecorded 0). */
+async function oldSplit(db, runId, firstJob, rowUsd) {
+  await db.run("UPDATE learning_ledger SET job_usd = ?, look_back_usd = ? WHERE run_id = ?", firstJob, Math.round((rowUsd - firstJob) * 1e9) / 1e9, runId);
+  await db.run("UPDATE store_meta SET ledger_rerecorded = 0 WHERE singleton = 1");
+}
+
+test("a run a follow-up opened again whose row an earlier build wrote (its job the first round's figure, the follow-up its look-back) is recorded again under this build's split, once, at the server's open, a page at a time: its usd is its row less every round's look-back and its learning leaves the follow-up out; a run of one round and a purged run are left as they are, and once marked no open reads the runs again", async (t) => {
+  const { store, file, clock, end } = await ledgerStore(t);
+  // R: round 1's job $0.90 and its end-of-run turn $0.10; a follow-up of $5.50 (model and a paid call) and its own
+  // end-of-run turn $0.10. Its row: $6.60.
+  await end("R", 6.6, { path: "agent" }, { also: [kept(1, 0.9, 0.1), kept(2, 6.5, 0.1)] });
+  // Past one page (64 runs a transaction) of runs with a follow-up, and one run of one round.
+  for (let at = 0; at < 66; at++) await end(`m${String(at).padStart(2, "0")}`, 2, { path: "agent" }, { also: [kept(1, 0.5, 0.1), kept(2, 1.8, 0.2)] });
+  await end("one", 1.3, { path: "agent" }, { also: [kept(1, 1, 0.3)] });
+  // Purged with its follow-up: its purge took its row, and the pass writes none back.
+  await end("P", 2, { path: "agent" }, { also: [kept(1, 0.5, 0.1), kept(2, 1.8, 0.2)] });
+  await store.runs.purge("P", { meters: null, spend: { usd: 2, basis: "list" }, learning: null });
+  const now = await runAllInOverStore(store, "R");
+  assert.deepEqual([now.usd, now.learning_usd, now.followup_usd], [6.4, 0, 0], "this build's split: the follow-up is the job's");
+  const rows = (await store.learning.ledger("agent-1")).rows;
+  await store.close();
+  let db = await raw(file);
+  await oldSplit(db, "R", 0.9, 6.6);
+  for (let at = 0; at < 66; at++) await oldSplit(db, `m${String(at).padStart(2, "0")}`, 0.5, 2);
+  await db.close();
+  let { store: again } = await storeOn(t, { file, clock });
+  const read = await runAllInOverStore(again, "R");
+  assert.ok(read.usd >= 5.5, `usd holds the follow-up's $5.50 (its paid call among it): ${JSON.stringify(read)}`);
+  assert.deepEqual(read, now, "R recorded again from its row and rounds, as this build's end records it");
+  assert.deepEqual((await again.learning.ledger("agent-1")).rows, rows, "every run with a follow-up recorded again, past the first page; the run of one round as it was; no row for the purged run");
+  await again.close();
+  // Marked: an open after it reads no run again, so a row written as the earlier build wrote it stays.
+  db = await raw(file);
+  await db.run("UPDATE learning_ledger SET job_usd = 0.9, look_back_usd = 5.7 WHERE run_id = 'R'");
+  await db.close();
+  ({ store: again } = await storeOn(t, { file, clock }));
+  assert.deepEqual((await again.learning.ledger("agent-1", ["R"])).rows.map((row) => [row.jobUsd, row.lookBackUsd]), [[0.9, 5.7]], "marked: no open reads the runs again");
+});
+
+/** store_meta.ledger_rerecorded on the store at `file`, read beside the store open on it. */
+async function rerecordedMark(file) {
+  const db = await raw(file);
+  try {
+    return Number((await db.get("SELECT ledger_rerecorded AS split FROM store_meta WHERE singleton = 1")).split);
+  } finally {
+    await db.close();
+  }
+}
+
+test("the reopened runs are marked recorded again only by a pass that started with no runner of an earlier build there: one that ends a reopened run under the split before after the open's pass has it recorded under this build's split at the server's next try, with no restart, which then marks it; a runner of this build holds no mark", async (t) => {
+  const { store, file, clock, end } = await ledgerStore(t);
+  // R: recorded again by the open's pass. S: ended by the earlier runner after that pass, under the split before.
+  await end("R", 6.6, { path: "agent" }, { also: [kept(1, 0.9, 0.1), kept(2, 6.5, 0.1)] });
+  await end("S", 2, { path: "agent" }, { also: [kept(1, 0.5, 0.1), kept(2, 1.8, 0.2)] });
+  const rows = (await store.learning.ledger("agent-1")).rows;
+  // A runner of an earlier build, there now on the store's clock: its row says no schema version it knows (a build before
+  // runners.knows), as a runner of 17 (SQLite) or before 0034 (Postgres) writes it.
+  await store.runners.put({ runner: "runner-before", incarnation: "i-before", refused: null, version: "0.1.0", slots: 4 });
+  await store.close();
+  let db = await raw(file);
+  await oldSplit(db, "R", 0.9, 6.6);
+  await db.close();
+  const { store: again } = await storeOn(t, { file, clock });
+  assert.deepEqual((await again.learning.ledger("agent-1", ["R"])).rows, rows.filter((row) => row.runId === "R"), "the open's pass records R again all the same");
+  assert.equal(await rerecordedMark(file), 0, "an earlier runner was there at the pass's start: not marked");
+  assert.equal(await again.rerecordReopened(), false, "still there at the next try: not marked");
+  assert.equal(await rerecordedMark(file), 0);
+  // That runner ends S as its build does: the row under the split before, after the server's passes.
+  db = await raw(file);
+  await db.run("UPDATE learning_ledger SET job_usd = 0.5, look_back_usd = 1.5 WHERE run_id = 'S'");
+  await db.close();
+  // Its row goes stale (it stopped at the floor and left): the server's next try, the same store, no restart.
+  clock.now += RUNNER_STALE_MS + 1;
+  assert.equal(await again.rerecordReopened(), true, "none there at its start: marked");
+  assert.deepEqual((await again.learning.ledger("agent-1")).rows, rows, "S recorded under this build's split");
+  assert.equal(await rerecordedMark(file), 1);
+  assert.equal(await again.rerecordReopened(), true, "marked: a try after reads no run again");
+  // A runner of this build says on its row the version it knows (keepPresence, from the store it opened): at the floor or
+  // above, so it holds no mark.
+  db = await raw(file);
+  await db.run("UPDATE store_meta SET ledger_rerecorded = 0 WHERE singleton = 1");
+  await db.close();
+  const presence = keepPresence(again.runners, "runner-now", null, { renewMs: 3_600_000 });
+  t.after(() => presence.stop());
+  await presence.relay(null);
+  const { known, runnerFloor } = await again.schemaState();
+  const [now] = await again.runners.live(RUNNER_STALE_MS);
+  assert.deepEqual([now.runner, now.knows], ["runner-now", known], "its row says the version its build knows");
+  assert.ok(now.knows >= runnerFloor, `${now.knows} at the floor (${runnerFloor}) or above`);
+  assert.equal(await again.rerecordReopened(), true, "a runner of this build there: marked");
+});
+
+/** Run `id` of agent-1 queued and claimed by `runner` on `store`, its lease an hour: a runner's claim, its attempt row
+ *  stamped at the store's clock (run_attempts.claimed_at). */
+async function held(store, id, runner) {
+  await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "q" }, title: "t", place: { mode: "runner" } } });
+  return store.claim(id, runner, { leaseMs: 3_600_000 });
+}
+
+test("a rolling restart's runner of this build takes the name of an earlier build's runner at once, its relay dialed, and the mark waits on the claims that earlier runner took before the server's open and RUNNER_STALE_MS: once it hands them back, a claim taken after that holds none", async (t) => {
+  const { store, file, clock, end } = await ledgerStore(t);
+  await end("R", 6.6, { path: "agent" }, { also: [kept(1, 0.9, 0.1), kept(2, 6.5, 0.1)] });
+  const rows = (await store.learning.ledger("agent-1")).rows;
+  // The earlier build's process: there, and holding Q, which it took before this build's server opened the store.
+  await store.runners.put({ runner: "runner-1", incarnation: "i-before", refused: null, version: "0.1.0", slots: 4 });
+  const before = await held(store, "Q", "runner-1");
+  await store.close();
+  let db = await raw(file);
+  await oldSplit(db, "R", 0.9, 6.6);
+  await db.close();
+  const { store: again } = await storeOn(t, { file, clock });
+  assert.equal(await rerecordedMark(file), 0, "the earlier runner there at the open's pass: not marked");
+  // This build's process starts under its name and takes it at once: the server dials its relay, as on any restart.
+  const presence = keepPresence(again.runners, "runner-1", null, { renewMs: 3_600_000, incarnation: "i-now" });
+  t.after(() => presence.stop());
+  await presence.relay({ host: "127.0.0.1", port: 40_001 });
+  const { known } = await again.schemaState();
+  assert.deepEqual((await again.runners.live(RUNNER_STALE_MS)).map((row) => [row.incarnation, row.port, row.knows]), [["i-now", 40_001, known]], "the name is this build's process's, its relay the one read");
+  assert.equal(await again.rerecordReopened(), false, "no earlier build's row there, but Q's claim, taken before the open, still held: not marked");
+  // The earlier process ends R under the split before as it drains, after the passes; past RUNNER_STALE_MS it still holds Q.
+  db = await raw(file);
+  await db.run("UPDATE learning_ledger SET job_usd = 0.9, look_back_usd = 5.7 WHERE run_id = 'R'");
+  await db.close();
+  clock.now += RUNNER_STALE_MS + 1;
+  await presence.relay({ host: "127.0.0.1", port: 40_001 });
+  assert.equal(await again.rerecordReopened(), false, "Q still held by the claim taken before the open: not marked");
+  // It hands Q back at its drain's end, and this build's process takes it: a claim after the open and RUNNER_STALE_MS.
+  await again.release(before, { cut: "drain" });
+  assert.ok(await again.claim("Q", "runner-1", { leaseMs: 3_600_000 }), "this build's runner claims Q");
+  assert.equal(await again.rerecordReopened(), true, "only a claim taken after the open and RUNNER_STALE_MS held: marked");
+  assert.deepEqual((await again.learning.ledger("agent-1")).rows, rows, "R recorded under this build's split");
+});
+
+test("a claim with no attempt row (a build before run_attempts, or one whose row is gone) holds the mark while it is held, with no runner row there; once its lease ran out it holds none", async (t) => {
+  const { store, file, clock, end } = await ledgerStore(t);
+  await end("R", 6.6, { path: "agent" }, { also: [kept(1, 0.9, 0.1), kept(2, 6.5, 0.1)] });
+  const rows = (await store.learning.ledger("agent-1")).rows;
+  await held(store, "Q", "runner-old");
+  await store.close();
+  let db = await raw(file);
+  await oldSplit(db, "R", 0.9, 6.6);
+  await db.run("DELETE FROM run_attempts WHERE run_id = 'Q'");
+  await db.close();
+  const { store: again } = await storeOn(t, { file, clock });
+  assert.equal(await rerecordedMark(file), 0, "Q held at the open's pass: not marked");
+  clock.now += 2 * RUNNER_STALE_MS;
+  assert.deepEqual(await again.runners.live(RUNNER_STALE_MS), [], "no runner row there");
+  assert.equal(await again.rerecordReopened(), false, "Q's claim has no attempt row to say when it was taken: not marked");
+  db = await raw(file);
+  await db.run("UPDATE learning_ledger SET job_usd = 0.9, look_back_usd = 5.7 WHERE run_id = 'R'");
+  await db.close();
+  // Its runner died: the lease runs out.
+  clock.now += 3_600_000;
+  assert.equal(await again.rerecordReopened(), true, "no claim held: marked");
+  assert.deepEqual((await again.learning.ledger("agent-1")).rows, rows, "R recorded under this build's split");
+});
+
+test("a SQLite store at 17 gains runners.knows at the split's step (18): the row a runner of 17 put reads as knowing nothing, and while that runner is there the mark waits", sqliteOnly("SQLite's upgrade chain; Postgres 0034 adds the column"), async (t) => {
+  const { store, file, clock, end } = await ledgerStore(t);
+  await end("R", 6.6, { path: "agent" }, { also: [kept(1, 0.9, 0.1), kept(2, 6.5, 0.1)] });
+  await store.close();
+  const db = await raw(file);
+  await db.run("ALTER TABLE runners DROP COLUMN knows");
+  await db.run("ALTER TABLE store_meta DROP COLUMN ledger_rerecorded");
+  await db.run("INSERT INTO runners (runner, incarnation, refused, host, port, seen_at, version, slots) VALUES ('runner-17', 'i-17', NULL, NULL, NULL, ?, '0.1.0', 4)", clock.now);
+  await db.run("UPDATE store_meta SET schema_version = 17 WHERE singleton = 1");
+  await db.close();
+  const { store: reopened } = await storeOn(t, { file, clock });
+  assert.deepEqual((await reopened.runners.live(RUNNER_STALE_MS)).map((row) => [row.runner, row.knows]), [["runner-17", null]]);
+  assert.equal(await rerecordedMark(file), 0, "the runner of 17 there at the open's pass: not marked");
+  clock.now += RUNNER_STALE_MS + 1;
+  assert.equal(await reopened.rerecordReopened(), true, "gone: marked at the next try");
+});
+
+test("Postgres migration 0034 adds the same mark and runners.knows only where missing, the mark unset, and is breaking for runners (an earlier runner writes a reopened run's row under the split before)", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { RUNNERS, STORE_META_LEDGER_RERECORDED } = await import("../dist/store/schema.js");
+  const { marksBreaking } = await import("../dist/store/postgres/migrate.js");
+  const sql = await readFile(new URL("../dist/store/postgres/migrations/0034_learning_ledger_rerecorded.sql", import.meta.url), "utf8");
+  assert.ok(marksBreaking(sql), "-- runners: breaking in its leading comment");
+  const text = sql.replace(/--[^\n]*/g, "").replace(/\s+/g, " ").trim();
+  assert.ok(text.includes("ALTER TABLE store_meta ADD COLUMN IF NOT EXISTS ledger_rerecorded BIGINT NOT NULL DEFAULT 0 CHECK (ledger_rerecorded IN (0, 1));"), text);
+  assert.match(STORE_META_LEDGER_RERECORDED, /ledger_rerecorded INTEGER NOT NULL DEFAULT 0 CHECK \(ledger_rerecorded IN \(0, 1\)\)/);
+  assert.ok(text.includes("ALTER TABLE runners ADD COLUMN IF NOT EXISTS knows INTEGER;"), text);
+  assert.match(RUNNERS, /\bknows INTEGER\b/, "SQLite's fresh runners table has it too");
+  assert.ok(text.endsWith("UPDATE store_meta SET schema_version = 34 WHERE singleton = 1;"), text);
 });

@@ -24,7 +24,7 @@ documented calls, not from written code. The size column is an estimate, and siz
 ## The table
 
 Of 30 rows (26 vendors; Google, Fly.io, Beam and boxes.dev have two rows each): 0 clean, 5 fit if unverified facts hold,
-14 need a workaround, 11 are blocked.
+15 need a workaround, 10 are blocked. Render's row is built since (`src/render.ts`, a dial sandbox).
 
 | Vendor | Rents | Fit | Size (estimate) | Shared pieces it would use |
 | --- | --- | --- | --- | --- |
@@ -54,7 +54,7 @@ Of 30 rows (26 vendors; Google, Fly.io, Beam and boxes.dev have two rows each): 
 | [Northflank Sandboxes](https://northflank.com/docs/v1/application/sandboxes) | microVMs as Northflank services | fits if (unverified: root makes a network namespace in the microVM; the exec proxy has no idle cut) | 280-300 | [framedExec][fe] (pid wrapper), [backstopAt][bs] |
 | [OpenSandbox](https://github.com/opensandbox-group/OpenSandbox) | self-hosted containers, or microVMs with Kata | needs a workaround (an exec of ours over execd's PTY socket; isolation set per deployment; the fence needs user namespaces allowed) | about 280 | [packed labels][pl], [prepareImage][pi] |
 | [Railway Sandboxes](https://docs.railway.com/sandboxes) | VMs in a project environment | needs a workaround (no name or labels: labels kept in create's variables and read by exec; errors mapped by message text) | 420-470 | [prepareImage][pi] |
-| [Render Sandboxes](https://render.com/docs/sandboxes) | Firecracker microVMs | blocked (the sandbox record has a name but no label, per the vendor's SDK, so the labels would have to be kept on our side or by the vendor; exec would also need a fifo pump of ours) | about 320 if labels were kept | [framedExec][fe], [prepareImage][pi] |
+| [Render Sandboxes](https://render.com/docs/sandboxes) | Firecracker microVMs | needs a workaround (built as a dial sandbox, `src/render.ts`: no stdin, so the sandbox dials the server, `agentrun-dial` started by one `runs/sync` call; no label, so the labels live in a file in the sandbox; Core passed live over dial) | 505, built | [dial][dl], [prepareImage][pi] |
 | [Runloop Devboxes](https://docs.runloop.ai/docs/devboxes/overview.md) | VMs | needs a workaround (two SSE feeds merged by hand) | 270-290 | [framedExec][fe] with [sse][ss], [backstopAt][bs], [prepareImage][pi] |
 | [Together Code Sandbox](https://docs.together.ai/docs/together-code-sandbox.md) | Firecracker microVMs booted from snapshots | fits if (unverified: root makes a network namespace; the SSE feed holds 75 s of silence; the `ttl` cap; the tag value limit; amd64) | 240-270 | [framedExec][fe] with [sse][ss], [packed labels][pl], [prepareImage][pi] |
 | [Vercel Sandbox](https://vercel.com/docs/sandbox) | Firecracker microVMs | fits if (unverified: the log stream keeps a character split across two chunks whole and holds 75 s of silence; a taken name's status reads as `exists`; root makes a network namespace) | 230-290 | [framedExec][fe], [packed labels][pl], [prepareImage][pi] |
@@ -431,19 +431,25 @@ provider spec.
 
 - **Rents:** a Firecracker microVM per sandbox, in public beta
   ([announcement](https://render.com/blog/introducing-render-sandboxes)).
-- **Exec:** a run streams output, but there is no stdin call ([executing](https://render.com/docs/sandboxes-executing)),
-  so a fifo pump of ours writes by exec. Each write is an exec against a limit of 1,000 a minute per user
-  ([limits](https://render.com/docs/sandboxes-limits)). Unverified: whether a process outlives the exec that started it,
-  and the stream's idle timeout; either could block `exec`.
-- **Labels and lifetime:** a native name and no label; a timeout at create, which can't move, so
-  `lifetime: "vendor"` and no `extend` ([creating](https://render.com/docs/sandboxes-creating)).
-  `idleTimeoutSeconds: 0` switches the idle suspend off.
-- **Blocked:** the API's `sandbox` record has a name, plan, status and timeouts but no label
-  ([SDK](https://www.npmjs.com/package/@renderinc/sdk) 1.8.0, `dist/generated/schema.d.ts`), so the labels would have
-  to be kept on our side or by the vendor.
-- **Image:** imported by tag in [prepareImage](PROVIDERS.md#wire-it-up).
-- **Open:** the vendor's, a label on the sandbox record. Ours, a `framedExec` mode that builds `write` from a fifo,
-  and a row for this shape in [exec shapes](PROVIDERS.md#exec-shapes-that-work).
+- **Built:** [`src/render.ts`](src/render.ts), a [dial](PROVIDERS.md#machines-that-dial-in) host, kind linux.
+- **Exec:** a run takes a command and answers its output, with no stdin call
+  ([executing](https://render.com/docs/sandboxes-executing)), so there is no `exec`: the sandbox dials the server. The
+  API names no command a sandbox runs at boot, so once it reads `running`, create starts `agentrun-dial` under `setsid`
+  in one `runs/sync` call (a live probe saw such a process outlive the call); `dialLog`, `dialExit` and `redial` go
+  through `runs/sync` too.
+- **Labels and lifetime:** a native name and no label
+  ([SDK](https://www.npmjs.com/package/@renderinc/sdk) 1.11.0, `dist/generated/schema.d.ts`): the computer's name gives
+  its own two labels, and create writes the rest to a file only root reads, which `get` and `list` read back once. A
+  timeout at create, which can't move, so `lifetime: "vendor"`, no `extend`, and a day at most
+  ([creating](https://render.com/docs/sandboxes-creating)). `idleTimeoutSeconds: 0` switches the idle suspend off.
+- **Image:** the box image imported once as a sandbox build of the workspace, `agentrun-box-<tag>`, in
+  [prepareImage](PROVIDERS.md#wire-it-up); a create names it as `buildName`, or a build id (`sbb-…`) as `buildId`.
+- **Network:** the sandbox's own policy is allow-all, since it must reach the server; `none`, `open` and an allow list
+  are init's.
+- **Verified live** (Core over dial, 11-25): the sandbox's env reaches a run's processes, root makes network namespaces
+  in the microVM (every `provider.network-*` case), the build imports the public box image with no credential, and a
+  process escaped with `setsid` ends with the release.
+- **Open:** the vendor's, a label on the sandbox record, and a stdin call.
 
 ### Runloop Devboxes
 
@@ -500,12 +506,12 @@ The open gaps on our side, by how many rows they hold back:
 | Gap | Rows | Kind |
 | --- | --- | --- |
 | No two-way exec stream: a computer that dials out to AgentRun instead | 9: Alibaba, AWS, Azure, Beam Sandbox, Cloudflare, DigitalOcean (if its caps cut the bridge), Fly Machines, Google Agent Platform, Kasm | planned |
-| Exec shapes `framedExec` doesn't take: a one-socket PTY, no stdin call, stdout and stderr on two feeds | 4: DigitalOcean, OpenSandbox (PTY); Render (no stdin); Runloop (two SSE feeds) | adapter helper |
+| Exec shapes `framedExec` doesn't take: a one-socket PTY, stdout and stderr on two feeds | 3: DigitalOcean, OpenSandbox (PTY); Runloop (two SSE feeds) | adapter helper |
 | An image that isn't one of [prepareImage](PROVIDERS.md#wire-it-up)'s paths: a deploy-time digest, or the vendor's agent as entrypoint | 4: Cloudflare, Blaxel, Baseten, Fly Sprites | docs and box |
 | One each: a per-machine credential (Freestyle); `e2b.ts` taking an API URL (Cube); an SDK that keeps keys process-wide (microsandbox) | 3 | adapter or docs |
 
-Three blocks are the vendor's to lift: DigitalOcean's auto-pause, which can't be switched off, and Hyperbrowser's and
-Render's sandbox records, which carry no label.
+Two blocks are the vendor's to lift: DigitalOcean's auto-pause, which can't be switched off, and Hyperbrowser's sandbox
+record, which carries no name or label.
 
 Dial-out is planned: computerd in the machine would connect to AgentRun, so the vendor needs no exec stream. The
 [attach binding](../../spec/computer/attach.md), a draft today, is that connection for a person's own machine.
@@ -524,3 +530,4 @@ A vendor can move its row:
 [bs]: PROVIDERS.md#the-eleven-members
 [pi]: PROVIDERS.md#wire-it-up
 [ss]: PROVIDERS.md#output-as-server-sent-events
+[dl]: PROVIDERS.md#machines-that-dial-in

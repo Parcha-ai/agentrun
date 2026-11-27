@@ -20,6 +20,7 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { learningEndOfRun } = await import("../dist/runner/learning-end.js");
 const { launchBody, launchOnItsDisk, readLaunchBody } = await import("../dist/run-launch.js");
 const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { agentCostOverStore, runAllInOverStore } = await import("../dist/store-reads/learning.js");
 const { SCHEMA_VERSION } = await import("../dist/store/index.js");
 const { notAuditableOf } = await import("../dist/runner/audit.js");
@@ -78,8 +79,8 @@ async function purgedRun(store, id, launch) {
   await store.runs.purge(id, KEPT);
 }
 
-test("a store as the run purge left it (version 14, no runs.disk) comes to this version (17) at its server's open, never at a runner's: each run's disk from its launch, a run purged before as the default disk's", async (t) => {
-  assert.equal(SCHEMA_VERSION, 17);
+test("a store as the run purge left it (version 14, no runs.disk) comes to this version (18) at its server's open, never at a runner's: each run's disk from its launch, a run purged before as the default disk's", async (t) => {
+  assert.equal(SCHEMA_VERSION, 18);
   const dir = scratch("agentrun-per-disk-upgrade-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const first = await openSqliteStore({ dataDir: dir, role: "server" });
@@ -169,7 +170,7 @@ test("a runner runs a named-disk launch with no seed, no # Learned section and n
   // What the runner's dispatch hands the harness it picks: the launch as the run runs it.
   const ran = async (body) => {
     const seen = [];
-    const loop = createDispatchLoop({ launchOf: async () => ({ body }), resolve: (_harness, launch) => void seen.push(launch) })({});
+    const loop = createDispatchLoop({ launchOf: async () => ({ body }), resolve: (_harness, launch) => void seen.push(launch) })({ redact: heldRedactor((text) => text) });
     await assert.rejects(loop.start({ runId: "run-1" }));
     return seen[0];
   };

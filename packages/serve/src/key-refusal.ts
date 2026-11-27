@@ -7,7 +7,7 @@ import { harnessOf } from "./harness-table.js";
 import { cutSecrets, endsInScheme, foldsHeld, redactSecrets, secretShapes, valueLeft, valueMatcher } from "./learn/secrets.js";
 import { hostModel, MODEL_KEYS } from "./model.js";
 import { modelWire, openRouterOnly, WIRES } from "./provider.js";
-import { entityAt, jsonEscapeAt, privateKeyEnd, pythonEscapeAt, scanned, squeeze, type Span } from "./redact/match.js";
+import { type Marks, marksOf, privateKeyEnd, scanned, shortRun, shownIn, type Span } from "./redact/match.js";
 import { savedGatewayIn } from "./model-gateway.js";
 
 /** The key a run's model requests carry, and who reads it: a provider's (saved in Settings → Model keys, or set where
@@ -87,6 +87,45 @@ export function redacted(text: string, secrets: readonly string[], shown = SHOWN
  *  so its cost grows with the square of what it reads; pieces this size keep each pass small. */
 const ANSWER_PIECE = 8192;
 
+/** The most characters (as match.ts's `scanned` counts them) one read for the head or the tail of a run (peek, tailOf)
+ *  visits before it stops and gives undefined, so the caller withholds the text. Each view reads such a read's stretch
+ *  from every place its join can start, so padding every view reads apart and shows little of costs it hundreds of
+ *  characters per character of the stretch. Checked after each reading (one view's, over one stretch of at most a
+ *  piece), so a read visits at most this and one reading more: the costliest reading measured visits 174.8 characters
+ *  per character of its stretch (READING in key-refusal.test.mjs, 175). 356 pieces is a ruled budget, not one derived
+ *  from a measure. The worst cost measured, every view's readings of a stretch read with no sequence open, over the
+ *  contract's adversarial texts and the padding the cost test reads, is 392.7 characters per character, on adversarial
+ *  padding (every family the views decode, then zero-width spaces). A read that goes over the budget withholds the
+ *  text, as it does within a piece of that padding. A run is read only where it is longer than a piece, at most twice
+ *  (its head and its tail), so the reads cost at most 2 x (356 + 175) pieces over a piece and one character, about
+ *  1,062 per character of the text. That is
+ *  over the matcher's bound (WORK in redact-contract.test.mjs) by construction; measured, the reads and the matcher's
+ *  own work together stay under it on the texts the reads cost most on (key-refusal.test.mjs). No read of the tests'
+ *  prose, JSON and logs reaches it, nor of the padding corpora's texts the matcher shows. Spending it only ever
+ *  withholds: a read that stops gives undefined, never a shorter stretch. */
+const READ_BUDGET = 356 * ANSWER_PIECE;
+
+/** The stretches a read for `count` characters tries, shortest first: 4 × `count` + 64 characters where that is
+ *  shorter than a piece, then a piece; no stretch is longer than a piece. */
+function widths(count: number): number[] {
+  return 4 * count + 64 < ANSWER_PIECE ? [4 * count + 64, ANSWER_PIECE] : [ANSWER_PIECE];
+}
+
+/** What the reads for the head or the tail of a run and past a call's stop (peek, tailOf) have visited in this process,
+ *  as match.ts's `scanned` counts it: in all, and the most one read visited. A test reads it to bound the reads' part
+ *  of a text's cost. */
+export const readCost = { chars: 0, most: 0 };
+
+/** `read`'s result, what it visited counted in readCost. */
+function counted<T>(read: () => T): T {
+  const before = scanned.chars;
+  const out = read();
+  const visited = scanned.chars - before;
+  readCost.chars += visited;
+  readCost.most = Math.max(readCost.most, visited);
+  return out;
+}
+
 /** How many texts redactedAnswer has read in this process: a test reads it to see a run's view served from what an
  *  earlier view redacted (runs.ts servedOnce). */
 export const answerPasses = { count: 0 };
@@ -143,17 +182,17 @@ export function withheldWhole(text: string, secrets: readonly string[], held: re
 
 /** Whether the text a reader is about to be shown (`shown`, what the caller returns) holds a held value, or the joined
  *  pieces still hold one or a secret shape: one a cut split. `shown` is read whole for a held value (valueMatcher, one
- *  linear pass): however the pieces were put together, as each was cut or shown, or an unread run's "[redacted]" between
- *  them, no text that reads as a held value is returned (a held value holding "[redacted]", its parts on either side of
- *  a cut in another piece). A value is also looked for in the pieces as they came, joined by line breaks, each piece's
- *  own cuts covering it (valueLeft): a piece's cut can take part of a value split across pieces (a credential
+ *  linear pass): however the pieces were put together, as each was cut or shown, or an unread run's "[redacted]"
+ *  between them, no text that reads as a held value is returned (a held value holding "[redacted]", its parts on either
+ *  side of a cut in another piece). A value is also looked for in the pieces as they came, joined by line breaks, each
+ *  piece's own cuts covering it (valueLeft): a piece's cut can take part of a value split across pieces (a credential
  *  parameter's value cut in place at the end of a piece, the rest of the held value in the next), and the rest then no
  *  longer reads as the value. A piece withheld whole covers all of itself, so a value split inside one piece is that
  *  piece's own redaction's, and only a value no cut covers across pieces (or in the text read past where they stopped)
- *  withholds the text. Each unread run's head and tail are covered (it shows as "[redacted]") and read: its head for the
- *  rest of a value split before it, its tail for the head of a value whose rest comes after it. A shape is looked for in
- *  the pieces each redacted (a shape whole in one is no shape a cut split). A peek too long to read (`unread`) withholds
- *  the text too. */
+ *  withholds the text. Each unread run's head and tail are covered (it shows as "[redacted]") and read: its head for
+ *  the rest of a value split before it, its tail for the head of a value whose rest comes after it. A shape is looked
+ *  for in the pieces each redacted (a shape whole in one is no shape a cut split). A peek too long to read or too
+ *  costly (`unread`) withholds the text too. */
 function heldIn(seen: Seen, secrets: readonly string[], shown: string): boolean {
   return seen.unread || valueMatcher(secrets)(shown) || valueLeft(seen.raw, secrets, seen.cuts) || secretShapes(seen.shapes).length > 0;
 }
@@ -183,6 +222,9 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
   // The run runCut is cutting: where it starts in `text`, and its first piece's index in `out`.
   let run: { from: number; at: number } | undefined;
   let from = 0;
+  // What the reads past a stop and of a run's ends need to know of the text outside them, read once if any is made.
+  let marked: Marks | undefined;
+  const marks = (): Marks => (marked ??= marksOf(text));
   // Also stops past 4 × `enough` characters read: text that shows as almost nothing (URLs whose queries are elided) is
   // not read to its end. Where it stops, the peek reads on as at any stop.
   while (from < text.length && shown <= enough && from <= 4 * enough) {
@@ -198,8 +240,9 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
       // The run is shown as "[redacted]": its head is read, covered, for the rest of a value split before it, and its
       // tail (tailOf: `hold` characters the matcher sees, at most a piece), covered too, for the head of a value whose
       // rest comes after it. One read, the two joined by a line break, as each piece is one.
-      const head = peek(text, start, hold, fold);
-      const tail = head === undefined ? undefined : tailOf(text, start, to, hold, fold);
+      const outside = marks();
+      const head = counted(() => peek(text, start, hold, fold, outside));
+      const tail = head === undefined ? undefined : counted(() => tailOf(text, start, to, hold, fold, outside));
       if (head === undefined || tail === undefined) unread = true;
       else {
         shapes.push(`${redactSecrets(head, secrets, Buffer.byteLength(head))}[redacted]`);
@@ -228,7 +271,8 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
     const space = run ? text.slice(from, from + ANSWER_PIECE).search(/\s/) : 0;
     scanned.chars += space < 0 ? Math.min(ANSWER_PIECE, text.length - from) : space + 1;
     const runTo = from + (space < 0 ? ANSWER_PIECE : space);
-    const ahead = peek(text, from, hold, fold);
+    const outside = marks();
+    const ahead = counted(() => peek(text, from, hold, fold, outside));
     if (ahead === undefined) unread = true;
     else {
       const rest = runTo > from + ahead.length ? text.slice(from, runTo) : ahead;
@@ -251,109 +295,127 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
   return { out: shows, seen: { raw, cuts, shapes: cutShapes, unread }, short: from < text.length && shown <= enough };
 }
 
-/** text from `from` on, as far as `count` characters the matcher sees (all of it, if it holds fewer), each run of
- *  whitespace in it one space. The matcher reads "+" as a space and decodes percent-encoded bytes, JSON's escapes (one
- *  level and two, as the JSON view reads them), Python's ("\'", "\x" and two hex digits, as the view that reads a
- *  single-quoted dict through them does) and HTML's character references (named and numeric), so a "+", an encoded
- *  byte, an escape and a reference that decode to whitespace count no more than whitespace does, and any other escape
- *  counts as what the view keeps of the character it decodes to. A character that renders as nothing (a zero-width
- *  space, a soft hyphen, a control character that is no whitespace: a NUL, an escape, a delete; U+FFFF; as it stands or as
- *  "\u0001", "\x01", "%01" or "&#1;" decodes) or a combining mark counts as nothing too: the views drop it (kept). So does a quote, an apostrophe
- *  or JSON's punctuation ("{", "}", "[", "]", ",", ":"), which the join views drop between a text's strings, and, with
- *  `fold` (a held value folds: learn/secrets.ts foldsHeld), a separator ("-", "_", ":", "."), which the fold view
- *  drops. Padding of any of them never hides the rest of a value split before it. Undefined, so the caller withholds
- *  the text, when that takes more than a piece of text (a run of whitespace counted as one): no redaction pass reads
- *  more than a piece. */
-function peek(text: string, from: number, count: number, fold: boolean): string | undefined {
-  const read = visible(text, from, count, text.length, fold);
-  return read.span > ANSWER_PIECE ? undefined : read.parts.join("");
-}
-
-/** The end of the run text[start, to) the pass reads for the head of a value whose rest comes after the run: as few of
- *  its last characters as hold `count` characters the matcher sees (at most a piece's worth), counted as peek counts
- *  them (with `fold` as peek's), so padding the views read as nothing (whitespace, a zero-width space, a soft hyphen, a
- *  control character, U+FFFF, a quote or JSON's punctuation, a separator a folded value drops, an escape, a character reference or encoded bytes
- *  that decode to any of them) between that head and the run's end never pushes the head out of it. Read forward from
- *  a start moved back from `to`, twice as far each time, so it reads at most two pieces in all. Undefined, so the
- *  caller withholds the text, when that takes more than a piece of text. */
-function tailOf(text: string, start: number, to: number, count: number, fold: boolean): string | undefined {
-  const want = Math.min(count, ANSWER_PIECE);
-  for (let width = Math.min(want, to - start); ; width = Math.min(2 * width, ANSWER_PIECE, to - start)) {
-    const from = to - width;
-    if (from === start || visible(text, from, want, to, fold).found >= want) return text.slice(from, to);
-    if (width >= ANSWER_PIECE) return undefined;
-  }
-}
-
-/** text[from, to) read as peek says, until `count` characters the matcher sees are found or the read passes a piece
- *  of text (`span`, a run of whitespace counted as one): what it read, as peek returns it, and how many it found. */
-function visible(text: string, from: number, count: number, to: number, fold: boolean): { parts: string[]; found: number; span: number } {
-  const parts: string[] = [];
-  let span = 0;
-  let found = 0;
-  for (let at = from; at < to && found < count && span <= ANSWER_PIECE; ) {
-    SPACES.lastIndex = at;
-    let end = SPACES.test(text) ? SPACES.lastIndex : at;
-    if (end > at) {
-      parts.push(" ");
-      span++;
-    } else {
-      while (end - at <= ANSWER_PIECE && end + 3 <= to && text[end] === "%" && HEX_PAIR.test(text.slice(end + 1, end + 3))) end += 3;
-      if (end > at) found += kept(Buffer.from(text.slice(at, end).replaceAll("%", ""), "hex").toString("utf8"), fold);
-      else {
-        // A character past U+FFFF is read whole, its two UTF-16 units as they are or as two escapes, as the views gather
-        // it before they squeeze it: a combining mark past U+FFFF is then dropped as the views drop it, where each of
-        // its halves alone would count as one.
-        let read = charAt(text, at);
-        end = read.end;
-        if (end < to && HIGH(read.char)) {
-          const low = charAt(text, end);
-          if (LOW(low.char)) {
-            read = { char: read.char + low.char, end: low.end, raw: false };
-            end = low.end;
-          }
-        }
-        if (!(read.raw && read.char === "+")) found += kept(read.char, fold);
+/** text from `from` on, each run of whitespace in it written short (collapsed), as far as `count` characters every view
+ *  of the matcher shows of it (match.ts shownIn: each view's own decoding, join and terminal reading, from each place
+ *  its join can start), or all of it where the rest of the text is shorter than the read. So padding any view reads as
+ *  nothing (whitespace, a control character, a character that renders as nothing or as a box or a blank, a quote or
+ *  JSON's punctuation a join drops, a separator the fold view drops with `fold`, a whole terminal sequence, each as it
+ *  stands or encoded) never pushes the rest of a value split before it out of the read: it ends where the view that
+ *  shows least has shown `count`, at the furthest of the places each view's `count`th character ends. What stands
+ *  outside the read counts too (`marks`, match.ts marksOf): it reads one character more for each backspace after `from`
+ *  (one after the read strikes out one inside it), and where `from` may be inside a terminal sequence, each view also
+ *  reads the stretch as that sequence's own (shownIn's `open`). Read in each stretch of widths(`count`) in turn.
+ *  Undefined, so the caller withholds the text, where a view shows fewer than `count` in a piece of text (a run of
+ *  whitespace written short): no redaction pass reads more than a piece; where a backspace in it strikes out what
+ *  stands before `from`; and where the read has visited more than READ_BUDGET characters. */
+function peek(text: string, from: number, count: number, fold: boolean, marks: Marks): string | undefined {
+  let spent = scanned.chars + READ_BUDGET;
+  count += marks.backspacesFrom(from);
+  const open = marks.openAt(from);
+  for (const size of widths(count)) {
+    const before = scanned.chars;
+    const { stretch, whole } = collapsed(text, from, size, marks);
+    // Writing the stretch reads the text once, however much whitespace it skips: that is not the views' to spend.
+    spent += scanned.chars - before;
+    if (whole) return stretch;
+    let end = 0;
+    for (const ends of shownIn(stretch, fold, undefined, count, open)) {
+      if (scanned.chars > spent || ends === undefined) return undefined;
+      if (ends.length < count) {
+        end = -1;
+        break;
       }
-      parts.push(text.slice(at, end));
-      span += end - at;
+      end = Math.max(end, ends[count - 1]!);
     }
-    // Each character read, a percent-encoded run's twice more (its hex parsed, then decoded).
-    scanned.chars += text[at] === "%" && end > at + 1 ? 3 * (end - at) : end - at;
-    at = end;
+    if (end >= 0) return stretch.slice(0, end);
   }
-  return { parts, found, span };
+  return undefined;
 }
-/** The character text[at] starts, as the views read it: one of Python's escapes (pythonEscapeAt, at either level:
- *  "\x20" and "\\x20" are a space), else a JSON escape's (jsonEscapeAt), or a character reference's (entityAt), else
- *  the UTF-16 unit itself (`raw`), and where it ends. Python's first: where JSON's escapes read "\\x20" as a backslash
- *  and three characters, the view that reads Python's twice reads a space; counting less only reads further. */
-function charAt(text: string, at: number): { char: string; end: number; raw: boolean } {
-  let escape: { char: string; end: number } | undefined;
-  if (
-    (text[at] === "\\" && ((escape = pythonEscapeAt(text, at)) !== undefined || (escape = jsonEscapeAt(text, at)) !== undefined)) ||
-    (text[at] === "&" && (escape = entityAt(text, at)) !== undefined)
-  )
-    return { ...escape, raw: false };
-  return { char: text[at]!, end: at + 1, raw: true };
+
+/** The end of the run text[start, to) the pass reads for the head of a value whose rest comes after the run: a stretch
+ *  of its last characters in which every view of the matcher shows `count` characters (match.ts shownIn, with `fold` as
+ *  peek's), so padding a view reads as nothing between that head and the run's end never pushes the head out of it. The
+ *  run's last widths(`count`) characters in turn, each from the start of an HTML numeric reference it would cut
+ *  (referenceStart); the whole run where that reaches its start. As peek's, it reads one character more for each
+ *  backspace after `to`, and each view reads a stretch that may start inside a terminal sequence as that sequence's own
+ *  too (`marks`). Undefined, so the caller withholds the text, where a view shows fewer than `count` in the run's last
+ *  piece, where a backspace in the stretch strikes out what stands before it, or the read has visited more than
+ *  READ_BUDGET characters. */
+function tailOf(text: string, start: number, to: number, count: number, fold: boolean, marks: Marks): string | undefined {
+  const want = Math.min(count, ANSWER_PIECE) + marks.backspacesFrom(to);
+  const spent = scanned.chars + READ_BUDGET;
+  for (const width of widths(want)) {
+    const from = referenceStart(text, start, Math.max(start, to - width));
+    if (to - from > ANSWER_PIECE) return undefined;
+    if (from === start) return text.slice(start, to);
+    const stretch = text.slice(from, to);
+    let shows = true;
+    for (const ends of shownIn(stretch, fold, undefined, want, marks.openAt(from))) {
+      if (scanned.chars > spent || ends === undefined) return undefined;
+      if (ends.length < want) {
+        shows = false;
+        break;
+      }
+    }
+    if (shows) return stretch;
+  }
+  return undefined;
 }
-const HIGH = (char: string): boolean => char.length === 1 && char.charCodeAt(0) >= 0xd800 && char.charCodeAt(0) <= 0xdbff;
-const LOW = (char: string): boolean => char.length === 1 && char.charCodeAt(0) >= 0xdc00 && char.charCodeAt(0) <= 0xdfff;
+
+/** text from `from` on, each run of whitespace written short as every view reads it alike (match.ts shortRun: one
+ *  space where it stands outside any terminal sequence and no backspace after it can strike past it), as far as `size`
+ *  characters so written (`whole` where that reaches the text's end), and, short of its end, never ending inside an
+ *  HTML numeric reference (referenceCut). */
+function collapsed(text: string, from: number, size: number, marks: Marks): { stretch: string; whole: boolean } {
+  const word = new RegExp(`\\S{1,${size}}`, "y");
+  const parts: string[] = [];
+  let length = 0;
+  let at = from;
+  // A run written short that is longer than the room left (many backspaces after it) ends the stretch inside it.
+  let cut = false;
+  while (at < text.length && length < size) {
+    SPACES.lastIndex = at;
+    let next: number;
+    if (SPACES.test(text)) {
+      next = SPACES.lastIndex;
+      const run = shortRun(text.slice(at, next), marks.backspacesFrom(next));
+      cut = run.length > size - length;
+      const part = cut ? run.slice(0, size - length) : run;
+      parts.push(part);
+      length += part.length;
+    } else {
+      word.lastIndex = at;
+      word.test(text);
+      next = Math.min(word.lastIndex, at + size - length);
+      parts.push(text.slice(at, next));
+      length += next - at;
+    }
+    scanned.chars += next - at;
+    at = next;
+  }
+  const stretch = parts.join("");
+  return at >= text.length && !cut ? { stretch, whole: true } : { stretch: stretch.slice(0, referenceCut(stretch)), whole: false };
+}
+
+/** What may stand in an HTML numeric reference after its "&": "#", an "x", and digits. */
+const IN_REFERENCE = /[#xX0-9A-Fa-f]/;
+/** Where `stretch`, cut from a longer text at its end, ends with no numeric reference ("&#", any zeros and digits) cut
+ *  at its end: before the "&" of one that runs to its end, else its end. A reference reads any number of zeros, so the
+ *  rest of the text can make one character of the digits the stretch reads one by one. */
+function referenceCut(stretch: string): number {
+  let at = stretch.length;
+  while (at > 0 && IN_REFERENCE.test(stretch[at - 1]!)) at--;
+  scanned.chars += stretch.length - at + 1;
+  return at > 0 && stretch[at - 1] === "&" && stretch[at] === "#" ? at - 1 : stretch.length;
+}
+/** `at`, or, where a numeric reference that starts in text[start, at) runs to `at`, where it starts (referenceCut). */
+function referenceStart(text: string, start: number, at: number): number {
+  let k = at;
+  while (k > start && IN_REFERENCE.test(text[k - 1]!)) k--;
+  scanned.chars += at - k + 1;
+  return k > start && text[k - 1] === "&" && text[k] === "#" ? k - 1 : at;
+}
 const SPACES = /\s+/y;
-const HEX_PAIR = /^[0-9A-Fa-f]{2}$/;
-/** What every view drops between a text's strings: a quote, an apostrophe (the join of single-quoted strings) and JSON's
- *  punctuation (the join view). */
-const JOIN_DROPS = new Set(['"', "'", "{", "}", "[", "]", ",", ":"]);
-/** What the fold view drops: the separators of a hex identifier. */
-const FOLD_DROPS = new Set(["-", "_", ":", "."]);
-/** How many characters the views keep of `chars` at the least (peek): squeezed (a control character that is no
- *  whitespace, and U+FFFF, as the views drop them, count 0), less each the join view drops, and, with `fold`, each the
- *  fold view drops. */
-function kept(chars: string, fold: boolean): number {
-  let count = 0;
-  for (const char of squeeze(chars)) if (!JOIN_DROPS.has(char) && !(fold && FOLD_DROPS.has(char))) count += char.length;
-  return count;
-}
 
 /** Where the piece of `text` read from `from` ends: at its last whitespace before ANSWER_PIECE characters; with none, at
  *  runCut's place, else at the next whitespace (a run read as one, or unread past ANSWER_PIECE). Never inside a private

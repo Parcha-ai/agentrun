@@ -125,6 +125,9 @@ export class FakeArchilDisk {
    *  { status, code, message } (Archil's code for it, per its plan docs: 403 network_plan_required), answered once
    *  `answered` (a promise, when given) settles. */
   refuseNetwork = undefined;
+  /** When set, the disk's region has no serverless exec (gcp-us-central1): every exec is recorded and refused, nothing
+   *  run, as Archil there answers "Exec is not enabled". */
+  noExec = false;
   /** The paths each running exec holds. */
   #held = new Set();
   /** Each mount's write delegation (delegate): { path }, one per mount. */
@@ -375,6 +378,7 @@ export class FakeArchilDisk {
 
   async exec(request) {
     this.#record({ op: "exec", mounts: { ...request.mounts }, checkoutPaths: request.checkoutPaths, queueMs: request.queueMs, image: request.image, network: request.network, command: request.command });
+    if (this.noExec) throw new FakeDiskError(400, "BadRequest", "Exec is not enabled");
     if (request.network !== undefined && this.refuseNetwork !== undefined) {
       const { status, code, message, answered } = this.refuseNetwork;
       if (answered) await answered;

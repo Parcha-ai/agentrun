@@ -12,13 +12,13 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
 const settle = async () => { for (let i = 0; i < 6; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
 
-const run = (learning: Run["learning"]): Run => ({ sha: null, updated_at: "2026-11-11T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" },
+const run = (learning: Run["learning"]): Run => ({ sha: null, updated_at: "2026-11-11T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" }, learning_work: { state: "none", runs: [], ended_at: null, deadline_at: null },
   run_id: "run-u", agent_id: "refunds", agent_version: 1, revision: "rv1", kind: "agentic", status: "completed", state: "idle", title: "allbirds.com",
   created_at: "2026-11-11T10:00:00Z", ended_at: "2026-11-11T10:00:09Z", result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null, learning,
 });
 const LEARNS: Run["learning"] = { detail: null, at: "2026-11-11T10:00:09Z", state: "dropped", reason: "empty" };
 const answer = (used: LearnedUse): RunLearningRead => ({
-  run: "run-u", state: "dropped", reason: "empty", detail: null, at: "2026-11-11T10:00:09Z", seed: "c1", merged: null, workflows: [], corrections: 0, problems: [], compiled: null, draft_errors: [], used,
+  run: "run-u", state: "dropped", reason: "empty", detail: null, at: "2026-11-11T10:00:09Z", seed: "c1", seed_failed: null, seed_waited: null, learned_chars: 0, merged: null, workflows: [], corrections: 0, dropped_lines: 0, problems: [], compiled: null, draft_errors: [], used,
 });
 const USED: LearnedUse = {
   workflows: [{ name: "check-refunds", calls: 3, failed: 1 }, { name: "find-policies", calls: 2, failed: 0 }],

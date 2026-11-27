@@ -118,7 +118,7 @@ async function readFolder(dir, fail) {
 /** The files as an upload sends them: text as it is, unless JSON's escapes make it longer than base64 would (a file of
  *  newlines or control characters), and any other bytes base64. So the body stays within the base64 size the server's
  *  upload limit allows for. */
-const filesBody = (files) => [...files].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([path, data]) => {
+export const filesBody = (files) => [...files].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([path, data]) => {
   const text = data.toString("utf8");
   const base64 = data.toString("base64");
   return Buffer.from(text, "utf8").equals(data) && Buffer.byteLength(JSON.stringify(text)) <= base64.length + 2 ? { path, encoding: "utf8", content: text } : { path, encoding: "base64", content: base64 };

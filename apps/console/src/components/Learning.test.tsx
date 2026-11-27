@@ -29,7 +29,7 @@ const view = (extra: Partial<AgentLearning> = {}): AgentLearning => ({
   ...extra,
 });
 const none = () => view({ corrections: "", workflows: [] });
-const runOf = (id: string, title: string, learning: Run["learning"]): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" },
+const runOf = (id: string, title: string, learning: Run["learning"]): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" }, learning_work: { state: "none", runs: [], ended_at: null, deadline_at: null },
   run_id: id, agent_id: "refunds", agent_version: 1, revision: "rv1", kind: "agentic", status: "completed", state: "idle", title,
   created_at: "2026-11-03T16:52:00Z", ended_at: "2026-11-03T16:52:09Z", result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null, learning,
 });
@@ -59,8 +59,8 @@ async function open(a: Agent, fake: Fake = {}, props: Partial<LearningProps> = {
   const v2 = {
     agentLearning: async (id: string) => { calls.push(`learning ${id}`); return (fake.learning ?? (async () => view()))(); },
     listAgentRuns: async (id: string) => { calls.push(`runs ${id}`); return { runs: fake.runs ?? RUNS, next_cursor: null }; },
-    corrections: async () => { calls.push("corrections"); return (fake.corrections ?? (async () => ({ text: TEXT, etag: '"c-v1"', cap_bytes: 2048 })))(); },
-    writeCorrections: async (_id: string, text: string, etag: string) => { calls.push(`write ${etag} ${JSON.stringify(text)}`); return (fake.write ?? (async () => ({ text, etag: '"c-v2"', cap_bytes: 2048 })))(text, etag); },
+    corrections: async () => { calls.push("corrections"); return (fake.corrections ?? (async () => ({ text: TEXT, etag: '"c-v1"', cap_bytes: 8192 })))(); },
+    writeCorrections: async (_id: string, text: string, etag: string) => { calls.push(`write ${etag} ${JSON.stringify(text)}`); return (fake.write ?? (async () => ({ text, etag: '"c-v2"', cap_bytes: 8192 })))(text, etag); },
     readLearningFile: async (_id: string, file: string) => { calls.push(`read ${file}`); return (fake.read ?? (async () => ({ text: '{"v": 2, "name": "check-refunds"}\n', etag: `"v-${file}"` })))(file); },
     retireWorkflow: async (_id: string, file: string, etag: string) => { calls.push(`retire ${file} ${etag}`); return (fake.retire ?? (async () => ({ text: "", etag: '"v3"' })))(file, etag); },
     approveWorkflow: async (_id: string, file: string, etag: string) => { calls.push(`approve ${file} ${etag}`); return (fake.approve ?? (async () => ({ text: "", etag: '"v4"' })))(file, etag); },
@@ -309,7 +309,7 @@ describe("the corrections", () => {
     expect(t.calls).toContain("corrections");
     const body = t.editor()!.querySelector("textarea")!;
     expect(body.value).toBe(TEXT);
-    expect(t.editor()!.textContent).toContain(`${new TextEncoder().encode(TEXT).length} of 2048 bytes`);
+    expect(t.editor()!.textContent).toContain(`${new TextEncoder().encode(TEXT).length} of 8192 bytes`);
     await t.type(body, `${TEXT}- Prices in the shop's currency.\n`);
     await t.key(body, "Enter", { ctrlKey: true });
     expect(t.calls).toContain(`write "c-v1" ${JSON.stringify(`${TEXT}- Prices in the shop's currency.\n`)}`);
@@ -347,8 +347,8 @@ describe("the corrections", () => {
   it("a file changed since it was opened is not written over: it says so, loads the newest and keeps the edit to copy", async () => {
     let reads = 0;
     const t = await open(agent(true), {
-      corrections: async () => (++reads === 1 ? { text: TEXT, etag: '"c-v1"', cap_bytes: 2048 } : { text: "# Learned\n\n- A run's newest correction.\n", etag: '"c-v2"', cap_bytes: 2048 }),
-      write: async (_text, etag) => { if (etag === '"c-v1"') throw new ClientError(412, "precondition_failed", "corrections.md changed since it was read."); return { text: "", etag: '"c-v3"', cap_bytes: 2048 }; },
+      corrections: async () => (++reads === 1 ? { text: TEXT, etag: '"c-v1"', cap_bytes: 8192 } : { text: "# Learned\n\n- A run's newest correction.\n", etag: '"c-v2"', cap_bytes: 8192 }),
+      write: async (_text, etag) => { if (etag === '"c-v1"') throw new ClientError(412, "precondition_failed", "corrections.md changed since it was read."); return { text: "", etag: '"c-v3"', cap_bytes: 8192 }; },
     });
     await t.click(/^Edit corrections$/);
     await t.type(t.editor()!.querySelector("textarea")!, "- My edit.\n");
@@ -373,17 +373,17 @@ describe("the corrections", () => {
   });
 
   it("any other refusal says the corrections were not saved, and stays open", async () => {
-    const t = await open(agent(true), { write: async () => { throw new ClientError(413, "payload_too_large", "corrections.md holds at most 2048 bytes."); } });
+    const t = await open(agent(true), { write: async () => { throw new ClientError(413, "payload_too_large", "corrections.md holds at most 8192 bytes."); } });
     await t.click(/^Edit corrections$/);
     await t.click(/^Save$/);
     expect(t.text()).toContain("The corrections were not saved.");
-    expect(t.text()).toContain("corrections.md holds at most 2048 bytes.");
+    expect(t.text()).toContain("corrections.md holds at most 8192 bytes.");
     expect(t.editor()).not.toBeNull();
   });
 
   it("a read that fails says so, and Try again reads it", async () => {
     let reads = 0;
-    const t = await open(agent(true), { corrections: async () => { if (reads++ === 0) throw new ClientError(503, "unavailable", "The server is restarting."); return { text: TEXT, etag: '"c-v1"', cap_bytes: 2048 }; } });
+    const t = await open(agent(true), { corrections: async () => { if (reads++ === 0) throw new ClientError(503, "unavailable", "The server is restarting."); return { text: TEXT, etag: '"c-v1"', cap_bytes: 8192 }; } });
     await t.click(/^Edit corrections$/);
     expect(t.editor()!.querySelector("textarea")).toBeNull();
     expect(t.button(/^Save$/)!.disabled).toBe(true);
@@ -392,7 +392,7 @@ describe("the corrections", () => {
   });
 
   it("an agent with none says how one is given, and Edit starts it", async () => {
-    const t = await open(agent(true), { learning: async () => none(), corrections: async () => ({ text: "", etag: '"c-v0"', cap_bytes: 2048 }) });
+    const t = await open(agent(true), { learning: async () => none(), corrections: async () => ({ text: "", etag: '"c-v0"', cap_bytes: 8192 }) });
     const section = t.host.querySelector('section[aria-label="Corrections"]')!;
     expect(section.textContent).toContain("None yet. A correction you give with a run's grade is kept here, one line each; every later run is given them whole.");
     await t.click(/^Edit corrections$/);

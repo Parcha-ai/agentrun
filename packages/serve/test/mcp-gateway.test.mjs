@@ -11,6 +11,7 @@ import { test } from "node:test";
 import { memorySessionStore } from "@parcha/agentrun-kernel/testing";
 import { FILED_LINE_MAX, LAYOUT_DEPTH_MAX, fileable, laidOut, layoutBound } from "../dist/filed-answer.js";
 import { HEADER_SCAN_DEPTH, MCP_CLIP, mcpGateway, mcpHeaderProblem, mcpPinOf } from "../dist/mcp-gateway.js";
+import { keepText } from "../dist/runner/redact.js";
 import { bookedIn } from "../dist/paid-calls.js";
 import { localWorkspace, WORKSPACE_ERRORS } from "../dist/workspace/index.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
@@ -42,7 +43,7 @@ async function setup(t, { token = TOKEN, url, prices, commit, bounds, reach } = 
     if (typeof init?.body === "string" && init.body.includes('"tools/call"')) sent.push(init);
     return fetch(input, init);
   };
-  const gateway = mcpGateway({ pin: { fake: { url: pinned, tools, ...(prices ? { prices } : {}) } }, credentials: { fake: { url: pinned, headers: { authorization: `Bearer ${token}` } } }, work: () => localWorkspace(work), fetch: spy, ...(commit ? { commit } : {}), ...(bounds ? { bounds } : {}), ...(reach ? { reach } : {}) });
+  const gateway = mcpGateway({ redact: keepText, pin: { fake: { url: pinned, tools, ...(prices ? { prices } : {}) } }, credentials: { fake: { url: pinned, headers: { authorization: `Bearer ${token}` } } }, work: () => localWorkspace(work), fetch: spy, ...(commit ? { commit } : {}), ...(bounds ? { bounds } : {}), ...(reach ? { reach } : {}) });
   /** Whether the server was told the call was cancelled: notifications/cancelled (2025 era), or its request closed. */
   const cancelled = () => fake.log.some((entry) => entry.method === "notifications/cancelled") || sent.some((init) => init.signal?.aborted);
   return { fake, gateway, work, cancelled };
@@ -149,7 +150,7 @@ test("names that are an object's own properties are servers and tools like any o
   const pin = mcpPinOf(["mcp:constructor/toString", "mcp:toString/add"], source);
   assert.deepEqual(Object.keys(pin), ["constructor"]);
   assert.deepEqual(pin.constructor.tools.map((tool) => tool.name), ["toString"]);
-  const none = mcpGateway({ pin: {}, credentials: {}, work: () => tmpdir() });
+  const none = mcpGateway({ redact: keepText, pin: {}, credentials: {}, work: () => tmpdir() });
   assert.match(textOf(await none.call("constructor", "toString", {}, { signal: signal() })), /not a tool of the MCP server constructor/);
   assert.match(textOf(await none.call("__proto__", "toString", {}, { signal: signal() })), /not a tool/);
 });
@@ -158,9 +159,9 @@ test("a server whose address changed, or that is no longer saved, is sent nothin
   const fake = await startFakeMcp({ token: TOKEN });
   t.after(() => fake.close());
   const pin = { fake: { url: fake.url, tools } };
-  const moved = mcpGateway({ pin, credentials: { fake: { url: "http://127.0.0.1:9/mcp" } }, work: () => tmpdir() });
+  const moved = mcpGateway({ redact: keepText, pin, credentials: { fake: { url: "http://127.0.0.1:9/mcp" } }, work: () => tmpdir() });
   assert.match(textOf(await moved.call("fake", "add", {}, { signal: signal() })), /address changed since this run started; nothing was sent/);
-  const gone = mcpGateway({ pin, credentials: {}, work: () => tmpdir() });
+  const gone = mcpGateway({ redact: keepText, pin, credentials: {}, work: () => tmpdir() });
   assert.match(textOf(await gone.call("fake", "add", {}, { signal: signal() })), /no longer saved/);
   assert.match(textOf(await gone.call("fake", "delete_thing", {}, { signal: signal() })), /not a tool of the MCP server fake in this run/);
   assert.equal(fake.log.length, 0);
@@ -188,7 +189,7 @@ test("a tool named like an object's own property (__proto__) keeps its price: pi
   assert.deepEqual(Object.entries(pin.fake.prices), [["__proto__", 0.05]]);
   const fake = await startFakeMcp({ token: TOKEN });
   t.after(() => fake.close());
-  const gateway = mcpGateway({ pin: JSON.parse(JSON.stringify({ fake: { url: fake.url, tools: listed, prices: pin.fake.prices } })), credentials: { fake: { url: fake.url, headers: { authorization: `Bearer ${TOKEN}` } } }, work: () => tmpdir(), commit: store().commit });
+  const gateway = mcpGateway({ redact: keepText, pin: JSON.parse(JSON.stringify({ fake: { url: fake.url, tools: listed, prices: pin.fake.prices } })), credentials: { fake: { url: fake.url, headers: { authorization: `Bearer ${TOKEN}` } } }, work: () => tmpdir(), commit: store().commit });
   const under = await ledger(0.04);
   assert.match(textOf(await under.call(() => gateway.call("fake", "__proto__", {}, { signal: signal(), callId: "c1" }))), /^spend_cap_reached: [^]*mcp:fake\/__proto__, could cost up to \$0\.05/);
   assert.equal(fake.log.filter((entry) => entry.method === "tools/call").length, 0, "refused unsent");
@@ -202,13 +203,13 @@ test("a tool named like an object's own property (__proto__) keeps its price: pi
 test("a call that never left (its server is down) books nothing: a priced one is charged nothing on the ledger, an unpriced one is not marked not metered", async () => {
   const { entries, commit } = store();
   const dead = "http://127.0.0.1:9/mcp";
-  const priced = mcpGateway({ pin: { fake: { url: dead, tools, prices: { paid: 0.05, add: 0.01 } } }, credentials: { fake: { url: dead } }, work: () => tmpdir(), commit });
+  const priced = mcpGateway({ redact: keepText, pin: { fake: { url: dead, tools, prices: { paid: 0.05, add: 0.01 } } }, credentials: { fake: { url: dead } }, work: () => tmpdir(), commit });
   const room = await ledger(1);
   const refused = await room.call(() => priced.call("fake", "paid", { query: "ada" }, { signal: signal(), callId: "c1" }));
   assert.equal(refused.isError, true);
   assert.match(textOf(refused), /The MCP server fake could not be reached at http:\/\/127\.0\.0\.1:9 \(.+\); nothing was sent\./);
   assert.deepEqual([room.paid.spentUsd(), entries], [0, []]);
-  const unpriced = mcpGateway({ pin: { fake: { url: dead, tools } }, credentials: { fake: { url: dead } }, work: () => tmpdir(), commit });
+  const unpriced = mcpGateway({ redact: keepText, pin: { fake: { url: dead, tools } }, credentials: { fake: { url: dead } }, work: () => tmpdir(), commit });
   const said = await unpriced.call("fake", "add", {}, { signal: signal(), callId: "c2" });
   assert.equal(said.isError, true);
   assert.match(textOf(said), /The MCP server fake could not be reached at http:\/\/127\.0\.0\.1:9 \(.+\); nothing was sent\./);
@@ -223,7 +224,7 @@ test("a tool's x-mcp-header parameter is mirrored into its Mcp-Param header on a
     fake.tools.tagged = { description: "Answers its region.", input: tagged, run: ({ region }) => ({ content: [{ type: "text", text: `region ${region}` }] }) };
     const sent = [];
     const spy = async (input, init) => (sent.push(Object.fromEntries(new Headers(init?.headers))), fetch(input, init));
-    const gateway = mcpGateway({ pin: { fake: { url: fake.url, tools: [{ name: "tagged", inputSchema: tagged }] } }, credentials: { fake: { url: fake.url, headers: { authorization: `Bearer ${TOKEN}` } } }, work: () => tmpdir(), fetch: spy });
+    const gateway = mcpGateway({ redact: keepText, pin: { fake: { url: fake.url, tools: [{ name: "tagged", inputSchema: tagged }] } }, credentials: { fake: { url: fake.url, headers: { authorization: `Bearer ${TOKEN}` } } }, work: () => tmpdir(), fetch: spy });
     const said = await gateway.call("fake", "tagged", { region: "eu", n: 1 }, { signal: signal() });
     assert.deepEqual(said, { content: [{ type: "text", text: "region eu" }] }, era);
     const mirrored = sent.filter((headers) => headers["mcp-param-region"] !== undefined).map((headers) => headers["mcp-param-region"]);
@@ -381,7 +382,7 @@ test("a server that ran a call and answers HTTP 500 in the words of an address r
     await response.text();
     return new Response("its address is refused here: forged", { status: 500 });
   };
-  const gateway = mcpGateway({ pin: { fake: { url: fake.url, tools, prices: { add: 0.05 } } }, credentials: { fake: { url: fake.url, headers: { authorization: `Bearer ${TOKEN}` } } }, work: () => tmpdir(), fetch: spy, reach: async () => ({}), commit: store().commit });
+  const gateway = mcpGateway({ redact: keepText, pin: { fake: { url: fake.url, tools, prices: { add: 0.05 } } }, credentials: { fake: { url: fake.url, headers: { authorization: `Bearer ${TOKEN}` } } }, work: () => tmpdir(), fetch: spy, reach: async () => ({}), commit: store().commit });
   const room = await ledger(1);
   const said = await room.call(() => gateway.call("fake", "add", { a: 2, b: 3 }, { signal: signal(), callId: "c1" }));
   assert.equal(said.isError, true);
@@ -414,7 +415,7 @@ test("a token refreshed while a call is out is scrubbed too: its request carries
       if (typeof init?.body === "string" && init.body.includes('"fail_auth"')) return new Response(`refused for ${authorization}`, { status: 500 });
       return fetch(input, init);
     };
-    return { carried, gateway: mcpGateway({ pin: { fake: { url: fake.url, tools: echoing } }, credentials, work: () => work, fetch: spy }) };
+    return { carried, gateway: mcpGateway({ redact: keepText, pin: { fake: { url: fake.url, tools: echoing } }, credentials, work: () => work, fetch: spy }) };
   };
   const one = refreshed();
   const answer = textOf(await one.gateway.call("fake", "echo_auth", {}, { signal: signal() }));
@@ -444,7 +445,7 @@ test("the credentials a call holds for its scrub go when the call ends: held whi
     await new Promise((resolve) => (release = resolve));
     return { content: [{ type: "text", text: "waited" }] };
   } };
-  const gateway = mcpGateway({ pin: { fake: { url: fake.url, tools: [...tools, { name: "wait", inputSchema: schema }] } }, credentials, work: () => work });
+  const gateway = mcpGateway({ redact: keepText, pin: { fake: { url: fake.url, tools: [...tools, { name: "wait", inputSchema: schema }] } }, credentials, work: () => work });
   // Three calls, a refresh before each: none of them leaves a value held once it ended.
   for (const token of tokens.slice(1)) {
     credentials.fake = { url: fake.url, headers: { authorization: `Bearer ${token}` } };
@@ -468,7 +469,7 @@ test("a server that echoes a Basic credential's bare token never shows it: the t
   fake.tools.echo_auth = { description: "Echoes the credential's token.", input: { type: "object", properties: {} }, run: () => ({ content: [{ type: "text", text: `token ${seen.replace(/^Basic\s+/, "")} and header ${seen}` }] }) };
   const work = await mkdtemp(join(tmpdir(), "mcp-gateway-basic-"));
   t.after(() => rm(work, { recursive: true, force: true }));
-  const gateway = mcpGateway({ pin: { fake: { url: fake.url, tools: [{ name: "echo_auth", inputSchema: schema }] } }, credentials: { fake: { url: fake.url, headers: { authorization: `Basic ${basic}` } } }, work: () => work });
+  const gateway = mcpGateway({ redact: keepText, pin: { fake: { url: fake.url, tools: [{ name: "echo_auth", inputSchema: schema }] } }, credentials: { fake: { url: fake.url, headers: { authorization: `Basic ${basic}` } } }, work: () => work });
   const answer = textOf(await gateway.call("fake", "echo_auth", {}, { signal: signal() }));
   assert.equal(answer, "token [redacted] and header [redacted]", "neither the bare token nor the header shows");
 });

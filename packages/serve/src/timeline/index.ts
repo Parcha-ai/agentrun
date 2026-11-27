@@ -7,6 +7,6 @@ export { FEEDBACK_SUFFIX, isFeedbackRow, isMessageRow, isUserEntry, MESSAGE_ORIG
 export { cut, scrubUrl, scrubUrls } from "./util.js";
 export { webCut, webShownOf, webWithin, type WebShown } from "./web-calls.js";
 export {
-  answeredRequests, BROWSER_CHARGE, CALL_ENDED_WITH_RUN, compactionAnswers, CALL_REFUSED, CALL_RESULT_CHARS, CALLS_PAGE_ROWS, CAP_REFUSED, CAP_WRAPUP, CAPS, chargedTool, COMPUTER_NOTE, endedOnTurnEndingTool, HOST_PHASE, METRIC_NAMES, REQUEST_CONTINUED, REQUEST_COST, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, runMetricsOf, runMetricsWithDecisions, timelineOf, timelineReducer, TOOL_COST, TOOL_STARTED, TOOL_UNMETERED,
+  answeredRequests, BROWSER_CHARGE, CALL_ENDED_WITH_RUN, compactionAnswers, CALL_REFUSED, CALL_RESULT_CHARS, CALLS_PAGE_ROWS, CAP_REFUSED, CAP_WRAPUP, CAPS, BROWSERS_UNHELD, chargedTool, COMPUTER_NOTE, endedOnTurnEndingTool, HOST_PHASE, METRIC_NAMES, REQUEST_CONTINUED, REQUEST_COST, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, runMetricsOf, runMetricsWithDecisions, timelineOf, timelineReducer, TOOL_COST, TOOL_STARTED, TOOL_UNMETERED,
   type AgentEventLike, type DecisionLike, type EntryLike, type RunMetrics, type SideSpend, type TimelineEvent, type TimelineKind, type TimelineOptions, type ToolMetrics,
 } from "./timeline.js";

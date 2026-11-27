@@ -84,9 +84,9 @@ async function fakeGitHub(t) {
 
 /** The runner's answers for claim run-own (agent-own, rev-own) of `revision` and `launch`, over `store`; `login` the
  *  login its claim read (staysInRunner), `cut` the runner's redactor for the run. */
-function heldOf(store, { env = {}, githubApi, data = "/nonexistent-data", revision = { kind: "agentic", body: {} }, launch = { input: { content: "Hello." } }, login, cut = (text) => text } = {}, lines = []) {
+function heldOf(store, { env = {}, githubApi, data = "/nonexistent-data", revision = { kind: "agentic", body: {} }, launch = { input: { content: "Hello." } }, login, claimed = {}, back, cut = heldRedactor((text) => text) } = {}, lines = []) {
   const deps = { store, sealKey: KEY, env, data, ...(githubApi ? { githubApi } : {}) };
-  const reads = { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch, revision, claimed: {}, ...(login ? { login } : {}) };
+  const reads = { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch, revision, claimed, ...(login ? { login } : {}), ...(back ?? {}) };
   return host.heldFor(deps, reads, cut, (line) => void lines.push(line)).held;
 }
 
@@ -127,6 +127,31 @@ test("a run's process mints a GitHub token for its own pull request's repository
   }
   // The same launch on a revision that checks out no pull request: nothing to mint for.
   assert.equal(await heldOf(store, { githubApi: github.api, launch }).githubAppAccess(), undefined);
+});
+
+test("a GitHub token minted for a run's process joins its runner's redactor, so nothing the runner writes of the run shows it", async (t) => {
+  const { keepText } = await import("../dist/runner/redact.js");
+  const { store } = await storeOn(t);
+  await connected(store);
+  const github = await fakeGitHub(t);
+  const cut = heldRedactor(keepText);
+  const launch = { input: { content: PULL }, inputOrigin: { kind: "trigger", source: "github" } };
+  const access = await heldOf(store, { githubApi: github.api, revision: { kind: "agentic", body: { checkout: "pull_request" } }, launch, cut }).githubAppAccess();
+  assert.equal(cut("the token is not-a-secret-ghs-token"), "the token is not-a-secret-ghs-token", "nothing minted yet, nothing held");
+  const minted = await access.mint({ repo: "acme/widgets", installation: 777 });
+  assert.equal(minted.ok, true, JSON.stringify(minted));
+  assert.ok(!cut(`the token is ${minted.token}`).includes(minted.token), "the minted token is cut from what the runner writes");
+});
+
+test("a run's process whose runner's cut cannot hold a key gets no GitHub token: the mint fails rather than hand out one nothing the runner writes would cut", async (t) => {
+  const { keepText } = await import("../dist/runner/redact.js");
+  const { store } = await storeOn(t);
+  await connected(store);
+  const github = await fakeGitHub(t);
+  const launch = { input: { content: PULL }, inputOrigin: { kind: "trigger", source: "github" } };
+  const access = await heldOf(store, { githubApi: github.api, revision: { kind: "agentic", body: { checkout: "pull_request" } }, launch, cut: keepText }).githubAppAccess();
+  const minted = await access.mint({ repo: "acme/widgets", installation: 777 }).catch((error) => ({ ok: false, error }));
+  assert.notEqual(minted.ok, true, `no token handed: ${JSON.stringify(minted)}`);
 });
 
 const judgeFlow = (name, provider) => ({
@@ -183,6 +208,41 @@ test("a run that sends no model key (a --faux runner's, a faux-pinned one, a hel
       assert.deepEqual([tiers, learned], [{}, {}], `${where}: no key at all for its tiers`);
     }
   }
+});
+
+// The shipped default runs each run in a process of its own: every plan reader that process is handed (the claim's, a
+// learned workflow tier's) is wrapped with the run's hand-back as it crosses (handed), since the readers the host reads
+// with carry none of their own.
+test("in a run's own process, the claim's plan reader and a learned workflow tier's hand the run back on a stop refusal, and OpenAI is sent nothing", async (t) => {
+  const { store } = await storeOn(t);
+  const { PlanStopping, stopRenewals, withPlan } = await import("../dist/chatgpt-plan.js");
+  // A sign-in whose token has ended, under a store whose stop began: any renewal is refused with PlanStopping.
+  const credential = { type: "oauth", access: "plan-access-ended", refresh: "plan-refresh-ended", expires: Date.now() - 1_000 };
+  await putSealedKey(store, KEY, "chatgpt:plan", JSON.stringify({ v: 1, state: "signed_in", credential, models: ["gpt-6-luna"] }));
+  await stopRenewals(store);
+  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "run-child-held-handback-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const sha = await landWorkflows(store, "agent-own", [{ name: "on-strong", description: "Answers a question", workflow: strongFlow }]);
+  await promoteChecked(store, "agent-own", [{ name: "on-strong", workflow: strongFlow }]);
+  const refusing = { state: "signed_in", models: ["gpt-6-luna"], token: async () => { throw new PlanStopping("try again in a moment"); }, refused: async () => undefined, watch: () => () => undefined };
+  const backed = () => {
+    const abort = new AbortController();
+    const reason = new Error("the runner is closing");
+    const out = { handed: 0, reason };
+    out.back = { handBack: () => (out.handed++, abort.abort(reason)), signal: abort.signal };
+    return out;
+  };
+  const claim = backed();
+  const own = await heldOf(store, { claimed: withPlan({}, refusing), back: claim.back }).plan();
+  await assert.rejects(own.token(), (error) => error === claim.reason, "the claim's reader: the node ends with the run's abort");
+  assert.equal(claim.handed, 1, "the claim's reader hands the run back once");
+  const tier = backed();
+  const learner = heldOf(store, { env: { AGENT_MODEL_STRONG: "chatgpt/gpt-6-luna" }, data, launch: { input: { content: "Hello." }, learning: startAt(sha) }, back: tier.back });
+  assert.deepEqual((await learner.learnedFirst({ laid: true })).workflows.map(({ name }) => name), ["on-strong"]);
+  const { plan } = await learner.tierModelKeys(["strong"]);
+  assert.ok(plan, "the strong tier's model is on the plan, so its answer carries the sign-in");
+  await assert.rejects(plan.token(), (error) => error === tier.reason, "a learned tier's reader: the node ends with the run's abort");
+  assert.equal(tier.handed, 1, "a learned tier's reader hands the run back once");
 });
 
 test("a run's process gets no decision or tier key its claim's learned workflows do not name: none before the runner chose them, and of those only the named", async (t) => {
@@ -282,10 +342,11 @@ test("the runner's handed keys, the run's subagent tier routes and a replay's gr
     assert.deepEqual([...routed.routes.keys()], tiers.map((tier) => `subagent-${tier}`), `${words}: the run routes those tiers`);
     assert.deepEqual(asked.map(({ tier, ref }) => [tier, ref]), tiers.map((tier) => [tier, revision.body.modelTiers?.[tier]]), `${words}: each tier on its model`);
     for (const route of asked) assert.deepEqual(route.keys, keys, `${words}: the routes read those tiers' keys alone`);
-    // A replay's grader routes the fast tier when it is one of them, and no route when it is not.
-    let graded = 0;
-    await spec.graderRouteOf(revision.body, false, undefined, {}, heldRedactor((text) => text), () => {}, { store, sealKey: KEY, env, routeOf: async () => (graded++, { model: { id: "grader" } }) });
-    assert.equal(graded, tiers.includes("fast") ? 1 : 0, `${words}: the grader routes the fast tier only when it is routed`);
+    // A replay's grader routes the fast tier when it is one of them, else the run's own model (its "default" route).
+    const graded = [];
+    const grader = await spec.graderRouteOf(revision.body, false, undefined, {}, heldRedactor((text) => text), () => {}, { store, sealKey: KEY, env, routeOf: async (_ref, _env, tier) => (graded.push(tier), { model: { id: "grader" } }) }, undefined, undefined, env.AGENT_MODEL);
+    assert.deepEqual(graded, [tiers.includes("fast") ? "fast" : "default"], `${words}: the grader routes the fast tier when it is routed, else the run's own model`);
+    assert.equal(grader.own, !tiers.includes("fast"), `${words}: the grader says whether it is the run's own model`);
   }
 });
 
@@ -318,14 +379,16 @@ test("a replay's grader on the runner reads the saved key of its fast tier's mod
   }
 });
 
-test("a grader with no fast tier reads no saved key and routes nothing, nor does a run with its own key read one; beside them, a fast tier's grader reads its model's key", async (t) => {
+test("a grader with no fast tier routes the run's own model and reads no saved key, nor does a run with its own key read one; beside them, a fast tier's grader reads its model's key", async (t) => {
   const { store } = await storeOn(t);
   await savedThree(store);
   const reads = [];
   const counted = { ...store, sealedKeys: { get: (name) => (reads.push(name), store.sealedKeys.get(name)) } };
-  const graderOf = (env, keyed) => spec.graderRouteOf({}, keyed, undefined, {}, heldRedactor((text) => text), () => {}, { store: counted, sealKey: KEY, env, routeOf: async () => ({ model: { id: "grader" } }) });
-  // A host with a strong tier and no fast one: nothing to grade on, so nothing read.
-  assert.equal(await graderOf({ AGENT_MODEL: "openai/gpt-6.1-sol", AGENT_MODEL_STRONG: "anthropic/claude-sonnet-5-5" }, false), undefined, "no fast tier: no grader route");
+  const routed = [];
+  const graderOf = (env, keyed) => spec.graderRouteOf({}, keyed, undefined, {}, heldRedactor((text) => text), () => {}, { store: counted, sealKey: KEY, env, routeOf: async (ref, _env, tier) => (routed.push([tier, ref]), { model: { id: "grader" } }) }, undefined, undefined, env.AGENT_MODEL);
+  // A host with a strong tier and no fast one: the grader is the run's own model, on the claim's keys: no saved key read.
+  const own = await graderOf({ AGENT_MODEL: "openai/gpt-6.1-sol", AGENT_MODEL_STRONG: "anthropic/claude-sonnet-5-5" }, false);
+  assert.deepEqual([own?.own, routed], [true, [["default", "openai/gpt-6.1-sol"]]], "no fast tier: the run's own model grades");
   assert.deepEqual(reads, [], "no fast tier: no saved key read");
   assert.ok(await graderOf(FAST_ON_XAI, true), "a run with its own key: a grader route");
   assert.deepEqual(reads, [], "a run with its own key: no saved key read");
@@ -384,7 +447,7 @@ test("a replay's or audit's process is handed the saved key of its grader's prov
     const held = heldOf(store, { env, launch });
     assert.deepEqual(await tierKeysHanded(held), { OPENAI_API_KEY: OPENAI_DUMMY }, `${what}: its fast tier's provider's saved key, and no other`);
     const lines = [];
-    const route = await graded(held, lines);
+    const route = (await graded(held, lines))?.route;
     assert.ok(route, `${what}: a grader route (${lines.join("; ")})`);
     assert.deepEqual([route.provider.origin, route.model, await route.provider.credential()], ["https://api.openai.com", "gpt-6-luna", OPENAI_DUMMY], what);
     assert.deepEqual(lines, [], what);
@@ -400,7 +463,8 @@ test("a replay's or audit's process is handed the saved key of its grader's prov
   // A revision that names agree_on has no grader: its replay is handed no key.
   const agreeOn = { kind: "agentic", body: { learning: { agree_on: ["answer"] } } };
   assert.deepEqual(await tierKeysHanded(heldOf(store, { env, revision: agreeOn, launch: { ...ask, replay } })), {}, "a revision that names agree_on");
-  // No fast tier named by the revision or the runner: the grader has no route, and no key is handed.
+  // No fast tier named by the revision or the runner: the grader is the run's own model, on the key its claim already
+  // holds, and no key is handed.
   assert.deepEqual(await tierKeysHanded(heldOf(store, { env: { AGENT_MODEL: env.AGENT_MODEL }, launch: { ...ask, replay } })), {}, "no fast tier");
   // A run that is no replay or audit (no subagent, no learning harness, no SDK): none of the server's keys.
   assert.deepEqual(await tierKeysHanded(heldOf(store, { env, launch: ask })), {}, "a run of its own");
@@ -431,6 +495,48 @@ test("the settings a run's process reads are the server's shared configuration a
   assert.equal(await call("settings.get", ["tool-settings"]), "{}");
   assert.deepEqual((await call("settings.all", [])).map(({ key }) => key), ["tool-settings", "sdk-run:run-own", "archil.agent.agent-own"]);
   assert.ok(lines.some((line) => /asked the store for settings\.get, which a run's process may not/.test(line)), lines.join("\n"));
+});
+
+test("a capped run's process reads what its learning work took beside it (learning-end.ts childrenBesideOf) from its runner (held keyedBeside), which reads the claim's own learning_work row and the keyed replays that row names on the server's side; the process's store port reads none of them, its own row and replays refused unread as another run's are", async (t) => {
+  const work = { children: [{ run: "replay-own", kind: "replay", at: 1, keyed: true }, { run: null, kind: "shadow", at: 2, keyed: true, dropped: "no_budget" }] };
+  const settings = new Map([["learning_work:run-own", work], ["learning_work:run-other", { children: [{ run: "replay-other", kind: "replay", at: 1, keyed: true }] }]]);
+  const runs = new Map([
+    ["run-own", { id: "run-own", state: "running", costUsd: null }],
+    ["replay-own", { id: "replay-own", state: "ended", costUsd: 0.25 }],
+    ["replay-other", { id: "replay-other", state: "ended", costUsd: 9 }],
+  ]);
+  const asked = [];
+  const store = {
+    settings: { get: async (key) => (asked.push(`settings.get ${key}`), settings.get(key)) },
+    runs: {
+      get: async (id) => (asked.push(`runs.get ${id}`), runs.get(id)),
+      launch: async (id) => (asked.push(`runs.launch ${id}`), { body: { maxCostUsd: 1 } }),
+    },
+  };
+  // The runner's answer, bound to claim run-own: whatever the process asks, the claim's own run's learning work.
+  const held = heldOf(store);
+  assert.equal(await held.keyedBeside(), 0.25, "its keyed replay's cost, read by its runner");
+  assert.deepEqual(asked, ["settings.get learning_work:run-own", "runs.get replay-own"], "the claim's own row and the replay it names alone");
+  asked.length = 0;
+  const bound = { claim: { runId: "run-own", epoch: 1 }, agentId: "agent-own", revisionId: "rev-own" };
+  const lines = [];
+  const call = (method, args) => host.storeCall(store, method, args, bound, (line) => void lines.push(line));
+  // In the run's own process its cap gate's `beside` (learning-end.ts spentBesideOf) reads through its store port and
+  // its runner's held answers.
+  const ported = [];
+  const port = { settings: { get: (key) => (ported.push(`settings.get ${key}`), call("settings.get", [key])) }, runs: { get: (id) => (ported.push(`runs.get ${id}`), call("runs.get", [id])), launch: (id) => (ported.push(`runs.launch ${id}`), call("runs.launch", [id])) } };
+  const { setHeld } = await import("../dist/runner/held.js");
+  setHeld(held);
+  t.after(() => setHeld(undefined));
+  const { childrenBesideOf } = await import("../dist/runner/learning-end.js");
+  assert.equal(await childrenBesideOf(port, "run-own"), 0.25, "its keyed replay's cost, its runner's answer");
+  assert.deepEqual(ported.filter((one) => /learning_work|replay-/.test(one)), [], `the port read no learning_work row and no replay: ${JSON.stringify(ported)}`);
+  asked.length = 0;
+  for (const [method, arg] of [["settings.get", "learning_work:run-own"], ["settings.get", "learning_work:run-other"], ["runs.get", "replay-own"], ["runs.launch", "replay-own"], ["runs.get", "replay-other"], ["runs.launch", "replay-other"]]) {
+    await assert.rejects(call(method, [arg]), /of another run or agent/, `${method} ${arg}`);
+  }
+  assert.deepEqual(asked, [], "a refused read reached the store");
+  assert.ok(lines.some((line) => /asked the store for runs\.get, which a run's process may not/.test(line)), lines.join("\n"));
 });
 
 test("a run's process reads no channel post: a webhook post, its own run's or another's, is refused unread", async () => {
@@ -519,6 +625,28 @@ test("where runs have users of their own, a claude-agent run on this machine's o
   });
   assert.equal(await stays(staysDeps(data, "agentic", "machine"), "claude-agent", launch, "run-own", SAME_USER), true, "AGENTRUN_RUN_USER=same: it stays in the runner, on the machine's login");
   assert.equal(await stays(staysDeps(data, "agentic", "machine"), "claude-agent", launch, "run-keyed", PER_RUN_USERS), false, "its caller's own model key: never refused");
+});
+
+test("where runs have users of their own and the login is this machine's own, a run that sends no model key (a --faux runner's, a faux-pinned one, a held one) claims with no login and is never refused for it; off faux, unpinned and not held, the same claim is refused", async (t) => {
+  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-login-keyless-claim-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const launch = { input: {}, place: { mode: "runner" } };
+  const claimOf = (env, own) => host.staysInRunner({ ...staysDeps(data, "agentic", "machine"), env }, "claude-agent", { ...launch, ...own }, "run-own", PER_RUN_USERS);
+  await assert.rejects(claimOf({}, {}), (error) => {
+    assert.equal(error.name, "ClaimRefused", `refused for good: ${error.stack}`);
+    assert.equal(error.message, host.LOGIN_MACHINE_NEEDS_SERVER_USER);
+    return true;
+  }, "off faux, unpinned and not held: refused at the claim in LOGIN_MACHINE_NEEDS_SERVER_USER's words");
+  const claimed = {};
+  for (const [where, env, own] of SENDS_NO_MODEL_KEY) claimed[where] = await claimOf(env, own).then((place) => place, (error) => ({ refused: error.message }));
+  assert.deepEqual(claimed, Object.fromEntries(SENDS_NO_MODEL_KEY.map(([where]) => [where, { stays: false, login: undefined }])), "a run that sends no model key reads no login at its claim: a process of its own, no login, never refused for one");
+  // Where every run is the runner's own user (AGENTRUN_RUN_USER=same): the same claim off faux stays in the runner, on the
+  // machine's login; one that sends no model key reads no login either, so it is a process of its own, not the runner's.
+  const sameUser = (env, own) => host.staysInRunner({ ...staysDeps(data, "agentic", "machine"), env }, "claude-agent", { ...launch, ...own }, "run-own", SAME_USER);
+  assert.deepEqual(await sameUser({}, {}), { stays: true }, "AGENTRUN_RUN_USER=same, off faux: it stays in the runner, on the machine's login");
+  const placed = {};
+  for (const [where, env, own] of SENDS_NO_MODEL_KEY) placed[where] = await sameUser(env, own);
+  assert.deepEqual(placed, Object.fromEntries(SENDS_NO_MODEL_KEY.map(([where]) => [where, { stays: false, login: undefined }])), "AGENTRUN_RUN_USER=same: a run that sends no model key is a process of its own, with no login, never in the runner on it");
 });
 
 // The runners on a data folder say at their start whether their runs on the login stay in their own process
@@ -772,7 +900,7 @@ test("the install a run's process asks for is readable by every user and writabl
   const asked = [];
   const deps = { store, sealKey: KEY, env: {}, data, installForClaim: async (entry, at) => void asked.push([entry.id, at]) };
   const reads = { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch: { input: { content: "Hello." }, harness: "claude-agent" }, revision: { kind: "agentic", body: {} }, claimed: {} };
-  const held = host.heldFor(deps, reads, (text) => text, () => {}).held;
+  const held = host.heldFor(deps, reads, heldRedactor((text) => text), () => {}).held;
   await held.install("claude-agent");
   assert.deepEqual(asked, [["claude-agent", dir]], "the runner installed (or found) the harness");
   const mode = (path) => statSync(path).mode & 0o777;
@@ -789,7 +917,7 @@ test("the computer the runner made for a run is released by the runner at the cl
   const released = [];
   const deps = { store, sealKey: KEY, env: {}, data, computerForClaim: async () => ({ release: async (why) => void released.push(why ?? "released") }) };
   const reads = { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch: { input: { content: "Hello." } }, revision: { kind: "agentic", body: {} }, claimed: {} };
-  const side = host.heldFor(deps, reads, (text) => text, () => {});
+  const side = host.heldFor(deps, reads, heldRedactor((text) => text), () => {});
   const got = await side.held.computer({ hadComputer: async () => false });
   assert.equal(typeof got.release, "function");
   // The run's process ends (a crash, a broken channel) without calling the computer's release.
@@ -874,7 +1002,7 @@ test("a Mode 2 run's process writes a file bigger than its channel's frame throu
   // pieces a quarter of a frame.
   const FRAME = 1024 * 1024;
   const bigs = bigWrites.runBigWrites?.({ gate: saveSlots(4), piece: FRAME / 4 });
-  const side = bigs ? host.heldFor(deps, reads, (text) => text, () => {}, bigs) : host.heldFor(deps, reads, (text) => text, () => {});
+  const side = bigs ? host.heldFor(deps, reads, heldRedactor((text) => text), () => {}, bigs) : host.heldFor(deps, reads, heldRedactor((text) => text), () => {});
   const [runnerEnd, childEnd] = duplexPair();
   const runner = host.runChannel(runnerEnd, () => {}, saveSlots(4), { ...(bigs ? { bigs } : {}), maxFrame: FRAME });
   runner.expose("held", (method, args) => side.held[method](...args));
@@ -909,15 +1037,42 @@ test("a run's own process never reads the login's setting itself: with the login
   const held = [];
   const hold = (values) => void held.push(...values);
   setHeld({ claudeLogin: async () => undefined });
-  assert.equal(await spec.runLoginOf({ store, data, env: {} }, false, "claude-agent", place, hold), undefined, "a run's own process whose runner handed it no login starts on none: it never reads the login's setting, turned on since its claim, itself");
+  assert.equal(await spec.runLoginOf({ store, data, env: {} }, false, "claude-agent", { place }, hold), undefined, "a run's own process whose runner handed it no login starts on none: it never reads the login's setting, turned on since its claim, itself");
   // Claimed on the login: its runner hands its reader of the access token, which the process holds before its CLI has a token.
   const token = `not-a-secret-login-access-${randomBytes(6).toString("hex")}`;
   setHeld({ claudeLogin: async () => ({ token: async () => token, refused: async () => {} }) });
-  const handed = await spec.runLoginOf({ store, data, env: {} }, false, "claude-agent", place, hold);
+  const handed = await spec.runLoginOf({ store, data, env: {} }, false, "claude-agent", { place }, hold);
   assert.equal(await handed?.token(), token, "the reader its runner handed");
   assert.deepEqual(held, [token], "each token held by the run's redactors");
-  assert.equal(await spec.runLoginOf({ store, data, env: {} }, true, "claude-agent", place, hold), undefined, "a run on its own model key starts on no login");
+  assert.equal(await spec.runLoginOf({ store, data, env: {} }, true, "claude-agent", { place }, hold), undefined, "a run on its own model key starts on no login");
   // A run in the runner itself (a seal key) reads the setting: AgentRun's own login folder.
-  const inRunner = await spec.runLoginOf({ store, data, env: {}, sealKey: KEY }, false, "claude-agent", place, hold);
+  const inRunner = await spec.runLoginOf({ store, data, env: {}, sealKey: KEY }, false, "claude-agent", { place }, hold);
   assert.equal(inRunner?.dir, join(data, "claude-login"), "a run in the runner starts on the login's folder, as the setting names it");
+});
+
+test("a run in the runner that sends no model key (held, on a --faux runner, faux-pinned) starts on no login and never reads the login's setting; the same run off those starts on the login's folder", async (t) => {
+  const spec = await import("../dist/runner/cli-run-spec.js");
+  const { store } = await storeOn(t);
+  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-login-keyless-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  await store.settings.put("claude_login", settingFor("agentrun", data));
+  // The settings the login reads, counted: a run that never sends the login never reads its setting either.
+  const reads = [];
+  const settings = new Proxy(store.settings, { get: (target, key) => (key === "get" ? (name, ...rest) => (reads.push(name), target.get(name, ...rest)) : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
+  const counted = new Proxy(store, { get: (target, key) => (key === "settings" ? settings : target[key]) });
+  const place = { mode: "runner" };
+  const hold = () => {};
+  const runs = [
+    ["held", { place, hold: { minutes: 5, refused: { message: "This run's model can't run here.", fields: [], details: {} } } }, {}],
+    ["on a --faux runner", { place }, { AGENTRUN_SERVE_FAUX: "1" }],
+    ["faux-pinned", { place, model: { provider: "faux", modelId: "faux-1" } }, {}],
+  ];
+  const control = await spec.runLoginOf({ store: counted, data, env: {}, sealKey: KEY }, false, "claude-agent", { place }, hold);
+  assert.equal(control?.dir, join(data, "claude-login"), "control: the same run in the runner, off those, starts on the login's folder");
+  assert.ok(reads.length > 0, "control: it read the login's setting");
+  for (const [what, launch, env] of runs) {
+    reads.length = 0;
+    assert.equal(await spec.runLoginOf({ store: counted, data, env, sealKey: KEY }, false, "claude-agent", launch, hold), undefined, `a run ${what} starts on no login`);
+    assert.deepEqual(reads, [], `a run ${what} never reads the login's setting`);
+  }
 });

@@ -103,8 +103,9 @@ const FINAL = ["ended", "failed", "stopped"];
  *  workflow's node submits `submit(requestText)` ({answer: 42, sure: true} by default); the agent answers AGENT_SAYS; a
  *  first compile ask is answered with BROKEN_DRAFT, and a revision ask is refused. `says(body)`: the agent's answer to a
  *  request instead (undefined: AGENT_SAYS); `call(body)`: a tool call the agent makes instead of answering; `tools` and
- *  `toolSettings`: the agent's (none by default); `outputSchema`: its definition's output_schema (none by default). */
-async function world(t, { learning, prior = 0, submit, paused = false, env = {}, priced, says, call, tools = [], toolSettings, outputSchema } = {}) {
+ *  `toolSettings`: the agent's (none by default); `outputSchema`: its definition's output_schema (none by default);
+ *  `grader(request)`: a grader request's answer (default: the faux grader's verdict, fixtures/faux-grader.mjs). */
+async function world(t, { learning, prior = 0, submit, paused = false, env = {}, priced, says, call, tools = [], toolSettings, outputSchema, grader } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-audit-ledger-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -114,6 +115,7 @@ async function world(t, { learning, prior = 0, submit, paused = false, env = {},
     // A revision ask is refused, as learn-promote-once's landsRevision: a test lands any revision itself, and a recompile
     // whose drafts failed would be recorded as its stop (runner/learning-end.ts recordDraftFailed, S3b).
     refuse: ({ body }) => (compileAskOf(body).startsWith("One more turn: revise") ? { message: "the test lands any revision itself" } : undefined),
+    ...(grader ? { grader } : {}),
   });
   let runner;
   t.after(async () => {
@@ -209,7 +211,8 @@ test("(a) k = 10 by default: exactly the served runs whose id the draw picks sta
   const shadows = await w.shadows();
   assert.deepEqual(shadows.map(({ launch }) => launch.audit.of).sort(), [...expected].sort(), "a shadow for each drawn run, none other");
   for (const { row, launch } of shadows) {
-    assert.deepEqual(launch.audit, { of: launch.audit.of, workflow: "answer", digest: DIGEST });
+    assert.deepEqual(launch.audit, { of: launch.audit.of, workflow: "answer", digest: DIGEST, deadlineAt: launch.audit.deadlineAt });
+    assert.ok(Number.isFinite(launch.audit.deadlineAt) && launch.audit.deadlineAt > Date.now(), "a learning child's deadline, ahead of now");
     assert.equal(launch.learning, undefined, "the shadow runs with learning off: no seed, no look-back");
     const served = readLaunchBody((await w.server.runs.launch(launch.audit.of)).body);
     assert.deepEqual(launch.input, served.input, "the same input");
@@ -496,7 +499,8 @@ function servedStore(served, learning, digest) {
   const made = [];
   const launches = new Map();
   const store = {
-    settings: { get: async () => undefined },
+    // The settings a shadow's start writes: the served run's learning work names it first (learning-work.ts).
+    settings: { get: async () => undefined, putIfAbsent: async (_key, value) => value, replaceIf: async () => true },
     learning: memoryRecords(),
     agents: { revision: async () => ({ id: "rev-1", body: { instructions: "Answer.", tools: [], learning }, mcpPin: null }) },
     runs: {
@@ -659,16 +663,23 @@ test("(agree_on) a revision read that fails when a check starts saves no check: 
   await w.replaysEnded(3);
 });
 
-// No agree_on: the whole answer, whatever the output schema says (no field is picked from it: a schema's enum can be an
-// echo of the owner's setting, not the decision). The same rationale-only difference is a disagreement, and it holds.
-test("(agree_on) with an output schema of enum and boolean fields and no agree_on, the audit compares the whole answer: a rationale-only difference disagrees", { timeout: 300_000 }, async (t) => {
+// No agree_on and no fast model: the agent's own model compares the whole answers, whatever the output schema says (no
+// field is picked from it: a schema's enum can be an echo of the owner's setting, not the decision). Its verdict stands:
+// a rationale-only difference it reads as the same decision agrees and nothing holds; read as another decision, it holds.
+test("(agree_on) with an output schema of enum and boolean fields, no agree_on and no fast model, the agent's own model compares the whole answers: its verdict on a rationale-only difference stands", { timeout: 300_000 }, async (t) => {
   const outputSchema = { type: "object", properties: { answer: { enum: [41, 42] }, sure: { type: "boolean" }, why: { type: "string" } } };
-  const w = await world(t, { learning: { audit_every: 1, hold_window: 1, hold_disagree: 1 }, outputSchema, says: () => SHADOW_SAYS, submit: () => ({ answer: 42, sure: true }) });
-  const served = await w.start("same-1", "What is six times seven");
-  assert.equal(served.metrics?.path, "workflow", JSON.stringify(served.metrics));
-  const next = await w.start("same-next", "What is seven times six");
-  assert.equal(next.metrics?.path, "agent", `held on the whole answer: ${JSON.stringify(next.metrics)}`);
-  assert.equal((await w.audits()).find((one) => one.run === "same-1")?.agreed, false);
+  for (const [same, path] of [[true, "workflow"], [false, "agent"]]) {
+    const graded = [];
+    const verdict = JSON.stringify({ same, differs_on: same ? null : "the rationale" });
+    const w = await world(t, { learning: { audit_every: 1, hold_window: 1, hold_disagree: 1 }, outputSchema, says: () => SHADOW_SAYS, grader: ({ body }) => (graded.push(JSON.stringify(body)), verdict), submit: () => ({ answer: 42, sure: true }) });
+    const served = await w.start(`same-${same}`, "What is six times seven");
+    assert.equal(served.metrics?.path, "workflow", JSON.stringify(served.metrics));
+    assert.equal(graded.length, 1, `same ${same}: one request to the agent's own model`);
+    assert.ok(graded[0].includes("six times seven is forty-two"), `same ${same}: the whole answer is compared, its rationale too`);
+    const next = await w.start(`same-${same}-next`, "What is seven times six");
+    assert.equal(next.metrics?.path, path, `same ${same}: ${JSON.stringify(next.metrics)}`);
+    assert.equal((await w.audits()).find((one) => one.run === `same-${same}`)?.agreed, same);
+  }
 });
 
 // Review on #3061 r4 (PRRT_kwDOUmdVMs64SUUv): a shadow never waits on a person. Its agent only reads (web_fetch, a

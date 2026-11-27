@@ -2,13 +2,14 @@
 // agent's newest version, computed again on the one that won). Three writes:
 //   - a run's compiled workflow draft (learningCommit), already checked, its files whole; a file that is not at the
 //     newest version as it was at the run's seed (or its `bases` save) is a conflict, never written over;
-//   - one line of an owner's feedback appended to corrections.md (appendCorrection), after the refusals;
+//   - one line of an owner's feedback appended to corrections.md (appendCorrection), after the refusals, the file's
+//     oldest lines dropped when the cap needs it (corrections.ts withCorrection: the newest correction wins);
 //   - corrections.md replaced whole by a person (putCorrections), under the ETag they read.
 // A purged run's text needs no write here: its purge deletes its rows (Store.learning.purgeRun). A run's merge read at a
 // save a purge came after (its seed, a revised workflow's base) is refused whole: `purged`.
 import type { Problem } from "./check.js";
-import { CORRECTIONS_CAP, CORRECTIONS_FILE, correctionLine, correctionsProblems } from "./corrections.js";
-import { type AgentLearning, blobOid, type LearningRead, type LearningWrite, LearningBusy, LearningMerged, LearningRefused, readLearning, readView, type RunDiff, runDiffKey, runMergeOf, writeLearning } from "./rows.js";
+import { CORRECTIONS_CAP, CORRECTIONS_FILE, correctionLine, correctionsProblems, withCorrection } from "./corrections.js";
+import { type AgentLearning, blobOid, type LearningRead, type LearningWrite, LearningBusy, LearningMerged, LearningRefused, readView, type RunDiff, runMergeOf, writeLearning } from "./rows.js";
 import { held, isHeld } from "./workflow-draft.js";
 
 /** A run's merge, one a round: its compiled draft's files, already checked, and its owner's correction. */
@@ -21,8 +22,9 @@ export type LearningChange = {
   reason: string;
   /** What merges: a draft's files, each whole. */
   files: { path: string; text: string }[];
-  /** One line of its owner's feedback appended to corrections.md (its whitespace folded: correctionLine), refused as
-   *  appendCorrection refuses one: what must never be stored (`refuseValues`), or the file past CORRECTIONS_CAP. */
+  /** One line of its owner's feedback appended to corrections.md (its whitespace folded: correctionLine), the file's
+   *  oldest lines dropped to keep it within CORRECTIONS_CAP; refused as appendCorrection refuses one: what must never be
+   *  stored (`refuseValues`), or the line past CORRECTIONS_CAP alone. */
   correction?: string;
   refuseValues?: readonly string[];
   /** Paths written with `status: pending` (waiting for the owner's OK): a draft's README.md. */
@@ -40,9 +42,9 @@ export type LearningChange = {
 };
 
 export type LearningCommitResult =
-  /** `refusedCorrection`: the correction the merge left out beside its draft, corrections.md at its cap on main by then
-   *  (another write filled it after the run's check), in the cap's words. */
-  | { ok: true; main: string; commit: string; files: string[]; already?: true; refusedCorrection?: Problem[] }
+  /** `refusedCorrection`: the correction the merge left out beside its draft, its line past the cap alone, in the cap's
+   *  words. `droppedLines`: how many of corrections.md's oldest lines the kept correction pushed out (absent: none). */
+  | { ok: true; main: string; commit: string; files: string[]; already?: true; refusedCorrection?: Problem[]; droppedLines?: number }
   | { ok: false; reason: "conflict"; problems: Problem[] }
   | { ok: false; reason: "refused"; problems: Problem[] }
   /** A run's purge came after the save the run's merge was read at (its seed): that purge rewrote what the run started
@@ -50,7 +52,7 @@ export type LearningCommitResult =
   | { ok: false; reason: "purged"; problems: Problem[] }
   | { ok: false; reason: "unavailable"; error: string };
 
-type Computed = LearningCommitResult | { pending: true; refusedCorrection?: Problem[] };
+type Computed = LearningCommitResult | { pending: true; refusedCorrection?: Problem[]; droppedLines?: number };
 
 /** A write's failure as a result: a precondition (a file changed since the seed, or the seed gone: a conflict), or the
  *  store unavailable (retry later). */
@@ -66,10 +68,11 @@ function failure(error: unknown): LearningCommitResult {
  * correction appended to corrections.md. `ok` with the new version and the paths it changed; `conflict` when a file is
  * not at the newest version as it was at the run's seed; `purged` when the merge gives files and a run's purge came after
  * its seed (or a revised workflow's base), nothing written; `refused` when the correction holds what must never be stored,
- * or, with no draft beside it, would take corrections.md past its cap (nothing written); `unavailable` when the store
- * failed. The draft and the correction are judged apart: a correction past the cap beside a draft (the file filled by
- * another write after the run's check, correctionRefused) is left out alone, and the draft merges, `ok` with the cap's
- * refusal as `refusedCorrection`. A merge whose run already merged (this round) is `ok` with the save that holds it, and
+ * or, with no draft beside it, its line alone is past corrections.md's cap (nothing written); `unavailable` when the store
+ * failed. A kept correction that would take the file past its cap drops the file's oldest lines to fit (`droppedLines`):
+ * the newest correction wins. The draft and the correction are judged apart: a line past the cap alone beside a draft is
+ * left out alone, and the draft merges, `ok` with the cap's refusal as `refusedCorrection`. A merge whose run already
+ * merged (this round) is `ok` with the save that holds it, and
  * writes nothing: its merge key is taken once, in the save's own transaction, so two calls racing for one round (a
  * reclaimed run) merge it once.
  */
@@ -78,9 +81,12 @@ export async function learningCommit(learning: AgentLearning, change: LearningCh
     const known = await runMergeOf(learning, change.runId, change.round);
     if (known) return await already(learning, change, known.merge, known);
     const line = change.correction === undefined ? undefined : correctionLine(change.correction);
-    // The line alone first: what it holds is refused whatever the file around it holds.
+    // The line alone first: what it holds is refused whatever the file around it holds; so is a line past the cap alone,
+    // which no dropped line makes room for.
     const own = line === undefined ? [] : correctionProblems(line, change.refuseValues);
     if (own.length) return { ok: false, reason: "refused", problems: own };
+    const tooLarge = line === undefined ? undefined : capProblem(line);
+    if (tooLarge && !change.files.length) return { ok: false, reason: "refused", problems: [tooLarge] };
     const marked = new Set(change.held ?? []);
     const drafts = change.files.map(({ path, text }) => ({ path, text: marked.has(path) && !isHeld(text) ? held(text) : text }));
     const same = change.files.flatMap(({ path }) => {
@@ -93,19 +99,17 @@ export async function learningCommit(learning: AgentLearning, change: LearningCh
     const readAt = drafts.length ? [...new Set([change.seed, change.mustHold, ...Object.values(change.bases ?? {})].filter((id): id is string => id !== undefined))] : [];
     const done = await writeLearning<Computed>(learning, async (read) => {
       const writes = [...drafts];
-      let refusedCorrection: Problem[] | undefined;
-      if (line !== undefined) {
-        const text = appended(correctionsOf(read), line);
-        const full = capProblem(text);
-        if (full && !drafts.length) return { result: { ok: false, reason: "refused", problems: [full] } };
-        if (full) refusedCorrection = [full];
-        else writes.push({ path: CORRECTIONS_FILE, text });
+      let droppedLines = 0;
+      if (line !== undefined && !tooLarge) {
+        const { text, dropped } = withCorrection(correctionsOf(read), line);
+        writes.push({ path: CORRECTIONS_FILE, text });
+        droppedLines = dropped;
       }
       // `mustHold`: the whole merge is refused when the agent's learning no longer holds it (a reset removed it).
-      return { result: { pending: true, ...(refusedCorrection ? { refusedCorrection } : {}) }, change: { by: run(change.runId, change.reason, change.round), writes, ...(same.length ? { same } : {}), ...(change.mustHold ? { seed: change.mustHold } : {}), ...(readAt.length ? { readAt } : {}) } };
+      return { result: { pending: true, ...(tooLarge ? { refusedCorrection: [tooLarge] } : {}), ...(droppedLines ? { droppedLines } : {}) }, change: { by: run(change.runId, change.reason, change.round), writes, ...(same.length ? { same } : {}), ...(change.mustHold ? { seed: change.mustHold } : {}), ...(readAt.length ? { readAt } : {}) } };
     }, opts.retries ?? 3);
     const { result, saved } = done;
-    return "pending" in result ? { ok: true, main: saved!.id, commit: saved!.id, files: [...saved!.files], ...(result.refusedCorrection ? { refusedCorrection: result.refusedCorrection } : {}) } : result;
+    return "pending" in result ? { ok: true, main: saved!.id, commit: saved!.id, files: [...saved!.files], ...(result.refusedCorrection ? { refusedCorrection: result.refusedCorrection } : {}), ...(result.droppedLines ? { droppedLines: result.droppedLines } : {}) } : result;
   } catch (error) {
     // The round merged under this call past the read above (a reclaimed run's two claims racing): its merge key let one
     // merge of it land, and this call reads that one.
@@ -116,38 +120,34 @@ export async function learningCommit(learning: AgentLearning, change: LearningCh
 }
 
 /** A round that merged already, `merge` its save: `ok` with it and the paths its diff names, nothing written again. Its
- *  merge left the correction out only at the cap. */
+ *  merge left the correction out only for its line past the cap alone. How many lines its correction dropped is not
+ *  read again. */
 async function already(learning: AgentLearning, change: LearningChange, merge: string, known: RunDiff | undefined): Promise<LearningCommitResult> {
   const left = known !== undefined && change.correction !== undefined && !known.files.some((file) => file.path === CORRECTIONS_FILE);
-  const refusedCorrection: Problem[] = left ? [{ rule: "too_large", path: CORRECTIONS_FILE, detail: `${CORRECTIONS_FILE} was at its cap of ${CORRECTIONS_CAP} bytes when the run's merge was written` }] : [];
-  return { ok: true, main: (await readView(learning))?.main ?? merge, commit: merge, files: known ? known.files.map((file) => file.path) : [], already: true, ...(refusedCorrection.length ? { refusedCorrection } : {}) };
+  const refused = left ? capProblem(correctionLine(change.correction!)) : undefined;
+  return { ok: true, main: (await readView(learning))?.main ?? merge, commit: merge, files: known ? known.files.map((file) => file.path) : [], already: true, ...(refused ? { refusedCorrection: [refused] } : {}) };
 }
 
 const run = (runId: string, reason: string, round?: number): LearningWrite["by"] => ({ run: runId, reason, ...(round !== undefined && round > 1 ? { round } : {}) });
 
 /** corrections.md's text at the version read ("" when it holds none). */
 const correctionsOf = (read: LearningRead): string => read.text(CORRECTIONS_FILE) ?? "";
-/** corrections.md's text `before` with `line` appended on a line of its own. */
-const appended = (before: string, line: string): string => `${before}${before && !before.endsWith("\n") ? "\n" : ""}${line}`;
 /** What a correction's line holds that must never be stored, whatever the file around it holds. */
 const correctionProblems = (line: string, refuseValues?: readonly string[]): Problem[] => correctionsProblems(line, refuseValues).filter((problem) => problem.rule !== "too_large");
-/** The cap's refusal of corrections.md as `text`, in its words; none within the cap. */
-const capProblem = (text: string): Problem | undefined => {
-  const bytes = Buffer.byteLength(text, "utf8");
-  return bytes > CORRECTIONS_CAP ? { rule: "too_large", path: CORRECTIONS_FILE, detail: `${CORRECTIONS_FILE} would hold ${bytes} bytes; the cap is ${CORRECTIONS_CAP} bytes` } : undefined;
+/** The cap's refusal of a correction's line past it alone, in its words; none within the cap. */
+const capProblem = (line: string): Problem | undefined => {
+  const bytes = Buffer.byteLength(line, "utf8");
+  return bytes > CORRECTIONS_CAP ? { rule: "too_large", path: CORRECTIONS_FILE, detail: `${CORRECTIONS_FILE} would hold ${bytes} bytes for this correction alone; the cap is ${CORRECTIONS_CAP} bytes` } : undefined;
 };
 
-/** Why run `runId`'s correction (`text`) would be refused on main as it is now: its line's own problems, else the cap's;
- *  empty when it would be taken. Read before the run's merge, so a refused correction never holds its draft back. A
- *  round (`merge`) whose merge is on main already (a stop after its commit, before the run's end was saved) is never
- *  checked for room again, its own line counted twice: empty, and its merge (learningCommit) gives back what it did. */
-export async function correctionRefused(learning: AgentLearning, text: string, refuseValues?: readonly string[], merge?: { runId: string; round?: number }): Promise<Problem[]> {
+/** Why a run's correction (`text`) would be refused: its line's own problems, else the cap's for the line alone; empty
+ *  when it would be taken. Never the file around it: a kept line drops the file's oldest lines to fit (learningCommit).
+ *  Read before the run's merge, so a refused correction never holds its draft back. */
+export function correctionRefused(text: string, refuseValues?: readonly string[]): Problem[] {
   const line = correctionLine(text);
   const own = correctionProblems(line, refuseValues);
   if (own.length) return own;
-  if (merge && (await learning.rows.saveOf(learning.agentId, { mergeKey: runDiffKey(merge.runId, merge.round) }))) return [];
-  const before = await readLearning(learning, correctionsOf);
-  const full = capProblem(appended(before, line));
+  const full = capProblem(line);
   return full ? [full] : [];
 }
 

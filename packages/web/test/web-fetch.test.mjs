@@ -33,7 +33,7 @@ test("with a key, a public page is read through Parallel's extract: via parallel
   const { sent, send } = parallel();
   const net = network();
   const page = await webFetch(PUBLIC, { ...net, parallel: parallelExtract(CANARY, send) });
-  assert.deepEqual(withoutText(page), { ok: true, url: PUBLIC, status: 200, title: "Read by Parallel", chars: page.text.length, links: ["http://public.example/", "https://other.example/y"], via: "parallel" }, "the absolute links of its markdown, the URL its text writes out among them, without fragments");
+  assert.deepEqual(withoutText(page), { ok: true, url: PUBLIC, status: 200, title: "Read by Parallel", chars: page.text.length, links: [], via: "parallel" }, "no link its markdown already writes, a link's target or a URL written out, is listed again");
   assert.match(page.text, /^# Read by Parallel\n\nThe page at http:\/\/public\.example\//);
   assert.deepEqual(sent, [{ url: PARALLEL_EXTRACT_URL, key: CANARY, body: { urls: [PUBLIC], advanced_settings: { full_content: { max_chars_per_result: 1_000_001 } } } }], "the most of a page web_fetch reads and one character, so a page Parallel cut there shows as cut");
   assert.deepEqual(net.dialled, [], "the guard checked the URL without dialling it, and the direct fetch never ran");
@@ -382,6 +382,29 @@ test("a page of unclosed `](` is read whole, with every real link it holds, and 
   assert.deepEqual(read.links, ["https://a.example/x", "https://en.wikipedia.org/wiki/Foo_(bar)", "https://b.example/y"]);
 });
 
+
+test("a markdown read's part lists only the links its own text does not write, within the caps, counting the rest; a page fetched directly lists them all", async () => {
+  const answering = (fullContent) => async () => new Response(JSON.stringify({ results: [{ url: PUBLIC, title: "Links", full_content: fullContent }], errors: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  const early = "See [a](https://a.example/x), [a's part](https://a.example/x#part), https://plain.example/p and [w](https://en.wikipedia.org/wiki/Foo_(bar)).";
+  const late = "Then [b](https://b.example/y) and [c](https://c.example/z), and [a](https://a.example/x) again.";
+  const content = `${early}\n\n${"word ".repeat(400)}\n\n${late}`;
+  const read = await parallelExtract(CANARY, answering(content)).read(PUBLIC);
+  assert.deepEqual(read.links, ["https://a.example/x", "https://plain.example/p", "https://en.wikipedia.org/wiki/Foo_(bar)", "https://b.example/y", "https://c.example/z"], "the read holds every link, as before");
+  const first = await webFetch(PUBLIC, { ...network(), parallel: parallelExtract(CANARY, answering(content)), maxChars: 1_000 });
+  assert.ok(first.text.includes(early) && !first.text.includes("https://b.example/y"), "the first part writes the early links alone");
+  assert.deepEqual([first.links, "links_omitted" in first], [["https://b.example/y", "https://c.example/z"], false], "only the links past the part are listed");
+  const whole = await webFetch(PUBLIC, { ...network(), parallel: parallelExtract(CANARY, answering(content)) });
+  assert.deepEqual([whole.text, whole.links, "links_omitted" in whole], [content, [], false], "a part holding the whole page lists none");
+  // 10 links in the first part, 300 past it: the caps apply to the 300, and links_omitted counts those of them left out.
+  const many = `${Array.from({ length: 10 }, (_, n) => `[e${n}](https://early.example/${n})`).join(" ")}\n\n${"word ".repeat(1_000)}\n\n${Array.from({ length: 300 }, (_, n) => `[l${n}](https://late.example/${n})`).join(" ")}`;
+  const capped = await webFetch(PUBLIC, { ...network(), parallel: parallelExtract(CANARY, answering(many)), maxChars: 3_000 });
+  assert.deepEqual([capped.links.length, capped.links_omitted, capped.links.some((link) => link.includes("early.example"))], [pages.LINKS_CAP, 300 - pages.LINKS_CAP, false], "200 of the 300 the part does not write, the other 100 counted");
+  assert.deepEqual(capped.links.slice(0, 2), ["https://late.example/0", "https://late.example/1"], "in page order");
+  // The direct fetch's text is the HTML reader's: its links stay its link targets, each listed, as before.
+  const html = `<html><head><title>Direct</title></head><body><p>See <a href="https://a.example/x">a</a> and <a href="/rel">rel</a>.</p></body></html>`;
+  const direct = await webFetch(PUBLIC, { ...network(), fetchImpl: async () => new Response(html, { status: 200, headers: { "content-type": "text/html" } }) });
+  assert.deepEqual([direct.via, direct.text.includes("](https://a.example/x)"), direct.links], ["direct", true, ["https://a.example/x", "http://public.example/rel"]], "a direct fetch lists the link its text writes too");
+});
 
 test("a read under way is never evicted: nine pages at once, then the first again while they are all being read, is still one extract for the first", async () => {
   const asked = [];

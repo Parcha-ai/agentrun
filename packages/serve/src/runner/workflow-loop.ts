@@ -126,6 +126,10 @@ export interface WorkflowSpecRun {
   /** A fresh journal of the claim, for what the spec reads from the run's records at its end (its decisions' booked
    *  cost): a fresh one, since the Harness closes its own before the end is written. */
   readonly journal?: () => Journal;
+  /** The claim's signal and LoopDeps.handBack: a renewal of the plan refused because the runner is closing hands the
+   *  run back to resume (claim-secrets.ts). */
+  readonly signal?: AbortSignal;
+  readonly handBack?: () => Promise<void>;
 }
 
 /** Loops for workflow runs: `spec(claim)` gives each claim's run what it runs (its workflow, input, models and host). */
@@ -230,7 +234,10 @@ function workflowLoop(specOf: (claim: Claim, run: WorkflowSpecRun) => WorkflowRu
   const takeRaises = async (journal: Journal, context: Context): Promise<void> => {
     takingDone = true;
     if (raising.takes.length === 0) return;
-    const data: RaiseData & { pause?: string } = { capUsd: raising.capUsd ?? raising.state?.capUsd ?? 0, takes: raising.takes, ...(raising.state?.pause ? { pause: raising.state.pause } : {}) };
+    // The pause the raises answered: the one the newest raise was checked against (lastRaise), as the agentic loop records
+    // it. A retry of a raise taken before changes nothing, so it names that raise's pause, never a pause the run stands at
+    // since, which would read as answered and let the held step run into the same cap again.
+    const data: RaiseData & { pause?: string } = { capUsd: raising.capUsd ?? raising.state?.capUsd ?? 0, takes: raising.takes, ...(raising.state?.lastRaise?.pause ? { pause: raising.state.lastRaise.pause } : {}) };
     await append(journal, context, KINDS.raise, data, { ...(raising.resumes ? { run: { summary: null } } : {}), take: raising.takes });
   };
 
@@ -313,7 +320,7 @@ function workflowLoop(specOf: (claim: Claim, run: WorkflowSpecRun) => WorkflowRu
     const parkController = new AbortController();
     let heldRefusal: CapRefusal | undefined;
     const context = withAbortSignal(AbortSignal.any([deps.signal, parkController.signal]), BACKGROUND_CONTEXT);
-    spec = await specOf(claim, { redact: deps.redact, journal: () => deps.journal(claim) });
+    spec = await specOf(claim, { redact: deps.redact, journal: () => deps.journal(claim), signal: deps.signal, ...(deps.handBack ? { handBack: deps.handBack } : {}) });
     claimNow = claim;
     specReady();
     const revision = { id: spec.revisionId, kind: "workflow" as const, body: { workflow: spec.workflow, tools: [...spec.tools] } };
@@ -324,6 +331,17 @@ function workflowLoop(specOf: (claim: Claim, run: WorkflowSpecRun) => WorkflowRu
     await takeRaises(deps.journal(claim), BACKGROUND_CONTEXT);
     // A paused run (or one a pause row woke) parks again here, before any step runs; a resume goes on.
     if (await takePauses(claim, deps.journal(claim), BACKGROUND_CONTEXT)) return { state: "parked" };
+    // Paused at its cap by its journal, and no raise of this claim resumed it (each refused, or a retry of one before): its
+    // pause stands, its budget entry unanswered, so it parks again on that entry with nothing written, before any step
+    // runs. Run, the held step would meet the same cap and write a second budget entry at it. Whatever the row said at the
+    // claim: a woken claim lost before its release leaves the row running with the pause unanswered. A person's stop goes
+    // on to end the run. A run whose root is not made yet (its first claim) has no pause to read, and a run with no cap
+    // never wrote a budget entry: neither is read.
+    const paused = async (journal: Journal): Promise<boolean> =>
+      Boolean(await journal.conversation(ROOT_CONVERSATION_ID, BACKGROUND_CONTEXT)) && (await raiseStateOf(journal, BACKGROUND_CONTEXT)).pause !== undefined;
+    if (spec?.cap !== undefined && !raising.resumes && stopReason === undefined && (await paused(deps.journal(claim)))) {
+      return { state: "parked", again: true };
+    }
 
     const hooks: WorkflowHostHooks = {
       park: (refusal) => { heldRefusal ??= refusal; parkController.abort(); },

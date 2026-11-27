@@ -94,8 +94,11 @@ runner refuses to claim and every run answers `runner_refused` (packages/serve/R
 Railway's API makes a template only by copying a project, and the copy drops plain values, optional flags and some
 deploy settings. So `template.json` holds only what survives: `PORT` and `RAILWAY_RUN_UID` are written as one-character
 secrets over a one-character alphabet (always `7340` and `0`), and model keys are added in the console, not as variables.
-Railway's default draining time applies, so a redeploy stops the server without the runner's 31 s stop. A run in flight
-then picks up again after the restart.
+The draining time the template's `drainingSeconds` would set is dropped too, and Railway's default is 0 s. So the
+template sets `RAILWAY_DEPLOYMENT_DRAINING_SECONDS` to `45` the same way (`4` and a one-character secret). That lets a
+redeploy wait out the runner's 40 s stop (a browser's release included) and a ChatGPT renewal saving its new pair. If a
+project of the template shows that variable empty, set it to `45` in the service's Variables. Without it, a redeploy that
+cuts a renewal short loses the ChatGPT sign-in, and you sign in again.
 
 ## Fly.io
 
@@ -442,8 +445,11 @@ build is older than the store: it refuses the store.
 
 On SIGTERM a runner claims nothing more and lets each busy run finish its turn for up to `--drain-timeout` (default 6 s),
 so a model request in flight is not cut and sent again; then it stops the loops left where they can resume and hands
-their runs back. A loop that does not stop is given up 25 s after that, so with the default drain a runner is done
-within 31 s: give it 35 s before a SIGKILL, more with a longer drain. `--drain-timeout 0s` hands every run back at once.
+their runs back. A loop that does not stop is given up 25 s after that. A browser's release, or a lost create's recovery
+under way, is waited for up to a computer provider's cleanup bound (30 s) and 10 s of margins from the SIGTERM, so with
+the default drain a runner is done within 40 s: give it 45 s before a SIGKILL, more with a drain over 15 s. An embedder
+that raises a provider's `cleanupMs` (and the runner's) above the default gives the runner a grace of at least
+`cleanupMs` + 15 s. `--drain-timeout 0s` hands every run back at once.
 
 ## With Docker Compose: a server and two runners
 
@@ -464,8 +470,8 @@ docker compose logs runner-1     # Runner runner-1 ready: ...
 
 The server's port is published on this machine's loopback (`127.0.0.1:7340`); put a reverse proxy with TLS in front of
 it before you publish it anywhere else. Each runner starts once the server is healthy (only the server sets the store
-up), is started again if it exits with an error, and is given 35 s to stop: its drain (6 s by default) and 25 s for a
-stuck loop after it, 31 s in all.
+up), is started again if it exits with an error, and is given 45 s to stop: its drain (6 s by default) and 25 s for a
+stuck loop after it, or a browser's release up to 40 s from the SIGTERM.
 
 **Memory.** Each runner container is limited to 2 GB (`mem_limit`), and a runner budgets its runs from that limit:
 1920 MiB, six claude-agent runs or fifteen pi runs at once, the rest queued. Without a limit, each runner would read

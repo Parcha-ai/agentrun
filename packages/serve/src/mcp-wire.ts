@@ -2,15 +2,23 @@
 // of the wire: the one credential scrubber, the one cap on an upstream answer, and the one SDK client the two build.
 // A leaf: no store, no run, nothing sent here.
 
+import { MIN_SECRET, valueMatcher } from "./learn/secrets.js";
+
 /** The most of one upstream answer read, by the probe and the gateway alike. */
 export const MAX_RESPONSE = 4 * 1024 * 1024;
 
 /** `text` with every credential value in `values` replaced, whole and as its bare token (with any one-word scheme, such
  *  as `Bearer ` or `Basic `, taken off): an upstream answer or error that echoes a header, or only its token, never shows
  *  it to the model, the harness, the owner's save or the run's files. A value of any length is cut (a short token is a
- *  valid credential); only an empty one is skipped. */
-export const scrub = (text: string, values: Iterable<string>): string =>
-  [...values].flatMap((value) => [value, value.replace(/^[A-Za-z][A-Za-z0-9_-]*\s+(?=\S+$)/, "")]).sort((a, b) => b.length - a.length).reduce((out, value) => (value.length > 0 ? out.split(value).join("[redacted]") : out), text);
+ *  valid credential); only an empty one is skipped. An answer that still holds a value of MIN_SECRET characters or more
+ *  in a form no cut in place finds (split by a control character, a terminal sequence, a character that shows as a box:
+ *  the redaction matcher, valueMatcher) is withheld whole, "[redacted]". */
+export const scrub = (text: string, values: Iterable<string>): string => {
+  const forms = [...values].flatMap((value) => [value, value.replace(/^[A-Za-z][A-Za-z0-9_-]*\s+(?=\S+$)/, "")]).sort((a, b) => b.length - a.length);
+  const out = forms.reduce((out, value) => (value.length > 0 ? out.split(value).join("[redacted]") : out), text);
+  const held = forms.filter((value) => value.length >= MIN_SECRET);
+  return held.length > 0 && valueMatcher(held)(out) ? "[redacted]" : out;
+};
 
 /** `res` with its body cut off at MAX_RESPONSE: past it the body errors, and `over` is told. */
 export function capped(res: Response, over?: () => void): Response {

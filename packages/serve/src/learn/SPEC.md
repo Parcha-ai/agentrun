@@ -34,15 +34,18 @@ them runs.
 `corrections.md` is a markdown list, one correction a line, in its owner's words (`correctionLine`: `- ` and the words,
 whitespace folded to single spaces). A run is served the file whole under `# Learned`, after one line saying what it
 is (`Your owner's standing corrections from earlier runs, one per line. Follow each one that applies.`). Nothing
-picks, ranks or summarizes it: the cap keeps it whole.
+picks, ranks or summarizes it: the cap keeps it short, oldest lines out first.
 
 - An owner's feedback on a run (a grade's words, or a message they sent after the job's first) appends one line, at
   the run's end, in the same commit as anything the run compiled (`LearningChange.correction`). The run is a feedback
-  round, `correction`.
+  round, `correction`. A compile the same round asks is told that line, on every attempt, after the corrections it
+  already knows; a line the checks refuse is never told.
 - A person replaces the file whole over v2 (`PUT /v2/agents/{id}/learning/corrections`, under the ETag its GET
   gave); an empty body empties it.
-- Over `CORRECTIONS_CAP`, 2048 bytes, a write is refused whole, never cut, and the run's learning says why. So is one
-  holding what must never be stored (below).
+- `CORRECTIONS_CAP` is 8192 bytes. A run's correction that would take the file past it drops the file's oldest lines
+  until it fits: the newest correction wins, and the run's learning says how many lines went (`dropped_lines`). A
+  correction whose line alone is past the cap, or a person's whole text past it, is refused whole, never cut, and says
+  why. So is one holding what must never be stored (below).
 
 ## A workflow draft
 
@@ -121,7 +124,7 @@ or the same decision by the grader's verdict on the draft and that answer, which
 whether the agent's own answer was right). The agent said `{"answer":42,"note":"checked"}` and the grade expects
 `{"answer":41}`: a draft of `{"answer":41,"note":"checked"}` is right. A disagreement still shows the recompile the
 grade's own expected answer. With no grade, it is judged against the agent's answer (equal, or the grader's same
-decision). No field name is ever taken from a
+decision). A run its owner corrected by message (no grade's expected answer, nor a grade that said right) keeps its recorded answer, never written over: the replay's grader is shown it with the owner's correction beside it (kept on the run's learning row as `correction`, and on the verdict as `replay.compared.corrected`), the correction winning where they differ; the agent's answer counts as wrong, and only a verdict asked with the correction counts: its same decision is right, equal answers or not (equal ones ask it too; with no verdict kept the input is unjudged: a message may be a question or thanks, not a correction), and a disagreement shows the owner's words as known `correction`; under agree_on it changes nothing. No field name is ever taken from a
 grade's keys: they are a person's data, and a run's purge leaves them nowhere in the record. A grade with no expected answer still says something: not
 correct, on the whole answer, makes a draft that repeats it wrong there, and leaves any other answer unjudged (under
 agree_on it names no field, so it changes nothing); correct changes nothing (the agent's answer is known as with no
@@ -156,7 +159,7 @@ path must resolve in both answers' values (bare JSON, a whole fence, or the last
 a path that resolves in neither or in only one (a key missing, a segment through an array, text or null) disagrees.
 Without it, two answers equal as JSON or as trimmed text agree with no model call, and two that differ are read by the
 grader (`learn/promote.ts` gradeAnswers, `runner/compare-end.ts`): the agent's fast model (its `model_tiers.fast`, else
-AGENT_MODEL_FAST), asked once by the replay run itself at its end whether its answer and the known one (the agent's, or
+AGENT_MODEL_FAST), else, with neither set, the agent's own model (`runner/adapter-run-spec.ts` graderRouteOf), asked once by the replay run itself at its end whether its answer and the known one (the agent's, or
 for a graded run the known answer above) reach the same decision, its system text GRADER_PROMPT and its reply `{"same": boolean, "differs_on": string | null}`. Its request goes
 through the run's own session on a tier proxy of its own (route `grader`), judged by the run's cap before it leaves and
 booked as the run's spend, so it is the check's cost (`check_usd`); a cap refusal never parks the run. It is asked once
@@ -172,15 +175,14 @@ pair is not the two answers read at the check (the agent's run answered again af
 follow-up) is stale, and that input differs ("the comparison read an earlier answer: ..."), as one with no verdict
 does: no claim asks the grader again. The record keeps `check.grader` (the
 model) and each disagreement's `differs_on` (cut to CHECK_TEXT_MAX), its reason says "compared by the fast model
-(<model>)", and a hold says "its answers reached a different decision from the agent's on k of n (for example:
-<differs_on>)". With no fast model the whole answer decides, and a hold that answered some inputs alone and agreed on
-none says "its answers never matched the agent's word for word, and no fast model compared their decisions (...); name
-the fields that carry the decision (learning.agree_on)". No field is read off the `output_schema`: its enum can be an echo of the owner's setting (kyb's
+(<model>)", or "compared by the agent's own model (<model>; no fast model is set)", and a hold says "its answers reached a different decision from the agent's on k of n (for example:
+<differs_on>)". When no grader's verdict was kept (no route to it could be made) the whole answer decides, and a hold that answered
+some inputs alone and agreed on none says "its answers never matched the agent's word for word, and no model compared
+their decisions (...); name the fields that carry the decision (learning.agree_on)". No field is read off the `output_schema`: its enum can be an echo of the owner's setting (kyb's
 `risk_appetite`) while the decision sits deeper (`verdict.decision`), and a default that promotes on the wrong field is
 worse than one that never promotes. A shipped template whose answer carries a decision declares it (kyb, inbound-lead),
 each path a required property of its output schema at every level (`templates.ts` readPackage refuses one an answer may
-leave out); one whose answer is generated text (market-monitor, release-notes) goes to the grader, or the whole answer
-with no fast model. The record keeps `check.agree_on` when it compared paths, and its reason says "said what the agent
+leave out); one whose answer is generated text (market-monitor, release-notes) goes to the grader. The record keeps `check.agree_on` when it compared paths, and its reason says "said what the agent
 said on mcc and riskTier": agree_on asks no model, free and exact where the definition can name the fields. Of the
 inputs it ran on, `alone` is the share
 it answered with no escalate and no failed step (a replay obeys an escalate, so an input one of them hands back is no
@@ -190,8 +192,13 @@ when alone is at least `learning.alone_min` (0.7), `agreed` is at least `learnin
 every field passes (above). Otherwise
 it is held, and the agent's next run it fits asks one revision with the inputs it did not agree on as data (each one's
 input, the agent's answer, and the draft's answer or why it handed it back); that revision is checked the same way.
-Held again, it stops (`check.stopped`): the agent keeps the runs and nothing compiles again until a hold or its owner
-acts. The record keeps `check`: the bar it was held to, `n`, `agreed`, `alone`, the runs it read, the tools that stopped
+Held again, it stops (`check.stopped`): the agent keeps the runs and nothing compiles again until new evidence after the
+stop restarts it (`runner/learning-end.ts` compileAskOf): a correction merged into `corrections.md` after it (a run's or a
+person's save), or `compile_after` of the agent's own completed runs started after it, the ending one counted. A
+restart is a first compile again: the stopped revision's revise (or, after a first compile's failed drafts, a new
+compile) is attempt 1, and its one recompile attempt 2, which stops again (`reviseAttemptOf`, `newCompileAttempt`).
+Evidence from before the newest stop restarts nothing, so each restart costs at most two compiles. A stop with nothing
+checked and a recompile's failed draft restart the same way. The record keeps `check`: the bar it was held to, `n`, `agreed`, `alone`, the runs it read, the tools that stopped
 skipped inputs (`skipped_tools`), each field's verdict (`fields`) and, on a hold, the disagreements. A promotion by
 check is never moved by its served runs' grades. The
 inputs are the agent's last `compile_after` runs of its own picked first, however many runs its workflow served since.
@@ -262,11 +269,14 @@ still stops a workflow that costs more than the agent by hand.
 
 ## The caps
 
-Over a cap is refused, never cut.
+Over a cap is refused, never cut, with one exception: a run's correction (a round's line, a feedback or a grade's
+words) appended to `corrections.md` that would take the file past its cap drops the file's oldest lines to fit, so the
+newest correction wins (`dropped_lines` on the run's learning). A correction whose line alone is past the cap, and a
+person's whole-file edit past it, are refused, nothing dropped.
 
 | What | Cap |
 | --- | --- |
-| `corrections.md` | 2048 bytes |
+| `corrections.md` | 8192 bytes (a run's correction drops the oldest lines to fit) |
 | A draft's `workflow.json` | 16384 bytes |
 | A draft's `README.md` | 1024 bytes |
 | Workflow drafts one turn adds or changes | 1 |
@@ -282,7 +292,7 @@ Over a cap is refused, never cut.
 | `file_mode` | a link, a folder or anything else that is not a regular file |
 | `encoding` | not UTF-8, in a file or its name |
 | `deleted` | a draft's file that was there, gone |
-| `too_large` | a draft's JSON over 16384 bytes, its README over 1024, or `corrections.md` past 2048 |
+| `too_large` | a draft's JSON over 16384 bytes, its README over 1024, or `corrections.md` past 8192 (a person's whole-file edit, or one correction's line alone; an appended correction drops the oldest lines instead) |
 | `invisible_unicode` | a character a reader does not see, by code point |
 | `secret_shape` | text shaped like a secret, by kind, in a file or its name |
 | `secret_value` | a value the host holds as secret, in a file or its name |

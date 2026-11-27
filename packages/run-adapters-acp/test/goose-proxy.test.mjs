@@ -163,3 +163,11 @@ test('the policy: a body as Goose sends it passes with its max_tokens clamped, a
   assert.throws(() => policy.header('anthropic-beta', 'context-1m-2025-08-07'), /anthropic-beta/);
   assert.equal(policy.header('anthropic-beta', BETA), BETA);
 });
+
+test("the policy offers our tools under the start's server name: agentrun by default, a start's own (a recipe with the title tie) when given, and the other refused", () => {
+  const tools = (name) => gooseBody({ tools: [{ name, description: 'Echo.', input_schema: { type: 'object', properties: {} } }] });
+  assert.doesNotThrow(() => applyGoose(tools('agentrun__echo'), { model: MODEL, tools: ['echo'] }));
+  assert.doesNotThrow(() => applyGoose(tools('ar3f12ab__echo'), { model: MODEL, tools: ['echo'], server: 'ar3f12ab' }));
+  assert.throws(() => applyGoose(tools('agentrun__echo'), { model: MODEL, tools: ['echo'], server: 'ar3f12ab' }), /a tool this session does not have/);
+  assert.throws(() => applyGoose(tools('ar3f12ab__echo'), { model: MODEL, tools: ['echo'] }), /a tool this session does not have/);
+});

@@ -1,4 +1,5 @@
 import { parseArgs } from 'node:util';
+import { keyBase } from '@parcha/agentrun-computer';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { defaultData } from '../server-fs.js';
@@ -21,7 +22,10 @@ export async function nativeMain(argv:string[],usage:string):Promise<number>{
  if(values.agent&&values.profile)throw new Error('Choose --agent or --profile, never both.');
  const data=values.data??defaultData();let recorded:string|undefined;
  try{const record=JSON.parse(await readFile(join(data,'.server.json'),'utf8'));if(typeof record.base_url==='string')recorded=record.base_url;}catch{/* explicit/default URL below */}
- const url=new URL(values.url??process.env.AGENTRUN_BASE_URL??process.env.AGENTRUN_URL??recorded??'http://127.0.0.1:7340');
+ const named:[string,string|undefined][]=[['--url',values.url],['AGENTRUN_BASE_URL',process.env.AGENTRUN_BASE_URL],['AGENTRUN_URL',process.env.AGENTRUN_URL],["the server's recorded base_url",recorded]];
+ const [setting,given]=named.find((entry):entry is [string,string]=>entry[1]!==undefined)??['the default URL','http://127.0.0.1:7340'];
+ // The token goes to it, and fetch's errors print the whole URL: the rule of a URL a key goes to (keyBase), over loopback's http or https.
+ const url=new URL(keyBase(given,setting,['http:','https:']));
  if(!['localhost','127.0.0.1','[::1]'].includes(url.hostname))throw new Error('Run AgentRun on this source machine and connect to its loopback URL; hosted native pairing is not available yet.');
  const token=secret('AGENTRUN_API_KEY')||secret('AGENTRUN_TOKEN')||(await readFile(join(data,'.token'),'utf8')).trim();
  const selection={project:values.project,runtime:values.runtime,selector:values.agent?{kind:'agent',name:values.agent}:values.profile?{kind:'profile',name:values.profile}:{kind:'project'}};

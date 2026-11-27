@@ -54,18 +54,19 @@ import {
 	type ReleaseConfirm,
 	RECOVER_MS,
 	recoverCreate,
-	leftToConverge,
+	type MadeBrowser,
 	releaseConfirmed,
 	boundedRelease,
 	restBytes,
 	restCall,
 	type UrlStore,
 	causedFail,
+	createdOf,
 	vendorFailure,
 	withoutCreateLabel,
 } from "./browser.js";
 import { CreateRequests, endedWords, labelsDiffer, otherSpecWords } from "./create-requests.js";
-import { httpsBase } from "./hosted/rest.js";
+import { httpsBase, keyBase } from "./hosted/rest.js";
 import type { KindCapabilities } from "./kinds.js";
 import {
 	type AttachedComputer,
@@ -104,7 +105,7 @@ export const BROWSERBASE_MIN_LIFETIME_MS = 60_000;
 /** The statuses of a session that runs (PENDING bills once it starts); any other has ended. */
 type SessionStatus = "RUNNING" | "PENDING" | "COMPLETED" | "ERROR" | "TIMED_OUT";
 const LIVE: ReadonlySet<SessionStatus> = new Set(["RUNNING", "PENDING"]);
-/** Every status a session reads as, ended ones included: a request's whole record (#leftToConverge). */
+/** Every status a session reads as, ended ones included: a request's whole record (#requestBrowsers). */
 const EVER: ReadonlySet<SessionStatus> = new Set([...LIVE, "COMPLETED", "ERROR", "TIMED_OUT"]);
 /**
  * The order #sessions asks for the statuses, a session's own: it is PENDING, then RUNNING, then ended, and never goes
@@ -323,20 +324,12 @@ export function throughGateway(connectUrl: string, connectBase: string | undefin
 }
 
 /**
- * The gateway that fronts the sessions' sockets (BROWSERBASE_CONNECT_BASE_URL), held to wss: or https: as httpsBase holds
- * an API URL, since every session's signed CDP URL rides it; throws in words on another, loopback included. One that is
- * no URL is not echoed: it may carry the gateway's own token.
+ * The gateway that fronts the sessions' sockets (BROWSERBASE_CONNECT_BASE_URL), held to the rule of a URL a key goes to
+ * over wss: or https: (keyBase), since every session's signed CDP URL rides it: another scheme, loopback included, a user
+ * or password, a query or a fragment throws in keyBase's words, which name the origin at most.
  */
 function connectBaseOf(url: string | undefined): string | undefined {
-	if (url === undefined) return undefined;
-	let parsed: URL;
-	try {
-		parsed = new URL(url);
-	} catch {
-		throw new Error("BROWSERBASE_CONNECT_BASE_URL is not a URL");
-	}
-	if (parsed.protocol !== "wss:" && parsed.protocol !== "https:") throw new Error(`BROWSERBASE_CONNECT_BASE_URL must be wss or https, so a session's signed URL never crosses in the clear: ${parsed.protocol}`);
-	return url;
+	return url === undefined ? undefined : keyBase(url, "BROWSERBASE_CONNECT_BASE_URL", ["wss:", "https:"]);
 }
 
 const refOf = (s: BrowserbaseSession): ComputerRef => ({ id: s.id, name: s.id });
@@ -661,14 +654,14 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 			const found = await this.#sessions(labels, signal);
 			return found.ok ? ok(found.value.map((s) => s.id)) : found;
 		};
-		const leave = (id: string, signal: AbortSignal) => this.#leftToConverge(request, id, signal);
-		return recoverCreate("session", find, (id, signal) => this.release({ id, name: id }, "delete", { signal }), this.#sleep, this.#cleanupMs, leave);
+		const made = (signal: AbortSignal) => this.#requestBrowsers(request, signal);
+		return recoverCreate("session", find, (id, signal) => this.release({ id, name: id }, "delete", { signal }), this.#sleep, this.#cleanupMs, made);
 	}
 
-	/** Whether a lost create's session is left to another create of its request (leftToConverge); a listing that fails releases it. */
-	async #leftToConverge(request: string, id: string, signal: AbortSignal): Promise<boolean> {
+	/** The request's sessions, ended ones included, for a lost create's recovery (recoverCreate, leftToConverge). */
+	async #requestBrowsers(request: string, signal: AbortSignal): Promise<Result<MadeBrowser[]>> {
 		const made = await this.#sessions({ [CREATE_LABEL]: request }, signal, EVER);
-		return made.ok && leftToConverge(id, made.value.map((s) => ({ ...heldOf(s), live: LIVE.has(s.status as SessionStatus) })));
+		return made.ok ? ok(made.value.map((s) => ({ ...heldOf(s), live: LIVE.has(s.status as SessionStatus) }))) : made;
 	}
 
 	/**
@@ -735,7 +728,8 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 	 * The running and pending sessions with all of these labels. Browserbase is asked by status and by the first label a
 	 * query carries as it is; the match is the provider's own, so a lane that drops the query never hands back another's.
 	 * Both statuses must answer: a release trusts this list. `statuses` widens it, to the ended ones too (EVER). The
-	 * statuses are asked in a session's own order (LIFECYCLE), so every session there when the read starts is found.
+	 * statuses are asked in a session's own order (LIFECYCLE), so every session there when the read starts is found, and a
+	 * session found in two answers reads as the later one says.
 	 */
 	async #sessions(labels: Record<string, string>, signal?: AbortSignal, statuses: ReadonlySet<SessionStatus> = LIVE): Promise<Result<BrowserbaseSession[]>> {
 		const problem = browserbaseLabelsProblem(labels);
@@ -750,7 +744,8 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 				if (asked.length === 0) continue;
 				const pages = await Promise.all(asked.map((status) => this.#api.list({ status, ...(q === undefined ? {} : { q }) }, signal)));
 				for (const s of pages.flat()) {
-					if (typeof s?.id === "string" && statuses.has(s.status as SessionStatus) && carries(metadataLabels(s.userMetadata), labels) && !found.has(s.id)) found.set(s.id, s);
+					// A later group's row wins: a session only moves forward, so one answered RUNNING and then COMPLETED has ended.
+					if (typeof s?.id === "string" && statuses.has(s.status as SessionStatus) && carries(metadataLabels(s.userMetadata), labels)) found.set(s.id, s);
 				}
 			}
 		} catch (error) {
@@ -762,7 +757,7 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 	async list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {
 		const found = await this.#sessions(labels, signal);
 		if (!found.ok) return found;
-		return ok(found.value.map((s) => ({ ref: refOf(s), labels: fromMetadata(s.userMetadata), deadline: deadlineOf(s), state: "running", network: "open" })));
+		return ok(found.value.map((s) => ({ ref: refOf(s), labels: fromMetadata(s.userMetadata), deadline: deadlineOf(s), state: "running", network: "open", ...createdOf(s.createdAt ?? s.startedAt) })));
 	}
 
 	/** Always open: a Browserbase browser reaches the open web, and a change is refused in words. */

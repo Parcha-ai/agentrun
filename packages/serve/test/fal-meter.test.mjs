@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { memorySessionStore } from "@parcha/agentrun-kernel/testing";
 import { mcpGateway, mcpPinOf } from "../dist/mcp-gateway.js";
+import { keepText } from "../dist/runner/redact.js";
 import { bookedIn } from "../dist/paid-calls.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { SAMPLES } from "./fixtures/media-samples.mjs";
@@ -85,6 +86,7 @@ async function setup(t, { capUsd = 1, entry = { meter: "fal" }, run, pricing, ga
   const root = [];
   const pinned = url ?? fake.url;
   const gateway = mcpGateway({
+    redact: keepText,
     pin: { fal: { url: pinned, tools: ["run_model", "submit_job", "submit_jobs", "get_model_schema"].map((name) => ({ name, inputSchema: { type: "object" } })), ...entry } },
     credentials: { fal: { url: pinned, headers: { authorization: `Bearer ${TOKEN}` } } },
     work: () => work,

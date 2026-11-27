@@ -31,3 +31,13 @@ export function checkedBase(given) {
 export function toUrl(given, env) {
   return apiBase(given === "cloud" ? env.AGENTRUN_CLOUD_URL || CLOUD_URL : given);
 }
+
+/** A share host's address (`agentrun login --share`, `agentrun share --to`): http or https with no query, fragment, user
+ *  or password, as checkedBase takes a server's, written as its origin and path without trailing slashes. A link under
+ *  its /r/ (or its API's /r/v2) names the same host: a share host serves everything under /r/, so the address is what
+ *  comes before it. Undefined for any other; the caller refuses it without echoing it. */
+export function shareBase(given) {
+  const url = typeof given === "string" && URL.canParse(given) ? new URL(given) : undefined;
+  if (!url || !/^https?:$/.test(url.protocol) || /[?#]/.test(given) || url.username || url.password) return undefined;
+  return `${url.origin}${url.pathname.replace(/\/+$/, "").replace(/\/r(?:\/v2)?$/, "")}`;
+}

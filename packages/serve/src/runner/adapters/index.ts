@@ -7,6 +7,7 @@ import type { AgentAdapter, Wire } from "@parcha/agentrun-kernel";
 import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
 import { facts as codexFacts } from "@parcha/agentrun-harness-codex/facts";
 import type { AdapterRun } from "../adapter-loop.js";
+import type { HeldRedact } from "../redact.js";
 import { facts as openCodeFacts } from "../../harness-opencode/facts.js";
 import { harnessOf, ON_TABLE } from "../../harness-table.js";
 import { piAdapter, type PiAdapterOptions } from "./pi.js";
@@ -27,6 +28,11 @@ export interface HarnessLaunch {
   readonly sessionsDir: string;
   /** The proxy's upstream fetch (a test's scripted origin). */
   readonly fetch?: typeof fetch;
+  /** The model runs on this machine (the route's `local`: an Ollama model): a CLI waits longer on its silent stream. */
+  readonly local?: boolean;
+  /** The runner's one redactor (LoopDeps.redact), holding the keys the claim opens: pi's session proxy cuts a provider's
+   *  error with it before pi has it. */
+  readonly redact: HeldRedact;
 }
 
 /** A harness the runner runs. */
@@ -38,7 +44,7 @@ export interface RunnerHarness {
   adapter(launch: HarnessLaunch, extra?: Readonly<Record<string, unknown>>): Promise<AgentAdapter>;
 }
 
-type ClaudePackage = { claudeAgentAdapter(options: Record<string, unknown>): AgentAdapter; verifyClaudeAgentCliAsync(path: string | undefined): Promise<unknown>; claudeAgentExecutable(): string | undefined };
+type ClaudePackage = { LOCAL_STREAM_IDLE_MS: number; claudeAgentAdapter(options: Record<string, unknown>): AgentAdapter; verifyClaudeAgentCliAsync(path: string | undefined): Promise<unknown>; claudeAgentExecutable(): string | undefined };
 const CLAUDE_PACKAGE = "@parcha/agentrun-harness-claude";
 type CodexPackage = { codexAdapter(options: Record<string, unknown>): AgentAdapter; verifyCodexAsync(found?: { path: string; packageVersion?: string }): Promise<unknown> };
 const CODEX_PACKAGE = "@parcha/agentrun-harness-codex";
@@ -47,7 +53,7 @@ const CODEX_PACKAGE = "@parcha/agentrun-harness-codex";
 export const RUNNER_HARNESSES: Readonly<Record<string, RunnerHarness>> = {
   pi: {
     // `extra`: pi's own options (PiAdapterOptions), as the run's spec gives them (adapter-run-spec.ts): its extensions,
-    // tools, redactor, tiers, and the route's whole provider over the launch's.
+    // tools, tiers, and the route's whole provider over the launch's. Its redactor is the launch's, typed.
     adapter: async (launch, extra = {}) =>
       piAdapter({
         run: launch.run,
@@ -56,7 +62,8 @@ export const RUNNER_HARNESSES: Readonly<Record<string, RunnerHarness>> = {
         ...(launch.price ? { price: launch.price } : {}),
         ...(launch.fetch ? { fetch: launch.fetch } : {}),
         ...(extra as Partial<PiAdapterOptions>),
-      } as PiAdapterOptions),
+        redact: launch.redact,
+      }),
   },
   [claudeFacts.id]: {
     record: "loop",
@@ -70,6 +77,9 @@ export const RUNNER_HARNESSES: Readonly<Record<string, RunnerHarness>> = {
         provider: { origin: launch.provider.origin, credential: launch.provider.credential, ...(launch.provider.headers ? { headers: launch.provider.headers } : {}) },
         ...(launch.price ? { price: launch.price } : {}),
         ...(launch.fetch ? { fetch: launch.fetch } : {}),
+        // A local model says nothing while it loads, reads its prompt or thinks: the CLI waits it out. A paid route's hung
+        // stream keeps the CLI's own limit, so it holds the run's slot and its cap no longer than that.
+        ...(launch.local ? { streamIdleMs: claude.LOCAL_STREAM_IDLE_MS } : {}),
         sessionsDir: launch.sessionsDir,
         ...extra,
       });

@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { BROWSER_CHARGED, BROWSER_PRICES, BROWSER_SESSION_OPEN, browserPrice, browserSpend, priceEnvOf } from "../dist/browser-cost.js";
+import { BROWSER_CHARGED, BROWSER_PRICES, BROWSER_SESSION_OPEN, BROWSER_UNHELD_OWED, browserPrice, browserSpend, priceEnvOf } from "../dist/browser-cost.js";
 import { journalRecords } from "../dist/runner/journal-reader.js";
 import { agent, follow, scratch, serve, toolLedger, withEnv } from "./support.mjs";
 
@@ -24,7 +24,7 @@ const PRICE_ENV = priceEnvOf("browserbase");
  *  taking `readS`, on a `provider` browser at `price`, under `cap` (none: no cap), booked on its one ledger `paid`.
  *  `seen(at, spent, held)` runs at every moment the run can spend, with the ledger's figures: inside each call, before
  *  each model turn and after the release (its ledger steps all written). */
-async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, readS = 3, thinkS = 20, cap, idleS = 180, end = "close", setup = () => {}, pump = false, options = {}, lastTurn = () => {}, after = async () => {}, cutRelease = false, seen = () => {} }) {
+async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, readS = 3, thinkS = 20, cap, idleS = 180, end = "close", setup = () => {}, pump = false, options = {}, lastTurn = () => {}, after = async () => {}, cutRelease = false, seen = () => {}, bind = () => {} }) {
   t.mock.timers.enable({ apis: ["Date"], now: T0 });
   const [{ BACKGROUND_CONTEXT: ctx }, { createModels }, faux, durable, { createBrowserExtension }, { FakeBackend, fakeDriver, fixturePage }] = await Promise.all([
     import("@earendil-works/chord/context"), import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-ai/providers/faux"),
@@ -44,8 +44,11 @@ async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, re
     await new Promise((_, reject) => signal?.addEventListener("abort", () => reject(signal.reason), { once: true }));
   } };
   const releases = [];
+  // What the spend logged, still said.
+  const logged = [];
+  const log = (line) => { logged.push(line); process.stderr.write(`agentrun-serve: ${line}\n`); };
   // A refusal's release, waited for here so its charge is billed at the moment of the refusal.
-  const spend = browserSpend(provider, price, idleS, async (conversation, context) => { releases.push(conversation.id); await browser.release(conversation, "close", context); await browser.drain(harness, context); }, undefined, { paid });
+  const spend = browserSpend(provider, price, idleS, async (conversation, context) => { releases.push(conversation.id); await browser.release(conversation, "close", context); await browser.drain(harness, context); }, log, { paid });
   const browser = createBrowserExtension({ ...options,
     provider: () => (cutRelease ? cutting : backend.provider), driver: fakeDriver(backend), evidence: { file: async () => null },
     prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge,
@@ -70,6 +73,8 @@ async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, re
   spend.watch(harness);
   const policy = { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: idleS, batchTimeoutMs: 60_000 };
   root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } }, init: async (tx, id) => { Object.assign(await tx.doc(browser.docs.Config, id), { label: "run", run: "run-cost", policy }); } });
+  // `bind`: the run's browser, root and context, for a test's own hooks (onSession) to act on.
+  bind({ browser, root, ctx, spend });
   await browser.reconcile(harness, () => true, ctx);
   await (await root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);
   t.mock.timers.tick(5_000);
@@ -87,7 +92,7 @@ async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, re
   const entries = (await harness.commit((tx) => tx.scanEntries({ conversationId: durable.ROOT_CONVERSATION_ID, order: "ascending" }, 500), ctx)).items;
   const booked = entries.filter((entry) => entry.kind === BROWSER_CHARGED).map((entry) => entry.data);
   const results = entries.map((entry) => JSON.stringify(entry)).filter((text) => text.includes("spend_cap_reached"));
-  return { record, booked, spent: paid.spentUsd(), paid, releases, results, backend, stretch: spend.stretch };
+  return { record, booked, spent: paid.spentUsd(), paid, releases, results, backend, stretch: spend.stretch, logged };
 }
 
 const pico = (usd) => Math.round(usd * 1e12) / 1e12;
@@ -104,6 +109,30 @@ test("uncapped: every charge is booked under its call, idle time between calls i
   assert.ok(Math.abs(record.spent.usd - 74 * 0.12 / 3600) < 1e-11, String(record.spent.usd));
   assert.deepEqual(releases, [], "nothing refused");
   assert.equal(pico(paid.spentUsd()), record.spent.usd, "the run's ledger books each charge once");
+  assert.equal(paid.heldUsd(), 0, "no hold is left");
+});
+
+test("a cut release's charge that billed past the release's own time: the release books 0 s and the run's record says by how much the cut went past it; every second booked once", async (t) => {
+  // The cut's charge (tools.ts releaseCut: BrowserExtensionHandle.charge) lands after the vendor answered the release and
+  // before its confirm commits: 7 s past the release's time.
+  const bound = {};
+  const { record, booked, paid, logged } = await run(t, {
+    reads: 1, price: { usdPerHour: 0.12, minimumS: 0 }, bind: (handles) => Object.assign(bound, handles),
+    options: { onSession: async (_row, change) => {
+      if (change !== "released") return;
+      t.mock.timers.tick(7_000);
+      await bound.browser.charge(bound.root, bound.ctx);
+      await bound.spend.ledgerIdle();
+    } },
+  });
+  // 3 s, the last answer's 20 s and 5 s to the release; then the cut's 7 s past it, and the release's own 0 s.
+  assert.deepEqual(booked.map((row) => [row.seconds, row.final, row.overbooked_s ?? null]), [[3, false, null], [25 + 7, false, null], [0, true, 7]], JSON.stringify(booked));
+  const said = logged.filter((line) => line.includes("browser_spend_overbooked"));
+  assert.equal(said.length, 1, `the log says it once: ${JSON.stringify(logged)}`);
+  assert.match(said[0], new RegExp(`browser session ${booked[2].tag} was charged 7 s past its release`));
+  assert.deepEqual([record.spent.seconds, record.spent.final], [35, true], "the session is billed what was charged, never less than 0 more");
+  assert.equal(total(booked), record.spent.usd, "booked is what the session's record bills");
+  assert.equal(pico(paid.spentUsd()), record.spent.usd, "the run's ledger books each second once");
   assert.equal(paid.heldUsd(), 0, "no hold is left");
 });
 
@@ -236,6 +265,135 @@ test("a charge joins the run's spend and moves its holds only once the commit th
   await harness.commit((tx) => spend.onCharge({ ...charge, seconds: 57, usd: 0.0019, final: true }, tx), ctx);
   await spend.ledgerIdle();
   assert.deepEqual([pico(paid.spentUsd()), paid.heldUsd()], [0.002, 0]);
+});
+
+test("a create-race browser's charge is booked under its tag alone: charged again at another time (another release that ended it), the ledger books it once, under the ref the usage reader matches it by", async (t) => {
+  const [{ BACKGROUND_CONTEXT: ctx }, durable, { createModels }] = await Promise.all([import("@earendil-works/chord/context"), import("@earendil-works/pi-durable"), import("@earendil-works/pi-ai/models")]);
+  const inner = await toolLedger(1);
+  const refs = [];
+  const paid = { ...inner, admit: (request) => (request.ref === undefined || refs.push(request.ref), inner.admit(request)), settle: (id, usd, options) => inner.settle(id, usd, options) };
+  const harness = await durable.Harness.open(new durable.MemoryStorage(), { models: createModels(), registry: durable.createRegistry(), onReport: () => {} }, ctx);
+  t.after(() => harness.close(ctx));
+  await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => undefined, undefined, { paid });
+  spend.watch(harness);
+  const charge = { conversationId: 1, tag: "unheld:bb-raced", provider: "browserbase", at: new Date(T0).toISOString(), seconds: 600, usd: 0.02, final: true, state: "priced" };
+  await harness.commit((tx) => spend.onCharge(charge, tx), ctx);
+  await spend.ledgerIdle();
+  await harness.commit((tx) => spend.onCharge({ ...charge, at: new Date(T0 + 5_000).toISOString(), seconds: 605 }, tx), ctx);
+  await spend.ledgerIdle();
+  assert.deepEqual(refs, ["browser:unheld:bb-raced/final", "browser:unheld:bb-raced/final"], "both charges name one booking, by the tag alone");
+  assert.equal(pico(inner.spentUsd()), 0.02, "booked once");
+});
+
+test("a create-race browser an earlier process of the run charged is not charged again by a later one that is told it again (its process ended before pi-browser's own commit): one charge and one timeline record on the root, and the other browser it is told with is charged", async (t) => {
+  const [{ BACKGROUND_CONTEXT: ctx }, durable, { createModels }, { BROWSERS_UNHELD }] = await Promise.all([import("@earendil-works/chord/context"), import("@earendil-works/pi-durable"), import("@earendil-works/pi-ai/models"), import("../dist/timeline/index.js")]);
+  const harness = await durable.Harness.open(new durable.MemoryStorage(), { models: createModels(), registry: durable.createRegistry(), onReport: () => {} }, ctx);
+  t.after(() => harness.close(ctx));
+  await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+  const made = new Date(T0).toISOString();
+  const swept = (ids) => ({ released: ids.map((id) => ({ id, tag: "ar-run-1-1", createdAt: made })), failed: [], creating: [] });
+  // Each a process of the run: its own spend over the run's one journal.
+  const first = browserSpend("browserbase", BROWSERBASE, 180, async () => undefined);
+  await first.unheld(harness, swept(["bb-raced"]), ctx, new Date(T0 + 600_000).toISOString());
+  const next = browserSpend("browserbase", BROWSERBASE, 180, async () => undefined);
+  await next.unheld(harness, swept(["bb-raced", "bb-other"]), ctx, new Date(T0 + 660_000).toISOString());
+  const root = await harness.conversation(durable.ROOT_CONVERSATION_ID, ctx);
+  const entries = (await root.entries({ order: "ascending" }, 500, undefined, ctx)).items;
+  assert.deepEqual(entries.filter((e) => e.kind === BROWSER_CHARGED).map((e) => [e.data.tag, e.data.seconds]), [["unheld:bb-raced", 600], ["unheld:bb-other", 660]], "each charged once, from when it was made");
+  assert.deepEqual(entries.filter((e) => e.kind === BROWSERS_UNHELD).map((e) => e.data.released), [["bb-raced"], ["bb-other"]], "each said once");
+});
+
+/** A run's root over one in-memory journal, each process of the run its own spend over it (browserSpend), its entries
+ *  read back in order; a browser made `AGE_S` before now. */
+async function unheldRoot(t) {
+  const [{ BACKGROUND_CONTEXT: ctx }, durable, { createModels }, { BROWSERS_UNHELD }] = await Promise.all([import("@earendil-works/chord/context"), import("@earendil-works/pi-durable"), import("@earendil-works/pi-ai/models"), import("../dist/timeline/index.js")]);
+  const harness = await durable.Harness.open(new durable.MemoryStorage(), { models: createModels(), registry: durable.createRegistry(), onReport: () => {} }, ctx);
+  t.after(() => harness.close(ctx));
+  await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+  const entries = async () => (await (await harness.conversation(durable.ROOT_CONVERSATION_ID, ctx)).entries({ order: "ascending" }, 500, undefined, ctx)).items;
+  const made = new Date(Date.now() - 600_000).toISOString();
+  const session = (id) => ({ id, tag: "ar-run-1-1", createdAt: made });
+  const spendOf = () => browserSpend("browserbase", BROWSERBASE, 180, async () => undefined, () => {});
+  /** The root's unheld entries, by kind and the browser each names. */
+  const kinds = async () => (await entries()).flatMap((e) => (e.kind === BROWSER_UNHELD_OWED ? [["owed", e.data.id]] : e.kind === BROWSER_CHARGED ? [["charged", e.data.tag]] : e.kind === BROWSERS_UNHELD ? [["said", e.data.released]] : []));
+  return { ctx, harness, entries, made, session, spendOf, kinds, BROWSERS_UNHELD };
+}
+
+test("a let-go records each browser a create race left running before its release is sent and charges and says it in one commit once its release answers, before the next is sent: a later release that never answers leaves the earlier one charged and said, and the later one owed", async (t) => {
+  const { ctx, harness, session, spendOf, kinds, entries } = await unheldRoot(t);
+  const spend = spendOf();
+  const stops = [];
+  await assert.rejects(spend.letGo(harness, async ({ releasing, released }) => {
+    await releasing(session("bb-a"));
+    stops.push("bb-a");
+    await released(session("bb-a"));
+    await releasing(session("bb-b"));
+    stops.push("bb-b");
+    // The process ends here, or the release of bb-b never answers within the let-go's bound.
+    throw new Error("the release window ran out");
+  }, ctx), /the release window ran out/);
+  assert.deepEqual(stops, ["bb-a", "bb-b"]);
+  assert.deepEqual(await kinds(), [["owed", "bb-a"], ["charged", "unheld:bb-a"], ["said", ["bb-a"]], ["owed", "bb-b"]], "bb-a's note is in its charge's commit, before bb-b's release is sent, so a process that ends there leaves it said");
+  const owed = (await entries()).find((e) => e.kind === BROWSER_UNHELD_OWED && e.data.id === "bb-b").data;
+  assert.deepEqual(Object.keys(owed).sort(), ["at", "createdAt", "id", "tag"], "the owed record keeps what books its time: its id, tag, when its vendor made it, and when its release went out");
+});
+
+test("two let-gos of one process that reach the same browser at once (a cut release's and the release it cut) charge it once and say it once, whichever answers first", async (t) => {
+  const { ctx, harness, session, spendOf, kinds } = await unheldRoot(t);
+  const spend = spendOf();
+  // Both send its release before either answers; each then hears it answer.
+  let sent = 0;
+  let bothSent;
+  const both = new Promise((resolve) => (bothSent = resolve));
+  const letGo = () => spend.letGo(harness, async ({ releasing, released }) => {
+    await releasing(session("bb-raced"));
+    if (++sent === 2) bothSent();
+    await both;
+    await released(session("bb-raced"));
+    return { released: [session("bb-raced")], failed: [], creating: [] };
+  }, ctx);
+  await Promise.all([letGo(), letGo()]);
+  const seen = await kinds();
+  assert.deepEqual(seen.filter(([kind]) => kind === "charged"), [["charged", "unheld:bb-raced"]], `charged once: ${JSON.stringify(seen)}`);
+  assert.deepEqual(seen.filter(([kind]) => kind === "said"), [["said", ["bb-raced"]]], "said once");
+});
+
+test("the next claim's open charges a browser an earlier let-go owed and never charged, once: one that stopped to when its release went out, one its vendor says still runs released then and charged to now; a status read that fails leaves it owed for the open after", async (t) => {
+  const { ctx, harness, session, spendOf, kinds, entries } = await unheldRoot(t);
+  const before = spendOf();
+  await assert.rejects(before.letGo(harness, async ({ releasing, released }) => {
+    await releasing(session("bb-a"));
+    await released(session("bb-a"));
+    await releasing(session("bb-stopped"));
+    await releasing(session("bb-running"));
+    await releasing(session("bb-unread"));
+    throw new Error("the process ended");
+  }, ctx));
+  const owedAt = Object.fromEntries((await entries()).filter((e) => e.kind === BROWSER_UNHELD_OWED).map((e) => [e.data.id, e.data.at]));
+  const closed = [];
+  let unreadable = true;
+  const browser = {
+    running: async (id) => {
+      if (id === "bb-unread" && unreadable) throw new Error("the vendor did not answer");
+      return id === "bb-running";
+    },
+    close: async (id) => void closed.push(id),
+  };
+  const opened = Date.now();
+  await spendOf().recoverOwed(harness, browser, ctx);
+  assert.deepEqual(closed, ["bb-running"], "only the one its vendor says still runs is released at the open");
+  const charges = Object.fromEntries((await entries()).filter((e) => e.kind === BROWSER_CHARGED).map((e) => [e.data.tag, e.data]));
+  assert.deepEqual(Object.keys(charges).sort(), ["unheld:bb-a", "unheld:bb-running", "unheld:bb-stopped"], "bb-a stays charged once; bb-unread stays owed");
+  assert.equal(charges["unheld:bb-stopped"].at, owedAt["bb-stopped"], "a stopped one is charged to when its release went out");
+  assert.ok(Date.parse(charges["unheld:bb-running"].at) >= opened, "one still running is charged to its release at the open");
+  for (const tag of ["unheld:bb-stopped", "unheld:bb-running"]) assert.ok(charges[tag].seconds >= 600 && charges[tag].final === true && charges[tag].call === null, JSON.stringify(charges[tag]));
+  assert.deepEqual((await kinds()).filter(([kind]) => kind === "said"), [["said", ["bb-a"]], ["said", ["bb-stopped"]], ["said", ["bb-running"]]], "each one charged is said with its charge");
+  unreadable = false;
+  await spendOf().recoverOwed(harness, browser, ctx);
+  await spendOf().recoverOwed(harness, browser, ctx);
+  assert.deepEqual((await kinds()).filter(([kind]) => kind !== "owed").slice(-2), [["charged", "unheld:bb-unread"], ["said", ["bb-unread"]]], "the open after charges the one it could not read, once");
+  assert.equal((await entries()).filter((e) => e.kind === BROWSER_CHARGED).length, 4, "every owed browser charged once across the opens");
 });
 
 test("a person's time carried for a session stays held until the session's next charge books it, and goes then", async (t) => {
@@ -714,6 +872,51 @@ test("a new session is never held nowhere: its call's two stretches hold it unti
   assert.ok(givenBack >= 0 && givenBack < asked, `the reserve is asked once the call's hold is given back, never beside it: ${JSON.stringify(events)}`);
   assert.deepEqual(events.slice(givenBack + 1, asked).filter(([what]) => what === "asked"), [], `no other step is asked between the two: ${JSON.stringify(events)}`);
   await landUntil(spend.ledgerIdle());
+});
+
+test("a person's time asked as a call that opened a session gives its hold back waits for the session's reserve: the reserve is held in the room the call kept for it, and the person's time is judged beside it", async (t) => {
+  // A $0.035 cap: the call holds two stretches ($0.018); the person's 15 minutes ($0.03) fit beside the call's charge, not
+  // beside the session's reserve ($0.009) too. Asked between the call's hold given back and the reserve asked, the
+  // person's time would take the room the call kept for the reserve: the reserve refused, the run paused at its cap for
+  // a step the agent never took, and its session held nowhere. Each ask and settle lands only when the test lets it.
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  const inner = await toolLedger(0.035);
+  const { later, landUntil } = heldWrites();
+  const events = [];
+  const logs = [];
+  const paused = [];
+  let spend;
+  let person;
+  const paid = {
+    admit: async (request) => {
+      events.push(["asked", request.id]);
+      await later();
+      try {
+        const out = await inner.admit(request);
+        events.push(["held", request.id]);
+        return out;
+      } catch (error) {
+        events.push(["refused", request.id]);
+        throw error;
+      }
+    },
+    settle: async (id, usd, options) => {
+      await later();
+      const out = await inner.settle(id, usd, options);
+      events.push(["landed", id, options?.givenBack === true]);
+      // The owner takes over the moment the call's hold is given back, before its session's reserve is asked.
+      if (id.startsWith("c1#") && options?.givenBack === true) person = spend.personTime("taking over the browser", 900, { pauses: false, tag: "ar-new", from: Date.now() });
+      return out;
+    },
+  };
+  spend = browserSpend("browserbase", BROWSERBASE, 180, async () => {}, (line) => logs.push(line), { paid, pause: async (refusal) => void paused.push(refusal) });
+  await landUntil(callOpening(spend));
+  const taken = await landUntil(person);
+  await landUntil(spend.ledgerIdle());
+  assert.deepEqual([logs, paused], [[], []], `the session's reserve is not refused, and the run is not paused: ${JSON.stringify(events)}`);
+  assert.ok("refused" in taken, `the person's time has no room beside the reserve: ${JSON.stringify(taken)} (${JSON.stringify(events)})`);
+  assert.match(taken.refused, /^spend_cap_reached: .*the next step, taking over the browser, could cost up to \$0\.03\b/);
+  assert.ok(Math.abs(inner.heldUsd() - 0.009) < 1e-9, `the session's reserve is held, one stretch: ${inner.heldUsd()}`);
 });
 
 // ---- a call that opens a session and then throws ----
@@ -1391,4 +1594,29 @@ test("a kept session's non-final charge books a person's carried minutes off the
   await spend.ledgerIdle();
   assert.ok(Math.abs(paidHolds() - base) < 1e-12, "nothing left held");
   assert.ok(Math.abs(paid.spentUsd() - 120 * r) < 1e-12, "each charge booked once");
+});
+
+test("the next claim's open charges an owed browser its own sweep of older sessions released to when that sweep answered, never back to when the earlier release went out: the stretch the browser ran after a release that failed is charged", async (t) => {
+  const { ctx, harness, session, spendOf, kinds, entries } = await unheldRoot(t);
+  await assert.rejects(spendOf().letGo(harness, async ({ releasing }) => {
+    await releasing(session("bb-swept"));
+    await releasing(session("bb-gone"));
+    throw new Error("the process ended");
+  }, ctx));
+  const owedAt = Object.fromEntries((await entries()).filter((e) => e.kind === BROWSER_UNHELD_OWED).map((e) => [e.data.id, e.data.at]));
+  const sweptAt = new Date(Date.parse(owedAt["bb-swept"]) + 300_000).toISOString();
+  const asked = [];
+  const browser = {
+    // Both stopped by now: bb-swept by the claim's sweep, bb-gone by its own release.
+    running: async (id) => void asked.push(id) ?? false,
+    close: async () => assert.fail("nothing is running to close"),
+    sweptOlder: new Map([["bb-swept", sweptAt]]),
+  };
+  await spendOf().recoverOwed(harness, browser, ctx);
+  const charges = Object.fromEntries((await entries()).filter((e) => e.kind === BROWSER_CHARGED).map((e) => [e.data.tag, e.data]));
+  assert.equal(charges["unheld:bb-swept"].at, sweptAt, "the swept one ran until the sweep answered");
+  assert.equal(charges["unheld:bb-gone"].at, owedAt["bb-gone"], "one the sweep did not release is charged to its release");
+  assert.ok(charges["unheld:bb-swept"].seconds >= charges["unheld:bb-gone"].seconds + 299, JSON.stringify(charges));
+  assert.deepEqual(asked, ["bb-gone"], "the vendor is asked only about the one the sweep did not release");
+  assert.deepEqual((await kinds()).filter(([kind]) => kind === "said"), [["said", ["bb-swept"]], ["said", ["bb-gone"]]]);
 });

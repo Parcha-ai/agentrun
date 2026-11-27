@@ -27,10 +27,10 @@ export const AUTH_METHOD = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const ALLOW_FORMS = {
   /** Goose 1.59.2's permission file (PermissionConfig under `user`, every field present: none has a default, and a
    *  file that does not parse stops Goose at its start): each tool always allowed by the name Goose calls it,
-   *  `agentrun__<tool>`, nothing asked before or never allowed. Written as JSON, which YAML reads. Goose's own tools are
-   *  not named, so they still ask. */
-  "goose-permission": (tools: readonly string[]) => `${JSON.stringify({ user: { always_allow: tools.map((tool) => `${MCP_SERVER}__${tool}`), ask_before: [], never_allow: [] } })}\n`,
-} satisfies Record<string, (tools: readonly string[]) => string>;
+   *  `<server>__<tool>` (`server`: our MCP server's name at this start, mcpServerName), nothing asked before or never
+   *  allowed. Written as JSON, which YAML reads. Goose's own tools are not named, so they still ask. */
+  "goose-permission": (tools: readonly string[], server: string) => `${JSON.stringify({ user: { always_allow: tools.map((tool) => `${server}__${tool}`), ask_before: [], never_allow: [] } })}\n`,
+} satisfies Record<string, (tools: readonly string[], server: string) => string>;
 
 /** The forms an allowFile may take, by name: a recipe loader's check (serve's) reads them from here. */
 export const ALLOW_FILE_FORMS: readonly string[] = Object.freeze(Object.keys(ALLOW_FORMS));
@@ -41,9 +41,9 @@ export type AcpAllowForm = keyof typeof ALLOW_FORMS;
 /** A recipe's allowFile: where in HOME the agent reads which tools run unasked, and in what form. */
 export type AcpAllowFile = { readonly path: string; readonly form: AcpAllowForm };
 
-/** The text of an allowFile in `form` for a start whose MCP server lists `tools`. */
-export function allowFileText(form: AcpAllowForm, tools: readonly string[]): string {
-  return ALLOW_FORMS[form](tools);
+/** The text of an allowFile in `form` for a start whose MCP server, given to the agent as `server`, lists `tools`. */
+export function allowFileText(form: AcpAllowForm, tools: readonly string[], server: string = MCP_SERVER): string {
+  return ALLOW_FORMS[form](tools, server);
 }
 
 export interface AcpRecipe {
@@ -90,6 +90,10 @@ export interface AcpRecipe {
    *  (`gpt-5.4-nano`): chosen with session/set_model among those session/new lists, before the first prompt. One it
    *  does not list is refused with ACP_CODES.modelUnlisted. Absent: the agent's own default. */
   readonly model?: string;
+  /** What the agent is told at each session's start about how the recipe runs it, which it cannot see for itself
+   *  (Cursor: its own Write tool is refused, so a file is written with a shell command): after the session's own
+   *  instructions, by the same route (the system prompt the agent advertises, else ahead of the first prompt). */
+  readonly instructions?: string;
   /** Files written into its private HOME before it starts, by their path in HOME (`.config/goose/config.yaml`). */
   readonly files?: Readonly<Record<string, string>>;
   /** A file in HOME, written at each start from the tools that start's MCP server lists, that tells the agent to run
@@ -105,6 +109,12 @@ export interface AcpRecipe {
   /** Where in HOME the agent keeps its own sessions: mirrored into the session's records, so another runner's agent
    *  loads them (session/load). Credential files under them are never mirrored. */
   readonly state?: readonly string[];
+  /** The MCP config files the agent reads, each JSON with an `mcpServers` object: `~/<path>` or `$HOME/<path>` in its
+   *  private HOME, else a path in the work directory (Cursor 2026.11.13: `~/.cursor/mcp.json` and `.cursor/mcp.json`).
+   *  Under a per-start server name and at least one of these, the run keeps one name across its starts; one of these
+   *  that declares a server under it has it refused for that start (a fresh name, the run told which file), and the file
+   *  is never edited. Without any, each start names the server afresh. */
+  readonly mcpConfigs?: readonly string[];
   /** What the agent is expected to advertise at initialize: a mismatch refuses with ACP_CODES.capabilityMismatch.
    *  `load`: it resumes a session with session/load. `mcp`: the transport our tools go over. */
   readonly declares: { readonly load: boolean; readonly mcp: "http" | "stdio" };
@@ -119,6 +129,15 @@ export interface AcpRecipe {
      *  it from writing files unasked, asks for each). Absent: every permission request goes to the host's gate. */
     readonly permissionTie?: "title";
   };
+}
+
+/** Where an mcpConfigs entry is: `home` (a `~/` or `$HOME/` path, as `files` spells one, made relative to HOME) or
+ *  `work` (relative to the work directory); undefined when it leaves either or is no path. */
+export function mcpConfigPath(path: unknown): { readonly in: "home" | "work"; readonly path: string } | undefined {
+  if (typeof path !== "string") return undefined;
+  const inHome = path.startsWith("~/") || path.startsWith("$HOME/");
+  const clean = homePath(path.startsWith("~/") ? path.slice(2) : path);
+  return clean ? { in: inHome ? "home" : "work", path: clean } : undefined;
 }
 
 /** `path` in HOME, normalized, or undefined when it leaves HOME (absolute, `..`, or a `$HOME/` prefix spelled out). */
@@ -153,6 +172,8 @@ export function recipeProblems(recipe: AcpRecipe): string[] {
   if (!/^[a-z][a-z0-9-]{0,62}$/.test(recipe.id ?? "")) problems.push(`the id ${JSON.stringify(recipe.id)} is not lowercase letters, digits and dashes`);
   if (typeof recipe.command !== "string" || !isAbsolute(recipe.command)) problems.push("the command must be an absolute path");
   if (!recipe.declares || typeof recipe.declares.load !== "boolean" || (recipe.declares.mcp !== "http" && recipe.declares.mcp !== "stdio")) problems.push('declares needs load (true or false) and mcp ("http" or "stdio")');
+  const told: unknown = recipe.instructions;
+  if (told !== undefined && (typeof told !== "string" || !told.trim())) problems.push("the instructions must be words, when there are any");
   const billing = recipe.billing as { kind?: unknown; maxTurns?: unknown; maxToolCalls?: unknown } | undefined;
   if (billing?.kind === "plan") {
     if (!Number.isInteger(billing.maxTurns) || (billing.maxTurns as number) < 1) problems.push("plan billing needs maxTurns, a whole number of turns of at least 1");
@@ -160,6 +181,9 @@ export function recipeProblems(recipe: AcpRecipe): string[] {
   } else if (billing?.kind !== "proxy") problems.push('billing is { kind: "plan", maxTurns, maxToolCalls } or { kind: "proxy" }');
   for (const path of Object.keys(recipe.files ?? {})) if (!homePath(path)) problems.push(`the file ${JSON.stringify(path)} must be inside the private HOME`);
   for (const path of recipe.state ?? []) if (!homePath(path)) problems.push(`the state path ${JSON.stringify(path)} must be inside the private HOME`);
+  const configs: unknown = recipe.mcpConfigs;
+  if (configs !== undefined && !Array.isArray(configs)) problems.push("mcpConfigs must be a list of paths");
+  else for (const path of configs ?? []) if (!mcpConfigPath(path)) problems.push(`the mcpConfigs path ${JSON.stringify(path)} must be ~/<a path inside the private HOME> or a path inside the work directory`);
   if (recipe.allowFile !== undefined) {
     const allow = recipe.allowFile as { path?: unknown; form?: unknown } | null;
     const path = typeof allow?.path === "string" ? homePath(allow.path) : undefined;

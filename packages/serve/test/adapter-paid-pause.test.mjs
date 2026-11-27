@@ -16,6 +16,7 @@ const { paidRequest } = await import("../dist/paid-calls.js");
 const { parallelSearchFee } = await import("@parcha/agentrun-web");
 const { timelineOf } = await import("../dist/timeline/index.js");
 const { mcpGateway } = await import("../dist/mcp-gateway.js");
+const { keepText } = await import("../dist/runner/redact.js");
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 after(closeOpenSessions);
 
@@ -183,6 +184,7 @@ test("a priced MCP call the run's cap has no room for parks the run at its next 
   // Never reached: the call is refused before it leaves, so no server listens at this address.
   const url = "http://127.0.0.1:9/mcp";
   const gateway = mcpGateway({
+    redact: keepText,
     pin: { fake: { url, tools: [{ name: "paid", inputSchema: { type: "object" } }], prices: { paid: 0.5 } } },
     credentials: { fake: { url } },
     work: () => work,

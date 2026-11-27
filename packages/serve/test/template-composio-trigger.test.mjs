@@ -12,7 +12,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { PackageError, readPackage } from "../dist/templates.js";
-import { startFakeComposio } from "./fixtures/fake-composio.mjs";
+import { ISSUE_ADDED, startFakeComposio } from "./fixtures/fake-composio.mjs";
 import { scratch, secretWritePath, serve } from "./support.mjs";
 
 secretWritePath(["PUT"], /^\/settings\/mcp-servers\/[^/]+\/composio$/);
@@ -20,6 +20,8 @@ secretWritePath(["PUT"], /^\/settings\/mcp-servers\/[^/]+\/composio$/);
 const PUBLIC = "https://agentrun.example.com";
 const TOOLS = [{ slug: "GITHUB_LIST_ISSUES", name: "List issues", description: "Lists issues." }];
 const NEED = { source: "composio", toolkit: "github", required: "true" };
+/** A webhook event whose config schema needs no field, as a new-channel event's is. */
+const PUSHED = { ...ISSUE_ADDED, slug: "GITHUB_PUSH_EVENT", name: "Push Event", description: "Triggered when commits are pushed.", config: { type: "object", title: "WebhookConfigSchema", properties: {} } };
 
 /** The owner's repository as two parameters, required (as a shipped package's are) unless `optional` names one, with no
  *  default unless `defaults` gives it one. */
@@ -44,8 +46,7 @@ triggers:
       kind: composio
       server: ${server}
       event: ${event}
-      config: ${config}
-${extra.map((line) => `      ${line}`).join("\n")}
+${config === null ? "" : `      config: ${config}\n`}${extra.map((line) => `      ${line}`).join("\n")}
     target: { kind: start_run, input: { content: "Triage the new issue." } }
 ---
 Triage the issue with mcp:github/GITHUB_LIST_ISSUES.
@@ -73,10 +74,10 @@ async function problemsOf(t, options = {}) {
 }
 
 /** A server serving the package (`manifest`, its options), with a fake Composio (GitHub, connected as agentrun-qa) and
- *  each saved Composio GitHub server of `names`; at the public URL unless `publicUrl` says none. */
-async function withSaved(t, names, { manifest, publicUrl = PUBLIC } = {}) {
+ *  each saved Composio GitHub server of `names`; at the public URL unless `publicUrl` says none; the fake lists `triggerTypes` when given. */
+async function withSaved(t, names, { manifest, publicUrl = PUBLIC, triggerTypes } = {}) {
   const { root } = await packageWith(t, manifest?.extra ?? [], manifest);
-  const composio = await startFakeComposio({ toolkits: { github: { no_auth: false, tools: TOOLS } }, authConfigs: { github: [{ id: "ac_managed", is_composio_managed: true }] }, active: ["github"] });
+  const composio = await startFakeComposio({ toolkits: { github: { no_auth: false, tools: TOOLS } }, authConfigs: { github: [{ id: "ac_managed", is_composio_managed: true }] }, active: ["github"], ...(triggerTypes ? { triggerTypes } : {}) });
   t.after(() => composio.close());
   const server = await serve(t, { templates: root, ...(publicUrl ? { publicUrl } : {}), composioControl: { baseUrl: composio.baseUrl } });
   for (const name of names) {
@@ -153,6 +154,21 @@ test("the need a composio trigger names is required: an optional one could resol
   const problems = await problemsOf(t, { need: { ...NEED, required: "false" } });
   assert.ok(problems.some((one) => /^agent\.md: triggers\[0\]\.source\.server/.test(one) && /required: true/.test(one)), JSON.stringify(problems));
   assert.deepEqual(await problemsOf(t, {}), [], "the package with a required composio need reads");
+});
+
+test("a package's composio trigger written without a config reads, and its apply makes the trigger and its instance with the empty config, which a re-apply keeps", async (t) => {
+  assert.deepEqual(await problemsOf(t, { config: null }), []);
+  const { api, composio } = await withSaved(t, ["work-github"], { manifest: { event: PUSHED.slug, config: null }, triggerTypes: { github: [ISSUE_ADDED, PUSHED] } });
+  const applied = await api("POST", "/templates/issues/apply", { parameters: {} });
+  const trigger = await madeTrigger(api, applied);
+  assert.deepEqual(trigger.source.config, {});
+  assert.deepEqual([...composio.instances.values()].map((i) => [i.trigger_name, i.trigger_config]), [[PUSHED.slug, {}]]);
+  // The package applied again onto its agent keeps the trigger as it stands: its config is still the empty one.
+  const again = await api("POST", "/templates/issues/apply", { parameters: {}, agent_id: applied.body.agent_id });
+  assert.ok(again.status === 200 || again.status === 201, `${again.status}: ${JSON.stringify(again.body)}`);
+  const triggers = (await api("GET", "/triggers")).body.triggers;
+  assert.deepEqual(triggers.map((one) => [one.id, one.source.config]), [[trigger.id, {}]]);
+  assert.equal(composio.instances.size, 1, "no second instance");
 });
 
 test("a composio trigger's config values take parameters, filled at apply: the trigger and its instance on Composio carry the owner's repository", async (t) => {

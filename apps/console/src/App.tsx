@@ -39,6 +39,7 @@ import { TemplatesPage } from "@/components/Templates";
 import { FreeShelf } from "@/components/FreeShelf";
 import { SuggestionsPage } from "@/components/SuggestionsPage";
 import { repoOfHash } from "@/lib/suggestions";
+import { freeModels } from "@/lib/freeShelf";
 import { WrappedPage } from "@/components/WrappedPage";
 import { LiveRun } from "@/components/LiveRun";
 import { Race } from "@/components/Race";
@@ -810,8 +811,10 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
   const moveToRunner = async (agentId: string): Promise<MovedToRunner> => {
     const { agent, etag } = await v2.getAgent(agentId);
     const tools = agent.definition.tools ?? [];
-    const fields = computerFields({ kind: "none" }, tools, editorCaps.tools)
-      ?? computerFields({ kind: "none" }, tools, toolOffers((await fetchCaps() as unknown as { tools?: unknown } | null)?.tools));
+    // What the no-computer choice's shell runs on the runner, from the computers list; none where it can't be read.
+    const kinds = await v2.computers().then((r) => r.kinds, () => null);
+    const read = async () => { const caps = await fetchCaps() as unknown as { tools?: unknown } | null; return computerFields({ kind: "none" }, tools, toolOffers(caps?.tools), kinds); };
+    const fields = computerFields({ kind: "none" }, tools, editorCaps.tools, kinds) ?? await read();
     if (!fields) throw new Error("the server's tools could not be read, so which of them run only in a box is unknown. Try again.");
     const { unchanged, ...body } = editBody(agent, fields, "Moved to the runner, where Claude Code's login on this machine runs it");
     if (unchanged) return { revision: agent.revision, saved: false, dropped: [] };
@@ -978,7 +981,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
         : where.section === "factory"
         ? <AgentFactoryPage v2={v2} agentName={agentName} />
         : where.section === "templates"
-        ? <TemplatesPage key={where.install !== undefined ? `install:${where.install}` : `${where.template ?? ""}:${where.templateModel ?? ""}`} v2={v2} name={where.template} install={where.install} model={where.templateModel} go={go} />
+        ? <TemplatesPage key={where.install !== undefined ? `install:${where.install}` : `${where.template ?? ""}:${where.templateModel ?? ""}`} v2={v2} name={where.template} install={where.install} model={where.templateModel} freeIds={c ? freeModels(c.harnesses).map((m) => m.id) : undefined} go={go} />
         : where.section === "free"
         ? <FreeShelf v2={v2} harnesses={editorCaps.harnesses} tools={c?.tools} freeRequests={editorCaps.freeRequests} routePrefix={c?.models?.route_prefix} go={go}
             fit={<LocalModelCard v2={v2} onPulling={() => setFitHeld(true)} onReady={localReady} onDone={() => setFitHeld(false)} />} fitHeld={fitHeld} localModel={localModel} />
@@ -992,7 +995,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
               {operationPicker}
               <span className="min-w-0 break-all font-mono text-small text-muted-foreground">{where.operation === "apply-template" ? `/v2/templates/${where.template ? encodeURIComponent(where.template) : "{template}"}/apply` : where.operation === "list-runs" ? (where.playgroundAgent ? `/v2/agents/${where.playgroundAgent}/runs` : "/v2/runs") : where.operation === "create-agent" ? "/v2/agents" : where.operation === "edit-agent" ? `/v2/agents/${where.playgroundAgent ?? "{agent_id}"}/definition` : "/v2/agents/{agent_id}/runs"}</span>
             </div>}
-            {where.operation === "apply-template" ? <div className="min-h-0 flex-1 overflow-auto"><TemplatesPage key={where.template ?? ""} v2={v2} name={where.template} go={go} playground draft={where.draft} /></div> : where.operation === "list-runs" ? <RunsRequest key={`list:${where.playgroundAgent ?? ""}:${where.status ?? ""}:${where.archived ?? false}:${where.source ?? ""}:${where.from ?? ""}:${where.to ?? ""}:${where.model ?? ""}`} v2={v2} origin={location.origin} agentId={where.playgroundAgent} filter={{ status: where.status, archived: where.archived, source: where.source, from: where.from, to: where.to, model: where.model }} /> : where.operation ? <AgentRequest key={`${where.operation}:${where.playgroundAgent ?? ""}:${where.draft ?? ""}`} v2={v2} operation={where.operation} origin={location.origin} agentId={where.playgroundAgent} draft={where.draft} harnesses={editorCaps.harnesses} routePrefix={c?.models?.route_prefix} /> : <>
+            {where.operation === "apply-template" ? <div className="min-h-0 flex-1 overflow-auto"><TemplatesPage key={where.template ?? ""} v2={v2} name={where.template} go={go} playground draft={where.draft} freeIds={c ? freeModels(c.harnesses).map((m) => m.id) : undefined} /></div> : where.operation === "list-runs" ? <RunsRequest key={`list:${where.playgroundAgent ?? ""}:${where.status ?? ""}:${where.archived ?? false}:${where.source ?? ""}:${where.from ?? ""}:${where.to ?? ""}:${where.model ?? ""}`} v2={v2} origin={location.origin} agentId={where.playgroundAgent} filter={{ status: where.status, archived: where.archived, source: where.source, from: where.from, to: where.to, model: where.model }} /> : where.operation ? <AgentRequest key={`${where.operation}:${where.playgroundAgent ?? ""}:${where.draft ?? ""}`} v2={v2} operation={where.operation} origin={location.origin} agentId={where.playgroundAgent} draft={where.draft} harnesses={editorCaps.harnesses} routePrefix={c?.models?.route_prefix} /> : <>
               {!agents && noModel}
               {startError && <div className="m-8 border p-4" role="alert"><p className="text-lead text-destructive-text">The agents could not be read: {startError}</p><Button size="sm" className="mt-3" type="button" onClick={() => setRetry((n) => n + 1)}>Try again</Button></div>}
               {agents && <Playground lead={operationPicker} notice={noModel} agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onRevision={(revision, definition) => setPlaygroundRevision({ revision, definition })} onSend={send} limits={caps?.limits} {...(demo ? { upload: demoUpload } : {})} removeUpload={v2.deleteUpload} onMoveToRunner={moveToRunner} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}

@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { parse as toml } from "smol-toml";
 import { parseDocument } from "yaml";
 import { secretsIn, keyShaped } from "../secret-cut.js";
-import { secretShapes } from "../learn/secrets.js";
+import { secretShapes, valueMatcher } from "../learn/secrets.js";
 import type { SourceSnapshot, SourceSnapshotOptions, SourceSnapshotEntry } from "./source-snapshot-types.js";
 import { removeOwnedCaptureHooks } from "./source-capture-hooks.js";
 import { sourceRuntimeProtocol } from "./source-snapshot-types.js";
@@ -323,6 +323,9 @@ export async function exportSourceSnapshot(options: SourceSnapshotOptions): Prom
   const runtimeConfiguration: Record<string, any> = {}; let modelCache: unknown, selectedAgentModel = false, piSkillRoots: string[] = [];
   let bytes = 0, expandedBytes = 0;
   const blob = (body: Buffer) => { const sha = hash(body); if (!Object.hasOwn(result.blobs, sha)) { if (bytes + body.length > reader.limits.bytes) throw new SourceSnapshotError("limit", "Snapshot exceeds its total byte limit."); bytes += body.length; result.blobs[sha] = body.toString("base64"); } return sha; };
+  // A held value in a form no literal check finds (split by a control character, a terminal sequence, a character that
+  // shows as a box), as the redaction matcher reads it.
+  const heldIn = valueMatcher((options.secretValues ?? []).filter(Boolean));
   const safe = async (body: Buffer, path: string) => {
     reader.keepSecretCheck(body);
     reader.keepSecretCheck(Buffer.from(path));
@@ -341,7 +344,7 @@ export async function exportSourceSnapshot(options: SourceSnapshotOptions): Prom
       else if (/\.toml$/i.test(path)) structuredSecret = literal(toml(content));
       else if (/\.ya?ml$/i.test(path)) structuredSecret = literal(parseDocument(content).toJS({ maxAliasCount: 0 }));
     } catch { /* Invalid source configuration is separately a blocker when it is active policy. */ }
-    if (credentialPath(path) || structuredSecret || options.secretValues?.some(secret => secret && (content.includes(secret) || path.includes(secret) || content.includes(JSON.stringify(secret).slice(1, -1)))) || secretShapes(content).length || (await secretsIn(content)).length) {
+    if (credentialPath(path) || structuredSecret || options.secretValues?.some(secret => secret && (content.includes(secret) || path.includes(secret) || content.includes(JSON.stringify(secret).slice(1, -1)))) || heldIn(content) || secretShapes(content).length || (await secretsIn(content)).length) {
       block("secret_content", "Credential-bearing content was withheld. Resolve the destination secret through its owner-authorized sign-in flow.", path); return false;
     }
     return true;

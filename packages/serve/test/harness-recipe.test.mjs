@@ -6,7 +6,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, st
 import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
-import { agent, call, clientOwnerSession, follow, scratch, serve, startRun, storeBytes, withEnv } from "./support.mjs";
+import { agent, call, claimsAfterRow, clientOwnerSession, FAUX, follow, scratch, serve, startInProcessRunner, startRun, storeBytes, withEnv } from "./support.mjs";
 import { firings } from "./trigger-support.mjs";
 import { findPlanted, plantedValue } from "./fixtures/planted-secrets.mjs";
 import { storeOn } from "./store-helpers.mjs";
@@ -137,6 +137,14 @@ test("the loader passes a recipe's allowFile and its title tie through, to the a
   assert.deepEqual(acpRecipeFor(tied, "/opt/agent", tied.release.archives[PLATFORM], route).quirks, { permissionTie: "title" });
 });
 
+test("the loader passes a recipe's MCP configs through to the adapter's recipe as they are: ~/ in HOME, any other in the work directory", async () => {
+  const { acpRecipeFor } = await import("../dist/harness-recipe-entry.js");
+  const recipe = parseRecipe(JSON.stringify(recipeOf(undefined, { ...TIED, mcpConfigs: ["~/.agent/mcp.json", ".agent/mcp.json"] })));
+  assert.deepEqual(recipe.mcpConfigs, ["~/.agent/mcp.json", ".agent/mcp.json"]);
+  assert.deepEqual(acpRecipeFor(recipe, "/opt/agent", recipe.release.archives[PLATFORM], { on: "keys" }).mcpConfigs, ["~/.agent/mcp.json", ".agent/mcp.json"]);
+  assert.equal(acpRecipeFor(parseRecipe(JSON.stringify(recipeOf())), "/opt/agent", recipe.release.archives[PLATFORM], { on: "keys" }).mcpConfigs, undefined);
+});
+
 test("the loader passes a recipe's announces field through to the adapter's recipe, and refuses one in another shape with words that give its shape", async () => {
   // Which tool of ours an agent's tool_call names is read from the field this names, never from its title.
   const { acpRecipeFor } = await import("../dist/harness-recipe-entry.js");
@@ -205,6 +213,8 @@ const BROKEN = [
   }],
   ["rule 3, private paths: a file outside HOME", RECIPE_CODES.paths, () => recipeOf(undefined, { files: { "/etc/model-agent.json": "{}" } })],
   ["rule 3, private paths: state that climbs out of HOME", RECIPE_CODES.paths, () => recipeOf(undefined, { state: ["../shared/sessions"] })],
+  ["rule 3, private paths: an MCP config that climbs out of HOME", RECIPE_CODES.paths, () => recipeOf(undefined, { mcpConfigs: ["~/../.cursor/mcp.json"] })],
+  ["rule 3, private paths: an MCP config outside the work directory", RECIPE_CODES.paths, () => recipeOf(undefined, { mcpConfigs: ["/etc/cursor/mcp.json"] })],
   ["rule 3, private paths: an allowFile outside HOME", RECIPE_CODES.paths, () => recipeOf(undefined, { allowFile: { path: "/etc/goose/permission.yaml", form: "goose-permission" } })],
   ["an allowFile in a form no agent reads", RECIPE_CODES.invalid, () => recipeOf(undefined, { allowFile: { path: ".config/goose/permission.yaml", form: "yaml" } })],
   ["an allowFile at a path its files also write", RECIPE_CODES.invalid, () => recipeOf(undefined, { files: { ".config/goose/permission.yaml": "{}" } })],
@@ -1818,7 +1828,7 @@ test("a held run on a plan-billed recipe whose model was refused at its create i
   assert.ok(held.spec.adapter, "and its claim still builds its agent's adapter, so it holds its computer");
   // A run's own process asks its runner (run-child-host.ts heldFor) for its harness's keys, by the recipe file it loaded.
   const digest = planRecipesOf(env)[0].digest;
-  const seam = (launch) => heldFor({ store: server, sealKey: seal, env, data }, { claim: { runId: "run-3", epoch: 1 }, run: { agentId: "agent-1", revisionId: "rev-1", signInHanded: null }, launch, revision: { kind: "agentic", body }, claimed: {} }, (text) => text, () => {}).held;
+  const seam = (launch) => heldFor({ store: server, sealKey: seal, env, data }, { claim: { runId: "run-3", epoch: 1 }, run: { agentId: "agent-1", revisionId: "rev-1", signInHanded: null }, launch, revision: { kind: "agentic", body }, claimed: {} }, heldRedactor((text) => text), () => {}).held;
   assert.deepEqual(await seam(launchOf()).harnessKeys(digest), { MODEL_AGENT_API_KEY: KEY }, "a run not held is answered the keys saved for its harness, as before");
   assert.deepEqual(await seam(launchOf({ minutes: 5, refused })).harnessKeys(digest), {}, "a held run its model kept from running is answered none, whatever its process asks");
 });
@@ -1868,7 +1878,7 @@ async function planClaim(t, { over = {}, installed = true, perRunProcess = false
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
   const [claim] = await store.runs.claimMany("runner-a", 1, { leaseMs: 60_000 });
-  if (perRunProcess) setHeld(heldFor({ store: server, sealKey: seal, env, data }, { claim, run: { agentId: "agent-1", revisionId: "rev-1", signInHanded: null }, launch, revision: { kind: "agentic", body }, claimed: {} }, (text) => text, () => {}).held);
+  if (perRunProcess) setHeld(heldFor({ store: server, sealKey: seal, env, data }, { claim, run: { agentId: "agent-1", revisionId: "rev-1", signInHanded: null }, launch, revision: { kind: "agentic", body }, claimed: {} }, heldRedactor((text) => text), () => {}).held);
   const registry = createRegistry();
   let models = createModels();
   harness = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
@@ -1891,4 +1901,71 @@ test("a run's own process, its harness's keys saved and no owner sign-in: a held
     assert.match(error.message, /HARNESS_RECIPE_NOT_INSTALLED|not installed/, `a recipe that is not installed is refused whether held or not: ${error.message}`);
     return true;
   });
+});
+
+test("harness-check reads a tool the agent offered its model as ours under `agentrun` or a run's own name (ar and exactly 6 lowercase hex digits), and nothing near either", async () => {
+  const { checkToolOf } = await import("../dist/harness-check.js");
+  assert.equal(checkToolOf("agentrun__check_echo"), "check_echo");
+  assert.equal(checkToolOf("ar3f12ab__check_echo"), "check_echo");
+  for (const other of ["ar3f12a__check_echo", "ar3f12abc__check_echo", "ar3F12AB__check_echo", "xar3f12ab__check_echo", "ar3f12ab_check_echo", "agentrun_check_echo", "github__check_echo", "check_echo"]) assert.equal(checkToolOf(other), undefined, other);
+});
+
+/** A trigger's message to a run, as a message_run target writes it: it answers nothing, and its origin is the trigger. */
+const TRIGGER_MESSAGE = { text: "A new event came in.", answers: false, origin: { kind: "trigger", trigger_id: "trigger-1", source: "webhook", owner: false } };
+
+test("a run's process on its owner's sign-in (a plan-billed recipe, no key saved), its run ended: a trigger's message that reopens it is written refused in the sign-in's words, and the run is back at its end, claimed once for it and never again on each poll", { skip: linux, timeout: 240_000 }, async (t) => {
+  const { RECIPE_TURN_PERSON_ONLY } = await import("../dist/harness-keys.js");
+  const { data, file, origin } = await installed(t, (o) => signingIn(o));
+  assert.equal((await signIn(file, data)).status, 0);
+  await noteChecked(data, file);
+  const lines = [];
+  const server = await serve(t, { data, harnessRecipes: [file], harnessSignIn: true, childRuns: { log: (line) => void lines.push(line) } });
+  const person = await startRun(server.api, "on-sign-in", "Reply with the word ready.", { harness: "model-agent", model: "model-agent/default" });
+  const ran = await follow(server.api, person.run_id, ["completed", "failed"], { deadlineMs: 120_000 });
+  assert.equal(ran.last.status, "completed", JSON.stringify(ran.last));
+  for (let row = await server.store.runs.get(person.run_id); row.runner !== null; row = await server.store.runs.get(person.run_id)) await new Promise((resolve) => setTimeout(resolve, 50));
+  const before = (await server.store.runAttempts.forRun(person.run_id)).length;
+  const heard = origin.messages().length;
+  const message = await server.store.runs.reopen(person.run_id, { kind: "steer", body: TRIGGER_MESSAGE });
+  const { claims, row, run } = await claimsAfterRow(server.store, person.run_id, message.id, before, server.runnerBeats);
+  assert.equal(claims, 1, `claimed once for the message, never again: ${claims} claims; the row ${JSON.stringify(row)}; ${lines.join("\n")}`);
+  assert.equal(row?.refused, RECIPE_TURN_PERSON_ONLY, JSON.stringify(row));
+  assert.equal(run.state, "ended", JSON.stringify(run));
+  assert.equal(origin.messages().length, heard, "no turn of it reached the vendor");
+});
+
+test("a run's process on its owner's sign-in, its run stopped while queued: a trigger's message that reopens it is written refused in the sign-in's words, claimed once for it and never again on each poll", { skip: linux, timeout: 240_000 }, async (t) => {
+  const { RECIPE_TURN_PERSON_ONLY } = await import("../dist/harness-keys.js");
+  const { sendCommand } = await import("../dist/runner/commands.js");
+  const { data, file, origin } = await installed(t, (o) => signingIn(o));
+  assert.equal((await signIn(file, data)).status, 0);
+  await noteChecked(data, file);
+  const lines = [];
+  const childRuns = { log: (line) => void lines.push(line) };
+  // No runner yet: the person's stop is in before any claim, so the run ends stopped from its queue.
+  const server = await serve(t, { data, harnessRecipes: [file], harnessSignIn: true, runner: false });
+  const person = await startRun(server.api, "stopped-first", "Reply with the word ready.", { harness: "model-agent", model: "model-agent/default" });
+  await sendCommand(server.store, person.run_id, { kind: "stop", body: {} });
+  // Closed here, before serve()'s own teardown (its after-hook runs first).
+  const runner = await startInProcessRunner(server.data, { data: server.data, faux: FAUX, mcpOwn: server.own, harnessRecipes: [file], harnessSignIn: true, childRuns });
+  try {
+    for (let row = await server.store.runs.get(person.run_id); !(row.state === "stopped" && row.runner === null); row = await server.store.runs.get(person.run_id)) await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal((await server.store.runs.get(person.run_id)).outcome, "stopped");
+    const before = (await server.store.runAttempts.forRun(person.run_id)).length;
+    const heard = origin.messages().length;
+    const message = await server.store.runs.reopen(person.run_id, { kind: "steer", body: TRIGGER_MESSAGE });
+    const { claims, row, run } = await claimsAfterRow(server.store, person.run_id, message.id, before, runner.beats);
+    assert.equal(claims, 1, `claimed once for the message, never again: ${claims} claims; the row ${JSON.stringify(row)}; ${lines.join("\n")}`);
+    assert.equal(row?.refused, RECIPE_TURN_PERSON_ONLY, JSON.stringify(row));
+    assert.equal(run.runner, null, JSON.stringify(run));
+    assert.notEqual(run.state, "running", JSON.stringify(run));
+    // A known gap, not this case's: the reopen's claim sends the launch's own input to the vendor, and the run ends ended
+    // with no outcome, not at the stop it had. Once that is fixed, these hold and the todo comes off.
+    await t.test("a run stopped while queued ends stopped and the vendor hears nothing (fixed by the queued-stop reopen change)", { todo: "a refused reopen of a run stopped while queued still works the launch's input" }, () => {
+      assert.equal(origin.messages().length, heard, "no turn of it reached the vendor");
+      assert.deepEqual([run.state, run.outcome], ["stopped", "stopped"], JSON.stringify(run));
+    });
+  } finally {
+    await runner();
+  }
 });
