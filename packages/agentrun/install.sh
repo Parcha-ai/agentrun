@@ -458,8 +458,9 @@ ours() {
 
 # Stops the AgentRun an earlier install started in the background, so only one server uses ~/.agentrun. The installer does
 # it itself, as `agentrun stop` does, since the version installed may have no `agentrun stop`: a SIGTERM to the launcher,
-# which passes it on to its server (the pid in .server.json) and waits for it. Both get 45 s, past the server's 30 s
-# drain, then a SIGKILL; one that outlives that fails the install, so a second server never starts beside it.
+# which passes it on to its server (the pid in .server.json) and waits for it. Both get 60 s, past the close of the
+# runner beside the server (55 s with its 30 s drain: the drain, then the loops' stop), then a SIGKILL; one that outlives
+# that fails the install, so a second server never starts beside it.
 stop_background() {
   bg=$(cat "$root/agentrun.pid" 2> /dev/null) || return 0
   if ours "$bg"; then
@@ -467,7 +468,7 @@ stop_background() {
     say "Stopping the AgentRun started in the background before (pid $bg) ..."
     kill -s TERM "$bg" 2> /dev/null || true
     waited=0
-    while { ours "$bg" || ours "$server"; } && [ "$waited" -lt 45 ]; do
+    while { ours "$bg" || ours "$server"; } && [ "$waited" -lt 60 ]; do
       sleep 1
       waited=$((waited + 1))
     done
@@ -880,8 +881,8 @@ services:
       AGENTRUN_TOKEN: ${AGENTRUN_TOKEN:?run the installer again}
       AGENTRUN_PUBLIC_URL: ${AGENTRUN_PUBLIC_URL:?run the installer again}
     restart: unless-stopped
-    # At least a signed-in server's stop bound (27 s: a ChatGPT plan renewal saves its new pair), as the quickstart's.
-    stop_grace_period: 35s
+    # Above the close of the runner beside the server (40 s with the image's 6 s drain), as the quickstart's.
+    stop_grace_period: 45s
 volumes:
   agentrun-data:
 EOF
