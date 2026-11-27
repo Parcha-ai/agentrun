@@ -1138,6 +1138,34 @@ const CASES = [
           text, values: [P24[0]], hides: [a, b], exact: all("[redacted]"),
         })));
       })(),
+      // A known gap, pinned both ways. A word that is exactly a string prefix before prose's apostrophe ("Plan B's",
+      // "the r's", "item #13's") opens a string, as the prefix rule says, so on the same line the single-quoted literals
+      // after it pair the wrong way round and a held value split across them shows. Main shows each of these too (its
+      // reading opens every apostrophe); reading such an apostrophe as prose as well would read the join a third time,
+      // past WORK. Follow-up: a prefix word before prose's apostrophe on the same line as joined literals. With a line
+      // break after it the string ends there and the literals are withheld (main showed those), and so after "It's".
+      ...(() => {
+        const code = "key = 'Zq8VbN3x' + 'LmT6pR2w'";
+        const words = [
+          ...["B", "N", "E", "X", "L", "U", "R", "F"].map((p) => [p, `Plan ${p}'s`]),
+          ...["u8", "r", "u", "b", "f", "br", "rb", "fr", "rf", "ur"].map((p) => [p, `the ${p}'s`]),
+          ["#13", "item #13's"],
+        ];
+        const at = (lead) => [
+          ["on the same line", `${lead} key: ${code}`, true],
+          ["on the same line, written in a JSON string", JSON.stringify({ note: `${lead} key: ${code}` }), true],
+          ["a line before", `${lead} key:\n${code}`, false],
+        ];
+        return [
+          ...words.flatMap(([prefix, lead]) => at(lead).map(([how, text, shown]) => [`after the prefix word ${prefix} and prose's apostrophe ${how}`, text, shown])),
+          ...at("It's").map(([how, text]) => [`after prose's apostrophe with no prefix word ${how}`, text, false]),
+        ].map(([how, text, shown]) => ({
+          name: shown
+            ? `a held value split across single-quoted literals joined by "+" ${how} shows as it came, as main shows it (known gap)`
+            : `a held value split across single-quoted literals joined by "+" ${how} withholds the text (main showed it)`,
+          text, values: [P24[0]], hides: shown ? [] : ["Zq8VbN3x", "LmT6pR2w"], exact: all(shown ? text : "[redacted]"),
+        }));
+      })(),
       // The values read with each "+" as nothing (the join's values pass), and each needle holding a "+" read so too: a
       // held value's base64 across a property name, a key's line across one, a login with a ":" and a "+" across a
       // single-quoted dict's values, a value of 8 characters with a "+", and the same split where an operator stands.
