@@ -15,17 +15,18 @@ export const COMPUTER_UNAVAILABLE_CODE = "computer_unavailable";
 /** How lostEnd's words begin, and only theirs. */
 const LOST_END = `${COMPUTER_UNAVAILABLE_CODE}: `;
 
-/** The answer of the call in flight when its sandbox, `name`, was found lost, `why` the provider's words. Its code is
- *  gone, never not_found, so no caller reads it as a file or a program that is not there (a shell's fallback from bash
- *  to sh would send the command again, to the new sandbox). */
+/** The answer of the call in flight when its sandbox, `name`, was found lost, `why` serve's sentence for the loss
+ *  (provider-error-words.ts: the machine refused or gone, which says a new one starts), never the provider's words. Its
+ *  code is gone, never not_found, so no caller reads it as a file or a program that is not there (a shell's fallback
+ *  from bash to sh would send the command again, to the new sandbox). */
 export const lostInCallWords = (name: string, why: string): string =>
-  `the computer ${name} was lost while this call ran, and it was not run again: ${why.replace(/[.!?]+$/, "")}. A new computer starts at the next call.`;
+  `the computer ${name} was lost while this call ran, and it was not run again: ${why}`;
 
 /** The Timeline's row once a new sandbox replaced a lost one: its name. */
 export const lostRecreatedWords = (name: string): string => `Its computer was lost; started a new one (${name}).`;
 
-/** The run's end once its sandbox was lost again after `recreates` new ones (the claim's bound): the provider's words,
- *  `why`, last. */
+/** The run's end once its sandbox was lost again after `recreates` new ones (the claim's bound): serve's sentence for
+ *  the loss, `why`, last. */
 export const lostEnd = (recreates: number, why: string): string =>
   `${LOST_END}the run's sandbox was lost ${recreates + 1} ${recreates === 0 ? "time" : "times"}, and a run starts at most ${recreates} new ${recreates === 1 ? "one" : "ones"} in place of a lost one: ${why.replace(/[.!?]+$/, "")}.`;
 

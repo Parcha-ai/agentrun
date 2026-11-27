@@ -48,7 +48,7 @@ export async function layOwnSkills(work: Workspace, skills: Readonly<Record<stri
 }
 
 /** A lay's failure, saying it was the lay of the run's skills: a WorkspaceError keeps its code, its path and its words
- *  (the backend's, an Archil key and Archil's own included) after that. */
+ *  (the backend's: an Archil failure in serve's sentence for it, archil.ts, never Archil's own) after that. */
 function laidFailed(error: unknown): unknown {
   const code = (error as { code?: unknown } | null)?.code;
   if (!(error instanceof Error) || error.name !== "WorkspaceError" || typeof code !== "string") return error;

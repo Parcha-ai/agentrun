@@ -135,7 +135,9 @@ test("a put the disk refuses fails the call in words: it ran, but the run's fold
   };
   const result = await client.call("exec.run", { argv: ["true"], timeoutMs: 10_000 });
   assert.equal(result.ok, false);
-  assert.match(result.error.message, /^exec\.run ran, but the run's folder could not be made durable: 1 of the folder's changes did not land, and are sent again at the next sync: out\.txt: .*the disk is away/);
+  // Archil's failure in serve's words; its own ("the disk is away") is the runner log's.
+  assert.match(result.error.message, /^exec\.run ran, but the run's folder could not be made durable: 1 of the folder's changes did not land, and are sent again at the next sync: out\.txt: put "out\.txt": Archil couldn't be reached\. Try again, or pick another place in Settings\./);
+  assert.doesNotMatch(result.error.message, /the disk is away/);
   assert.equal(disk.files.has(`${ROOT}/out.txt`), false);
   // The next call that may change the folder sends it again.
   refuse = false;

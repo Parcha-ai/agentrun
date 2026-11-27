@@ -127,7 +127,8 @@ test("a priced computer whose connect fails after its create is deleted, and the
     },
   });
   assert.equal(row.state, "failed", JSON.stringify(row));
-  assert.match(row.summary, /the desktop did not answer/);
+  assert.match(row.summary, /could not start a desktop computer: .* answered with an error\. The server log has the details\./);
+  assert.doesNotMatch(row.summary, /the desktop did not answer/, "the provider's own words stay on the runner log");
   assert.equal(vendor.computers.size, 0, "the computer it made is deleted");
   // Its time was never booked (the run's cap never judged): it is the run's unheld time, on its interval.
   const [interval] = await server.computerIntervals.forRun(RUN);

@@ -1156,15 +1156,18 @@ refuses where the shell here is no sandbox.
 
 **A lost sandbox.** A run's sandbox can be lost mid-run: its vendor deleted it (from its own console or API), or no
 longer has it. The tool call in flight when the loss is confirmed fails with code `gone`: `the computer <name> was lost
-while this call ran, and it was not run again: <the provider's words>. A new computer starts at the next call.` It is
+while this call ran, and it was not run again: <Provider> refused the sandbox, or no longer has it. Try again, and a new
+one starts.` It is
 never sent again, to the new sandbox or anywhere, so a command that is not safe to repeat runs at most once. Whatever it
 wrote to the run's folder before the loss stays there. The run's next tool call starts a new
 sandbox under the same claim and runs there, also when the lost one was kept through a park. A start that fails is
 tried again at the next tool call, under the same request, and does not count. In Mode 2 the new sandbox mounts the run's folder again with a new mount
 credential, and the lost one's credential is removed. The run's folder is kept; what was on the lost sandbox outside it
 (its processes, `/tmp`) is gone. The timeline says `Its computer was lost; started a new one (<name>).` A claim starts
-at most 2 new sandboxes. The loss after that fails the run at once, whichever call finds it with error code `computer_unavailable`, in the provider's
-words. A provider error that does not show the sandbox gone (a 5xx, a timeout, its read of the machine failing) starts
+at most 2 new sandboxes. The loss after that fails the run at once, whichever call finds it with error code `computer_unavailable`, in serve's
+words. A provider's failure reaches a person only as one of five sentences (its key refused, its account out of quota
+or credit, the provider not reached, the machine refused or gone, anything else), each naming the provider and what to
+do; the provider's own words go to one runner log line, `run <id> <site>: <class>: <words>`, secrets cut. A provider error that does not show the sandbox gone (a 5xx, a timeout, its read of the machine failing) starts
 nothing. A desktop, a phone, a paired computer and an agent's own computer are never started again this way.
 
 **A phone's apps.** A phone has its stock apps. To give every phone more, the operator names APK files on the machine

@@ -95,7 +95,7 @@ test("the lay reads no error's class: a Workspace whose errors lost it on the wa
   assert.equal(new TextDecoder().decode(disk.files.get(`${ROOT}/.agents/skills/cite/SKILL.md`)), "# Cite\n");
 });
 
-test("a lay that fails says it was the lay of the run's skills, with the path, the disk's key and Archil's words", async (t) => {
+test("a lay that fails says it was the lay of the run's skills, with the path, the disk's key, and Archil's failure in serve's words", async (t) => {
   const disk = new FakeArchilDisk();
   const held = runOver(t, disk);
   const { workspace } = await held.archil();
@@ -113,7 +113,7 @@ test("a lay that fails says it was the lay of the run's skills, with the path, t
   await assert.rejects(layOwnSkills(workspace, { "cite/SKILL.md": "# Cite\n" }), (error) => {
     assert.ok(error instanceof WorkspaceError, `a ${error?.constructor?.name}: ${error?.message}`);
     assert.equal(error.code, "UNAVAILABLE");
-    assert.match(error.message, /^laying the run's skills in \.agents\/skills\/: mkdir "\.agents\/skills": 503 SlowDown: try again$/);
+    assert.equal(error.message, `laying the run's skills in .agents/skills/: mkdir ".agents/skills": Archil couldn't be reached. Try again, or pick another place in Settings.`);
     return true;
   });
 });

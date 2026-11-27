@@ -200,10 +200,13 @@ test("start: an unmounted desktop, a phone and a browser launch with no mount; t
   assert.deepEqual(side.launched[0], ["browserbase", { kind: "browser", keys: { BROWSERBASE_API_KEY: "bk", BROWSERBASE_PROJECT_ID: "bp" }, configuration: browserbase }]);
 });
 
-test("start: a computer that cannot be had fails as computer_unavailable, in the provider's words", async () => {
+test("start: a computer that cannot be had fails as computer_unavailable, in serve's words, the provider's on one runner log line", async () => {
   const side = { keysOf: async () => SAVED.e2b, launch: async () => { throw new Error("E2B answered 503: no capacity"); } };
   const resolved = await resolveComputer({ kind: "desktop", provider: "e2b" }, 2, KIND_REGISTRY, side);
-  await assert.rejects(resolved.start({ workspace: localWorkspace(scratch()), check: { readBackOf } }), (error) => error.code === "computer_unavailable" && error.message === "E2B could not start a desktop computer: E2B answered 503: no capacity");
+  const lines = [];
+  const tell = { runId: "run-1", log: (line) => lines.push(line) };
+  await assert.rejects(resolved.start({ workspace: localWorkspace(scratch()), check: { readBackOf }, held: {}, tell }), (error) => error.code === "computer_unavailable" && error.message === "E2B could not start a desktop computer: E2B couldn't be reached. Try again, or pick another place in Settings.");
+  assert.deepEqual(lines, ["run run-1 claim: down: E2B answered 503: no capacity"]);
 });
 
 test("start: a desktop launched with no hello is refused and released: its ports are filled from what it said at connect", async () => {
@@ -216,13 +219,15 @@ test("start: a desktop launched with no hello is refused and released: its ports
   assert.deepEqual(released, [computer.id]);
 });
 
-test("start: a Docker launch that fails where no daemon answers is refused in the one wording (as Settings → Computers and the run's start say); with a daemon, in the launch's own words", async () => {
+test("start: a Docker launch that fails where no daemon answers is refused in the one wording (as Settings → Computers and the run's start say); with a daemon, in serve's sentence for the launch's failure", async () => {
   const NO_DOCKER = "No Docker on this server: Render and most hosted services run none. A vendor sandbox (Modal, E2B or Agent37) needs Archil turned on in Settings → Workspace.";
   const failing = (daemon) => ({ keysOf: async () => ({}), answers: async () => false, daemon, launch: async () => { throw new Error("cannot ask Docker its architecture (docker version): Cannot connect to the Docker daemon"); } });
   const start = async (side) => (await resolveComputer({ kind: "sandbox", provider: "docker" }, 1, KINDS, side)).start({ workspace: localWorkspace(scratch()), check: { readBackOf } });
   await assert.rejects(start(failing(async () => ({ up: false, absent: true, reason: "exit 1" }))), (error) => error.code === "computer_unavailable" && error.message === NO_DOCKER);
-  await assert.rejects(start(failing(async () => ({ up: true }))), (error) => error.code === "computer_unavailable" && error.message.startsWith("Docker could not start a sandbox computer: cannot ask Docker its architecture"));
-  await assert.rejects(start(failing(undefined)), (error) => error.message.startsWith("Docker could not start a sandbox computer:"), "no daemon check: the launch's words");
+  // "Cannot connect to the Docker daemon", by the one text table: down.
+  const DOWN = "Docker could not start a sandbox computer: Docker couldn't be reached. Try again, or pick another place in Settings.";
+  await assert.rejects(start(failing(async () => ({ up: true }))), (error) => error.code === "computer_unavailable" && error.message === DOWN);
+  await assert.rejects(start(failing(undefined)), (error) => error.message === DOWN, "no daemon check: serve's sentence for the launch's failure");
 });
 
 test("runShellOf, read off the setting, is the shell runHands gives the run over the computer started, for every kind in both modes; a refused setting has none", async () => {

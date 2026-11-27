@@ -252,7 +252,7 @@ test("a launch that fails lets go of the hold, so the agent's next run is not re
   const { store, provider, claim } = await setup();
   const create = provider.create;
   provider.create = async () => ({ ok: false, error: { code: "vendor", message: "Orgo answered 402" } });
-  await assert.rejects(claim("run-1"), /Orgo answered 402/);
+  await assert.rejects(claim("run-1"), /: Orgo says the account is out of quota or credit\. Check the Orgo account's plan and billing, then try again\.$/);
   assert.equal(store.rows.has("agent_computer_hold:agent-1"), false);
   provider.create = create;
   store.runs.set("run-1", "running");
@@ -411,7 +411,8 @@ test("a claim that loses its hold to a resume while it makes the computer delete
       if (spec.labels["agentrun.epoch"] === "1" && resumed === undefined) resumed = await claim("run-1", 2);
       return made;
     };
-    await assert.rejects(claim("run-1", 1), (error) => /computer-c-1, which this claim made, was not deleted \(fenced: /.test(error.message));
+    // The delete's refusal is the provider's (its fence): named, never quoted, beside serve's own words.
+    await assert.rejects(claim("run-1", 1), (error) => /computer-c-1, which this claim made, was not deleted: its provider failed$/.test(error.message) && !error.message.includes("carries run"));
     assert.deepEqual([[...computers.keys()], computers.get("c-1").state, computers.get("c-1").labels["agentrun.epoch"]], [["c-1"], "running", "2"]);
     assert.deepEqual([(await agentComputerOf(store, "agent-1")).id, (await agentComputerOf(store, "agent-1")).state], ["c-1", "held"]);
     await resumed.release();

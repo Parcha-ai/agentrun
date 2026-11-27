@@ -29,9 +29,11 @@ import { recordedClient } from "../computer-calls.js";
 import type { Recording, RecordWatch } from "../computer-record.js";
 import type { MountCheck } from "./attach.js";
 import type { AgentComputer, RunComputer } from "./run-tools.js";
-import { emptyMeta, finalSyncWords, type FolderStore, type HeldFolder, holdSynced, pullFolder, recordMeta, recordWords, type StoredFolder, storedFolder, syncOf } from "./synced-folder.js";
+import { emptyMeta, finalSyncWords, type FolderStore, type HeldFolder, holdSynced, notingStore, pullFolder, recordMeta, recordWords, type StoredFolder, storedFolder, syncOf } from "./synced-folder.js";
 import type { Workspace } from "./workspace.js";
 import { restartWith } from "../start-switches.js";
+import { stderrLog } from "./computer-intervals.js";
+import { isOwnWords, providerFailed, type ProviderTell } from "./provider-error-words.js";
 
 /** The setting kind (what an agent is given, not a computer's capabilities().kind), a machine's kind and groups, and one
  *  provider of the kind registry: the computer module's own types. Where a run's shell is: the kernel registry's. */
@@ -300,8 +302,9 @@ export type ResolvedComputer = {
    *  disk as the claim writes the folder on it, each write fenced by the claim (computer-for-claim.ts, fencedStore),
    *  absent where this runner keeps none; `held`: the claim's synced folder, set here and again by a new sandbox in place
    *  of a lost one (computer-for-claim.ts renewalOf). A computer that cannot be had throws with code
-   *  computer_unavailable and the words. */
-  start(run: { readonly workspace: Workspace; readonly check: MountCheck; readonly store?: FolderStore; readonly held: HeldFolder; readonly signal?: AbortSignal }): Promise<StartedComputer>;
+   *  computer_unavailable and the words: serve's own as they are, a provider's failure in serve's sentence for its class
+   *  (provider-error-words.ts), its own words on one log line through `tell` (the run's; absent, the runner's stderr). */
+  start(run: { readonly workspace: Workspace; readonly check: MountCheck; readonly store?: FolderStore; readonly held: HeldFolder; readonly tell?: ProviderTell; readonly signal?: AbortSignal }): Promise<StartedComputer>;
 };
 
 const SETTINGS = "Settings → Computers";
@@ -512,7 +515,13 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
     provider: entry.id,
     ...(folder ? { folder } : {}),
     ports,
-    async start({ workspace, check, store: disk, held, signal }) {
+    async start({ workspace, check, store: disk, held, tell, signal }) {
+      // A failure at the start, after `lead`: serve's own words as they are; a provider's (the computer's, or the run's
+      // disk's, Archil) in serve's sentence for its class, the provider's own words on one log line with the run's id and
+      // `site`, the provider's keys cut from it.
+      const told: ProviderTell = { runId: tell?.runId ?? "(unknown)", log: tell?.log ?? stderrLog, secrets: [...(tell?.secrets ?? []), ...Object.values(keys)] };
+      const failure = (error: unknown, lead: string, site: string, provider = entry.label, what: string = kind): Error =>
+        unavailable(`${lead}: ${isOwnWords(error) ? error.message : providerFailed(error, { provider, kind: what, site }, told).words}`);
       // A computer kept at the run's park, attached again: it mounts what it mounted, read back under its own epoch.
       const again = await side.reattach?.(entry, { kind, keys, configuration, ...(folder ? { folder } : {}), ...(gpu ? { gpu: { type: gpu.type, count: gpu.count } } : {}), ...(persistent ? { persistent: true as const } : {}), ...(signal ? { signal } : {}) });
       // The run's disk as the claim keeps the folder on it. A synced folder's store: for a new computer, listed and held
@@ -528,7 +537,7 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
           await emptyMeta(disk);
         } catch (error) {
           await again?.release().catch(() => undefined);
-          throw unavailable(`${entry.label} could not start a ${kind} computer: ${error instanceof Error ? error.message : String(error)}`);
+          throw failure(error, `${entry.label} could not start a ${kind} computer`, "claim-disk", "Archil", "disk");
         }
       }
       let stored: StoredFolder | undefined;
@@ -536,7 +545,8 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
         try {
           stored = await storedFolder(store);
         } catch (error) {
-          throw unavailable(`${aLabel(entry.label, true)} ${kind} can't hold this run's folder: ${error instanceof Error ? error.message : String(error)}.`);
+          // A folder over a cap is serve's own words (synced-folder.ts storedFolder); the disk's listing failing, Archil's.
+          throw isOwnWords(error) ? unavailable(`${aLabel(entry.label, true)} ${kind} can't hold this run's folder: ${error.message.replace(/\.$/, "")}.`) : failure(error, `${aLabel(entry.label, true)} ${kind} can't hold this run's folder`, "claim-disk", "Archil", "disk");
         }
       }
       const mount: MountSpec | undefined = !mounts || again ? undefined : folder === "sync" ? { kind: "sync" } : await workspace.mountSpec();
@@ -547,18 +557,22 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
         // A provider that binds a folder of this machine (Docker) whose daemon does not answer: the one wording.
         const said = entry.mounts.includes("bind") && side.daemon ? await side.daemon(entry.id).catch(() => undefined) : undefined;
         if (said && !said.up && said.absent) throw unavailable(noDockerWords(kind, registry.PROVIDERS, mode));
-        throw unavailable(`${entry.label} could not start a ${kind} computer: ${error instanceof Error ? error.message : String(error)}`);
+        throw failure(error, `${entry.label} could not start a ${kind} computer`, "claim");
       }
       // A synced folder, before any tool runs there: pushed into a new computer, or pulled whole from a kept one (whose
       // copy may be newer than the disk's), through the machine's own client. One that can't be had lets the computer go.
       let sync: (() => Promise<Result<void>>) | undefined;
       const own = launched.own ?? launched.client;
       if (store && own) {
+        // A failure on the disk's side is said already, in serve's words (notingStore); the computer's is sorted here.
+        let diskSaid: string | undefined;
+        const noted = notingStore(store, (words) => { diskSaid ??= words; });
         try {
-          held.folder = again ? await pullFolder(store, own, signal) : await holdSynced(store, own, stored!, signal);
+          held.folder = again ? await pullFolder(noted, own, signal) : await holdSynced(noted, own, stored!, signal);
         } catch (error) {
           await launched.release().catch(() => undefined);
-          throw unavailable(`${entry.label} could not start a ${kind} computer: ${error instanceof Error ? error.message : String(error)}`);
+          const lead = `${entry.label} could not start a ${kind} computer`;
+          throw diskSaid === undefined ? failure(error, lead, "claim-sync") : unavailable(`${lead}: the run's folder could not be kept on its disk: ${diskSaid}`);
         }
         sync = syncOf(held);
       }
