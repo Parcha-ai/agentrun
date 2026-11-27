@@ -110,7 +110,8 @@ async function bytes(server, workspace, { path, id, body = "hello" }) {
 
 /** Every operation of WORKSPACE_ROUTES: how a scoped request reaches it, and what a row of another workspace reads as.
  *  `row`: the operation names W1's row by id (agent, run or template), and W2 gets the 404 a missing id gets. `list`: W2's
- *  list holds none of W1's rows. `made`: a write W2 makes lands in W2 alone. `served`: answered to any workspace. */
+ *  list holds none of W1's rows. `made`: a write W2 makes lands in W2 alone. `served`: answered to any workspace.
+ *  `catalog`: Composio's catalog, tested on its own. */
 const TABLE = {
   getRun: { method: "GET", path: "/v2/runs/{run}", row: "run" },
   getTimeline: { method: "GET", path: "/v2/runs/{run}/timeline", row: "run" },
@@ -141,6 +142,9 @@ const TABLE = {
   getCapabilities: { method: "GET", path: "/v2/capabilities", served: true },
   getHealth: { method: "GET", path: "/v2/health", served: true },
   getOpenapi: { method: "GET", path: "/v2/openapi.json", served: true },
+  // Composio's catalog, no workspace's row: api-only-composio-listing.test.mjs.
+  listComposioToolkits: { catalog: true },
+  listComposioTools: { catalog: true },
 };
 
 test("every operation of WORKSPACE_ROUTES is a route of the server, and the table below covers each", () => {

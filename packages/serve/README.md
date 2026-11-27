@@ -2809,8 +2809,8 @@ ordinary MCP server with the key sealed as an `x-api-key` header. `POST /v2/sett
 toolkits Composio offers (`{toolkits: [{slug, name}]}`, by name) for the console's toolkit picker;
 `PUT /v2/settings/mcp-servers/{name}/composio` `{api_key, toolkit, tools, user_id?, auth_config_id?, price_usd?}` makes
 and saves the server. In place of `api_key`, `"api_key_env":
-"COMPOSIO_API_KEY"` reads the key from that variable, as the server and each runner were started with it, at each use and keeps no copy: the
-way an [API-only](#api-only) server's token saves one. That key is only ever sent to Composio's own origin, fixed in
+"COMPOSIO_API_KEY"` (in the save and both listings) reads the key from that variable, as the server and each runner were started with it, at each use and keeps no copy: the
+way an [API-only](#api-only) server's token saves one and lists the toolkits and their actions, scoped to a workspace or not. That key is only ever sent to Composio's own origin, fixed in
 code, so a server saved so whose address is anywhere else is refused by name and sent nothing. The body names no
 address or headers (`422 not_allowed`): Composio answers the address. When the toolkit needs your account and `user_id`
 (default `agentrun`) has none active, the answer's `connect_url` is Composio's page to connect it; nothing here signs
