@@ -120,6 +120,16 @@ const TABLE = {
   sendMessage: { method: "POST", path: "/v2/runs/{run}/messages", row: "run", body: { content: "More." } },
   stopRun: { method: "POST", path: "/v2/runs/{run}/stop", row: "run", body: {} },
   cancelRun: { method: "POST", path: "/v2/runs/{run}/cancel", row: "run", body: {} },
+  deleteRun: { method: "DELETE", path: "/v2/runs/{run}", row: "run" },
+  raiseRunCap: { method: "PATCH", path: "/v2/runs/{run}", row: "run", body: { max_cost_usd: 5 } },
+  getRunGraph: { method: "GET", path: "/v2/runs/{run}/graph", row: "run" },
+  getRunTrace: { method: "GET", path: "/v2/runs/{run}/trace", row: "run" },
+  pauseRun: { method: "POST", path: "/v2/runs/{run}/pause", row: "run", body: {} },
+  resumeRun: { method: "POST", path: "/v2/runs/{run}/resume", row: "run", body: {} },
+  archiveRun: { method: "POST", path: "/v2/runs/{run}/archive", row: "run", body: {} },
+  unarchiveRun: { method: "POST", path: "/v2/runs/{run}/unarchive", row: "run", body: {} },
+  gradeRun: { method: "PUT", path: "/v2/runs/{run}/grade", row: "run", body: { correct: true } },
+  startRun: { method: "POST", path: "/v2/runs/{run}/start", row: "run", body: {} },
   getAgent: { method: "GET", path: "/v2/agents/{agent}", row: "agent" },
   listRevisions: { method: "GET", path: "/v2/agents/{agent}/revisions", row: "agent" },
   listRuns: { method: "GET", path: "/v2/agents/{agent}/runs", row: "agent" },
@@ -202,6 +212,32 @@ test("a scoped request reads another workspace's row as a missing one, the same 
   assert.equal((await unscoped(server, "GET", `/v2/runs/${run.body.run_id}`)).status, 200);
 });
 
+test("a scoped request acts on its own run with the run extras, and a run it purged reads to another workspace as a missing one", { timeout: 120_000 }, async (t) => {
+  // A runner beside the server, so W1's run ends and may be graded and purged.
+  const server = await scopedServer(t, { runner: true });
+  const { run } = await seedW1(server);
+  await until(async () => ["completed", "failed", "cancelled"].includes((await inW1(server, "GET", `/v2/runs/${run}`)).body?.status), 60_000, "W1's run ends");
+  for (const name of ["raiseRunCap", "getRunGraph", "getRunTrace", "pauseRun", "resumeRun", "gradeRun", "startRun"]) {
+    const op = TABLE[name];
+    const answer = await inW1(server, op.method, op.path.replace("{run}", run), op.body === undefined ? {} : { body: op.body });
+    assert.notEqual(answer.status, 403, `${name} is served to W1's own run: ${answer.text}`);
+  }
+  const archived = await inW1(server, "POST", `/v2/runs/${run}/archive`, { body: {} });
+  assert.equal(archived.status, 200, archived.text);
+  assert.ok(archived.body.archived_at, "the run reads archived");
+  const unarchived = await inW1(server, "POST", `/v2/runs/${run}/unarchive`, { body: {} });
+  assert.deepEqual([unarchived.status, unarchived.body.archived_at ?? null], [200, null], unarchived.text);
+  const purged = await inW1(server, "DELETE", `/v2/runs/${run}`);
+  assert.equal(purged.status, 204, purged.text);
+  const mine = await inW1(server, "GET", `/v2/runs/${run}`);
+  assert.deepEqual([mine.status, mine.body.error?.code], [410, "purged"], mine.text);
+  for (const [method, path] of [["GET", "/v2/runs/{run}"], ["DELETE", "/v2/runs/{run}"]]) {
+    const theirs = await inW2(server, method, path.replace("{run}", run));
+    const missing = await inW2(server, method, path.replace("{run}", missingLike(run)));
+    assert.equal(shape(theirs, run), shape(missing, missingLike(run)), `${method}: W1's purged run reads to W2 as a missing one`);
+  }
+});
+
 test("an Idempotency-Key used in one workspace starts afresh in another, and replays in its own", { timeout: 120_000 }, async (t) => {
   const server = await scopedServer(t);
   const key = { "idempotency-key": "apply-once" };
@@ -237,7 +273,7 @@ test("a listed token without the header is 403; the header off an API-only serve
     assert.deepEqual([answer.status, answer.body.error?.code], [400, "bad_request"], `${JSON.stringify(workspace)}: ${answer.text}`);
   }
   assert.equal((await send(server, "GET", "/v2/runs", { workspace: "x".repeat(128) })).status, 200, "128 characters is a name");
-  for (const [method, path] of [["DELETE", "/v2/agents/a1"], ["GET", "/v2/usage"], ["DELETE", "/v2/runs/r1"], ["GET", "/v2/triggers"], ["POST", "/v2/runs"]]) {
+  for (const [method, path] of [["DELETE", "/v2/agents/a1"], ["GET", "/v2/usage"], ["GET", "/v2/runs/r1/usage"], ["POST", "/v2/runs/r1/approvals/ap1"], ["GET", "/v2/triggers"], ["POST", "/v2/runs"]]) {
     const answer = await inW1(server, method, path, method === "GET" || method === "DELETE" ? {} : { body: {} });
     assert.deepEqual([answer.status, answer.body.error?.code, answer.body.error?.details?.reason], [403, "forbidden", "not_scoped"], `${method} ${path}: ${answer.text}`);
   }
