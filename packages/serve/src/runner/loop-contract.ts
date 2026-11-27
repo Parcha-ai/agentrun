@@ -140,6 +140,10 @@ export interface Loop {
    *  computer-held.ts): the runner then goes on handing it rows (the owner's calls and release) until it ends. Absent:
    *  never. */
   keepsComputer?(reason: StopReason): boolean;
+  /** The runner's close set LoopDeps.releaseBy while this loop was already stopping (a person's stop, which stays its
+   *  stop and its end): a tool hosts' release under way is cut by it from now, as a shutdown's stop would cut it. Absent:
+   *  the loop reads releaseBy only when its release begins. */
+  closing?(): void;
 }
 
 /** What a claim's tool hosts get beyond a provider's own cleanup bound to let the run go (RELEASE_MARGIN_MS). */

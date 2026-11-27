@@ -195,5 +195,9 @@ function dispatchLoop(deps: DispatchDeps, loopDeps: LoopDeps): Loop {
     keepsComputer(reason) {
       return inner?.keepsComputer?.(reason) ?? false;
     },
+    // Not chosen yet: the inner loop reads LoopDeps.releaseBy when its release begins.
+    closing() {
+      inner?.closing?.();
+    },
   };
 }

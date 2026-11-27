@@ -81,7 +81,7 @@ function remoteJournal(claim: Claim): Journal {
 }
 
 let loop: Loop | undefined;
-/** When the runner's close cuts the claim's tool hosts' release (LoopDeps.releaseBy), as its shutdown stop said. */
+/** When the runner's close cuts the claim's tool hosts' release (LoopDeps.releaseBy), as its stop or closing said. */
 let releaseBy: number | undefined;
 let made!: (loop: Loop) => void;
 const loopMade = new Promise<Loop>((resolve) => (made = resolve));
@@ -149,6 +149,10 @@ channel.expose("loop", async (method, args) => {
       // A shutdown's stop carries when the runner's close cuts the release (run-child-host.ts): the same clock, one host.
       if (typeof args[1] === "number") releaseBy = args[1];
       return (await loopMade).stop(args[0] as StopReason);
+    case "closing":
+      // The close's cut of the release, for a loop already stopping (run-child-host.ts closing).
+      if (typeof args[0] === "number") releaseBy = args[0];
+      return (await loopMade).closing?.();
     default:
       throw new Error(`a run's loop has no ${method}`);
   }

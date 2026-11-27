@@ -1575,8 +1575,12 @@ export function startRunner(options: RunnerOptions): Runner {
           held.cursor = Math.max(held.cursor, end.id);
           stopLoop(held, { kind: "command", commandId: end.id, ...(end.kind === "cancel" ? { cancel: true as const } : {}) });
         }
-        // A loop a stop or cancel already stops writes that end: it is never cut for the close.
-        if (held.stopping) continue;
+        // A loop a stop or cancel already stops writes that end: it is never cut for the close, but its release under way
+        // is cut by the close's window (releaseBy), as a shutdown's would be.
+        if (held.stopping) {
+          held.loop.closing?.();
+          continue;
+        }
         stopLoop(held, { kind: "shutdown" });
         held.abort.abort(new Error("the runner is closing"));
       }

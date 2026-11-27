@@ -1535,9 +1535,9 @@ export function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, 
       if (!started) return;
       await up;
       if (!channel || channel.closed) return;
-      // A shutdown's stop says when the runner's close cuts the release (LoopDeps.releaseBy), and its grace runs to that
-      // cut and the margin its booking takes, when that is later than its own.
-      const releaseBy = reason.kind === "command" ? undefined : loopDeps.releaseBy?.();
+      // A stop says when the runner's close cuts the release (LoopDeps.releaseBy), once it is closing; a shutdown's grace
+      // runs to that cut and the margin its booking takes, when that is later than its own.
+      const releaseBy = loopDeps.releaseBy?.();
       const told = channel.call("loop", "stop", releaseBy === undefined ? [reason] : [reason, releaseBy]).catch(() => undefined);
       const grace = reason.kind === "command" ? commandGraceMs(loopDeps.releaseBoundMs ?? releaseBoundMs()) : Math.max(STOP_GRACE_MS / 3, releaseBy === undefined ? 0 : releaseBy - Date.now() + RELEASE_MARGIN_MS);
       let timer: NodeJS.Timeout | undefined;
@@ -1549,6 +1549,12 @@ export function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, 
     },
     keepsComputer(reason: StopReason): boolean {
       return reason.kind === "command" && reason.cancel !== true && keeps;
+    },
+    closing(): void {
+      // The close's cut of the release, to the run's process: a loop a person's stop already stops gets no shutdown stop.
+      const releaseBy = loopDeps.releaseBy?.();
+      if (releaseBy === undefined || !started) return;
+      void up.then(() => (channel && !channel.closed ? channel.call("loop", "closing", [releaseBy]) : undefined)).catch(() => undefined);
     },
   };
 }

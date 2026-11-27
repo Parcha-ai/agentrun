@@ -598,7 +598,14 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, co
     crashed.push(closeRunner);
     closeRunner = await startInProcessRunner(data, runnerOptions);
   };
-  return { ...server, data, store, stop, crashRunner, api: client(server.baseUrl, server.token), ...(closeRunner ? { runnerBeats: () => closeRunner.beats() } : {}) };
+  // The runner beside the server closes gracefully (runner.ts close), the server and its store still up for the test to
+  // read what the close left: once, the whole start's stop then closing the rest.
+  const closeRunnerOnly = async () => {
+    const closing = closeRunner;
+    closeRunner = undefined;
+    await closing?.();
+  };
+  return { ...server, data, store, stop, crashRunner, closeRunner: closeRunnerOnly, api: client(server.baseUrl, server.token), ...(closeRunner ? { runnerBeats: () => closeRunner.beats() } : {}) };
 }
 
 /** `server`'s client with every request sent from the owner's session (ownerSessionOf), as the console sends it: the

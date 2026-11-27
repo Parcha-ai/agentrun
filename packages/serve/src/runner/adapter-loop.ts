@@ -4634,6 +4634,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       wakeInbox();
       await finished?.catch(() => undefined);
     },
+    closing() {
+      // A release under way takes the close's window as its cut from now, its stop left as it was (releaseHost).
+      releaseRearm?.();
+    },
   };
 }
 

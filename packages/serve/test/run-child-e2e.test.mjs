@@ -338,3 +338,51 @@ export default async function reply(context, faux) {
   const reaped = events.findIndex((event) => event.startsWith("reaped "));
   assert.ok(reaped > runs[0] && reaped < runs[1], `the first slot's reap ended before the second process ran: ${events.join(" | ")}`);
 });
+
+test("a person's stop of a run in a process of its own, sent in its runner's drain, its browser's release never answering, has the cut's charge and record land inside the close's window, the run ending stopped", { timeout: 180_000 }, async (t) => {
+  const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
+  const { journalRecords } = await import("../dist/runner/journal-reader.js");
+  const { RELEASE_MARGIN_MS } = await import("../dist/runner/loop-contract.js");
+  const { runnerStopBy } = await import("../dist/runner/runner.js");
+  const dir = scratchDir(t, "child-close-stop-");
+  const hold = join(dir, "let-go");
+  t.after(() => existsSync(dir) && writeFileSync(hold, ""));
+  withEnv(t, { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project", FAUX_BROWSER_RELEASE_HOLD: hold }, ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAUX_BROWSER_RELEASE_HOLD", "FAUX_BROWSER_PROVIDER"]);
+  // A 4 s lease less its 1 s margin is a 3 s stop, after a 4 s drain: the close's window ends 7.5 s from its start, its
+  // release cut at 6.5 s (the 1.5 s cleanup bound and its margin). The stop comes 2.5 s into the drain, so a release bound
+  // from its own start would be cut past the window; a stopping run is sent no shutdown stop at the drain's end.
+  const cleanupMs = 1_500;
+  const timing = { leaseMs: 4_000, renewEveryMs: 500, stopMarginMs: 1_000, drainMs: 4_000, cleanupMs, commandPollMs: 50 };
+  const releaseBy = cleanupMs + RELEASE_MARGIN_MS;
+  assert.equal(runnerStopBy(0, timing.drainMs, timing.leaseMs, timing.stopMarginMs, cleanupMs), releaseBy + timing.stopMarginMs);
+  const gate = join(dir, "gate");
+  const lines = [];
+  const { api, store, closeRunner } = await serve(t, { faux: new URL("./fixtures/faux-browse-gated.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname, childRuns: { log: (line) => void lines.push(line) }, runnerTiming: timing });
+  const records = async (runId) => (await journalRecords(store.readJournal(runId), BACKGROUND_CONTEXT)).entries;
+  const charges = async (runId) => (await records(runId)).filter((entry) => entry.kind === "agentrun.browser_charged").map((entry) => entry.data);
+  // The run browses once and then waits, its session open, on a gate that never opens: only the person's stop ends it.
+  const runId = await started(api, "browse-close-stop", { tools: ["browser"] }, { input: { content: `Browse the example page 1 times, then answer once ${gate} exists.` } });
+  for (let waited = 0; (await charges(runId)).length === 0; waited += 100) {
+    assert.ok(waited < 60_000, `the snapshot's call was charged; ${lines.join("\n")}`);
+    await sleep(100);
+  }
+  const began = Date.now();
+  const closing = closeRunner();
+  await sleep(2_500);
+  assert.equal((await api("POST", `/runs/${runId}/stop`)).body.stopped, true);
+  for (let waited = 0; !existsSync(`${hold}.asked`); waited += 50) {
+    assert.ok(waited < 10_000, `the run's stop asked the vendor to release its session; ${lines.join("\n")}`);
+    await sleep(50);
+  }
+  const asked = statSync(`${hold}.asked`).mtimeMs;
+  assert.ok(asked - began < timing.drainMs, `the release began in the drain: ${asked - began} ms`);
+  await closing;
+  const took = Date.now() - began;
+  assert.ok(took < releaseBy + timing.stopMarginMs + 1_500, `the close ended inside its window (${releaseBy + timing.stopMarginMs} ms): ${took} ms`);
+  assert.equal((await store.runs.get(runId)).state, "stopped", "the person's stop is the run's end");
+  const cuts = (await records(runId)).filter((entry) => entry.kind === "agentrun.release.cut").map((entry) => entry.data);
+  assert.equal(cuts.length, 1, `the run says its release was cut, inside the close's window: ${JSON.stringify(cuts)}; ${lines.join("\n")}`);
+  assert.ok(cuts[0].bound_ms < releaseBy, `cut where the close's window cuts the release, not a whole bound after its start: ${JSON.stringify({ cut: cuts[0], from: asked - began })}`);
+  const cut = (await charges(runId)).filter((charge) => !charge.final && Date.parse(charge.at) >= asked);
+  assert.equal(cut.length, 1, `the cut charged the session's time through the cut: ${JSON.stringify({ charges: await charges(runId), asked: new Date(asked).toISOString() })}`);
+});

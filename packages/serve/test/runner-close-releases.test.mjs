@@ -524,6 +524,44 @@ test("pi: a run that ends in the close's drain, its browser's release never answ
   assert.deepEqual(said.filter((line) => /could not be written|releaseCut failed|beforeRelease failed: (?!Harness is closed)/.test(line)), [], "nothing of the release was refused");
 });
 
+test("pi: a person's stop in the close's drain, its browser's release never answering, has the cut's charge and record land inside the close's window, the run ending stopped: a stopping loop's release is cut by the window the drain's end sets", { timeout: 60_000 }, async (t) => {
+  const { RELEASE_MARGIN_MS } = await import("../dist/runner/loop-contract.js");
+  const { runnerStopBy } = await import("../dist/runner/runner.js");
+  const { sendCommand } = await import("../dist/runner/commands.js");
+  const said = warnings(t);
+  // As above: the close's window ends 7.5 s from its start, its release cut at 6.5 s. The stop comes 2.5 s into the
+  // drain, so a release bound from its own start would be cut at 9 s, past the window. A stopping loop is sent no
+  // shutdown stop at the drain's end: only the window the drain's end sets moves its cut.
+  const window = { leaseMs: 4_000, renewEveryMs: 500, stopMarginMs: 1_000, drainMs: 4_000, cleanupMs: CLEANUP_MS };
+  const releaseBy = CLEANUP_MS + RELEASE_MARGIN_MS;
+  assert.equal(runnerStopBy(0, window.drainMs, window.leaseMs, window.stopMarginMs, CLEANUP_MS), releaseBy + window.stopMarginMs);
+  const hold = join(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "release-hold-")), "let-go");
+  t.after(() => writeFileSync(hold, ""));
+  const { server, runner, live } = await piRun(t, "runner-close-stop-release-", { runnerOptions: window, launch: { max_cost_usd: 1 }, env: { FAUX_BROWSER_RELEASE_HOLD: hold } });
+
+  const began = Date.now();
+  const closing = runner.close();
+  await new Promise((resolve) => setTimeout(resolve, 2_500));
+  await sendCommand(server, RUN, { kind: "stop" });
+  await until(() => existsSync(`${hold}.asked`), "the run's stop asked the vendor to release its session, in the drain");
+  const releaseFrom = statSync(`${hold}.asked`).mtimeMs - began;
+  assert.ok(releaseFrom < window.drainMs, `the release began in the drain: ${releaseFrom} ms`);
+  await closing;
+  const took = Date.now() - began;
+
+  assert.ok(took < releaseBy + window.stopMarginMs + 1_500, `the close ended inside its window (${releaseBy + window.stopMarginMs} ms): ${took} ms`);
+  assert.equal((await server.runs.get(RUN)).state, "stopped", "the person's stop is the run's end");
+  const records = await recordsOf(server);
+  const cuts = cutsOf(records);
+  assert.equal(cuts.length, 1, `the run says its release was cut, once: ${JSON.stringify(cuts)}`);
+  assert.ok(cuts[0].bound_ms <= releaseBy - releaseFrom + 1_000 && cuts[0].bound_ms < releaseBy, `cut where the close's window cuts the release, not a whole bound after its start: ${JSON.stringify({ cut: cuts[0], releaseFrom })}`);
+  const asked = statSync(`${hold}.asked`).mtimeMs;
+  const charges = chargesOf(records);
+  assert.equal(charges.filter((charge) => !charge.final && Date.parse(charge.at) >= asked).length, 1, `the cut charged the session's time through the cut: ${JSON.stringify({ charges, asked: new Date(asked).toISOString() })}`);
+  assert.equal(live().length, 1, "the vendor still holds the session");
+  assert.deepEqual(said.filter((line) => /could not be written|releaseCut failed|beforeRelease failed: (?!Harness is closed)/.test(line)), [], "nothing of the release was refused");
+});
+
 test("the close's window runs from its start: a drain, then a release that never ends, is cut where the providers' cleanup bound from the close's start ends, and the claim is renewed to the close's end, so no other runner claims the run before close() resolves", { timeout: 60_000 }, async (t) => {
   const { RELEASE_MARGIN_MS } = await import("../dist/runner/loop-contract.js");
   const { runnerStopBy } = await import("../dist/runner/runner.js");
