@@ -2,7 +2,8 @@
 // beside its end, with no look-back turn and no grade. Two things, one merge a round on its agent's learning:
 //   - its owner's feedback (a grade's words, a message after its first), appended to corrections.md as one line, with
 //     no model turn;
-//   - its compile turn (learn/compile.ts), when one is due: the job written as a workflow, or a revision of a held one,
+//   - its compile turn (learn/compile.ts), when one is due, told the correction the round takes (a grade's words, say)
+//     beside the owner's others: the job written as a workflow, or a revision of a held one,
 //     checked (`checkDraft`: the workflow checks, its dry run, the secret and hidden-character refusals) and committed
 //     directly, with the compiled record on the run's learning. A compile whose drafts all failed is recorded on the
 //     agent's promotion records (compile once: `compileFailed`), never silent.
@@ -51,8 +52,10 @@ export interface ReflectDeps {
    *  alone, since a kept line drops the file's oldest lines to fit); empty when they would be taken. */
   readonly correctionRefused: (input: { runId: string; agentId: string; round: number; text: string; refuse: readonly string[] }) => Promise<readonly Problem[]>;
   /** The compile turn's facts (learn/compile.ts CompileAsk), `refuse` cut from what they quote: undefined when the run
-   *  compiles nothing (its job not due, a workflow that answered). Absent, or a read that throws: no compile turn. */
-  readonly compileFacts?: (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[]; round: number }) => Promise<CompileAsk | undefined>;
+   *  compiles nothing (its job not due, a workflow that answered). `correction`: the owner's words this round takes as a
+   *  line of corrections.md (checked already: a refused one is never given), told the compile beside the corrections it
+   *  knows. Absent, or a read that throws: no compile turn. */
+  readonly compileFacts?: (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[]; round: number; correction?: string }) => Promise<CompileAsk | undefined>;
   /** Compile once: a compile turn whose drafts all failed their checks (one answered, none passed) is the compile's
    *  attempt, kept on a promotion record (learning-end.ts recordDraftFailed) that compileFacts reads. Its `workflow` and
    *  `errors` come cut of `refuse`. Absent: none kept. */
@@ -139,10 +142,11 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
     const refusedCorrection = correction === undefined ? [] : await deps.correctionRefused({ runId: input.runId, agentId: input.agentId, round, text: correction, refuse }).catch((): Problem[] => [{ rule: "encoding", detail: "the owner's correction could not be checked" }]);
     const taken = correction !== undefined && !refusedCorrection.length ? correction : undefined;
     // The compile turn, when one is due and the run's cap has room: a cap it reached, or a spend under it that is unknown,
-    // asks no model turn (the cap keeps no reserve).
+    // asks no model turn (the cap keeps no reserve). It is told the correction this round takes (a grade's words, say),
+    // never one refused.
     const noRoom = facts.capReached ? "no_budget" : facts.capUsd !== undefined && facts.spentUsd === null ? "unknown_cost" : undefined;
     const workflowOnly = input.outcome === "completed" && deps.nothingNew !== undefined && (await deps.nothingNew(input.runId).catch(() => false));
-    const compile = !noRoom && deps.compileFacts ? await deps.compileFacts({ runId: input.runId, agentId: input.agentId, outcome: input.outcome, refuse, round }).catch(() => undefined) : undefined;
+    const compile = !noRoom && deps.compileFacts ? await deps.compileFacts({ runId: input.runId, agentId: input.agentId, outcome: input.outcome, refuse, round, ...(taken !== undefined ? { correction: taken } : {}) }).catch(() => undefined) : undefined;
     let draft: DraftCommit | undefined;
     let compiled: { record: CompiledRecord; draft_errors?: string[] } | undefined;
     // A draft the checks refused: their problems by rule (a draft never answered refused nothing).

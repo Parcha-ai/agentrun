@@ -4103,21 +4103,47 @@ as before.
 
 A request in a workspace is served only: the runs' reads and lists (`GET /runs`, `/runs/{id}`, its timeline, files and
 export), a run's message, stop and cancel; the agents' list, read, create, revisions, definition and current revision,
-and a run started on one; the templates' list, read, import and apply; and `/capabilities`, `/health` and
-`/openapi.json`. Every other route is `403 forbidden` with `details.reason: "not_scoped"`. In it, an agent, run or
-imported template package of another workspace (or of none) answers the same `404` as an id no row has, and every list
-holds the workspace's rows alone; bundled template packages are every workspace's. What it makes is the workspace's: an
-agent (made or applied), an imported package (an import whose name another workspace holds is `409 name_taken`). A run
-is its agent's workspace's, so a run a request with no header starts on that agent is the workspace's too. A run's
-`file_ids` naming a file out of the workspace read as no file. An `Idempotency-Key` is the workspace's own: the same key
-in another workspace starts afresh. `GET /capabilities` says so in `features.workspaces`: the header's name, `enforced`
-(true on an API-only server alone) and the operations a scoped request is served, so a proxy can check before it forwards.
+and a run started on one; the templates' list, read, import and apply; the uploaded files' create, upload, list, read and
+delete (`/files`); and `/capabilities`, `/health` and `/openapi.json`. Every other route is `403 forbidden` with
+`details.reason: "not_scoped"`. In it, an agent, run, imported template package or file of another workspace (or of none)
+answers the same `404` as an id no row has, and every list holds the workspace's rows alone, paged within them; bundled
+template packages are every workspace's. What it makes is the workspace's: an agent (made or applied), an imported
+package (an import whose name another workspace holds is `409 name_taken`), a file. A run is its agent's workspace's,
+whoever started it, so a run a request with no header starts on that agent is the workspace's too. A run's `file_ids`
+take the workspace's files alone: one out of it reads as no file. An `Idempotency-Key` is the workspace's own: the same
+key in another workspace starts afresh. An import with no header of a name a workspace holds is `409 name_taken` too,
+never replacing that workspace's package: the operator deletes it first.
+
+Launch disks (`archil_disk` on a run's start) are the backend's to map to its tenants: the server keeps no record of which
+tenant a disk it did not make is for, and a run in a workspace may name any of them. It names no agent's own disk
+(`GET /agents/{id}/archil`) outside its workspace: that reads as a disk Archil does not have (`422` at
+`archil_disk.disk_id`, in the same words).
+
+`GET /capabilities` says what this server does in `features.workspaces`: the header's name, `enforced` (true on an
+API-only server alone), `required_for_tokens` (true when `AGENTRUN_WORKSPACE_TOKENS` names a token, so a request of that
+token without the header is refused, not served every workspace's rows) and the operations a scoped request is served.
+A proxy checks it before it forwards, on each instance: during a rolling deploy an instance of an earlier build ignores
+the header and serves every row. The backend names the workspace itself: it overwrites, never passes through, an
+`AgentRun-Workspace` header its own callers send.
 
 `agentrun-serve workspace-backfill FILE [--apply]` puts agents made before the backend sent the header in a workspace:
 FILE is `{"<agent id>": "<workspace>"}`. It sets an agent with none, refuses one in another workspace and keeps it, and
 without `--apply` writes nothing and prints what it would do. On SQLite it adds the workspace columns first when a server
 of this build has not yet opened the store. A store behind this build (on Postgres, below migration 0033) is refused with
 exit 2 and never migrated: start a server of this build once, then run it again.
+
+Known limits:
+
+- Agent ids are the server's, not a workspace's. `createAgent` with a `definition.id` another workspace holds is
+  `409 agent_exists`, so a caller-picked id tells a tenant that some workspace has it. Ids the server makes (UUIDv7) never
+  collide; a backend that lets its tenants pick ids prefixes them with the workspace.
+- Publisher trust is the server's. Once any workspace imports from a GitHub publisher with `trust_publisher`, every
+  workspace imports from it without, and a dry run's `trusted: true` tells a workspace that some workspace trusted it.
+- `workspace-backfill` maps agents alone. A template package imported before the backend sent the header stays in no
+  workspace: no workspace sees it, an import of its name is `409 name_taken`, and an agent made from it is not applied
+  again in a workspace (its package reads as missing). Delete the package and import it again with the header.
+- On Postgres, migration 0033 builds its two indexes (`agents_by_workspace`, `runs_by_workspace`) inside the migrate
+  transaction, which holds writes to `runs` and `agents` for the build: on a large `runs` table runners wait that long.
 
 ### Share host
 
@@ -5034,7 +5060,9 @@ round on the agent's learning, whatever its harness:
   the fixed request id `learn-reflect-<run id>` and the origin `reflect`, so a server that restarts mid-turn asks again
   and the run takes it once. The turn (`compilePrompt`, in `src/learn/compile.ts`) gives the agent's last runs (each
   input, its tool calls, its answer and what the person said after it), the workflow language and one worked example,
-  and asks for the whole job as one workflow draft. The draft is checked in code and dry-run; what the checks refuse
+  and asks for the whole job as one workflow draft. When the same round takes its owner's words (a grade's, say), the
+  compile is told that line too, on every attempt, beside the owner's other corrections; a line refused above is
+  never told. The draft is checked in code and dry-run; what the checks refuse
   goes back to the model, as data, up to 3 times. A draft that passes is saved directly, with no grader: its
   promotion check (below) decides whether it serves. A compile whose drafts all failed is recorded as the compile's
   attempt (compile once), and its errors are on the run's learning (`draft_errors`), never silent.

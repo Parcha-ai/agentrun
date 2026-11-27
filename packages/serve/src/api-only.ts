@@ -152,8 +152,8 @@ export function servedApiOnly(routes: readonly Route[], method: string | undefin
 /** The refusal's words for `raw` on an API-only server. */
 export const apiOnlyRefusal = (raw: string): string => `this server serves the run API only (${API_ONLY_ENV}=1): ${raw} is not served here`;
 
-/** The operations a scoped request (the AgentRun-Workspace header, workspace-scope.ts) is served: its own agents, runs
- *  and imported template packages, and the server's description. Every other is refused with 403 not_scoped, whatever
+/** The operations a scoped request (the AgentRun-Workspace header, workspace-scope.ts) is served: its own agents, runs,
+ *  imported template packages and uploaded files, and the server's description. Every other is refused with 403 not_scoped, whatever
  *  API_ONLY_ROUTES serves an unscoped request. listAgents, createAgent, updateDefinition, getTemplate, listTemplates and
  *  getOpenapi are not in API_ONLY_ROUTES: an API-only server serves them to a scoped request alone. */
 export const WORKSPACE_ROUTES: ReadonlySet<string> = new Set([
@@ -161,6 +161,7 @@ export const WORKSPACE_ROUTES: ReadonlySet<string> = new Set([
   "listAgents", "getAgent", "listRevisions", "createAgent", "updateDefinition", "setCurrent",
   "importTemplate", "applyTemplate", "getTemplate", "listTemplates",
   "createRun", "sendMessage", "stopRun", "cancelRun",
+  "createFile", "listFiles", "getFile", "uploadFile", "deleteFile",
   "getCapabilities", "getHealth", "getOpenapi",
 ]);
 

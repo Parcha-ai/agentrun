@@ -9020,6 +9020,7 @@ class FeaturesWebhooks(TypedDict):
 class FeaturesWorkspaces(TypedDict):
     header: Literal["AgentRun-Workspace"]
     enforced: bool
+    required_for_tokens: bool
     routes: list[str]
 
 
