@@ -119,7 +119,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
      *  projects setup's list offers and how many sessions they hold; after, to the signed-in owner, how the import asked for at setup stands. Null
      *  where the server offers none (`{ offer: false }`, or a 404: a server without accounts has no such route, and once
      *  the owner is set it is none to a caller not signed in) or refuses the read. */
-    setupImport: () => call<SetupImport | NoOffer>("GET", "/setup/import").then((r) => ((r as Partial<NoOffer> | null)?.offer === false ? null : (r as SetupImport)), (e) => {
+    setupImport: (signal?: AbortSignal) => call<SetupImport | NoOffer>("GET", "/setup/import", { signal }).then((r) => ((r as Partial<NoOffer> | null)?.offer === false ? null : (r as SetupImport)), (e) => {
       if (e instanceof ClientError && (e.status === 404 || e.status === 403)) return null;
       throw e;
     }),
