@@ -4,7 +4,7 @@ import { type ParallelSearchMode, PARALLEL_SEARCH_MODE_USD, type Pay, PaidRefuse
 import { clip, markdownRead, PAGE_READ_MAX_CHARS, type Read, TITLE_CAP, withoutUserinfo } from "../page.js";
 import { type Failed, failed, failure, type Hit, keyWide, type Limit, type Search, type SearchAsk, type Searched, searchArgs, searchFailed, snippetOf } from "../search.js";
 import { defineProvider, type ProviderRun, settingsOf, type WebClient } from "../provider.js";
-import { type Check, domains, matching, oneOf, settingsProblems, wholeIn } from "./keyed.js";
+import { type Check, domains, matching, oneOf, paidSend, settingsProblems, wholeIn } from "./keyed.js";
 
 
 export const PARALLEL_SEARCH_URL = "https://api.parallel.ai/v1/search";
@@ -75,7 +75,8 @@ export function parallelExtract(apiKey: string, send: typeof fetch = fetch, pay:
     };
     const fee = parallelFeeOf(url, body);
     if (!fee) throw new PaidRefused(`Parallel's ${URL.parse(url)?.pathname ?? url} was not sent: it has no price here`);
-    return pay(fee, sent);
+    // A stopped call sends nothing, and one that never left is not billed (paidSend).
+    return paidSend(pay, fee, signal, sent);
   };
   const extract = async (url: string, signal?: AbortSignal, client: WebClient = {}): Promise<Read | Failed> => {
     try {

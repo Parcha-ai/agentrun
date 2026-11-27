@@ -206,6 +206,8 @@ export interface ListedFilter {
   readonly after?: { readonly startedAt: number; readonly id: string };
   readonly limit: number;
   readonly offset?: number;
+  /** Only runs in this workspace (Runs.workspace: the run's own, else its agent's). */
+  readonly workspace?: string;
 }
 /** A run as a list reads it (Runs.listed): its row, its agent's archive time, and its listing as kept (null: none built). */
 export interface ListedRun {
@@ -991,8 +993,9 @@ export class ExternalBodyConflict extends Error {
 export interface Agents {
   /** Creates the agent, or renames it (name, description) when it exists. */
   put(agent: { id: string; name: string; description?: string | null }): Promise<void>;
-  /** The agent row and its first revision, current, in one transaction: both or neither. */
-  create(agent: { id: string; name: string; description?: string | null }, firstRevision: NewRevision): Promise<void>;
+  /** The agent row and its first revision, current, in one transaction: both or neither. `workspace`: the workspace a
+   *  scoped request made it in (workspace-scope.ts), written with it; absent, none. */
+  create(agent: { id: string; name: string; description?: string | null; workspace?: string }, firstRevision: NewRevision): Promise<void>;
   get(id: string): Promise<AgentRow | undefined>;
   /** The agent an external reference ("<source>:<kind>:<id>") maps to (Runs.createInline), or undefined before its first
    *  run. */
@@ -1002,7 +1005,14 @@ export interface Agents {
   /** The revision that maps `version` of its owning system, or undefined before that version's first run. */
   externalRevision(agentId: string, version: string): Promise<RevisionRow | undefined>;
   /** The agents, by `archived` (default false). A purged agent (Agents.purge) only with `purged`: what a total counts. */
-  list(options?: { archived?: boolean; purged?: boolean }): Promise<AgentRow[]>;
+  list(options?: { archived?: boolean; purged?: boolean; workspace?: string }): Promise<AgentRow[]>;
+  /** The agent's workspace (null: none, made unscoped), or undefined when there is no such agent. `workspace` given to
+   *  `list`: only the agents in it. */
+  workspace(id: string): Promise<string | null | undefined>;
+  /** Puts the agent in `workspace` only while it is in none, and answers the workspace it is in after (`workspace` when it
+   *  was put there or was there already; another when it was in that one, nothing written), or undefined when there is no
+   *  such agent: an operator's backfill (workspace-backfill.ts). */
+  adoptWorkspace(id: string, workspace: string): Promise<string | null | undefined>;
   /** Archives the agent, or unarchives it. Archived, every trigger of it that is on is turned off in the same transaction
    *  (`disabled` set to `why`, JSON; its scope rows dropped), and those are the answer: from its commit no firing starts a
    *  run of the agent (triggers.fire refuses it, AgentArchived), and none of its triggers is made on or turned on.
@@ -1138,9 +1148,10 @@ export interface Runs {
    *  `started_at`); absent, now. With `firing` (a launch hook's host starting the firing it was handed), that firing is
    *  started with the run in the same transaction, its trigger's last run and failure streak as a started firing's
    *  are, only while it has no run and is still due or sent with a start_by: any other (released, failed, settled) is
-   *  refused (FiringMoved), and nothing is written. */
+   *  refused (FiringMoved), and nothing is written. `workspace`: the scoped request's that made it (workspace-scope.ts),
+   *  written only when given, by a server alone. */
   create(run:{ id: string; agentId: string; revisionId: string; origin?: RunOrigin; labels?: RunLabels;
-    expectedCurrent?: string | null; settingsGuards?: readonly SettingsGuard[]; startedAt?: number; firing?: { triggerId: string; key: string } }, launch?: RunLaunchInput): Promise<RunRow>;
+    expectedCurrent?: string | null; settingsGuards?: readonly SettingsGuard[]; startedAt?: number; firing?: { triggerId: string; key: string }; workspace?: string }, launch?: RunLaunchInput): Promise<RunRow>;
   /** A run whose agent is given inline and mapped to a source system by `agent.ref` and `revision.version`. In one
    *  transaction: the agent (one per `ref`, written on its first run, its name and description brought up to the version
    *  whose first use this is) and the revision (one per `version`, made current on its first use) are written or read, then
@@ -1154,6 +1165,9 @@ export interface Runs {
     launch: RunLaunchInput;
   }): Promise<RunRow>;
   get(id: string): Promise<RunRow | undefined>;
+  /** The run's workspace: its own, else its agent's (null: neither has one), or undefined when there is no such run. A run
+   *  started unscoped of an agent in a workspace is in that workspace. */
+  workspace(id: string): Promise<string | null | undefined>;
   /** The run's launch row (the runner reads it at its claim; the server for views). StoreLaunchMissing when the run has
    *  none (it was not started with one), never a default. */
   launch(runId: string): Promise<RunLaunchRow>;
@@ -1202,8 +1216,9 @@ export interface Runs {
    *  import's read of the sessions it holds, never a reader of a run's content.
    *  `scope` selects, before the limit, the runs the Agent Factory shows, never an imported one: `active`, every
    *  execution still going (a resumable agentic stop and a built-in learning run included); `review`, unarchived ended
-   *  escalations and failures. `before` is an exclusive keyset boundary in descending (startedAt, id) order. */
-  list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; labels?: RunLabels; disk?: string | null; limit?: number; purged?: boolean; scope?: "active" | "review"; before?: { startedAt: number; id: string } }): Promise<RunRow[]>;
+   *  escalations and failures. `before` is an exclusive keyset boundary in descending (startedAt, id) order. `workspace`:
+   *  only the runs in it (Runs.workspace: the run's own, else its agent's). */
+  list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; labels?: RunLabels; disk?: string | null; limit?: number; purged?: boolean; scope?: "active" | "review"; before?: { startedAt: number; id: string }; workspace?: string }): Promise<RunRow[]>;
   /** A page of a runs list, in one read: newest first, `offset` rows on, at most `limit`, and whether more follow (`more`).
    *  Each with its listing as its row keeps it (RUN_LISTING_COLUMNS: null while none has been built), whether that is
    *  behind, and its agent's archive time. `archived` filters on the run's archive or its agent's (true: either; false:
@@ -1872,8 +1887,13 @@ export interface ImportedTemplates {
   list(): Promise<ImportedTemplateRow[]>;
   /** Every imported package's id, sorted, with none of its files read. */
   ids(): Promise<string[]>;
-  /** Keeps the package under its id, in place of the one there (a re-import at a new SHA replaces it). */
-  put(row: Omit<ImportedTemplateRow, "importedAt">): Promise<void>;
+  /** Keeps the package under its id, in place of the one there (a re-import at a new SHA replaces it): true. `workspace`:
+   *  the workspace a scoped request imported it in (workspace-scope.ts), written with it, and the one there is replaced
+   *  only while it is that workspace's: one of another workspace or none is kept, nothing is written, and the answer is
+   *  false. Absent, the row is written whatever its workspace, which stays as it was. */
+  put(row: Omit<ImportedTemplateRow, "importedAt">, workspace?: string): Promise<boolean>;
+  /** Every imported package's workspace by id (null: none), with none of its files read. */
+  workspaces(): Promise<ReadonlyMap<string, string | null>>;
   /** Removes the package: false when none had that id. */
   remove(id: string): Promise<boolean>;
 }

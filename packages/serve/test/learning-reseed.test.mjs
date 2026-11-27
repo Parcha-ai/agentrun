@@ -22,11 +22,15 @@ const refused = (what) => () => {
 };
 const EMPTY_JOURNAL = { scanConversations: async () => ({ items: [] }) };
 const TURNED_JOURNAL = { scanConversations: async () => ({ items: [{ id: 1 }] }), scanEntries: async () => ({ items: [{ id: 1, conversationId: 1, kind: "agentrun.message", data: {} }] }) };
-/** A run's root journal of entries of `kinds`, in order (a job's end kept for its look-back carries its end). */
-const journalOf = (kinds) => ({
-  scanConversations: async () => ({ items: [{ id: 1 }] }),
-  scanEntries: async () => ({ items: kinds.map((kind, i) => ({ id: i + 1, conversationId: 1, kind, data: kind === KINDS.jobEnd ? { end: { state: "ended" }, endedAt: 5 } : {} })) }),
-});
+/** A run's root journal of entries of `kinds`, in order (a job's end kept for its look-back carries its end), scanned
+ *  as the store scans it (Storage.scanEntries): newest first unless asked oldest first, in one page. */
+const journalOf = (kinds) => {
+  const entries = kinds.map((kind, i) => ({ id: i + 1, conversationId: 1, kind, data: kind === KINDS.jobEnd ? { end: { state: "ended" }, endedAt: 5 } : {} }));
+  return {
+    scanConversations: async () => ({ items: [{ id: 1 }] }),
+    scanEntries: async (query) => ({ items: query?.order === "ascending" ? entries : [...entries].reverse() }),
+  };
+};
 /** A follow-up's turn running: its first round's job end kept and that round ended, the follow-up's job not yet ended. */
 const MID_TURN = journalOf(["agentrun.message", KINDS.jobEnd, KINDS.end, "agentrun.message"]);
 /** The follow-up's end-of-run learning step running: its job's end kept after the run's last end. */

@@ -1938,7 +1938,10 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   Sign out again. The runner's own renewal, for
   runs that are users of their own, never writes back to a removed login. This machine's own login (`place` `machine`)
   is the person's: the sign-out is refused (403) with nothing touched, and the words say to run `claude auth logout` in
-  a terminal there. The console's Claude login row offers Sign out only while AgentRun's own login is signed in.
+  a terminal there. The console's Claude login row offers Sign out only while AgentRun's own login is signed in. Its
+  Turn on, where the login then reads `signed_out` and the server says the sign-in can start here (`can_start`), also
+  starts the CLI's sign-in (`POST /v2/settings/claude-login/login`), which opens the browser; the API's turn-on alone
+  never does.
 
 While it is on, a claude-agent run on an `anthropic/<model>` model goes on the login: its CLI gets no
 `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` or key, no model proxy runs, and the CLI's sandbox denies its commands
@@ -2261,6 +2264,9 @@ each tool says what it sends TypeSafe, or that Jev is off: for `web_search` `…
 search sends that and each result's URL, title, snippet and published date to TypeSafe …`, for `web_fetch` `…; a fetch given an
 objective sends the page's text and the objective to TypeSafe …`, and for either `…; Jev off: no TypeSafe key` or
 `…; Jev off (AGENTRUN_WEB_JEV_OFF)`.
+An agent's own `jev: "off"` on `web_search` or `web_fetch` (`definition.tool_settings.web_search.jev`) turns Jev off for
+both of that agent's web tools the same way: its runs' planes carry it and no TypeSafe key is handed. `off` is its one
+value; the server's own tool settings refuse it, and leaving it out runs Jev as the server has it.
 
 | | `claude-agent` | `codex` | pi |
 | --- | --- | --- | --- |
@@ -3966,6 +3972,8 @@ serves these routes alone:
 - `GET /capabilities`, `GET /health`, `GET /usage` and `GET /capacity`;
 - the names of the MCP servers saved here (`GET /settings/mcp-server-names`, `{names}`), never a URL or a credential:
   a backend that builds runs from saved servers holds back a job whose server isn't saved, before its launch is refused;
+- the prices this server meters computer and browser time at (`GET /settings/prices`), each a decimal string with
+  its source, never a key: a backend bounds a run's budget in this server's figures before its launch;
 - a deploy, for a backend that deploys agents here: a template's apply (`POST /templates/{id}/apply`, a redeploy with
   its `agent_id`), the agent's read (`GET /agents/{id}`), its revisions (`GET /agents/{id}/revisions`), a rollback
   (`POST /agents/{id}/current`), and its archive and unarchive (`POST /agents/{id}/archive`, `/unarchive`). The archive
@@ -4082,6 +4090,34 @@ whole server, as before; any value other than these and `1` or `true` stops the 
 
 So on an API-only server a run is launched inline (`POST /runs` with its definition), on an agent a template's apply
 made, or on an agent made before the profile was turned on.
+
+#### Workspaces
+
+A backend in front of an API-only server can keep each of its tenants to its own rows: it names the tenant's workspace
+in the `AgentRun-Workspace` header, 1 to 128 letters, digits, `:`, `.`, `_` or `-`, an opaque name the server keeps and
+never checks against anything. The header is taken only on an API-only server and only on a request a server token
+(`AGENTRUN_TOKENS`) opened; anywhere else, or malformed, it is `400 bad_request`. `AGENTRUN_WORKSPACE_TOKENS` lists the
+ids of the tokens whose every request must carry it (comma-separated): such a token without it is `403 forbidden`, so a
+backend that forgot the header is refused rather than handed every tenant's rows. A request with no header is served
+as before.
+
+A request in a workspace is served only: the runs' reads and lists (`GET /runs`, `/runs/{id}`, its timeline, files and
+export), a run's message, stop and cancel; the agents' list, read, create, revisions, definition and current revision,
+and a run started on one; the templates' list, read, import and apply; and `/capabilities`, `/health` and
+`/openapi.json`. Every other route is `403 forbidden` with `details.reason: "not_scoped"`. In it, an agent, run or
+imported template package of another workspace (or of none) answers the same `404` as an id no row has, and every list
+holds the workspace's rows alone; bundled template packages are every workspace's. What it makes is the workspace's: an
+agent (made or applied), an imported package (an import whose name another workspace holds is `409 name_taken`). A run
+is its agent's workspace's, so a run a request with no header starts on that agent is the workspace's too. A run's
+`file_ids` naming a file out of the workspace read as no file. An `Idempotency-Key` is the workspace's own: the same key
+in another workspace starts afresh. `GET /capabilities` says so in `features.workspaces`: the header's name, `enforced`
+(true on an API-only server alone) and the operations a scoped request is served, so a proxy can check before it forwards.
+
+`agentrun-serve workspace-backfill FILE [--apply]` puts agents made before the backend sent the header in a workspace:
+FILE is `{"<agent id>": "<workspace>"}`. It sets an agent with none, refuses one in another workspace and keeps it, and
+without `--apply` writes nothing and prints what it would do. On SQLite it adds the workspace columns first when a server
+of this build has not yet opened the store. A store behind this build (on Postgres, below migration 0033) is refused with
+exit 2 and never migrated: start a server of this build once, then run it again.
 
 ### Share host
 

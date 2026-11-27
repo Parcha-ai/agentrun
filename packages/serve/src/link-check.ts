@@ -103,8 +103,13 @@ export function citedLinks(answer: string): string[][] {
   return [...new Map(found.map((forms) => [forms.join("\n"), forms])).values()];
 }
 
-/** A call's urls for the check, and whether it is a web call: a web_search's results', a web_fetch's asked url, final url
- *  and page links, with how many of that page's links its output lost to a cut (`links_cut`). Any other call's are the
+/** The links a string `value` holds (linksOf), none for any other value. */
+const linksOfText = (value: unknown): string[] => (typeof value === "string" ? [...linksOf(value)] : []);
+
+/** A call's urls for the check, and whether it is a web call: a web_search's results' and those in a native search's
+ *  text; a web_fetch's asked url, final url and page links, and those in its text and in each chunk an objective found
+ *  (a part past the first, and a found page, list no links of their own), with how many of that page's links its output
+ *  lost to a cut (`links_cut`). Any other call's are the
  *  URLs its result holds as it returned them (linksOf: a JSON string that is a URL whole counts whole). A grader reads
  *  only such a result's head (CALL_RESULT_CHARS, cut with "..." as timeline/util.ts cut ends it), so one ending in "..."
  *  may have held more past it: a cut of unknown count (1), named on a link that matches nothing, never a verdict. */
@@ -120,9 +125,10 @@ function sourceOf(call: CheckedCall): { urls: string[]; cut: number; web: boolea
     read = undefined;
   }
   const out = isObj(read) ? read : {};
-  if (tool === WEB_SEARCH_TOOL) return { urls: Array.isArray(out.results) ? out.results.flatMap((hit) => (isObj(hit) && typeof hit.url === "string" ? [hit.url] : [])) : [], cut: 0, web: true };
+  if (tool === WEB_SEARCH_TOOL) return { urls: [...(Array.isArray(out.results) ? out.results.flatMap((hit) => (isObj(hit) && typeof hit.url === "string" ? [hit.url] : [])) : []), ...linksOfText(out.text)], cut: 0, web: true };
   const asked = isObj(call.arguments) && typeof call.arguments.url === "string" ? [call.arguments.url] : [];
-  return { urls: [...asked, ...(typeof out.url === "string" ? [out.url] : []), ...strings(out.links)], cut: typeof out.links_cut === "number" ? out.links_cut : 0, web: true };
+  const found = Array.isArray(out.found) ? out.found.flatMap((chunk) => (isObj(chunk) ? linksOfText(chunk.text) : [])) : [];
+  return { urls: [...asked, ...(typeof out.url === "string" ? [out.url] : []), ...strings(out.links), ...linksOfText(out.text), ...found], cut: typeof out.links_cut === "number" ? out.links_cut : 0, web: true };
 }
 
 const callsWord = (calls: readonly number[]) => (calls.length === 1 ? `call ${calls[0]}` : `calls ${calls.slice(0, -1).join(", ")} and ${calls.at(-1)}`);
@@ -159,6 +165,6 @@ export function linkCheck(answer: string, calls: readonly CheckedCall[]): string
     lines.push(`${scrubUrl(link)} — ${at >= 0 ? `matches call ${at + 1}` : `no matching call${cut.length ? ` (${callsWord(cut)}'s links were cut)` : ""}`}`);
   }
   const intro =
-    "Each distinct http(s) link the answer cites, checked in code against every url its calls answered (a web_search's results; a web_fetch's url, its final url and its page's links; any other call's URLs as its result holds them): a fragment, a trailing slash, a leading www. on the host and the order of the query are ignored, the query's keys must be the same, and a query value shown as … matches any value for its key. Links are shown with their query values elided.";
+    "Each distinct http(s) link the answer cites, checked in code against every url its calls answered (a web_search's results and text; a web_fetch's url, final url, links and text; any other call's URLs as its result holds them): a fragment, a trailing slash, a leading www. on the host and the order of the query are ignored, the query's keys must be the same, and a query value shown as … matches any value for its key. Links are shown with their query values elided.";
   return [intro, ...(lines.length ? lines : ["(the answer cites no http(s) link)"])].join("\n");
 }
