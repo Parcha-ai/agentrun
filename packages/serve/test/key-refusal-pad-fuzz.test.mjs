@@ -13,6 +13,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { redactedAnswer, redactedCall } from "../dist/key-refusal.js";
+import { coverTally } from "./fixtures/marks-cover.mjs";
 
 const B = "\\";
 const WRAPS = { json: (s) => `{"a": "${s}"}`, py: (s) => `{'a': '${s}'}`, plain: (s) => s, jj: (s) => `{"a": "[\\"${s}\\"]"}` };
@@ -97,4 +98,29 @@ for (const seed of SEEDS)
     if (!ALL && !process.env.KEY_REFUSAL_PAD_FUZZ_SEEDS) assert.equal(read, SAMPLE);
     console.log(`# seed ${seed}: ${seen.size} pads, ${read} withheld (padding, wrap) rows, ${failed.length} shown`);
     assert.deepEqual(failed, []);
+  });
+
+// The marks a read is cut with cover what every view hides (fixtures/marks-cover.mjs), over the same rows: each padding
+// three times between a held value's halves, in each wrap, where the matcher withholds it.
+for (const seed of SEEDS)
+  test(`random padding of mixed encodings (seed ${seed}): where a view hides a character as a terminal does, a read that starts there is told a sequence may be open or a backspace follows`, () => {
+    const draw = pads(seeded(seed));
+    const seen = new Set();
+    const { tally, add } = coverTally();
+    let read = 0;
+    for (let i = 0; i < DRAWS && (ALL || process.env.KEY_REFUSAL_PAD_FUZZ_SEEDS || read < SAMPLE); i++) {
+      const pad = draw();
+      if (seen.has(pad)) continue;
+      seen.add(pad);
+      for (const wrap of Object.values(WRAPS)) {
+        if (!ALL && !process.env.KEY_REFUSAL_PAD_FUZZ_SEEDS && read === SAMPLE) break;
+        const short = wrap(`see ${HEAD}${pad.repeat(3)} ${REST} more`);
+        if (redactedAnswer(short, [VALUE]).includes(REST)) continue;
+        read++;
+        add(short);
+      }
+    }
+    console.log(`# seed ${seed}: ${tally.texts} texts, ${tally.checked} hidden places checked, ${tally.misses} missed`);
+    assert.ok(tally.checked > 0);
+    assert.deepEqual(tally.missed, []);
   });

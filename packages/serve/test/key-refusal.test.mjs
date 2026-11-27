@@ -11,6 +11,7 @@ import { readCost, redactedAnswer, redactedCall } from "../dist/key-refusal.js";
 import { marksOf, OPEN_OSC, scanned, shownIn } from "../dist/redact/match.js";
 import { CALL_RESULT_CHARS, scrubUrls } from "../dist/timeline/index.js";
 import { cut } from "../dist/timeline/util.js";
+import { coverTally } from "./fixtures/marks-cover.mjs";
 
 const KEY = `not-a-secret-${"openrouter-key"}`;
 const ONLY = { OPENROUTER_API_KEY: KEY };
@@ -517,6 +518,20 @@ for (const [what, kind, pad] of OUTSIDE_THE_READ) {
     for (const out of [redactedCall(text, [`${PY_HEAD}${PY_REST}`], 100_000), redactedAnswer(text, [`${PY_HEAD}${PY_REST}`])]) assert.equal(out.includes(PY_REST), false);
   });
 }
+
+// The marks a read is cut with cover what every view hides (fixtures/marks-cover.mjs), over this file's padding: each
+// between a held value's halves, in each way it is written above.
+test("the padding above: where a view hides a character as a terminal does, a read that starts there is told a sequence may be open or a backspace follows", () => {
+  const { tally, add } = coverTally();
+  for (const [, pad, kind] of CONTROL_PADS) add(wrapped(kind, `see ${PY_HEAD} ${pad}${PY_REST} more`));
+  for (const [, text, [head, rest]] of FOLLOWED_TITLES) add(text(`see ${head} `, `${rest} more`));
+  add(endingAString(`see ${PY_HEAD} `, `${PY_REST} more`));
+  for (const [, pad, wraps] of MIXED_PADS) for (const wrap of wraps) add(WRAPS[wrap](`see ${PY_HEAD}${pad.repeat(3)} ${PY_REST} more`));
+  for (const [, kind, pad] of OUTSIDE_THE_READ) add(inKind(kind, `see ${PY_HEAD}${pad} ${PY_REST} more`));
+  console.log(`# ${tally.texts} texts, ${tally.checked} hidden places checked, ${tally.misses} missed`);
+  assert.ok(tally.checked > 0);
+  assert.deepEqual(tally.missed, []);
+});
 
 test("kr-11: control padding after a word, with no held value split around it, is shown (control)", () => {
   let body = "";

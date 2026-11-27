@@ -1635,8 +1635,16 @@ const OPENERS: readonly (readonly [number, string])[] = [
  *  Undefined in place of a reading in which a terminal's backspace strikes out what stands before the stretch
  *  (screenOf's `struckBefore`): what that reading shows is not the stretch's to count. Two readings that decode and
  *  join alike are read once. `walked` gets the index in VIEWS of each view whose readings were read (or, alike, for
- *  another view). */
-export function* shownIn(text: string, fold: boolean, walked?: Set<number>, enough = Number.POSITIVE_INFINITY, open = 0): Generator<number[] | undefined> {
+ *  another view); `hidden`, from each reading of the text from its start (no join's start or opener written before
+ *  it), the place after each character its terminal reading hides that its reading with controls dropped keeps. */
+export function* shownIn(
+  text: string,
+  fold: boolean,
+  walked?: Set<number>,
+  enough = Number.POSITIVE_INFINITY,
+  open = 0,
+  hidden?: Set<number>,
+): Generator<number[] | undefined> {
   const limit = fold ? Number.POSITIVE_INFINITY : enough;
   // `skip`: characters written before the stretch (a join's start, an opener), whose places come out as 0; `hide`:
   // where an opener is written there, those characters, which are never kept, and the input is read as a terminal
@@ -1722,7 +1730,12 @@ export function* shownIn(text: string, fold: boolean, walked?: Set<number>, enou
         const shown: number[] = [];
         const terminal = screenOf(dropped.marked, true);
         const screen = viewOf(input.text, view, undefined, separates, terminal, shown, limit);
-        yield terminal.struckBefore ? undefined : kept(screen.text, shown, input);
+        const reading = kept(screen.text, shown, input);
+        if (hidden && input.skip === 0) {
+          const on = new Set(reading);
+          for (const end of kept(dropped.text, ends, input)) if (!on.has(end)) hidden.add(end);
+        }
+        yield terminal.struckBefore ? undefined : reading;
       }
       // An opener's reading counts only as a terminal shows it: dropped, its controls are no sequence's.
       if (input.hide === 0) yield kept(dropped.text, ends, input);

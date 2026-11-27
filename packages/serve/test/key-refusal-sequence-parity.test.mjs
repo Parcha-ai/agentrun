@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { redactedAnswer, redactedCall } from "../dist/key-refusal.js";
 import { shownIn, VIEW_COUNT } from "../dist/redact/match.js";
+import { coverTally } from "./fixtures/marks-cover.mjs";
 
 const [HEAD, REST] = [["Wc3M", "hT8q", "Lz5N", "rB1v"].join(""), ["Xe6K", "pJ4d", "Ys9G", "fA2u"].join("")];
 const VALUE = `${HEAD}${REST}`;
@@ -130,6 +131,16 @@ for (const [layout, shapes, piece, text] of LAYOUTS)
     assert.ok(checked > shapes.length / 2, `the matcher read past ${checked} of ${shapes.length} shapes`);
     assert.deepEqual(under, []);
   });
+
+// The marks a read is cut with cover what every view hides (fixtures/marks-cover.mjs), over every shape's short text in
+// each layout, whether or not the matcher withholds it.
+test("every padding shape, in each layout: where a view hides a character as a terminal does, a read that starts there is told a sequence may be open or a backspace follows", () => {
+  const { tally, add } = coverTally();
+  for (const [, shapes, piece, text] of LAYOUTS) for (const [, pad, kind] of shapes) add(text(`see ${HEAD}${piece(pad, kind).repeat(3)} ${REST} more`, kind));
+  console.log(`# ${tally.texts} texts, ${tally.checked} hidden places checked, ${tally.misses} missed`);
+  assert.ok(tally.checked > 0);
+  assert.deepEqual(tally.missed, []);
+});
 
 // Each title ended by ST, past the read, followed right away by a held value's rest that starts with what a second
 // level of escapes reads with the ST's backslash as one escape (a letter of JSON's escapes, "u" and four hex digits,

@@ -11,6 +11,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { redactedAnswer, redactedCall } from "../dist/key-refusal.js";
+import { coverTally } from "./fixtures/marks-cover.mjs";
 
 const B = "\\";
 const ESCS = { raw: "\u001b", u: `${B}u001b`, uu: `${B}${B}u001b`, x: `${B}x1b`, xx: `${B}${B}x1b`, pct: "%1B", ent: "&#27;" };
@@ -64,28 +65,34 @@ function seeded(seed) {
 const SAMPLE = 240;
 const SEED = 17;
 
-test("padding of every encoding of a terminal sequence's parts that the matcher withholds between a held value's halves is withheld past the read after a call's stop and after a run too long to read", () => {
+const every = process.env.KEY_REFUSAL_PAD_CORPUS === "all";
+/** The corpus's shapes in the sample's order. */
+function shuffled() {
   const all = shapes();
   assert.equal(all.length, 30_800);
-  const every = process.env.KEY_REFUSAL_PAD_CORPUS === "all";
   const order = all.map((_, i) => i);
   const random = seeded(SEED);
   for (let i = order.length - 1; i > 0; i--) {
     const j = Math.floor(random() * (i + 1));
     [order[i], order[j]] = [order[j], order[i]];
   }
+  return order.map((i) => all[i]);
+}
+/** The short text the matcher reads: the padding three times between a held value's halves (a title once). */
+const shortOf = (shape) =>
+  WRAPS[shape.wrap](shape.title ? `see ${shape.head} ${shape.piece}${shape.rest} more` : `see ${shape.head}${shape.piece.repeat(3)} ${shape.rest} more`);
+
+test("padding of every encoding of a terminal sequence's parts that the matcher withholds between a held value's halves is withheld past the read after a call's stop and after a run too long to read", () => {
   let body = "";
   while (body.length < 8092) body += "word ";
   const failed = [];
   let read = 0;
-  for (const i of order) {
+  for (const shape of shuffled()) {
     if (!every && read === SAMPLE) break;
-    const shape = all[i];
     const wrap = WRAPS[shape.wrap];
     const value = shape.head + shape.rest;
     const tail = shape.rest.slice(-16);
-    const short = shape.title ? wrap(`see ${shape.head} ${shape.piece}${shape.rest} more`) : wrap(`see ${shape.head}${shape.piece.repeat(3)} ${shape.rest} more`);
-    if (redactedAnswer(short, [value]).includes(tail)) continue;
+    if (redactedAnswer(shortOf(shape), [value]).includes(tail)) continue;
     read++;
     const long = shape.title ? shape.piece : `${shape.piece.repeat(300)} `;
     const kr9 = redactedCall(wrap(`${body}see ${shape.head} ${long}${shape.rest} more`), [value], 200) === "[redacted]";
@@ -95,4 +102,20 @@ test("padding of every encoding of a terminal sequence's parts that the matcher 
   }
   assert.equal(read, every ? 8486 : SAMPLE);
   assert.deepEqual(failed, []);
+});
+
+// The marks a read is cut with cover what every view hides (fixtures/marks-cover.mjs), over the same shapes' short texts.
+test("padding of every encoding of a terminal sequence's parts: where a view hides a character as a terminal does, a read that starts there is told a sequence may be open or a backspace follows", () => {
+  const { tally, add } = coverTally();
+  let read = 0;
+  for (const shape of shuffled()) {
+    if (!every && read === SAMPLE) break;
+    const short = shortOf(shape);
+    if (redactedAnswer(short, [shape.head + shape.rest]).includes(shape.rest.slice(-16))) continue;
+    read++;
+    add(short);
+  }
+  console.log(`# ${tally.texts} texts, ${tally.checked} hidden places checked, ${tally.misses} missed`);
+  assert.ok(tally.checked > 0);
+  assert.deepEqual(tally.missed, []);
 });
