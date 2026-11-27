@@ -113,11 +113,12 @@ async function recorder(t, to) {
 async function fakeServer(t, answer) {
   const sent = [];
   const server = createServer((req, res) => {
-    let raw = "";
-    req.on("data", (chunk) => (raw += chunk));
+    // Bytes kept whole until the end: a character split across two chunks is read as one.
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
     req.on("end", () => {
       if (!req.url.startsWith("/v2/")) return res.writeHead(404).end();
-      const body = JSON.parse(raw);
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
       sent.push([req.method, req.url, body]);
       const [status, json] = answer(body);
       res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(json));

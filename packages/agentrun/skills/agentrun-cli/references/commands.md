@@ -1542,7 +1542,7 @@ Import a template package from GitHub (github:OWNER/REPO[/PATH][@REF]) and print
 Route: none, it runs on this machine.
 
 - `--dry-run` (boolean, this CLI's own): check the package and print it whole (instructions, skill files); store nothing
-- `--trust` (boolean, this CLI's own): trust the package's publisher (the GitHub owner): the first package from one needs it
+- `--trust` (boolean, this CLI's own): trust the package's publisher (the GitHub owner): the first package from one needs it, and every install on a server that takes uploads only, where this command reads GitHub itself
 
 ### `agentrun template list`
 
