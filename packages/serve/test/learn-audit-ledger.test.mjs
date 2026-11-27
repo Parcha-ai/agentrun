@@ -32,7 +32,7 @@ const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { readLaunchBody } = await import("../dist/run-launch.js");
-const { promotionsOf } = await import("../dist/learn/promote.js");
+const { promotionsOf, GRADER_PROMPT } = await import("../dist/learn/promote.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
 const { learningOf } = await import("../dist/learn/rows.js");
 const { workflowDigest } = await import("../dist/runner/workflow-first.js");
@@ -661,16 +661,24 @@ test("(agree_on) a revision read that fails when a check starts saves no check: 
   await w.replaysEnded(3);
 });
 
-// No agree_on: the whole answer, whatever the output schema says (no field is picked from it: a schema's enum can be an
-// echo of the owner's setting, not the decision). The same rationale-only difference is a disagreement, and it holds.
-test("(agree_on) with an output schema of enum and boolean fields and no agree_on, the audit compares the whole answer: a rationale-only difference disagrees", { timeout: 300_000 }, async (t) => {
+// No agree_on and no fast model: the agent's own model compares the whole answers, whatever the output schema says (no
+// field is picked from it: a schema's enum can be an echo of the owner's setting, not the decision). Its verdict stands:
+// a rationale-only difference it reads as the same decision agrees and nothing holds; read as another decision, it holds.
+const isGrader = (body) => JSON.stringify(body ?? null).includes(JSON.stringify(GRADER_PROMPT.split("\n")[0]).slice(1, -1));
+test("(agree_on) with an output schema of enum and boolean fields, no agree_on and no fast model, the agent's own model compares the whole answers: its verdict on a rationale-only difference stands", { timeout: 300_000 }, async (t) => {
   const outputSchema = { type: "object", properties: { answer: { enum: [41, 42] }, sure: { type: "boolean" }, why: { type: "string" } } };
-  const w = await world(t, { learning: { audit_every: 1, hold_window: 1, hold_disagree: 1 }, outputSchema, says: () => SHADOW_SAYS, submit: () => ({ answer: 42, sure: true }) });
-  const served = await w.start("same-1", "What is six times seven");
-  assert.equal(served.metrics?.path, "workflow", JSON.stringify(served.metrics));
-  const next = await w.start("same-next", "What is seven times six");
-  assert.equal(next.metrics?.path, "agent", `held on the whole answer: ${JSON.stringify(next.metrics)}`);
-  assert.equal((await w.audits()).find((one) => one.run === "same-1")?.agreed, false);
+  for (const [same, path] of [[true, "workflow"], [false, "agent"]]) {
+    const graded = [];
+    const verdict = JSON.stringify({ same, differs_on: same ? null : "the rationale" });
+    const w = await world(t, { learning: { audit_every: 1, hold_window: 1, hold_disagree: 1 }, outputSchema, says: (body) => (isGrader(body) ? (graded.push(JSON.stringify(body)), verdict) : SHADOW_SAYS), submit: () => ({ answer: 42, sure: true }) });
+    const served = await w.start(`same-${same}`, "What is six times seven");
+    assert.equal(served.metrics?.path, "workflow", JSON.stringify(served.metrics));
+    assert.equal(graded.length, 1, `same ${same}: one request to the agent's own model`);
+    assert.ok(graded[0].includes("six times seven is forty-two"), `same ${same}: the whole answer is compared, its rationale too`);
+    const next = await w.start(`same-${same}-next`, "What is seven times six");
+    assert.equal(next.metrics?.path, path, `same ${same}: ${JSON.stringify(next.metrics)}`);
+    assert.equal((await w.audits()).find((one) => one.run === `same-${same}`)?.agreed, same);
+  }
 });
 
 // Review on #3061 r4 (PRRT_kwDOUmdVMs64SUUv): a shadow never waits on a person. Its agent only reads (web_fetch, a

@@ -359,7 +359,7 @@ export async function graderRouteOf(
   if (agreeOnOf(body.learning)?.length) return undefined;
   const { tiers, refs } = routedSubagentTiers(body, deps.env ?? {});
   const fast = tiers.includes("fast");
-  const savedKeys = keyed || !fast ? {} : await subagentTierKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env, handBack: deps.handBack, signal: deps.signal }, ["fast"], refs);
+  const savedKeys = !fast ? {} : keyed ? {} : await subagentTierKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env, handBack: deps.handBack, signal: deps.signal }, ["fast"], refs);
   for (const redact of new Set(holds)) holdClaimed(redact, savedKeys);
   // The claim's run, turn and attempt on its grader's requests too (request-metadata.ts): they spend on the run's cap.
   const env = claimModelEnv(deps.env, [claimed, savedKeys], runKey, claim);

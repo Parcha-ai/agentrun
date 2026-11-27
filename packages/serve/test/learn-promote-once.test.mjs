@@ -306,7 +306,7 @@ test("(e) agree_min 0.9 on the definition: 4 of 5 saying what the agent said is 
   const records = await promotionsOf(w.server.learning, "agent-1");
   const held = records.findLast(({ digest }) => digest === DIGEST);
   assert.deepEqual([held.decided, held.check.agree_min, held.check.alone_min, held.check.n, held.check.agreed, held.check.alone], ["hold", 0.9, 0.7, 5, 4, 5], JSON.stringify(held.check));
-  assert.deepEqual(held.check.disagreements, [{ run: "prior-0", input: JSON.stringify({ content: "Question 0?", question: "Question 0" }), agent: AGENT_SAYS, draft: JSON.stringify({ answer: 41, sure: true }), fields: ["answer"] }]);
+  assert.deepEqual(held.check.disagreements, [{ run: "prior-0", input: JSON.stringify({ content: "Question 0?", question: "Question 0" }), agent: AGENT_SAYS, draft: JSON.stringify({ answer: 41, sure: true }), differs_on: "answer", fields: ["answer"] }], "no fast model: the agent's own model compared them, in its words");
   // Run-2's end asked the one revision; the faux model's draft of it failed its checks: the recompile's attempt, so it stops.
   const failed = records.at(-1);
   assert.deepEqual([failed.workflow, failed.decided, failed.check.attempt, failed.check.n, failed.check.stopped, failed.check.agree_min], ["answer", "hold", 2, 0, true, 0.9], JSON.stringify(failed));
@@ -381,7 +381,7 @@ test("(c, d) the revision's check holds it too: stopped, its numbers on the reco
   // On the newest 5: run-2 and run-1 (42), prior-4 (42), prior-3 (41), prior-2 (handed back): 4 alone, 3 agree (75%).
   assert.deepEqual([stopped.check.attempt, stopped.check.stopped, stopped.check.n, stopped.check.alone, stopped.check.agreed], [2, true, 5, 4, 3]);
   assert.deepEqual(stopped.check.of, ["run-2", "run-1", "prior-4", "prior-3", "prior-2"]);
-  assert.match(stopped.reason, /held on answer, and this was the recompile's check, so it stops: nothing compiles again until a hold or its owner acts$/);
+  assert.match(stopped.reason, /; compared by the agent's own model \(claude-sonnet-5-5; no fast model is set\): held on answer; .*, and this was the recompile's check, so it stops: nothing compiles again until a hold or its owner acts$/);
   // Every run after the stop is still the agent's and asks no compile.
   for (let i = 5; i <= 8; i++) {
     const row = await w.start(`run-${i}`, `Question ${10 + i}`);
