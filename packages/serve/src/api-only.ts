@@ -134,6 +134,23 @@ export function apiOnlyMcpSave(body: unknown, preset: boolean, origins: readonly
   }
 }
 
+/** Whether a request in a workspace on an API-only server previews `body` (previewMcpServer): one of its own servers by
+ *  `name` alone (an address it saved, one of `origins`), or an address whose origin is one of `origins`, per_run, with
+ *  headers or a bearer token sent for the listing alone, or with none. Anything else (a github_app server, another address)
+ *  is the refused route's own 404, before anything reaches the address. */
+export function apiOnlyMcpPreview(body: unknown, origins: readonly string[]): boolean {
+  if (body === null || typeof body !== "object") return false;
+  const { url, auth } = body as { url?: unknown; auth?: unknown };
+  if (url === undefined) return true;
+  const type = auth === undefined ? "none" : auth !== null && typeof auth === "object" ? (auth as { type?: unknown }).type : undefined;
+  if (typeof url !== "string" || !["none", "per_run", "headers", "bearer"].includes(String(type))) return false;
+  try {
+    return origins.includes(new URL(url).origin);
+  } catch {
+    return false;
+  }
+}
+
 /** A run's computer live view: its page, files and socket, which take the viewer credential alone here (server.ts). */
 const COMPUTER_LIVE = /^\/v2\/runs\/[^/]+\/computer\/live\//;
 
@@ -155,20 +172,21 @@ export const apiOnlyRefusal = (raw: string): string => `this server serves the r
 /** The operations a scoped request (the AgentRun-Workspace header, workspace-scope.ts) is served: its own agents, runs,
  *  imported template packages and uploaded files, its own MCP servers, and the server's description. Every other is
  *  refused with 403 not_scoped, whatever API_ONLY_ROUTES serves an unscoped request. listAgents, createAgent,
- *  updateDefinition, getTemplate, listTemplates, getOpenapi, listMcpServers, getMcpServer and refreshMcpServer are not in
- *  API_ONLY_ROUTES: an API-only server serves them to a scoped request alone.
+ *  updateDefinition, getTemplate, listTemplates, getOpenapi, listMcpServers, getMcpServer, previewMcpServer and
+ *  refreshMcpServer are not in API_ONLY_ROUTES: an API-only server serves them to a scoped request alone.
  *
  *  A workspace's MCP servers are its own rows (mcp-workspace.ts): it lists, reads, saves, refreshes and deletes those
  *  alone, another workspace's name reading as an unknown one, and its agents grant its own server of a name before the
  *  shared one. Its saves are the token's as an unscoped one's are (the secret-write gate, apiOnlyMcpSave): no credential
- *  is kept. listMcpServerNames is its own servers' names and the shared ones'. */
+ *  is kept. listMcpServerNames is its own servers' names and the shared ones'. A preview is of its own server by name, or of
+ *  an address at the operator's MCP origins (apiOnlyMcpPreview). */
 export const WORKSPACE_ROUTES: ReadonlySet<string> = new Set([
   "listAllRuns", "listRuns", "getRun", "getTimeline", "listRunFiles", "readRunFile", "getRunExport",
   "listAgents", "getAgent", "listRevisions", "createAgent", "updateDefinition", "setCurrent",
   "importTemplate", "applyTemplate", "getTemplate", "listTemplates",
   "createRun", "sendMessage", "stopRun", "cancelRun",
   "createFile", "listFiles", "getFile", "uploadFile", "deleteFile",
-  "listMcpServerNames", "listMcpServers", "getMcpServer", "saveMcpServer", "saveComposioServer", "refreshMcpServer", "deleteMcpServer",
+  "listMcpServerNames", "listMcpServers", "getMcpServer", "previewMcpServer", "saveMcpServer", "saveComposioServer", "refreshMcpServer", "deleteMcpServer",
   "getCapabilities", "getHealth", "getOpenapi",
 ]);
 

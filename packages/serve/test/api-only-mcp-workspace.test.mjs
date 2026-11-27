@@ -67,9 +67,9 @@ async function runAdd(send, agent) {
   await follow((method, path) => send(method, path), run.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
 }
 
-test("a scoped request is served the MCP servers' list, read, save, Composio save, refresh, delete and names; their sign-ins, previews and Composio triggers stay unscoped", () => {
-  for (const name of ["listMcpServerNames", "listMcpServers", "getMcpServer", "saveMcpServer", "saveComposioServer", "refreshMcpServer", "deleteMcpServer"]) assert.ok(WORKSPACE_ROUTES.has(name), name);
-  for (const name of ["startMcpOAuth", "previewMcpServer", "putMcpPrivateHosts", "listComposioTriggers", "listComposioEvents", "rotateComposioSecret", "deleteComposioSubscription"]) assert.ok(!WORKSPACE_ROUTES.has(name), name);
+test("a scoped request is served the MCP servers' list, read, preview, save, Composio save, refresh, delete and names; their sign-ins and Composio triggers stay unscoped", () => {
+  for (const name of ["listMcpServerNames", "listMcpServers", "getMcpServer", "previewMcpServer", "saveMcpServer", "saveComposioServer", "refreshMcpServer", "deleteMcpServer"]) assert.ok(WORKSPACE_ROUTES.has(name), name);
+  for (const name of ["startMcpOAuth", "putMcpPrivateHosts", "listComposioTriggers", "listComposioEvents", "rotateComposioSecret", "deleteComposioSubscription"]) assert.ok(!WORKSPACE_ROUTES.has(name), name);
 });
 
 test("a workspace's server is its own: another workspace reads, lists and deletes it as a name never saved (byte for byte), and its save of the name makes its own row, the first left as it was", async (t) => {
@@ -126,6 +126,33 @@ test("a name that holds a row key's '/' (sent as %2F) reaches no row, and a requ
   const view = mcpView(s.server.store, requestNames);
   assert.equal(await inWorkspace(W2, () => view.settings.get(mcpSourceKey(mcpRowKey("contextforge", W1)))), undefined, "W2's view of W1's record by its row key: none");
   assert.notEqual(await inWorkspace(W1, () => view.settings.get(mcpSourceKey("contextforge"))), undefined, "W1's own record by its name");
+});
+
+test("a scoped preview reaches the operator's MCP origins alone: an address there lists its tools, its own server by name is reached; another address, a github_app server, or another workspace's server by name is the refused route's 404, nothing sent", async (t) => {
+  const s = await setup(t);
+  const listed = await s.w1("POST", "/settings/mcp-servers/preview", perRun(s.one.fake.url));
+  assert.equal(listed.status, 200, JSON.stringify(listed.body));
+  assert.ok(listed.body.tools.some((tool) => tool.name === "add"), "the listed address's tools");
+  assert.equal((await s.w1("PUT", PATH, perRun(s.one.fake.url))).status, 200);
+  // Its own per_run server by name: listed with no credential (each run hands its own), so the server asks for one.
+  const before = s.one.sent.length;
+  const byName = await s.w1("POST", "/settings/mcp-servers/preview", { name: "contextforge" });
+  assert.deepEqual([byName.status, byName.body.error?.code], [422, "auth_required"], JSON.stringify(byName.body));
+  assert.ok(s.one.sent.length > before, "the preview by name reached W1's own server");
+
+  const elsewhere = await startFakeMcp({ token: `Bearer ${LIST}` });
+  t.after(() => elsewhere.close());
+  for (const body of [perRun(elsewhere.url), { url: s.one.fake.url, auth: { type: "github_app" } }, { url: "not a url", auth: { type: "per_run" } }]) {
+    const refused = await s.w1("POST", "/settings/mcp-servers/preview", body);
+    assert.equal(refused.status, 404, `${JSON.stringify(body)}: ${JSON.stringify(refused.body)}`);
+    assert.match(refused.body.error.message, /is not served here/);
+  }
+  assert.deepEqual(elsewhere.log, [], "nothing reached the other address");
+
+  const theirs = await s.w2("POST", "/settings/mcp-servers/preview", { name: "contextforge" });
+  const unknown = await s.w2("POST", "/settings/mcp-servers/preview", { name: "never-saved" });
+  assert.equal(theirs.status, 404, JSON.stringify(theirs.body));
+  assert.deepEqual(JSON.stringify(bare(theirs)), JSON.stringify(bare(unknown)).replaceAll("never-saved", "contextforge"), "W1's server by name reads as one never saved");
 });
 
 test("a scoped save that carries a credential is the secret-write refusal (403): a workspace keeps none, and no address gets anything", async (t) => {

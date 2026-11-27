@@ -4107,8 +4107,8 @@ as before.
 A request in a workspace is served only: the runs' reads and lists (`GET /runs`, `/runs/{id}`, its timeline, files and
 export), a run's message, stop and cancel; the agents' list, read, create, revisions, definition and current revision,
 and a run started on one; the templates' list, read, import and apply; the uploaded files' create, upload, list, read and
-delete (`/files`); the MCP servers' list, names, read, save, Composio save, refresh and delete (`/settings/mcp-servers`);
-and `/capabilities`, `/health` and `/openapi.json`. Every other route is `403 forbidden` with
+delete (`/files`); the MCP servers' list, names, read, preview, save, Composio save, refresh and delete
+(`/settings/mcp-servers`); and `/capabilities`, `/health` and `/openapi.json`. Every other route is `403 forbidden` with
 `details.reason: "not_scoped"`. In it, an agent, run, imported template package or file of another workspace (or of none)
 answers the same `404` as an id no row has, and every list holds the workspace's rows alone, paged within them; bundled
 template packages are every workspace's. What it makes is the workspace's: an agent (made or applied), an imported
@@ -4129,8 +4129,9 @@ refused as a server never saved. A save in a workspace seals no credential: it i
 install names (`api_key_env`); a credential in the body is refused as a token's secret write is. The owner's shared
 servers still guard it: a workspace's save never stands on an auth config one of them stands on, and its run never binds
 the owner's Composio user. A workspace's server is kept as `<workspace>/<name>`, its sealed credential bound to that row,
-so a credential copied to another workspace's row does not open. A sign-in (`/oauth/start`), a preview and the Composio
-triggers' routes stay unscoped.
+so a credential copied to another workspace's row does not open. A preview is of its own server by name, or of an address at the
+operator's MCP origins (`AGENTRUN_API_ONLY_MCP_ORIGINS`), any other `404` before anything is sent. A sign-in
+(`/oauth/start`) and the Composio triggers' routes stay unscoped.
 
 Launch disks (`archil_disk` on a run's start) are the backend's to map to its tenants: the server keeps no record of which
 tenant a disk it did not make is for, and a run in a workspace may name any of them. It names no agent's own disk

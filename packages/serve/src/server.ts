@@ -35,7 +35,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
-import { API_ONLY_ROUTES, WORKSPACE_ROUTES, apiOnlyMcpSave, apiOnlyRefusal, apiOnlyTriggerEdit, apiOnlyTriggerSkipped, apiOnlyTurnsOn, servedApiOnly, servedScoped } from "./api-only.js";
+import { API_ONLY_ROUTES, WORKSPACE_ROUTES, apiOnlyMcpPreview, apiOnlyMcpSave, apiOnlyRefusal, apiOnlyTriggerEdit, apiOnlyTriggerSkipped, apiOnlyTurnsOn, servedApiOnly, servedScoped } from "./api-only.js";
 import { inWorkspace, outOfScope, outsideWorkspace, scopedSlot, slotPath, WORKSPACE, WORKSPACE_HEADER, WORKSPACE_NAME, WORKSPACE_TOKENS_ENV, workspaceNow, workspaceTokensFrom } from "./workspace-scope.js";
 import { mcpRowKey, mcpRowWorkspace, mcpView, requestNames } from "./mcp-workspace.js";
 import { API_ONLY_ENV, API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV } from "./env-switch.js";
@@ -6606,9 +6606,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "getMcpServer":
         return send(res, 200, await mcpServers.get(id));
-      case "previewMcpServer":
+      case "previewMcpServer": {
         // The API token's preview, as the gate reads a token's save: a server it saved is previewed at its shown address.
-        return send(res, 200, await mcpServers.preview(await bodyOf(req), stopping.signal, req.headers.authorization !== undefined && !mayHoldSecrets(req)));
+        // In a workspace on an API-only server: its own server by name, or an address at the operator's MCP origins alone
+        // (api-only.ts apiOnlyMcpPreview); anything else is the refused route's 404, before anything reaches it.
+        const body = await bodyOf(req);
+        if (options.apiOnly && workspaceNow() !== undefined && !apiOnlyMcpPreview(body, apiOnlyMcpOrigins)) throw new ApiError("not_found", apiOnlyRefusal(`/v2${path}`));
+        return send(res, 200, await mcpServers.preview(body, stopping.signal, req.headers.authorization !== undefined && !mayHoldSecrets(req)));
+      }
       case "saveMcpServer": {
         const body = await bodyOf(req);
         const preset = await mcpServers.composioPreset(id);

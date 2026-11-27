@@ -142,6 +142,7 @@ const TABLE = {
   listMcpServerNames: { mcp: true },
   listMcpServers: { mcp: true },
   getMcpServer: { mcp: true },
+  previewMcpServer: { mcp: true },
   saveMcpServer: { mcp: true },
   saveComposioServer: { mcp: true },
   refreshMcpServer: { mcp: true },
