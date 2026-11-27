@@ -26,7 +26,7 @@ import { type EntryLike, isMessageRow, type TimelineEvent } from "../timeline/in
 import { shownMessage } from "../timeline/timeline.js";
 import type { AgentLearning } from "../learn/rows.js";
 import { correctionRefused, learningCommit, type LearningChange, type LearningCommitResult } from "../learn/commit.js";
-import { CAPS, type Change, checkDraft, problemWords, type Problem, unstorable } from "../learn/index.js";
+import { CAPS, type Change, checkDraft, correctionLine, problemWords, type Problem, unstorable } from "../learn/index.js";
 import { repickSiteOf } from "../learn/check.js";
 import { repickLabelOf, repickRewrite } from "../learn/repick.js";
 import { holdsSave, learningOf, type LearningRead, readAt, readLearning, readOf, runMergeOf } from "../learn/rows.js";
@@ -134,7 +134,7 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     correctionRefused: async ({ text, refuse }) => correctionRefused(text, refuse),
     // A run with no workflow binding (an SDK run's `noWorkflows`) compiles nothing.
     ...(start.noWorkflows ? {} : {
-      compileFacts: (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[]; round: number }) => compileAskOf(deps, { ...input, input: launch.input, ...(launch.sdk ? { sdkTask: sdkInputText(launch) } : {}), seedWorkflows: start.workflows?.length ?? 0, corrections: start.section }),
+      compileFacts: (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[]; round: number; correction?: string }) => compileAskOf(deps, { ...input, input: launch.input, ...(launch.sdk ? { sdkTask: sdkInputText(launch) } : {}), seedWorkflows: start.workflows?.length ?? 0, corrections: start.section }),
       compileFailed: (input: { runId: string; agentId: string; compile: CompileAsk; workflow: string; errors: readonly string[] }) => recordDraftFailed(deps, input),
       compileStarts: ({ runId, until }: { runId: string; until: number }) => noteLearningDeadline(deps.store.settings, runId, until),
     }),
@@ -597,8 +597,10 @@ export function traceFrom(timeline: readonly TimelineEvent[], refuse: readonly s
  *  final output's shape) and the DSL's language with this host's addendum. An SDK run's compile, asked outside its
  *  session, also carries the owner's standing corrections it was laid with (`corrections`, its # Learned section), as an
  *  in-session compile reads them in its session; its held workflow is the one its task fits (`sdkTask`: sdkTakes, as its
- *  start reserves a check). Undefined when it compiles nothing, or when the folder can't be read. */
-export async function compileAskOf(deps: LearningEndDeps, input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[]; round?: number; input?: unknown; sdkTask?: string; seedWorkflows?: number; corrections?: string }): Promise<CompileAsk | undefined> {
+ *  start reserves a check). Every compile carries the correction its round takes (`correction`, a grade's words, say:
+ *  checked already) as their next line, since no session was laid with it. Undefined when it compiles nothing, or when
+ *  the folder can't be read. */
+export async function compileAskOf(deps: LearningEndDeps, input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[]; round?: number; input?: unknown; sdkTask?: string; seedWorkflows?: number; corrections?: string; correction?: string }): Promise<CompileAsk | undefined> {
   const { agentId } = input;
   // A revision is asked only of a workflow its promotion holds, once per hold. The workflows whose newest revision other
   // than their champion (learn/promote.ts championOf: it serves while that one is held) is held: the run's own may be one.
@@ -716,9 +718,14 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   const object = input.input !== null && typeof input.input === "object" && !Array.isArray(input.input);
   leftOut.input = object && holds(input.input);
   const fields = object && !leftOut.input ? { input: input.input as Record<string, unknown> } : {};
-  // An SDK compile is one request outside the run's session: it carries the corrections the session was laid with.
+  // An SDK compile is one request outside the run's session: it carries the corrections the session was laid with. Every
+  // compile carries the correction its round takes, as corrections.md will keep it, after them: no session was laid
+  // with that one.
   const bridge = workflowAdapters !== undefined ? { workflowAdapters } : {};
-  const corrections = workflowAdapters !== undefined && input.corrections?.trim() ? { corrections: input.corrections } : {};
+  const laid = workflowAdapters !== undefined ? input.corrections?.trim() ?? "" : "";
+  const taken = input.correction !== undefined ? correctionLine(input.correction).trim() : "";
+  const known = [laid, taken].filter(Boolean).join("\n");
+  const corrections = known ? { corrections: known } : {};
   const base = { ...bridge, ...corrections, reference: compileReference(dsl, { tools, judges, ...bridge }), traces, tools, described, judges, ...fields, ...(outputSchema !== undefined ? { outputSchema } : {}) };
   // A revision is of main's text as read here, whatever the run started from: that commit is its conflict base (`base`).
   const ask: CompileAsk = !held ? { mode: "new", ...base } : { mode: "revise", workflow: held.workflow, current: read.current!, ...(read.main ? { base: read.main } : {}), held, ...base };

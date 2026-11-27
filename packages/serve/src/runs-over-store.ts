@@ -46,7 +46,6 @@ import { declaredKeys, undeclaredKeys, withCarried } from "./run-keys.js";
 import type { RunTrigger } from "./triggers.js";
 import { clip } from "@parcha/agentrun-web";
 import { isObject, type Json } from "./validate.js";
-import { workspaceNow } from "./workspace-scope.js";
 
 /** The store slice these writers need: the run rows, its commands, and the origin read a retry makes. */
 export type RunsStore = Pick<Store, "runs" | "command" | "commands" | "runOfOrigin">;
@@ -605,11 +604,9 @@ export async function startRun(store: Store, deps: StartDeps, entry: AgentEntry,
   const target = keyTargetOf(launch, revision);
   keyedOrRefused(deps, target, sealed);
   const runId = (deps.newRunId ?? uuidv7)();
-  // A scoped request's run is its workspace's (workspace-scope.ts).
-  const workspace = workspaceNow();
   try {
     const labels = labelsOf(body.labels);
-    return await withHeldFiles(store, deps, runId, entry.agent.id, revision, launch, (launch) => store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, expectedCurrent: entry.agent.currentRevision, ...(origin ? { origin } : {}), ...(labels ? { labels } : {}), ...(firing ? { firing } : {}), ...(workspace !== undefined ? { workspace } : {}) }, { body: launchBody(launch), ...(sealed ? { sealed: sealed(runId, launch, target) } : {}) }));
+    return await withHeldFiles(store, deps, runId, entry.agent.id, revision, launch, (launch) => store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, expectedCurrent: entry.agent.currentRevision, ...(origin ? { origin } : {}), ...(labels ? { labels } : {}), ...(firing ? { firing } : {}) }, { body: launchBody(launch), ...(sealed ? { sealed: sealed(runId, launch, target) } : {}) }));
   } catch (error) {
     if (error instanceof RevisionMoved) throw new ApiError("precondition_failed", "The agent changed while this run was prepared. Start again using its current setup.");
     // Only another writer of the store got here first under the same origin key: its run is the one asked for.
