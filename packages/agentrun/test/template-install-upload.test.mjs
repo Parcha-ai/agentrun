@@ -67,11 +67,11 @@ function entry(path, { type = "0", data = Buffer.alloc(0) } = {}) {
  *  hold, and hidden files. */
 const EXTRA = [["NOTES.md", "A note beside the package.\n"], [".env", "KEY=not-a-package-file\n"], ["skills/.cache/x", "cached\n"]];
 
-/** A GitHub-shaped tarball at `sha`: one top folder, a file beside the package, and the kyb package under templates/kyb/
- *  with `extra` ([path, text]) in its folder too. */
-function tarball({ sha = SHA, extra = EXTRA } = {}) {
+/** A GitHub-shaped tarball at `sha`: one top folder, a file beside the package, and the kyb package under
+ *  templates/<folder>/ (kyb by default, the name its agent.md gives) with `extra` ([path, text]) in its folder too. */
+function tarball({ sha = SHA, extra = EXTRA, folder = "kyb" } = {}) {
   const top = `acme-agents-${sha.slice(0, 7)}`;
-  const blocks = [...entry("pax_global_header", { type: "g", data: Buffer.from(`52 comment=${sha}\n`) }), ...entry(`${top}/`, { type: "5" }), ...entry(`${top}/README.md`, { data: Buffer.from("# agents\n") }), ...entry(`${top}/templates/`, { type: "5" }), ...entry(`${top}/templates/kyb/`, { type: "5" })];
+  const blocks = [...entry("pax_global_header", { type: "g", data: Buffer.from(`52 comment=${sha}\n`) }), ...entry(`${top}/`, { type: "5" }), ...entry(`${top}/README.md`, { data: Buffer.from("# agents\n") }), ...entry(`${top}/templates/`, { type: "5" }), ...entry(`${top}/templates/${folder}/`, { type: "5" })];
   const walk = (dir, at) => {
     for (const name of readdirSync(dir).sort()) {
       const path = join(dir, name);
@@ -81,8 +81,8 @@ function tarball({ sha = SHA, extra = EXTRA } = {}) {
       } else blocks.push(...entry(`${top}/${at}${name}`, { data: readFileSync(path) }));
     }
   };
-  walk(KYB, "templates/kyb/");
-  for (const [path, text] of extra) blocks.push(...entry(`${top}/templates/kyb/${path}`, { data: Buffer.from(text) }));
+  walk(KYB, `templates/${folder}/`);
+  for (const [path, text] of extra) blocks.push(...entry(`${top}/templates/${folder}/${path}`, { data: Buffer.from(text) }));
   blocks.push(Buffer.alloc(1024));
   return gzipSync(Buffer.concat(blocks));
 }
@@ -351,6 +351,24 @@ test("a package the server's own import refuses is refused through the fallback 
   assert.match(byUpload.err, READ_HERE);
   assert.deepEqual(problems(bySource), [["package", "invalid", "notes/: a package's folders are skills/, rules/ and evals/"]]);
   assert.deepEqual(problems(byUpload), problems(bySource));
+  assert.deepEqual([await direct.store.importedTemplates.list(), await hosted.store.importedTemplates.list()], [[], []]);
+});
+
+test("a package whose agent.md names another folder is refused through the fallback too, as the server's own import refuses it, and nothing is stored", { timeout: 180_000 }, async (t) => {
+  // A source's package is named by its folder; an upload is named by its agent.md. Without a check here, kyb's files
+  // under templates/renamed/ would be stored as upload:kyb, in place of any upload of that name.
+  const github = await fauxGitHub(t, { tarballs: { [SHA]: tarball({ folder: "renamed" }) } });
+  const direct = await serve(t, { runner: false, templateImportApi: github.url });
+  const hosted = await serve(t, { runner: false, apiOnly: true });
+  const source = "github:acme/agents/templates/renamed@main";
+
+  const bySource = await installer(direct.baseUrl, github, direct.token)(source, "--trust");
+  const byUpload = await installer(hosted.baseUrl, github, hosted.token)(source, "--trust");
+  assert.equal(bySource.code, 1, bySource.err);
+  assert.match(bySource.err, /name is the folder's name, \\"renamed\\"/);
+  assert.equal(byUpload.code, 1, `exit ${byUpload.code}: ${byUpload.out} ${byUpload.err}`);
+  assert.match(byUpload.err, /agent\.md names the package "kyb", and a package's name is its folder's, "renamed"/);
+  assert.match(byUpload.err, /nothing was uploaded/);
   assert.deepEqual([await direct.store.importedTemplates.list(), await hosted.store.importedTemplates.list()], [[], []]);
 });
 
