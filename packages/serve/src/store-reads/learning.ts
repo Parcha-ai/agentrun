@@ -384,8 +384,21 @@ export type RunAllIn = { path: RunPath | null } & Pick<RunFigures, "usd" | "lear
  *  (its row's when absent); one other than its row's (an imported run's estimate, a booking where its end stored none)
  *  is its job's, less its look-back. While the run is at work `usd` is `rowUsd` and the rest null; null while unknown (its shadow still at work, a compile's or
  *  a check's cost unknown), never $0. Undefined for an unknown run. A served run's share is the agent's ledger's
- *  (agentLedgerOverStore). */
+ *  (agentLedgerOverStore). The run's own reads (runOwnOverStore) and its agent's ledger (runAllInOf) in turn. */
 export async function runAllInOverStore(store: Store, runId: string, rowUsd?: number | null): Promise<RunAllIn | undefined> {
+  const own = await runOwnOverStore(store, runId, rowUsd);
+  return own && (await runAllInOf(store, own));
+}
+
+/** What runOwnOverStore reads of a run: its costs as GET /runs/{id} shows them with no share of its revision's (`all`),
+ *  and, for a served run, what its share is read with outside (runAllInOf): its agent, its ledger row as its view prices
+ *  it, and whether a replay of its own-key check still runs (`open`). */
+export type RunOwn = { all: RunAllIn; served?: { agentId: string; runId: string; row: LedgerRow; open: boolean } };
+
+/** Run `runId`'s own reads of runAllInOverStore (A8): its record, its revision's kind, its launch, its ledger row and its
+ *  shadow's, its own-key check's replays; never its agent's other runs, so the reads are the same whatever their number
+ *  (store-view.ts runCostOverStore holds a snapshot over them alone). Undefined for an unknown run. */
+export async function runOwnOverStore(store: Store, runId: string, rowUsd?: number | null): Promise<RunOwn | undefined> {
   const run = await store.runs.get(runId);
   if (!run) return undefined;
   const ended = FINAL_STATES.includes(run.state);
@@ -394,26 +407,35 @@ export async function runAllInOverStore(store: Store, runId: string, rowUsd?: nu
   const path = !ended || kind === "workflow" ? null : (pathOfRow(run.metrics, started)?.path ?? null);
   if (!ended) {
     const row = rowUsd === undefined ? (typeof run.costAtMostUsd === "number" ? null : run.costUsd) : rowUsd;
-    return { path, usd: row, learning_usd: null, all_in_usd: null, compile_usd: null, followup_usd: null, shadow_usd: null, check_usd: null, share_usd: null };
+    return { all: { path, usd: row, learning_usd: null, all_in_usd: null, compile_usd: null, followup_usd: null, shadow_usd: null, check_usd: null, share_usd: null } };
   }
-  // A served run carries a share of its revision's spend: its figures are the series' own, over the agent's ledger, its
-  // own-key check unknown while a replay of it runs (as runFiguresOf reads it).
-  const served = path !== null && SERVED_PATHS.includes(path) && revisionOfRow(run) !== undefined;
-  const series = served ? (await agentLedgerOverStore(store, run.agentId)).out.figures.get(run.id) : undefined;
-  const figures = series ? ((await ownCheckOf(store, run.id)).some((one) => !one.ended) ? checkOpen(series) : series) : await runFiguresOf(store, run);
+  const own = await runFiguresOf(store, run);
   // The run's view priced it other than its row does (`rowUsd`: an imported run's catalog estimate, or its booking where
   // its end stored none): its job is that figure, as its end would have recorded it at that cost (record: less its
   // look-back), its learning's parts the ledger's.
-  const { usd, learning_usd, all_in_usd, compile_usd, followup_usd, shadow_usd, check_usd, share_usd } = typeof rowUsd === "number" && rowUsd !== run.costUsd ? await pricedAt(store, run, rowUsd, figures) : figures;
-  return { path, usd, learning_usd, all_in_usd, compile_usd, followup_usd, shadow_usd, check_usd, share_usd };
+  const row = typeof rowUsd === "number" && rowUsd !== run.costUsd ? record(await runEndOf(store, { ...run, costUsd: rowUsd, costAtMostUsd: null })).row : own.row;
+  const all = allInOf(path, row === own.row ? own.figures : figuresOf(row, partsOf(own.figures)));
+  const served = path !== null && SERVED_PATHS.includes(path) && revisionOfRow(run) !== undefined;
+  return served ? { all, served: { agentId: run.agentId, runId: run.id, row, open: own.open } } : { all };
 }
 
-/** Run `run`'s figures with its row's cost read as `usd` (runAllInOverStore's `rowUsd`): its row as its end would have
- *  recorded it at that cost, with `figures`' compile, shadow, own-key check and share. */
-async function pricedAt(store: Store, run: RunRecord, usd: number, figures: RunFigures): Promise<RunFigures> {
-  const row = record(await runEndOf(store, { ...run, costUsd: usd, costAtMostUsd: null })).row;
-  return figuresOf(row, { compile: figures.compile_usd, shadow: figures.shadow_usd, check: figures.check_usd, share: figures.share_usd });
+/** A run's costs as GET /runs/{id} shows them from its own reads (runOwnOverStore): a served run carries a share of its
+ *  revision's spend, so its figures are its row's with the series' parts, over the agent's ledger (summarize reads them
+ *  so), its own-key check unknown while a replay of it runs; its own figures while the series holds it not. */
+export async function runAllInOf(store: Store, own: RunOwn): Promise<RunAllIn> {
+  if (!own.served) return own.all;
+  const { agentId, runId, row, open } = own.served;
+  const series = (await agentLedgerOverStore(store, agentId)).out.figures.get(runId);
+  if (!series) return own.all;
+  const figures = figuresOf(row, partsOf(series));
+  return allInOf(own.all.path, open ? checkOpen(figures) : figures);
 }
+
+/** `figures`' learning parts, as figuresOf reads them. */
+const partsOf = (figures: RunFigures) => ({ compile: figures.compile_usd, shadow: figures.shadow_usd, check: figures.check_usd, share: figures.share_usd });
+
+/** `figures` as GET /runs/{id} shows them, on `path`. */
+const allInOf = (path: RunPath | null, { usd, learning_usd, all_in_usd, compile_usd, followup_usd, shadow_usd, check_usd, share_usd }: RunFigures): RunAllIn => ({ path, usd, learning_usd, all_in_usd, compile_usd, followup_usd, shadow_usd, check_usd, share_usd });
 
 /** The replay runs of a check run `runId` started on its own model key (learning-work.ts names them), each with whether
  *  it has ended: what they spent is its learning (learn/ledger.ts `check_usd`), unknown while one runs. */
@@ -433,8 +455,9 @@ const checkOpen = (figures: RunFigures): RunFigures => ({ ...figures, check_usd:
 /** One run's figures (learn/ledger.ts figuresOf) with no share of its revision's (a run that carries none: not served, or
  *  out of the series), over the ledger of it and its audit's shadow (ledgerRowsOf), as summarize reads them. Its own-key
  *  check's replays are read as summarize reads them (their check rows of it, `ofRun`): unknown while one runs, and one
- *  that ended with no row of its own yet at its row's cost. */
-async function runFiguresOf(store: Store, run: RunRecord): Promise<RunFigures> {
+ *  that ended with no row of its own yet at its row's cost. With its ledger row (`row`) and whether a replay of its
+ *  own-key check still runs (`open`). */
+async function runFiguresOf(store: Store, run: RunRecord): Promise<{ row: LedgerRow; figures: RunFigures; open: boolean }> {
   const shadow = isShadowRun(run.id) ? undefined : await store.runs.get(shadowRunId(run.id));
   const listed = shadow ? [run, shadow] : [run];
   const { recorded, spend } = await ledgerRowsOf(store, run.agentId, listed.map((one) => one.id));
@@ -450,8 +473,9 @@ async function runFiguresOf(store: Store, run: RunRecord): Promise<RunFigures> {
   const shadows = new Map<string, Shadow>();
   const state = shadowOf(new Map(listed.map((one) => [one.id, one])), run.id);
   if (state) shadows.set(run.id, state);
-  const checked = replays.some((one) => !one.ended) ? null : check.has(run.id) ? check.get(run.id)! : 0;
-  return figuresOf(row, { compile: compile.has(run.id) ? compile.get(run.id)! : 0, shadow: shadowCostOf(run.id, audit, shadows), check: checked, share: 0 });
+  const open = replays.some((one) => !one.ended);
+  const checked = open ? null : check.has(run.id) ? check.get(run.id)! : 0;
+  return { row, figures: figuresOf(row, { compile: compile.has(run.id) ? compile.get(run.id)! : 0, shadow: shadowCostOf(run.id, audit, shadows), check: checked, share: 0 }), open };
 }
 
 /** The check the serving promotion was decided on, as the cost summary says it: the champion (championOf) of the learned
