@@ -131,8 +131,9 @@ const stoppedGuard = (signal: AbortSignal): PageGuard => ({ wall: { verdict: "un
 
 /** A page guard check every call fetching one page shares (`ask`, on a signal of its own): each call waits on it until
  *  its own signal stops it, the page then left unjudged for that call (stoppedGuard); the check itself is stopped only
- *  once every call waiting on it has stopped (one waiting with no signal never stops). */
-type SharedGuard = { verdict: Promise<PageGuard>; wait(signal?: AbortSignal): Promise<PageGuard> };
+ *  once every call waiting on it has stopped (one waiting with no signal never stops), and a stopped one is joined by
+ *  no call after (`stopped`). */
+type SharedGuard = { verdict: Promise<PageGuard>; stopped(): boolean; wait(signal?: AbortSignal): Promise<PageGuard> };
 function sharedGuard(ask: (signal: AbortSignal) => Promise<PageGuard>): SharedGuard {
   const own = new AbortController();
   let waiting = 0;
@@ -141,6 +142,7 @@ function sharedGuard(ask: (signal: AbortSignal) => Promise<PageGuard>): SharedGu
   void verdict.then(() => (settled = true), () => (settled = true));
   return {
     verdict,
+    stopped: () => own.signal.aborted,
     wait(signal) {
       if (signal?.aborted) return Promise.resolve(stoppedGuard(signal));
       waiting += 1;
@@ -178,7 +180,8 @@ export function createWeb(config: WebConfig): Web {
     // One verdict a page: a read another fragment of its URL shares is that page (sharedRead).
     const page = sharedRead(read);
     const known = pageVerdicts.get(page);
-    if (known) return known.wait(step.signal);
+    // A check every waiter stopped is not joined, though it is the page's until its verdict settles: ask anew.
+    if (known && !known.stopped()) return known.wait(step.signal);
     // A call already stopped starts no check.
     if (step.signal?.aborted) return Promise.resolve(stoppedGuard(step.signal));
     // The check is the page's, not the caller's: no caller's stop ends it while another call waits on it (sharedGuard).
