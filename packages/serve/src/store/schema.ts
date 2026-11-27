@@ -47,7 +47,9 @@
 // would still write learning where this server neither reads nor purges it, so it must not open the store (it opens only
 // its own version). Version 18 keeps whether the server has recorded again each ledger row a build before the follow-up
 // split wrote (store_meta.ledger_rerecorded, run-patch.ts backfillLedger): a runner of 17 still writes a reopened run's
-// row with its job at the first round's figure, after the pass that records it again, so it must not open the store.
+// row with its job at the first round's figure, after the pass that records it again, so it must not open the store;
+// and each runner's row says the version its build knows (runners.knows), so the server marks that pass done only once
+// none of 17 is there.
 // The server upgrades these in place at its open (listingUpgrade from 11, relayUpgrade from 12, purgeUpgrade from 13,
 // diskUpgrade from 14, ledgerUpgrade from 15, learningRowsUpgrade from 16, then splitUpgrade from 17); a runner of this
 // build waits for it.
@@ -98,12 +100,13 @@ export function diskUpgrade(runColumns: ReadonlySet<string>): readonly string[] 
 export function learningRowsUpgrade(): readonly string[] {
   return [...LEARNING_ROWS, "UPDATE store_meta SET schema_version = 17 WHERE singleton = 1"];
 }
-/** Version 17 → 18 on SQLite (the server's open, sqlite/store.ts, last): the version alone, its mark
- *  (STORE_META_LEDGER_RERECORDED) added at the same open, so no runner of 17, whose end writes a reopened run's ledger row
- *  under the split before (its job the first round's figure), opens the store again once the open's backfill has recorded
- *  those rows again. */
-export function splitUpgrade(): readonly string[] {
-  return ["UPDATE store_meta SET schema_version = 18 WHERE singleton = 1"];
+/** Version 17 → 18 on SQLite (the server's open, sqlite/store.ts, last), given the runners' columns now: the version
+ *  each runner's build knows (runners.knows, RUNNERS) where missing, every row there null (a runner of 17's), and the
+ *  version; its mark (STORE_META_LEDGER_RERECORDED) added at the same open. No runner of 17, whose end writes a reopened
+ *  run's ledger row under the split before (its job the first round's figure), opens the store again; one still there
+ *  holds the mark until its row goes stale (run-patch.ts backfillLedger). */
+export function splitUpgrade(runnerColumns: ReadonlySet<string>): readonly string[] {
+  return [...(runnerColumns.has("knows") ? [] : ["ALTER TABLE runners ADD COLUMN knows INTEGER"]), "UPDATE store_meta SET schema_version = 18 WHERE singleton = 1"];
 }
 /** A trigger's package mark (TriggerRow.templateId): the id of the template package whose apply made or last kept it, null
  *  for one a person made. In STORE_DDL, and added at a server open to a store an earlier build of this version made, as
@@ -225,7 +228,9 @@ export const COMPUTER_INTERVALS_RUN = "CREATE INDEX IF NOT EXISTS computer_inter
  *  capabilities' runner_refused, health's runner check) and where to relay a dial (computer-attach.ts liveRelays). In
  *  STORE_DDL. A store an earlier build of version 13 made kept the relays in a table of their own (runner_relays): the
  *  server's open drops it and makes this one (sqlite/store.ts), as it drops browser_viewers, with no version: the rows
- *  are heartbeats renewed every 10 s, so none is copied, and a runner waits for that server (StoreAwaitsServer). */
+ *  are heartbeats renewed every 10 s, so none is copied, and a runner waits for that server (StoreAwaitsServer).
+ *  `knows`: the store's schema version the runner's build knows (RunnerRow.knows), null on a row a runner of 17 wrote:
+ *  added where missing by the split's step (splitUpgrade). */
 export const RUNNERS = `CREATE TABLE IF NOT EXISTS runners (
     runner TEXT PRIMARY KEY,
     incarnation TEXT NOT NULL,
@@ -234,7 +239,8 @@ export const RUNNERS = `CREATE TABLE IF NOT EXISTS runners (
     port INTEGER,
     seen_at INTEGER NOT NULL,
     version TEXT,
-    slots INTEGER
+    slots INTEGER,
+    knows INTEGER
   ) STRICT`;
 /** What a runner says of itself for the server's capacity read (GET /v2/capacity, capacity.ts): its build's version
  *  (`version`) and the most runs it holds at once (`slots`), each null on a row an earlier build wrote. In RUNNERS, and
@@ -414,9 +420,10 @@ const LEDGER_BACKFILLED = "ledger_backfilled INTEGER NOT NULL DEFAULT 0 CHECK (l
 export const STORE_META_LEDGER_BACKFILLED = `ALTER TABLE store_meta ADD COLUMN ${LEDGER_BACKFILLED}`;
 /** Whether every final run not purged whose learning kept more than one round (a follow-up opened it again) has had its
  *  ledger row recorded again under this build's split (learn/ledger.ts roundsLooked: its job the row less every round's
- *  look-back), which backfillLedger writes once it has recorded the last: a build before wrote such a row with its job
- *  at its first round's figure, and the row is the journal's, so it is recorded again once, never read two ways. 0 on a
- *  store no server of this build opened yet. In STORE_DDL, and added at the server open that brings a store to 18. */
+ *  look-back), which backfillLedger writes once it has recorded the last in a pass that started with no runner of an
+ *  earlier build there (RunnerRow.knows): a build before wrote such a row with its job at its first round's figure, and
+ *  the row is the journal's, so it is recorded again, never read two ways. 0 on a store no server of this build marked
+ *  yet. In STORE_DDL, and added at the server open that brings a store to 18. */
 const LEDGER_RERECORDED = "ledger_rerecorded INTEGER NOT NULL DEFAULT 0 CHECK (ledger_rerecorded IN (0, 1))";
 export const STORE_META_LEDGER_RERECORDED = `ALTER TABLE store_meta ADD COLUMN ${LEDGER_RERECORDED}`;
 /** Each learning cost, by the revision it is for (learn/ledger.ts SpendRow): a compile turn (`round`, the round that asked

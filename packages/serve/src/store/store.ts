@@ -1803,6 +1803,11 @@ export interface RunnerRow {
    *  row a runner of an earlier build wrote, or one that said neither (a refusing runner says no slots). */
   readonly version: string | null;
   readonly slots: number | null;
+  /** The store's schema version the runner's build knows (Runners.knows, which keepPresence writes): null on a row a
+   *  runner of a build before this column wrote. A live row whose `knows` is null or below the store's runner floor is a
+   *  runner of an earlier build, which holds the reopened runs' mark (run-patch.ts backfillLedger). Not the package
+   *  version, which a build says the same before and after a breaking change until its release. */
+  readonly knows: number | null;
 }
 
 /** The store's runs and hand-backs as the capacity read counts them (GET /v2/capacity, capacity.ts), on the deadlines'
@@ -1843,12 +1848,15 @@ export const KEPT_PREFIX = "computer_kept:";
 
 /** Every runner's word that it is there (runner/presence.ts). */
 export interface Runners {
+  /** The store's schema version this build knows (its newest migration on Postgres, SCHEMA_VERSION on SQLite: what a
+   *  runner's open checks the store against), which keepPresence says on each row it keeps (RunnerRow.knows). */
+  readonly knows: number;
   /** Keeps `row` for its runner, replacing any earlier incarnation's, seen now; rows no runner renewed for
    *  RUNNER_ROWS_KEPT_MS go in the same write. Its host and port go together: both absent (or null) for no relay. With
    *  `unlessLiveMs`, not over another incarnation's row of the same name seen within that: a process's put again of a row
    *  that went (pruned, a store restored) never takes back a later process's live one. False when such a row is there and
    *  nothing was written. */
-  put(row: Omit<RunnerRow, "seenAt" | "host" | "port" | "version" | "slots"> & { readonly host?: string | null; readonly port?: number | null; readonly version?: string | null; readonly slots?: number | null }, options?: { readonly unlessLiveMs?: number }): Promise<boolean>;
+  put(row: Omit<RunnerRow, "seenAt" | "host" | "port" | "version" | "slots" | "knows"> & { readonly host?: string | null; readonly port?: number | null; readonly version?: string | null; readonly slots?: number | null; readonly knows?: number | null }, options?: { readonly unlessLiveMs?: number }): Promise<boolean>;
   /** Marks the runner's row seen now and says on it where its relay answers (`at`, or null for nowhere), while the row is
    *  still this incarnation's. False when it is not (or there is none), and nothing was written. */
   renew(runner: string, incarnation: string, at: { readonly host: string; readonly port: number } | null): Promise<boolean>;
@@ -2124,6 +2132,11 @@ export interface Store {
   /** Reads the store's schema version and its runner floor now, without a lock or a write: a runner reads it at each
    *  renewal (runner/main.ts), and stops once the floor is above the version its build knows. */
   schemaState?(): Promise<StoreSchemaState>;
+  /** The server's pass over the ledger (run-patch.ts backfillLedger), as its open runs it: true once the reopened runs are
+   *  marked recorded again under this build's split (store_meta.ledger_rerecorded), which only a pass that started with
+   *  no runner of an earlier build there marks. The server tries again every RUNNER_STALE_MS until it is true (server.ts).
+   *  On a store opened as the server. */
+  rerecordReopened?(): Promise<boolean>;
   /** The clock a claim's lease is judged and stamped on (its `until`), when it is this process's own: the store's clock on
    *  SQLite (one host), or a test's. A runner reckons a claim's deadline from its `until` on it, so a claim or renew that
    *  waited for the writer lock keeps the lease the store granted from the lock. Absent when the lease is the database's

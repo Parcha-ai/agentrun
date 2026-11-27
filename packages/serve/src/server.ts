@@ -133,7 +133,7 @@ import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type AgenticBody, type AgentRow, LearningRecordRefused, type McpCredentialMark, type MonidPinBody, type NewRevision, openStore, type RevisionPlace, type RevisionRow, type LaunchSealed, openRunLaunch, type RunMcpAuth, type RunRow, sealRunLaunch, type Store, StoreLaunchMissing, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
+import { type AgenticBody, type AgentRow, LearningRecordRefused, type McpCredentialMark, type MonidPinBody, type NewRevision, openStore, type RevisionPlace, type RevisionRow, type LaunchSealed, openRunLaunch, type RunMcpAuth, RUNNER_STALE_MS, type RunRow, sealRunLaunch, type Store, StoreLaunchMissing, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
 import { agentDeleting, answerOf, logged, purgedAgent } from "./agents.js";
 import { keepGrade } from "./runner/feedback-round.js";
 import { gradeRow, notAuditableOf } from "./runner/audit.js";
@@ -2474,6 +2474,29 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     clearInterval(refusedTimer);
     await refusedSweep;
   });
+  // The reopened runs' ledger rows, recorded again at the store's open (run-patch.ts backfillLedger), are marked done only
+  // by a pass that started with no runner of an earlier build there: one such runner ends its runs until its floor read
+  // stops it, under the split before. Until a pass marks it, the pass runs again every RUNNER_STALE_MS (the age at which
+  // such a runner's row reads as gone), so a run it ended meanwhile is recorded under this build's split with no restart;
+  // then the timer stops. A pass that fails is said on stderr and tried at the next tick.
+  let rerecordPass: Promise<void> = Promise.resolve();
+  let rerecordStopped = store.rerecordReopened === undefined;
+  const rerecordTimer = setInterval(() => {
+    rerecordPass = rerecordPass.then(async () => {
+      if (rerecordStopped) return;
+      if (!(await store.rerecordReopened!())) return;
+      rerecordStopped = true;
+      clearInterval(rerecordTimer);
+    }).catch((error: Error) => void process.stderr.write(`agentrun-serve: the ledger rows of the runs a follow-up opened again could not be recorded again (tried again in ${RUNNER_STALE_MS / 1000} s): ${error.message}\n`));
+  }, RUNNER_STALE_MS);
+  rerecordTimer.unref();
+  if (rerecordStopped) clearInterval(rerecordTimer);
+  const stopRerecord = async () => {
+    rerecordStopped = true;
+    clearInterval(rerecordTimer);
+    await rerecordPass;
+  };
+  stops.unshift(stopRerecord);
   // The runner beside this server, when its run isolation was refused (cli.ts): its word, kept in this store until the stop.
   let refusedBeside: Presence | undefined;
   const sourceWorkspaces = { data, sealKey, env: withSecrets(process.env, "own"), ...(options.archilControl ? { control: options.archilControl } : {}) };
@@ -7635,6 +7658,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     clearInterval(refusedTimer);
     await refusedSweep;
     await refusedBeside?.close();
+    // No more tries at the reopened runs' ledger mark: a pass in flight ends before the store closes, and the next start
+    // tries again.
+    await stopRerecord();
     // A ChatGPT renewal OpenAI is answering saves its new pair first (renewalsStopped, above): none started since.
     await renewalsStopped;
     // The store's EXCLUSIVE lock is the one-server lock: closing it releases it for the next server.

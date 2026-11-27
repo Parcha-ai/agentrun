@@ -88,6 +88,11 @@ export async function openPostgresStore(options: PostgresStoreOptions): Promise<
       return found === known ? undefined : `the schema is at version ${found ?? "none"} now, and this build knows ${known}`;
     },
   });
+  // The schema's runner floor now (its version where none is marked), against which a runner's row is of an earlier build.
+  const floor = async (): Promise<number> => {
+    const state = await connection.withClient((client) => runnerFloorOf(client, schema));
+    return state.runnerFloor ?? state.version ?? known;
+  };
   try {
     if (role === "server") {
       const found = await connection.withClient((client) => migrate(client, schema, now(), migrations));
@@ -102,8 +107,9 @@ export async function openPostgresStore(options: PostgresStoreOptions): Promise<
     }
     if(role==="server")await backfillNativeCommandOwners(connection);
     // Every run an earlier build ended gets its ledger row once, here, and every run a follow-up opened again its row
-    // recorded again under this build's split, once, as on SQLite (run-patch.ts backfillLedger).
-    if (role === "server") await backfillLedger(connection, now);
+    // recorded again under this build's split, as on SQLite (run-patch.ts backfillLedger): marked done only when no
+    // runner below the floor was there at its start, else tried again on the server's timer (Store.rerecordReopened).
+    if (role === "server") await backfillLedger(connection, now, floor);
     if (role === "runner" && options.warn) {
       const gap = now() - (await connection.clock());
       if (Math.abs(gap) > CLOCK_WARN_MS) {
@@ -114,9 +120,10 @@ export async function openPostgresStore(options: PostgresStoreOptions): Promise<
     await connection.close().catch(() => undefined);
     throw error;
   }
-  const store = storeOver(connection, now);
+  const store = storeOver(connection, now, known);
   // Bounded: a runner reads it on a timer, and a database that stops answering must neither hold that timer's read for good
   // nor the store's close, which waits for every call in flight.
   const schemaState = async () => ({ ...(await connection.withClient((client) => runnerFloorOf(client, schema), SCHEMA_STATE_MS)), known });
-  return Object.assign(store, { schemaState });
+  if (role !== "server") return Object.assign(store, { schemaState });
+  return Object.assign(store, { schemaState, rerecordReopened: () => backfillLedger(connection, now, floor) });
 }

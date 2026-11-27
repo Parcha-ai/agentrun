@@ -318,8 +318,8 @@ type PairedRecord = { id: string; name: string; hello: string; driver: string; l
 const pairedOf = (r: PairedRecord): PairedComputerRow => ({ id: r.id, name: r.name, hello: JSON.parse(r.hello), driver: r.driver, labels: JSON.parse(r.labels), pairingId: r.pairing_id, createdAt: r.created_at, seenAt: r.seen_at, revokedAt: r.revoked_at });
 type MintedRecord = { machine: string; kind: string; os: string; arch: string; expires_at: number; revoked_at: number | null; created_at: number; runner: string | null; incarnation: string | null; run: string | null; refused: string | null };
 const mintedOf = (r: MintedRecord): MintedTokenRow => ({ machine: r.machine, kind: r.kind, os: r.os, arch: r.arch, expiresAt: r.expires_at, revokedAt: r.revoked_at, createdAt: r.created_at, runner: r.runner, incarnation: r.incarnation, run: r.run, refused: r.refused });
-type RunnerRecord = { runner: string; incarnation: string; refused: string | null; host: string | null; port: number | string | null; seen_at: number | string; version: string | null; slots: number | string | null };
-const runnerOf = (r: RunnerRecord): RunnerRow => ({ runner: r.runner, incarnation: r.incarnation, refused: r.refused, host: r.host, port: r.port === null ? null : Number(r.port), seenAt: Number(r.seen_at), version: r.version, slots: r.slots === null ? null : Number(r.slots) });
+type RunnerRecord = { runner: string; incarnation: string; refused: string | null; host: string | null; port: number | string | null; seen_at: number | string; version: string | null; slots: number | string | null; knows: number | string | null };
+const runnerOf = (r: RunnerRecord): RunnerRow => ({ runner: r.runner, incarnation: r.incarnation, refused: r.refused, host: r.host, port: r.port === null ? null : Number(r.port), seenAt: Number(r.seen_at), version: r.version, slots: r.slots === null ? null : Number(r.slots), knows: r.knows === null ? null : Number(r.knows) });
 type TriggerSettingRecord = { adapter: string; scope: string; field: string; sealed: string; updated_at: number };
 const triggerSettingOf = (r: TriggerSettingRecord): TriggerSettingRow => ({ adapter: r.adapter, scope: r.scope, field: r.field, sealed: r.sealed, updatedAt: r.updated_at });
 type McpOauthRecord = { state: string; server: string; sealed: Uint8Array; working: string | null; expires_at: number };
@@ -489,8 +489,9 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     // diskUpgrade). Version 15 keeps each ledger row's epoch: the server repairs the rows that release could leave wrong
     // and drops it (the ledger's step below, then ledgerUpgrade). Version 16 keeps no learning as rows: the server adds
     // them (schema.ts learningRowsUpgrade). Version 17 has its reopened runs' ledger rows under the split before: the
-    // server adds the mark (STORE_META_LEDGER_RERECORDED, unset) and writes 18 (schema.ts splitUpgrade), last, and the
-    // open's backfill records those rows again. A runner refuses each version of SQLITE_UPGRADES until that server has,
+    // server adds the mark (STORE_META_LEDGER_RERECORDED, unset) and each runner's known version (runners.knows) and
+    // writes 18 (schema.ts splitUpgrade), last, and the open's backfill records those rows again (marked once no runner of
+    // 17 is there). A runner refuses each version of SQLITE_UPGRADES until that server has,
     // and a runner of 15, whose end writes the epoch, refuses 16 and later (SchemaVersionUnknown), or stops at its next
     // floor read; a runner of 17, whose end writes the split before, refuses 18 the same way. A later version is refused too, a runner in words that name its floor (a SQLite runner opens only its
     // own version, so the floor is the version): RunnerBelowFloor.
@@ -665,25 +666,30 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
         if (found <= 15) await connection.write(ledgerUpgrade(await named("learning_ledger")).map((sql) => ({ sql })), { full: true });
         // ledgerUpgrade writes 16, the rows step 17 after it, and the split's step 18, last.
         if (found <= 16) await connection.write(learningRowsUpgrade().map((sql) => ({ sql })), { full: true });
-        await connection.write(splitUpgrade().map((sql) => ({ sql })), { full: true });
+        await connection.write(splitUpgrade(await named("runners")).map((sql) => ({ sql })), { full: true });
       }
       // Every run an earlier build ended gets its ledger row once, here, on the schema this build reads, and every run a
-      // follow-up opened again has its row recorded again under this build's split, once.
-      await backfillLedger(connection, options.now ?? Date.now);
+      // follow-up opened again has its row recorded again under this build's split: marked done only when no runner of 17
+      // was there at its start, else tried again on the server's timer (Store.rerecordReopened).
+      await backfillLedger(connection, options.now ?? Date.now, SQLITE_FLOOR);
     }
   } catch (error) {
     await connection.close().catch(() => undefined);
     throw error;
   }
-  const store = storeOver(connection, options.now ?? Date.now, inMemory(file) ? undefined : file);
+  const store = storeOver(connection, options.now ?? Date.now, SCHEMA_VERSION, inMemory(file) ? undefined : file);
   // A SQLite runner opens only its own version (the server upgrades the file in place at its start, never beside a
   // runner on another build): its floor is the version itself.
   const schemaState = async () => {
     const version = await versionOf(connection);
     return { version, runnerFloor: version, known: SCHEMA_VERSION };
   };
-  return Object.assign(store, { schemaState });
+  if (role !== "server") return Object.assign(store, { schemaState });
+  return Object.assign(store, { schemaState, rerecordReopened: () => backfillLedger(connection, options.now ?? Date.now, SQLITE_FLOOR) });
 }
+
+/** The runner floor of a SQLite store a server of this build opened: the version itself (a runner opens only its own). */
+const SQLITE_FLOOR = async (): Promise<number> => SCHEMA_VERSION;
 
 /** An agents, runs or imported_templates table an earlier build of this version made keeps no workspace (schema.ts
  *  WORKSPACE_ADDED): each added where missing, every row unscoped, then their indexes. The server's open runs it, and so
@@ -778,10 +784,10 @@ function readOnly(tx: Tx): Tx {
 
 /** The Store over `connection`, on whichever database it is (SQLite here, Postgres in postgres/store.ts), on the store's
  *  clock `now` (ms), its identity `where` (Store.where). The opener sets the schema up and checks its version first.
- *  `file`: a SQLite store's database file, beside which secureRewrite keeps its marker (SCRUB_SUFFIX), and whose WAL a
- *  purge checkpoints. */
-export function storeOver(connection: StoreConnection, now: () => number, file?: string): Store {
-  return new SqliteStore(connection, now, undefined, file === undefined ? undefined : `${file}${SCRUB_SUFFIX}`);
+ *  `knows`: the schema version this build knows on that database (Runners.knows). `file`: a SQLite store's database
+ *  file, beside which secureRewrite keeps its marker (SCRUB_SUFFIX), and whose WAL a purge checkpoints. */
+export function storeOver(connection: StoreConnection, now: () => number, knows: number, file?: string): Store {
+  return new SqliteStore(connection, now, knows, undefined, file === undefined ? undefined : `${file}${SCRUB_SUFFIX}`);
 }
 
 /** How long a purge's checkpoint waits for another connection's reader or writer before it leaves the log to the next
@@ -891,6 +897,8 @@ class SqliteStore implements Store {
   readonly sealedSecrets: SealedSecrets;
   readonly #db: StoreConnection;
   readonly #now: () => number;
+  /** The schema version this build knows on this database (Runners.knows), which a snapshot keeps. */
+  readonly #knows: number;
   /** The store this one is a snapshot of, or itself (Store.origin). */
   readonly origin: Store;
   /** Where this store's data is: its connection's (StoreConnection.where). */
@@ -914,10 +922,11 @@ class SqliteStore implements Store {
    *  it asked), so a marker is never removed without a checkpoint that truncated every writer's frames. */
   #scrubMarks = 0;
 
-  constructor(db: StoreConnection, now: () => number, origin?: Store, scrubMarker?: string) {
+  constructor(db: StoreConnection, now: () => number, knows: number, origin?: Store, scrubMarker?: string) {
     this.#db = db;
     this.#scrubMarker = scrubMarker;
     this.#now = now;
+    this.#knows = knows;
     this.origin = origin ?? this;
     this.where = db.where;
     const d = db.dialect;
@@ -2553,9 +2562,10 @@ class SqliteStore implements Store {
 
     // Stamped and judged on the deadlines' clock (fence.ts storeNow: the database's on Postgres), the one a claim's lease
     // runs on, so a runner on another host whose own clock is behind the server's never reads as gone (nor its relay).
-    const RUNNERS_SELECT = "SELECT runner, incarnation, refused, host, port, seen_at, version, slots FROM runners";
+    const RUNNERS_SELECT = "SELECT runner, incarnation, refused, host, port, seen_at, version, slots, knows FROM runners";
     this.runners = {
-      put: async ({ runner, incarnation, refused, host = null, port = null, version = null, slots = null }, { unlessLiveMs } = {}) => {
+      knows,
+      put: async ({ runner, incarnation, refused, host = null, port = null, version = null, slots = null, knows = null }, { unlessLiveMs } = {}) => {
         const n = clock();
         // With unlessLiveMs, the upsert's WHERE leaves a row another incarnation renewed within it as it is, in the same
         // statement: no read between, so a later process's put can never land between a look and this write.
@@ -2563,8 +2573,8 @@ class SqliteStore implements Store {
         const [, result] = await db.write([
           { sql: `DELETE FROM runners WHERE seen_at < ${n.sql} - ${d.bigintParam}`, params: [...n.params, RUNNER_ROWS_KEPT_MS] },
           {
-            sql: `INSERT INTO runners (runner, incarnation, refused, host, port, seen_at, version, slots) VALUES (?, ?, ?, ?, ?, ${n.sql}, ?, ?) ON CONFLICT (runner) DO UPDATE SET incarnation = excluded.incarnation, refused = excluded.refused, host = excluded.host, port = excluded.port, seen_at = excluded.seen_at, version = excluded.version, slots = excluded.slots${unlessLive}`,
-            params: [runner, incarnation, refused, host, port, ...n.params, version, slots, ...(unlessLiveMs === undefined ? [] : [unlessLiveMs])],
+            sql: `INSERT INTO runners (runner, incarnation, refused, host, port, seen_at, version, slots, knows) VALUES (?, ?, ?, ?, ?, ${n.sql}, ?, ?, ?) ON CONFLICT (runner) DO UPDATE SET incarnation = excluded.incarnation, refused = excluded.refused, host = excluded.host, port = excluded.port, seen_at = excluded.seen_at, version = excluded.version, slots = excluded.slots, knows = excluded.knows${unlessLive}`,
+            params: [runner, incarnation, refused, host, port, ...n.params, version, slots, knows, ...(unlessLiveMs === undefined ? [] : [unlessLiveMs])],
           },
         ]);
         return (result?.changes ?? 0) === 1;
@@ -3132,7 +3142,7 @@ class SqliteStore implements Store {
   }
 
   async snapshot<T>(read: (store: Store) => Promise<T>): Promise<T> {
-    return this.#db.transaction((tx) => read(new SqliteStore(snapshotOf(this.#db, tx), this.#now, this.origin)), { read: true });
+    return this.#db.transaction((tx) => read(new SqliteStore(snapshotOf(this.#db, tx), this.#now, this.#knows, this.origin)), { read: true });
   }
 
   /** How many journals the store keeps (open, of a claim not released). */

@@ -3,7 +3,7 @@
 // runs.update and for the journal's commit (store/journal), which stages the patch and calls this inside its own
 // transaction: the run's end and its outbox rows commit with the journal's last entry, or none of them do. The fence is
 // the first statement: `WHERE id = ? AND epoch = ?` changing no row throws Fenced, and the caller's transaction rolls back.
-import { CENSUS_UNSCANNED, endedReason, FINAL_STATES, Fenced, type AlsoRow, type Claim, type ImportedFrom, type RunOutcome, type RunLabels, type RunPatch, type RunRow, type RunState } from "../store.js";
+import { CENSUS_UNSCANNED, endedReason, FINAL_STATES, Fenced, RUNNER_STALE_MS, type AlsoRow, type Claim, type ImportedFrom, type RunOutcome, type RunLabels, type RunPatch, type RunRow, type RunState } from "../store.js";
 import { type Dialect, settledBody, SQLITE } from "../dialect.js";
 import type { SqliteExecutor, SqliteValue, StoreConnection } from "./connection.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
@@ -174,26 +174,44 @@ const UNRECORDED_PAGE = `SELECT id FROM runs WHERE id > ? AND ${UNRECORDED} ORDE
  *  never kept a second round, and no journal, is read. Whether each is final and not purged is read again in its page. */
 const REOPENED_PAGE = `SELECT DISTINCT run_id AS id FROM learning_proposals WHERE run_id > ? AND round > 1 ORDER BY run_id LIMIT ${BACKFILL_PAGE}`;
 
-/** At a server's open on either store, once each: records every final run that has no ledger row (UNRECORDED), as its
- *  end would have (recordLedger), then marks the ledger whole (store_meta.ledger_backfilled); and records again every
+/** Whether a runner of an earlier build is there now: a runners row seen within RUNNER_STALE_MS on the deadlines' clock
+ *  (fence.ts storeNow, as Runners.live reads it) that says no schema version it knows (a build before runners.knows) or
+ *  one below `floor`, the store's runner floor. Such a runner still ends runs until its floor read stops it. */
+async function earlierRunnerThere(connection: Pick<StoreConnection, "all" | "dialect">, now: () => number, floor: number): Promise<boolean> {
+  const d = connection.dialect;
+  const n = storeNow(d, now);
+  const there = await connection.all(`SELECT 1 AS there FROM runners WHERE seen_at >= ${n.sql} - ${d.bigintParam} AND (knows IS NULL OR knows < ${d.bigintParam}) LIMIT 1`, ...n.params, RUNNER_STALE_MS, floor);
+  return there.length > 0;
+}
+
+/** The server's pass over the ledger on either store, at its open and on its timer until it answers true (server.ts):
+ *  records every final run that has no ledger row (UNRECORDED), as its end would have (recordLedger), then marks the
+ *  ledger whole (store_meta.ledger_backfilled), after which no pass reads those runs again; and records again every
  *  final run, not purged, whose learning kept more than one round (REOPENED_PAGE), whose row a build before this split
- *  (learn/ledger.ts roundsLooked) wrote with its job at its first round's figure, then marks that done
- *  (store_meta.ledger_rerecorded). The row is the journal's, so it is recorded again, never read two ways. A mark set,
- *  no later open reads those runs again: each end, heal and import writes its own row, and no reader records one. Each
- *  pass goes by id, BACKFILL_PAGE runs a transaction, each read again in it, so a stop partway keeps each page it
- *  committed and the next open goes over the rest (a run recorded twice gets the same row). Each run's row is locked
- *  before it is read again (a no-op on SQLite's one writer): on Postgres another server's heal or end of it in flight
- *  commits first and the read sees its row, so a pass never writes over it with what it read before, and two servers
- *  opening at once write the same row. */
-export async function backfillLedger(connection: Pick<StoreConnection, "all" | "dialect" | "get" | "transaction">, now: () => number): Promise<void> {
+ *  (learn/ledger.ts roundsLooked) wrote with its job at its first round's figure. The row is the journal's, so it is
+ *  recorded again, never read two ways. That second pass reads the live runners before it starts and marks its runs done
+ *  (store_meta.ledger_rerecorded) only when no runner of an earlier build was there then (earlierRunnerThere, against
+ *  `floor()`, the store's runner floor): such a runner, ending its in-flight runs until its floor read stops it, writes a
+ *  reopened run's row under the split before after any pass, so while one is there each try records every such run
+ *  again and leaves the mark unset, and the first try that starts with none there marks it. Answers whether the mark is
+ *  set. Once it is, no pass reads those runs again: each end, heal and import writes its own row, and no reader records
+ *  one. Each pass goes by id, BACKFILL_PAGE runs a transaction, each read again in it; a mark is set only after the last
+ *  page of a pass that may set it, so a stop partway keeps each page it committed and the next try walks again from the
+ *  first id (a run recorded again gets the same row). Each run's row is locked before it is read again (a no-op on
+ *  SQLite's one writer): on Postgres another server's heal or end of it in flight commits first and the read sees its
+ *  row, so a pass never writes over it with what it read before, and two servers trying at once write the same row. */
+export async function backfillLedger(connection: Pick<StoreConnection, "all" | "dialect" | "get" | "transaction">, now: () => number, floor: () => Promise<number>): Promise<boolean> {
   const marks = await connection.get<{ whole: number; split: number }>("SELECT ledger_backfilled AS whole, ledger_rerecorded AS split FROM store_meta WHERE singleton = 1");
   if (Number(marks?.whole) !== 1) await recordEach(connection, now, UNRECORDED_PAGE, UNRECORDED, "ledger_backfilled");
-  if (Number(marks?.split) !== 1) await recordEach(connection, now, REOPENED_PAGE, FINAL_KEPT, "ledger_rerecorded");
+  if (Number(marks?.split) === 1) return true;
+  const held = await earlierRunnerThere(connection, now, await floor());
+  await recordEach(connection, now, REOPENED_PAGE, FINAL_KEPT, held ? undefined : "ledger_rerecorded");
+  return !held;
 }
 
 /** One pass of backfillLedger: each page `pick` lists (by id after its one parameter), each run locked, read again where
- *  `where` still holds and recorded, a transaction a page; then `mark` set in store_meta. */
-async function recordEach(connection: Pick<StoreConnection, "all" | "dialect" | "transaction">, now: () => number, pick: string, where: string, mark: "ledger_backfilled" | "ledger_rerecorded"): Promise<void> {
+ *  `where` still holds and recorded, a transaction a page; then `mark`, when given, set in store_meta. */
+async function recordEach(connection: Pick<StoreConnection, "all" | "dialect" | "transaction">, now: () => number, pick: string, where: string, mark: "ledger_backfilled" | "ledger_rerecorded" | undefined): Promise<void> {
   for (let after = ""; ;) {
     const page = await connection.all<{ id: string }>(pick, after);
     if (page.length === 0) break;
@@ -206,7 +224,7 @@ async function recordEach(connection: Pick<StoreConnection, "all" | "dialect" | 
     });
     after = page.at(-1)!.id;
   }
-  await connection.transaction((tx) => tx.run(`UPDATE store_meta SET ${mark} = 1 WHERE singleton = 1`).then(() => undefined));
+  if (mark) await connection.transaction((tx) => tx.run(`UPDATE store_meta SET ${mark} = 1 WHERE singleton = 1`).then(() => undefined));
 }
 
 /** The one reopen a run that ended may take (runs.reopen, and a run's end with a person's message waiting): back to running
