@@ -15,7 +15,7 @@ import { delimiter, dirname, join, relative } from "node:path";
 import { after, test } from "node:test";
 import * as claude from "@parcha/agentrun-harness-claude";
 import { API_ONLY_ROUTES } from "../dist/api-only.js";
-import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_ROUTES, CLAUDE_LOGIN_SETTING, claudeLoginOf, claudeLoginServed, claudeLoginSwitchedOff, claudeLoginView, dropRefusedLogin, envAtPlace, homeOf, LOGIN_ANSWERS_DIR, LOGIN_REFUSES_API_KEYS, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt as checkedLoginAt, loginBeforeRun, loginForRun, loginOnRunnerOnly, loginServes, settingFor, signOutClaudeLogin, startLoginHere, turnOffClaudeLogin, turnOnBody, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
+import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_ROUTES, CLAUDE_LOGIN_SETTING, claudeLoginOf, claudeLoginServed, claudeLoginSwitchedOff, claudeLoginView, dropRefusedLogin, envAtPlace, homeOf, LOGIN_ANSWERS_DIR, LOGIN_REFUSES_API_KEYS, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt as checkedLoginAt, loginBeforeRun, loginForRun, loginOnRunnerOnly, loginServes, settingFor, signInHereOff, signOutClaudeLogin, startLoginHere, turnOffClaudeLogin, turnOnBody, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
 import { ClaudeSignIns } from "../dist/claude-sign-in.js";
 import { MODEL_KEYS, hostModel } from "../dist/model.js";
 import { providerFor } from "../dist/provider.js";
@@ -124,6 +124,20 @@ test("a server with a public address never starts the CLI's sign-in itself, and 
   assert.equal(started.status, 403, JSON.stringify(started.body));
   assert.equal(started.body.error.message, view.body.start_off, "a start it refuses says the same");
   assert.equal(fake.calls().filter((call) => call.argv.startsWith("auth login")).length, 0, "no sign-in started");
+});
+
+test("the words for a sign-in that never starts here name the variable the public address came from, and what to do there", () => {
+  const PUBLIC = "https://agentrun.example.test";
+  assert.equal(signInHereOff("127.0.0.1", undefined, true), undefined, "loopback with no public address starts it");
+  assert.match(signInHereOff("127.0.0.1", PUBLIC, true), /^In-browser sign-in is off because AGENTRUN_PUBLIC_URL is set to https:\/\/agentrun\.example\.test\b.*unset AGENTRUN_PUBLIC_URL and restart the server\.$/);
+  assert.equal(signInHereOff("127.0.0.1", PUBLIC, true, "AGENTRUN_PUBLIC_URL"), signInHereOff("127.0.0.1", PUBLIC, true));
+  // On Render, RENDER_EXTERNAL_URL gives the address when AGENTRUN_PUBLIC_URL is unset (cli.ts): no advice to unset a
+  // variable that is not set, and none to unset one Render sets on every web service.
+  const render = signInHereOff("0.0.0.0", PUBLIC, false, "RENDER_EXTERNAL_URL");
+  assert.match(render, /^In-browser sign-in is off because this server's public address is https:\/\/agentrun\.example\.test, from Render's RENDER_EXTERNAL_URL\b/);
+  assert.doesNotMatch(render, /AGENTRUN_PUBLIC_URL|unset/);
+  assert.match(render, /run the command shown in a terminal on the server's machine\.$/);
+  assert.match(signInHereOff("0.0.0.0", undefined, false), /^In-browser sign-in is off because this server listens on 0\.0\.0\.0, past loopback\b/);
 });
 
 test("Claude Code's login on this machine: turned on with the owner's word, its status asked of the CLI alone, the CLI's own sign-in started here, turned off", { timeout: 180_000 }, async (t) => {
