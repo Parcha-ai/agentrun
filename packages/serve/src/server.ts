@@ -37,6 +37,7 @@ import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
 import { API_ONLY_ROUTES, apiOnlyMcpSave, apiOnlyRefusal, apiOnlyTriggerEdit, apiOnlyTriggerSkipped, apiOnlyTurnsOn, servedApiOnly } from "./api-only.js";
 import { API_ONLY_ENV, API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV } from "./env-switch.js";
+import { pricesInForce } from "./prices.js";
 import { composioOutsideNamespaceServers, holdApiOnlyMcpOrigins, offApiOnlyMcpServers } from "./mcp-api-only-origins.js";
 import { declaredKeys, keysOwed, keysOwedRefusal, type RunKeys, runKeysOf, runKeysTriggerSkipped, undeclaredKeys, withCarried } from "./run-keys.js";
 import { capacityOverStore, capacityWindowOf } from "./capacity.js";
@@ -836,6 +837,8 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/capacity$/, name: "getCapacity" },
   // A year of the work under this machine's home (wrapped.ts), on a server on the person's own machine alone.
   { method: "GET", pattern: /^\/wrapped$/, name: "getWrapped" },
+  // The prices this server meters computer and browser time at, as its meters read them (prices.ts).
+  { method: "GET", pattern: /^\/settings\/prices$/, name: "getPrices" },
   { method: "GET", pattern: /^\/settings\/tool-keys$/, name: "listToolKeys" },
   { method: "PUT", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "saveToolKey" },
   { method: "DELETE", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "deleteToolKey" },
@@ -6336,6 +6339,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const learning = await learningCountsOverStore(store, filter);
         return send(res, 200, { ...statsView(s, (id) => runningStatus.get(id)), analytics: { ...analyticsView(a, filter), usage: tokens }, learning });
       }
+      case "getPrices":
+        // Read at each request from this process's settings, where the runner beside it reads them too.
+        return send(res, 200, pricesInForce(process.env));
       case "listToolKeys":
         // The offers the server holds, not capabilities': a model key's row names the harnesses its key would run too.
         return send(res, 200, toolKeys.view(offers));

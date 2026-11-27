@@ -3405,6 +3405,26 @@ export interface operations {
     body: never;
     answer: Record<string, unknown>;
   };
+  getPrices: {
+    body: never;
+    answer: {
+      compute: {
+        provider: string;
+        resource: "vcpu" | "memory" | "gpu" | "disk";
+        gpu_type: string | null;
+        unit: "vcpu_second" | "gib_second" | "gpu_second" | "gb_month";
+        usd: string | null;
+        source: "setting" | "list" | "unpriced";
+      }[];
+      browser: {
+        provider: string;
+        unit: "hour";
+        usd: string | null;
+        minimum_s: number;
+        source: "setting" | "list" | "unpriced";
+      }[];
+    };
+  };
   getRevisionSkills: {
     body: never;
     answer: {
