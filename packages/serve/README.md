@@ -5031,7 +5031,8 @@ round on the agent's learning, whatever its harness:
   lines went (`dropped_lines`). A line it keeps is that run's known correction too: with no grade's expected answer, a
   promotion check judges a replay of the run against its recorded answer as the correction changes it, the agent's
   answer counted wrong: only the fast model's verdict, asked with the correction, says a draft agrees, never equal
-  answers alone.
+  answers alone. With no such verdict (no fast model, or its request failed) that input is unjudged, since a message may
+  be a question or thanks rather than a correction.
 - Its job, when a compile is due: once the agent has its `learning.compile_after` completed runs (20 by default) and no
   learned workflow, or once per hold of one its promotion held, the server asks the same session one more turn, under
   the fixed request id `learn-reflect-<run id>` and the origin `reflect`, so a server that restarts mid-turn asks again

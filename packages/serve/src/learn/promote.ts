@@ -656,7 +656,8 @@ export async function gradeAnswers(input: string, agent: string, draft: string, 
  *  fast model) they differ. A verdict whose `pair` is not these two answers' (one answered again since it was read) is
  *  stale: they differ, in its words (COMPARE_STALE), as with none. When the known answer `b` is one its owner corrected
  *  (`corrected`: it is known wrong where the correction says), only a verdict asked with the correction counts
- *  (Compared.corrected): it says whether they agree, equal or not, and with none they differ. */
+ *  (Compared.corrected): it says whether they agree, equal or not, and with none they differ (the check then leaves
+ *  that input unjudged: runner/promotion.ts checkInputOf). */
 export function compareAnswers(a: string | null, b: string | null, compared?: Compared, corrected = false): Compared {
   if (a === null || b === null) return { same: false };
   if (!corrected && sameAnswer(a, b)) return { same: true };

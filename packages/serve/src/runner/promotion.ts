@@ -63,6 +63,7 @@ import { listed } from "../learning-words.js";
 import { isObject, type Json } from "../validate.js";
 import { agentRun, lastOwnRuns, newCompileAttempt, sinceReset } from "../learn/compile.js";
 import { answerAt, answerValue, type CheckBar, type CheckDisagreement, type CheckKnown, type CheckRecord, type CheckTurns, checkShares, CHECK_TEXT_MAX, championOf, compareAnswers, type Compared, comparedGrade, comparedOf, correctionCounts, gradesOf, knownAnswerText, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, type ReplayLaunch, type ReplayOutcomes, type ReplayScore, replayingOf, sameAnswer, type SkippedTool, skippedToolsOf, valueAtPath } from "../learn/promote.js";
+import { CORRECTIONS_CAP } from "../learn/corrections.js";
 import { check as checkFields, type CheckInput, type CheckTally, type FieldAnswers, jointSaid, KNOWN, tallyOf } from "../learn/field-check.js";
 import { sendCommand } from "./commands.js";
 import { ClaimRefused } from "./loop-contract.js";
@@ -525,7 +526,9 @@ export const WHOLE_ANSWER = "answer";
  *  best known answer: a grade's expected answer written over the agent's (learn/promote.ts knownAnswerText), the grade
  *  saying whether the agent's was right; else, when its owner corrected the run by message (`corrected`), the agent's
  *  answer as that correction changes it: the agent's known wrong, and the draft right only as a grader's verdict asked
- *  with the correction says (only that verdict counts, equal answers or not; with none kept the pair differs); else the agent's
+ *  with the correction says (only that verdict counts, equal answers or not). With no such verdict kept (no fast model, a
+ *  request that failed) the input is unjudged, neither right nor wrong: a message's words are not known to correct
+ *  anything (an owner's question or thanks is taken as one too) until a model reads them beside the answer; else the agent's
  *  answer, known wrong when a grade with no expected answer said so. The field's `grade` is the grade's own expected
  *  answer, the part its owner gave, and its `correction` the owner's words, which a disagreement shows the recompile
  *  (and a purge blanks). Field names are never taken from a grade: its keys are a person's data, which a run's purge
@@ -544,7 +547,7 @@ function checkInputOf(row: CheckRow, on: readonly string[] | undefined): { reado
   // itself: no known answer there, neither right nor wrong (unjudged).
   const contradicts = row.correct === false && row.expected !== undefined && row.agent !== null && sameAnswer(knownAnswerText(row.agent, row.expected), row.agent);
   const corrected = row.expected === undefined ? row.corrected : undefined;
-  const graded = contradicts ? { no_known: true as const } : row.expected ? { grade: row.expected, ...(row.correct !== undefined ? { agent_correct: row.correct } : {}) } : corrected !== undefined ? { correction: corrected, agent_correct: false } : row.correct === false ? { agent_correct: false } : {};
+  const graded = contradicts ? { no_known: true as const } : row.expected ? { grade: row.expected, ...(row.correct !== undefined ? { agent_correct: row.correct } : {}) } : corrected !== undefined ? (row.compared?.corrected !== undefined ? { correction: corrected, agent_correct: false } : { no_known: true as const }) : row.correct === false ? { agent_correct: false } : {};
   const compared = compareAnswers(row.answer, row.expected ? knownAnswerText(row.agent, row.expected) : row.agent, row.compared, corrected !== undefined);
   // The answers as sameAnswer reads them, so a draft that says the agent's answer in another dress repeats it.
   return { input: { input_id: row.of, outcome, fields: { [WHOLE_ANSWER]: { workflow: answerValue(row.answer), agent: answerValue(row.agent), agrees: compared.same, ...graded } } }, compared };
@@ -1120,8 +1123,8 @@ export const answerOf = async (store: PromotionDeps["store"], runId: string, con
 
 /** The owner's correction run `runId` took by message: what each round's end-of-run step took (runner/reflect-hook.ts
  *  `taken`: past the refuse list and the checks, merged into corrections.md, cut of what the run must never learn), as
- *  its kept row holds it (merged, with `corrections` and the words in `correction`), oldest round first, one line each.
- *  Undefined when it took none: a correction refused or dropped is none, and a purged run's rows keep no words. */
+ *  its kept row holds it (merged, with `corrections` and the words in `correction`), oldest round first, one line each,
+ *  the oldest dropped past CORRECTIONS_CAP bytes all told (corrections.md's own cap). Undefined when it took none: a correction refused or dropped is none, and a purged run's rows keep no words. */
 export async function correctionOf(store: Pick<Store, "learning">, runId: string): Promise<string | undefined> {
   const newest = await store.learning.proposal(runId);
   if (!newest) return undefined;
@@ -1132,7 +1135,15 @@ export async function correctionOf(store: Pick<Store, "learning">, runId: string
     const row = (kept?.proposal ?? null) as { state?: unknown; corrections?: unknown; correction?: unknown } | null;
     return row?.state === "merged" && typeof row.corrections === "number" && row.corrections >= 1 && typeof row.correction === "string" && row.correction.trim() ? [row.correction.trim()] : [];
   });
-  return words.length ? words.join("\n") : undefined;
+  // Within corrections.md's own cap all told, the newest kept first: one round's alone always fits (its merge checked it).
+  const kept: string[] = [];
+  let bytes = 0;
+  for (const line of words.reverse()) {
+    bytes += Buffer.byteLength(line, "utf8") + (kept.length ? 1 : 0);
+    if (bytes > CORRECTIONS_CAP) break;
+    kept.unshift(line);
+  }
+  return kept.length ? kept.join("\n") : undefined;
 }
 
 const metricsOf = (row: RunRow | undefined) => (isObject(row?.metrics as Json) ? (row!.metrics as { replay?: { outcome?: unknown; skipped?: Skipped; compared?: unknown }; path?: unknown; workflow?: unknown; workflow_digest?: unknown }) : {});
