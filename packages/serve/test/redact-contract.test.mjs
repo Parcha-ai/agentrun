@@ -406,19 +406,11 @@ const CASES = [
       exact: { redactedAnswer: "[redacted]", redactedCall: "[redacted]", runFile: "[redacted]" },
     },
     {
-      name:
-        what === "%E2%80%8B"
-          ? `a run too long to read ending in ${what}, with no held value in the text, is withheld whole: its tail read passes its budget`
-          : `a run too long to read ending in ${what}, with no held value in the text, shows with the run as "[redacted]" (control)`,
+      name: `a run too long to read ending in ${what}, with no held value in the text, shows with the run as "[redacted]" (control)`,
       text: `the key: ${"z".repeat(9000)}${CUT_KEY.slice(0, 16)}${pad}\n${CUT_KEY.slice(16)} end`,
       values: [SPLIT],
       hides: [],
-      // Percent-encoded zero-width spaces: the tail read visits 850,788 characters, more than its budget (key-refusal.ts
-      // READ_BUDGET, 92 pieces: 753,664), so it gives up and the text is withheld whole. Pinned as it is now.
-      exact:
-        what === "%E2%80%8B"
-          ? { redactedAnswer: "[redacted]", redactedCall: "[redacted]" }
-          : { redactedAnswer: `the key: [redacted]\n${CUT_KEY.slice(16)} end`, redactedCall: `the key: [redacted]\n${CUT_KEY.slice(16)} end` },
+      exact: { redactedAnswer: `the key: [redacted]\n${CUT_KEY.slice(16)} end`, redactedCall: `the key: [redacted]\n${CUT_KEY.slice(16)} end` },
     },
   ]),
   {
@@ -1473,7 +1465,8 @@ test("adversarial texts: the characters the whole pipeline visits are at most WO
 // Malformed JSON nested as deep as the text, past a call's stop: every name opens another object or array, so the text
 // holds names and no value, and two of the views the read past the stop walks show none of a piece of it. That read
 // gives up there and the call's result is withheld whole; before the read counted what each view shows, it showed the
-// first CALL_RESULT_CHARS. Withheld, not shown: pinned as it is now, so a change either way is seen.
+// first CALL_RESULT_CHARS. It fails closed whatever the read's budget (with none, a view still shows fewer characters
+// than the read needs in a piece): withheld, not shown, pinned as it is now, so a change either way is seen.
 test("malformed JSON nested as deep as the text, past a call's stop, is withheld whole: '{\"a\":' and '[{\"a\":[' at 128 KiB and 512 KiB", () => {
   const shown = [];
   for (const unit of ['{"a":', '[{"a":[']) for (const size of [128 * 1024, 512 * 1024]) {
