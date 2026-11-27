@@ -589,6 +589,7 @@ export interface components {
       answer: boolean;
       follow_up: boolean;
       steer_workflow_runs: boolean;
+      said?: boolean;
     };
     timeline: {
       long_poll: boolean;
@@ -797,6 +798,7 @@ export interface components {
   };
   MessageCreate: {
     content: string;
+    said?: string;
     model_key?: string;
     mcp_auth?: Record<string, {
       headers: Record<string, string>;
@@ -3025,7 +3027,7 @@ export interface operations {
     answer: {
       text: string;
       etag: string;
-      cap_bytes: 2048;
+      cap_bytes: 8192;
     };
   };
   getLearningCost: {
@@ -3408,6 +3410,26 @@ export interface operations {
     body: never;
     answer: Record<string, unknown>;
   };
+  getPrices: {
+    body: never;
+    answer: {
+      compute: {
+        provider: string;
+        resource: "vcpu" | "memory" | "gpu" | "disk";
+        gpu_type: string | null;
+        unit: "vcpu_second" | "gib_second" | "gpu_second" | "gb_month";
+        usd: string | null;
+        source: "setting" | "list" | "unpriced";
+      }[];
+      browser: {
+        provider: string;
+        unit: "hour";
+        usd: string | null;
+        minimum_s: number;
+        source: "setting" | "list" | "unpriced";
+      }[];
+    };
+  };
   getRevisionSkills: {
     body: never;
     answer: {
@@ -3604,6 +3626,7 @@ export interface operations {
         pending?: true;
       }[];
       corrections: number;
+      dropped_lines: number;
       problems: {
         rule: string;
         path?: string;
@@ -3763,7 +3786,7 @@ export interface operations {
         billable: boolean;
       }[] | null;
       infra_usd: number | null;
-      reason: "running" | "not_booked" | "reopened" | null;
+      reason: "running" | "not_booked" | null;
     };
   };
   getSdkRun: {
@@ -6163,7 +6186,7 @@ export interface operations {
     answer: {
       text: string;
       etag: string;
-      cap_bytes: 2048;
+      cap_bytes: 8192;
     };
   };
   putMcpPrivateHosts: {

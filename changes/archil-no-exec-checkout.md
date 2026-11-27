@@ -1,5 +1,0 @@
----
-packages: @parcha/agentrun-serve
-kind: fix
----
-A run with `checkout: pull_request` or `checkout: repository` on a Mode 2 server whose Archil region has no serverless exec (gcp-us-central1) now gets its checkout: the server's git fetch runs in the run's sandbox computer once it has mounted the run's folder, the same script with the GitHub App's token on the process's stdin, never on its argv or in its environment. Before, the fetch went to Archil's exec, which that region refuses, and the run was told its checkout failed with "Exec is not enabled". A run there with no computer that mounts its folder is told up front that it has no checkout and why, and its timeline names a sandbox computer as the fix. A template whose computer list asks for a shell first (code-review, agent-scout) is applied there with the first sandbox whose keys are set and that mounts the run's folder (E2B, Modal or Agent37 on Archil), so its runs have a shell and their checkout. A computer's exec now takes stdin (process.write). Regions with exec and Mode 1 are unchanged.

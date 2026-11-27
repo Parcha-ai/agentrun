@@ -1,7 +1,8 @@
 // web_search's one answer shape (Search), its bounds, and searchInTurn: a call asks its backends in order, each behind
 // a breaker of its own. A quota answer turns a backend off until the reset it names, else for the breaker's life; a rate
 // limit holds it for the wait it named (60 s when none), and one naming a wait past 15 minutes turns it off for that
-// wait. A backend that fails, is held or is off passes the call to the next.
+// wait. A backend that fails, answers no results, is held or is off passes the call to the next.
+import { cutAt } from "./page.js";
 import type { SearchProvider } from "./providers/registry.js";
 
 /** The most of one keyword query a search sends (Parallel's own bound on a query). */
@@ -179,7 +180,7 @@ export function searchText(answer: Search): string {
 export function snippetOf(raw: string): string {
   const text = raw.replace(/!?\[([^\]]*)\]\([^)\s]*\)/g, "$1").replace(/\s+/g, " ").trim();
   if (text.length <= SNIPPET_MAX) return text;
-  const cut = text.slice(0, SNIPPET_MAX - 1);
+  const cut = cutAt(text, SNIPPET_MAX - 1);
   const space = cut.lastIndexOf(" ");
   return `${(space > SNIPPET_MAX / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
 }
@@ -204,9 +205,10 @@ export function searchArgs(args: Record<string, unknown>): SearchAsk {
  *  `deadline`, the call's one deadline for every backend it asks (searchInTurn); Parallel and a native search keep the
  *  caller's signal and their own bounds. */
 export type Backend = { name: string; ask(deadline: AbortSignal): Promise<Searched> };
-/** One backend's turn in a call: answered (`ok`), failed (`error`: its message, the failure typed where the provider
- *  typed it, the limit it met), or held by its breaker. */
-export type Try = { provider: string; outcome: "ok" | "error" | "held"; error?: string; failure?: Failure; limit?: Limit; ms?: number };
+/** One backend's turn in a call: answered (`ok`), answered no results (`empty`: a search passed on to the next
+ *  backend), failed (`error`: its message, the failure typed where the provider typed it, the limit it met), or held by
+ *  its breaker. */
+export type Try = { provider: string; outcome: "ok" | "empty" | "error" | "held"; error?: string; failure?: Failure; limit?: Limit; ms?: number };
 /** The most one call of web_search spends across its keyless backends together: Firecrawl's failing or timing out
  *  leaves Exa what is left of it, never a fresh bound. Firecrawl's own bound inside it (FIRECRAWL_MS, 30 s) leaves Exa
  *  at least the rest. */
@@ -215,12 +217,19 @@ export const KEYLESS_SEARCH_MS = 60_000;
  *  (FIRECRAWL_MS). */
 export type SearchBounds = { searchMs?: number; firecrawlMs?: number };
 
+/** Whether a search's answer holds nothing for the model: no results and no short answer of its own (`text`). */
+const emptyAnswer = (answer: Search): boolean => !("error" in answer) && !answer.results.length && !answer.text;
+
 /** A call's search through `backends` in turn, each behind its breaker, all under one deadline (`boundMs` or `signal`):
- *  the first with results answers; none starts on a spent deadline. None left: SEARCH_UNAVAILABLE where every backend is
- *  off (a lone backend's own answer where it was asked), else the last failure, else searchBusy for the shortest wait. */
+ *  the first with results (or a short answer of its own) answers; one answering none passes the call on, and the first
+ *  such answers only when no backend after it has results. None starts on a spent deadline. None left: SEARCH_UNAVAILABLE
+ *  where every backend is off (a lone backend's own answer where it was asked), else the last failure, else searchBusy
+ *  for the shortest wait. */
 export async function searchInTurn(backends: readonly Backend[], breakerOf: (name: string) => Breaker, signal?: AbortSignal, boundMs: number = KEYLESS_SEARCH_MS, tries?: Try[]): Promise<Search> {
   const deadline = AbortSignal.any([AbortSignal.timeout(boundMs), ...(signal ? [signal] : [])]);
   let last: Search | undefined;
+  // The first answer with no results: the call's, if no backend after it has any.
+  let empty: Search | undefined;
   for (const backend of backends) {
     const breaker = breakerOf(backend.name);
     const held = breaker.held();
@@ -229,14 +238,17 @@ export async function searchInTurn(backends: readonly Backend[], breakerOf: (nam
       tries?.push({ provider: backend.name, outcome: "held", ...(holding && "error" in held ? { failure: failure(holding.kind, "HELD", held.error) } : {}), ms: 0 });
       continue;
     }
-    if (last && deadline.aborted) break;
+    if ((last || empty) && deadline.aborted) break;
     const started = tries ? performance.now() : 0;
     const searched = await backend.ask(deadline);
     const answer = breaker.read(searched);
-    tries?.push({ provider: backend.name, outcome: "error" in answer ? "error" : "ok", ...("error" in answer ? { error: answer.error, ...(searched.failure ? { failure: searched.failure } : {}) } : {}), ...(searched.limit ? { limit: searched.limit } : {}), ms: Math.round(performance.now() - started) });
-    if (!("error" in answer)) return answer;
-    last = answer;
+    const outcome = "error" in answer ? "error" : emptyAnswer(answer) ? "empty" : "ok";
+    tries?.push({ provider: backend.name, outcome, ...("error" in answer ? { error: answer.error, ...(searched.failure ? { failure: searched.failure } : {}) } : {}), ...(searched.limit ? { limit: searched.limit } : {}), ms: Math.round(performance.now() - started) });
+    if (outcome === "ok") return answer;
+    if (outcome === "empty") empty ??= answer;
+    else last = answer;
   }
+  if (empty) return empty;
   const breakers = backends.map((backend) => breakerOf(backend.name));
   if (breakers.every((breaker) => breaker.off())) return backends.length === 1 && last ? last : { error: SEARCH_UNAVAILABLE };
   // A backend that turned off in this call while another only waits: the run's search is not off, so it waits.

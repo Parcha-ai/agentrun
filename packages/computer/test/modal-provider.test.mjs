@@ -344,6 +344,34 @@ test("create: a spec's sizes and user map onto Modal's fields and init's --user"
 	assert.deepEqual([tiny.rec.params().cpu, tiny.rec.params().memoryMiB], [0.125, 64], "the request never above the limit");
 });
 
+/** The recorder with sandboxes.create answering a running sandbox that keeps its tags, as Modal makes one. */
+function making() {
+	const { rec, provider } = setup();
+	let next = 0;
+	rec.sdk.sandboxes.create = async (app, image, params) => {
+		rec.calls.push(["sandboxes.create", app, image, params]);
+		return { sandboxId: `sb-made-${++next}`, poll: async () => null, getTags: async () => ({ ...params.tags }), terminate: async () => {} };
+	};
+	return { rec, provider, host: provider.host };
+}
+const machineRequest = (extra = {}) => ({ name: "computer-0123456789ab", image: "debian:bookworm-slim", labels: { [COMPUTER]: "1" }, lifetimeMs: 600_000, backstopAt: new Date(Date.now() + DAY_MS).toISOString(), egress: false, command: ["sh", "-c", "true"], ...extra });
+
+test("a Modal computer's size is the limit its create set (Modal reads none back and bills by use up to it): 2 vCPUs and 4096 MB by default, a spec's own sizes else, as get reads the sandbox back", async () => {
+	const { rec, host } = making();
+	const plain = await host.create(machineRequest(), { timeoutMs: 2_000 });
+	const params = rec.params();
+	assert.deepEqual([params.cpuLimit, params.memoryLimitMiB], [1, 4096], "1 core, 2 vCPUs, and 4 GiB: the create's limits");
+	const machine = await host.get(plain.id, { timeoutMs: 2_000 });
+	assert.deepEqual(machine.resources, { cpus: params.cpuLimit * 2, memoryMb: params.memoryLimitMiB }, "the figures are the create's limits, in vCPUs and MB");
+	assert.deepEqual(machine.resources, { cpus: 2, memoryMb: 4096 });
+	const sized = await host.create(machineRequest({ cpus: 0.5, memoryMb: 512 }), { timeoutMs: 2_000 });
+	assert.deepEqual((await host.get(sized.id, { timeoutMs: 2_000 })).resources, { cpus: 0.5, memoryMb: 512 }, "a spec's sizes are its limits, and its figures");
+	// A sandbox this provider did not make (another process's, read by its id) has no size this provider knows: none said.
+	rec.sdk.sandboxes.fromId = async (id) => ({ sandboxId: id, poll: async () => null, getTags: async () => ({ [COMPUTER]: "1" }) });
+	assert.equal(Object.hasOwn(await host.get("sb-elsewhere", { timeoutMs: 2_000 }), "resources"), false, "never guessed");
+	await host.delete(sized.id, { timeoutMs: 2_000 });
+});
+
 test("create of a GPU computer: Modal's GPU option, on its gVisor runtime", async () => {
 	for (const [gpu, given] of [
 		[{ type: "T4", count: 1 }, "T4"],
