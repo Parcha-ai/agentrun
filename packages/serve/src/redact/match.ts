@@ -1059,10 +1059,10 @@ const WORD_CHAR = /^[\p{L}\p{N}_]$/u;
 
 /** The prefixes code writes before a quote: a word that is exactly one before an apostrophe makes it open a string,
  *  whatever follows. Python's, in any case (r'...', Rb'...', Python 2's ur'...'), held lower case here; and in the case
- *  written, SQL's (N'...', E'...', X'...', B'...') and C's (L'x', U'x', u8'x'); C's u'x' and Rust's b'x' are Python's u
- *  and b. A Delphi control character, "#" and digits (#13'...'), is one too (partsOf). */
+ *  written, SQL's (N'...', E'...', X'...') and C's (L'x', u8'x'); SQL's B'...', C's u'x' and U'x' and Rust's b'x' are
+ *  Python's b and u in another case. A Delphi control character, "#" and digits (#13'...'), is one too (partsOf). */
 const STRING_PREFIXES: ReadonlySet<string> = new Set(["r", "u", "b", "f", "br", "rb", "fr", "rf", "ur"]);
-const CASED_PREFIXES: ReadonlySet<string> = new Set(["N", "E", "X", "B", "L", "U", "u8"]);
+const CASED_PREFIXES: ReadonlySet<string> = new Set(["N", "E", "X", "L", "u8"]);
 
 /** JSON's punctuation between its values. */
 const STRUCTURE = only("{}[],:");
