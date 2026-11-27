@@ -17,7 +17,7 @@ export type Span = [start: number, end: number];
  *  run read, each guard read back (the shape scanners); each form, hex, folded and plain needle's search, and the text
  *  it passes over (find); each view built (its special characters found, its blanks, its decoders' reads, its non-ASCII
  *  stretches squeezed, each cut its cover passes), lowered and flattened; each covered stretch a find in a view is
- *  checked against (inside); the finds merged and the text cut; and
+ *  checked against (coveringFrom); the finds merged and the text cut; and
  *  key-refusal.ts's reads of a text in pieces. A test sets it to 0, redacts, and reads it: a stage that read again from
  *  the start at each find would count the text once per find. */
 export const scanned = { chars: 0 };
@@ -1467,18 +1467,32 @@ function flatOf(view: View): View {
   return { text: parts.join(""), covered };
 }
 
-/** Whether [start, end) of a view lies in one of its covered stretches: a binary search, each stretch it visits
- *  counted. */
-function inside(covered: readonly Span[], start: number, end: number): boolean {
-  let lo = 0;
-  let hi = covered.length - 1;
+/** The last of a view's covered stretches (in order, apart) that starts at or before `start`, or -1: searched forward
+ *  from `from` (-1, or one that does) in steps that double, then halve, each stretch it visits counted. A needle's
+ *  finds come in order, so each passes the stretches between it and the find before it once, in work linear in them,
+ *  where a search from the first stretch at each find would read their count's logarithm again at every find. */
+function coveringFrom(covered: readonly Span[], from: number, start: number): number {
+  let last = from;
+  let step = 1;
+  let after = covered.length;
+  for (let probe = from + 1; probe < covered.length; probe = last + step) {
+    scanned.chars++;
+    if (covered[probe]![0] > start) {
+      after = probe;
+      break;
+    }
+    last = probe;
+    step *= 2;
+  }
+  let lo = last + 1;
+  let hi = after - 1;
   while (lo <= hi) {
     scanned.chars++;
     const mid = (lo + hi) >> 1;
-    if (covered[mid]![0] <= start) lo = mid + 1;
+    if (covered[mid]![0] <= start) [last, lo] = [mid, mid + 1];
     else hi = mid - 1;
   }
-  return hi >= 0 && covered[hi]![1] >= end;
+  return last;
 }
 
 /** Whether `view` holds one of `needles` outside its covered stretches (with no `covered`, anywhere). */
@@ -1489,7 +1503,11 @@ function holdsIn(view: string, covered: readonly Span[] | undefined, needles: re
       if (find(view, needle, 0) >= 0) return true;
       continue;
     }
-    for (let at = find(view, needle, 0); at >= 0; at = find(view, needle, at + 1)) if (!inside(covered, at, at + needle.length)) return true;
+    let stretch = -1;
+    for (let at = find(view, needle, 0); at >= 0; at = find(view, needle, at + 1)) {
+      stretch = coveringFrom(covered, stretch, at);
+      if (stretch < 0 || covered[stretch]![1] < at + needle.length) return true;
+    }
   }
   return false;
 }

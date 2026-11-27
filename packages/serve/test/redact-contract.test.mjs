@@ -1417,15 +1417,17 @@ test("the work count reads each stage: a form's search, a view and its decoders,
   // A text with JSON's escapes is read in the squeezed view and the JSON view: two views built, each searched.
   const json = count(() => holds(escaped, { ...none, plain: [DENSE] }, { cuts: [[0, 3]] }));
   if (json < 3 * escaped.length) problems.push(`the JSON view: ${json} for ${escaped.length}`);
-  // Each find checked against the view's covered stretches visits some of them: F finds, each inside its own cut,
-  // against F covered stretches, visit about log2(F) each; against one covered stretch, one each. The same text and
-  // finds otherwise, so the two counts differ by those visits (and the cover's pass over F cuts, not one).
+  // Each find checked against the view's covered stretches visits some of them, searched forward from the find before:
+  // F finds, each inside its own cut, against F covered stretches, visit a few each (the next stretch, the one after
+  // it, and back); against one covered stretch, none after the first. The same text and finds otherwise, so the two
+  // counts differ by those visits (and the cover's pass over F cuts, not one). A search from the first stretch at each
+  // find would visit about log2(F) = 12 each, and more as the text grows.
   const finds = 4096;
   const separate = `${DENSE} x `.repeat(finds);
   const each = Array.from({ length: finds }, (_, i) => [11 * i, 11 * i + DENSE.length]);
   const apart = count(() => holds(separate, { ...none, plain: [DENSE] }, { cuts: each }));
   const together = count(() => holds(separate, { ...none, plain: [DENSE] }, { cuts: [[0, separate.length]] }));
-  if (apart - together < 6 * finds) problems.push(`the finds checked against ${finds} covered stretches: ${apart - together} more than against one`);
+  if (apart - together < 2 * finds || apart - together > 8 * finds) problems.push(`the finds checked against ${finds} covered stretches: ${apart - together} more than against one`);
   assert.deepEqual(problems, []);
 });
 
@@ -1496,19 +1498,23 @@ test("adversarial texts: the characters the shape scanners visit are at most a f
 // That sum takes each stage at its most at once, and its views are all reachable together: familiesOf reads each family
 // as present or absent, so one closed JSON string holding each of them turns on all sixteen views, and the rest of the
 // text decodes to itself at nearly its whole length in each (the text of DENSE's strings, each block of about 4 KiB
-// headed by one such string). It is the most measured here where the two readings of the quotes agree (below): 967.4
-// per character at 128 KiB and 972.2 at 512 KiB, through redactedAnswer; every other such text measures under 450 (a
-// held RSA key's, made anew each run, moves by a few).
+// headed by one such string). It is the most measured here where the two readings of the quotes agree (below): 943.6
+// per character at 128 KiB and at 512 KiB, through redactedAnswer; every other such text measures under 450 (a held
+// RSA key's, made anew each run, moves by a few).
 // A held value of two lines adds its three parts as forms and plain needles (about 30 more). A held value of k long
 // lines adds k + 1 of each: its work grows with k, linear in the text all the same.
 // The quoted joins are also read as main's reading reads them (every apostrophe opening a string, closed by the next,
 // no operator left out) wherever the two readings differ, so what main withheld is withheld still: where they differ
 // in an operator only, a fourth pass of the join's values; where an apostrophe pairs otherwise, main's joins over again.
 // That union is why WORK is 1,536 and no longer 1,024, the bound from before the stacked and join views: the text that
-// reads the most is DENSE's strings joined by "+" and "\" ten to a line, each line after prose's apostrophe, which
-// both readings read whole, at about 1,390 per character, flat from 32 KiB to 512 KiB (1,384.1, 1,391.1, 1,397.9). The
+// reads the most is a JSON string on each line after prose's apostrophe, holding a hundred single-quoted strings joined
+// by "+", the JSON strings joined by "+" and "\", which both readings read whole: 1,453.7 per character at 32 KiB,
+// 1,465.6 at 128 KiB, 1,465.2 at 512 KiB and 1,465.3 at 2 MiB. The
 // most measured, and each text's most, are in the test's diagnostics; a text that passes 1,536 is a finding, not a
-// reason to raise the bound. A stage that read again from the start at each find passes the text once per find:
+// reason to raise the bound. Nor may a text's work per character grow with its length: each find in a view was once
+// checked by a search from the first covered stretch, about log2 of their count each, so that text read 1,513.3 at
+// 32 KiB, 1,539.5 at 512 KiB and 1,546.7 at 2 MiB; it is searched forward from the find before now (coveringFrom).
+// A stage that read again from the start at each find passes the text once per find:
 // a held value found every 9 characters is found 14,563 times in 128 KiB, and one in every string of a JSON text (every
 // 11 characters) 47,662 times in 512 KiB, which a join that passed the cuts from the first at each string reads about
 // 2.3 billion times over.
