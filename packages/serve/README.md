@@ -560,6 +560,8 @@ runners by backlog, not by CPU. It gives:
   (the most runs it holds at once), what it holds (`executing`), its `free_slots` and whether it `refused` to claim.
   `version` and `slots` are null for a runner of an earlier build that is still running. (On Postgres, an earlier
   runner refuses to start once the server has applied `0024_runner_capacity.sql`, so upgrade runners with the server.)
+  A runner started under the name of a runner of an earlier build that is still running (a rolling restart) is listed
+  only once that one stops: until then the name shows the earlier one.
   A runner also claims by its host's memory, so a free
   slot is the most it may take.
 - `free_slots`: the sum of the live runners' free slots.

@@ -61,7 +61,7 @@ export interface Presence {
  *  against, so the server tells a runner of an earlier build by it, run-patch.ts backfillLedger) and `slots`, the most
  *  runs it holds at once (none for a refusing runner), renewed every `renewMs`; put
  *  again when it went (a row pruned, a store restored), never over a later process's of the same name while that one is
- *  live; its relay's place is written on its own row only. A write that
+ *  live, nor at first over a live one of an earlier build's (a rolling restart's, draining) until that one went; its relay's place is written on its own row only. A write that
  *  fails is tried again at the next renewal: it never stops the runner, and `warn` hears it once. `incarnation` is the
  *  runner process's one (runner/main.ts hands its relay the same), a new one by default. */
 export function keepPresence(runners: Runners, runner: string, refused: string | null, { renewMs = PRESENCE_RENEW_MS, warn = (_line: string) => {}, incarnation = randomUUID(), slots = null }: { renewMs?: number; warn?: (line: string) => void; incarnation?: string; slots?: number | null } = {}): Presence {
@@ -74,7 +74,7 @@ export function keepPresence(runners: Runners, runner: string, refused: string |
   let at: RelayAt | null = null;
   let said = refused;
   const row = () => ({ runner, incarnation, refused: said, host: at?.host ?? null, port: at?.port ?? null, version: RUNNER_VERSION, slots, knows: runners.knows ?? null });
-  // Its first put takes the name over from an earlier process's row. Every write after it (a renewal, the relay's place:
+  // Its first put takes the name over from an earlier process's row (an earlier build's live one aside: `first`). Every write after it (a renewal, the relay's place:
   // one Runners.renew, with the place it holds now) touches its own row only, or puts one where no other process of the
   // name is live (Runners.put unlessLiveMs): an older process overlapping a restart never takes the later one's row back,
   // nor clears its relay.
@@ -91,7 +91,16 @@ export function keepPresence(runners: Runners, runner: string, refused: string |
     if (unsaid) return void (await sayRefusal());
     if (!(await runners.renew(runner, incarnation, at))) await again();
   };
-  let writing: Promise<unknown> = runners.put(row()).catch(failed);
+  // The first put takes the name over at once, unless the live row of it is an earlier process's of a build that knows an
+  // earlier schema (its `knows` null or below this one's): a rolling restart's earlier build, still ending the runs it
+  // holds as it drains. That row stands while its process renews it, so the server still sees that process there
+  // (run-patch.ts backfillLedger waits for it), and a renewal here puts this row once it went (closed, or RUNNER_STALE_MS
+  // without a renewal).
+  const first = async () => {
+    const there = typeof runners.knows === "number" ? (await runners.live(RUNNER_STALE_MS)).find((one) => one.runner === runner && one.incarnation !== incarnation) : undefined;
+    return there && (there.knows ?? Number.NEGATIVE_INFINITY) < runners.knows ? again() : runners.put(row());
+  };
+  let writing: Promise<unknown> = first().catch(failed);
   const timer = setInterval(() => {
     writing = writing.then(renew).catch(failed);
   }, renewMs);
