@@ -204,7 +204,8 @@ export type CheckRecord = CheckBar & {
    *  far, until it holds compile_after of them and decides once on them all. Absent once decided on them, and on a
    *  managed check; a check stopped or set aside before it held them keeps the turns it had. */
   readonly turns?: CheckTurns;
-  /** How it compared with no agree_on: the fast model that read the answers (its name), when it was asked on any input.
+  /** How it compared with no agree_on: the model that read the answers (its name: the fast model, else the agent's own),
+   *  when it was asked on any input.
    *  With agree_on, the paths compared (CheckBar.agree_on); with neither, the whole answer. */
   readonly grader?: string;
 };
@@ -554,7 +555,7 @@ export function knownAnswerText(agent: string | null, expected: unknown): string
   return JSON.stringify(Object.fromEntries([...own(said), ...own(expected)]));
 }
 
-// The grader: with no agree_on, the agent's fast model reads two answers to one input and says whether they reach the same
+// The grader: with no agree_on, the agent's fast model (else its own model) reads two answers to one input and says whether they reach the same
 // decision. One request per pair, its reply {"same": boolean, "differs_on": string | null}. A replay run and an audit's
 // shadow run ask it at their end, on their own cap (runner/compare-end.ts), and keep its verdict on their record
 // (metrics `compared`); the check and the audit read it there through runner/promotion.ts checkInputOf (compareAnswers on
@@ -576,12 +577,12 @@ export const graderUserText = (input: string, known: string, draft: string): str
   [`The job input:\n<<<\n${input}\n>>>`, `The known answer:\n<<<\n${known}\n>>>`, `The workflow's answer:\n<<<\n${draft}\n>>>`].join("\n\n");
 
 /** How a pair of answers compared: `same`, the grader's model when it was asked (`grader`; none when they were equal,
- *  compared on agree_on, or compared whole), what they differ on when they do (`differs_on`: the grader's words, or
+ *  compared on agree_on, or compared whole; `own` when it was the agent's own model, there being no fast model), what they differ on when they do (`differs_on`: the grader's words, or
  *  why its verdict could not be had), and the two answers the grader read (`pair`, answersPair): its verdict is of that
  *  pair alone. A replay's verdict keeps the grade of its source run it was asked against (`graded`: whether the agent
  *  was right, and its expected answer when it gave one; null: none), so the check judges that input on that grade
  *  (runner/promotion.ts checkRows), never on one given after the grader was asked, whose pair it is not. */
-export type Compared = { readonly same: boolean; readonly grader?: string; readonly differs_on?: string; readonly pair?: string; readonly graded?: ComparedGrade | null };
+export type Compared = { readonly same: boolean; readonly grader?: string; readonly own?: true; readonly differs_on?: string; readonly pair?: string; readonly graded?: ComparedGrade | null };
 /** The grade a replay's verdict was asked against (Compared.graded). */
 export type ComparedGrade = { readonly correct: boolean; readonly expected?: Readonly<Record<string, unknown>> };
 
@@ -607,7 +608,7 @@ export const COMPARE_STALE = "the comparison read an earlier answer: a run answe
  *  never asked again). */
 export type GraderReply = { readonly text: string } | { readonly refused: string } | { readonly failed: string } | { readonly cut: string };
 /** The grader: its model's name, and one request to it. */
-export type Grader = { readonly model: string; ask(request: { readonly system: string; readonly user: string }): Promise<GraderReply> };
+export type Grader = { readonly model: string; readonly own?: true; ask(request: { readonly system: string; readonly user: string }): Promise<GraderReply> };
 
 /** The grader's verdict in `text`: one JSON object (bare, or the whole of one fence) whose `same` is a boolean and whose
  *  `differs_on` is a string or null (or absent); undefined for any other reply. */
@@ -629,7 +630,7 @@ export async function gradeAnswers(input: string, agent: string, draft: string, 
   const request = { system: GRADER_PROMPT, user: graderUserText(input, agent, draft) };
   const first = await grader.ask(request);
   const reply = "failed" in first ? await grader.ask(request) : first;
-  const by = { grader: grader.model, pair: answersPair(agent, draft) };
+  const by = { grader: grader.model, ...(grader.own ? { own: true as const } : {}), pair: answersPair(agent, draft) };
   if ("refused" in reply) return { same: false, ...by, differs_on: COMPARE_CAP_HELD };
   if ("cut" in reply) return { same: false, ...by, differs_on: `${COMPARE_UNREAD}: ${reply.cut}` };
   if ("failed" in reply) return { same: false, ...by, differs_on: `${COMPARE_UNREAD}: its request failed twice` };
@@ -641,13 +642,13 @@ export async function gradeAnswers(input: string, agent: string, draft: string, 
 /** Two whole answers compared (`a`, `b`; either null: they differ), as a check and an audit judge one with no agree_on
  *  (runner/promotion.ts checkInputOf): equal byte for byte or as JSON values, they agree with no model; two that differ
  *  take the grader's verdict on that pair when it was asked (`compared`, kept on the run that asked it); with none (no
- *  fast model) they differ. A verdict whose `pair` is not these two answers' (one answered again since it was read) is
+ *  route to a grader) they differ. A verdict whose `pair` is not these two answers' (one answered again since it was read) is
  *  stale: they differ, in its words (COMPARE_STALE), as with none. */
 export function compareAnswers(a: string | null, b: string | null, compared?: Compared): Compared {
   if (a === null || b === null) return { same: false };
   if (sameAnswer(a, b)) return { same: true };
   if (compared?.grader === undefined) return { same: false };
-  return compared.pair === answersPair(a, b) ? compared : { same: false, grader: compared.grader, differs_on: COMPARE_STALE };
+  return compared.pair === answersPair(a, b) ? compared : { same: false, grader: compared.grader, ...(compared.own ? { own: true as const } : {}), differs_on: COMPARE_STALE };
 }
 
 /** A `compared` as a run's record keeps it (metrics `compared`), else undefined. */
@@ -656,7 +657,7 @@ export function comparedOf(value: unknown): Compared | undefined {
   const graded = value.graded === null ? null : isObject(value.graded) && typeof value.graded.correct === "boolean"
     ? { correct: value.graded.correct, ...(isObject(value.graded.expected) && Object.keys(value.graded.expected).length ? { expected: value.graded.expected } : {}) }
     : undefined;
-  return { same: value.same, ...(typeof value.grader === "string" ? { grader: value.grader } : {}), ...(typeof value.differs_on === "string" ? { differs_on: value.differs_on } : {}), ...(typeof value.pair === "string" ? { pair: value.pair } : {}), ...(graded !== undefined ? { graded } : {}) };
+  return { same: value.same, ...(typeof value.grader === "string" ? { grader: value.grader } : {}), ...(value.own === true ? { own: true as const } : {}), ...(typeof value.differs_on === "string" ? { differs_on: value.differs_on } : {}), ...(typeof value.pair === "string" ? { pair: value.pair } : {}), ...(graded !== undefined ? { graded } : {}) };
 }
 
 /** A run's newest grade as a check judges it (an empty expected answer is none), null for none. */

@@ -747,8 +747,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // A replay run's or a shadow's grader (runner/compare-end.ts), on a proxy of its own beside the CLI session's, as pi's
   // is (adapter-run-spec.ts graderRouteOf), reached through the session's port while it is up. None: compared whole.
   // None for a held run its model kept from running, whose model runs nowhere.
-  const graderRoute = (launch.replay || launch.audit) && heldRefusal === undefined ? await graderRouteOf(body as { learning?: unknown }, keyed, runKey, claimed, cut, log, { ...deps, handBack: run.handBack, signal: run.signal }, [held, cut], claim) : undefined;
-  if (graderRoute) tierRoutes.set(GRADER as Tier, graderRoute);
+  const graderRoute = (launch.replay || launch.audit) && heldRefusal === undefined ? await graderRouteOf(body as { learning?: unknown }, keyed, runKey, claimed, cut, log, { ...deps, handBack: run.handBack, signal: run.signal }, [held, cut], claim, modelAskOf(launch.model, body.model)) : undefined;
+  if (graderRoute) tierRoutes.set(GRADER as Tier, graderRoute.route);
   // Each step writes the store or reads another run (runner/learned-first.ts): in a run's own process its runner takes
   // them (held.ts learnedFirst), over the workflows it reads at the claim's seed itself. A held run its model kept from
   // running takes none of them, as on pi: it settles no audit and starts no replay run, starts on no workflow, and its
@@ -838,7 +838,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // A run the promoted workflow answered (path `workflow`) starts its shadow audit after the step, drawn at 1 in k (runner/audit.ts
   // withAudit): at its end, so the shadow's cap is what the run's own left.
   // A held run (no audits) takes none, as on pi.
-  const endOfRun = audits === undefined ? undefined : launch.replay || launch.audit ? withGrader(compareEndOfRun(launch, { store: deps.store, log, redact: run.redact }), graderRoute ? { model: graderRoute.model, models: () => run.ledger.models(GRADER, GRADER) } : undefined) : withAudit(learningEndOfRun(launch, {
+  const endOfRun = audits === undefined ? undefined : launch.replay || launch.audit ? withGrader(compareEndOfRun(launch, { store: deps.store, log, redact: run.redact }), graderRoute ? { model: graderRoute.route.model, own: graderRoute.own, models: () => run.ledger.models(GRADER, GRADER) } : undefined) : withAudit(learningEndOfRun(launch, {
     store: deps.store,
     data: deps.data,
     ...(deps.env ? { env: deps.env } : {}),
