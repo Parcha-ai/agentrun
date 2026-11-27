@@ -68,9 +68,11 @@ export type BrowserExtensionOptions<D extends PageDriver = PageDriver> = VaultOp
    *  and a call's charge is then carried by the session's next one. */
   onCharge?: (charge: SessionCharge, tx: Tx, call?: { callId: string }) => void | Promise<void>;
   /** A release by a session's tag ended sessions besides that session's own: a create retried behind the provider's API,
-   *  or a create race of the session's tag, left them running, and no record bills their time. Their ids, once each
-   *  release answered, so a host books what they ran; called again for the same id when a later attempt finds it again.
-   *  A throw here never fails the release. */
+   *  or a create race of the session's tag, left them running, and no record bills their time. Their ids, so a host books
+   *  what they ran: a release's once a status read confirms each stopped, one whose release stopped it and then failed
+   *  included (the release keeps every id it found), and a create's tag lookup's once each release answered. Called again
+   *  for an id only when a process ends between this call and the release's last commit. A throw here never fails the
+   *  release. */
   onRaceReleased?: (released: { conversationId: number; tag: string; ids: string[] }) => void | Promise<void>;
   /** Exact strings to scrub from every output besides the built-in shapes, read at each use. */
   redact?: { values: () => readonly string[] };

@@ -365,8 +365,10 @@ await browser.reconcile(harness, () => true, context);   // settles what a dead 
   not throw: a throw fails the commit, and a call's charge is then carried by the session's next one.
 - `onRaceReleased({ conversationId, tag, ids })`: a release by a session's tag ended sessions besides that session's own
   (a create retried behind the provider's API, or a create race of that tag, left them running), and no record bills
-  their time. Called with their ids once each release answered, again for an id a later attempt finds again, so a host
-  books what they ran under one key per id. A throw here never fails the release.
+  their time. Called with their ids: a release's once a status read confirms each stopped, including one whose release
+  stopped it and then failed (the release keeps every id it found, across its attempts and a restart), and a create's tag
+  lookup's once each release answered. Called again for an id only when a process ends between the call and the
+  release's last commit, so a host books what they ran under one key per id. A throw here never fails the release.
 
 Per conversation, the host writes a `BrowserConfig` (`label`, `run`, and the policy: proxies, verified, captcha, geolocation,
 region, a raw context id, the session timeout, the idle release and the batch timeout; `DEFAULT_BROWSER_POLICY` holds the
