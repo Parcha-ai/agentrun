@@ -300,6 +300,10 @@ const MIXED_PADS = [
     ["JSON's \\u009c", `${B}u009c`],
     ["a percent-encoded CAN", "%18"],
   ].map(([what, inner]) => [`a raw OSC title holding ${what} and then XYZW, ended by a raw BEL`, `\u001b]0;t${inner}XYZW\u0007`, ALL_WRAPS]),
+  // An OSC holding an apostrophe that ends a string, the next string after it: a call's stop falls on a string's
+  // opening quote, and the view that reads the strings' escapes twice joins the strings from there (the fuzz's seed 4).
+  ["Python's ESC, ] and t written twice, an apostrophe, Python's [, JSON's BEL, ending a string", `${B}x1b${B}${B}x5d'${B}${B}x74${B}x5b${B}u0007", "`, ["json", "jj"]],
+  ["Python's ESC and JSON's ] written twice, an apostrophe, HTML's slash, JSON's ESC, Python's backslash written twice, ending a string", `${B}${B}x1b${B}${B}u005d '&#47;${B}u001b${B}${B}x5c", "`, ["json"]],
 ];
 for (const [what, pad, wraps] of MIXED_PADS) {
   const value = `${PY_HEAD}${PY_REST}`;
