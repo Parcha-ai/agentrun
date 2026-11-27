@@ -177,8 +177,11 @@ export const firecrawlKeyless = defineProvider(
     return {
       async search(ask, deadline, _signal, called) {
         const firecrawlMs = called?.firecrawlMs ?? bounds?.firecrawlMs;
-        // Which limit Firecrawl met is the breaker's to read, never the model's.
-        return searchTyped(ask, { ...options, signal: deadline, ...(firecrawlMs === undefined ? {} : { timeoutMs: firecrawlMs }) });
+        // Which limit Firecrawl met is the breaker's to read, never the model's; the words it answers for one (limitWords,
+        // the caller's among them) are the model's, and the breaker passes them on (Searched.worded).
+        const searched = await searchTyped(ask, { ...options, signal: deadline, ...(firecrawlMs === undefined ? {} : { timeoutMs: firecrawlMs }) });
+        const limitSaid = searched.limit && (searched.failure?.class === "rate" || searched.failure?.class === "quota");
+        return limitSaid ? { ...searched, worded: true } : searched;
       },
       read: (url, { signal }) => scrapeTyped(url as string, { ...options, ...(signal ? { signal } : {}) }),
     };

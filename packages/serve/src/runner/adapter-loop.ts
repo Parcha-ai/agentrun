@@ -93,7 +93,7 @@ import { type RequestFigures, reserveFor, stepAndAnswerFor, wrappingUp, wrapUpTe
 import { LEARNED_CARD_FIELDS, LEARNED_CLIP, LEARNED_WORKFLOW_TOOL, learnedApprovedTools } from "../learned-workflow.js";
 import { failedRecord, LEARNED_ALLOWED, LEARNED_NODES, learnedCallRan, refusedRecord } from "../learned-nodes.js";
 import { warnHoldShort } from "../print.js";
-import { type FeedbackData, feedbackAsk, feedbackOf, jobEndOpen, pendingFeedbackOf } from "./feedback-round.js";
+import { type FeedbackData, feedbackOf, jobEndOpen, pendingFeedbackOf } from "./feedback-round.js";
 import { handbackText, servedAnswerOf, servedAnswerText, WORKFLOW_FIRST, WORKFLOW_FIRST_CALL, type WorkflowFirst, type WorkflowFirstData, type WorkflowRevise } from "./workflow-first.js";
 
 /** The end of a harness's own call (Claude Code's WebSearch) the gate held and then let run: the host ran nothing of it,
@@ -453,7 +453,7 @@ export type AdapterRun = PiRun & {
   readonly incarnation?: string;
   /** LoopDeps.handBack: a request the run needs refused because the runner is closing hands the run back to resume
    *  (claim-secrets.ts: the plan's renewal). Absent where no loop gave one. */
-  readonly handBack?: () => void;
+  readonly handBack?: () => Promise<void>;
   /** Stages the run row's `summary` on the next commit of this pass that writes a root entry of `kind` whose data `test`
    *  takes, in that commit (a tool host's wait on the person, its claim held: the server tells run.needs_input by the
    *  summary). Absent where no loop gave one. */
@@ -1116,7 +1116,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   let reopen: { sent?: Promise<void>; placed?: () => void; feedback?: FeedbackData; by?: number } | undefined;
   /** A grade's feedback round this claim closes (runner/feedback-round.ts): the run opened again on a grade's words (its
    *  steer, taken with a FEEDBACK entry and never sent as a turn), or a claim that finds such an entry with no end after it.
-   *  The agent is asked no turn of the job's: the run goes to its end-of-run turn, told the grade first (feedbackAsk). */
+   *  The agent is asked no turn of the job's: the run goes to its end-of-run step, whose compile, when one is due, is told
+   *  the grade's words as a correction (reflect-hook.ts `taken`). */
   let feedbackNow: FeedbackData | undefined;
   /** A reopen of a run whose session is still new (a person stopped it before its first input was sent): resolved once the
    *  person's message is placed as that first input, or once the reopen's own message was answered unplaced (command):
@@ -4139,12 +4140,6 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     const theSession = session;
     const requestId = reflectRequestId(claim.runId, again, round, step);
     const theRecord = cliRecord;
-    // A grade's feedback round (feedbackNow): its first ask is told the grade first (feedback-round.ts feedbackAsk), cut
-    // of every secret the runner holds. Only a run the agent finished opens one, so its session saw the job.
-    if (feedbackNow && !again && step === undefined) {
-      const cut = (text: string) => deps.redact(text);
-      prompt = `${feedbackAsk({ ...feedbackNow, text: cut(feedbackNow.text) })}\n\n${prompt}`;
-    }
     let timer: NodeJS.Timeout | undefined;
     try {
       // A turn already answered (an earlier claim's) is read from its submission; a CLI's record answers one it already

@@ -749,6 +749,12 @@ The model gateway in force: the environment's, the one saved here, or none.
 
 Route: `GET /settings/model-gateway`.
 
+### `agentrun local get-prices`
+
+The prices this server meters computer time and browser time at, with where each comes from.
+
+Route: `GET /settings/prices`.
+
 ### `agentrun local get-suggestion SUGGESTION_ID`
 
 One suggested agent whole: its instructions, the files a create adds, and whether GitHub lets it.
@@ -1536,7 +1542,7 @@ Import a template package from GitHub (github:OWNER/REPO[/PATH][@REF]) and print
 Route: none, it runs on this machine.
 
 - `--dry-run` (boolean, this CLI's own): check the package and print it whole (instructions, skill files); store nothing
-- `--trust` (boolean, this CLI's own): trust the package's publisher (the GitHub owner): the first package from one needs it
+- `--trust` (boolean, this CLI's own): trust the package's publisher (the GitHub owner): the first package from one needs it, and every install on a server that takes uploads only, where this command reads GitHub itself
 
 ### `agentrun template list`
 

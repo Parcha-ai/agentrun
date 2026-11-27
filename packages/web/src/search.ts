@@ -1,7 +1,8 @@
 // web_search's one answer shape (Search), its bounds, and searchInTurn: a call asks its backends in order, each behind
 // a breaker of its own. A quota answer turns a backend off until the reset it names, else for the breaker's life; a rate
 // limit holds it for the wait it named (60 s when none), and one naming a wait past 15 minutes turns it off for that
-// wait. A backend that fails, is held or is off passes the call to the next.
+// wait. A backend that fails, answers no results, is held or is off passes the call to the next.
+import { cutAt } from "./page.js";
 import type { SearchProvider } from "./providers/registry.js";
 
 /** The most of one keyword query a search sends (Parallel's own bound on a query). */
@@ -66,8 +67,10 @@ export function bare<T>(value: T): T {
   return rest as T;
 }
 /** A Search, and the failure and limit its provider answered, if any: the run's breaker reads `limit` (searchBreaker),
- *  the receipt `failure`, the model the Search alone. */
-export type Searched = { answer: Search; failure?: Failure; limit?: Limit };
+ *  the receipt `failure`, the model the Search alone. `worded`: the error is the provider's words for the model about the
+ *  limit it met (a keyless search's, a caller's Words among them), which the breaker passes on where its own would say
+ *  no more; else a limit's error is said in the breaker's words. */
+export type Searched = { answer: Search; failure?: Failure; limit?: Limit; worded?: true };
 /** A failed search as searchInTurn reads it. */
 export const searchFailed = ({ error, failure, limit }: Failed): Searched => ({ answer: { error }, failure, ...(limit ? { limit } : {}) });
 
@@ -97,9 +100,10 @@ export function offUntil(limit: Limit, nowMs: number): number | undefined {
 
 /** A breaker on one backend, read at `now`. `held`: what a call answers unsent while it holds (SEARCH_UNAVAILABLE once
  *  off, searchBusy for the seconds left of a wait). `read` takes a search and its limit: a quota answer, or a rate limit
- *  naming a wait past 15 minutes, turns it off (offUntil), the call keeping any results it has; a shorter rate limit
- *  opens a wait, never shrinking one already open; a repeatIsQuota limit after an earlier one whose wait has passed,
- *  with no success between, is a quota answer and the call answers SEARCH_UNAVAILABLE. */
+ *  naming a wait past 15 minutes, turns it off (offUntil); a shorter rate limit opens a wait, never shrinking one
+ *  already open; a repeatIsQuota limit after an earlier one whose wait has passed, with no success between, is a quota
+ *  answer. The call that met a limit keeps any results it has; with none it answers `held`'s words, as the next call
+ *  would, never the provider's for the limit. */
 export type Breaker = { held(): Search | undefined; read(searched: Searched): Search; off(): boolean; left(): number; holding(): Holding | undefined };
 /** What holds a breaker now: the kind of the limit that last held it, and when it may be asked again (Infinity: not in
  *  the breaker's life). */
@@ -116,29 +120,32 @@ export function searchBreaker(now: () => number = Date.now): Breaker {
   let offKind: Limit["kind"] = "quota";
   let waitKind: Limit["kind"] = "rate";
   const off = () => now() < offTill;
+  const held = (): Search | undefined => {
+    if (off()) return { error: SEARCH_UNAVAILABLE };
+    const left = until - now();
+    return left > 0 ? busyFor(left) : undefined;
+  };
   return {
     holding() {
       if (off()) return { kind: offKind, until: offTill };
       return until > now() ? { kind: waitKind, until } : undefined;
     },
-    held() {
-      if (off()) return { error: SEARCH_UNAVAILABLE };
-      const left = until - now();
-      return left > 0 ? busyFor(left) : undefined;
-    },
+    held,
     off,
     left: () => Math.max(0, until - now()),
-    read({ answer, limit }) {
+    read({ answer, limit, worded }) {
       if (!("error" in answer)) marked = false;
       if (!limit) return answer;
       const at = now();
       const till = offUntil(limit, at);
-      // The call that turns search off for a rate limit answers its results if it has any (a merged search's other
-      // requests), else SEARCH_UNAVAILABLE, never its limit's "try again" words.
+      // The call that met a limit answers its results if it has any (a merged search's other requests), else what a call
+      // held by it answers (held: SEARCH_UNAVAILABLE, or searchBusy for its wait), never the provider's "answered 429";
+      // a provider's own words for the model (worded) stand, but for a rate limit that turns it off ("try again" words).
+      const heldOr = (words = !worded) => ("error" in answer && words ? (held() ?? answer) : answer);
       if (till !== undefined) {
         if (till >= offTill) offKind = limit.kind;
         offTill = Math.max(offTill, till);
-        return limit.kind === "quota" || !("error" in answer) ? answer : { error: SEARCH_UNAVAILABLE };
+        return heldOr(limit.kind === "rate" || !worded);
       }
       if (limit.kind === "rate" && limit.repeatIsQuota && marked && at >= until) {
         offTill = Number.POSITIVE_INFINITY;
@@ -148,7 +155,7 @@ export function searchBreaker(now: () => number = Date.now): Breaker {
       if (limit.kind === "rate" && limit.repeatIsQuota) marked = true;
       until = Math.max(until, at + waitOf(limit.retryAfter, at));
       waitKind = limit.kind;
-      return answer;
+      return heldOr();
     },
   };
 }
@@ -179,7 +186,7 @@ export function searchText(answer: Search): string {
 export function snippetOf(raw: string): string {
   const text = raw.replace(/!?\[([^\]]*)\]\([^)\s]*\)/g, "$1").replace(/\s+/g, " ").trim();
   if (text.length <= SNIPPET_MAX) return text;
-  const cut = text.slice(0, SNIPPET_MAX - 1);
+  const cut = cutAt(text, SNIPPET_MAX - 1);
   const space = cut.lastIndexOf(" ");
   return `${(space > SNIPPET_MAX / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
 }
@@ -204,9 +211,10 @@ export function searchArgs(args: Record<string, unknown>): SearchAsk {
  *  `deadline`, the call's one deadline for every backend it asks (searchInTurn); Parallel and a native search keep the
  *  caller's signal and their own bounds. */
 export type Backend = { name: string; ask(deadline: AbortSignal): Promise<Searched> };
-/** One backend's turn in a call: answered (`ok`), failed (`error`: its message, the failure typed where the provider
- *  typed it, the limit it met), or held by its breaker. */
-export type Try = { provider: string; outcome: "ok" | "error" | "held"; error?: string; failure?: Failure; limit?: Limit; ms?: number };
+/** One backend's turn in a call: answered (`ok`), answered no results (`empty`: a search passed on to the next
+ *  backend), failed (`error`: its message, the failure typed where the provider typed it, the limit it met), or held by
+ *  its breaker. */
+export type Try = { provider: string; outcome: "ok" | "empty" | "error" | "held"; error?: string; failure?: Failure; limit?: Limit; ms?: number };
 /** The most one call of web_search spends across its keyless backends together: Firecrawl's failing or timing out
  *  leaves Exa what is left of it, never a fresh bound. Firecrawl's own bound inside it (FIRECRAWL_MS, 30 s) leaves Exa
  *  at least the rest. */
@@ -215,12 +223,23 @@ export const KEYLESS_SEARCH_MS = 60_000;
  *  (FIRECRAWL_MS). */
 export type SearchBounds = { searchMs?: number; firecrawlMs?: number };
 
+/** What a call stopped before any backend was asked answers (searchInTurn): the keyless backends' words for a stop. */
+const SEARCH_STOPPED = "the search was stopped";
+
+/** Whether a search's answer holds nothing for the model: no results and no short answer of its own (`text`). */
+const emptyAnswer = (answer: Search): boolean => !("error" in answer) && !answer.results.length && !answer.text;
+
 /** A call's search through `backends` in turn, each behind its breaker, all under one deadline (`boundMs` or `signal`):
- *  the first with results answers; none starts on a spent deadline. None left: SEARCH_UNAVAILABLE where every backend is
- *  off (a lone backend's own answer where it was asked), else the last failure, else searchBusy for the shortest wait. */
+ *  the first with results (or a short answer of its own) answers; one answering none passes the call on, and the first
+ *  such answers only when no backend after it has results. None starts on a spent deadline: one spent before any was
+ *  asked answers SEARCH_STOPPED, a stopped turn of the first not held. None left: SEARCH_UNAVAILABLE
+ *  where every backend is off (a lone backend's own answer where it was asked), else the last failure (one that met a
+ *  limit in its breaker's words), else searchBusy for the shortest wait. */
 export async function searchInTurn(backends: readonly Backend[], breakerOf: (name: string) => Breaker, signal?: AbortSignal, boundMs: number = KEYLESS_SEARCH_MS, tries?: Try[]): Promise<Search> {
   const deadline = AbortSignal.any([AbortSignal.timeout(boundMs), ...(signal ? [signal] : [])]);
   let last: Search | undefined;
+  // The first answer with no results: the call's, if no backend after it has any.
+  let empty: Search | undefined;
   for (const backend of backends) {
     const breaker = breakerOf(backend.name);
     const held = breaker.held();
@@ -229,14 +248,24 @@ export async function searchInTurn(backends: readonly Backend[], breakerOf: (nam
       tries?.push({ provider: backend.name, outcome: "held", ...(holding && "error" in held ? { failure: failure(holding.kind, "HELD", held.error) } : {}), ms: 0 });
       continue;
     }
-    if (last && deadline.aborted) break;
+    if (deadline.aborted) {
+      if (last || empty) break;
+      // A call stopped before any backend was asked starts none (a paid one would be held, or sent, for nothing): its
+      // turn is the stopped one the backend would have answered, in the keyless backends' words.
+      tries?.push({ provider: backend.name, outcome: "error", error: SEARCH_STOPPED, failure: failure("infra", "STOPPED", SEARCH_STOPPED), ms: 0 });
+      return { error: SEARCH_STOPPED };
+    }
     const started = tries ? performance.now() : 0;
     const searched = await backend.ask(deadline);
     const answer = breaker.read(searched);
-    tries?.push({ provider: backend.name, outcome: "error" in answer ? "error" : "ok", ...("error" in answer ? { error: answer.error, ...(searched.failure ? { failure: searched.failure } : {}) } : {}), ...(searched.limit ? { limit: searched.limit } : {}), ms: Math.round(performance.now() - started) });
-    if (!("error" in answer)) return answer;
-    last = answer;
+    const outcome = "error" in answer ? "error" : emptyAnswer(answer) ? "empty" : "ok";
+    // The receipt keeps what the provider said; the model reads the breaker's words for a limit.
+    tries?.push({ provider: backend.name, outcome, ...("error" in answer ? { error: "error" in searched.answer ? searched.answer.error : answer.error, ...(searched.failure ? { failure: searched.failure } : {}) } : {}), ...(searched.limit ? { limit: searched.limit } : {}), ms: Math.round(performance.now() - started) });
+    if (outcome === "ok") return answer;
+    if (outcome === "empty") empty ??= answer;
+    else last = answer;
   }
+  if (empty) return empty;
   const breakers = backends.map((backend) => breakerOf(backend.name));
   if (breakers.every((breaker) => breaker.off())) return backends.length === 1 && last ? last : { error: SEARCH_UNAVAILABLE };
   // A backend that turned off in this call while another only waits: the run's search is not off, so it waits.

@@ -28,7 +28,9 @@ test("keyed Exa: credit spent on a fetch holds web_search too, unsent; spent on 
 
   const searchFirst = await keyedServer(t, (path, body) => (path === "/search" ? refused(402, { error: "out of credits" }) : exaPage(body.urls[0], "Read.")));
   const v = web.createWeb({ order: { search: ["exa"], fetch: ["exa", "direct"] }, keys: { exa: EXA_CANARY }, endpoints: { exa: searchFirst.url }, guard: guardOf(network()), now: () => START });
-  assert.match((await v.search("widgets")).answer.error, /Exa's search answered 402/);
+  const spentExa = await v.search("widgets");
+  assert.deepEqual(spentExa.answer, { error: SEARCH_UNAVAILABLE }, "the search that met the quota answers the breaker's words, not the provider's 402");
+  assert.match(spentExa.receipt.tries[0].failure.message, /Exa's search answered 402/, "the receipt keeps the provider's");
   const page = await v.fetch(NOTES);
   assert.deepEqual([page.answer.via, page.receipt.tries.map((one) => [one.provider, one.outcome])], ["direct", [["exa", "held"], ["direct", "ok"]]]);
   assert.deepEqual(searchFirst.got.map((one) => one.path), ["/search"], "the fetch never sent");
@@ -37,7 +39,9 @@ test("keyed Exa: credit spent on a fetch holds web_search too, unsent; spent on 
 test("keyed Firecrawl: credit spent on a search holds web_fetch, unsent", async (t) => {
   const fc = await keyedServer(t, (path, body) => (path === "/v2/search" ? refused(402, { success: false, error: "Payment required" }) : firecrawlPage(body.url, "# Read")));
   const w = web.createWeb({ order: { search: ["firecrawl"], fetch: ["firecrawl", "direct"] }, keys: { firecrawl: FIRECRAWL_CANARY }, endpoints: { firecrawl: fc.url }, guard: guardOf(network()), now: () => START });
-  assert.match((await w.search("widgets")).answer.error, /Firecrawl's search answered 402/);
+  const spentFirecrawl = await w.search("widgets");
+  assert.deepEqual(spentFirecrawl.answer, { error: SEARCH_UNAVAILABLE }, "the search that met the quota answers the breaker's words, not the provider's 402");
+  assert.match(spentFirecrawl.receipt.tries[0].failure.message, /Firecrawl's search answered 402/, "the receipt keeps the provider's");
   assert.equal((await w.fetch(PUBLIC)).answer.via, "direct");
   assert.deepEqual(fc.got.map((one) => one.path), ["/v2/search"]);
 });
@@ -59,7 +63,9 @@ const parallelWeb = (send) => web.createWeb({ order: { search: ["parallel"], fet
 test("Parallel: credit spent on a search holds its extract, and the page says so; spent on an extract, search is off", async () => {
   const searchFirst = parallelSend((path) => (path === "/v1/search" ? { status: 402 } : parallelPage));
   const w = parallelWeb(searchFirst.send);
-  assert.match((await w.search("widgets")).answer.error, /Parallel's search answered 402/);
+  const spentParallel = await w.search("widgets");
+  assert.deepEqual(spentParallel.answer, { error: SEARCH_UNAVAILABLE }, "the search that met the quota answers the breaker's words, not the provider's 402");
+  assert.match(spentParallel.receipt.tries[0].failure.message, /Parallel's search answered 402/, "the receipt keeps the provider's");
   const page = await w.fetch(PUBLIC);
   assert.deepEqual([page.answer.via, page.answer.parallel], ["direct", "not tried: out of quota for the rest of this run"]);
   assert.deepEqual(searchFirst.got, ["/v1/search"], "extract never sent");

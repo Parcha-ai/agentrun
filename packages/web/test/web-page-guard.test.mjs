@@ -55,6 +55,15 @@ test("each page is asked about once a run, in the same words for every page: the
   assert.deepEqual(Object.keys(long.questions.wall.criteria), ["content", ...web.WALLS]);
 });
 
+test("a page read under one fragment and asked for under another is the same page: asked about once, each answer naming the fragment it asked for", async () => {
+  const { asked, web: w } = guardedWeb(CONTENT);
+  const first = await w.fetch(`${PUBLIC}#a`, { task: TASK });
+  const second = await w.fetch(`${PUBLIC}#b`, { task: TASK });
+  assert.equal(second.receipt.cache, "hit");
+  assert.equal(asked.filter(isGuard).length, 1);
+  assert.deepEqual([first.answer.url, second.answer.url], [`${PUBLIC}#a`, `${PUBLIC}#b`]);
+});
+
 test("the receipt carries the guard's verdicts and scores, and its request is a fee line of its own; a content page gets no warning", async () => {
   const { web: w } = guardedWeb(CONTENT);
   const plain = await guardedWeb({}, { decider: undefined, pageGuard: false }).web.fetch(PUBLIC, { task: TASK });

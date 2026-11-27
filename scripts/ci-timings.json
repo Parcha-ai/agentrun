@@ -717,7 +717,6 @@
   "packages/serve/test/create-busy.test.mjs": 2.7,
   "packages/serve/test/custody-runner-e2e.test.mjs": 4.9,
   "packages/serve/test/custody-support.test.mjs": 0.1,
-  "packages/serve/test/decision-key.test.mjs": 0.9,
   "packages/serve/test/decision-parallel-route.test.mjs": 0.8,
   "packages/serve/test/decision-recovered-cut.test.mjs": 0,
   "packages/serve/test/decision-row-redact.test.mjs": 3.9,

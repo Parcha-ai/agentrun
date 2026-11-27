@@ -548,8 +548,8 @@ export const costStopOverStore = async (store: Store, agentId: string): Promise<
  *  answered and its answer is still the run's last (servedAnswerStands), `handed_back` when it handed back or a follow-up's
  *  new answer is the agent's, with its digest. Else, for a run its launch offered a learned workflow, its timeline
  *  (runner/learning-end.ts runPathOf, the agent calling the tool itself): `workflow` when its job did only that,
- *  `handed_back` when the agent went on, with the workflow it called last that ran (its call's record,
- *  runner/workflow-calls.ts workflowCallsOf). Any other run's path is `agent`, one whose learned calls were all refused
+ *  `handed_back` when the agent went on, with the workflow it called last that ran and that call's digest (its call's
+ *  record, runner/workflow-calls.ts workflowCallsOf). Any other run's path is `agent`, one whose learned calls were all refused
  *  included. Both read the run's rows less its feedback rounds' (withoutFeedbackRounds): a grade's
  *  round never moves the path. `cut` on a hand-back a restart cut (servedOf: the workflow's call ended `interrupted`),
  *  never one the workflow made itself. `entries`: the run's (runEntries), when the caller read them already. */
@@ -578,10 +578,19 @@ export async function runPathOverStore(store: Store, runId: string, started: Run
   if (path === "agent") return { path, workflow: null };
   // The workflow its agent called last that ran (its call's record), and only a name the launch offered (offeredName),
   // as every view of the run names it; none for a call that ran no workflow (a name it does not have, a gate's refusal).
+  // That call served the run as the platform's would have: the run carries its record's digest, so the ledger counts it
+  // a served run of that revision (a share of its spend, its took-over mark) and the money rule and the audits read it
+  // at that digest.
+  if (calls.length) {
+    const call = calls.filter((one) => one.caller === "agent" && one.outcome !== "refused").at(-1);
+    const workflow = offeredName(call?.workflow ?? null, started?.workflows);
+    return { path, workflow, ...(workflow !== null && call ? { digest: call.digest } : {}) };
+  }
   // A run that keeps no call record at all (a connected agent's: its SDK runs the workflow, the server keeps its events)
-  // names the one its last learned_workflow call asked for by name (callArgsOf).
-  const called = calls.length ? calls.filter((call) => call.caller === "agent" && call.outcome !== "refused").at(-1)?.workflow : [...callArgsOf(entries).values()].findLast((call) => WORKFLOW_CALLS.has(call.tool) && typeof call.args.name === "string")?.args.name;
-  return { path, workflow: offeredName(typeof called === "string" ? called : null, started?.workflows) };
+  // names the one its last learned_workflow call asked for by name (callArgsOf), and no digest: its events never say
+  // which revision ran.
+  const asked = [...callArgsOf(entries).values()].findLast((call) => WORKFLOW_CALLS.has(call.tool) && typeof call.args.name === "string")?.args.name;
+  return { path, workflow: offeredName(typeof asked === "string" ? asked : null, started?.workflows) };
 }
 
 /** The run-record fields run `runId`'s end writes for its path (runner/workflow-first.ts pathMetrics), the one writer
@@ -700,8 +709,8 @@ export async function roundsSpendOf(store: Pick<RunRecords, "learning">, runId: 
  *  its job answered and its costs once it looked back (a look-back of 0 for an ended one that did not). */
 export function impactLearningOf(end: RunLearningEnd, started: RunLaunch["learning"], laid: Laid | undefined, rounds?: Answered, rowUsd: number | null = null): ImpactLearning {
   const over = end.state === "merged" || end.state === "dropped";
-  // A run a follow-up opened again: its job answered at its first round's end, and all its row spent after (every later
-  // round's follow-up turn and look-back) is its learning, as its cost per run reads it (roundsLooked).
+  // A run a follow-up opened again: its job is all its row spent but every round's look-back (a follow-up's turns are the
+  // job's), as its cost per run reads it (roundsLooked).
   const looked = rounds ? roundsLooked(rounds, rowUsd) : end.answered_at !== undefined ? { answered_at: end.answered_at, job_cost_usd: end.job_cost_usd ?? null, look_back_usd: end.look_back_usd ?? null } : over ? { look_back_usd: 0 } : {};
   const corrections = started ? correctionCount(started.section) : 0;
   return {
