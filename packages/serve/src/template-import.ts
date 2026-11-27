@@ -281,7 +281,7 @@ export async function deleteTemplate(deps: Pick<TemplateImportDeps, "registry" |
   const workspace = workspaceNow();
   // The row as read here: the store's delete takes it only while it is still this one, so an import of the id that
   // replaced it since (and puts its package in the registry after) is kept in both.
-  const row = (await deps.store.importedTemplates.list()).find((one) => one.id === id);
+  const row = await deps.store.importedTemplates.stamp(id);
   const removed = row !== undefined && (await deps.store.importedTemplates.remove(id, workspace, row));
   if (workspace !== undefined && !removed) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
   if (deps.registry.get(id) === pkg) deps.registry.remove(id);

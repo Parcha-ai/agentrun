@@ -2629,6 +2629,10 @@ class SqliteStore implements Store {
           : { sql: `INSERT INTO imported_templates (id, source, sha, publisher, files, imported_at, workspace) VALUES (?, ?, ?, ?, ?, ?, ?) ${replace} WHERE imported_templates.workspace = excluded.workspace`, params: [id, source, sha, publisher, JSON.stringify(files), now(), workspace] }]);
         return (result?.changes ?? 0) === 1;
       },
+      stamp: async (id) => {
+        const row = await db.get<{ sha: string; imported_at: number }>("SELECT sha, imported_at FROM imported_templates WHERE id = ?", id);
+        return row ? { sha: row.sha, importedAt: row.imported_at } : undefined;
+      },
       workspaces: async () => new Map((await db.all<{ id: string; workspace: string | null }>("SELECT id, workspace FROM imported_templates")).map((row) => [row.id, row.workspace])),
       remove: async (id, workspace, read) => {
         const where = ["id = ?", ...(workspace === undefined ? [] : ["workspace = ?"]), ...(read === undefined ? [] : ["sha = ?", "imported_at = ?"])];

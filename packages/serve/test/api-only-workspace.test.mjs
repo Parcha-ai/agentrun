@@ -375,6 +375,18 @@ test("a workspace's reimport of a package its delete is removing, landing before
   assert.equal((await store.importedTemplates.workspaces()).get("upload:notes"), W1);
 });
 
+test("a template delete reads the one package's sha and import time, never every package's files", { timeout: 60_000 }, async (t) => {
+  const { store } = await storeOn(t);
+  const registry = new TemplateRegistry([]);
+  const deps = { registry, store: { importedTemplates: store.importedTemplates, settings: store.settings }, reach: async () => { throw new Error("no GitHub read here"); }, apiOnly: true };
+  const signal = AbortSignal.timeout(30_000);
+  assert.equal((await inWorkspace(W1, () => importTemplate(deps, { files: [{ path: "agent.md", encoding: "utf8", content: UPLOADED }] }, signal))).status, 201);
+  const noList = { ...deps, store: { importedTemplates: { ...store.importedTemplates, list: async () => { throw new Error("a delete read every package"); } }, settings: store.settings } };
+  await inWorkspace(W1, () => deleteTemplate(noList, "upload:notes"));
+  assert.equal(await store.importedTemplates.stamp("upload:notes"), undefined, "the row is gone");
+  assert.equal(registry.get("upload:notes"), undefined, "and the package no longer served");
+});
+
 test("an Idempotency-Key used in one workspace starts afresh in another, and replays in its own", { timeout: 120_000 }, async (t) => {
   const server = await scopedServer(t);
   const key = { "idempotency-key": "apply-once" };
