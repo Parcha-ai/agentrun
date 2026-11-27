@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve, @parcha/agentrun
+kind: fix
+---
+The shipped stop graces now outlast the close of the runner beside the server, which takes up to 40 s with the image's 6 s drain when a browser's release hangs to its provider's 30 s cleanup bound, and up to 55 s with the CLI's 30 s drain. The quickstart `compose.yaml` and the compose file `install.sh --vps` writes give 45 s of stop grace (35 s before), as the runners, the Helm chart and the Coolify and Dokploy templates already did. The macOS service waits 60 s before launchd kills it (`ExitTimeOut`, 35 s before), and `agentrun stop` and the installer's stop of a background AgentRun wait 60 s before a SIGKILL (45 s before). Render's fixed 30 s stays under that close: `render.yaml` and the README say what a stop there can cut.
