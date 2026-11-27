@@ -443,6 +443,8 @@ export type RunPermissions = {
   readonly policy: (tool: string) => Permission;
   readonly denyFrom: (tool: string) => SettingFrom;
   readonly refresh: () => Promise<void>;
+  /** Why a call node of `tool` with `args` is refused for a filed folder (RunGate.filedRefused), or undefined. */
+  readonly filed: (tool: string, args: unknown) => string | undefined;
 };
 
 export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { tools?: readonly string[]; toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles, shell: ShellPlace | undefined, options: { readonly effectOf?: (name: string) => ToolEffect | undefined; readonly argumentsOf?: ArgumentsOf; readonly facts: AdapterFacts | undefined; readonly names?: readonly string[]; readonly turnedOff?: boolean; readonly onComputerOff?: (kind: string) => Promise<void> }): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions; readonly learn: (flows: readonly LearnedWorkflow[]) => void; readonly askedOn: (host: ToolHost) => void; readonly computerOff: () => boolean; /** Whether the run can write a file now, as its gate decides a save_as (RunGate.writeBar): what its files note and computer_screenshot's save_as are offered by. */ readonly writes: () => boolean; /** The computer ops the gate refuses whatever their arguments (RunGate.opsRefused: not given, denied, or an ask no one can approve): what computer_op and a script's `computer` leave out. */ readonly opsRefused: () => readonly string[] }> {
@@ -559,7 +561,7 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
   };
   // An ask is named as main's pending approval is (RunGate.askedAs: its settings key), beside the decision, which is
   // unchanged. The permissions are the learned workflow's (main's toolGate.policy and denyFrom), over the same settings.
-  const permissions: RunPermissions = { policy: (tool) => gate.policy(tool), denyFrom: (tool) => gate.denyFrom(tool), refresh: async () => { current = await storeSettings(store); } };
+  const permissions: RunPermissions = { policy: (tool) => gate.policy(tool), denyFrom: (tool) => gate.denyFrom(tool), filed: (tool, args) => gate.filedRefused(tool, args), refresh: async () => { current = await storeSettings(store); } };
   // A tool's setting now, read from the store as each call's is (SessionIO.permission: Codex's live search, which runs
   // inside a model request, is offered only while it says allow). A read that fails is a deny, never the last good read's
   // allow: a deny saved since may be in what did not read, and no call reaches the gate to say otherwise.
@@ -1284,7 +1286,7 @@ export async function learnedWorkflowHostTool(opts: {
   const providers = await decisionProvidersIn(opts.env);
   const decisions = providers ? { decisions: { providers, book: opts.run.ledger.decisions, pause: (refusal: Refusal) => opts.run.ledger.pause(refusal) } } : {};
   // A call node's native web_search goes through the session's port too, labelled web_search, as the run's own does.
-  const tool = learnedWorkflowTool({ workflows: flows, granted: opts.granted, ...(opts.plane ? { plane: opts.plane } : {}), env: opts.env, work: opts.work, models: tieredModels(byProvider) as never, modelOf, search: () => opts.run.ledger.models(WEB_SEARCH_TOOL), policy: opts.permissions.policy, denyFrom: opts.permissions.denyFrom, refresh: opts.permissions.refresh, mcpTools, nestedOf: (callId) => nestedBy.get(callId), ...decisions, ...(opts.workspace ? { workspace: opts.workspace } : {}), ...(opts.modelName ? { modelName: opts.modelName } : {}), ...(opts.replay ? { replay: opts.replay } : {}) });
+  const tool = learnedWorkflowTool({ workflows: flows, granted: opts.granted, ...(opts.plane ? { plane: opts.plane } : {}), env: opts.env, work: opts.work, models: tieredModels(byProvider) as never, modelOf, search: () => opts.run.ledger.models(WEB_SEARCH_TOOL), policy: opts.permissions.policy, denyFrom: opts.permissions.denyFrom, refresh: opts.permissions.refresh, filed: opts.permissions.filed, mcpTools, nestedOf: (callId) => nestedBy.get(callId), ...decisions, ...(opts.workspace ? { workspace: opts.workspace } : {}), ...(opts.modelName ? { modelName: opts.modelName } : {}), ...(opts.replay ? { replay: opts.replay } : {}) });
   const host = hostToolOf(LEARNED_WORKFLOW_TOOL, tool as never, opts.ctx);
   if (!host) return undefined;
   // The tool nests calls (HostTool.nests): its MCP nodes are the session's tools called nested in it, which the harness

@@ -486,6 +486,9 @@ __all__ = [
     "GetObservationsResponseUsageDailyItem",
     "GetObservationsResponseUsageModelsItem",
     "GetOpenapiResponse",
+    "GetPricesResponse",
+    "GetPricesResponseBrowserItem",
+    "GetPricesResponseComputeItem",
     "GetRevisionSkillsResponse",
     "GetRunExportResponse",
     "GetRunExportResponseAgent",
@@ -5486,6 +5489,28 @@ class GetModelGatewayResponseSecret(TypedDict):
     changed_at: str | None
 
 
+class GetPricesResponse(TypedDict):
+    compute: list[GetPricesResponseComputeItem]
+    browser: list[GetPricesResponseBrowserItem]
+
+
+class GetPricesResponseComputeItem(TypedDict):
+    provider: str
+    resource: Literal["vcpu", "memory", "gpu", "disk"]
+    gpu_type: str | None
+    unit: Literal["vcpu_second", "gib_second", "gpu_second", "gb_month"]
+    usd: str | None
+    source: Literal["setting", "list", "unpriced"]
+
+
+class GetPricesResponseBrowserItem(TypedDict):
+    provider: str
+    unit: Literal["hour"]
+    usd: str | None
+    minimum_s: int
+    source: Literal["setting", "list", "unpriced"]
+
+
 class GetSuggestionResponse(TypedDict):
     id: str
     repo: str
@@ -8544,7 +8569,7 @@ class GetRunUsageResponse(TypedDict):
     browser_sessions: list[GetRunUsageResponseBrowserSessionsItem] | None
     computer_intervals: list[GetRunUsageResponseComputerIntervalsItem] | None
     infra_usd: float | None
-    reason: Literal["running", "not_booked", "reopened"] | None
+    reason: Literal["running", "not_booked"] | None
 
 
 class _GetRunUsageResponseTotalRequired(TypedDict):
@@ -12384,6 +12409,7 @@ OPERATIONS: dict[str, Operation] = {
     "getGitHubConnection": Operation(method="GET", path="/integrations/github", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getLocalModel": Operation(method="GET", path="/settings/local-model", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getModelGateway": Operation(method="GET", path="/settings/model-gateway", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getPrices": Operation(method="GET", path="/settings/prices", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getSuggestion": Operation(method="GET", path="/suggestions/{suggestion_id}", path_params=("suggestion_id",), multi_segment=(), query=("name",), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getWorkspaceArchil": Operation(method="GET", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "gitHubCallback": Operation(method="GET", path="/integrations/github/callback", path_params=(), multi_segment=(), query=("code", "state"), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
@@ -12902,6 +12928,10 @@ class LocalResource(Group):
     def get_model_gateway(self, *, timeout: float | None = None) -> GetModelGatewayResponse:
         """The model gateway in force: the environment's, the one saved here, or none (GET /settings/model-gateway)."""
         return self._call("getModelGateway", (), None, None, timeout=timeout)
+
+    def get_prices(self, *, timeout: float | None = None) -> GetPricesResponse:
+        """The prices this server meters computer time and browser time at, with where each comes from (GET /settings/prices)."""
+        return self._call("getPrices", (), None, None, timeout=timeout)
 
     def get_suggestion(self, suggestion_id: str, *, name: str | None = None, timeout: float | None = None) -> GetSuggestionResponse:
         """One suggested agent whole: its instructions, the files a create adds, and whether GitHub lets it (GET /suggestions/{suggestion_id})."""

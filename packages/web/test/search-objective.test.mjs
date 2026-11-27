@@ -81,7 +81,7 @@ test("keyed Exa's and keyless Exa's wire bodies: the objective as their query, t
   const exa = keyed(() => json({ results: [{ url: "https://a.example/", title: "A", highlights: ["An excerpt."] }] }));
   const keyedWeb = web.createWeb({ order: { search: ["exa"], fetch: [] }, keys: { exa: KEY }, send: { exa: exa.send } });
   const { answer } = await keyedWeb.search({ objective: OBJECTIVE, queries: QUERIES }, { n: 4 });
-  assert.deepEqual(exa.sent, [{ path: "/search", body: { query: OBJECTIVE, type: "auto", numResults: 4, contents: { highlights: { maxCharacters: 3_000 } } } }], "keyed Exa is sent the objective as its query");
+  assert.deepEqual(exa.sent, [{ path: "/search", body: { query: OBJECTIVE, type: "auto", numResults: 4, contents: { highlights: true } } }], "keyed Exa is sent the objective as its query");
   assert.deepEqual([answer.objective, answer.queries], [OBJECTIVE, QUERIES], "keyed Exa's answer carries the objective and the queries");
   const free = mcp(() => toolText("Title: A\nURL: https://a.example/\nPublished: N/A\nAuthor: N/A\nHighlights:\nAn excerpt."));
   const keyless = web.createWeb({ order: { search: ["exa-keyless"], fetch: [] }, send: { "exa-keyless": free.send } });

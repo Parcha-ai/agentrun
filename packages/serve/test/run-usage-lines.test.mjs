@@ -243,11 +243,11 @@ function snapshotStore(run, { entries = [], submissions = [], launch, rounds = 0
 const ENDED = Date.UTC(2026, 10, 19, 10, 0, 0);
 const ended = (extra = {}) => ({ id: "run_1", state: "ended", endedAt: ENDED, importedFrom: null, ...extra });
 
-test("an ended run's usage is read in one snapshot of the store, every read of it: its state, launch, rounds and journal", async () => {
+test("an ended run's usage is read in one snapshot of the store, every read of it: its state, launch and journal (its rounds no longer decide whether it has lines)", async () => {
   const { runUsageOverStore } = await import("../dist/run-usage.js");
   const { store, reads } = snapshotStore(ended(), { entries: [...keys(), ...reported(7, 1, "m", 0.01, usage(10, 1))] });
   const read = await runUsageOverStore(store, "run_1");
-  assert.deepEqual(reads, ["run", "launch", "rounds", "journal", "intervals"], "each read inside the snapshot, none outside (an outside read throws)");
+  assert.deepEqual(reads, ["run", "launch", "journal", "intervals"], "each read inside the snapshot, none outside (an outside read throws)");
   assert.equal(read.ended_at, "2026-11-19T10:00:00.000Z", "the moment the lines cover");
   assert.deepEqual(read.total, { usd: 0.01 });
   assert.equal(read.lines.length, 1);
@@ -272,12 +272,20 @@ test("not_booked: an imported run and an SDK run, whose figure is their harness'
   }
 });
 
-test("reopened: a learning run a follow-up opened again has no lines, since its booking can't be split by round", async () => {
+test("reopened: a learning run a follow-up opened again has every round's job and follow-up lines, each round's learning turn left out", async () => {
   const { runUsageOverStore } = await import("../dist/run-usage.js");
-  const { store, reads } = snapshotStore(ended(), { rounds: 2, entries: [...keys(), ...reported(7, 1, "m", 0.01, usage(10, 1))] });
+  const job = [...keys(), ...reported(7, 1, "m", 0.01, usage(10, 1)), ...paid(1, "monid:faux/person/enrich", "monid", 0.003)];
+  // Round 1's learning turn, closed by the run's first end.
+  const look1 = [e(7, "agentrun.end-of-run.turn", { role: "person", requestId: "learn-reflect-1" }), ...reported(7, 2, "m", 0.5, usage(5000, 500)), e(1, "agentrun.end", { status: "completed" })];
+  // The follow-up's turn: a model request and a second paid call, the job's.
+  const follow = [...reported(7, 3, "m", 0.02, usage(20, 2)), ...paid(2, "monid:faux/person/enrich", "monid", 0.003)];
+  // Round 2's learning turn, closed by the run's second end.
+  const look2 = [e(7, "agentrun.end-of-run.turn", { role: "person", requestId: "learn-reflect-1:round-2" }), ...reported(7, 4, "m", 0.4, usage(4000, 400)), e(1, "agentrun.end", { status: "completed" })];
+  const { store } = snapshotStore(ended(), { rounds: 2, entries: [...job, ...look1, ...follow, ...look2] });
   const read = await runUsageOverStore(store, "run_1");
-  assert.deepEqual([read.lines, read.reason], [null, "reopened"]);
-  assert.ok(!reads.includes("journal"), "its journal is not read");
+  assert.equal(read.reason, null);
+  assert.deepEqual(read.lines.map((one) => [one.meter, nameOf(one), one.quantity, micro(one.usd)]), [["tokens", "m", 33, 30000], ["tools", "monid", 2, 6000]], "both rounds' job and follow-up, no learning turn");
+  assert.deepEqual(read.total, { usd: 0.036 });
 });
 
 test("the end-of-run learning turn is not on the lines: it is the server's work for the agent, which cost.usd leaves out too", async () => {

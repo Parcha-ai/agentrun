@@ -65,7 +65,8 @@ const page = await web.fetch("https://example.org/", { offset: 0, maxChars: 20_0
 Each call returns its `answer` and a `receipt`, `{ op, asked, queries?, provider, tries, classifier, wall, injection, out, cost,
 cache?, unsifted? }`. `asked` is a search's objective (the words given, when it has none) or a fetch's URL, and
 `queries` a search's queries. `tries` lists the providers asked before the call returned, in the order asked, with each outcome,
-and a provider its breaker holds as `held`. A fetch also lists Parallel where it was passed over (no key, refused
+a search's provider that answered no results as `empty` (the call goes on to the next, and that answer returns only when
+none after it has results), and a provider its breaker holds as `held`. A fetch also lists Parallel where it was passed over (no key, refused
 earlier in the run, or a URL it may not be sent), with why; a part from the run's pages lists none. `cost` holds the fees
 of the requests sent before the call returned. A fetch stopped at its signal returns at once, but its read is the run's
 and goes on: a provider asked after the stop is in neither; one whose request was already sent has its fee in `cost` but

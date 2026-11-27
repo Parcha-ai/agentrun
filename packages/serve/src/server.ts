@@ -37,6 +37,7 @@ import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
 import { API_ONLY_ROUTES, apiOnlyMcpSave, apiOnlyRefusal, apiOnlyTriggerEdit, apiOnlyTriggerSkipped, apiOnlyTurnsOn, servedApiOnly } from "./api-only.js";
 import { API_ONLY_ENV, API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV } from "./env-switch.js";
+import { pricesInForce } from "./prices.js";
 import { composioOutsideNamespaceServers, holdApiOnlyMcpOrigins, offApiOnlyMcpServers } from "./mcp-api-only-origins.js";
 import { declaredKeys, keysOwed, keysOwedRefusal, type RunKeys, runKeysOf, runKeysTriggerSkipped, undeclaredKeys, withCarried } from "./run-keys.js";
 import { capacityOverStore, capacityWindowOf } from "./capacity.js";
@@ -836,6 +837,8 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/capacity$/, name: "getCapacity" },
   // A year of the work under this machine's home (wrapped.ts), on a server on the person's own machine alone.
   { method: "GET", pattern: /^\/wrapped$/, name: "getWrapped" },
+  // The prices this server meters computer and browser time at, as its meters read them (prices.ts).
+  { method: "GET", pattern: /^\/settings\/prices$/, name: "getPrices" },
   { method: "GET", pattern: /^\/settings\/tool-keys$/, name: "listToolKeys" },
   { method: "PUT", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "saveToolKey" },
   { method: "DELETE", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "deleteToolKey" },
@@ -2240,16 +2243,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  (`learning_usd`) and the two (`all_in_usd`), with what makes up `learning_usd` (`compile_usd`, `followup_usd`,
    *  `shadow_usd`, `check_usd`, `share_usd`): the figures the agent's cost page gives the run (learn/ledger.ts figuresOf, one formula).
    *  A cost known only as a bound keeps its bound, and all-in is unknown.
-   *  `tools_usd`: the part of `usd` its paid tool calls cost (store-view.ts toolsUsdOverStore). */
+   *  `tools_usd`: the part of `usd` its paid tool calls cost (store-view.ts toolsUsdOverStore). Both are read in one
+   *  snapshot of the store: a follow-up that opens the run again between the two reads never puts its paid calls beside
+   *  the previous end's `usd` (run-usage.ts reads a run's lines the same way). */
   const allInViewOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {
     const cost = (view.cost ?? {}) as { usd?: unknown; upper_bound?: unknown };
     const own = typeof cost.usd === "number" && cost.upper_bound !== true ? cost.usd : null;
-    const all = await runAllInOverStore(store, runId, own);
+    const { all, tools_usd } = await store.snapshot(async (snapshot) => {
+      const all = await runAllInOverStore(snapshot, runId, own);
+      return { all, tools_usd: all ? await toolsUsdOverStore(snapshot, runId) : null };
+    });
     if (!all) return {};
     // A bound stays the view's bound. Otherwise usd is the job's (its ledger row's, the same figure the cost series
     // gives): known as it answered even when its compile turn's cost is not; the row's while the run is at work.
     const { learning_usd, all_in_usd, compile_usd, followup_usd, shadow_usd, check_usd, share_usd } = all;
-    return { cost: { ...cost, ...(cost.upper_bound === true ? {} : { usd: all.usd }), tools_usd: await toolsUsdOverStore(store, runId), learning_usd, all_in_usd, compile_usd, followup_usd, shadow_usd, check_usd, share_usd } };
+    return { cost: { ...cost, ...(cost.upper_bound === true ? {} : { usd: all.usd }), tools_usd, learning_usd, all_in_usd, compile_usd, followup_usd, shadow_usd, check_usd, share_usd } };
   };
   // The agents accessor the routes call, over the one store (module A): the agents-store functions, with the run-row reads
   // the server makes (store-reads) under `.store`. `.request` is a thin pass-through — the store runs its own transactions,
@@ -5880,7 +5888,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           const words = body.said;
           if (words !== undefined && typeof words !== "string") throw invalid([{ field: "said", reason: "wrong_type", message: "said is a string when sent: the person's own words" }]);
           if (typeof words === "string" && !words.trim()) throw invalid([{ field: "said", reason: "empty", message: "said is not empty when sent: the person's own words" }]);
-          if (typeof words === "string" && words.length > SAID_MAX) throw invalid([{ field: "said", reason: "too_long", message: `said is at most ${SAID_MAX} characters` }]);
+          // Counted in code points, as its schema's maxLength and a host's len() count it: an emoji is one, not two.
+          if (typeof words === "string" && [...words].length > SAID_MAX) throw invalid([{ field: "said", reason: "too_long", message: `said is at most ${SAID_MAX} characters (code points)` }]);
           // Its mcp_auth and model_key replace the run's in the steer's own write, so the turn it starts uses them.
           // In its agent's delete turn (runWrite): a message that may open the run again never lands under its purge.
           // Its text is cut of what it hands and of what the run holds, read in that turn (cutHeld).
@@ -6330,6 +6339,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const learning = await learningCountsOverStore(store, filter);
         return send(res, 200, { ...statsView(s, (id) => runningStatus.get(id)), analytics: { ...analyticsView(a, filter), usage: tokens }, learning });
       }
+      case "getPrices":
+        // Read at each request from this process's settings, where the runner beside it reads them too.
+        return send(res, 200, pricesInForce(process.env));
       case "listToolKeys":
         // The offers the server holds, not capabilities': a model key's row names the harnesses its key would run too.
         return send(res, 200, toolKeys.view(offers));

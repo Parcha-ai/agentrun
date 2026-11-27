@@ -454,7 +454,9 @@ The token is in the log of the start that made it. A `docker stop` reaches both 
 6 s (`--drain-timeout 6s`) to finish its turn, so a busy `docker stop` ends in about 7.5 s; a turn cut off resumes at
 the next start. Signed in with ChatGPT, a stop also waits up to 25 s for a renewal OpenAI is answering to save its new
 pair, so Compose's `stop_grace_period` is 35 s, and a plain `docker stop` needs `-t 35`: Docker's default 10 s can cut
-that wait short and lose the sign-in. Compose publishes the port
+that wait short and lose the sign-in. A stop signal again while it closes (a second `docker stop`, a second Ctrl-C on a
+runner started by hand) is said once and changes nothing, so that save is never cut; a close that never ends (a store
+that no longer answers) ends only with SIGKILL (`docker kill`, `kill -9`). Compose publishes the port
 on this machine's loopback only (port 7340, or `AGENTRUN_PORT`; set `AGENTRUN_PUBLIC_URL` with it, so the printed link names that port), and
 the volume `agentrun-data` keeps `/data` across `down` and `up`. In the container the server listens on `0.0.0.0`, so
 setup takes the code the start prints (`Set up this server: <url>/setup#code=<code>`), and every route but `GET /v2/capabilities` and `GET /v2/health` still needs the token. Compose's `healthcheck` and
@@ -5189,14 +5191,15 @@ and says how its figure was reached.
   and do not change it. A native, SDK or imported run's figure is its harness's own, an `estimate`; so is an imported
   session's catalog estimate where its source priced none ([importing your sessions](#importing-your-sessions)). LiteLLM writes no
   cost into a streamed answer's headers, so a run whose answers stream through LiteLLM reads `estimate`.
-- `tools_usd` (on `GET /runs/{id}` alone, `toolsusd/1`; Parallel's decisions in it since `toolsusd/2`): the part of `usd` its paid tool calls cost (monid's endpoints,
+- `tools_usd` (on `GET /runs/{id}` alone, `toolsusd/1`; Parallel's decisions in it since `toolsusd/2`; a learning run's
+  follow-up turns since `toolsusd/3`): the part of `usd` its paid tool calls cost (monid's endpoints,
   MCP tools with a saved price, Parallel behind `web_search` and `web_fetch`, browser time, and a workflow decision
   Parallel answered on its own API, on `PARALLEL_API_KEY`, at Parallel's list price), as the run's ledger booked them,
   rounded as `usd` is. It is inside `usd`, never added to it: `usd` less `tools_usd` is what its model requests and its
   other decisions cost (Jev's, an OpenRouter model's, Parallel's model reached through OpenRouter). A paid call in a learning run's end-of-run turn is learning's (in `learning_usd`), never in
-  `tools_usd`. 0 when it made no paid call. Null while a paid call's charge is unknown (as `usd` is then); while the run
-  is at work (until it ended, stopped or failed); for a learning run a follow-up opened again, whose `usd` is what its
-  first round had cost; and for an imported, native or SDK run, whose `usd` is its import's or its harness's own figure
+  `tools_usd`. A learning run a follow-up opened again counts its job and every follow-up turn, each round's end-of-run
+  turn left out, as its `usd` does: a follow-up's turns are the job's, not learning's. 0 when it made no paid call. Null while a paid call's charge is unknown (as `usd` is then); while the run
+  is at work (until it ended, stopped or failed); and for an imported, native or SDK run, whose `usd` is its import's or its harness's own figure
   and whose tool calls the server never books. Each call's own charge is its span's `usd` on `GET /runs/{id}/trace`.
 - `GET /stats` (`cost.basis`) and `GET /usage` (`basis`) say the same words over the runs they sum: `estimate` when any
   run's is, else `reported` when any run's is, else `unpriced`. A run whose end stored no basis (one that ended before
@@ -5254,8 +5257,10 @@ were reached. Nothing is priced here, and nothing is rounded to a billing increm
   and it ends again later. `ended_at` is the end the lines cover: keep it with them, and read again at `run.ended`, which
   fires at each end. A later read with another `ended_at`, or null, means the run moved since.
 - `lines` and `total` are null, with `reason`, while the run is at work (`running`), for a run whose figure is not its
-  booking's (`not_booked`: an imported, native or SDK run, or a CLI run whose model requests went past its proxy), and
-  for a learning run a follow-up opened again (`reopened`, whose booking can't be split by round).
+  booking's (`not_booked`: an imported, native or SDK run, or a CLI run whose model requests went past its proxy). A
+  learning run a follow-up opened again has lines (`runusage/5`; before, `reopened` and none): its job's and every
+  follow-up turn's up to its latest end, each round's end-of-run turn left out. Each end's lines hold the last end's and
+  what the follow-up added, so a reader that bills each end bills the difference.
 - `compute_time` (`runusage/4`): one line per computer provider and resource (`resource`: `vcpu`, `memory`, `gpu` with
   its `gpu_type`, `disk`), for the computers the run made. Sum a provider's lines for its one compute figure. `quantity`
   is every second of each such computer at its figure (`vcpu_second`, `gib_second`, `gpu_second`, or `gb_month` of disk
@@ -5364,8 +5369,10 @@ names it and `<GPU_TYPE>` the provider's own GPU name, both in capitals with eve
 | `AGENTRUN_COMPUTE_USD_PER_DISK_GB_MONTH_<PROVIDER>` | one GB of disk for a month of 730 hours |
 
 A price sheet that quotes by the hour divides by 3,600 (a vCPU at $0.0504 an hour is `0.000014`). What a computer holds
-is its provider's own figure where the provider's answer gives one (Daytona: vCPUs, memory, disk and GPUs; E2B and Fly:
-vCPUs and memory), else what its create asked for. Nothing is built in: a provider that bills nothing (`docker`) is $0,
+is its provider's own figure where the provider's answer gives one (Daytona: vCPUs, memory, disk and GPUs; Agent37:
+vCPUs, memory and disk; E2B, Fly and Render: vCPUs and memory), else what its create asked for. Modal reads no size back
+and bills a sandbox by its use up to the limits its create set, so a Modal computer holds those limits (2 vCPUs and
+4096 MB unless the spec asks other sizes), the most its time can bill. Nothing is built in: a provider that bills nothing (`docker`) is $0,
 a resource set to `0` is $0 (its time booked at $0, its line `estimate` with `usd` 0), and with no setting a resource
 is unpriced.
 

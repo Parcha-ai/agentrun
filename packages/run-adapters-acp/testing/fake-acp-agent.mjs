@@ -50,6 +50,10 @@
 //         elsewhere would: "key" the CURSOR_API_KEY as is, "base64" it in base64, "token" a JWT-shaped token (made
 //         here, no real one). For the key walk's red: a leak its guard must see;
 //   failNew: at session/new, print these words on stderr and exit 1 (Cursor's own refusals, the team admin's switch);
+//   keepsName: keep, with a session, the name the client gave its MCP server at session/new, and after session/load
+//              name and title our calls under that name, whatever name the load gave it (its MCP connection is the
+//              load's), as Cursor 2026.11.13 does: after a restart it titled `ar7e621c-web_fetch: web_fetch` though
+//              that start named the server `arc50d18`;
 //   cursorDirs: keep sessions and read the CLI config where Cursor 2026.11.13 does (cursor-config/dist/paths.js): its
 //               config directory is $CURSOR_CONFIG_DIR, else $XDG_CONFIG_HOME/cursor, else $HOME/.cursor; sessions in
 //               <dir>/acp-sessions, and an edit, write, delete or move refused unasked when <dir>/cli-config.json denies
@@ -113,7 +117,7 @@ const said = (event) => config.countFile && appendFileSync(config.countFile, `${
 const save = (session) => {
   if (!loads) return;
   mkdirSync(store, { recursive: true });
-  writeFileSync(join(store, `${session.id}.json`), JSON.stringify({ id: session.id, history: session.history }));
+  writeFileSync(join(store, `${session.id}.json`), JSON.stringify({ id: session.id, history: session.history, ...(session.kept ? { server: session.kept } : {}) }));
   if (config.grow) {
     // A store that grows by appending, as SQLite's WAL does: `bytes` more at each save, and its shared-memory index
     // rewritten beside it.
@@ -257,11 +261,14 @@ async function mcpClient(server) {
   return { request, close: () => child.kill() };
 }
 
-async function openSession(id, params, history) {
+async function openSession(id, params, history, kept) {
   const servers = params.mcpServers ?? [];
   const server = servers.find((s) => s.name === "agentrun") ?? servers[0];
   const mcp = server ? await mcpClient(server) : undefined;
   const session = { id, history, mcp, server: server?.name ?? "agentrun", turn: undefined, system: params.systemPrompt ? text(params.systemPrompt.content ?? []).join("\n") : undefined };
+  // keepsName: the name the session was opened under, kept with it and used again after a load (Cursor's).
+  if (config.keepsName) session.kept = kept ?? session.server;
+  if (config.keepsName && kept) session.server = kept;
   sessions.set(id, session);
   return session;
 }
@@ -474,9 +481,9 @@ const app = agent({ name: "fake-acp" })
     needsSignIn();
     const file = join(store, `${params.sessionId}.json`);
     if (!loads || !existsSync(file)) throw RequestError.resourceNotFound(params.sessionId);
-    const { history } = JSON.parse(readFileSync(file, "utf8"));
-    const session = await openSession(params.sessionId, params, history);
-    said({ type: "load", sessionId: params.sessionId, steps: steps(history) });
+    const { history, server: kept } = JSON.parse(readFileSync(file, "utf8"));
+    const session = await openSession(params.sessionId, params, history, typeof kept === "string" ? kept : undefined);
+    said({ type: "load", sessionId: params.sessionId, steps: steps(history), names: params.mcpServers.map((s) => s.name) });
     // The history goes back to the client as it happened: a client keeps it off its timeline.
     for (const h of history) {
       if (h.kind === "user") await client.notify("session/update", { sessionId: session.id, update: { sessionUpdate: "user_message_chunk", content: { type: "text", text: h.text } } });

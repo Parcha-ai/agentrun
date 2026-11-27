@@ -128,9 +128,10 @@ export async function closeStoreAfter(work: () => Promise<void>, drainRenewals: 
 }
 
 /** `plan` for one claimed run on a runner: a renewal refused because the runner is closing (PlanStopping) tells
- *  `handBack` (LoopDeps.handBack), which stops the run's loop for a shutdown and aborts `signal`, and the ask is answered
- *  with that abort, so the run is handed back to resume, never failed for it. Any other answer is the plan's own. */
-export function handingBack(plan: PlanReader, handBack: () => void, signal: AbortSignal): PlanReader {
+ *  `handBack` (LoopDeps.handBack), which stops the run's loop (by a person's stop or cancel no delivery had handed on yet,
+ *  else for a shutdown that aborts `signal`), and once it has, the ask is answered with that abort, so the run is handed
+ *  back to resume, never failed for it. Any other answer is the plan's own. */
+export function handingBack(plan: PlanReader, handBack: () => Promise<void>, signal: AbortSignal): PlanReader {
   return {
     get state() {
       return plan.state;
@@ -143,7 +144,7 @@ export function handingBack(plan: PlanReader, handBack: () => void, signal: Abor
         return await plan.token();
       } catch (error) {
         if (!(error instanceof PlanStopping)) throw error;
-        handBack();
+        await handBack();
         throw signal.aborted ? signal.reason : error;
       }
     },
@@ -779,9 +780,10 @@ export class ChatGPTPlan implements PlanReader {
   }
 
   /** While its store stops (no renewal starts): `row`'s access token as it is when it outlives the rest of the stop's drain
-   *  plus RENEWAL_DRAIN_MS (a run its drain lets go on sends it no later than that) and OpenAI has not refused it here;
-   *  else PlanStopping, so a run that needs it renewed is handed back (handingBack) rather than failed. A plan closed with
-   *  no stop of its store counts a whole drain. */
+   *  plus RENEWAL_DRAIN_MS and OpenAI has not refused it here; else PlanStopping, so a run that needs it renewed is handed
+   *  back (handingBack) rather than failed. A loop drain can outlast the renewals' (the CLI's is 30 s, drainMs is set by
+   *  the caller): each request asks token() again, so a token sent later is judged again then, never served past its
+   *  end. A plan closed with no stop of its store counts a whole drain. */
   private asItIs(row: Row): string {
     const ends = renewalsOf(this.#deps.store).drainEnds;
     const left = ends === undefined ? RENEWAL_DRAIN_MS : Math.max(0, ends - Date.now());
@@ -845,8 +847,18 @@ export class ChatGPTPlan implements PlanReader {
     // Its store's stop began while the lease was taken (a write that can take the store's whole deadline): the refresh
     // token is never sent past the stop, so the drain waits only on refreshes sent before it, and the lease goes back.
     if (this.stopping()) {
-      await this.swap(bytes, bare).catch(() => undefined);
-      return this.asItIs(bare);
+      if (await this.swap(bytes, bare).catch(() => undefined)) return this.asItIs(bare);
+      // The lease did not go back: the owner signed out or in again since it was taken, or the store would not answer.
+      // The row's state now wins, never the pair the lease was taken on.
+      let now: Row | undefined;
+      try {
+        now = (await this.readTaken())?.row;
+      } catch {
+        throw new PlanStopping(RENEW_LATER);
+      }
+      if (!now) throw new PlanUnavailable(SIGNED_OUT);
+      if (now.state === "expired") throw new PlanUnavailable(EXPIRED);
+      return this.asItIs(now);
     }
     let next: Credential;
     try {

@@ -120,4 +120,14 @@ test("the server says it takes said (features.messages.said); a said that is not
   const taken = await api("POST", `/runs/${runId}/messages`, { content: host(FIRST), said: "y".repeat(4_000) });
   assert.equal(taken.status, 202, JSON.stringify(taken.body).slice(0, 300));
   assert.equal(await steers(), before + 1, "the message was written");
+  // Counted in code points, as a host's len() and the schema's maxLength count: 4,000 emoji are 8,000 UTF-16 units.
+  const emoji = "\u{1F600}".repeat(4_000);
+  assert.equal(emoji.length, 8_000);
+  const wide = await api("POST", `/runs/${runId}/messages`, { content: host(FIRST), said: emoji });
+  assert.equal(wide.status, 202, JSON.stringify(wide.body).slice(0, 300));
+  assert.equal(await steers(), before + 2, "the 4,000-code-point message was written");
+  const over = await api("POST", `/runs/${runId}/messages`, { content: host(FIRST), said: `${emoji}x` });
+  assert.equal(over.status, 422, JSON.stringify(over.body).slice(0, 300));
+  assert.deepEqual(over.body.error?.fields?.map((issue) => [issue.field, issue.reason]), [["said", "too_long"]], JSON.stringify(over.body).slice(0, 300));
+  assert.equal(await steers(), before + 2, "the 4,001-code-point message was not written");
 });
