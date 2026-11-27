@@ -156,13 +156,14 @@ export const apiOnlyRefusal = (raw: string): string => `this server serves the r
  *  imported template packages and uploaded files, its agents' Archil disks and the runs of its own computers going now, the
  *  computers this server offers (never the operator's paired ones), the marketplace's list (its `here` naming only a
  *  package the workspace sees), and the server's description. Every other is refused with 403 not_scoped, whatever API_ONLY_ROUTES serves an
- *  unscoped request. listAgents, createAgent, updateDefinition, getTemplate, listTemplates, listMarketplaceTemplates and
- *  getOpenapi are not in API_ONLY_ROUTES: an API-only server serves them to a scoped request alone. */
+ *  unscoped request. listAgents, createAgent, updateDefinition, getTemplate, listTemplates, deleteTemplate,
+ *  listMarketplaceTemplates and getOpenapi are not in API_ONLY_ROUTES: an API-only server serves them to a scoped request alone. */
 export const WORKSPACE_ROUTES: ReadonlySet<string> = new Set([
   "listAllRuns", "listRuns", "getRun", "getTimeline", "listRunFiles", "readRunFile", "getRunExport",
   "listAgents", "getAgent", "listRevisions", "createAgent", "updateDefinition", "setCurrent",
+  "archiveAgent", "unarchiveAgent", "deleteAgent",
   "getAgentArchil", "deleteAgentArchil", "listComputers", "listRunningComputers",
-  "importTemplate", "applyTemplate", "getTemplate", "listTemplates", "listMarketplaceTemplates",
+  "importTemplate", "applyTemplate", "getTemplate", "listTemplates", "deleteTemplate", "listMarketplaceTemplates",
   "createRun", "sendMessage", "stopRun", "cancelRun",
   "createFile", "listFiles", "getFile", "uploadFile", "deleteFile",
   "getCapabilities", "getHealth", "getOpenapi",

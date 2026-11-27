@@ -22,7 +22,8 @@ services:
     # either exits, the container exits non-zero and Render starts it again. Render waits 30 s after SIGTERM, above the
     # runner's 6 s drain, a signed-in server's 27 s stop and the 29 s a ChatGPT renewal its runner sends may take to save
     # its new pair (the grace test pins them). maxShutdownDelaySeconds would set it, but Render does not take it for a service with a
-    # persistent disk, as this one is.
+    # persistent disk, as this one is. It is under the 40 s the runner's close takes when a browser's release hangs to its
+    # provider's 30 s cleanup bound: such a stop is killed before that release is recorded, and the run resumes at the next start.
     disk:
       name: agentrun-data
       mountPath: /data
