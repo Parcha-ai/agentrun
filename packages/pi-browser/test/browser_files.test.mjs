@@ -402,6 +402,17 @@ test("a workspace write makes the file and its missing folders, replaces one alr
   assert.deepEqual(fs.readdirSync(path.join(workspace, "shots", "a")), ["walk.png"], "no temporary file is left");
 });
 
+test("a workspace write takes any name the folder takes: its temporary file's name is short whatever the name", async (t) => {
+  const { workspace } = rig(t);
+  const files = workspaceFiles(workspace);
+  const name = `${"a".repeat(251)}.png`;
+  fs.writeFileSync(path.join(workspace, name), "fits");
+  fs.rmSync(path.join(workspace, name));
+  assert.deepEqual(await files.write(`shots/${name}`, Buffer.from("long")), { path: `shots/${name}` });
+  assert.equal(fs.readFileSync(path.join(workspace, "shots", name), "utf8"), "long");
+  assert.deepEqual(fs.readdirSync(path.join(workspace, "shots")), [name], "no temporary file is left");
+});
+
 test("a workspace write that would leave the workspace, by '..', by being absolute or through a link on the way or at the file, is refused and writes nothing outside", async (t) => {
   const { workspace, outside } = rig(t);
   fs.symlinkSync(outside, path.join(workspace, "linkdir"));

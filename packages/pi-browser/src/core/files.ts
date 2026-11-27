@@ -155,7 +155,8 @@ export function workspaceFiles(
         if (there && !there.isFile()) return { refused: `${rel} is not a regular file` };
         const vetoed = refuse?.(target);
         if (vetoed) return { refused: `${rel}: ${vetoed}` };
-        const tempName = `.${name}.${randomBytes(4).toString("hex")}.tmp`;
+        // Not built from the name, as serve's workspace writes are not: a name the folder takes may leave no room for more.
+        const tempName = `.workspace-${randomBytes(8).toString("hex")}.tmp`;
         const handle = await open(at(dir, tempName), constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o666).catch(() => null);
         if (!handle) return { refused: `${rel} cannot be written` };
         temp = tempName;
