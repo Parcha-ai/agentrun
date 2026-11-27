@@ -325,7 +325,10 @@ export const evidenceIn = (work: Workspace) => {
 
 /** What browser_upload may choose: a file of the run's Workspace, the one its read opens, by a path relative to it. The
  *  Workspace refuses a path that would leave it (absolute, "..", a link anywhere on the way), so nothing outside the run's
- *  folder is ever read; a file must be a regular one of at most `maxBytes`. `mime` names its media type by its name. */
+ *  folder is ever read; a file must be a regular one of at most `maxBytes`. `mime` names its media type by its name.
+ *  `write` is where a browser screenshot's save_as goes: the Workspace's own write, the one the agent's write tool makes
+ *  (pi-env.ts writeFile), refusing a path that would leave the folder as that tool is refused, its folders made and a
+ *  file already there replaced. */
 export const uploadsFrom = (work: Workspace, maxBytes: number, mime: (name: string) => string) => ({
   async resolve(rel: string): Promise<{ bytes: Uint8Array; name: string; mime: string } | { refused: string }> {
     if (typeof rel !== "string" || !rel.trim()) return { refused: "path must name a file in the workspace" };
@@ -343,6 +346,17 @@ export const uploadsFrom = (work: Workspace, maxBytes: number, mime: (name: stri
       return { bytes, name, mime: mime(name) };
     } catch (error) {
       return { refused: refusal(error) };
+    }
+  },
+  async write(rel: string, bytes: Uint8Array): Promise<{ path: string } | { refused: string }> {
+    if (typeof rel !== "string" || !rel.trim()) return { refused: "path must name a file in the workspace" };
+    try {
+      await work.write(rel, bytes);
+      return { path: rel };
+    } catch (error) {
+      // A refusal's own words name the path relative to the folder; an unavailable folder's may name it on this machine.
+      const said = isWorkspaceError(error, "REFUSED") || isWorkspaceError(error, "EXISTS") || isWorkspaceError(error, "NOT_FOUND") ? `: ${(error as Error).message}` : "";
+      return { refused: isWorkspaceError(error, "ESCAPE") ? `${rel} resolves outside the workspace, or a link is on the way to it` : `${rel} could not be written${said}` };
     }
   },
 });
