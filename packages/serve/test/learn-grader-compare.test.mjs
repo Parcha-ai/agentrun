@@ -22,7 +22,7 @@
 //   (13) a run its owner corrected by message (no grade), whose recorded answer stays wrong: each replay's grader is
 //       shown the correction beside that answer, and a draft that answers per the correction promotes;
 //   (14) a replay repeating that wrong recorded answer word for word: the grader, asked with the correction, says it
-//       differs, and with no verdict kept equal answers are no agreement;
+//       differs, and with no verdict kept each input is unjudged (equal answers are no agreement);
 //   (15) an agent that answered again per the correction: a replay equal to that recorded answer is still asked with
 //       the correction, and the grader's same decision promotes (only a verdict asked with the correction counts);
 //   (16) a correction the checks refused was never taken, so it changes nothing.
@@ -438,7 +438,7 @@ test("(13) a run corrected by message (no grade) whose recorded answer stays wro
   assert.ok(users.every((one) => one.includes(CORRECTION)), `each is shown the correction: ${users[0]}`);
 });
 
-test("(14) a replay repeating the corrected run's wrong recorded answer word for word: the fast model is asked with the correction (no equal-answer shortcut) and, judging per it, says they differ: held; with no fast model, no verdict kept, equal answers are no agreement", { timeout: 300_000 }, async (t) => {
+test("(14) a replay repeating the corrected run's wrong recorded answer word for word: the fast model is asked with the correction (no equal-answer shortcut) and, judging per it, says they differ: held; with no fast model, no verdict kept, each input is unjudged (equal answers are no agreement) and it holds", { timeout: 300_000 }, async (t) => {
   const says = JSON.stringify({ answer: 42, sure: true });
   const w = await world(t, { learning: { compile_after: 3 }, prior: 3, says, corrects: CORRECTION, grader: correctionGrader });
   await correctedPriors(w, "merged");
@@ -455,7 +455,9 @@ test("(14) a replay repeating the corrected run's wrong recorded answer word for
   const held = (await checked(none, undrawn("repeats-none"))).record;
   assert.equal(held.decided, "hold", held.reason);
   assert.equal(held.check.agreed, 0, JSON.stringify(held.check));
-  assert.deepEqual(held.check.fields.answer.by, { grade: { n: 3, workflow_right: 0, agent_right: 0 } });
+  // No model read the words beside the answer: each input unjudged, neither right nor wrong (they may be a question).
+  assert.deepEqual(held.check.fields.answer.by, {});
+  assert.equal(held.check.fields.answer.unjudged, 3, JSON.stringify(held.check.fields.answer));
   assert.equal(none.graderRequests().length, 0, "no fast model: no grader request");
 });
 
@@ -548,6 +550,12 @@ test("a known answer its owner corrected: only a verdict asked with the correcti
   const { corrected: _, ...unasked } = asked;
   assert.deepEqual(compareAnswers(draft, agent, unasked, true), { same: false }, "a verdict asked without the correction is none");
   assert.deepEqual(compareAnswers(agent, agent, { ...asked, pair: answersPair(agent, agent) }, true), { ...asked, pair: answersPair(agent, agent) }, "equal answers: the verdict asked with the correction decides");
+  // The check's own judging (checkInputOf, through answerJudged): with no verdict asked with the correction the input is
+  // unjudged, neither right nor wrong (the words may be a question or thanks); with one, it decides.
+  assert.equal(answerJudged({ agent, answer: agent, corrected: words }, undefined), null, "equal answers, no verdict: unjudged");
+  assert.equal(answerJudged({ agent, answer: draft, corrected: words, compared: unasked }, undefined), null, "a verdict asked without the correction: unjudged");
+  assert.equal(answerJudged({ agent, answer: draft, corrected: words, compared: asked }, undefined), true);
+  assert.equal(answerJudged({ agent, answer: agent, corrected: words, compared: { same: false, grader: "fast-1", pair: answersPair(agent, agent), corrected: words } }, undefined), false, "the verdict, asked with it, says they differ");
   // Judged field by field: right only as the verdict says, equal to the agent's answer or not; the agent's own wrong.
   const field = (workflow, agrees) => ({ input_id: "r", outcome: "answered", fields: { answer: { workflow, agent: { a: 1 }, agrees, agent_correct: false, correction: words } } });
   const verdict = checkFields([field({ a: 2 }, true), field({ a: 1 }, true), field({ a: 1 }, false), field({ a: 3 }, undefined)], { agree_min: 0.8, alone_min: 0.7 });
@@ -558,6 +566,20 @@ test("a known answer its owner corrected: only a verdict asked with the correcti
   const users = [];
   await gradeAnswers("q", agent, draft, { model: "fast-1", ask: async (request) => (users.push(request.user), { text: '{"same": true}' }) }, words);
   assert.ok(users[0].includes(`The known answer:\n<<<\n${agent}\n>>>\n\nThe owner's correction of the known answer:\n<<<\n${words}\n>>>`), users[0]);
+});
+
+test("correctionOf: each round's merged correction, oldest first, the oldest dropped past corrections.md's cap all told; a dropped or refused round keeps none", async () => {
+  const { correctionOf } = await import("../dist/runner/promotion.js");
+  const { CORRECTIONS_CAP } = await import("../dist/learn/corrections.js");
+  const of = (rows) => ({ learning: { proposal: async (_runId, round) => { const row = round === undefined ? rows.at(-1) : rows[round - 1]; return row ? { round: round ?? rows.length, proposal: row } : undefined; } } });
+  const merged = (correction) => ({ state: "merged", corrections: 1, correction });
+  assert.equal(await correctionOf(of([]), "r"), undefined);
+  assert.equal(await correctionOf(of([merged("It is 2."), { state: "dropped", reason: "checker" }, merged(" Not 3 either. ")]), "r"), "It is 2.\nNot 3 either.");
+  assert.equal(await correctionOf(of([{ state: "merged", correction: "words with no corrections count" }]), "r"), undefined, "merged with no correction kept: none");
+  const big = "x".repeat(CORRECTIONS_CAP / 2);
+  const words = await correctionOf(of([merged(`a${big}`), merged(`b${big}`), merged("newest")]), "r");
+  assert.equal(words, `b${big}\nnewest`, "the oldest round dropped to fit the cap");
+  assert.ok(Buffer.byteLength(words) <= CORRECTIONS_CAP);
 });
 
 /** The learning rows a promotion record is written through, in memory: one agent's records of each kind, and workflow
