@@ -126,8 +126,12 @@ const TABLE = {
   createRun: { method: "POST", path: "/v2/agents/{agent}/runs", row: "agent", body: { input: { content: "Hello." } } },
   updateDefinition: { method: "PUT", path: "/v2/agents/{agent}/definition", row: "agent", body: { definition: { version: 1, name: "W2 edit", instructions: "Answer.", skills: [], tools: [] } } },
   setCurrent: { method: "POST", path: "/v2/agents/{agent}/current", row: "agent", body: { revision_id: "rev_none" } },
+  archiveAgent: { method: "POST", path: "/v2/agents/{agent}/archive", row: "agent" },
+  unarchiveAgent: { method: "POST", path: "/v2/agents/{agent}/unarchive", row: "agent" },
+  deleteAgent: { method: "DELETE", path: "/v2/agents/{agent}", row: "agent" },
   getTemplate: { method: "GET", path: "/v2/templates/{template}", row: "template" },
   applyTemplate: { method: "POST", path: "/v2/templates/{template}/apply", row: "template", body: { parameters: {} } },
+  deleteTemplate: { method: "DELETE", path: "/v2/templates/{template}", row: "template" },
   getFile: { method: "GET", path: "/v2/files/{file}", row: "file" },
   uploadFile: { method: "PUT", path: "/v2/files/{file}", row: "file", body: "hello" },
   deleteFile: { method: "DELETE", path: "/v2/files/{file}", row: "file" },
@@ -149,7 +153,8 @@ test("every operation of WORKSPACE_ROUTES is a route of the server, and the tabl
   assert.deepEqual([...WORKSPACE_ROUTES].sort(), Object.keys(TABLE).sort());
   assert.equal(servedScoped(ROUTES, "GET", "/v2/runs/r1"), "served");
   assert.equal(servedScoped(ROUTES, "HEAD", "/v2/agents/a1"), "served");
-  assert.equal(servedScoped(ROUTES, "DELETE", "/v2/agents/a1"), "not_scoped");
+  assert.equal(servedScoped(ROUTES, "DELETE", "/v2/agents/a1"), "served");
+  assert.equal(servedScoped(ROUTES, "DELETE", "/v2/agents/a1/learning"), "not_scoped");
   assert.equal(servedScoped(ROUTES, "GET", "/v2/usage"), "not_scoped");
   assert.equal(servedScoped(ROUTES, "GET", "/v2/runs/r1/computer/live/v/x"), "not_scoped");
   assert.equal(servedScoped(ROUTES, "GET", "/v2/nothing-here"), "none");
@@ -202,6 +207,38 @@ test("a scoped request reads another workspace's row as a missing one, the same 
   assert.equal((await unscoped(server, "GET", `/v2/runs/${run.body.run_id}`)).status, 200);
 });
 
+test("a workspace archives, unarchives and deletes its own agent and deletes its own imported package; another workspace's calls change none of them", { timeout: 120_000 }, async (t) => {
+  const server = await scopedServer(t);
+  const { agent, template } = await seedW1(server);
+  const made = await inW1(server, "POST", "/v2/agents", { body: { definition: { version: 1, name: "W1 spare", instructions: "Answer.", skills: [], tools: [] } } });
+  assert.equal(made.status, 201, made.text);
+  const spare = made.body.agent_id;
+  for (const [method, path] of [["POST", `/v2/agents/${agent}/archive`], ["DELETE", `/v2/agents/${spare}`], ["DELETE", `/v2/templates/${encodeURIComponent(template)}`]]) {
+    assert.equal((await inW2(server, method, path)).status, 404, `${method} ${path}`);
+  }
+  assert.equal((await inW1(server, "GET", `/v2/agents/${agent}`)).body.archived_at, null, "W2's archive changed nothing");
+  assert.equal((await inW1(server, "GET", `/v2/templates/${encodeURIComponent(template)}`)).status, 200, "W2's delete changed nothing");
+
+  const archived = await inW1(server, "POST", `/v2/agents/${agent}/archive`);
+  assert.equal(archived.status, 200, archived.text);
+  assert.notEqual(archived.body.archived_at, null);
+  const unarchived = await inW1(server, "POST", `/v2/agents/${agent}/unarchive`);
+  assert.equal(unarchived.status, 200, unarchived.text);
+  assert.equal(unarchived.body.archived_at, null);
+  assert.deepEqual(unarchived.body.triggers_off, []);
+
+  assert.equal((await inW1(server, "POST", `/v2/agents/${spare}/archive`)).status, 200);
+  const deleted = await inW1(server, "DELETE", `/v2/agents/${spare}`);
+  assert.equal(deleted.status, 204, deleted.text);
+  assert.ok(!TABLE.listAgents.list((await inW1(server, "GET", "/v2/agents")).body).includes(spare), "the purged agent is not listed");
+
+  const gone = await inW1(server, "DELETE", `/v2/templates/${encodeURIComponent(template)}`);
+  assert.equal(gone.status, 204, gone.text);
+  assert.equal((await inW1(server, "GET", `/v2/templates/${encodeURIComponent(template)}`)).status, 404);
+  const bundled = await inW1(server, "DELETE", "/v2/templates/deployed");
+  assert.deepEqual([bundled.status, bundled.body.error?.code], [403, "forbidden"], bundled.text);
+});
+
 test("an Idempotency-Key used in one workspace starts afresh in another, and replays in its own", { timeout: 120_000 }, async (t) => {
   const server = await scopedServer(t);
   const key = { "idempotency-key": "apply-once" };
@@ -237,7 +274,7 @@ test("a listed token without the header is 403; the header off an API-only serve
     assert.deepEqual([answer.status, answer.body.error?.code], [400, "bad_request"], `${JSON.stringify(workspace)}: ${answer.text}`);
   }
   assert.equal((await send(server, "GET", "/v2/runs", { workspace: "x".repeat(128) })).status, 200, "128 characters is a name");
-  for (const [method, path] of [["DELETE", "/v2/agents/a1"], ["GET", "/v2/usage"], ["DELETE", "/v2/runs/r1"], ["GET", "/v2/triggers"], ["POST", "/v2/runs"]]) {
+  for (const [method, path] of [["DELETE", "/v2/agents/a1/learning"], ["GET", "/v2/usage"], ["DELETE", "/v2/runs/r1"], ["GET", "/v2/triggers"], ["POST", "/v2/runs"]]) {
     const answer = await inW1(server, method, path, method === "GET" || method === "DELETE" ? {} : { body: {} });
     assert.deepEqual([answer.status, answer.body.error?.code, answer.body.error?.details?.reason], [403, "forbidden", "not_scoped"], `${method} ${path}: ${answer.text}`);
   }
