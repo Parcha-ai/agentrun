@@ -2904,7 +2904,7 @@ class ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem(_ListLe
 
 class _ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemExpectedItemRequired(TypedDict):
     field: str
-    known: Literal["grade", "unknown", "contradicts"]
+    known: Literal["grade", "correction", "unknown", "contradicts"]
 
 
 class ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemExpectedItem(_ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemExpectedItemRequired, total=False):
@@ -2968,7 +2968,7 @@ class ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItem(_L
 
 class _ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItemExpectedItemRequired(TypedDict):
     field: str
-    known: Literal["grade", "unknown", "contradicts"]
+    known: Literal["grade", "correction", "unknown", "contradicts"]
 
 
 class ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItemExpectedItem(_ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItemExpectedItemRequired, total=False):
@@ -3128,7 +3128,7 @@ class ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItem(_L
 
 class _ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemExpectedItemRequired(TypedDict):
     field: str
-    known: Literal["grade", "unknown", "contradicts"]
+    known: Literal["grade", "correction", "unknown", "contradicts"]
 
 
 class ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemExpectedItem(_ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemExpectedItemRequired, total=False):
@@ -3192,7 +3192,7 @@ class ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsIt
 
 class _ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItemExpectedItemRequired(TypedDict):
     field: str
-    known: Literal["grade", "unknown", "contradicts"]
+    known: Literal["grade", "correction", "unknown", "contradicts"]
 
 
 class ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItemExpectedItem(_ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItemExpectedItemRequired, total=False):

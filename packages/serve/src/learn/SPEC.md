@@ -124,7 +124,7 @@ or the same decision by the grader's verdict on the draft and that answer, which
 whether the agent's own answer was right). The agent said `{"answer":42,"note":"checked"}` and the grade expects
 `{"answer":41}`: a draft of `{"answer":41,"note":"checked"}` is right. A disagreement still shows the recompile the
 grade's own expected answer. With no grade, it is judged against the agent's answer (equal, or the grader's same
-decision). No field name is ever taken from a
+decision). A run its owner corrected by message (no grade's expected answer, nor a grade that said right) keeps its recorded answer, never written over: the replay's grader is shown it with the owner's correction beside it (kept on the run's learning row as `correction`, and on the verdict as `replay.compared.corrected`), the correction winning where they differ; the agent's answer counts as wrong, and only a verdict asked with the correction counts: its same decision is right, equal answers or not (equal ones ask it too; with no verdict kept the input is unjudged: a message may be a question or thanks, not a correction), and a disagreement shows the owner's words as known `correction`; under agree_on it changes nothing. No field name is ever taken from a
 grade's keys: they are a person's data, and a run's purge leaves them nowhere in the record. A grade with no expected answer still says something: not
 correct, on the whole answer, makes a draft that repeats it wrong there, and leaves any other answer unjudged (under
 agree_on it names no field, so it changes nothing); correct changes nothing (the agent's answer is known as with no
