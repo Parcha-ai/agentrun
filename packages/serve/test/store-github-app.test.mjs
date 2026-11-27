@@ -11,10 +11,15 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { queued, registryPin, storeOn } from "./store-helpers.mjs";
+import { agentWithRevision, queued, registryPin, storeOn } from "./store-helpers.mjs";
 import { stranger } from "./fixtures/stranger.mjs";
 
-const { githubAppAccess } = await import("../dist/runner/github-app.js");
+const { githubAppAccess: accessOf } = await import("../dist/runner/github-app.js");
+/** githubAppAccess for the claim of run-1, a run in no workspace, queued at its first use. */
+async function githubAppAccess(store, key, input, options = {}) {
+  if (!(await store.runs.get("run-1"))) await queued(store);
+  return accessOf(store, key, input, { run: "run-1", ...options });
+}
 const { mcpClaim } = await import("../dist/runner/mcp-claim.js");
 const { mcpGateway } = await import("../dist/mcp-gateway.js");
 const { heldRedactor, keepText } = await import("../dist/runner/redact.js");
@@ -83,6 +88,22 @@ test("no App the runner can open is no access: never connected, no seal key, or 
   await connected(store, { key: randomBytes(32) });
   assert.equal(await githubAppAccess(store, KEY, { content: "https://github.com/acme/widgets" }), undefined, "another key's rows");
   assert.equal(await githubAppAccess(store, undefined, { content: "https://github.com/acme/widgets" }), undefined, "no seal key");
+});
+
+test("a run in a workspace, its own agent's or its own, and a run the store does not hold have no access: the App is never opened and GitHub is asked nothing", async (t) => {
+  const { store } = await storeOn(t);
+  await connected(store);
+  const github = await fakeGitHub(t);
+  await store.agents.create({ id: "scoped", name: "scoped", workspace: "org:acme" }, { id: "rev-scoped", kind: "agentic", body: { instructions: "Answer." } });
+  await store.runs.create({ id: "run-scoped", agentId: "scoped", revisionId: "rev-scoped" });
+  await agentWithRevision(store);
+  await store.runs.create({ id: "run-own", agentId: "agent-1", revisionId: "rev-1", workspace: "org:acme" });
+  for (const run of ["run-scoped", "run-own", "run-unknown"]) {
+    assert.equal(await accessOf(store, KEY, { content: "Fix https://github.com/acme/widgets" }, { run, api: github.api }), undefined, run);
+  }
+  assert.deepEqual(github.asked, []);
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
+  assert.equal((await (await accessOf(store, KEY, { content: "Fix https://github.com/acme/widgets" }, { run: "run-1", api: github.api })).mint({ repo: "acme/widgets" })).ok, true, "the same server's run in no workspace");
 });
 
 test("a run that names no repository has access with no target: the claim step refuses its calls in words", async (t) => {
