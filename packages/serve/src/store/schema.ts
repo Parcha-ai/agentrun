@@ -22,7 +22,8 @@
 // and each computer a run made, from its create to its proven delete (computer_intervals, COMPUTER_INTERVALS). Each runner's
 // version and slots (runners.version, .slots: RUNNERS_ADDED), each hand-back (hand_backs, HAND_BACKS) and each claim of a
 // run with the turn it works and its attempt at it (run_attempts, RUN_ATTEMPTS) are added the same way, and so is the
-// learning ledger (learning_ledger, learning_spend: LEARNING_LEDGER, LEARNING_SPEND).
+// learning ledger (learning_ledger, learning_spend: LEARNING_LEDGER, LEARNING_SPEND), and each agent's, run's and imported
+// package's workspace (WORKSPACE_ADDED).
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
 // in the clear. Foreign keys are on (the connection's pragma).
@@ -137,8 +138,24 @@ export const IMPORTED_TEMPLATES = `CREATE TABLE IF NOT EXISTS imported_templates
     sha TEXT NOT NULL,
     publisher TEXT NOT NULL,
     ${json("files")},
-    imported_at INTEGER NOT NULL
+    imported_at INTEGER NOT NULL,
+    workspace TEXT
   ) STRICT`;
+
+/** The workspace of each agent, run and imported template package (workspace-scope.ts): the opaque name a scoped request
+ *  made the row in, null for one made unscoped (every row before it). A run with none reads as its agent's. In STORE_DDL,
+ *  and added where missing at a server open to a store an earlier build of this version made, with its indexes
+ *  (WORKSPACE_INDEXES), as LEARNING_LEDGER_ADDED is. No runner reads or writes it, so a runner waits for nothing. */
+export const WORKSPACE_ADDED: Readonly<Record<"agents" | "runs" | "imported_templates", string>> = {
+  agents: "ALTER TABLE agents ADD COLUMN workspace TEXT",
+  runs: "ALTER TABLE runs ADD COLUMN workspace TEXT",
+  imported_templates: "ALTER TABLE imported_templates ADD COLUMN workspace TEXT",
+};
+/** A workspace's agents and runs in the lists' order (Agents.list, Runs.listed with a workspace). */
+export const WORKSPACE_INDEXES: readonly string[] = [
+  "CREATE INDEX IF NOT EXISTS agents_by_workspace ON agents (workspace, created_at)",
+  "CREATE INDEX IF NOT EXISTS runs_by_workspace ON runs (workspace, started_at)",
+];
 
 /** A hosted machine's minted token (a dial provider's create, spec/computer/attach.md): its computerd dials the attach
  *  socket and fetches the daemon with it. By the machine (its name, from its create's request id): the token's SHA-256
@@ -558,7 +575,9 @@ export const STORE_DDL: readonly string[] = [
     external_ref TEXT,
     -- When the agent was purged (DELETE /agents/{id} of an archived agent made here): its row is then a tombstone, its
     -- name, description and revisions' content blanked, kept for its runs' tombstones and their cost. Null: not purged.
-    purged_at INTEGER
+    purged_at INTEGER,
+    -- WORKSPACE_ADDED.
+    workspace TEXT
   ) STRICT`,
   `CREATE UNIQUE INDEX IF NOT EXISTS agents_external ON agents (external_ref) WHERE external_ref IS NOT NULL`,
   // A revision's skills (the P4 fold of the old agent store's skill table): the revision's own skill files, a JSON object
@@ -639,7 +658,9 @@ export const STORE_DDL: readonly string[] = [
     ${RUN_LISTING_COLUMNS.join(",\n    ")},
     -- When the run was purged (DELETE /runs/{id}, Runs.purge): its row is then a tombstone, every record of what it was
     -- given or did gone and its cost kept, which no list shows and every total still sums. Null: not purged.
-    purged_at INTEGER
+    purged_at INTEGER,
+    -- WORKSPACE_ADDED.
+    workspace TEXT
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS runs_by_agent ON runs (agent_id, started_at)`,
   `CREATE INDEX IF NOT EXISTS runs_by_revision ON runs (revision_id, started_at)`,
@@ -891,6 +912,7 @@ export const STORE_DDL: readonly string[] = [
   ) STRICT`,
   ...LEARNING_ROWS,
   IMPORTED_TEMPLATES,
+  ...WORKSPACE_INDEXES,
   MINTED_TOKENS,
   RUNNERS,
   HAND_BACKS,

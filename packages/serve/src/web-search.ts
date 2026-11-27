@@ -8,7 +8,7 @@ import { type Breaker, breakers, fitSearch, type Search, type SearchBounds, type
 import { forModel } from "./result.js";
 import { planeOf, whyUnavailable } from "./tool-plane.js";
 import { WEB_FETCH_TOOL } from "./web-fetch.js";
-import { ordersOf, type SearchOn, searchChainOf, searchingOn, webOf } from "./web-run.js";
+import { logReceipt, ordersOf, type SearchOn, searchChainOf, searchingOn, webOf } from "./web-run.js";
 
 export type { SearchOn };
 
@@ -29,7 +29,9 @@ async function searched(env: NodeJS.ProcessEnv, args: Record<string, unknown>, b
   const { objective, queries, n } = searchArgs(args);
   // Under --faux, an order with every keyless provider left out (web-run.ts ordersOf) asks none.
   if (objective && !ordersOf(env).search.length) return { error: "web_search: under --faux, the keyless search endpoints are fakes', and this server names none" };
-  const { answer } = await searchingOn.run(models, () => webOf(env).search({ objective, queries, n }, { n, breakers: breakerOf, keyLimits, ...(signal ? { signal } : {}), ...(bounds ? { bounds } : {}) }));
+  // Its receipt goes on the server's log (web-run.ts logReceipt); the model reads the answer alone.
+  const { answer, receipt } = await searchingOn.run(models, () => webOf(env).search({ objective, queries, n }, { n, breakers: breakerOf, keyLimits, ...(signal ? { signal } : {}), ...(bounds ? { bounds } : {}) }));
+  logReceipt(receipt);
   return answer;
 }
 
