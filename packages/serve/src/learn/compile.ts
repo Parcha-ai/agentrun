@@ -147,7 +147,7 @@ export function promotedOf(records: readonly PromotionRecord[], workflow: string
 /** The learned workflows whose newest revision other than their champion (learn/promote.ts championOf, which serves while
  *  that revision is held) is held: each one's compile turn is asked for a revision (once per hold). A champion's own
  *  hold counts: with it held there is no champion. Not one a check stopped (its recompile's check held it too): nothing
- *  compiles it again. A purged run's records are gone with it (Store.learning purgeRun): no purged run's revision is the
+ *  compiles it again until new evidence restarts it (stopsOf, runner/learning-end.ts compileAskOf). A purged run's records are gone with it (Store.learning purgeRun): no purged run's revision is the
  *  champion or the hold a compile revises. */
 export function heldNamesOf(records: readonly PromotionRecord[]): Set<string> {
   return new Set([...new Set(records.map(({ workflow }) => workflow))].filter((name) => {
@@ -155,6 +155,29 @@ export function heldNamesOf(records: readonly PromotionRecord[]): Set<string> {
     const newest = records.findLast((one) => one.workflow === name && one.digest !== champion);
     return newest?.decided === "hold" && !newest.check?.stopped && !newest.audit?.stopped;
   }));
+}
+
+/** How many of the agent's learning saves one read for a correction since a stop takes (runner/learning-end.ts
+ *  correctedSince). */
+export const CORRECTED_SAVES = 32;
+
+/** What a stop's reason says restarts it (runner/learning-end.ts compileAskOf): new evidence, after it. */
+export const STOP_RESTARTS = "nothing compiles again until a correction or compile_after new runs of the agent's own restart it";
+
+/** Whether a promotion record stops its workflow's loop: a recompile's hold (a check's or an audit's), a stop with
+ *  nothing checked, or a recompile's failed draft. */
+export const stoppedRecord = (record: PromotionRecord | undefined): boolean => record?.decided === "hold" && (record.check?.stopped === true || record.audit?.stopped === true);
+
+/** Each workflow whose newest revision other than its champion stopped (stoppedRecord), with that stop: a restart reads
+ *  what came after it (runner/learning-end.ts compileAskOf). */
+export function stopsOf(records: readonly PromotionRecord[]): Map<string, PromotionRecord> {
+  const stops = new Map<string, PromotionRecord>();
+  for (const name of new Set(records.map(({ workflow }) => workflow))) {
+    const champion = championOf(records, name)?.digest;
+    const newest = records.findLast((one) => one.workflow === name && one.digest !== champion);
+    if (newest && stoppedRecord(newest)) stops.set(name, newest);
+  }
+  return stops;
 }
 
 /** The words a compile's promotion record starts with when every draft of its turn failed its checks (runner/
@@ -172,7 +195,7 @@ export function newCompileAttempt(records: readonly PromotionRecord[]): 1 | 2 {
 }
 
 /** Whether the agent's compile stopped on its drafts: its newest record is a recompile's failed draft (nothing compiles
- *  a new workflow again until its owner acts). */
+ *  a new workflow again until it restarts: STOP_RESTARTS). */
 export function compileStoppedOf(records: readonly PromotionRecord[]): boolean {
   const last = records.at(-1);
   return last !== undefined && draftFailedOf(last) && last.check?.stopped === true;

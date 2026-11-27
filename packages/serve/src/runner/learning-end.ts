@@ -30,9 +30,10 @@ import { CAPS, type Change, checkDraft, correctionLine, problemWords, type Probl
 import { repickSiteOf } from "../learn/check.js";
 import { repickLabelOf, repickRewrite } from "../learn/repick.js";
 import { holdsSave, learningOf, type LearningRead, readAt, readLearning, readOf, runMergeOf } from "../learn/rows.js";
-import { completedRun, type CompileAsk, compileStoppedOf, lastOwnRuns, sinceReset, type CompileTrace, compileDue, compilePrompt, compileReference, COMPILE_TRACES, DRAFT_FAILED, draftFailedOf, type DraftChecked, type HeldAsk, heldNamesOf, newCompileAttempt } from "../learn/compile.js";
+import { completedRun, type CompileAsk, compileStoppedOf, CORRECTED_SAVES, lastOwnRuns, STOP_RESTARTS, stoppedRecord, stopsOf, sinceReset, type CompileTrace, compileDue, compilePrompt, compileReference, COMPILE_TRACES, DRAFT_FAILED, draftFailedOf, type DraftChecked, type HeldAsk, heldNamesOf, newCompileAttempt } from "../learn/compile.js";
 import { heldOnGiveBacks, reviseAttemptOf, sdkInputText } from "./promotion.js";
 import { loopOf, repickOf } from "../learning-setting.js";
+import { CORRECTIONS_FILE } from "../learn/corrections.js";
 import { CHECK_TEXT_MAX, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, resetAtOf } from "../learn/promote.js";
 import { type DraftDecisions, draftDecisionProviders, draftDryRun, draftFiles, draftMcpTools, unpricedCalls, WORKFLOWS_DIR } from "../learn/workflow-draft.js";
 import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
@@ -541,7 +542,7 @@ export async function recordDraftFailed(deps: Pick<LearningEndDeps, "store" | "l
     const workflow = input.compile.mode === "revise" ? input.compile.workflow : input.workflow;
     const digest = draftFailedDigest(input.runId);
     const failed = input.errors.join("; ").slice(0, CHECK_TEXT_MAX) || "no draft passed";
-    const reason = `${DRAFT_FAILED}: ${failed}. ${attempt === 2 ? "It was the recompile, so it stops: nothing compiles again until its owner acts" : "It is not promoted; the next due run compiles it once more"}`;
+    const reason = `${DRAFT_FAILED}: ${failed}. ${attempt === 2 ? `It was the recompile, so it stops: ${STOP_RESTARTS}` : "It is not promoted; the next due run compiles it once more"}`;
     const check = { compile_after, agree_min, alone_min, attempt, n: 0, agreed: 0, alone: 0, agent_agreed: 0, of: [], ...(attempt === 2 ? { stopped: true as const } : {}) };
     const kept = await recordPromotion(deps.store.learning, input.agentId, { workflow, digest, at: new Date().toISOString(), decided: "hold", reason, check }, (was) => was === undefined, { anyDigest: true, runId: input.runId });
     if (kept.won) deps.log?.(`learning: run ${input.runId}: the compile of ${workflow} failed its checks (attempt ${attempt}${attempt === 2 ? ", stopped" : ""})`);
@@ -581,11 +582,25 @@ export function traceFrom(timeline: readonly TimelineEvent[], refuse: readonly s
   return { input: first ? cut(first.text ?? first.summary) : "", calls, answer: cut(answer), feedback: messages.slice(1).filter((row) => row.kind === "user_message").map((row) => cut(words.get(row))) };
 }
 
+/** Whether a correction merged into agent `agentId`'s learning after `since` (ms): a run's or a person's save that changed
+ *  corrections.md, read newest first, a page of CORRECTED_SAVES at a time, until a save at or before `since`. */
+export async function correctedSince(store: Pick<Store, "learning">, agentId: string, since: number): Promise<boolean> {
+  for (let before: number | undefined; ;) {
+    const { saves, more } = await store.learning.saves(agentId, { limit: CORRECTED_SAVES, ...(before !== undefined ? { before } : {}) });
+    for (const save of saves) {
+      if (save.at <= since) return false;
+      if (!("host" in save.by) && save.files.includes(CORRECTIONS_FILE)) return true;
+    }
+    if (!more || !saves.length) return false;
+    before = saves.at(-1)!.version;
+  }
+}
+
 /** The compile turn's facts for run `runId` of agent `agentId` (learn/compile.ts): a revision of the learned workflow
  *  that fits the run's input and whose promotion holds it at main's digest (runner/promotion.ts: its one check on the
  *  agent's own runs fell under the bar; its champion served the run, or the agent did by hand), its text as main holds
  *  it, with the check's numbers and the inputs it disagreed on, once per hold (none when any run since the hold was asked
- *  its revise, read from the agent's kept learning; a stopped check's none; a connected agent's hold on give-backs only once it
+ *  its revise, read from the agent's kept learning; a stopped check's none, until new evidence after the stop restarts it; a connected agent's hold on give-backs only once it
  *  is due, as a first compile is, on its runs since the hold); else, when the job is due (compileDue: the run
  *  completed, the agent has no learned workflow active or waiting, and it has its definition's compile_after completed
  *  agent runs), a new one, compiled once: one more after a first compile whose drafts all failed their checks, and none
@@ -622,8 +637,30 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   const ending = input.outcome === "completed" ? 1 : 0;
   const dueWith = (workflows: number) => compileDue({ completed: ending === 1, runs: own.length + ending, workflows, compileAfter });
   const compiledOf = (kept: LearningProposal | undefined) => (kept?.proposal as { compiled?: { workflow?: unknown; held?: unknown } } | null | undefined)?.compiled;
-  // Compile once: a recompile whose drafts failed their checks stopped the agent's new compiles (recordDraftFailed).
-  const stopped = compileStoppedOf(records);
+  // A stop restarts on new evidence after it: compile_after own completed runs started after it (the ending one counted),
+  // or a correction merged after it (correctedSince). The restart is a first compile again: its revise (or a new compile)
+  // is attempt 1 (runner/promotion.ts reviseAttemptOf, newCompileAttempt), its one recompile attempt 2, which stops
+  // again; only evidence newer than that stop restarts it once more.
+  const restartsAfter = async (stop: PromotionRecord): Promise<boolean> => {
+    const stopAt = Date.parse(stop.at);
+    const after = (run: { readonly startedAt: number } | undefined) => run !== undefined && run.startedAt > stopAt;
+    if (own.filter(after).length + (after(listed[at]) ? ending : 0) >= compileAfter) return true;
+    return correctedSince(deps.store, agentId, stopAt).catch(() => false);
+  };
+  const stops = stopsOf(records);
+  const restarted = new Set<string>();
+  for (const [name, stop] of stops) if (await restartsAfter(stop)) restarted.add(name);
+  for (const name of restarted) heldNames.add(name);
+  // A stopped revision is revised on its restart, and once more for that restart's one recompile: its workflow's newest
+  // record then that restart's failed draft (newer than the stop, not stopped), which only a restart writes.
+  const restarting = (name: string, stop: PromotionRecord): boolean => {
+    if (restarted.has(name)) return true;
+    const newest = records.findLast((one) => one.workflow === name);
+    return newest !== undefined && newest !== stop && draftFailedOf(newest) && !stoppedRecord(newest) && !(newest.at < stop.at);
+  };
+  // Compile once: a recompile whose drafts failed their checks stopped the agent's new compiles (recordDraftFailed), until
+  // it restarts.
+  const stopped = compileStoppedOf(records) && !restarted.has(records.at(-1)!.workflow);
   // First by what the run started from (the workflows it was offered): a run not due by them opens no folder, unless one
   // of its workflows is held. Main is read below for the turn itself, and decides again.
   if (!heldNames.size && (stopped || !dueWith(input.seedWorkflows ?? 0))) return undefined;
@@ -657,7 +694,7 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
         const resolve = dsl.resolveSchemaForWorkflow as never;
         const fitting = active.filter((one) => input.sdkTask !== undefined ? sdkTakes(one as never, input.sdkTask, resolve) : fits(one as never, input.input, resolve));
         const record = fitting.length === 1 ? promotionOf(records, fitting[0]!.name, workflowDigest(fitting[0]!)) : undefined;
-        if (record?.decided === "hold" && !record.check?.stopped && !record.audit?.stopped) [held, current] = [record, fitting[0]!.workflow];
+        if (record?.decided === "hold" && (!stoppedRecord(record) || restarting(fitting[0]!.name, record))) [held, current] = [record, fitting[0]!.workflow];
       }
       return { workflows: workflows.length, ...(current !== undefined ? { current } : {}), ...(held ? { held } : {}), ...(view?.main ? { main: view.main } : {}) };
     };
@@ -689,8 +726,10 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
     // can't be read asks nothing. A draft that failed since, not stopped (only a revise of a connected agent's hold on
     // give-backs: reviseAttemptOf), asks once more: counted from it, its own run's kept learning (written after its record,
     // at the run's end) not counted.
-    const failed = records.findLast((one) => one.workflow === read.held!.workflow && draftFailedOf(one) && !one.check?.stopped && !(one.at < read.held!.at));
-    const since = Date.parse(failed?.at ?? read.held.at);
+    // A restarted stop counts from that stop (its restart's revise is asked once), not from the hold it stopped.
+    const from = restarted.has(read.held.workflow) ? stops.get(read.held.workflow)!.at : read.held.at;
+    const failed = records.findLast((one) => one.workflow === read.held!.workflow && draftFailedOf(one) && !one.check?.stopped && !(one.at < from));
+    const since = Date.parse(failed?.at ?? from);
     const kept = await deps.store.learning.proposals(agentId, { limit: HELD_ASKED_READ }).catch(() => undefined);
     const asked = (one: LearningProposal) => !(one.createdAt < since) && compiledOf(one)?.workflow === read.held!.workflow && compiledOf(one)?.held === read.held!.digest && draftFailedDigest(one.runId) !== failed?.digest;
     if (!kept || kept.some(asked)) return sayLeftOut(), undefined;

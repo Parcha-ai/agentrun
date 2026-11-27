@@ -381,7 +381,7 @@ test("(c, d) the revision's check holds it too: stopped, its numbers on the reco
   // On the newest 5: run-2 and run-1 (42), prior-4 (42), prior-3 (41), prior-2 (handed back): 4 alone, 3 agree (75%).
   assert.deepEqual([stopped.check.attempt, stopped.check.stopped, stopped.check.n, stopped.check.alone, stopped.check.agreed], [2, true, 5, 4, 3]);
   assert.deepEqual(stopped.check.of, ["run-2", "run-1", "prior-4", "prior-3", "prior-2"]);
-  assert.match(stopped.reason, /held on answer, and this was the recompile's check, so it stops: nothing compiles again until a hold or its owner acts$/);
+  assert.match(stopped.reason, /held on answer, and this was the recompile's check, so it stops: nothing compiles again until a correction or compile_after new runs of the agent's own restart it$/);
   // Every run after the stop is still the agent's and asks no compile.
   for (let i = 5; i <= 8; i++) {
     const row = await w.start(`run-${i}`, `Question ${10 + i}`);

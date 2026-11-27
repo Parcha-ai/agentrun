@@ -235,7 +235,7 @@ test("runs a workflow answered alone are no check input; the agent's own complet
   assert.equal(await served.gateOf()({ name: "answer", workflow: text }, digest), undefined, "nothing to check it on: it never serves");
   const stopped = (await promotionsOf(served.learning, "a")).at(-1);
   assert.deepEqual([stopped.decided, stopped.check?.n, stopped.check?.stopped, served.created], ["hold", 0, true, []], `${JSON.stringify(stopped)}\n${served.logs.join("\n")}`);
-  assert.equal(stopped.reason, "nothing to check it on: the agent has no completed run of its own to check it against. It is not promoted, and it stops: nothing compiles again until a hold or its owner acts");
+  assert.equal(stopped.reason, "nothing to check it on: the agent has no completed run of its own to check it against. It is not promoted, and it stops: nothing compiles again until a correction or compile_after new runs of the agent's own restart it");
   const { learning, created, logs, gateOf } = await replayStoreOf({ path: "agent" });
   assert.equal(await gateOf()({ name: "answer", workflow: text }, digest), undefined, "it does not serve while it is checked");
   const record = (await promotionsOf(learning, "a")).at(-1);

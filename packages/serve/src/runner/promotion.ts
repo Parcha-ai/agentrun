@@ -61,7 +61,7 @@ import type { McpPin } from "../mcp-gateway.js";
 import { pinAnnotations, type Recorded, recordedCalls, type ReplayCalls, replayCalls, type Skipped, SKIPPED_WRITE, toolClassOf, toolWord, unmarkedWords } from "../learn/replay-calls.js";
 import { listed } from "../learning-words.js";
 import { isObject, type Json } from "../validate.js";
-import { agentRun, lastOwnRuns, newCompileAttempt, sinceReset } from "../learn/compile.js";
+import { agentRun, lastOwnRuns, newCompileAttempt, sinceReset, STOP_RESTARTS, stoppedRecord } from "../learn/compile.js";
 import { answerAt, answerValue, type CheckBar, type CheckDisagreement, type CheckKnown, type CheckRecord, type CheckTurns, checkShares, CHECK_TEXT_MAX, championOf, compareAnswers, type Compared, comparedGrade, comparedOf, gradesOf, knownAnswerText, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, type ReplayLaunch, type ReplayOutcomes, type ReplayScore, replayingOf, sameAnswer, type SkippedTool, skippedToolsOf, valueAtPath } from "../learn/promote.js";
 import { check as checkFields, type CheckInput, type CheckTally, type FieldAnswers, jointSaid, KNOWN, tallyOf } from "../learn/field-check.js";
 import { sendCommand } from "./commands.js";
@@ -488,8 +488,8 @@ export const NEVER_WORD_FOR_WORD = "its answers never matched the agent's word f
 export const differentDecisionWords = (k: number, n: number, example: string | undefined): string => `its answers reached a different decision from the agent's on ${k} of ${n}${example ? ` (for example: ${example})` : ""}`;
 
 /** The one writer of a hold with nothing checked (n 0): `name` at `digest` held for `reason`, never promoted, its check
- *  the bar it was held at (`check`: what else the record keeps of it), `stopped` when nothing compiles again until a hold
- *  or its owner acts, and `extra` on the record (a connected agent's check: what its reservation carries). Kept only while
+ *  the bar it was held at (`check`: what else the record keeps of it), `stopped` when nothing compiles again until it
+ *  restarts (STOP_RESTARTS), and `extra` on the record (a connected agent's check: what its reservation carries). Kept only while
  *  `still` holds of the digest's record (the one write), and logged. */
 async function holdUnchecked(deps: DecideDeps, name: string, digest: string, bar: CheckBar, reason: string, still: Parameters<typeof recordPromotion>[3], { stopped = false, check = {}, extra = {} }: { stopped?: boolean; check?: Partial<CheckRecord>; extra?: Partial<PromotionRecord> } = {}) {
   const decided = await recordPromotion(deps.store.learning, deps.agentId, { workflow: name, digest, at: iso((deps.now ?? Date.now)()), decided: "hold", reason, check: { ...bar, n: 0, agreed: 0, alone: 0, agent_agreed: 0, of: [], ...check, ...(stopped ? { stopped: true } : {}) }, ...seedOf(deps), ...extra }, still);
@@ -498,12 +498,12 @@ async function holdUnchecked(deps: DecideDeps, name: string, digest: string, bar
 }
 
 /** Stops a draft its check had nothing to run on (`why`: no input of the agent's it takes, or every input skipped at a
- *  write): held, never promoted unchecked, its record `stopped` (nothing compiles again until a hold or its owner acts)
+ *  write): held, never promoted unchecked, its record `stopped` (nothing compiles again until it restarts: STOP_RESTARTS)
  *  and naming the cause, which the compile's draft errors show (store-reads/loop.ts). It asks no recompile: a revision
  *  would have nothing to be checked on either, and a stop with nothing checked never counts as a compile's first check
  *  (attemptOf). */
 const stopUnchecked = (deps: DecideDeps, name: string, digest: string, bar: CheckBar, why: string, still: Parameters<typeof recordPromotion>[3], check: Partial<CheckRecord> = {}, extra: Partial<PromotionRecord> = {}) =>
-  holdUnchecked(deps, name, digest, bar, `${NOTHING_TO_CHECK}: ${why}. It is not promoted, and it stops: nothing compiles again until a hold or its owner acts`, still, { stopped: true, check, extra });
+  holdUnchecked(deps, name, digest, bar, `${NOTHING_TO_CHECK}: ${why}. It is not promoted, and it stops: ${STOP_RESTARTS}`, still, { stopped: true, check, extra });
 
 /** One input a check ran its draft on: the agent's run (`of`) and its input, the agent's recorded answer, and what the
  *  draft did: its answer when it answered alone, why it handed the input back, or failed (or skipped a write). A
@@ -736,7 +736,7 @@ export async function decideCheck(deps: DecideDeps, name: string, digest: string
   const example = disagreements.find((one) => one.differs_on !== undefined)?.differs_on;
   const verbatim = ok || !whole ? "" : grader ? (differed > 0 ? `; ${differentDecisionWords(differed, whole.n, example)}` : "") : whole.workflow_right === 0 ? `; ${read.exactMismatchReason ?? NEVER_WORD_FOR_WORD}` : "";
   const heldOn = `held${failing.length ? ` on ${listed(failing)}` : !joint.pass && fieldCount ? " on its fields together" : ""}${verbatim}`;
-  const reason = ok ? `${said}: promoted` : stopped ? `${said}: ${heldOn}, and this was the recompile's check, so it stops: nothing compiles again until a hold or its owner acts` : `${said}: ${heldOn}; the agent's next run recompiles it once with the inputs it did not agree on`;
+  const reason = ok ? `${said}: promoted` : stopped ? `${said}: ${heldOn}, and this was the recompile's check, so it stops: ${STOP_RESTARTS}` : `${said}: ${heldOn}; the agent's next run recompiles it once with the inputs it did not agree on`;
   const check: CheckRecord = { ...bar, ...score, agent_agreed: tally.agent_agreed, joint: joint.pass, ...(fieldCount ? { fields } : {}), ...numbers, ...(disagreements.length ? { disagreements } : {}), ...(stopped ? { stopped: true as const } : {}), ...(grader ? { grader } : {}) };
   const record: PromotionRecord = { workflow: name, digest, at: iso(now()), decided: ok ? "promote" : "hold", reason, check, ...seedOf(deps), ...extra };
   // A check that outlives its revision's run: the run's purge never stops it (it replays other runs' inputs), and the
@@ -792,8 +792,11 @@ export const heldOnGiveBacks = (check: CheckRecord | undefined): boolean => (che
 
 /** Which attempt a revision compile of `held` is when its draft fails its checks (runner/learning-end.ts
  *  recordDraftFailed): 2, the recompile, for any hold but a connected agent's on give-backs, which spends none: its
- *  check's own attempt, until a revise of it has failed once already (the workflow's newest record that failed draft). */
-export function reviseAttemptOf(records: readonly PromotionRecord[], held: { readonly workflow: string; readonly check?: CheckRecord }): 1 | 2 {
+ *  check's own attempt, until a revise of it has failed once already (the workflow's newest record that failed draft).
+ *  A stopped hold is revised only on its restart (learning-end.ts compileAskOf), a first compile again: 1, until a revise
+ *  of that restart has failed once already, then 2 (it stops again). */
+export function reviseAttemptOf(records: readonly PromotionRecord[], held: { readonly workflow: string; readonly decided?: string; readonly check?: CheckRecord; readonly audit?: { readonly stopped?: true } }): 1 | 2 {
+  if (stoppedRecord({ decided: "hold", ...held } as PromotionRecord)) return newCompileAttempt(records.filter((one) => one.workflow === held.workflow)) === 2 ? 2 : 1;
   if (!held.check || !heldOnGiveBacks(held.check)) return 2;
   return newCompileAttempt(records.filter((one) => one.workflow === held.workflow)) === 2 ? 2 : held.check.attempt;
 }
