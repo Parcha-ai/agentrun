@@ -32,6 +32,7 @@ import type { InputIssue } from "./errors.js";
 import type { Settings } from "./store/index.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessId } from "./harness.js";
 import type { AdapterFacts } from "@parcha/agentrun-kernel";
+import type { FetchProvider, SearchProvider } from "@parcha/agentrun-web";
 import { factsOf as tableFactsOf, harnessOf } from "./harness-table.js";
 import { viaOpenRouter, wireOf } from "./provider.js";
 import { routedId } from "./wires.js";
@@ -261,7 +262,6 @@ export const FIRECRAWL_FETCH = "Firecrawl's free keyless fetch, no key, the guar
 /** The resolutions of web_search the run's own web_search runs (web-run.ts webOf), where Jev ranks the results: native
  *  only where it is the model provider's hosted search (pi's), never a harness's own search inside its CLI. */
 const searchesOwn = (resolves: string, facts: AdapterFacts | undefined): boolean => WEB_RUNS.web_search.includes(resolves) && (resolves !== "native" || !facts?.webSearch);
-const ranksOwn = (resolves: Resolution, input: ResolveInput): boolean => searchesOwn(resolves, input.facts);
 
 /** The server's settings that are a ceiling an agent's pick cannot raise: web_fetch `kernel` keeps every URL on the
  *  server; web_search `native` sends every query to the harness's own search, and `off` sends none (Jev, where it is
@@ -300,7 +300,7 @@ const ceilingOver = (capability: Pickable, pick: string | undefined, choice: str
  *  setting does, and the why says so. */
 export function explainCapability(capability: Pickable, input: ResolveInput): { resolves: Resolution; why: string } {
   const said = ceilinged(capability, input);
-  if (capability === "web_search" && input.jevWhy && ranksOwn(said.resolves, input)) return { ...said, why: `${said.why}; ${input.jevWhy}` };
+  if (capability === "web_search" && input.jevWhy && searchesOwn(said.resolves, input.facts)) return { ...said, why: `${said.why}; ${input.jevWhy}` };
   if (capability === "web_fetch" && input.jevFetchWhy && WEB_RUNS.web_fetch.includes(said.resolves)) return { ...said, why: `${said.why}; ${input.jevFetchWhy}` };
   return said;
 }
@@ -340,28 +340,25 @@ function explained(capability: Pickable, input: ResolveInput): { resolves: Resol
 }
 
 /** The order `auto` asks for each web tool: the first provider here the server can run is what auto resolves to
- *  (Parallel only where the server holds its key; keyless Firecrawl, keyless Exa and the guarded direct fetch always),
- *  keyless Firecrawl where none can. Capabilities' `why` and every run's plane read it (autoWeb). Parallel is first for
- *  both. To put Firecrawl first, swap the two ids in a list: that one line is the whole change. */
-export const DEFAULT_WEB_ORDER: Readonly<{ web_search: readonly AutoSearch[]; web_fetch: readonly AutoFetch[] }> = Object.freeze({ web_search: Object.freeze(["parallel", "firecrawl-keyless"] as const), web_fetch: Object.freeze(["parallel", "firecrawl-keyless"] as const) });
-type AutoSearch = "parallel" | "firecrawl-keyless" | "exa-keyless";
-type AutoFetch = "parallel" | "firecrawl-keyless" | typeof DIRECT_FETCH;
+ *  (Parallel only where the server holds its key; keyless Firecrawl always), keyless Firecrawl where none can.
+ *  Capabilities' `why` and every run's plane read it (autoWeb). Parallel is first for both. To put Firecrawl first, swap
+ *  the two ids in a list: that one line is the whole change. */
+export const DEFAULT_WEB_ORDER: Readonly<Record<"web_search" | "web_fetch", readonly AutoWeb[]>> = Object.freeze({ web_search: Object.freeze(["parallel", "firecrawl-keyless"] as const), web_fetch: Object.freeze(["parallel", "firecrawl-keyless"] as const) });
+/** What `auto` may resolve either web tool to: the ids DEFAULT_WEB_ORDER holds. */
+type AutoWeb = "parallel" | "firecrawl-keyless";
 
-/** What `auto` resolves `capability` to on a run of `input`, and why, by `order` (DEFAULT_WEB_ORDER). `auto` never
- *  resolves native, on any harness: where a native search would run, web_search's why names it as the pick it is;
- *  where none runs (noNative), it says why not. */
-export function autoWeb(capability: "web_search" | "web_fetch", input: ResolveInput, order: typeof DEFAULT_WEB_ORDER = DEFAULT_WEB_ORDER): { resolves: Resolution; why: string } {
-  const runs = (id: string): boolean => id !== "parallel" || input.parallelKey;
-  const id = order[capability].find(runs) ?? "firecrawl-keyless";
+/** What `auto` resolves `capability` to on a run of `input`, and why, by DEFAULT_WEB_ORDER. `auto` never resolves
+ *  native, on any harness: where a native search would run, web_search's why names it as the pick it is; where none
+ *  runs (noNative), it says why not. */
+export function autoWeb(capability: "web_search" | "web_fetch", input: ResolveInput): { resolves: Resolution; why: string } {
+  const runs = (id: AutoWeb): boolean => id !== "parallel" || input.parallelKey;
+  const id = DEFAULT_WEB_ORDER[capability].find(runs) ?? "firecrawl-keyless";
   const key = `your Parallel key (${input.parallelKeyFrom ?? "server"})`;
-  if (capability === "web_fetch") {
-    if (id === "parallel") return { resolves: "parallel", why: `Parallel's extract on ${key}, the guarded direct fetch behind it` };
-    return id === DIRECT_FETCH ? { resolves: DIRECT_FETCH, why: "the guarded direct fetch" } : { resolves: "firecrawl-keyless", why: FIRECRAWL_FETCH };
-  }
-  const said = id === "parallel" ? key : id === "exa-keyless" ? "Exa's free search, no key" : FIRECRAWL_SEARCH;
+  if (capability === "web_fetch") return id === "parallel" ? { resolves: "parallel", why: `Parallel's extract on ${key}, the guarded direct fetch behind it` } : { resolves: "firecrawl-keyless", why: FIRECRAWL_FETCH };
+  const said = id === "parallel" ? key : FIRECRAWL_SEARCH;
   const without = noNative(input);
-  if (without !== undefined) return { resolves: id as Resolution, why: `${without.why}; ${said}` };
-  return { resolves: id as Resolution, why: id === "parallel" ? said : `${said}; ${ownSearch(input)} is an explicit pick` };
+  if (without !== undefined) return { resolves: id, why: `${without.why}; ${said}` };
+  return { resolves: id, why: id === "parallel" ? said : `${said}; ${ownSearch(input)} is an explicit pick` };
 }
 
 /** What `capability` resolves to on a run of `input`. */
@@ -604,9 +601,18 @@ export function planeOf(env: NodeJS.ProcessEnv): Plane {
 /** Whether a run is handed Parallel's key: one of its capabilities resolves to Parallel. */
 export const handsParallel = (plane: Plane): boolean => PICKABLE.some((name) => plane[name] === "parallel");
 
-/** The resolutions of each web tool its run's Web runs (web-run.ts SEARCH_CHAINS, FETCH_CHAINS), where Jev ranks a
- *  search's results. */
-const WEB_RUNS: Readonly<Record<"web_search" | "web_fetch", readonly string[]>> = { web_search: ["parallel", "native", "firecrawl-keyless", "exa-keyless"], web_fetch: ["parallel", "firecrawl-keyless", DIRECT_FETCH] };
+/** What each resolution of web_search its run's Web runs (web-run.ts webOf) asks, in turn: keyless Firecrawl has keyless
+ *  Exa behind it. */
+const SEARCH_CHAINS: Readonly<Record<string, readonly SearchProvider[]>> = { parallel: ["parallel"], native: ["native"], "firecrawl-keyless": ["firecrawl-keyless", "exa-keyless"], "exa-keyless": ["exa-keyless"] };
+/** What each resolution of web_fetch its run's Web runs asks, in turn: the guarded direct fetch behind any provider,
+ *  and alone for the direct fetch's own. */
+const FETCH_CHAINS: Readonly<Record<string, readonly FetchProvider[]>> = { parallel: ["parallel", "direct"], "firecrawl-keyless": ["firecrawl-keyless", "direct"], [DIRECT_FETCH]: ["direct"] };
+/** The search order a resolution of web_search names, under no --faux; none for one that runs no search. */
+export const searchChainOf = (resolved: string | undefined): readonly SearchProvider[] => (resolved !== undefined && Object.hasOwn(SEARCH_CHAINS, resolved) ? SEARCH_CHAINS[resolved]! : []);
+/** The fetch order a resolution of web_fetch names, under no --faux: the guarded direct fetch alone for any other. */
+export const fetchChainOf = (resolved: string | undefined): readonly FetchProvider[] => (resolved !== undefined && Object.hasOwn(FETCH_CHAINS, resolved) ? FETCH_CHAINS[resolved]! : ["direct"]);
+/** The resolutions of each web tool its run's Web runs, where Jev ranks a search's results: the chains' own. */
+const WEB_RUNS: Readonly<Record<"web_search" | "web_fetch", readonly string[]>> = { web_search: Object.keys(SEARCH_CHAINS), web_fetch: Object.keys(FETCH_CHAINS) };
 /** Whether a run on `harness` is handed TypeSafe's key for its web tools (decisions.ts DecisionNeeds.jevWeb): one of
  *  them is served by its own Web (web-run.ts webOf), and Jev is turned off neither by the plane (the server's switch at
  *  launch, planeFor) nor in `env` (AGENTRUN_WEB_JEV_OFF: a runner's own switch adds "off", never removes it).

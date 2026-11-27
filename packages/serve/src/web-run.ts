@@ -13,7 +13,7 @@ import { hostedSearched, type SearchModels } from "./hosted-search.js";
 import { FAUX_ENV } from "./model.js";
 import { paidRequest } from "./paid-calls.js";
 import { logLine } from "./print.js";
-import { planeOf } from "./tool-plane.js";
+import { fetchChainOf, planeOf, searchChainOf } from "./tool-plane.js";
 import { activeHolds, type HeldView, heldViewOf, holdsFromEnv, reportHold } from "./web-holds.js";
 
 /** pi-browser's guard and reader, loaded at the first fetch, so a run that never fetches never loads pi-browser. */
@@ -88,17 +88,8 @@ export function receiptLine(receipt: Receipt): string {
 /** `receipt`'s line (receiptLine) on the server's log: one per web_search or web_fetch call a run's Web answers. */
 export const logReceipt = (receipt: Receipt): void => serverLog(receiptLine(receipt));
 
-/** What each resolution of web_search asks, in turn: keyless Firecrawl has keyless Exa behind it. */
-const SEARCH_CHAINS: Readonly<Record<string, readonly SearchProvider[]>> = { parallel: ["parallel"], native: ["native"], "firecrawl-keyless": ["firecrawl-keyless", "exa-keyless"], "exa-keyless": ["exa-keyless"] };
-/** What each resolution of web_fetch asks, in turn: the guarded direct fetch behind any provider, and alone otherwise. */
-const FETCH_CHAINS: Readonly<Record<string, readonly FetchProvider[]>> = { parallel: ["parallel", "direct"], "firecrawl-keyless": ["firecrawl-keyless", "direct"] };
 /** Under --faux, the variable naming each keyless provider's fake: one with none named is left out. */
 const FAUX_FAKES: Readonly<Partial<Record<string, string>>> = { "firecrawl-keyless": FAUX_FIRECRAWL_ENV, "exa-keyless": FAUX_EXA_ENV };
-
-/** The search order a resolution of web_search names, under no --faux; none for one that runs no search. */
-export const searchChainOf = (resolved: string | undefined): readonly SearchProvider[] => (resolved !== undefined && Object.hasOwn(SEARCH_CHAINS, resolved) ? SEARCH_CHAINS[resolved]! : []);
-/** The fetch order a resolution of web_fetch names, under no --faux: the guarded direct fetch alone for any other. */
-export const fetchChainOf = (resolved: string | undefined): readonly FetchProvider[] => (resolved !== undefined && Object.hasOwn(FETCH_CHAINS, resolved) ? FETCH_CHAINS[resolved]! : ["direct"]);
 
 /** `tools`, GET /capabilities' (cached), each web tool with `held`, read live: the server's holds at `now` on any provider
  *  it asks where it resolves on some harness, or on that provider's key (web-holds.ts). None held, no field. */
