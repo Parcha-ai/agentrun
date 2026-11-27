@@ -655,6 +655,23 @@ test("the padding above: where a view hides a character as a terminal does, a re
   assert.deepEqual(tally.missed, []);
 });
 
+// The place the check above found the marks missing, end to end: Python code in a JSON string, an ESC and "(" in one
+// literal, then a line's ending backslash and a literal holding a space and 9,000 more of the escape's intermediate
+// bytes and its final byte, then the held value's rest. The space ends a piece, and the 9,000 characters after it are a
+// run too long to read: its head is read from a place inside the escape, which the view decoding JSON's escapes ended
+// at the backslash where the join drops it. A read there told nothing is open counts the intermediates as shown, ends
+// inside them, and the head of the held value, in the piece before, showed.
+const ESCAPE_PAST_A_JOIN = JSON.stringify({ a: `x = '${PY_HEAD}'+${B}\n'\u001b('+${B}\n' ${"(".repeat(9000)}B'+${B}\n'${PY_REST} more'` });
+for (const [what, read] of [
+  ["an answer", (text, values) => redactedAnswer(text, values)],
+  ["a call's result", (text, values) => cut(redactedCall(text, values, CALL_RESULT_CHARS, scrubUrls), CALL_RESULT_CHARS)],
+]) {
+  test(`kr-10 (an escape a line's ending backslash ends as JSON's escapes read it, its intermediates a run too long to read): ${what} split around it shows no part of the held value`, () => {
+    const out = read(ESCAPE_PAST_A_JOIN, [`${PY_HEAD}${PY_REST}`]);
+    assert.equal(out.includes(PY_HEAD) || out.includes(PY_REST), false);
+  });
+}
+
 // A limit of the check, not of the marks: the view that reads percent-encoding and HTML's references together reads
 // the U+FFFD an invalid percent-encoded byte decodes to and a no-break space after it as one character, ending where
 // the space ends. Where a backspace strikes it out, the check counts the place before the space's end hidden, and no
