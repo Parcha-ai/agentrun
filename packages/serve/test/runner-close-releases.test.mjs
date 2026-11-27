@@ -434,6 +434,24 @@ test("a tool host whose beforeRelease never resolves holds close() no longer tha
   assert.deepEqual([cuts[0].hooks, cuts[0].finished], [2, 1], "the settle finished, the hung host did not");
 });
 
+test("a release's cut whose timer comes before Date.now() reads its bound waits out the rest: the cut is never recorded before its bound", { timeout: 60_000 }, async (t) => {
+  const { RELEASE_MARGIN_MS } = await import("../dist/runner/loop-contract.js");
+  const bound = CLEANUP_MS + RELEASE_MARGIN_MS;
+  // Timers run on the process's monotonic clock and Date.now() on the wall clock, which may read behind it when a timer
+  // comes. Here the wall clock runs 1% slow, so a timer set for the bound by Date.now() comes before Date.now() reads it.
+  const realNow = Date.now;
+  const base = realNow();
+  Date.now = () => base + Math.floor((realNow() - base) * 0.99);
+  t.after(() => (Date.now = realNow));
+  const { server, runner } = await cliRun(t, "runner-close-slow-clock-", { runnerOptions: { cleanupMs: CLEANUP_MS }, hooks: (registered) => [...registered, () => new Promise(() => {})] });
+
+  await runner.close();
+  const cuts = cutsOf(await recordsOf(server));
+  assert.equal(cuts.length, 1, `the run says its release was cut, once: ${JSON.stringify(cuts)}`);
+  assert.equal(cuts[0].bound_ms, bound);
+  assert.ok(cuts[0].after_ms >= bound, `cut at the bound by the clock the record reads: ${cuts[0].after_ms}`);
+});
+
 test("a release that takes just under a provider's cleanup bound is awaited, under a lease shorter than it, and what comes after it in the release is booked before close() resolves", { timeout: 60_000 }, async (t) => {
   // A tool host whose release takes just under the cleanup bound (a lost create's recovery), let go before the computer's
   // settle: the settle runs only once it is done. The lease less its margin (1 s) is shorter than that release: the

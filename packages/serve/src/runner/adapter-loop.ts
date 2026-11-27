@@ -1126,12 +1126,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         }
       })();
       let timer: NodeJS.Timeout | undefined;
+      // The cut comes once Date.now() reads the bound passed, the clock its record reads: a timer runs on the monotonic
+      // clock, which Date.now() may read behind when the timer comes, and the rest is waited for then.
       const late = new Promise<"late">((resolve) => {
-        releaseRearm = () => {
+        const arm = (): void => {
           clearTimeout(timer);
-          timer = setTimeout(() => resolve("late"), Math.max(0, began + boundMs() - Date.now()));
+          timer = setTimeout(() => (Date.now() - began >= boundMs() ? resolve("late") : arm()), Math.max(0, began + boundMs() - Date.now()));
         };
-        releaseRearm();
+        releaseRearm = arm;
+        arm();
       });
       const ended = await Promise.race([running.then(() => "done" as const), late]);
       clearTimeout(timer);
