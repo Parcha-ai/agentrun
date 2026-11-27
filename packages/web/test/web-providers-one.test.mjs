@@ -51,13 +51,17 @@ test("Parallel's search stopped by the caller while its request is out is STOPPE
 });
 
 test("Parallel's search that failed by a thrown error names no URL's user name or password, and its words are cut at 300", async () => {
-  const said = `proxy refused https://agent:pa55word@proxy.example/v1/search ${"x".repeat(600)}`;
+  // A URL holding a user name and a password: synthetic, built in code.
+  const proxy = new URL("https://proxy.example/v1/search");
+  proxy.username = "agent";
+  proxy.password = "not-a-secret";
+  const said = `proxy refused ${proxy.href} ${"x".repeat(600)}`;
   const w = keyedWeb("parallel", async () => { throw new TypeError(said); });
   const { answer, receipt } = await w.search({ objective: "widgets" });
   const words = `Parallel's search failed: ${cutAt(withoutUserinfo(said), 300)}`;
   assert.deepEqual(receipt.tries[0].failure, { class: "infra", code: "CONNECT", message: words });
   assert.equal(answer.error, words);
-  assert.ok(!JSON.stringify({ answer, receipt }).includes("pa55word"), "the password is said nowhere");
+  assert.ok(!JSON.stringify({ answer, receipt }).includes("not-a-secret"), "the password is said nowhere");
 });
 
 test("keyless Firecrawl reads a page whose metadata title is a list by its first string, as keyed Firecrawl does", async (t) => {
