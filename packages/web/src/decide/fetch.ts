@@ -1,7 +1,7 @@
 // The fetch step: a part judged in passages, or the chunks of a page its objective asks for, with the page guard beside.
 import type { Fee, Pay } from "../fees.js";
 import type { WebPage, WebRead, WebUnread } from "../fetch.js";
-import { clip, type Page, type Part } from "../page.js";
+import { clip, type Page, type Part, unwrittenLinks } from "../page.js";
 import { QUERY_MAX } from "../search.js";
 import type { Verdict, WebDecider } from "./decider.js";
 import type { PageGuard, Warned } from "./page-guard.js";
@@ -108,7 +108,12 @@ export async function decideFetch(decider: WebDecider | undefined, url: string, 
     const ignored = [...(options.offset ? ["offset"] : []), ...(options.maxChars === undefined ? [] : ["max_chars"])];
     answer = !found.answer ? notApplied(found.classifier.error!.code) : ignored.length ? { ...found.answer, sift: `${found.answer.sift}; ${ignored.join(" and ")} ignored: found chunks come from the whole page, each with its offset` } : found.answer;
     classifier = found.classifier;
-  } else if (decider) ({ answer, classifier } = await judgePart(decider, url, part, { task: options.task, ...step }));
+  } else if (decider) {
+    ({ answer, classifier } = await judgePart(decider, url, part, { task: options.task, ...step }));
+    // A first part that left passages out lists again the links only they wrote: what it lists is checked against the
+    // text the model is given, never the part before judging.
+    if (whole.ok && whole.written && !(part.offset ?? 0) && "text" in answer && answer.text !== part.text) answer = { ...answer, ...unwrittenLinks(whole.written, answer.text) };
+  }
   else if (need && whole.ok && whole.text) answer = notApplied("no classifier in this run");
   const guard = await guarding;
   options.lines.push(...guardLines);

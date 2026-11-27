@@ -132,6 +132,27 @@ test("a fetched part is judged in passages: the kept passages in order, LEFT_OUT
   assert.equal(asked.length, 2, "each call is judged, one the run's pages answer too");
 });
 
+test("a markdown part judged in passages lists again the links only its left-out passages wrote: none is lost from both text and links", async () => {
+  // Three passages, each writing its own link; the middle one is left out.
+  const linked = (letter, n) => `${letter.repeat(560)} [${letter}](https://${letter}.example/${n})\n\n`;
+  const content = `${linked("a", 1)}${linked("b", 2)}${linked("c", 3).trimEnd()}`;
+  const { provider } = fakeProvider({ p1: 0.9, p2: 0.01, p3: 0.7 });
+  const web = fakeWeb({ decider: priced(provider), send: { parallel: pagesOf(content) } });
+  const { answer } = await web.fetch(PUBLIC, { task: TASK });
+  assert.ok(answer.text.includes(LEFT_OUT) && !answer.text.includes("https://b.example/2"), "the middle passage is left out");
+  assert.deepEqual(answer.links, ["https://b.example/2"], "its link is listed; the kept passages' links are in the text");
+  const unjudged = await fakeWeb({ send: { parallel: pagesOf(content) } }).fetch(PUBLIC, {});
+  assert.deepEqual(unjudged.answer.links, [], "with no passage left out, every link is in the text");
+});
+
+test("a markdown page longer than a read keeps: a link written past the read's cut is still listed with its first part", async () => {
+  const content = `[e](https://early.example/0)\n\n${"word ".repeat(210_000)}\n\n[late](https://late.example/z)`;
+  assert.ok(content.length > 1_000_000, "past the read's 1,000,000 characters");
+  const { answer } = await fakeWeb({ send: { parallel: pagesOf(content) } }).fetch(PUBLIC, { maxChars: 1_000 });
+  assert.ok(answer.text.includes("https://early.example/0"), "the first part writes the early link");
+  assert.deepEqual(answer.links, ["https://late.example/z"], "the link past the cut is listed, as the read held it");
+});
+
 test("a dropped passage's place counts from the page's start, not the part's", async () => {
   const { provider } = fakeProvider({ p1: 0.01 });
   const web = fakeWeb({ decider: priced(provider), send: { parallel: longPages } });
