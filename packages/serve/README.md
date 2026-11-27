@@ -4104,8 +4104,9 @@ ids of the tokens whose every request must carry it (comma-separated): such a to
 backend that forgot the header is refused rather than handed every tenant's rows. A request with no header is served
 as before.
 
-A request in a workspace is served only: the runs' reads and lists (`GET /runs`, `/runs/{id}`, its timeline, files and
-export), a run's message, stop and cancel; the agents' list, read, create, revisions, definition and current revision,
+A request in a workspace is served only: the runs' reads and lists (`GET /runs`, `/runs/{id}`, its timeline, files,
+export, graph and trace), a run's message, stop, cancel, cap raise, pause, resume, archive, unarchive, grade, held start
+and purge (`DELETE /runs/{id}`); the agents' list, read, create, revisions, definition and current revision,
 and a run started on one; the templates' list, read, import and apply; the uploaded files' create, upload, list, read and
 delete (`/files`); and `/capabilities`, `/health` and `/openapi.json`. Every other route is `403 forbidden` with
 `details.reason: "not_scoped"`. In it, an agent, run, imported template package or file of another workspace (or of none)

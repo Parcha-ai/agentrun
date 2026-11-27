@@ -154,13 +154,17 @@ export const apiOnlyRefusal = (raw: string): string => `this server serves the r
 
 /** The operations a scoped request (the AgentRun-Workspace header, workspace-scope.ts) is served: its own agents, runs,
  *  imported template packages and uploaded files, and the server's description. Every other is refused with 403 not_scoped, whatever
- *  API_ONLY_ROUTES serves an unscoped request. listAgents, createAgent, updateDefinition, getTemplate, listTemplates and
- *  getOpenapi are not in API_ONLY_ROUTES: an API-only server serves them to a scoped request alone. */
+ *  API_ONLY_ROUTES serves an unscoped request. listAgents, createAgent, updateDefinition, getTemplate, listTemplates,
+ *  getOpenapi, getRunGraph, getRunTrace, pauseRun, resumeRun, archiveRun, unarchiveRun and startRun are not in
+ *  API_ONLY_ROUTES: an API-only server serves them to a scoped request alone. Every run route here names its run first
+ *  in its path, which the route's scope check reads as missing when it is another workspace's. answerApproval is not
+ *  here: it takes the owner's session alone, never a token. */
 export const WORKSPACE_ROUTES: ReadonlySet<string> = new Set([
   "listAllRuns", "listRuns", "getRun", "getTimeline", "listRunFiles", "readRunFile", "getRunExport",
   "listAgents", "getAgent", "listRevisions", "createAgent", "updateDefinition", "setCurrent",
   "importTemplate", "applyTemplate", "getTemplate", "listTemplates",
   "createRun", "sendMessage", "stopRun", "cancelRun",
+  "deleteRun", "raiseRunCap", "getRunGraph", "getRunTrace", "pauseRun", "resumeRun", "archiveRun", "unarchiveRun", "gradeRun", "startRun",
   "createFile", "listFiles", "getFile", "uploadFile", "deleteFile",
   "getCapabilities", "getHealth", "getOpenapi",
 ]);
