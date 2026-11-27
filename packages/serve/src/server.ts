@@ -162,7 +162,7 @@ import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from 
 import { isSecretWriteOperation, type SecretRequest, secretPageFor, secretsWritableFields, secretWriteRefusal, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
 import { ChatGPTPlan, planOf, PlanSignInRefused, RENEWAL_DRAIN_MS, SIGN_OUT_UNCONFIRMED, stopRenewals, withPlan } from "./chatgpt-plan.js";
 import { modelGatewayRoute, readSavedGateway, type SavedGateway, withSavedGateway } from "./model-gateway.js";
-import { CLAUDE_LOGIN_ROUTES, LOGIN_REFUSES_API_KEYS, oneOwnerDeps, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginServed, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, LOGIN_HARNESS, loginOf, loginOnRunnerOnly, loopback, signOutClaudeLogin, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, withClaudeLogin, signInHereOff } from "./claude-login.js";
+import { CLAUDE_LOGIN_ROUTES, LOGIN_REFUSES_API_KEYS, oneOwnerDeps, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginServed, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, LOGIN_HARNESS, loginOf, loginOnRunnerOnly, loopback, signOutClaudeLogin, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, withClaudeLogin, signInHereOff, type PublicUrlFrom } from "./claude-login.js";
 import { ClaudeSignIns } from "./claude-sign-in.js";
 import { bootSealKey, parametersDigest, withSealKey } from "./seal-key.js";
 import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
@@ -341,6 +341,9 @@ export type ServeOptions = {
   openSetup?: boolean;
   /** With accounts: the address people open (AGENTRUN_PUBLIC_URL), which the printed setup link uses. */
   publicUrl?: string;
+  /** The variable `publicUrl` was read from (the CLI's: AGENTRUN_PUBLIC_URL, else Render's RENDER_EXTERNAL_URL), for words
+   *  that name it; AGENTRUN_PUBLIC_URL when not given. */
+  publicUrlFrom?: PublicUrlFrom;
   /** The home whose Claude Code, Codex, pi, OpenCode and Copilot CLI sessions setup offers to import and GET /v2/wrapped reads (default this
    *  user's), and the temp directory whose projects setup leaves out (default the OS's). */
   sessionsHome?: { home: string; temp?: string };
@@ -1936,7 +1939,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       pinned: async () => claudeCliIn(installDirOf(data, LOGIN_HARNESS), (await import("@parcha/agentrun-harness-claude")).claudeAgentPlatform()),
       // `refused` and `turn`: the keys are counted when the refusal is asked (inside the turn-on's turn, the keys' own).
       ...oneOwner,
-      startOff: signInHereOff(host, options.publicUrl, isLoopback(host)),
+      startOff: signInHereOff(host, options.publicUrl, isLoopback(host), options.publicUrlFrom),
       claude: () => import("@parcha/agentrun-harness-claude"),
       saved: (login) => {
         made = handOver(login, "turn");

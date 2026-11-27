@@ -578,17 +578,23 @@ export function whyNotOneOwner(facts: { apiOnly: boolean; tokens: number; keys?:
 /** Why a server with Claude Code's login on makes no API key for an app, in one line: the same rule from the other side. */
 export const LOGIN_REFUSES_API_KEYS = "Claude Code's login on this machine is on, and a Claude plan is one person's: an API key would let an app start runs on it. Turn the login off under Settings → Model keys first.";
 
-/** Why a server on `host` (`loopback`: whether that is a loopback address) with public address `publicUrl` never starts
- *  the CLI's sign-in itself, in words that name the setting and say what to do; undefined where it may. The sign-in opens
+/** Why a server on `host` (`loopback`: whether that is a loopback address) with public address `publicUrl`, read from
+ *  the variable `from` (the CLI's: AGENTRUN_PUBLIC_URL, else Render's RENDER_EXTERNAL_URL), never starts the CLI's
+ *  sign-in itself, in words that name the setting and say what to do; undefined where it may. The sign-in opens
  *  a browser on the server's machine, and a server with a public address or one listening past loopback may be opened
  *  from another: a placeholder AGENTRUN_PUBLIC_URL turns it off too, so the console says so instead of falling back to the
  *  command in silence. */
-export function signInHereOff(host: string, publicUrl: string | undefined, loopback: boolean): string | undefined {
+export function signInHereOff(host: string, publicUrl: string | undefined, loopback: boolean, from: PublicUrlFrom = "AGENTRUN_PUBLIC_URL"): string | undefined {
   const what = "run the command shown in a terminal on this machine";
+  // Render sets it on every web service, so there is nothing to unset: the command is the way.
+  if (publicUrl && from === "RENDER_EXTERNAL_URL") return `In-browser sign-in is off because this server's public address is ${publicUrl}, from Render's RENDER_EXTERNAL_URL, and a server with a public address never opens a browser itself: run the command shown in a terminal on the server's machine.`;
   if (publicUrl) return `In-browser sign-in is off because AGENTRUN_PUBLIC_URL is set to ${publicUrl}, and a server with a public address never opens a browser itself: ${what}, or unset AGENTRUN_PUBLIC_URL and restart the server.`;
   if (!loopback) return `In-browser sign-in is off because this server listens on ${host}, past loopback, and such a server never opens a browser itself: ${what}, or restart it on 127.0.0.1.`;
   return undefined;
 }
+
+/** The variable a server's public address was read from. */
+export type PublicUrlFrom = "AGENTRUN_PUBLIC_URL" | "RENDER_EXTERNAL_URL";
 
 /** GET /settings/claude-login. `state`: `off` (not turned on), `other_machine` (turned on for another machine),
  *  `refused` (turned on for this machine and kept, but its folders are ones this server's user may not use: `refused`

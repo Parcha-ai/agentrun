@@ -686,7 +686,7 @@ if (process.argv[2] === "eval-template") {
       ...(values["harness-sign-in"] ? { harnessSignIn: true } : {}),
       ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), log: (line) => void process.stdout.write(`${line}\n`),
       // The public address is the server's with accounts on or off: the Host names it serves, the webhook URLs it gives.
-      ...(publicUrl ? { publicUrl } : {}),
+      ...(publicUrl && publicName ? { publicUrl, publicUrlFrom: publicName } : {}),
       ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true } : {}), ...(apiOnly ? { apiOnly } : {}), ...(shareHost ? { shareHost } : {}), ...(launchHook ? { launchHook } : {}), ...(runKeys ? { runKeys } : {}),
       ...(apiOnlyMcpOrigins.length ? { apiOnlyMcpOrigins } : {}),
       // The proxies whose X-Forwarded-For the sign-in limit reads (comma-separated); none unless set.

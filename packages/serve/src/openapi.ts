@@ -605,7 +605,7 @@ const CLAUDE_LOGIN = {
     place: { enum: ["agentrun", "machine"], description: "Where the login is: `agentrun`, AgentRun's own directory in its data (the default); `machine`, this machine's own Claude Code login (`machine.folder`), which the owner opts into." },
     command: { type: "string", description: "The line that signs the CLI in at `place`, for a terminal on this machine." },
     can_start: { type: "boolean", description: "Whether POST /settings/claude-login/login can start the CLI's sign-in here: the server is bound to loopback with no public address, so the browser it opens is on this machine." },
-    start_off: { type: "string", description: "Why this server never starts the CLI's sign-in itself, in one line that names the setting and says what to do: AGENTRUN_PUBLIC_URL is set (its value named, a placeholder too), or the server listens past loopback. Absent where it may." },
+    start_off: { type: "string", description: "Why this server never starts the CLI's sign-in itself, in one line that names the setting and says what to do: a public address is set (its value and its variable named: AGENTRUN_PUBLIC_URL, a placeholder too, or Render's RENDER_EXTERNAL_URL), or the server listens past loopback. Absent where it may." },
     refused: { type: "string", description: "Why the mode can't be turned on here, or, with state `refused`, why the login kept is not used, in one line: more than one person can start runs on this server, or the login's folders or the server's home are ones its user may not use." },
     account: {
       type: "object", additionalProperties: false,
