@@ -26,7 +26,7 @@ import { type Harness, ROOT_CONVERSATION_ID, type Conversation, type Session, ty
 import { PROVIDERS } from "@parcha/agentrun-computer";
 import type { SessionCharge } from "@parcha/pi-browser";
 import type { BeforeCreate } from "@parcha/pi-browser/durable";
-import { BROWSER_CHARGED, browserChargeRef, SPEND_CAP_REACHED, UNHELD_BROWSER_TAG } from "./cap.js";
+import { BROWSER_CHARGED, browserChargeRef, SPEND_CAP_REACHED, UNHELD_BROWSER_TAG, unheldBrowserTag } from "./cap.js";
 import { BROWSERS_UNHELD } from "./timeline/index.js";
 import type { UnheldSessions } from "./workspace/resolve-computer.js";
 import { type PaidBooking, paidStep, unbookedRefusal } from "./paid-calls.js";
@@ -334,16 +334,21 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
    *  booked already books nothing. */
   async function bookRootCharges(harness: Pick<Harness, "conversation">, context: Context): Promise<void> {
     if (!paid) return;
+    const charges: Booked[] = [];
+    await eachRootEntry(harness, context, (entry) => void (entry.kind === BROWSER_CHARGED && charges.push(entry.data as Booked)));
+    await Promise.all(charges.map((data) => bookOnLedger(paid, data)));
+  }
+
+  /** Each entry the run's root holds, oldest first. */
+  async function eachRootEntry(harness: Pick<Harness, "conversation">, context: Context, visit: (entry: { kind: string; data?: unknown }) => void): Promise<void> {
     const root = await harness.conversation(ROOT_CONVERSATION_ID as never, context);
     if (!root) return;
-    const charges: Booked[] = [];
     for (let cursor: unknown = undefined; ; ) {
       const page = await root.entries({ order: "ascending" } as never, 500, cursor as never, context);
-      for (const entry of page.items as readonly { kind: string; data?: unknown }[]) if (entry.kind === BROWSER_CHARGED) charges.push(entry.data as Booked);
+      for (const entry of page.items as readonly { kind: string; data?: unknown }[]) visit(entry);
       if (page.next === undefined) break;
       cursor = page.next;
     }
-    await Promise.all(charges.map((data) => bookOnLedger(paid, data)));
   }
 
   /** At a reopen, after pi-browser's reconcile: every session its custody still tracks (each row of its inventory: kept,
@@ -533,19 +538,33 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
   /** Once every ledger step of a charge under no call is written. */
   const ledgerIdle = async (): Promise<void> => void (await Promise.all([...pending]));
 
-  /** The browsers a create race left running that this process has charged (unheldTag): each once, whichever release saw
-   *  it end. */
+  /** The browsers a create race left running that the run has charged (unheldTag): each once, whichever release saw it
+   *  end, in this process or an earlier one. */
   const raced = new Set<string>();
+  /** Read once per process, before its first such charge: the ones an earlier process of the run committed (each
+   *  BROWSERS_UNHELD's released ids, each BROWSER_CHARGED under an unheldTag). pi-browser tells a session again when its
+   *  process ended after the charge's commit and before its own, and that session is charged already. */
+  let chargedBefore: Promise<void> | undefined;
+  const readChargedBefore = (harness: Pick<Harness, "conversation">, context: Context): Promise<void> =>
+    (chargedBefore ??= eachRootEntry(harness, context, (entry) => {
+      const data = (entry.data ?? {}) as { tag?: unknown; released?: unknown };
+      if (entry.kind === BROWSER_CHARGED && unheldBrowserTag(data.tag)) raced.add(data.tag as string);
+      if (entry.kind === BROWSERS_UNHELD && Array.isArray(data.released)) for (const id of data.released) if (typeof id === "string") raced.add(unheldTag(id));
+    }).catch((error: unknown) => {
+      chargedBefore = undefined;
+      throw error;
+    }));
   /** Sessions a create race left running and nothing held, released (a let-go's ClaimBrowser.releaseUnheld, or a release
    *  by a session's tag that ended them beside it: pi-browser's onRaceReleased), in one commit on the run's root: each
    *  one's time charged as a session's release is (a BROWSER_CHARGED, final, under no call, its tag unheldTag), from when
    *  its vendor made it to `at`, topped up to the provider's minimum (pi-browser's sessionCharge), and what was released,
    *  what could not be, and what was left to a create still in flight, said on the run's timeline (BROWSERS_UNHELD). A
-   *  session this process charged already is neither charged nor said again. Each charge is booked on the run's one ledger
+   *  session the run charged already (raced) is neither charged nor said again. Each charge is booked on the run's one ledger
    *  as every charge is, once its commit is in (watch, booked: by its ref, its id alone, so a reopen, or the other release,
    *  never books it twice). One whose vendor does not say when it made it is charged at no known amount (usd null):
    *  unknown, never 0. A free provider's time charges nothing. */
-  async function unheld(harness: Pick<Harness, "commit">, swept: UnheldSessions, context: Context, at = new Date().toISOString()): Promise<void> {
+  async function unheld(harness: Pick<Harness, "commit" | "conversation">, swept: UnheldSessions, context: Context, at = new Date().toISOString()): Promise<void> {
+    await readChargedBefore(harness, context);
     const fresh = { ...swept, released: swept.released.filter((one) => !raced.has(unheldTag(one.id))) };
     if (fresh.released.length === 0 && fresh.failed.length === 0 && fresh.creating.length === 0) return;
     // Taken before any wait, so a release that sees the same session meanwhile finds it charged; given back if the commit

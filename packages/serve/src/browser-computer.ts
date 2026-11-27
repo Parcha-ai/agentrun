@@ -176,7 +176,12 @@ export function claimBrowserProvider(computer: ClaimBrowser, options: BrowserCom
     },
 
     async findByTag(tag, signal) {
-      const found = (await statused(computer.find(tag, signal))).map((id) => ({ id, tag }));
+      // Each with when its vendor made it, where its listing said (madeAt): pi-browser keeps that time beside a session it
+      // releases for another's tag, which no later lookup lists, so the time it ran is charged from there.
+      const found = (await statused(computer.find(tag, signal))).map((id) => {
+        const madeAt = computer.madeAt?.(id);
+        return madeAt ? { id, tag, madeAt } : { id, tag };
+      });
       // No browser left under a saver's tag: one may have just ended (a create whose reply was lost, found and released
       // by the provider), and the vendor may still be writing the profile back, so its settle time is waited out first.
       if (found.length === 0) {
@@ -292,6 +297,14 @@ export function browserHolds(rows: ReadonlyArray<{ readonly tag: string; readonl
  *  for a browser that names no run and epoch. */
 export async function releaseUnheldBrowsers(computer: ClaimBrowser, rows: () => Promise<ReadonlyArray<{ readonly tag: string; readonly resourceId: string | null }>>, custody: Iterable<string> = [], signal?: AbortSignal): Promise<UnheldSessions | undefined> {
   return computer.releaseUnheld?.(async () => browserHolds(await rows(), custody), signal);
+}
+
+/** The sessions pi-browser's onRaceReleased tells (a release by `tag` ended them beside its own), as the charge of the
+ *  browsers nothing held takes them (browser-cost.ts unheld): each from when its vendor made it, the time pi-browser kept
+ *  beside it (`madeAt`, so a later process has it too), else this process's listing's (ClaimBrowser.madeAt); null where
+ *  neither says. */
+export function raceReleasedSessions({ tag, ids, madeAt }: { tag: string; ids: readonly string[]; madeAt?: Readonly<Record<string, string>> }, computer: Pick<ClaimBrowser, "madeAt">): UnheldSessions {
+  return { released: ids.map((id) => ({ id, tag, createdAt: madeAt?.[id] ?? computer.madeAt?.(id) ?? null })), failed: [], creating: [] };
 }
 
 /** When the run's process lets the run go: closes the download sockets its browser's sessions hold, released or not (a

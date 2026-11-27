@@ -257,6 +257,24 @@ test("a create-race browser's charge is booked under its tag alone: charged agai
   assert.equal(pico(inner.spentUsd()), 0.02, "booked once");
 });
 
+test("a create-race browser an earlier process of the run charged is not charged again by a later one that is told it again (its process ended before pi-browser's own commit): one charge and one timeline record on the root, and the other browser it is told with is charged", async (t) => {
+  const [{ BACKGROUND_CONTEXT: ctx }, durable, { createModels }, { BROWSERS_UNHELD }] = await Promise.all([import("@earendil-works/chord/context"), import("@earendil-works/pi-durable"), import("@earendil-works/pi-ai/models"), import("../dist/timeline/index.js")]);
+  const harness = await durable.Harness.open(new durable.MemoryStorage(), { models: createModels(), registry: durable.createRegistry(), onReport: () => {} }, ctx);
+  t.after(() => harness.close(ctx));
+  await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+  const made = new Date(T0).toISOString();
+  const swept = (ids) => ({ released: ids.map((id) => ({ id, tag: "ar-run-1-1", createdAt: made })), failed: [], creating: [] });
+  // Each a process of the run: its own spend over the run's one journal.
+  const first = browserSpend("browserbase", BROWSERBASE, 180, async () => undefined);
+  await first.unheld(harness, swept(["bb-raced"]), ctx, new Date(T0 + 600_000).toISOString());
+  const next = browserSpend("browserbase", BROWSERBASE, 180, async () => undefined);
+  await next.unheld(harness, swept(["bb-raced", "bb-other"]), ctx, new Date(T0 + 660_000).toISOString());
+  const root = await harness.conversation(durable.ROOT_CONVERSATION_ID, ctx);
+  const entries = (await root.entries({ order: "ascending" }, 500, undefined, ctx)).items;
+  assert.deepEqual(entries.filter((e) => e.kind === BROWSER_CHARGED).map((e) => [e.data.tag, e.data.seconds]), [["unheld:bb-raced", 600], ["unheld:bb-other", 660]], "each charged once, from when it was made");
+  assert.deepEqual(entries.filter((e) => e.kind === BROWSERS_UNHELD).map((e) => e.data.released), [["bb-raced"], ["bb-other"]], "each said once");
+});
+
 test("a person's time carried for a session stays held until the session's next charge books it, and goes then", async (t) => {
   const [{ BACKGROUND_CONTEXT: ctx }, durable, { createModels }] = await Promise.all([import("@earendil-works/chord/context"), import("@earendil-works/pi-durable"), import("@earendil-works/pi-ai/models")]);
   const paid = await toolLedger(1);

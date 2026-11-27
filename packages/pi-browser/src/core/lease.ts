@@ -7,7 +7,7 @@ export type ResourceStatus = "pending" | "running" | "stopped" | "gone";
 
 /** Written to documents, so never a secret: a provider keeps connect URLs and keys in its own memory, found again by
  *  `id`. */
-export type LeaseRef = { readonly id: string; readonly tag: string };
+export type LeaseRef = { readonly id: string; readonly tag: string; /** When the provider made the session (an ISO time), where its tag lookup (findByTag) says. */ readonly madeAt?: string };
 
 /** Each change is one commit, and a provider call sits between two commits, never inside one. `lost` ends custody of a
  *  resource the provider no longer answers for and that was never confirmed released. */

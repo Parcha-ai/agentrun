@@ -475,7 +475,7 @@ const browserTool: ToolEntry = {
   // Its downloads go into work/ by path (pi-browser), which a box's command could turn through a link.
   runnerOnly: true,
   bind: async (host) => {
-    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY, BrowserFailureError, browserFailure, MAX_UPLOAD_BYTES, uploadMime }, { createDrivingGates, createLiveView, liveViewProvider }, live, person, { claimBrowserProvider, closeHeldSockets, planeBrowser, planeComputer, releaseOlderBrowsers, releaseUnheldBrowsers }, { cdpDriver }] = await Promise.all([
+    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY, BrowserFailureError, browserFailure, MAX_UPLOAD_BYTES, uploadMime }, { createDrivingGates, createLiveView, liveViewProvider }, live, person, { claimBrowserProvider, closeHeldSockets, planeBrowser, planeComputer, raceReleasedSessions, releaseOlderBrowsers, releaseUnheldBrowsers }, { cdpDriver }] = await Promise.all([
       import("@earendil-works/chord/context"),
       import("@parcha/pi-browser/durable"),
       import("@parcha/pi-browser"),
@@ -659,11 +659,10 @@ const browserTool: ToolEntry = {
     };
     // A release by a session's tag that ended sessions beside it (a create race left them running, with no record): each
     // one's time charged as the let-go's release of the browsers nothing held charges it (spend.unheld, one key per
-    // session, so whichever of the two sees it end charges it once), from when the vendor's listing said it was made.
-    const raceReleased = async ({ tag, ids }: { tag: string; ids: string[] }): Promise<void> => {
+    // session, so whichever of the two sees it end charges it once), from when its vendor made it (raceReleasedSessions).
+    const raceReleased = async (released: { tag: string; ids: string[]; madeAt?: Record<string, string> }): Promise<void> => {
       if (!opened || !("browser" in made)) return;
-      const claimed = made.browser;
-      await spend.unheld(opened as never, { released: ids.map((id) => ({ id, tag, createdAt: claimed.madeAt?.(id) ?? null })), failed: [], creating: [] }, context);
+      await spend.unheld(opened as never, raceReleasedSessions(released, made.browser), context);
     };
     // The pointer is cut from everything the browser hands the model (its results, their details, its failures): a
     // vendor's refusal can quote it, as pi-browser's one-saver rule names Kernel's profile.

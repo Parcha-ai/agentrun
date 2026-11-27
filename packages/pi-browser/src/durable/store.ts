@@ -27,6 +27,14 @@ type ReleaseState = { phase: "release"; attempt: number; found?: string[] } | { 
 type ReleaseRuntime = TaskRuntime<ReleaseInput, ReleaseState, { released: number }, object>;
 export type HandoffInput = { row: InventoryRow; requestId: string; interactionId: string; completionCondition: string };
 type HandoffResult = { outcome: HandoffOutcome; reason?: string };
+/** When the provider made each session a tag lookup found, by id (InventoryRow.made). */
+type Made = Record<string, string>;
+const madeOf = (refs: readonly LeaseRef[]): Made => Object.fromEntries(refs.flatMap((ref) => (ref.madeAt ? [[ref.id, ref.madeAt]] : [])));
+/** `made` without the ids `told`; undefined when none is left. */
+const madeLeft = (made: Made | undefined, told: readonly string[] = []): Made | undefined => {
+  const left = Object.entries(made ?? {}).filter(([id]) => !told.includes(id));
+  return left.length ? Object.fromEntries(left) : undefined;
+};
 
 export type StoreDeps = {
   name: string;
@@ -45,8 +53,9 @@ export type StoreDeps = {
   /** A release task (an attempt, or its abort handler) had the provider release `tag`'s session, and the provider answered. */
   stopped?(tag: string): void;
   /** A release by `row`'s tag ended sessions besides the row's own (`ids`, each confirmed no longer running): a create
-   *  retried behind the provider, or a create race, left them. Their time is on no record (durable.ts, onRaceReleased). */
-  raced?(row: InventoryRow, ids: string[]): Promise<void>;
+   *  retried behind the provider, or a create race, left them. Their time is on no record (durable.ts, onRaceReleased).
+   *  `made`: when the provider made each, where a tag lookup said (InventoryRow.made). */
+  raced?(row: InventoryRow, ids: string[], made: Made): Promise<void>;
 };
 
 export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, bill, scrubbed, createDeadlineMs, handoff, handedBack, stopped: stoppedHook, raced }: StoreDeps) {
@@ -56,11 +65,12 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
   async function move(tx: Tx, row: InventoryRow, next: Move): Promise<void> {
     const inventory = await tx.doc(Inventory);
     const owed = union(inventory.rows[row.tag]?.owed, next.owed).filter((id) => !next.told?.includes(id));
-    const { owed: _stale, ...fields } = row;
+    const made = madeLeft(inventory.rows[row.tag]?.made, next.told);
+    const { owed: _stale, made: _staleMade, ...fields } = row;
     // A lost one stays: custody gave up releasing it, not looking for it (reconcile releases it again at run open). So
     // does a released one that still owes a raced call: the reconcile confirms those sessions' stop and tells them.
     if (next.state === "released" && !owed.length) delete inventory.rows[row.tag];
-    else inventory.rows[row.tag] = { ...fields, state: next.state === "released" ? "lost" : next.state, resourceId: next.resourceId ?? row.resourceId, ...(owed.length ? { owed } : {}) };
+    else inventory.rows[row.tag] = { ...fields, state: next.state === "released" ? "lost" : next.state, resourceId: next.resourceId ?? row.resourceId, ...(owed.length ? { owed } : {}), ...(made ? { made } : {}) };
     const state = await tx.doc(Sessions, cidOf(row));
     const record = state.sessions.find((r) => r.tag === row.tag);
     if (!record) return;
@@ -78,18 +88,32 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
   const addNotice = (state: SessionsState, text: string) => { if (!state.notice?.includes(text)) state.notice = [state.notice, text].filter(Boolean).join(" "); };
   const begin = async (tx: Tx, row: InventoryRow) => { (await tx.doc(Inventory)).rows[row.tag] = { ...row, state: "creating", resourceId: null }; };
 
-  /** Saves `ids` on the row as owed, before any stop is sent to them. */
-  const owe = async (tx: Tx, row: InventoryRow, ids: readonly string[]) => {
+  /** Saves `ids` on the row as owed, and when the provider made each (`made`), before any stop is sent to them. */
+  const owe = async (tx: Tx, row: InventoryRow, ids: readonly string[], made: Made = {}) => {
     const rows = (await tx.doc(Inventory)).rows;
     const at = rows[row.tag] ?? row;
-    rows[row.tag] = { ...at, owed: union(at.owed, ids) };
+    rows[row.tag] = { ...at, owed: union(at.owed, ids), ...madeOn(at, made) };
   };
+  /** The row's `made` with `made` added, as fields to spread on it. */
+  const madeOn = (at: InventoryRow, made: Made) => {
+    const all = madeLeft({ ...at.made, ...made });
+    return all ? { made: all } : {};
+  };
+  /** Saves when the provider made the sessions a release found (`made`) on the row, before any stop is sent to them. */
+  const noteMade = async (tx: Tx, row: InventoryRow, made: Made) => {
+    const rows = (await tx.doc(Inventory)).rows;
+    const at = rows[row.tag];
+    if (at && Object.keys(made).length) rows[row.tag] = { ...at, ...madeOn(at, made) };
+  };
+  /** When the provider made the row's sessions, as its row holds it now, with `seen` (this process's lookups) over it. */
+  const madeFor = async (read: DocumentReader, row: InventoryRow, context: Context, seen: Made = {}): Promise<Made> =>
+    ({ ...(await read.snapshot(Inventory, context))?.rows?.[row.tag]?.made, ...seen });
   /** The release confirms the row's owed sessions with its own and tells them (they go in as `found`). A row with no id
    *  yet leaves them to the reconcile: its release takes the first id it finds as its own. */
   async function requestRelease(tx: Tx, row: InventoryRow, reason: ReleaseReason, at: string, notBefore?: number): Promise<void> {
     const owed = row.resourceId === null ? [] : (await tx.doc(Inventory)).rows[row.tag]?.owed ?? [];
     await move(tx, row, { state: "releasing", reason, at });
-    const { owed: _stale, ...fields } = row;
+    const { owed: _stale, made: _staleMade, ...fields } = row;
     await tx.createTask(ReleaseTask, { row: { ...fields, state: "releasing" as const }, ...(notBefore ? { notBefore } : {}), ...(owed.length ? { found: owed } : {}) }, { ownership: { kind: "conversation" }, conversationId: cidOf(row), background: true });
   }
   /** A create no tag lookup finds may still land (a crashed or fenced holder's call in flight): the release task looks
@@ -98,9 +122,10 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
 
   /** `found` hears the ids before any is released: a release that stops a session and then fails (its status check after
    *  the stop) leaves the session known only to its caller, since the provider's tag lookup lists running sessions only. */
-  async function releaseAll(row: InventoryRow, provider: BrowserProvider, signal?: AbortSignal, found: (ids: string[]) => void | Promise<void> = () => {}): Promise<string[]> {
-    const ids = [...new Set([row.resourceId, ...(await provider.findByTag(row.tag, signal)).map((ref) => ref.id)].filter((id): id is string => id !== null))];
-    await found(ids);
+  async function releaseAll(row: InventoryRow, provider: BrowserProvider, signal?: AbortSignal, found: (ids: string[], made: Made) => void | Promise<void> = () => {}): Promise<string[]> {
+    const refs = await provider.findByTag(row.tag, signal);
+    const ids = [...new Set([row.resourceId, ...refs.map((ref) => ref.id)].filter((id): id is string => id !== null))];
+    await found(ids, madeOf(refs));
     for (const id of ids) await provider.release({ id, tag: row.tag }, signal);
     return ids;
   }
@@ -114,16 +139,16 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
   /** The host hears the sessions besides `row`'s own among `ids` (raced) once their stop is confirmed, `ids` every id the
    *  release found: one whose release stopped it and then failed (its status read) is found by no later lookup, so it is
    *  told from the ids its release kept, once, by the step that confirms the release. */
-  const tellRaced = async (row: InventoryRow, ids: readonly string[]) => {
+  const tellRaced = async (row: InventoryRow, ids: readonly string[], made: () => Promise<Made>) => {
     const extras = othersOf(row, ids);
-    if (extras.length) await raced?.(row, extras);
+    if (extras.length) await raced?.(row, extras, await made());
   };
   const anyRunning = async (provider: BrowserProvider, row: InventoryRow, ids: string[], signal?: AbortSignal) => {
     for (const id of ids) if (["pending", "running"].includes(await provider.status({ id, tag: row.tag }, signal))) return true;
     return false;
   };
   /** The ids released under `row`'s tag once none of them runs; null while one does. */
-  const releasedIds = async (provider: BrowserProvider, row: InventoryRow, signal?: AbortSignal, found?: (ids: string[]) => void | Promise<void>) => {
+  const releasedIds = async (provider: BrowserProvider, row: InventoryRow, signal?: AbortSignal, found?: (ids: string[], made: Made) => void | Promise<void>) => {
     const ids = await releaseAll(row, provider, signal, found);
     return (await anyRunning(provider, row, ids, signal)) ? null : ids;
   };
@@ -162,9 +187,9 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
   async function bindByTag(provider: BrowserProvider, row: InventoryRow, commit: (change: (tx: Tx) => Promise<void>) => Promise<unknown>, signal?: AbortSignal, found?: LeaseRef[]): Promise<LeaseRef | null> {
     const refs = found ?? await provider.findByTag(row.tag, signal);
     const extras = refs.slice(1);
-    if (extras.length) await commit((tx) => owe(tx, row, extras.map((ref) => ref.id)));
+    if (extras.length) await commit((tx) => owe(tx, row, extras.map((ref) => ref.id), madeOf(extras)));
     const stopped = await stopExtras(provider, row, extras, signal);
-    if (stopped.length) await raced?.(row, stopped);
+    if (stopped.length) await raced?.(row, stopped, madeOf(extras));
     const kept = refs[0] ?? null;
     await commit((tx) => kept ? move(tx, row, { state: "live", resourceId: kept.id, at: now(), told: stopped }) : unknownCreate(tx, row, now()));
     return kept;
@@ -190,7 +215,7 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
         for (const id of othersOf(row, found)) if (!(await anyRunning(provider, row, [id], runtime.signal))) out.push(id);
         return out;
       }, []);
-      if (ended.length) await raced?.(row, ended);
+      if (ended.length) await raced?.(row, ended, await madeFor(runtime, row, context));
       await runtime.commit(async (tx) => {
         await move(tx, row, { state: "lost", reason: "lost", at: iso(runtime.now()), ...foundId(row, found), owed: othersOf(row, found), told: ended });
         return { status: "terminal", outcome: { status: "failed", error: { code: "release_failed", message: `${row.tag}: not released after ${RELEASE_ATTEMPTS} attempts` } } };
@@ -218,10 +243,15 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
         // Ids the lookup found that the task does not hold yet are committed before any stop is sent: an attempt cut
         // between its stop and its next commit (the task's abort) leaves them for the abort handler, whose own lookup
         // no longer lists a stopped session.
-        const keep = async (ids: string[]) => {
+        const keep = async (ids: string[], made: Made) => {
           seen = ids;
           const known = union(found, ids);
-          if (known.length > found.length) await runtime.commit(() => ({ status: "running", checkpoint: { phase: "release", attempt, found: known } }), context);
+          if (known.length > found.length) {
+            await runtime.commit(async (tx) => {
+              await noteMade(tx, row, made);
+              return { status: "running", checkpoint: { phase: "release", attempt, found: known } };
+            }, context);
+          }
         };
         const released = await step(runtime, async () => releaseAll(row, await providerOf(runtime, cidOf(row), row.plane, context), runtime.signal, keep), null);
         // What the lookup found goes on to the next attempt even when its release failed: the stop may have landed.
@@ -244,7 +274,7 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
         // least once, with the bill that commit records.
         const at = iso(runtime.now());
         await emitReleased(cidOf(row), row.tag, runtime, context, at, foundId(row, ids));
-        await tellRaced(row, ids);
+        await tellRaced(row, ids, () => madeFor(runtime, row, context));
         await runtime.commit(async (tx) => {
           await move(tx, row, { state: "released", at, ...foundId(row, ids), told: othersOf(row, ids) });
           return { status: "terminal", outcome: { status: "completed", result: { released: ids.length } } };
@@ -259,18 +289,20 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
       let found = union(task.input.found, checkpoint.phase === "confirm" ? checkpoint.ids : checkpoint.found);
       let stopped: string[] | null = null;
       let confirmed: string[] = [];
+      let seen: Made = {};
       // Before the create deadline nothing found is proof of nothing: the successor keeps the delayed lookup. The ids
       // earlier attempts found that no lookup lists now are read once each; one not confirmed stays owed on the row.
       if (!(notBefore && runtime.now() < notBefore)) stopped = await providerOf(runtime, cidOf(row), row.plane, context).then(async (provider) => {
-        const ids = await releasedIds(provider, row, context.abortSignal, (ids) => void (found = union(found, ids)));
+        const ids = await releasedIds(provider, row, context.abortSignal, (ids, made) => void ((found = union(found, ids)), (seen = { ...seen, ...made })));
         if (ids) for (const id of found) if (ids.includes(id) || !(await anyRunning(provider, row, [id], context.abortSignal).catch(() => true))) confirmed.push(id);
         return ids;
       }).catch(() => null);
       const others = stopped ? othersOf(row, union(found, stopped)) : [];
       const told = others.filter((id) => stopped?.includes(id) || confirmed.includes(id));
       if (stopped) stoppedHook?.(row.tag);
-      if (told.length) await raced?.(row, told);
+      if (told.length) await raced?.(row, told, await madeFor(runtime, row, context, seen));
       await runtime.commit(async (tx) => {
+        if (stopped) await noteMade(tx, row, seen);
         if (stopped) await move(tx, row, { state: "released", at: iso(runtime.now()), ...foundId(row, union(found, stopped)), owed: others, told });
         else await tx.createTask(ReleaseTask, { ...task.input, ...(found.length ? { found } : {}) }, { ownership: { kind: "conversation" }, conversationId: cidOf(row), background: true });
         return { status: "terminal", outcome: { status: "aborted", reason: stopped ? "released by the abort handler" : "release handed to a successor task" } };
@@ -357,12 +389,14 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
    *  the first its tag lists, kept on the row and record before any stop is sent, as its tag lookup lists running
    *  sessions only. */
   async function reconcileLost(provider: BrowserProvider, row: InventoryRow, commit: (change: (tx: Tx) => Promise<void>) => Promise<unknown>, outcome: (kind: keyof ReconcileReport, change?: (tx: Tx) => Promise<void>) => Promise<void>, at: string): Promise<void> {
-    const listed = (await provider.findByTag(row.tag)).map((ref) => ref.id);
+    const refs = await provider.findByTag(row.tag);
+    const listed = refs.map((ref) => ref.id);
+    const made = { ...row.made, ...madeOf(refs) };
     const own = row.resourceId ?? listed[0] ?? null;
     const others = union(listed, row.owed).filter((id) => id !== own);
     if (others.some((id) => !row.owed?.includes(id)) || own !== row.resourceId) {
       await commit(async (tx) => {
-        await owe(tx, row, others);
+        await owe(tx, row, others, made);
         const rows = (await tx.doc(Inventory)).rows;
         if (own !== null && rows[row.tag]?.resourceId === null) rows[row.tag]!.resourceId = own;
         const record = (await tx.doc(Sessions, cidOf(row))).sessions.find((r) => r.tag === row.tag);
@@ -374,7 +408,7 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
     const stopped: string[] = [];
     for (const id of union(own === null ? [] : [own], others)) if (!(await anyRunning(provider, row, [id]).catch(() => true))) stopped.push(id);
     const told = others.filter((id) => stopped.includes(id));
-    if (told.length) await raced?.(row, told);
+    if (told.length) await raced?.(row, told, made);
     const done = answered && (own === null || stopped.includes(own)) && told.length === others.length;
     if (done) {
       await outcome("released", async (tx) => {
@@ -384,7 +418,16 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
       });
       return;
     }
-    if (told.length) await commit(async (tx) => { const rows = (await tx.doc(Inventory)).rows; if (rows[row.tag]) rows[row.tag] = { ...rows[row.tag]!, owed: (rows[row.tag]!.owed ?? []).filter((id) => !told.includes(id)) }; });
+    if (told.length) {
+      await commit(async (tx) => {
+        const rows = (await tx.doc(Inventory)).rows;
+        const at = rows[row.tag];
+        if (!at) return;
+        const { made: _told, ...fields } = at;
+        const left = madeLeft(at.made, told);
+        rows[row.tag] = { ...fields, owed: (at.owed ?? []).filter((id) => !told.includes(id)), ...(left ? { made: left } : {}) };
+      });
+    }
     if (!answered) throw new Error(`${row.tag}: a release failed`);
     await outcome("lost");
   }

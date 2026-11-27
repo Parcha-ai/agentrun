@@ -153,7 +153,7 @@ test("a release aborted while it waits to retry, after its first attempt release
 // every id it found, and the step that confirms the release tells B, once its stop is confirmed. `lateStop`: B's release
 // answers with B still running, and B stops only after the first status read of it. `restart`: the process ends while
 // the task waits to retry, and the next process over the same storage resumes it.
-async function stoppedThenFailed(t, { lateStop = false, restart = false, abortUnread = false } = {}) {
+async function stoppedThenFailed(t, { lateStop = false, restart = false, abortUnread = false, madeAt = false } = {}) {
   const backend = new FakeBackend({ start: START, pages: { [START]: fixturePage(START, "The start page.") } });
   const left = [];
   let failB = !lateStop;
@@ -164,12 +164,19 @@ async function stoppedThenFailed(t, { lateStop = false, restart = false, abortUn
   const toldUnread = [];
   let failedB;
   const bFailed = new Promise((resolve) => { failedB = resolve; });
+  // `madeAt`: the vendor's tag lookup says when it made each session.
+  const times = new Map();
   const provider = {
     ...backend.provider,
     async create(spec, signal) {
       const made = await backend.provider.create(spec, signal);
       left.push((await backend.provider.create(spec, signal)).id);
+      for (const id of [made.id, left.at(-1)]) times.set(id, new Date(Date.UTC(2026, 10, 5, 12, 0, times.size)).toISOString());
       return made;
+    },
+    async findByTag(tag, signal) {
+      const refs = await backend.provider.findByTag(tag, signal);
+      return madeAt ? refs.map((ref) => ({ ...ref, madeAt: times.get(ref.id) })) : refs;
     },
     async release(ref, signal) {
       if (ref.id === left[0] && stopLate) return undefined;
@@ -239,7 +246,7 @@ async function stoppedThenFailed(t, { lateStop = false, restart = false, abortUn
   }
   const tasks = (await last.harness.commit((tx) => tx.scanTasks({}, 50), ctx)).items.filter((task) => task.kind === "browser.release");
   const [record] = (await last.harness.snapshot(last.browser.docs.Sessions, last.root.id, ctx)).sessions;
-  return { b: left[0], record, heard, backend, rootId: last.root.id, failB, stopLate, toldUnread, atAbort, outcomes: tasks.map((task) => task.state.outcome?.status) };
+  return { b: left[0], times, record, heard, backend, rootId: last.root.id, failB, stopLate, toldUnread, atAbort, outcomes: tasks.map((task) => task.state.outcome?.status) };
 }
 
 test("a release that stops the other session and then fails on it (its status read): the retry, which no longer finds it by its tag, confirms its stop and tells it as raced, once", async (t) => {
@@ -265,6 +272,12 @@ test("a release that stops the other session and then fails on it, its process e
   assert.equal(record.state, "released");
   assert.equal(backend.sessions.get(b).state, "stopped");
   assert.deepEqual(heard, [{ conversationId: rootId, tag: record.tag, ids: [b], by: 2, stopped: ["stopped"] }], "B is told once across both processes, by the one that resumed the task");
+});
+
+test("the vendor's listing says when it made each session, and the process ends after the release stopped the other one and failed on it: the next process, whose lookups no longer list it, hands its host that time with its id", async (t) => {
+  const { b, times, record, heard, rootId, outcomes } = await stoppedThenFailed(t, { restart: true, madeAt: true });
+  assert.deepEqual(outcomes, ["completed"], "the resumed task completed");
+  assert.deepEqual(heard, [{ conversationId: rootId, tag: record.tag, ids: [b], madeAt: { [b]: times.get(b) }, by: 2, stopped: ["stopped"] }], "B is told once, by the next process, with when it was made");
 });
 
 test("a release aborted after it stopped the other session and failed on it, every status read of that one failing: the abort handler keeps it owed, untold, and the next reconcile tells it once a read confirms its stop", async (t) => {
@@ -473,7 +486,7 @@ test("a lost create's extra whose release stops it while every status read of it
 // lands. The next process over the same storage opens with the session's record still creating and B saved on its row;
 // its reconcile binds the session, and its close releases it. A run open's reconcile after that finds nothing more. The
 // turn the first process left resumes in the next, and its create there answers.
-async function lostAnswerRestart(t) {
+async function lostAnswerRestart(t, { madeAt = false } = {}) {
   const backend = new FakeBackend({ start: START, pages: { [START]: fixturePage(START, "The start page.") } });
   const made = [];
   let readsFail = true;
@@ -491,6 +504,11 @@ async function lostAnswerRestart(t) {
       if (ref.id === made[1] && readsFail) { failedRead(); throw new Error("the status read of B failed"); }
       return backend.provider.status(ref, signal);
     },
+    // `madeAt`: the vendor's tag lookup says when it made each session.
+    async findByTag(tag, signal) {
+      const refs = await backend.provider.findByTag(tag, signal);
+      return madeAt ? refs.map((ref) => ({ ...ref, madeAt: `2026-11-05T12:00:0${made.indexOf(ref.id)}.000Z` })) : refs;
+    },
   };
   const heard = [];
   const storage = new MemoryStorage();
@@ -504,7 +522,7 @@ async function lostAnswerRestart(t) {
     const by = (count += 1);
     const browser = createBrowserExtension({
       provider: () => provider, driver: fakeDriver(backend), evidence: { file: async () => null }, createDeadlineMs: 50,
-      onRaceReleased: (released) => { heard.push({ ids: released.ids, by, stopped: released.ids.map((id) => backend.sessions.get(id).state) }); },
+      onRaceReleased: (released) => { heard.push({ ids: released.ids, by, stopped: released.ids.map((id) => backend.sessions.get(id).state), ...(released.madeAt ? { madeAt: released.madeAt } : {}) }); },
       tools: { browser_read: async (_args, port) => { const s = await port.session(); await s.driver.page(); return { content: [{ type: "text", text: "read" }] }; } },
     });
     const model = faux.fauxProvider({ models: [{ id: "faux-1" }] });
@@ -529,7 +547,7 @@ async function lostAnswerRestart(t) {
   const turn = first.root.submit({ type: "input", content: "go" }, ctx).then((handle) => handle.wait(ctx)).catch(() => undefined);
   await readFailed;
   const inventory = async (harness) => (await harness.snapshot(first.browser.docs.Inventory, ctx))?.rows ?? {};
-  const atEnd = { heard: [...heard], owed: Object.values(await inventory(first.harness))[0]?.owed };
+  const atEnd = { heard: [...heard], owed: Object.values(await inventory(first.harness))[0]?.owed, ...(madeAt ? { made: Object.values(await inventory(first.harness))[0]?.made } : {}) };
   firstProcess.ended = true;
   await first.browser.close();
   await first.harness.close(ctx).catch(() => undefined);
@@ -551,6 +569,14 @@ test("a lost create's extra whose status reads all fail, its process ending then
   assert.deepEqual(heard, [{ ids: [made[1]], by: 2, stopped: ["stopped"] }], "told once, by the next process, after a read confirms its stop");
   assert.deepEqual(atEnd, { heard: [], owed: [made[1]] }, "the first process told nothing, and B was saved on the row before its stop was sent");
   assert.deepEqual(Object.values(rows).filter((row) => row.owed), [], "nothing is owed once B is told");
+});
+
+test("a lost create's extra whose status reads all fail, its process ending then, the vendor's listing saying when it made each: B's time is saved on the row with its id, and the next process hands it to its host with B", { timeout: 30_000 }, async (t) => {
+  const { made, heard, atEnd, rows } = await lostAnswerRestart(t, { madeAt: true });
+  const b = made[1];
+  assert.deepEqual(atEnd, { heard: [], owed: [b], made: { [b]: "2026-11-05T12:00:01.000Z" } }, "saved on the row before its stop was sent");
+  assert.deepEqual(heard, [{ ids: [b], by: 2, stopped: ["stopped"], madeAt: { [b]: "2026-11-05T12:00:01.000Z" } }], "told once, by the next process, with when it was made");
+  assert.deepEqual(Object.values(rows).filter((row) => row.owed || row.made), [], "nothing is owed, nor kept, once B is told");
 });
 
 // A row that owns A, whose tag also finds B and C. While `stuck`, B's release stops it but every status read of B fails,

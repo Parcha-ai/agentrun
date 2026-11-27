@@ -73,8 +73,9 @@ export type BrowserExtensionOptions<D extends PageDriver = PageDriver> = VaultOp
    *  is saved on the session's inventory row (`owed`) before its stop is sent, until it is told: the session's own release
    *  confirms them, or a run open's reconcile for a row that ended lost or still owes one. Called again for an id only
    *  when a process ends between this call and the commit that takes it off the row. A throw here never fails the
-   *  release. */
-  onRaceReleased?: (released: { conversationId: number; tag: string; ids: string[] }) => void | Promise<void>;
+   *  release. `madeAt`: when the provider made each of them (an ISO time, by id), where its tag lookup said
+   *  (LeaseRef.madeAt), kept on the row with the id, so a later process hands it on too; absent when it said for none. */
+  onRaceReleased?: (released: { conversationId: number; tag: string; ids: string[]; madeAt?: Record<string, string> }) => void | Promise<void>;
   /** Exact strings to scrub from every output besides the built-in shapes, read at each use. */
   redact?: { values: () => readonly string[] };
   section?: { addendum?: string };
@@ -921,8 +922,9 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
     handoff: options.handoff,
     handedBack: (tag, fence) => c.fences.set(tag, { fence, failure: HANDED_BACK }),
     stopped: (tag) => { c.stops.get(tag)?.stop(); c.stops.delete(tag); },
-    raced: async (row, ids) => {
-      try { await options.onRaceReleased?.({ conversationId: row.conversationId, tag: row.tag, ids }); } catch { /* the host's booking never fails the release */ }
+    raced: async (row, ids, made) => {
+      const madeAt = Object.fromEntries(ids.flatMap((id) => (made[id] ? [[id, made[id]]] : [])));
+      try { await options.onRaceReleased?.({ conversationId: row.conversationId, tag: row.tag, ids, ...(Object.keys(madeAt).length ? { madeAt } : {}) }); } catch { /* the host's booking never fails the release */ }
     },
   });
 

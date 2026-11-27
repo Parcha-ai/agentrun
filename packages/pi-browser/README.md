@@ -363,14 +363,16 @@ await browser.reconcile(harness, () => true, context);   // settles what a dead 
   earlier charge billed the session past this one's `at` (a `handle.charge` taken while its release was under way, the
   release confirmed before it), by that many seconds; this charge bills none of it again and never a negative. It must
   not throw: a throw fails the commit, and a call's charge is then carried by the session's next one.
-- `onRaceReleased({ conversationId, tag, ids })`: a release by a session's tag ended sessions besides that session's own
+- `onRaceReleased({ conversationId, tag, ids, madeAt })`: a release by a session's tag ended sessions besides that session's own
   (a create retried behind the provider's API, or a create race of that tag, left them running), and no record bills
   their time. Called with their ids once a status read confirms each stopped, including one whose release stopped it and
   then failed. Each id is saved on the session's inventory row (`owed`) before its stop is sent, and stays there, across
   a restart, until a read confirms its stop and it is told: the session's own release confirms the ones its row owes, and
   a run open's reconcile those of a row that ended lost or that a release left owing. Called again for an id only when a
   process ends between the call and the commit that takes it off the row, so a host books what they ran under one key
-  per id. A throw here never fails the release.
+  per id. `madeAt`, by id, is when the provider made each, where its tag lookup said (`LeaseRef.madeAt`): saved on the
+  row (`made`) with the id before its stop is sent, so a later process, whose lookups no longer list a stopped session,
+  hands it on too; absent when the lookup said for none. A throw here never fails the release.
 
 Per conversation, the host writes a `BrowserConfig` (`label`, `run`, and the policy: proxies, verified, captcha, geolocation,
 region, a raw context id, the session timeout, the idle release and the batch timeout; `DEFAULT_BROWSER_POLICY` holds the
