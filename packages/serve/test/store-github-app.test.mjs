@@ -90,7 +90,10 @@ test("no App the runner can open is no access: never connected, no seal key, or 
   assert.equal(await githubAppAccess(store, undefined, { content: "https://github.com/acme/widgets" }), undefined, "no seal key");
 });
 
-test("a run in a workspace, its own agent's or its own, and a run the store does not hold have no access: the App is never opened and GitHub is asked nothing", async (t) => {
+/** Why a run in a workspace has no token of the server's App, in the words its checkout and its github_app calls give. */
+const IN_WORKSPACE = "a run in a workspace doesn't use this server's GitHub App, so only public repositories are read";
+
+test("a run in a workspace, its own agent's or its own, is withheld the App in words and mints nothing; a run the store does not hold has no access: the App is never opened and GitHub is asked nothing", async (t) => {
   const { store } = await storeOn(t);
   await connected(store);
   const github = await fakeGitHub(t);
@@ -98,12 +101,41 @@ test("a run in a workspace, its own agent's or its own, and a run the store does
   await store.runs.create({ id: "run-scoped", agentId: "scoped", revisionId: "rev-scoped" });
   await agentWithRevision(store);
   await store.runs.create({ id: "run-own", agentId: "agent-1", revisionId: "rev-1", workspace: "org:acme" });
-  for (const run of ["run-scoped", "run-own", "run-unknown"]) {
-    assert.equal(await accessOf(store, KEY, { content: "Fix https://github.com/acme/widgets" }, { run, api: github.api }), undefined, run);
+  assert.equal(GITHUB_UNUSABLE.inWorkspace, IN_WORKSPACE);
+  for (const run of ["run-scoped", "run-own"]) {
+    const access = await accessOf(store, KEY, { content: "Fix https://github.com/acme/widgets" }, { run, api: github.api });
+    assert.equal(access?.withheld, IN_WORKSPACE, run);
+    assert.equal(access.target, undefined, `${run}: no repository to mint for`);
+    assert.deepEqual(await access.mint({ repo: "acme/widgets" }, { contents: "read" }), { ok: false, reason: "withheld", message: IN_WORKSPACE }, run);
   }
+  assert.equal(await accessOf(store, KEY, { content: "Fix https://github.com/acme/widgets" }, { run: "run-unknown", api: github.api }), undefined, "run-unknown");
   assert.deepEqual(github.asked, []);
   await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
   assert.equal((await (await accessOf(store, KEY, { content: "Fix https://github.com/acme/widgets" }, { run: "run-1", api: github.api })).mint({ repo: "acme/widgets" })).ok, true, "the same server's run in no workspace");
+});
+
+test("a run in a workspace granted a github_app server's tools: its calls are refused unsent in the withheld words, never 'no GitHub App' on a server that has one, and its tools' listing is refused in the same words", async (t) => {
+  const { store } = await storeOn(t);
+  await connected(store);
+  const github = await fakeGitHub(t);
+  const fake = await startFakeMcp({ token: () => true });
+  t.after(() => fake.close());
+  const ADD = { name: "add", title: "Add", description: "Add two numbers.", inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] }, annotations: { readOnlyHint: true } };
+  await store.mcp.put({ name: "gh", url: fake.url, auth: "github_app", tools: [ADD], sealed: null });
+  await store.agents.create({ id: "scoped", name: "scoped", workspace: "org:acme" }, { id: "rev-scoped", kind: "agentic", body: { instructions: "Answer." }, mcpPin: await registryPin(store) });
+  await store.runs.create({ id: "run-scoped", agentId: "scoped", revisionId: "rev-scoped" });
+  const claim = await store.claim("run-scoped", "runner-a", { leaseMs: 60_000 });
+  const githubApp = await accessOf(store, KEY, { content: "Fix https://github.com/acme/widgets" }, { run: "run-scoped", api: github.api });
+  const step = await mcpClaim({ store, claim, grants: ["mcp:gh/add"], sealKey: KEY, signal: new AbortController().signal, githubApp, githubMcpOrigin: new URL(fake.url).origin });
+  t.after(() => step.release());
+  const work = mkdtempSync(join(tmpdir(), "github-app-"));
+  t.after(() => rmSync(work, { recursive: true, force: true }));
+  const answer = await mcpGateway({ redact: keepText, pin: step.pin, credentials: step.credentials, work: () => work }).call("gh", "add", { a: 1, b: 1 }, { signal: new AbortController().signal });
+  assert.equal(answer.isError, true);
+  assert.equal(answer.content[0].text, `The MCP server gh's credential can't be used right now: ${IN_WORKSPACE}.`);
+  const { registryListing } = await import("../dist/mcp-pin-first.js");
+  await assert.rejects(registryListing(store, KEY, { loopback: true, githubApp, appOrigin: new URL(fake.url).origin })("gh"), (error) => error.message === IN_WORKSPACE);
+  assert.deepEqual(github.asked, [], "GitHub was asked nothing");
 });
 
 test("a run that names no repository has access with no target: the claim step refuses its calls in words", async (t) => {

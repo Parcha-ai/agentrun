@@ -142,7 +142,8 @@ export interface PrCheckoutOptions {
   /** Whether a github trigger started the run (its launch's inputOrigin): only then is its payload tag the server's own,
    *  and read. Anyone may write the tag's text into a run of their own. */
   readonly fromGitHub?: boolean;
-  /** The server's GitHub App mint, when it has an App the runner can open: none, the fetch is anonymous. */
+  /** The server's GitHub App mint, when it has an App the runner can open (a run in a workspace's refuses, in the words
+   *  the run is told): none, the fetch is anonymous. */
   readonly mint?: GithubAppMint;
   /** The token revoked at GitHub once the fetch is done: best effort, a failure leaves it to its hour. */
   readonly revoke?: (token: string) => Promise<void>;
@@ -178,8 +179,8 @@ export async function prCheckout(options: PrCheckoutOptions): Promise<PrCheckout
   const web = (options.web ?? GITHUB_WEB).replace(/\/+$/, "");
   const name = `${pull.repo}#${pull.number}`;
 
-  // The token: the App's, for this repository alone, contents read alone. None (no App, not installed, GitHub said no):
-  // the fetch is anonymous, and the words say which, in case the repository turns out to be private.
+  // The token: the App's, for this repository alone, contents read alone. None (no App, a run in a workspace, not
+  // installed, GitHub said no): the fetch is anonymous, and the words say which, in case the repository is private.
   let token: string | undefined;
   let anonymous = "";
   if (options.mint) {

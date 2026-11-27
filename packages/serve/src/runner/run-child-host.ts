@@ -896,7 +896,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
         }
         return access.mint(bound, { contents: "read" });
       };
-      return { api: access.api, target: bound, mint, ...(access.revoke ? { revoke: access.revoke } : {}), ...(access.same ? { same: access.same } : {}) };
+      return { api: access.api, target: bound, mint, ...(access.revoke ? { revoke: access.revoke } : {}), ...(access.same ? { same: access.same } : {}), ...(access.withheld ? { withheld: access.withheld } : {}) };
     },
     subagentTierKeys: async () => {
       // A subagent's tiers alone: an agentic run granted the subagent tool routes each tier its revision's modelTiers or
