@@ -1286,7 +1286,7 @@ export class Triggers {
     const agentId = trigger.target.agent_id;
     const sent: HookFiring = {
       firing_id: firing.key, trigger_id: trigger.id, agent_id: agentId, revision_id: (await this.store.agents.get(agentId))?.currentRevision ?? null,
-      input: this.inputOf(trigger, firing), fired_at: second(firing.nominalAt),
+      input: this.inputOf(trigger, firing), fired_at: second(firing.nominalAt), max_cost_usd: trigger.target.max_cost_usd ?? null,
     };
     const handed: Handed | HookFailed = await handToHost(hook, sent, this.stopping.signal, () => this.clock.now()).catch((error: unknown) => (error instanceof HookFailed ? error : Promise.reject(error)));
     if (this.closed || "stopped" in handed) return;
