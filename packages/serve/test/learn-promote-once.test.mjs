@@ -473,6 +473,34 @@ test("(h) a check's stopped workflow restarts on a correction merged after the s
   assert.deepEqual(failed.map(({ workflow, check }) => [workflow, check?.attempt, check?.stopped ?? false]), [["answer", 1, false], ["answer", 2, true]], JSON.stringify(failed));
 });
 
+// Review on #4090 (PRRT_kwDOUmdVMs68v93g): a recompile whose draft failed writes its stop under the failed run's own
+// digest, so main's revision is still an attempt-1 hold, not stopped. Its restart is a first compile all the same: the
+// restart's revise is attempt 1 (its failed draft earns the one recompile), and only that recompile stops it again.
+test("(i) a hold whose recompile's draft failed (the stop under its own digest) restarts on a correction: the restart's revise is attempt 1, its recompile attempt 2 (stopped), then nothing", { timeout: 240_000 }, async (t) => {
+  const { draftFailedDigest } = await import("../dist/runner/learning-end.js");
+  const { DRAFT_FAILED } = await import("../dist/learn/compile.js");
+  const w = await world(t, { learning: { compile_after: 5 }, prior: 5 });
+  const bar = { compile_after: 5, agree_min: 0.8, alone_min: 0.7 };
+  const held = new Date(Date.now() - 2000).toISOString();
+  await recordPromotion(w.server.learning, "agent-1", { workflow: "answer", digest: DIGEST, at: held, decided: "hold", reason: "held", check: { ...bar, attempt: 1, n: 5, alone: 5, agreed: 0 } }, () => true);
+  const stop = draftFailedDigest("old-recompile");
+  await recordPromotion(w.server.learning, "agent-1", { workflow: "answer", digest: stop, at: new Date(Date.now() - 1000).toISOString(), decided: "hold", reason: `${DRAFT_FAILED}: no draft passed. It was the recompile, so it stops`, check: { ...bar, attempt: 2, n: 0, alone: 0, agreed: 0, agent_agreed: 0, of: [], stopped: true } }, () => true, { anyDigest: true });
+  const revises = (id) => w.asks.get(id).filter((ask) => ask.startsWith("One more turn: revise your learned workflow `answer`"));
+
+  const corrected = await learningCommit(learningOf(w.server, "agent-1"), { runId: "owner-fix-1", reason: "the owner's correction", files: [{ path: "corrections.md", text: "- The answer to every question is 42.\n" }] });
+  assert.equal(corrected.ok, true, JSON.stringify(corrected));
+
+  await w.start("run-1", "Question 10");
+  assert.ok(revises("run-1").length > 0, `restarted by the correction: ${w.asks.get("run-1")[0]?.slice(0, 160)}`);
+  await w.start("run-2", "Question 11");
+  assert.ok(revises("run-2").length > 0, `the restart's one recompile: ${w.asks.get("run-2")[0]?.slice(0, 160)}`);
+  await w.start("run-3", "Question 12");
+  assert.deepEqual(w.asks.get("run-3"), [], "a third compile in one restart: refused");
+
+  const failed = (await promotionsOf(w.server.learning, "agent-1")).filter((one) => one.digest !== DIGEST && one.digest !== stop);
+  assert.deepEqual(failed.map(({ workflow, check }) => [workflow, check?.attempt, check?.stopped ?? false]), [["answer", 1, false], ["answer", 2, true]], JSON.stringify(failed));
+});
+
 // Review on #3032 r4 (PRRT_kwDOUmdVMs64MQC-): the compile ask counts the agent's own completed runs before anything limits
 // the read, as the check's inputs are: 250 runs a workflow served since never push the agent's own N out of the window.
 test("(a) compile_after 5, 5 own completed runs then 250 workflow-served runs, the workflow retired: the compile ask still fires", async () => {
