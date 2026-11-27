@@ -1,9 +1,10 @@
 import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Chip, type ChipTone } from "@/components/ui/chip";
-import { HARNESS_ORDER, issuesFor, PIN_BROKEN, PIN_HOLDS, pinLine, providerHelp, providerLabel, resolution, DENY_ONLY, SERVER_DENY, serverDenies, type ToolChoice, type ToolGate, withPermission, withProvider } from "@/lib/toolSettings";
+import { HARNESS_ORDER, issuesFor, JEV_TOOLS, jevOn, PIN_BROKEN, PIN_HOLDS, pinLine, providerHelp, providerLabel, resolution, DENY_ONLY, SERVER_DENY, serverDenies, type ToolChoice, type ToolGate, withJev, withPermission, withProvider } from "@/lib/toolSettings";
 import { cn } from "@/lib/utils";
 import { Picker } from "@/components/ui/picker";
+import { Switch } from "@/components/ui/switch";
 import type { Agent } from "@/lib/agentForm";
 import { grantOf, type McpServer, type ToolEffect } from "@/lib/mcp";
 import type { Permission, ToolSetting, ToolSettings } from "@/lib/v2";
@@ -205,7 +206,8 @@ export const PerHarness = ({ choice, harnesses = [] }: { choice: ToolChoice; har
 
 /** The agent editor's tool settings: per capability with a provider choice that this agent grants, or that the server's
  *  pick leaves unavailable (the agent's own pick may be what makes it run, before it is granted), its provider, the
- *  server's pick its default, and what it resolves to on the agent's harness and model. Nothing at all when none has one. */
+ *  server's pick its default, and what it resolves to on the agent's harness and model; and, where it grants a web tool,
+ *  its Jev switch (off: `jev: "off"` on web_search, which turns Jev off for both). Nothing at all when none has one. */
 export function AgentToolSettings({ agent, harness, model, tools, choices, gates = [], mcpServers, serverSettings, focus, callTools, value, issues, unattended = false, onChange }: {
   agent: Agent | null;
   /** The agent never asks, as the form has it: its tools set to ask run without asking. */
@@ -314,6 +316,10 @@ export function AgentToolSettings({ agent, harness, model, tools, choices, gates
           if (!own && !saved[t.name] && !model) return <Resolves value={t.resolves[harness]} prefix={`${harness}: `} tool={t.name} />;
           return <span className="block font-mono text-small text-muted-foreground">once saved</span>;
         }} />
+      {JEV_TOOLS.some((name) => granted.has(name)) && <div className="mt-3 flex items-start gap-3">
+        <Switch checked={jevOn(value)} onChange={(on) => onChange(withJev(value, on))} label="Jev ranks web results" />
+        <p className="text-small text-muted-foreground"><span className="font-mono text-foreground">Jev</span> {jevOn(value) ? "ranks this agent's web_search results and picks the parts of a web_fetch page that hold its objective, where this server runs it." : "is off for this agent's web_search and web_fetch: their results are not ranked, and nothing is sent to TypeSafe."}</p>
+      </div>}
       {rest.map((m) => <p key={m} className="mt-2 font-mono text-small text-destructive-text" role="alert">{m}</p>)}
     </section>
   );

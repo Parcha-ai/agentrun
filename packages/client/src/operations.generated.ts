@@ -218,10 +218,12 @@ export type DefinitionInput = {
     web_fetch?: {
       provider?: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
       permission?: "allow" | "ask" | "deny";
+      jev?: "off";
     };
     web_search?: {
       provider?: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
       permission?: "allow" | "ask" | "deny";
+      jev?: "off";
     };
     web_save?: {
       permission?: "allow" | "ask" | "deny";

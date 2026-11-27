@@ -1713,11 +1713,13 @@ class DefinitionToolSettingsAskPerson(TypedDict, total=False):
 class DefinitionToolSettingsWebFetch(TypedDict, total=False):
     provider: Literal["auto", "firecrawl-keyless", "kernel", "parallel"]
     permission: Literal["allow", "ask", "deny"]
+    jev: Literal["off"]
 
 
 class DefinitionToolSettingsWebSearch(TypedDict, total=False):
     provider: Literal["auto", "native", "firecrawl-keyless", "exa-keyless", "parallel", "off"]
     permission: Literal["allow", "ask", "deny"]
+    jev: Literal["off"]
 
 
 class DefinitionToolSettingsWebSave(TypedDict, total=False):
@@ -2220,11 +2222,13 @@ class DefinitionInputToolSettingsAskPerson(TypedDict, total=False):
 class DefinitionInputToolSettingsWebFetch(TypedDict, total=False):
     provider: Literal["auto", "firecrawl-keyless", "kernel", "parallel"]
     permission: Literal["allow", "ask", "deny"]
+    jev: Literal["off"]
 
 
 class DefinitionInputToolSettingsWebSearch(TypedDict, total=False):
     provider: Literal["auto", "native", "firecrawl-keyless", "exa-keyless", "parallel", "off"]
     permission: Literal["allow", "ask", "deny"]
+    jev: Literal["off"]
 
 
 class DefinitionInputToolSettingsWebSave(TypedDict, total=False):
