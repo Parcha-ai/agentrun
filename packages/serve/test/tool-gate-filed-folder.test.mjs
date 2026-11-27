@@ -250,3 +250,14 @@ test("a screenshot's save_as is held as the kernel saves it: a ~ or file: prefix
     assert.equal(await verdictOf(gate, "computer_screenshot", { save_as: given }), await verdictOf(gate, "computer_screenshot", {}), `${given} is saved outside the folder, as a shot with no save_as runs`);
   }
 });
+
+test("a browser screenshot's save_as in the filed folder is refused, held as write, in the words a save_as there gets; one outside it and one with no save_as run", async () => {
+  const gate = runnerGate({ settings: { ...ALLOW, browser: { permission: "allow" } }, overrides: FILED, harness: "pi", root: RUN, tools: ["read", "write", "browser"] });
+  for (const given of ["stripe/pages/shot.png", "./stripe/pages/shot.png", "stripe/./pages/shot.png"]) {
+    const shot = await verdictOf(gate, "screenshot", { save_as: given });
+    assert.ok(shot.startsWith(refusal("write", given)), shot);
+    assert.ok(shot.endsWith("screenshot with save_as writes a file into the run's files, so write's setting holds it; a screenshot without save_as is not held to it."), shot);
+  }
+  assert.equal(await verdictOf(gate, "screenshot", { save_as: "shots/walk.png" }), "allow");
+  assert.equal(await verdictOf(gate, "screenshot", {}), "allow");
+});

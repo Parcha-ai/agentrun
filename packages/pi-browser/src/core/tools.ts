@@ -5,6 +5,7 @@ import type { Decisions, PageVerdict } from "./decisions.js";
 import { fetchDownloads } from "./downloads.js";
 import { asPartial, browserFailure, classifyBrowserError, partialOf, transportFactOf, type BrowserFailure, type PartialRun } from "./failures.js";
 import type { WorkspaceFiles } from "./host.js";
+import { workspacePathRefusal } from "./files.js";
 import { createRepeatGuard, type RepeatGuard } from "./guard.js";
 import { regionOf, type Locate } from "./clip.js";
 import { captureWithinBudget, type ScreenshotOptions } from "./images.js";
@@ -82,7 +83,7 @@ export type ToolImpl<D extends BrowserDriver = BrowserDriver, A = unknown> = (ar
 export type BrowserToolArgs = {
   snapshot: { includeIframes?: boolean };
   run: { code?: string; actions?: RunAction[] };
-  screenshot: { fullPage?: boolean; type?: "png" | "jpeg"; quality?: number; ask?: string; clip?: { x: number; y: number; width: number; height: number }; id?: string; selector?: string };
+  screenshot: { fullPage?: boolean; type?: "png" | "jpeg"; quality?: number; ask?: string; clip?: { x: number; y: number; width: number; height: number }; id?: string; selector?: string; save_as?: string };
   browser_read: { what?: (typeof WHATS)[number] };
   browser_release: Record<string, never>;
   browser_relaunch: { verified?: boolean; geolocation?: Geo };
@@ -131,6 +132,33 @@ const lostOf = (error: unknown): Lost[] => (error !== null && typeof error === "
  *  them): they were not sent, so the model may send them again. */
 export const lostRequests = (lost: readonly Lost[]): string =>
   `The browser lost ${lost.length === 1 ? "a request" : `${lost.length} requests`} your page made before ${lost.length === 1 ? "the request" : "they"} left the browser: ${lost.map((r) => `${r.method} ${r.url}`).join(", ")}. Chrome's network service restarted while ${lost.length === 1 ? "it was" : "they were"} on ${lost.length === 1 ? "its" : "their"} way, so ${lost.length === 1 ? "the request was" : "the requests were"} not sent. Make ${lost.length === 1 ? "it" : "them"} again if you still need ${lost.length === 1 ? "it" : "them"}.`;
+
+/** Where a screenshot's `save_as` saves it and in which format, or why it is refused: a path relative to the workspace
+ *  (workspacePathRefusal) naming a .png, .jpg or .jpeg file, whose format agrees with `type` when it is given. A .png
+ *  name asks for a PNG; a .jpg name leaves the capture as it was asked (a JPEG unless type says png, which is refused). */
+export function savePlanOf(given: unknown, type: "png" | "jpeg" | undefined): { path: string; format: "png" | "jpeg" } | { refused: string } {
+  const bad = workspacePathRefusal(given);
+  if (bad) return { refused: `save_as: ${bad}` };
+  const path = (given as string).split(/[\\/]/).filter((part) => part !== "" && part !== ".").join("/");
+  const format = /\.png$/i.test(path) ? "png" : /\.jpe?g$/i.test(path) ? "jpeg" : null;
+  if (!format || /(^|\/)\.(png|jpe?g)$/i.test(path)) return { refused: `save_as names a .png, .jpg or .jpeg file: not ${JSON.stringify(given)}` };
+  if (type !== undefined && type !== format) return { refused: `save_as ${JSON.stringify(given)} names a ${format === "png" ? "PNG" : "JPEG"} file, and type asks for ${type === "png" ? "a PNG" : "a JPEG"}: give a name that matches type, or leave type out` };
+  return { path, format };
+}
+
+/** What became of a screenshot's save_as: saved at `path`, or not, with the reason in a word and in a sentence. */
+export type SaveOutcome = { path: string; saved: true } | { path: string; saved: false; reason: "format_changed" | "refused"; message: string };
+
+/** The capture's own bytes (the ones filed as evidence) written at the plan's path through the host's write, unless the
+ *  capture came back in another format than the name says (a PNG over the size budget is retaken as a JPEG): a file
+ *  whose bytes are not what its name says is never written. */
+async function saveCapture(plan: { path: string; format: "png" | "jpeg" }, taken: "png" | "jpeg", bytes: Uint8Array, write: NonNullable<WorkspaceFiles["write"]>): Promise<SaveOutcome> {
+  if (taken !== plan.format) {
+    return { path: plan.path, saved: false, reason: "format_changed", message: `the ${plan.format === "png" ? "PNG" : "JPEG"} was over the size budget and was taken as a ${taken === "png" ? "PNG" : "JPEG"}, so it was not saved as ${plan.path}; save a .${taken === "png" ? "png" : "jpg"} name, or capture a smaller region (clip, id or selector)` };
+  }
+  const out = await write(plan.path, bytes).catch((error: unknown): { refused: string } => ({ refused: `${plan.path} could not be written: ${(error as Error)?.message ?? String(error)}` }));
+  return "refused" in out ? { path: plan.path, saved: false, reason: "refused", message: out.refused } : { path: out.path, saved: true };
+}
 
 /** A read of a browser that has loaded no page yet: it is fresh, and the next step is to navigate, to the replaced
  *  session's last page when there is one. */
@@ -433,8 +461,14 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
     },
 
     screenshot: (args, port, call) => {
-      const { ask: asked, clip: wantedClip, id: wantedId, selector: wantedSelector, ...requested } = args ?? {};
+      const { ask: asked, clip: wantedClip, id: wantedId, selector: wantedSelector, save_as: saveAs, ...asks } = args ?? {};
       const ask = typeof asked === "string" && asked.trim() ? asked.trim() : undefined;
+      // A save_as is checked before any browser call, so a refused one captures and files nothing.
+      const plan = saveAs === undefined ? undefined : savePlanOf(saveAs, asks.type);
+      if (plan && "refused" in plan) return Promise.resolve(text(browserFailure("refused", plan.refused), true));
+      const write = call.files?.write?.bind(call.files);
+      if (plan && !write) return Promise.resolve(text(browserFailure("refused", "This host gives the browser no workspace to save a screenshot into."), true));
+      const requested = plan?.format === "png" ? { ...asks, type: "png" as const } : asks;
       return perform("screenshot", args ?? {}, port, call, "read", async (s, news) => {
         // A region goes through the same capture as the whole page, so whatever guards a capture guards a clipped one.
         const region = await regionOf({ clip: wantedClip, id: wantedId, selector: wantedSelector, fullPage: requested.fullPage }, s.driver.locate?.bind(s.driver));
@@ -446,9 +480,10 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
         const taken = shot.options.clip ? "the clip" : shot.options.fullPage ? "the full page" : "the viewport";
         const scaled = shot.options.scale !== undefined && shot.options.scale < 1 ? ", scaled down" : "";
         const adjusted = shot.adjusted && `adjusted: the first capture${first ? ` (${first.width}x${first.height})` : ""} ${over}; this is ${taken} at ${shot.size.width}x${shot.size.height}${scaled}`;
-        const lines = [news, `url: ${url}`, `evidence: ${receipt.path ?? "(not filed)"}`, adjusted].filter(Boolean).join("\n");
+        const saved = plan && write ? await saveCapture(plan, shot.size.type, Buffer.from(shot.data, "base64"), write) : undefined;
+        const lines = [news, `url: ${url}`, `evidence: ${receipt.path ?? "(not filed)"}`, adjusted, saved && (saved.saved ? `saved: ${saved.path}` : `not saved: ${saved.message}`)].filter(Boolean).join("\n");
         const media = { kind: "screenshot", path: receipt.bodyPath, mime: shot.mimeType, bytes: Buffer.from(shot.data, "base64").byteLength, width: shot.size.width, height: shot.size.height, ...(region ? { clip: region.clip, ...region.of } : {}), ...(ask ? { ask } : {}) };
-        return { content: [{ type: "text", text: lines }, { type: "image", data: shot.data, mimeType: shot.mimeType }], details: { evidence: receipt.path, sha256: receipt.sha256, media } };
+        return { content: [{ type: "text", text: lines }, { type: "image", data: shot.data, mimeType: shot.mimeType }], details: { evidence: receipt.path, sha256: receipt.sha256, media, ...(saved ? { save_as: saved } : {}) } };
       });
     },
 

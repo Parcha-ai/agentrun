@@ -392,3 +392,39 @@ test("the durable extension lists browser_upload and browser_downloads only for 
   assert.deepEqual(names({ workspace: () => scratchSync(t, "files-list-") }), ["browser_downloads", "browser_upload"]);
   assert.deepEqual(names({ files: { resolve: async () => ({ refused: "no" }) } }), ["browser_upload"]);
 });
+
+test("a workspace write makes the file and its missing folders, replaces one already there, and says where it went", async (t) => {
+  const { workspace } = rig(t);
+  const files = workspaceFiles(workspace);
+  assert.deepEqual(await files.write("shots/a/walk.png", Buffer.from("one")), { path: "shots/a/walk.png" });
+  assert.deepEqual(await files.write("./shots/a/walk.png", Buffer.from("two")), { path: "shots/a/walk.png" });
+  assert.equal(fs.readFileSync(path.join(workspace, "shots", "a", "walk.png"), "utf8"), "two");
+  assert.deepEqual(fs.readdirSync(path.join(workspace, "shots", "a")), ["walk.png"], "no temporary file is left");
+});
+
+test("a workspace write that would leave the workspace, by '..', by being absolute or through a link on the way or at the file, is refused and writes nothing outside", async (t) => {
+  const { workspace, outside } = rig(t);
+  fs.symlinkSync(outside, path.join(workspace, "linkdir"));
+  fs.writeFileSync(path.join(outside, "target.png"), "theirs");
+  fs.symlinkSync(path.join(outside, "target.png"), path.join(workspace, "link.png"));
+  fs.mkdirSync(path.join(workspace, "dir.png"));
+  const files = workspaceFiles(workspace);
+  for (const [rel, why] of [
+    ["../escape.png", /'\.\.'/], ["sub/../../escape.png", /'\.\.'/], [path.join(outside, "abs.png"), /absolute/], ["", /name a file/],
+    ["linkdir/escape.png", /a link is on the way/], ["linkdir/deeper/escape.png", /a link is on the way/], ["link.png", /is a link/], ["dir.png", /not a regular file/],
+  ]) {
+    const out = await files.write(rel, Buffer.from("mine"));
+    assert.ok("refused" in out, JSON.stringify(rel));
+    assert.match(out.refused, why, JSON.stringify(rel));
+  }
+  assert.deepEqual(fs.readdirSync(outside), ["target.png"], "nothing was written outside");
+  assert.equal(fs.readFileSync(path.join(outside, "target.png"), "utf8"), "theirs", "the link's target is untouched");
+  assert.equal(fs.existsSync(path.join(path.dirname(workspace), "escape.png")), false);
+});
+
+test("a workspace write the host vetoes is refused with the host's reason", async (t) => {
+  const { workspace } = rig(t);
+  const files = workspaceFiles(workspace, { refuse: (real) => (path.basename(real) === "ledger.json" ? "reserved by the host" : null) });
+  assert.equal((await files.write("ledger.json", Buffer.from("{}"))).refused, "ledger.json: reserved by the host");
+  assert.equal(fs.existsSync(path.join(workspace, "ledger.json")), false);
+});

@@ -117,16 +117,20 @@ export function heldAs(name: string, args: unknown): { readonly tool: string; re
   const fields = (given !== null && typeof given === "object" ? given : {}) as Record<string, unknown>;
   return { tool, args: SHELL_OPS.has(op as string) ? { command: fields.command, ...(fields.cwd !== undefined ? { cwd: fields.cwd } : {}) } : { path: fields.path } };
 }
-/** The path a computer_screenshot call saves the screen to in the run's folder (its `save_as`), held to write's setting
- *  as a file the write tool writes is; undefined for any other call, a screenshot with no save_as included. */
+/** The path a computer_screenshot or a browser screenshot call saves its capture to in the run's folder (its `save_as`),
+ *  held to write's setting as a file the write tool writes is; undefined for any other call, a screenshot with no save_as
+ *  included. */
 const SCREENSHOT_TOOL = "computer_screenshot";
+/** The browser's screenshot registration (BROWSER_REGISTRATIONS), whose save_as writes into the run's files too. */
+const BROWSER_SCREENSHOT = "screenshot";
+const SAVING_SCREENSHOTS: ReadonlySet<string> = new Set([SCREENSHOT_TOOL, BROWSER_SCREENSHOT]);
 function savedAs(name: string, args: unknown): { readonly path: unknown } | undefined {
-  if (name !== SCREENSHOT_TOOL || args === null || typeof args !== "object") return undefined;
+  if (!SAVING_SCREENSHOTS.has(name) || args === null || typeof args !== "object") return undefined;
   const path = (args as { save_as?: unknown }).save_as;
   return path === undefined ? undefined : { path };
 }
 /** What a screenshot's refusal for write's setting adds to write's own words: why write's setting holds it. */
-const SAVED_AS_WORDS = "computer_screenshot with save_as writes a file into the run's files, so write's setting holds it; a screenshot without save_as is not held to it.";
+const savedAsWords = (name: string): string => `${name} with save_as writes a file into the run's files, so write's setting holds it; a screenshot without save_as is not held to it.`;
 /** Why the gate refuses every call held to a tool whatever its arguments, or undefined where it may let one through:
  *  "not given", the tool needs `grant` among the agent's `tools` and it is not there (none given, none: leaving it out is
  *  how its owner keeps it, whatever its setting says); "denied", the tool's `permission` is deny; "no approver", it asks
@@ -142,7 +146,7 @@ export const writeBar = (tools: readonly string[] | undefined, permission: Permi
 const notGivenText = (what: string, tool: string, instead: string, ran: "no" | "unknown"): string =>
   `${DENIED_OPENING}${what} needs ${tool} among this agent's tools, and this agent is not given ${tool}.${instead ? ` ${instead}` : ""} ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}`;
 /** What a screenshot's save_as does, and what to do instead, in a not-given refusal. */
-const SAVED_AS_WRITES = ["computer_screenshot with save_as (it writes a file into the run's files)", "Take the screenshot without save_as."] as const;
+const savedAsWrites = (name: string): [string, string] => [`${name} with save_as (it writes a file into the run's files)`, "Take the screenshot without save_as."];
 /** The settings keys of the agent's own file tools, and the arguments their calls name a file by (pi's and the kernel's
  *  `path`, claude-agent's `file_path` and `notebook_path`), which filedRefusal reads. */
 const FILE_KEYS: ReadonlySet<string> = new Set(["read", "write", "edit"]);
@@ -156,7 +160,9 @@ type NamedFiles = { tool: string; paths: string[]; opens?: (given: string) => st
 /** The run-file paths the call `name` (held to `key`) with `args` names, which filedRefusal holds: the agent's own read,
  *  write and edit (by key; every PATH_ARGS it gives, as given), web_save's `path` as where it saves (savePath: a bare name
  *  under media/), browser_upload's `path`, a workflow call node's pdf_pages `path` as pdf_pages opens it
- *  (pdfWorkPath), and a screenshot's `save_as`, held as write, as the kernel saves it (savePathOf). Undefined for any other call, and for read_skill_file, which reads the agent's skill, not the run's
+ *  (pdfWorkPath), and computer_screenshot's `save_as`, held as write, as the kernel saves it (savePathOf); the browser
+ *  screenshot's save_as is write's own `path` (decide holds it as a write call), read as the write tool reads one.
+ *  Undefined for any other call, and for read_skill_file, which reads the agent's skill, not the run's
  *  files. */
 function runFilePaths(key: string, name: string, args: unknown): NamedFiles | undefined {
   if (args === null || typeof args !== "object") return undefined;
@@ -634,14 +640,14 @@ export class RunGate {
     // offers a tool the agent was not given (write's default is allow).
     const saved = savedAs(name, args);
     if (saved) {
-      const refused = this.notGiven("write", ...SAVED_AS_WRITES, ran);
+      const refused = this.notGiven("write", ...savedAsWrites(name), ran);
       if (refused) return refused;
       const write = await this.decide("write", saved, options);
-      if (typeof write === "object") return { deny: `${write.deny} ${SAVED_AS_WORDS}` };
+      if (typeof write === "object") return { deny: `${write.deny} ${savedAsWords(name)}` };
       // And at the path the kernel saves it at (runFilePaths: savePathOf), which write's check above reads as a path the
       // agent's write takes: refused in the same words, held as write.
       const kept = this.filedRefusal("write", name, args, ran);
-      if (kept) return { deny: `${kept} ${SAVED_AS_WORDS}` };
+      if (kept) return { deny: `${kept} ${savedAsWords(name)}` };
       if (write === "ask") return "ask";
     }
     if (verdict === "allow") return "allow";
