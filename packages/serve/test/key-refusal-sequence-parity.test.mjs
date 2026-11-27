@@ -1,17 +1,16 @@
-// key-refusal's read past a call's stop (and the tail of a run too long to read) counts what the matcher's views show.
-// It may count less than they show (it reads further), never more: a terminal sequence the matcher's screen reading
-// hides whole must count as nothing there too, or padding of it pushes a held value's rest out of the read and its
-// head shows. The two share the sequence rules (match.ts sequenceAt) but not the decoding: the views decode one layer
-// each, key-refusal decodes the units itself, so this test reads each shape through every decoding. Each padding shape
-// below is a terminal sequence (each opener, with a unit of each class below inside), written as it stands, as JSON's
-// escapes (as a writer writes them, as "\u" escapes throughout, and twice), as Python's escapes in a single-quoted
-// dict, as HTML character references, or percent-encoded as UTF-8 (and with bytes that are no UTF-8). Where the
-// matcher withholds a short text with the padding between a held value's halves, the same padding repeated past what
-// the read takes must withhold it too.
+// key-refusal's read past a call's stop (and the tail of a run too long to read) counts what the matcher's views show:
+// it reads the stretch through each of them (match.ts shownIn), each with its own decoding, join and terminal reading,
+// and stops where the view that shows least has shown enough. A terminal sequence the matcher's screen reading hides
+// whole must count as nothing there too, or padding of it pushes a held value's rest out of the read and its head
+// shows. Each padding shape below is a terminal sequence (each opener, with a unit of each class below inside), written
+// as it stands, as JSON's escapes (as a writer writes them, as "\u" escapes throughout, and twice), as Python's escapes
+// in a single-quoted dict, as HTML character references, or percent-encoded as UTF-8 (and with bytes that are no
+// UTF-8). Where the matcher withholds a short text with the padding between a held value's halves, the same padding
+// repeated past what the read takes must withhold it too. And the read walks every view the matcher has.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { redactedAnswer, redactedCall, SEQUENCE_LAYERS } from "../dist/key-refusal.js";
-import { VIEW_DECODINGS } from "../dist/redact/match.js";
+import { redactedAnswer, redactedCall } from "../dist/key-refusal.js";
+import { shownIn, VIEW_COUNT } from "../dist/redact/match.js";
 
 const [HEAD, REST] = [["Wc3M", "hT8q", "Lz5N", "rB1v"].join(""), ["Xe6K", "pJ4d", "Ys9G", "fA2u"].join("")];
 const VALUE = `${HEAD}${REST}`;
@@ -163,20 +162,16 @@ test("every OSC title ended by ST the matcher reads past whole, followed right a
   assert.deepEqual(under, []);
 });
 
-// The decodings the read past a call's stop reads a sequence through are the views' own: a view added to the matcher,
-// or a decoder added to a view, is read there too ("+" aside: in a sequence it and the space it stands for are of one
-// class; a join view's strings bound only a second level of escapes).
-test("each view's decoding is one the read after a call's stop reads a sequence through", () => {
-  const twice = new Set(["json", "json-quoted", "python-twice"]);
-  const key = ({ names, strings }) => `${names.join(" ")}${strings ? " strings" : ""}`;
-  const layers = SEQUENCE_LAYERS.map(key);
-  const views = VIEW_DECODINGS.map(({ names, strings }) => {
-    const kept = names.filter((name) => name !== "plus");
-    return key({ names: kept, strings: strings && kept.some((name) => twice.has(name)) });
-  });
-  assert.ok(VIEW_DECODINGS.length >= 16, `${VIEW_DECODINGS.length} views`);
-  assert.deepEqual(views.filter((view) => !layers.includes(view)), []);
-  assert.deepEqual([...new Set(views)].sort(), [...layers].sort());
+// The read past a call's stop walks every view of the matcher, a view added to it too: over text that holds what each
+// decoder decodes, property names, both quotes and a terminal sequence, with and without the fold view's separators.
+test("the read after a call's stop walks every view of the matcher", () => {
+  const text = String.raw`{"k": "v %41+\n \\x41 &#65; \x41 it's", 'n': 'w'} ` + "\u001b[31mred\u001b[0m";
+  for (const fold of [false, true]) {
+    const walked = new Set();
+    Array.from(shownIn(text, fold, walked));
+    assert.ok(VIEW_COUNT >= 16, `${VIEW_COUNT} views`);
+    assert.deepEqual([...walked].sort((a, b) => a - b), Array.from({ length: VIEW_COUNT }, (_, index) => index), `fold ${fold}`);
+  }
 });
 
 test("kr-10 (percent-encoded CSI colours with U+FFFD inside): a held value whose head ends a run too long to read, the padding after it, and whose rest follows is withheld", () => {

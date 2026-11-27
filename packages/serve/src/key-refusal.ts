@@ -7,21 +7,7 @@ import { harnessOf } from "./harness-table.js";
 import { cutSecrets, endsInScheme, foldsHeld, redactSecrets, secretShapes, valueLeft, valueMatcher } from "./learn/secrets.js";
 import { hostModel, MODEL_KEYS } from "./model.js";
 import { modelWire, openRouterOnly, WIRES } from "./provider.js";
-import {
-  type DecoderName,
-  entityAt,
-  joinDrops,
-  jsonEscapeAt,
-  jsonEscapeOnceAt,
-  privateKeyEnd,
-  pythonEscapeAt,
-  scanned,
-  sequenceAt,
-  type SequenceUnits,
-  squeeze,
-  type Span,
-  VIEW_DECODINGS,
-} from "./redact/match.js";
+import { type Marks, marksOf, privateKeyEnd, scanned, shortRun, shownIn, type Span } from "./redact/match.js";
 import { savedGatewayIn } from "./model-gateway.js";
 
 /** The key a run's model requests carry, and who reads it: a provider's (saved in Settings → Model keys, or set where
@@ -101,6 +87,25 @@ export function redacted(text: string, secrets: readonly string[], shown = SHOWN
  *  so its cost grows with the square of what it reads; pieces this size keep each pass small. */
 const ANSWER_PIECE = 8192;
 
+/** The most characters (as match.ts's `scanned` counts them) one read for the head or the tail of a run (peek, tailOf)
+ *  visits before it stops and gives undefined, so the caller withholds the text. Each view reads such a read's stretch
+ *  from every place its join can start, so padding every view reads apart and shows little of costs it hundreds of
+ *  characters per character of the stretch. Checked after each reading (one view's, over one stretch of at most a
+ *  piece), so a read visits at most this and one reading more: the costliest reading measured visits 178 characters per
+ *  character of its stretch (READ_BOUND in key-refusal.test.mjs). A run is read only where it is longer than a piece,
+ *  at most twice (its head and its tail), so the reads cost at most 2 x (92 + 178) pieces over a piece and one
+ *  character, about 540 per character of the text, under the matcher's bound (WORK in redact-contract.test.mjs). No
+ *  read of the tests' prose, JSON and logs reaches it; on the padding corpora, each read that does is on a text that
+ *  was withheld before it too. Spending it only ever withholds: a read that stops gives undefined, never a shorter
+ *  stretch. */
+const READ_BUDGET = 92 * ANSWER_PIECE;
+
+/** The stretches a read for `count` characters tries, shortest first: 4 × `count` + 64 characters where that is
+ *  shorter than a piece, then a piece; no stretch is longer than a piece. */
+function widths(count: number): number[] {
+  return 4 * count + 64 < ANSWER_PIECE ? [4 * count + 64, ANSWER_PIECE] : [ANSWER_PIECE];
+}
+
 /** How many texts redactedAnswer has read in this process: a test reads it to see a run's view served from what an
  *  earlier view redacted (runs.ts servedOnce). */
 export const answerPasses = { count: 0 };
@@ -157,17 +162,17 @@ export function withheldWhole(text: string, secrets: readonly string[], held: re
 
 /** Whether the text a reader is about to be shown (`shown`, what the caller returns) holds a held value, or the joined
  *  pieces still hold one or a secret shape: one a cut split. `shown` is read whole for a held value (valueMatcher, one
- *  linear pass): however the pieces were put together, as each was cut or shown, or an unread run's "[redacted]" between
- *  them, no text that reads as a held value is returned (a held value holding "[redacted]", its parts on either side of
- *  a cut in another piece). A value is also looked for in the pieces as they came, joined by line breaks, each piece's
- *  own cuts covering it (valueLeft): a piece's cut can take part of a value split across pieces (a credential
+ *  linear pass): however the pieces were put together, as each was cut or shown, or an unread run's "[redacted]"
+ *  between them, no text that reads as a held value is returned (a held value holding "[redacted]", its parts on either
+ *  side of a cut in another piece). A value is also looked for in the pieces as they came, joined by line breaks, each
+ *  piece's own cuts covering it (valueLeft): a piece's cut can take part of a value split across pieces (a credential
  *  parameter's value cut in place at the end of a piece, the rest of the held value in the next), and the rest then no
  *  longer reads as the value. A piece withheld whole covers all of itself, so a value split inside one piece is that
  *  piece's own redaction's, and only a value no cut covers across pieces (or in the text read past where they stopped)
- *  withholds the text. Each unread run's head and tail are covered (it shows as "[redacted]") and read: its head for the
- *  rest of a value split before it, its tail for the head of a value whose rest comes after it. A shape is looked for in
- *  the pieces each redacted (a shape whole in one is no shape a cut split). A peek too long to read (`unread`) withholds
- *  the text too. */
+ *  withholds the text. Each unread run's head and tail are covered (it shows as "[redacted]") and read: its head for
+ *  the rest of a value split before it, its tail for the head of a value whose rest comes after it. A shape is looked
+ *  for in the pieces each redacted (a shape whole in one is no shape a cut split). A peek too long to read or too
+ *  costly (`unread`) withholds the text too. */
 function heldIn(seen: Seen, secrets: readonly string[], shown: string): boolean {
   return seen.unread || valueMatcher(secrets)(shown) || valueLeft(seen.raw, secrets, seen.cuts) || secretShapes(seen.shapes).length > 0;
 }
@@ -197,6 +202,9 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
   // The run runCut is cutting: where it starts in `text`, and its first piece's index in `out`.
   let run: { from: number; at: number } | undefined;
   let from = 0;
+  // What the reads past a stop and of a run's ends need to know of the text outside them, read once if any is made.
+  let marked: Marks | undefined;
+  const marks = (): Marks => (marked ??= marksOf(text));
   // Also stops past 4 × `enough` characters read: text that shows as almost nothing (URLs whose queries are elided) is
   // not read to its end. Where it stops, the peek reads on as at any stop.
   while (from < text.length && shown <= enough && from <= 4 * enough) {
@@ -212,8 +220,8 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
       // The run is shown as "[redacted]": its head is read, covered, for the rest of a value split before it, and its
       // tail (tailOf: `hold` characters the matcher sees, at most a piece), covered too, for the head of a value whose
       // rest comes after it. One read, the two joined by a line break, as each piece is one.
-      const head = peek(text, start, hold, fold);
-      const tail = head === undefined ? undefined : tailOf(text, start, to, hold, fold);
+      const head = peek(text, start, hold, fold, marks());
+      const tail = head === undefined ? undefined : tailOf(text, start, to, hold, fold, marks());
       if (head === undefined || tail === undefined) unread = true;
       else {
         shapes.push(`${redactSecrets(head, secrets, Buffer.byteLength(head))}[redacted]`);
@@ -242,7 +250,7 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
     const space = run ? text.slice(from, from + ANSWER_PIECE).search(/\s/) : 0;
     scanned.chars += space < 0 ? Math.min(ANSWER_PIECE, text.length - from) : space + 1;
     const runTo = from + (space < 0 ? ANSWER_PIECE : space);
-    const ahead = peek(text, from, hold, fold);
+    const ahead = peek(text, from, hold, fold, marks());
     if (ahead === undefined) unread = true;
     else {
       const rest = runTo > from + ahead.length ? text.slice(from, runTo) : ahead;
@@ -265,257 +273,127 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
   return { out: shows, seen: { raw, cuts, shapes: cutShapes, unread }, short: from < text.length && shown <= enough };
 }
 
-/** text from `from` on, as far as `count` characters the matcher sees (all of it, if it holds fewer), each run of
- *  whitespace in it one space. The matcher reads "+" as a space and decodes percent-encoded bytes, JSON's escapes (one
- *  level and two, as the JSON view reads them), Python's ("\'", "\x" and two hex digits, as the view that reads a
- *  single-quoted dict through them does) and HTML's character references (named and numeric), so a "+", an encoded
- *  byte, an escape and a reference that decode to whitespace count no more than whitespace does, and any other escape
- *  counts as what the view keeps of the character it decodes to. A character that renders as nothing (a zero-width
- *  space, a soft hyphen, a control character that is no whitespace: a NUL, an escape, a delete; U+FFFF) or as a box or a
- *  blank (U+FFFE, a private use character, the braille blank, a lone surrogate: match.ts IGNORABLE), as it stands or as
- *  "\u0001", "\x01", "%01" or "&#1;" decodes, or a combining mark counts as nothing too: the views drop it. A whole
- *  terminal sequence counts nothing (sequenceEnd), and a backspace two less (counted). So does a quote, an apostrophe
- *  or JSON's punctuation ("{", "}", "[", "]", ",", ":"), which the join views drop between a text's strings, and, with
- *  `fold` (a held value folds: learn/secrets.ts foldsHeld), a separator ("-", "_", ":", "."), which the fold view
- *  drops. Padding of any of them never hides the rest of a value split before it. Undefined, so the caller withholds
- *  the text, when that takes more than a piece of text (a run of whitespace counted as one): no redaction pass reads
- *  more than a piece. */
-function peek(text: string, from: number, count: number, fold: boolean): string | undefined {
-  const read = visible(text, from, count, text.length, fold);
-  return read.span > ANSWER_PIECE ? undefined : read.parts.join("");
-}
-
-/** The end of the run text[start, to) the pass reads for the head of a value whose rest comes after the run: as few of
- *  its last characters as hold `count` characters the matcher sees (at most a piece's worth), counted as peek counts
- *  them (with `fold` as peek's), so padding the views read as nothing (whitespace, a zero-width space, a soft hyphen, a
- *  control character, a character that shows as a box or a blank, a quote or JSON's punctuation, a separator a folded value drops, an escape, a character reference or encoded bytes
- *  that decode to any of them) between that head and the run's end never pushes the head out of it. Read forward from
- *  a start moved back from `to`, twice as far each time, so it reads at most two pieces in all. Undefined, so the
- *  caller withholds the text, when that takes more than a piece of text. */
-function tailOf(text: string, start: number, to: number, count: number, fold: boolean): string | undefined {
-  const want = Math.min(count, ANSWER_PIECE);
-  for (let width = Math.min(want, to - start); ; width = Math.min(2 * width, ANSWER_PIECE, to - start)) {
-    const from = to - width;
-    if (from === start || visible(text, from, want, to, fold).found >= want) return text.slice(from, to);
-    if (width >= ANSWER_PIECE) return undefined;
+/** text from `from` on, each run of whitespace in it written short (collapsed), as far as `count` characters every view
+ *  of the matcher shows of it (match.ts shownIn: each view's own decoding, join and terminal reading, from each place
+ *  its join can start), or all of it where the rest of the text is shorter than the read. So padding any view reads as
+ *  nothing (whitespace, a control character, a character that renders as nothing or as a box or a blank, a quote or
+ *  JSON's punctuation a join drops, a separator the fold view drops with `fold`, a whole terminal sequence, each as it
+ *  stands or encoded) never pushes the rest of a value split before it out of the read: it ends where the view that
+ *  shows least has shown `count`, at the furthest of the places each view's `count`th character ends. What stands
+ *  outside the read counts too (`marks`, match.ts marksOf): it reads one character more for each backspace after `from`
+ *  (one after the read strikes out one inside it), and where `from` may be inside a terminal sequence, each view also
+ *  reads the stretch as that sequence's own (shownIn's `open`). Read in each stretch of widths(`count`) in turn.
+ *  Undefined, so the caller withholds the text, where a view shows fewer than `count` in a piece of text (a run of
+ *  whitespace written short): no redaction pass reads more than a piece; where a backspace in it strikes out what
+ *  stands before `from`; and where the read has visited more than READ_BUDGET characters. */
+function peek(text: string, from: number, count: number, fold: boolean, marks: Marks): string | undefined {
+  let spent = scanned.chars + READ_BUDGET;
+  count += marks.backspacesFrom(from);
+  const open = marks.openAt(from);
+  for (const size of widths(count)) {
+    const before = scanned.chars;
+    const { stretch, whole } = collapsed(text, from, size, marks);
+    // Writing the stretch reads the text once, however much whitespace it skips: that is not the views' to spend.
+    spent += scanned.chars - before;
+    if (whole) return stretch;
+    let end = 0;
+    for (const ends of shownIn(stretch, fold, undefined, count, open)) {
+      if (scanned.chars > spent || ends === undefined) return undefined;
+      if (ends.length < count) {
+        end = -1;
+        break;
+      }
+      end = Math.max(end, ends[count - 1]!);
+    }
+    if (end >= 0) return stretch.slice(0, end);
   }
+  return undefined;
 }
 
-/** text[from, to) read as peek says, until `count` characters the matcher sees are found or the read passes a piece
- *  of text (`span`, a run of whitespace counted as one): what it read, as peek returns it, and how many it found. */
-function visible(text: string, from: number, count: number, to: number, fold: boolean): { parts: string[]; found: number; span: number } {
+/** The end of the run text[start, to) the pass reads for the head of a value whose rest comes after the run: a stretch
+ *  of its last characters in which every view of the matcher shows `count` characters (match.ts shownIn, with `fold` as
+ *  peek's), so padding a view reads as nothing between that head and the run's end never pushes the head out of it. The
+ *  run's last widths(`count`) characters in turn, each from the start of an HTML numeric reference it would cut
+ *  (referenceStart); the whole run where that reaches its start. As peek's, it reads one character more for each
+ *  backspace after `to`, and each view reads a stretch that may start inside a terminal sequence as that sequence's own
+ *  too (`marks`). Undefined, so the caller withholds the text, where a view shows fewer than `count` in the run's last
+ *  piece, where a backspace in the stretch strikes out what stands before it, or the read has visited more than
+ *  READ_BUDGET characters. */
+function tailOf(text: string, start: number, to: number, count: number, fold: boolean, marks: Marks): string | undefined {
+  const want = Math.min(count, ANSWER_PIECE) + marks.backspacesFrom(to);
+  const spent = scanned.chars + READ_BUDGET;
+  for (const width of widths(want)) {
+    const from = referenceStart(text, start, Math.max(start, to - width));
+    if (to - from > ANSWER_PIECE) return undefined;
+    if (from === start) return text.slice(start, to);
+    const stretch = text.slice(from, to);
+    let shows = true;
+    for (const ends of shownIn(stretch, fold, undefined, want, marks.openAt(from))) {
+      if (scanned.chars > spent || ends === undefined) return undefined;
+      if (ends.length < want) {
+        shows = false;
+        break;
+      }
+    }
+    if (shows) return stretch;
+  }
+  return undefined;
+}
+
+/** text from `from` on, each run of whitespace written short as every view reads it alike (match.ts shortRun: one
+ *  space where it stands outside any terminal sequence and no backspace after it can strike past it), as far as `size`
+ *  characters so written (`whole` where that reaches the text's end), and, short of its end, never ending inside an
+ *  HTML numeric reference (referenceCut). */
+function collapsed(text: string, from: number, size: number, marks: Marks): { stretch: string; whole: boolean } {
+  const word = new RegExp(`\\S{1,${size}}`, "y");
   const parts: string[] = [];
-  let span = 0;
-  let found = 0;
-  for (let at = from; at < to && found < count && span <= ANSWER_PIECE; ) {
+  let length = 0;
+  let at = from;
+  // A run written short that is longer than the room left (many backspaces after it) ends the stretch inside it.
+  let cut = false;
+  while (at < text.length && length < size) {
     SPACES.lastIndex = at;
-    let end = SPACES.test(text) ? SPACES.lastIndex : at;
-    if (end > at) {
-      parts.push(" ");
-      span++;
+    let next: number;
+    if (SPACES.test(text)) {
+      next = SPACES.lastIndex;
+      const run = shortRun(text.slice(at, next), marks.backspacesFrom(next));
+      cut = run.length > size - length;
+      const part = cut ? run.slice(0, size - length) : run;
+      parts.push(part);
+      length += part.length;
     } else {
-      // A run ends right after a terminal sequence's opener (ESC, or U+009B or U+009D as UTF-8), so the sequence, its
-      // own bytes encoded or not, is read whole by sequenceEnd and counts as nothing.
-      while (end - at <= ANSWER_PIECE && end + 3 <= to && text[end] === "%" && HEX_PAIR.test(text.slice(end + 1, end + 3))) {
-        const byte = Number.parseInt(text.slice(end + 1, end + 3), 16);
-        end += 3;
-        if (byte === 0x1b) break;
-        const c1 = byte === 0xc2 ? percentByte(text, end, to) : -1;
-        if (c1 === 0x9b || c1 === 0x9d) {
-          end += 3;
-          break;
-        }
-      }
-      if (end > at) {
-        const bytes = Buffer.from(text.slice(at, end).replaceAll("%", ""), "hex").toString("utf8");
-        found = counted(found, bytes, fold);
-        if (opensSequence(bytes.at(-1))) [end, found] = sequenceEnd(text, end - (bytes.at(-1) === "\u001b" ? 3 : 6), end, to, bytes.at(-1)!, found);
-      } else {
-        // A character past U+FFFF is read whole, its two UTF-16 units as they are or as two escapes, as the views gather
-        // it before they squeeze it: a combining mark past U+FFFF is then dropped as the views drop it, where each of
-        // its halves alone would count as one.
-        let read = charAt(text, at);
-        end = read.end;
-        if (end < to && HIGH(read.char)) {
-          const low = charAt(text, end);
-          if (LOW(low.char)) {
-            read = { char: read.char + low.char, end: low.end, raw: false };
-            end = low.end;
-          }
-        }
-        if (!(read.raw && read.char === "+")) found = counted(found, read.char, fold);
-        if (opensSequence(read.char)) [end, found] = sequenceEnd(text, at, end, to, read.char, found);
-      }
-      parts.push(text.slice(at, end));
-      span += end - at;
+      word.lastIndex = at;
+      word.test(text);
+      next = Math.min(word.lastIndex, at + size - length);
+      parts.push(text.slice(at, next));
+      length += next - at;
     }
-    // Each character read, a percent-encoded run's twice more (its hex parsed, then decoded).
-    scanned.chars += text[at] === "%" && end > at + 1 ? 3 * (end - at) : end - at;
-    at = end;
+    scanned.chars += next - at;
+    at = next;
   }
-  return { parts, found, span };
+  const stretch = parts.join("");
+  return at >= text.length && !cut ? { stretch, whole: true } : { stretch: stretch.slice(0, referenceCut(stretch)), whole: false };
 }
-/** The character text[at] starts, as the views read it: one of Python's escapes (pythonEscapeAt, at either level:
- *  "\x20" and "\\x20" are a space), else a JSON escape's (jsonEscapeAt), or a character reference's (entityAt), else
- *  the UTF-16 unit itself (`raw`), and where it ends. Python's first: where JSON's escapes read "\\x20" as a backslash
- *  and three characters, the view that reads Python's twice reads a space; counting less only reads further. */
-function charAt(text: string, at: number): { char: string; end: number; raw: boolean } {
-  let escape: { char: string; end: number } | undefined;
-  if (
-    (text[at] === "\\" && ((escape = pythonEscapeAt(text, at)) !== undefined || (escape = jsonEscapeAt(text, at)) !== undefined)) ||
-    (text[at] === "&" && (escape = entityAt(text, at)) !== undefined)
-  )
-    return { ...escape, raw: false };
-  return { char: text[at]!, end: at + 1, raw: true };
+
+/** What may stand in an HTML numeric reference after its "&": "#", an "x", and digits. */
+const IN_REFERENCE = /[#xX0-9A-Fa-f]/;
+/** Where `stretch`, cut from a longer text at its end, ends with no numeric reference ("&#", any zeros and digits) cut
+ *  at its end: before the "&" of one that runs to its end, else its end. A reference reads any number of zeros, so the
+ *  rest of the text can make one character of the digits the stretch reads one by one. */
+function referenceCut(stretch: string): number {
+  let at = stretch.length;
+  while (at > 0 && IN_REFERENCE.test(stretch[at - 1]!)) at--;
+  scanned.chars += stretch.length - at + 1;
+  return at > 0 && stretch[at - 1] === "&" && stretch[at] === "#" ? at - 1 : stretch.length;
 }
-const HIGH = (char: string): boolean => char.length === 1 && char.charCodeAt(0) >= 0xd800 && char.charCodeAt(0) <= 0xdbff;
-const LOW = (char: string): boolean => char.length === 1 && char.charCodeAt(0) >= 0xdc00 && char.charCodeAt(0) <= 0xdfff;
-/** `found` with what the views keep of `chars` added (kept), less two for each backspace in them: a terminal shows
- *  the character after a backspace in place of the one before it, and that one may be past U+FFFF (two UTF-16 units,
- *  as kept counts it). Never below 0: counting fewer only reads further. */
-function counted(found: number, chars: string, fold: boolean): number {
-  let count = found + kept(chars, fold);
-  for (const char of chars) if (char === "\b") count = Math.max(0, count - 2);
-  return count;
+/** `at`, or, where a numeric reference that starts in text[start, at) runs to `at`, where it starts (referenceCut). */
+function referenceStart(text: string, start: number, at: number): number {
+  let k = at;
+  while (k > start && IN_REFERENCE.test(text[k - 1]!)) k--;
+  scanned.chars += at - k + 1;
+  return k > start && text[k - 1] === "&" && text[k] === "#" ? k - 1 : at;
 }
-/** Whether `char` opens a terminal sequence (ESC, the 8-bit CSI or OSC): the views read one as a terminal shows it. */
-const opensSequence = (char: string | undefined): boolean => char === "\u001b" || char === "\u009b" || char === "\u009d";
-type Unit = { char: string; end: number };
-/** One unit as each decoder a view reads through (match.ts VIEW_DECODINGS) reads it, where one starts at text[at]. A
- *  "+" has none: inside a sequence it and the space a form's "+" stands for are of one class (an intermediate byte, or
- *  a title's text), so a view with it reads a sequence as the same view without it does. */
-const UNIT_DECODERS: Readonly<Record<DecoderName, ((text: string, at: number, to: number) => Unit | undefined) | undefined>> = {
-  percent: (text, at, to) => percentAt(text, at, to),
-  plus: undefined,
-  json: (text, at) => (text[at] === "\\" ? jsonEscapeAt(text, at) : undefined),
-  "json-quoted": (text, at) => (text[at] === "\\" ? jsonEscapeAt(text, at, true) : undefined),
-  "json-once": (text, at) => jsonEscapeOnceAt(text, at),
-  entity: (text, at) => (text[at] === "&" ? entityAt(text, at) : undefined),
-  python: (text, at) => pythonEscapeAt(text, at, 1) ?? jsonEscapeOnceAt(text, at),
-  "python-twice": (text, at) => (text[at] === "\\" ? (pythonEscapeAt(text, at, 2) ?? jsonEscapeAt(text, at, true)) : undefined),
-};
-const TWO_LEVELS: ReadonlySet<DecoderName> = new Set(["json", "json-quoted", "python-twice"]);
-/** The decodings sequenceEnd reads a sequence through: each view's (match.ts VIEW_DECODINGS), read once where two
- *  views differ only in "+". `strings`: the view reads a text's strings and decodes two levels of escapes, so a
- *  backslash one level reads right before a quote or an apostrophe is that string's last character, which the second
- *  level does not read with the quote. Exported for its test. */
-export const SEQUENCE_LAYERS: readonly { readonly names: readonly DecoderName[]; readonly strings: boolean }[] = [
-  ...new Map(
-    VIEW_DECODINGS.map(({ names, strings }) => {
-      const kept = names.filter((name) => UNIT_DECODERS[name] !== undefined);
-      const layer = { names: kept, strings: strings && kept.some((name) => TWO_LEVELS.has(name)) };
-      return [`${kept.join(" ")}${layer.strings ? " strings" : ""}`, layer] as const;
-    }),
-  ).values(),
-];
-const LAYER_READS = SEQUENCE_LAYERS.map(({ names, strings }) => {
-  const decoders = names.map((name) => UNIT_DECODERS[name]!);
-  return (text: string, at: number, to: number): Unit => {
-    if (strings) {
-      const once = jsonEscapeOnceAt(text, at);
-      if (once?.char === "\\" && (text[once.end] === '"' || text[once.end] === "'")) return once;
-    }
-    for (const decode of decoders) {
-      const unit = decode(text, at, to);
-      if (unit) return unit;
-    }
-    return { char: text[at]!, end: at + 1 };
-  };
-});
-/** Where the terminal sequence `intro` opens, read on from text[at], ends, read by the matcher's sequence rules
- *  (match.ts sequenceAt); or `at` where it opens none (the views then read on from there). `from` is where the opener
- *  starts. It counts as nothing, and a backspace inside it, which still moves back, as one would outside it: `found`
- *  comes back with it taken off (counted). It is read through each decoding and the read that ends furthest is taken:
- *  - each unit as charAt or percentAt decodes it (every layer at once, JSON's two levels among them), with what the
- *    join views drop passed over (match.ts joinDrops: a ":" or a blank they drop can make a whole escape of the rest);
- *  - each unit as each view decodes it (SEQUENCE_LAYERS), where that view reads the opener as an opener too (a view
- *    that reads "\u001b" as six characters opens no sequence there, and its read would only run to the bound). A
- *    view that decodes fewer layers can read an ST where one that decodes more reads its backslash with what follows
- *    as one escape: a JSON writer's "\u001b" and two backslashes before a quote, a letter of JSON's escapes, or "u"
- *    and four hex digits; Python's before "x" and two hex digits; a raw ESC and backslash before any of them.
- *  Every read passes over a unit that decodes to nothing (an escaped quote, which the view that reads a string written
- *  in a string drops). Where the end taken falls inside a unit (as charAt or percentAt read units), the read past it
- *  resumes at that unit's start, where the views' own reads resume, never inside an escape they read whole. Not at
- *  its end: what a view that decodes
- *  fewer layers reads after its sequence can be the rest of the next sequence's opener (a percent-encoded ESC in a
- *  title, the BEL after it and the backslash of the next "\u001b" read as an ST), and that opener must still open.
- *  Read no further than a piece of text.
- *
- *  The invariant every count here keeps is one-sided: this read may count fewer characters than the views show
- *  (it then reads further), never more, so no padding the views read past pushes a held value's other half out of
- *  the read. */
-function sequenceEnd(text: string, from: number, at: number, to: number, intro: string, found: number): [number, number] {
-  const unitsOf = (decode: (k: number) => Unit): SequenceUnits => {
-    let place = -1;
-    let read: Unit = { char: "", end: at };
-    const unit = (k: number) => {
-      if (k !== place) [place, read] = [k, decode(k)];
-      return read;
-    };
-    return { end: Math.min(to, at + ANSWER_PIECE + 1), code: (k) => unit(k).char.charCodeAt(0), char: (k) => unit(k).char, next: (k) => unit(k).end };
-  };
-  const units = unitsOf((k) => percentAt(text, k, to) ?? charAt(text, k));
-  const code = intro.charCodeAt(0);
-  // A unit decoded to nothing (an escaped quote: jsonEscapeAt) has no code; the view it comes from records nothing
-  // there, so every read passes over it.
-  const empty = (unit: number): boolean => Number.isNaN(unit);
-  const reads = [sequenceAt(units, code, at, (unit) => empty(unit) || joinDrops(unit))];
-  for (const read of LAYER_READS) {
-    const layer = unitsOf((k) => read(text, k, to));
-    if (layer.next(from) === at && layer.char(from) === intro) reads.push(sequenceAt(layer, code, at, empty));
-  }
-  const sequence = reads.reduce((far, one) => (one && (!far || one.end > far.end) ? one : far), undefined);
-  if (!sequence) return [at, found];
-  let [start, end] = [at, at];
-  while (end < sequence.end) [start, end] = [end, units.next(end)];
-  if (end > sequence.end) end = start;
-  let count = found;
-  for (let n = 0; n < sequence.backspaces; n++) count = counted(count, "\b", false);
-  return [end, count];
-}
-/** The byte text[at] percent-encodes ("%" and two hex digits before `to`), or -1. */
-function percentByte(text: string, at: number, to: number): number {
-  return at + 3 <= to && text[at] === "%" && HEX_PAIR.test(text.slice(at + 1, at + 3)) ? Number.parseInt(text.slice(at + 1, at + 3), 16) : -1;
-}
-/** The character percent-encoded bytes at text[at] decode to inside a terminal sequence, as the percent views decode
- *  them: an ASCII byte, one whole UTF-8 sequence of two to four bytes (U+0080-009F and U+FFFD among them), or, for a
- *  byte that starts none, U+FFFD (as Buffer decodes it there); undefined where text[at] is no percent-encoded byte. */
-function percentAt(text: string, at: number, to: number): { char: string; end: number } | undefined {
-  const lead = percentByte(text, at, to);
-  if (lead < 0) return undefined;
-  if (lead < 0x80) return { char: String.fromCharCode(lead), end: at + 3 };
-  const size = lead >= 0xc2 && lead <= 0xdf ? 2 : lead >= 0xe0 && lead <= 0xef ? 3 : lead >= 0xf0 && lead <= 0xf4 ? 4 : 0;
-  const bytes = [lead];
-  for (let i = 1; i < size; i++) {
-    const next = percentByte(text, at + 3 * i, to);
-    if (next < 0x80 || next > 0xbf) break;
-    bytes.push(next);
-  }
-  if (size && bytes.length === size) {
-    try {
-      return { char: UTF8.decode(Uint8Array.from(bytes)), end: at + 3 * size };
-    } catch {
-      // An overlong or surrogate encoding: no UTF-8, read as below.
-    }
-  }
-  return { char: "\ufffd", end: at + 3 };
-}
-// ignoreBOM: each character is decoded alone, and a decoder that strips a BOM would read %EF%BB%BF as nothing at all
-// where the views read U+FEFF. Fatal, with the BOM kept, one whole UTF-8 sequence decodes to exactly one character.
-const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const SPACES = /\s+/y;
-const HEX_PAIR = /^[0-9A-Fa-f]{2}$/;
-/** What the fold view drops: the separators of a hex identifier. */
-const FOLD_DROPS = new Set(["-", "_", ":", "."]);
-/** How many characters the views keep of `chars` at the least (peek): squeezed (a control character that is no
- *  whitespace, and one that shows as a box or a blank, as the views drop them, count 0), less each the join view drops,
- *  and, with `fold`, each the
- *  fold view drops. */
-function kept(chars: string, fold: boolean): number {
-  let count = 0;
-  for (const char of squeeze(chars)) if (!joinDrops(char.charCodeAt(0)) && !(fold && FOLD_DROPS.has(char))) count += char.length;
-  return count;
-}
 
 /** Where the piece of `text` read from `from` ends: at its last whitespace before ANSWER_PIECE characters; with none, at
  *  runCut's place, else at the next whitespace (a run read as one, or unread past ANSWER_PIECE). Never inside a private
