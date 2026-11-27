@@ -73,6 +73,8 @@
 
   The docs now say that keeping the model off a filed answer takes giving the run no desktop, or setting the desktop kind to `deny`. A desktop whose model is handed no screen tools (`surface: code`) still gives its scripts `apps.open` and input ops.
 
+  Upgrading: a runner from 0.1.0-beta.60 up to 0.1.0-beta.63 has neither the `pdf_pages` call node check nor the `save_as` check. It runs a learned `pdf_pages` call node on a path in a filed folder and saves a screenshot's `save_as` into one, with no error or warning, so update every runner that can claim the runs of an agent with a `file` setting to this release.
+
 ## 0.1.0-beta.63 (2026-11-26)
 
 - An agent on any CLI harness (claude-agent, codex, opencode, and Goose or Cursor where their owner installed them) now gets the browser, the same way it gets web_fetch. Before, granting `browser` to such an agent came back with "browser runs on pi here; on <harness> it is not bound yet", and a run of an agent whose computer is a browser was refused at its claim with "This agent's computer is a browser, which only the pi harness drives here". Now neither is refused on any of them. The harness is handed the browser's tools (`snapshot`, `run`, `screenshot` and the rest) as host tools. They drive the same session pi's would: the agent's browser computer, or else the vendor its tool plane picks. They use the same live view, the same spend held under the run's cap, and the same release when the run is let go. <!-- changes/browser-on-every-harness.md -->
