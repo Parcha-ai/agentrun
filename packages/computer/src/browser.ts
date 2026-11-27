@@ -114,6 +114,13 @@ export const withoutCreateLabel = (labels: Record<string, string>): Record<strin
 	return rest;
 };
 
+/** A listed browser's createdAt (ComputerInfo), from the time its vendor says it made it: none where that is absent or
+ *  is no time. */
+export const createdOf = (at: string | undefined): { createdAt?: Date } => {
+	const time = typeof at === "string" && at !== "" ? new Date(at) : undefined;
+	return time !== undefined && !Number.isNaN(time.getTime()) ? { createdAt: time } : {};
+};
+
 /** A browser a create label found: its id, when the vendor made it (an ISO time, where it says), and its labels. */
 export interface HeldBrowser {
 	id: string;
@@ -169,8 +176,8 @@ export function leftToConverge(mine: string, made: ReadonlyArray<MadeBrowser>): 
 
 /**
  * Where a lost create's browser left to a converge (leftToConverge) stands when the request's browsers are read again:
- * "unread" when the read lists neither mine nor any newer one (the first read did, so it says nothing); "release" once
- * mine has ended; "answered" when a newer one has ended, since a converge that answers the older ends its own first;
+ * "unread" when the read does not list mine, or lists no newer one (the first read did, so it says nothing); "release"
+ * once mine has ended; "answered" when a newer one has ended, since a converge that answers the older ends its own first;
  * "answered-older" when an older one also runs, since that converge may have missed the older and answered mine, or
  * answered the older and left mine held by none; "release" when an older one runs and every newer one runs too;
  * "running" while every newer one still runs, so no converge has answered mine yet.
@@ -226,9 +233,10 @@ export function recoveriesInFlight(): readonly RecoveryInFlight[] {
  * included), each found browser's request is read, again after a read that failed or did not list it, and one no read
  * lists is kept: such a read says nothing of who holds it. One older than a browser of its request that has ended
  * (convergeSettled) is kept at once, even when an older one runs, as a converge that answers it ends its own first and
- * one whose list missed the older may have answered it; where an older one runs, the words say it may be held by none. One left to another create's converge (leftToConverge) is otherwise read again,
- * every RECOVER_GAP_MS within that half (once at least), and kept once a newer one has ended or a read fails or misses
- * a browser the first read listed. One whose newer browsers all still run at the end was answered by no converge (each
+ * one whose list missed the older may have answered it; where an older one runs, the words say it may be held by none.
+ * One left to another create's converge (leftToConverge) is otherwise read again, every RECOVER_GAP_MS within that half
+ * (once at least), and kept once a newer one has ended or the last read fails or misses a browser the first read
+ * listed. One whose newer browsers all still run at the end was answered by no converge (each
  * kept its own) and is released. The words say what became of them, for the create's failure; they never carry a URL.
  */
 export async function recoverCreate(

@@ -1236,6 +1236,16 @@ as a caller's labels, with no code of its own: Docker writes them with `--label`
   cannot prove it is current (named in `unproven`, with why). It keeps the run's computers of this epoch. It holds
   each listed computer to the run's label again, so a computer of another run is never touched, whatever `list` gives.
   It returns `{ released, kept, unproven }`.
+- `releaseUnheld(provider, run, epoch, held, { signal? })` is the claim's own sweep, for when it lets the run go: it
+  lists the run's computers by `agentrun.run` and deletes each of this epoch that `held(info)` refuses, keeping every
+  one of another epoch, another run, or the agent's tenure. A browser one create of a request made and then lost, kept
+  by its recovery, is one: nothing holds it, and the vendor alone would end it. It returns
+  `{ released, held, failed }`, each released computer with its labels and, when the listing gives it, `createdAt`,
+  from which its time is charged; a release that fails is named in `failed` and the rest go on. Its options may carry
+  `releasing(computer)`, run before each release is sent (a host saves what it books the computer's time by, so a
+  process that ends before the booking leaves a record a later one books from; one that throws holds that computer back,
+  named in `failed`), and `released(computer)`, run as each release answers, before the next is sent (a host books it
+  there, so a later release that hangs leaves it booked).
 - **Fenced.** A computer of the run with a higher epoch means a later claim holds the run: `releaseOlder` is refused
   (`refused`, `fenced: run "r1" has computer-… at epoch 4, above this claim's epoch 3; …`) before it releases
   anything.
@@ -2679,10 +2689,10 @@ when that half is under 2 s). While every newer one still runs, no converge has 
 own), and at the end it is released. On the first read as on every later one, a newer one that has ended counts before
 an older one that runs, since a converge whose list missed the older may have answered it. That keeps one held by none
 too: where three creates of a request ran, the newest's converge may have answered the oldest and ended its own, and
-the lost create's, the middle one, then runs to the vendor's lifetime; its failure says that an older one still runs.
-A read that fails, or that misses the lost create's browser, or a read again that misses every newer one, says nothing
-of who holds it and leaves it running; a first read that fails or misses it is tried again within the same half before
-that. The search's own retries, for a vendor that lists a browser late, wait within that
+the lost create's, the middle one, is held by none; its failure says that an older one still runs.
+A first read that fails or misses the lost create's browser, or a last read again that fails or misses it or every
+newer one, says nothing of who holds it and leaves it running (a read again before the last is followed by the next,
+which decides); a first read that fails or misses it is tried again within the same half before that. The search's own retries, for a vendor that lists a browser late, wait within that
 half too, so the release keeps the other half.
 Browserbase is asked status by status in a session's own order (pending, then running, then the ended ones), so a
 session that moves on while a list runs is found in a later answer, never missed, and one found in two answers reads as
@@ -2692,16 +2702,22 @@ while it listed the request, or released its own and then failed (its release re
 older failed), or its own reply was lost too and its recovery released it. Nothing on the vendor tells those apart, so
 there the lost create's browser runs to the vendor's lifetime: on Browserbase its `timeout`, up to the run's lifetime
 and at most 6 h; on Kernel its idle timeout, at most 72 h. One kept because the request could not be read runs as long.
-The create's failure says so, and its labels let a sweep find it. This bound is not covered, and is tracked separately.
+The create's failure says so. A browser that carries a run's labels (`runLabels`) is released sooner, when the run's
+claim lets the run go (`releaseUnheld`, which serve runs at a run's end, stop and park).
 Where a read shows the lost create's browser is the request's only one, it is released. A 4xx refusal made nothing, so nothing is looked for. Both labels are the provider's own: `check()` refuses
 them in a spec, and no list or attach shows them.
 
-Two gaps are not covered, and are tracked separately. A lost create whose browser is the request's only one releases
+Three gaps are not covered, and are tracked separately. A lost create whose browser is the request's only one releases
 it even when another process's create answered it by its lookup, or when the lost create read the request before the
 other create's POST landed and that create's converge answered it: nothing on the vendor says so, and that create
 holds a browser that has ended. The same holds when a converge lists the lost create's browser running just before the
 lost create's last read again and ends its own just after: the lost create releases it, and that create's read of it
-most often finds it ended and fails the request. On Orgo, a create whose POST got no answer deletes the computer by its exact name; that
+most often finds it ended and fails the request. Nor does a newer browser that still runs prove that nothing answered
+the lost create's: another create's lookup answers the request's oldest without a converge and ends nothing, so a
+lookup that lists the lost create's browser while a newer one runs answers it, and the lost create's last read again
+still finds every newer one running and releases it; nothing on the vendor tells that lookup apart. The lookup's caller
+then holds a browser that has ended: a pi-browser host's next call finds it ended and opens a fresh session, losing one
+call and the page state, and a call with effects that was under way may report `possibly_effected`. On Orgo, a create whose POST got no answer deletes the computer by its exact name; that
 name can be the computer another process's create answered through Orgo's 409 (name in use), which then holds a
 deleted computer.
 

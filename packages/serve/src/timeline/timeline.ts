@@ -215,6 +215,10 @@ export const CAP_REFUSED = "agentrun.cap_refused";
  *  claim's, that the old one is gone with what was on it (`words`, what it was told after the label, as the wrap-up's).
  *  A row of its own, the server's, as the wrap-up's; no request, no cost. */
 export const COMPUTER_NOTE = "agentrun.computer_note";
+/** The run's claim, letting the run go, released the browsers of the run's labels that no claim held (serve's
+ *  browser-cost.ts unheld): `words` say how many and which, and any it could not release. A row of its own, the server's,
+ *  as the wrap-up's; no request, no cost (each one's time is its BROWSER_CHARGED). */
+export const BROWSERS_UNHELD = "agentrun.browsers_unheld";
 /** A tool call with no price, run outside the run's cost and its cap (an MCP tool its owner set no price for): `tool`,
  *  `charged_by` and `call` name it. It shows as a row of its own, "not metered", and the usage row counts it
  *  (`not_metered`); it is no charge and never makes the cost unknown. */
@@ -1023,7 +1027,7 @@ function createProjector(options: TimelineOptions) {
 
     // The wrap-up's refusal of a call, kept for the run's view: its result row is the call's own.
     if (entry.kind === CAP_REFUSED) return out;
-    if (entry.kind === CAP_WRAPUP || entry.kind === COMPUTER_NOTE) {
+    if (entry.kind === CAP_WRAPUP || entry.kind === COMPUTER_NOTE || entry.kind === BROWSERS_UNHELD) {
       // What the run's model was told near its cap, or after its computer was replaced: the server's row (`origin:
       // "server"`, in the words of its other rows), no request, no cost, and no message any turn took (its id ends in
       // NOTE_SUFFIX, which isMessageRow passes over).

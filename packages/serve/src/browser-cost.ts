@@ -26,7 +26,9 @@ import { type Harness, ROOT_CONVERSATION_ID, type Conversation, type Session, ty
 import { PROVIDERS } from "@parcha/agentrun-computer";
 import type { SessionCharge } from "@parcha/pi-browser";
 import type { BeforeCreate } from "@parcha/pi-browser/durable";
-import { BROWSER_CHARGED, SPEND_CAP_REACHED } from "./cap.js";
+import { BROWSER_CHARGED, browserChargeRef, SPEND_CAP_REACHED, UNHELD_BROWSER_TAG, unheldBrowserTag } from "./cap.js";
+import { BROWSERS_UNHELD } from "./timeline/index.js";
+import type { ClaimBrowser, UnheldOptions, UnheldSession, UnheldSessions } from "./workspace/resolve-computer.js";
 import { type PaidBooking, paidStep, unbookedRefusal } from "./paid-calls.js";
 import { logLine } from "./print.js";
 import { forModel } from "./result.js";
@@ -102,6 +104,28 @@ const OWED = {
 const BROWSER_TOOL = "browser";
 /** A row of pi-browser's open-session inventory. */
 type Row = { tag: string; conversationId: number; state: string; resourceId: string | null };
+
+/** The tag a browser a create race left running is charged under (BROWSER_CHARGED), whichever release ended it (a let-go's
+ *  releaseUnheld, or a release by a session's tag that ended it beside that session): one key, so it is charged once in a
+ *  process and booked once on the ledger (browserChargeRef). */
+export const unheldTag = (id: string): string => `${UNHELD_BROWSER_TAG}${id}`;
+
+/** Saved on the run's root before a let-go sends the release of a browser a create race left running: the browser (its
+ *  id, tag and when its vendor made it) and when its release went out (`at`). The browser's charge commits after its
+ *  release answers; a process that ends between the two leaves this record, and the next claim's open charges it
+ *  (browserSpend's recoverOwed). */
+export const BROWSER_UNHELD_OWED = "agentrun.browser_unheld_owed";
+
+/** What a release of the browsers a create race left running says on the run's timeline and its root (BROWSERS_UNHELD):
+ *  that nothing the run held was among them, so a reader does not take their time for the run's own use. */
+export function unheldWords(swept: UnheldSessions): string {
+  const n = swept.released.length;
+  const one = n === 1;
+  const released = n > 0 ? `Released ${n} browser${one ? "" : "s"} a create race left running (${swept.released.map((r) => r.id).join(", ")}); this run did not hold ${one ? "it" : "them"}, and ${one ? "its" : "their"} time is booked on the run and absorbed, not billed.` : "";
+  const failed = swept.failed.length > 0 ? `Could not release ${swept.failed.length} browser${swept.failed.length === 1 ? "" : "s"} a create race left running (${swept.failed.join("; ")}): each runs to its vendor's lifetime.` : "";
+  const creating = swept.creating.length > 0 ? `Left ${swept.creating.length} browser${swept.creating.length === 1 ? "" : "s"} to ${swept.creating.length === 1 ? "its create" : "their creates"}, still running (${swept.creating.join(", ")}).` : "";
+  return [released, failed, creating].filter(Boolean).join(" ");
+}
 
 /** One run's browser bookings, for its one provider at `price` with pi-browser's idle window `idleS`. `release` lets go of
  *  a conversation's session (pi-browser's release, "close"). `log` takes the line that says a charge went uncounted
@@ -253,7 +277,7 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     // Held at its charge (known: it was billed): a claim lost before its settle leaves it booked at that, never unknown
     // (the kernel's bookCut books an owed step at its hold). A charge of an unknown amount holds nothing.
     const owes = typeof data.usd === "number" && Number.isFinite(data.usd) && data.usd > 0 ? data.usd : 0;
-    const step = paidStep(booking, data.call ?? undefined, { name: "this browser session's time", holdUsd: owes, basis: `${provider}'s session time, billed as it was charged`, by: data.charged_by, tool: BROWSER_TOOL, tag: data.tag, ...OWED.charge, ref: chargeRef(data) }, async () => undefined, () => data.usd).then(
+    const step = paidStep(booking, data.call ?? undefined, { name: "this browser session's time", holdUsd: owes, basis: `${provider}'s session time, billed as it was charged`, by: data.charged_by, tool: BROWSER_TOOL, tag: data.tag, ...OWED.charge, ref: browserChargeRef(data) }, async () => undefined, () => data.usd).then(
       (stepped) => void ("refused" in stepped && log(logLine("browser_spend_unbooked", { said: `a browser charge of ${data.tag} was not booked on the run's ledger (${stepped.refused.slice(0, 200)}): the next claim's reopen books it` }))),
       (error: unknown) => void log(logLine("browser_spend_unbooked", { said: `a browser charge of ${data.tag} was not booked on the run's ledger (${String((error as Error)?.message ?? error).slice(0, 200)}): the next claim's reopen books it` })),
     );
@@ -314,24 +338,26 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     }
   }
 
-  /** The one booking a charge names on the ledger: its session, its time, and whether it was the session's last. */
-  const chargeRef = (data: Pick<Booked, "tag" | "at" | "final">) => `browser:${data.tag}@${data.at}${data.final ? "/final" : ""}`;
-
   /** At a reopen, on the runner's one ledger: every charge the root holds (BROWSER_CHARGED) is booked there, once by its
    *  ref, so one whose commit landed and whose booking did not (its process lost between the two) is counted now; one
    *  booked already books nothing. */
   async function bookRootCharges(harness: Pick<Harness, "conversation">, context: Context): Promise<void> {
     if (!paid) return;
+    const charges: Booked[] = [];
+    await eachRootEntry(harness, context, (entry) => void (entry.kind === BROWSER_CHARGED && charges.push(entry.data as Booked)));
+    await Promise.all(charges.map((data) => bookOnLedger(paid, data)));
+  }
+
+  /** Each entry the run's root holds, oldest first. */
+  async function eachRootEntry(harness: Pick<Harness, "conversation">, context: Context, visit: (entry: { kind: string; data?: unknown }) => void): Promise<void> {
     const root = await harness.conversation(ROOT_CONVERSATION_ID as never, context);
     if (!root) return;
-    const charges: Booked[] = [];
     for (let cursor: unknown = undefined; ; ) {
       const page = await root.entries({ order: "ascending" } as never, 500, cursor as never, context);
-      for (const entry of page.items as readonly { kind: string; data?: unknown }[]) if (entry.kind === BROWSER_CHARGED) charges.push(entry.data as Booked);
+      for (const entry of page.items as readonly { kind: string; data?: unknown }[]) visit(entry);
       if (page.next === undefined) break;
       cursor = page.next;
     }
-    await Promise.all(charges.map((data) => bookOnLedger(paid, data)));
   }
 
   /** At a reopen, after pi-browser's reconcile: every session its custody still tracks (each row of its inventory: kept,
@@ -521,5 +547,155 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
   /** Once every ledger step of a charge under no call is written. */
   const ledgerIdle = async (): Promise<void> => void (await Promise.all([...pending]));
 
-  return { onCharge, watch, reopened, capped, opening, personTime, carry, stretch, ledgerIdle };
+  /** The browsers a create race left running that the run has charged (unheldTag): each once, whichever release saw it
+   *  end, in this process or an earlier one. */
+  const raced = new Set<string>();
+  /** Read once per process, before its first such charge: the ones an earlier process of the run committed (each
+   *  BROWSERS_UNHELD's released ids, each BROWSER_CHARGED under an unheldTag). pi-browser tells a session again when its
+   *  process ended after the charge's commit and before its own, and that session is charged already. */
+  let chargedBefore: Promise<void> | undefined;
+  /** Read in the same pass: the browsers an earlier process's let-go owed (BROWSER_UNHELD_OWED), each with when its
+   *  release went out, for recoverOwed. */
+  const owedBefore = new Map<string, UnheldSession & { at: string }>();
+  const readChargedBefore = (harness: Pick<Harness, "conversation">, context: Context): Promise<void> =>
+    (chargedBefore ??= eachRootEntry(harness, context, (entry) => {
+      const data = (entry.data ?? {}) as { tag?: unknown; released?: unknown; id?: unknown; createdAt?: unknown; at?: unknown };
+      if (entry.kind === BROWSER_CHARGED && unheldBrowserTag(data.tag)) raced.add(data.tag as string);
+      if (entry.kind === BROWSERS_UNHELD && Array.isArray(data.released)) for (const id of data.released) if (typeof id === "string") raced.add(unheldTag(id));
+      if (entry.kind === BROWSER_UNHELD_OWED && typeof data.id === "string" && typeof data.at === "string") owedBefore.set(data.id, { id: data.id, tag: typeof data.tag === "string" ? data.tag : null, createdAt: typeof data.createdAt === "string" ? data.createdAt : null, at: data.at });
+    }).catch((error: unknown) => {
+      owedBefore.clear();
+      chargedBefore = undefined;
+      throw error;
+    }));
+  /** Sessions a create race left running and nothing held, released (a let-go's ClaimBrowser.releaseUnheld, or a release
+   *  by a session's tag that ended them beside it: pi-browser's onRaceReleased), in one commit on the run's root: each
+   *  one's time charged as a session's release is (a BROWSER_CHARGED, final, under no call, its tag unheldTag), from when
+   *  its vendor made it to `at`, topped up to the provider's minimum (pi-browser's sessionCharge), and what was released,
+   *  what could not be, and what was left to a create still in flight, said on the run's timeline (BROWSERS_UNHELD). A
+   *  session the run charged already (raced) is neither charged nor said again. Each charge is booked on the run's one ledger
+   *  as every charge is, once its commit is in (watch, booked: by its ref, its id alone, so a reopen, or the other release,
+   *  never books it twice). One whose vendor does not say when it made it is charged at no known amount (usd null):
+   *  unknown, never 0. A free provider's time charges nothing. */
+  async function unheld(harness: Pick<Harness, "commit" | "conversation">, swept: UnheldSessions, context: Context, at = new Date().toISOString()): Promise<void> {
+    await readChargedBefore(harness, context);
+    const fresh = { ...swept, released: swept.released.filter((one) => !raced.has(unheldTag(one.id))) };
+    if (fresh.released.length === 0 && fresh.failed.length === 0 && fresh.creating.length === 0) return;
+    // Taken before any wait, so a release that sees the same session meanwhile finds it charged; given back if the commit
+    // fails, so the next release that sees it charges it.
+    const tags = fresh.released.map((one) => unheldTag(one.id));
+    for (const tag of tags) raced.add(tag);
+    let words: string;
+    try {
+      const charges = await Promise.all(fresh.released.map((one) => unheldCharge(one, at)));
+      words = unheldWords(fresh);
+      await harness.commit(async (tx) => {
+        if (rate !== 0) for (const data of charges) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BROWSER_CHARGED, data });
+        await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BROWSERS_UNHELD, data: { words, released: fresh.released.map((one) => one.id), failed: [...fresh.failed], creating: [...fresh.creating] } });
+      }, context);
+    } catch (error) {
+      for (const tag of tags) raced.delete(tag);
+      throw error;
+    }
+    log(logLine("browser_unheld_released", { said: words }));
+  }
+
+  /** The charge of a released browser a create race left running (BROWSER_CHARGED, final, under no call, its tag
+   *  unheldTag): its time from when its vendor made it to `at`, topped up to the provider's minimum (pi-browser's
+   *  sessionCharge); usd null where its vendor does not say when it made it. */
+  async function unheldCharge({ id, createdAt }: UnheldSession, at: string): Promise<Booked> {
+    const { sessionCharge, startSpent } = await import("@parcha/pi-browser");
+    const prices = { sessionUsdPerHour: rate, sessionMinimumS: price.minimumS, fetchUsd: 0, fetchProxiedUsd: 0, searchUsd: 0 };
+    const base = { tool: "browser" as const, charged_by: provider, call: null, tag: unheldTag(id), conversation: ROOT_CONVERSATION_ID as number, at, final: true };
+    if (createdAt === null) return { ...base, usd: null, seconds: 0 };
+    const charged = sessionCharge(startSpent(createdAt), at, prices, rate === null ? "unpriced" : "priced", true);
+    return { ...base, usd: charged.usage.state === "priced" ? charged.usage.usage.cost.total : null, seconds: charged.spent.seconds };
+  }
+
+  /** Browser `session`, released, charged to `at` and said on the root (BROWSERS_UNHELD, its release alone) in one commit
+   *  of its own, unless the run charged it already (raced): a browser the run charged is a browser it said. True when this
+   *  commit charged it. A free provider's time charges nothing, and its release is still said. */
+  async function chargeUnheld(harness: Pick<Harness, "commit" | "conversation">, session: UnheldSession, context: Context, at = new Date().toISOString()): Promise<boolean> {
+    await readChargedBefore(harness, context);
+    const tag = unheldTag(session.id);
+    if (raced.has(tag)) return false;
+    raced.add(tag);
+    const swept = { released: [session], failed: [], creating: [] };
+    const words = unheldWords(swept);
+    try {
+      const data = await unheldCharge(session, at);
+      await harness.commit(async (tx) => {
+        if (rate !== 0) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BROWSER_CHARGED, data });
+        await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BROWSERS_UNHELD, data: { words, released: [session.id], failed: [], creating: [] } });
+      }, context);
+    } catch (error) {
+      raced.delete(tag);
+      throw error;
+    }
+    log(logLine("browser_unheld_released", { said: words }));
+    return true;
+  }
+
+  /** What a release of the browsers a create race left running did, said on the run's root (BROWSERS_UNHELD), when it
+   *  did anything. */
+  async function sayUnheld(harness: Pick<Harness, "commit">, swept: UnheldSessions, context: Context): Promise<void> {
+    if (swept.released.length === 0 && swept.failed.length === 0 && swept.creating.length === 0) return;
+    const words = unheldWords(swept);
+    await harness.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BROWSERS_UNHELD, data: { words, released: swept.released.map((one) => one.id), failed: [...swept.failed], creating: [...swept.creating] } })), context);
+    log(logLine("browser_unheld_released", { said: words }));
+  }
+
+  /** A let-go's release of the browsers a create race left running: `release` (ClaimBrowser.releaseUnheld) with each
+   *  browser recorded before its release is sent (BROWSER_UNHELD_OWED) and charged in a commit of its own once its release
+   *  answers, said in that same commit (chargeUnheld), before the next is sent. So a process that ends, or a later release
+   *  that does not answer, leaves each one released either charged and said or owed, and the next claim's open charges and
+   *  says an owed one (recoverOwed). Then what it could not release, and left to a create, said on the root
+   *  (BROWSERS_UNHELD), also when the release throws, which it throws after. A browser the run charged already (raced) is
+   *  neither owed, charged nor said again. A charge whose commit fails is said in the log and stays owed. */
+  async function letGo(harness: Pick<Harness, "commit" | "conversation">, release: (options: Pick<UnheldOptions, "releasing" | "released">) => Promise<UnheldSessions | undefined>, context: Context): Promise<void> {
+    await readChargedBefore(harness, context);
+    let swept: UnheldSessions | undefined;
+    try {
+      swept = await release({
+        releasing: async (session) => {
+          if (raced.has(unheldTag(session.id))) return;
+          await harness.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BROWSER_UNHELD_OWED, data: { ...session, at: new Date().toISOString() } })), context);
+        },
+        released: async (session) => {
+          try {
+            await chargeUnheld(harness, session, context);
+          } catch (error) {
+            log(logLine("browser_unheld_charge_owed", { session: session.id, error: error instanceof Error ? error.message : String(error) }));
+          }
+        },
+      });
+    } finally {
+      await sayUnheld(harness, { released: [], failed: swept?.failed ?? [], creating: swept?.creating ?? [] }, context);
+    }
+  }
+
+  /** At a claim's open: each browser an earlier process's let-go owed (BROWSER_UNHELD_OWED) and the run never charged,
+   *  charged and said on the root (chargeUnheld). One the claim's sweep of its older sessions released (`swept`: by id,
+   *  when that sweep answered; ClaimBrowser.sweptOlder) ran until then, so it is charged to then; one its vendor says still
+   *  runs (its release failed and its process ended) is released here and charged to now; one that no longer runs
+   *  otherwise is charged to when its release went out. One whose status cannot be read, or that cannot be released, or
+   *  whose charge's commit fails, stays owed for the next open, said in the log. */
+  async function recoverOwed(harness: Pick<Harness, "commit" | "conversation">, browser: Pick<ClaimBrowser, "running" | "close" | "sweptOlder">, context: Context): Promise<void> {
+    await readChargedBefore(harness, context);
+    for (const { at, ...session } of owedBefore.values()) {
+      if (raced.has(unheldTag(session.id))) continue;
+      try {
+        let through = browser.sweptOlder?.get(session.id) ?? at;
+        if (through === at && (await browser.running(session.id))) {
+          await browser.close(session.id);
+          through = new Date().toISOString();
+        }
+        await chargeUnheld(harness, session, context, through);
+      } catch (error) {
+        log(logLine("browser_unheld_charge_owed", { session: session.id, error: error instanceof Error ? error.message : String(error) }));
+      }
+    }
+  }
+
+  return { onCharge, watch, reopened, capped, opening, personTime, carry, stretch, ledgerIdle, unheld, letGo, recoverOwed };
 }

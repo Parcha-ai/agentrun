@@ -603,6 +603,7 @@ export type Cost = {
   };
   learning_usd?: number | null;
   tools_usd?: number | null;
+  billable_usd?: number | null;
   all_in_usd?: number | null;
   compile_usd?: number | null;
   followup_usd?: number | null;
@@ -5480,6 +5481,7 @@ export type GetRunUsageResponse = {
     basis: "reported" | "estimate" | "unpriced";
     attempt: number | null;
     billable: boolean;
+    absorbed?: "create_race";
     usd: number | null;
     so_far_usd?: number;
     unpriced?: number;

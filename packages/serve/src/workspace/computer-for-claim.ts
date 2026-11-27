@@ -44,8 +44,8 @@
 // id and the agent's), found again by its owner at each later claim and attached under the new claim, and detached, not
 // deleted, at the run's end. A run that finds it held by another run still going is refused, naming that run.
 import { randomUUID } from "node:crypto";
-import type { BrowserComputerProvider, BrowserSpec, ComputerClient, ComputerConnection, ComputerError, ComputerOwner, ComputerProvider, ComputerSpec, DaemonMethod, DaemonMethods, HelloResult, MountKind, MountReadBack, Result, ScreenWatch, ScreenWatchHandlers, WatchOptions } from "@parcha/agentrun-computer";
-import { isBrowserProvider, ownerFilter, releaseOlder, RUN_LABEL, runLabels } from "@parcha/agentrun-computer";
+import type { BrowserComputerProvider, BrowserSpec, ComputerClient, ComputerConnection, ComputerError, ComputerOwner, ComputerProvider, ComputerRef, ComputerSpec, DaemonMethod, DaemonMethods, HelloResult, MountKind, MountReadBack, Result, ScreenWatch, ScreenWatchHandlers, WatchOptions } from "@parcha/agentrun-computer";
+import { epochOf, isBrowserProvider, ownerFilter, releaseOlder, releaseUnheld, RUN_LABEL, runLabels } from "@parcha/agentrun-computer";
 import { type RecordInput, type Recording, type RecordWatch, startRecording } from "../computer-record.js";
 import { computerOfPlace, type ComputerSetting as RevisionComputer, type PlaceView } from "../computer-setting.js";
 import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions, settingOptions } from "../computer-keys.js";
@@ -62,7 +62,7 @@ import { endingDeletes, figuresOf, type IntervalWrites, intervalWrites, stderrLo
 import { type ComputeLedger, type ComputeMeter, computeMeter, type ComputeMeterOptions } from "../compute-cost.js";
 import { bounded, deleteKept, dropKept, endKept, finishedKept, heldElsewhere, keepKept, KEEP_MS, KEPT_DELETE_MS, type Kept, keptBy, type KeptHolder, keptTaken, type ParkCause, type ParkedEnd, pinnedOf, readKept, restoreKept, takeKept } from "./computer-kept.js";
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
-import { type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, registryHere, resolveComputer, runShellOf, type ShellPlace } from "./resolve-computer.js";
+import { type BrowserHolds, type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, registryHere, resolveComputer, runShellOf, type ShellPlace, type UnheldOptions, type UnheldSession } from "./resolve-computer.js";
 import { computerDenied } from "../tool-gate.js";
 import { loadToolSettings } from "../tool-plane.js";
 import { computerDeniedWords, computerStillOffWords } from "../refusal-words.js";
@@ -340,18 +340,18 @@ function keptDeletes(provider: ComputerProvider, kept: KeptGone): ComputerProvid
 }
 
 /** The run's computers of a lower claim epoch released (the janitor's releaseOlder: one claim's computer at a time), its
- *  failure thrown in its words; true when it deleted one, an earlier claim's computer its runner never let go (a runner
+ *  failure thrown in its words; the ones it deleted, each an earlier claim's computer its runner never let go (a runner
  *  lost, a crash). A run's first claim is epoch 1 (a queued run is epoch 0; each claim and release moves it up one): no
  *  claim came before it to leave a computer, so the provider is not asked (its list is a vendor round trip before the
  *  create). */
-async function releaseOlderClaims(provider: ComputerProvider, claim: { readonly runId: string; readonly epoch: number }, signal: AbortSignal | undefined, ending?: { readonly entry: string; readonly writes: IntervalWrites; readonly keptGone?: KeptGone }): Promise<boolean> {
-  if (claim.epoch <= 1) return false;
+async function releaseOlderClaims(provider: ComputerProvider, claim: { readonly runId: string; readonly epoch: number }, signal: AbortSignal | undefined, ending?: { readonly entry: string; readonly writes: IntervalWrites; readonly keptGone?: KeptGone }): Promise<readonly ComputerRef[]> {
+  if (claim.epoch <= 1) return [];
   // Each delete that answers ok ends its interval as it answers (computer-intervals.ts endingDeletes), so one deleted
   // before another failed, or before the call was cut, keeps its end; one detached or not let go is left open.
   const releasing = ending ? endingDeletes(provider, ending.entry, ending.writes) : provider;
   const older = await releaseOlder(ending?.keptGone ? keptDeletes(releasing, ending.keptGone) : releasing, claim.runId, claim.epoch, signal ? { signal } : {});
   if (!older.ok) throw new Error(older.error.message);
-  return older.value.released.length > 0;
+  return older.value.released;
 }
 
 /** The agent's computer setting: the launch's, else its revision's (computer, else place), else the launch's place. The
@@ -465,15 +465,71 @@ export function claimBrowser(provider: ComputerProvider, spec: ComputerSpec): { 
     if (!answered.ok) throw failed(answered.error);
     return answered.value;
   };
+  // When the vendor's listing said each session a find listed was made (madeAt): a session a release by its tag ended beside
+  // the one it was for is charged from then.
+  const made = new Map<string, string>();
+  // The tag labels of the sessions this claim is opening now, how many opens each: a let-go never releases one whose
+  // create is still in flight (releaseUnheld), which its create answers.
+  const creating = new Map<string, number>();
+  // The run and claim epoch its sessions are made under: what a let-go releases the unheld ones of (releaseUnheld).
+  const run = spec.labels?.[RUN_LABEL];
+  const epoch = spec.labels ? epochOf(spec.labels) : undefined;
+  const unheld = run !== undefined && epoch?.ok
+    ? {
+        async releaseUnheld(holds: () => BrowserHolds | Promise<BrowserHolds>, { signal, releasing, released }: UnheldOptions = {}) {
+          // Read once, at the first computer of the run and epoch the list gave (after the list).
+          let read: Promise<{ ids: ReadonlySet<string>; tags: Set<string> }> | undefined;
+          const held = () => (read ??= Promise.resolve(holds()).then((got) => ({ ids: got.ids, tags: new Set([...got.tags].map(labelValue)) })));
+          const left: string[] = [];
+          const session = (one: { ref: { id: string }; labels: Record<string, string>; createdAt?: Date }): UnheldSession => ({ id: one.ref.id, tag: one.labels[SESSION_TAG] ?? null, createdAt: one.createdAt?.toISOString() ?? null });
+          const swept = await valueOf(
+            releaseUnheld(
+              provider,
+              run,
+              epoch.value,
+              async (info) => {
+                const tag = info.labels[SESSION_TAG] ?? "";
+                if (creating.has(tag)) {
+                  left.push(info.ref.id);
+                  return true;
+                }
+                const { ids, tags } = await held();
+                return ids.has(info.ref.id) || tags.has(tag);
+              },
+              {
+                ...(signal ? { signal } : {}),
+                ...(releasing ? { releasing: (one) => releasing(session(one)) } : {}),
+                ...(released ? { released: (one) => released(session(one)) } : {}),
+              },
+            ),
+          );
+          for (const one of swept.released) open.delete(one.ref.id);
+          return {
+            released: swept.released.map(session),
+            failed: swept.failed.map((one) => `${one.ref.id}: ${one.problem}`),
+            creating: left,
+          };
+        },
+      }
+    : {};
   return {
     browser: {
+      ...unheld,
       provider: provider.id,
       maxLifetimeS: Math.floor(lifetime / 1000),
       features: structuredClone(features),
       async open(tag, lifetimeS, browser?: BrowserSpec, signal?: AbortSignal) {
         const lifetimeMs = Math.min(lifetime, Math.max(1, Math.round(lifetimeS)) * 1000);
+        const label = labelValue(tag);
+        creating.set(label, (creating.get(label) ?? 0) + 1);
         // Each open is its own request: a session closed and opened again under one tag is a new one.
-        const created = await provider.create({ ...spec, lifetimeMs, labels: { ...spec.labels, [SESSION_TAG]: labelValue(tag) }, ...(browser ? { browser } : {}) }, { requestId: randomUUID(), ...(signal ? { signal } : {}) });
+        const created = await provider
+          .create({ ...spec, lifetimeMs, labels: { ...spec.labels, [SESSION_TAG]: label }, ...(browser ? { browser } : {}) }, { requestId: randomUUID(), ...(signal ? { signal } : {}) })
+          .finally(() => {
+            const left = (creating.get(label) ?? 1) - 1;
+            if (left > 0) creating.set(label, left);
+            else creating.delete(label);
+          });
         if (!created.ok) throw failed(created.error);
         open.add(created.value.id);
         return created.value.id;
@@ -481,8 +537,10 @@ export function claimBrowser(provider: ComputerProvider, spec: ComputerSpec): { 
       async find(tag) {
         const listed = await provider.list({ ...spec.labels, [SESSION_TAG]: labelValue(tag) });
         if (!listed.ok) throw failed(listed.error);
+        for (const one of listed.value) if (one.createdAt instanceof Date) made.set(one.ref.id, one.createdAt.toISOString());
         return listed.value.map((one) => one.ref.id);
       },
+      madeAt: (id) => made.get(id) ?? null,
       async running(id, signal) {
         const found = await provider.attach({ id }, signal ? { signal } : {});
         if (found.ok) return true;
@@ -559,7 +617,7 @@ async function providerLaunch(
   interval: { readonly writes: IntervalWrites; readonly entry: string; readonly kind: string; readonly meter?: ComputeMeter; readonly keptGone?: KeptGone },
 ): Promise<ProviderComputer & { releasedOlder: boolean }> {
   const { writes, entry, keptGone } = interval;
-  const releasedOlder = await releaseOlderClaims(provider, claim, signal, { entry, writes, ...(keptGone ? { keptGone } : {}) });
+  const releasedOlder = (await releaseOlderClaims(provider, claim, signal, { entry, writes, ...(keptGone ? { keptGone } : {}) })).length > 0;
   // Its first stretch held under the run's cap at what the create asks for, before anything is made: refused, nothing is.
   const ahead = await interval.meter?.before(entry, figuresOf(spec));
   // The claim is the request: a retry of this launch under the same epoch gets the computer it made, never a second.
@@ -1241,11 +1299,14 @@ export async function computerForClaim(
       // A browser makes nothing here: the run's browser tool opens each session through it, so a session lives (and is
       // booked) only while the tool holds it.
       if (kind === "browser") {
-        // The run's sessions of a lower claim epoch go first, as a computer's do (the janitor's releaseOlder).
-        await releaseOlderClaims(provider, launch, signal, { entry: entry.id, writes });
+        // The run's sessions of a lower claim epoch go first, as a computer's do (the janitor's releaseOlder); the ones it
+        // released, by id and when, are the browser's sweptOlder.
+        const swept = await releaseOlderClaims(provider, launch, signal, { entry: entry.id, writes });
+        const sweptAt = new Date().toISOString();
         const opened = claimBrowser(provider, spec);
         madeBy = entry;
-        return { id: entry.id, groups: ["cdp"], browser: opened.browser, release: opened.release };
+        const browser = swept.length > 0 ? { ...opened.browser, sweptOlder: new Map(swept.map((ref) => [ref.id, sweptAt])) } : opened.browser;
+        return { id: entry.id, groups: ["cdp"], browser, release: opened.release };
       }
       let launched: Awaited<ReturnType<typeof ownedLaunch>> | ProviderComputer;
       /** The labels the provider lists this computer under: its owner's for the agent's own, else the run's. */

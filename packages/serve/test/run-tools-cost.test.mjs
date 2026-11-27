@@ -47,6 +47,7 @@ test("a run with one monid call: tools_usd is that call's charge, and usd is sti
   assert.equal(requests, 2, "the call, then the answer");
   assert.equal(micro(view.cost.usd), micro(requests * REQUEST_USD + 0.003), "usd: the model's requests and monid's $0.003, as on main");
   assert.equal(view.cost.tools_usd, 0.003, "tools_usd: monid's charge for the call");
+  assert.equal(view.cost.billable_usd, view.cost.usd, "no browser race: billable_usd is usd exactly");
 });
 
 test("a run with no paid tool call: tools_usd is 0, and usd is its model requests alone", { timeout: 120_000 }, async (t) => {
@@ -57,6 +58,7 @@ test("a run with no paid tool call: tools_usd is 0, and usd is its model request
   assert.equal(requests, 1);
   assert.equal(micro(view.cost.usd), micro(requests * REQUEST_USD), "usd: the one model request");
   assert.equal(view.cost.tools_usd, 0, "no paid call: $0, never absent or null");
+  assert.equal(view.cost.billable_usd, view.cost.usd, "no browser race: billable_usd is usd exactly");
 });
 
 test("a run with a priced MCP call and a monid call: tools_usd is their sum, inside usd", { timeout: 120_000 }, async (t) => {
@@ -81,6 +83,7 @@ test("a run whose paid call charged an unknown amount: tools_usd is null, as usd
   assert.equal(view.cost.usd, null, "usd: unknown");
   assert.ok(view.cost.so_far_usd >= 0, "usd's known part is said beside it");
   assert.equal(view.cost.tools_usd, null, "tools_usd: unknown too");
+  assert.equal(view.cost.billable_usd, null, "billable_usd: null with usd, never a figure");
 });
 
 test("a learning run a follow-up opened again: the follow-up's paid call is the job's, in tools_usd, usd and the usage lines; a run with no follow-up keeps its whole charge (#3234 review)", { timeout: 240_000 }, async (t) => {
@@ -134,6 +137,8 @@ test("a run still at work: tools_usd is null, never a figure read apart from usd
   assert.equal(view.pending?.kind, "approval", `the run waits on the second call's approval: ${JSON.stringify(view.pending)}`);
   assert.equal(readFileSync(calls, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((one) => one.path === "/v1/run" && one.endpoint === "/person/enrich").length, 1, "the paid call ran before the wait");
   assert.equal(view.cost.tools_usd, null, `a run at work: tools_usd is unknown until it ends: ${JSON.stringify(view.cost)}`);
+  assert.equal(typeof view.cost.usd, "number", `a run at work has its usd so far: ${JSON.stringify(view.cost)}`);
+  assert.equal(view.cost.billable_usd, view.cost.usd, `a run at work with no browser race: billable_usd is usd, never null: ${JSON.stringify(view.cost)}`);
 });
 
 test("a learning run a follow-up opened again whose ledger row an earlier build wrote (its job the first round's figure) reads as this build's split once the server opens again: usd holds tools_usd, the follow-up is not learning, and the usage lines join to usd (#4050 review)", { timeout: 240_000 }, async (t) => {

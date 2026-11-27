@@ -3823,7 +3823,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /agents/{id}/home/files`, and `GET`, `PUT`, `DELETE` on a file's path below it | The files in the agent's home, listed, read, written and deleted ([agent home](#agent-home)). This server's own routes (`x-agentrun-serve: "home/1"`). |
 | `GET /stats` | This server's own route, outside the contract (`x-agentrun-serve: "stats/1"`): the agents, the runs (`total`, `active`, `needs_input`, `failed`, `needs_review`, `status_unknown`), each agent's run count, the cost and what is archived, read from the agent store's aggregates and verified source reports; source completion counters are read when needed to separate overlapping usage. Archived agents and runs are left out of every number but `archived`. A completed or cancelled run counts only in `runs.total`, but for an escalated one (completed, waiting for a person's review), which `needs_review` (`stats/3`) counts; `failed` never does. Each running run is in exactly one of `active` (queued or working) and `needs_input` (`input_required`), both from the runs this server holds, and `status_unknown`: a running run it does not hold, or holds as ended before its end is written. `cost.usd` sums the runs that ended with a cost and is null when none did, never $0, with `basis` (`reported`, `estimate` or `unpriced`: [A run's cost](#a-runs-cost-its-tokens-and-its-basis)), or null beside a null `usd`; `unknown_runs` counts the rest. `analytics` (`stats/2`) sums the runs' metrics over the runs not archived that the `from` and `to` query parameters (RFC 3339 date-times to the millisecond, an impossible one or a finer fraction refused; runs started in [`from`, `to`)) and `agent` pick, each optional, 400 when malformed: `filter` echoes them; `totals` (runs, completed, an escalated run included, `needs_review` (`stats/3`), failed, never an escalated run, `runs_with_metrics`, `runs_with_token_metrics`, tokens and each token kind, requests, unmetered, `cost_usd` and `unknown_cost_runs`), `time` (`wall_ms` over the ended runs, `active_ms` where metrics have it), `by_harness_effort`, `by_day` (UTC), `by_source` (`live` or the import source) and the top 20 `tools`. Token totals sum only runs with every token counter reported, counted by `runs_with_token_metrics`; other runs remain in `runs` but cannot hide the known partial total. If runs exist but none reports a complete count, `tokens` is null; an empty scope is zero. Individual token-kind totals remain null when a measured run reports that counter as unknown. `analytics.usage` combines recorded runs and connected source reports ([Unified token usage](#unified-token-usage)). `learning` (`learning/1`) counts the runs that tried to learn over the same filters, from the store ([Learning](#learning)). The query bounds `analytics` and `learning` alone. |
 | `GET /runs/{id}/graph` | A workflow run drawn, live: its workflow, the DSL's `workflowGraph`, each node's state (a map's items with their labels and the branch each route took for them, a route's branch), every decision with its receipt (answers, evidence, the state the judge saw, image links), every call with its input and output, and the totals (cost, null when any part is unknown). While the run goes it reads the run process's `live.json`, rewritten every 300 ms, never the run's store, which the process holds; once it ended, its store is read lock-free, so a poll never waits on it and never answers `home_busy`. An agentic run has none (`404`). |
-| `GET /runs/{id}/usage` | This server's own (`runusage/1`): what one run cost, line by line: its model requests by model and provider, its paid tool calls by who charged for them, its browser time by provider, its computers' time by provider and resource (`runusage/4`), each line by the attempt it was made in and whether that attempt is billable, with `infra_usd` beside them (`runusage/5`), joining to its `cost.usd` ([A run's cost, line by line](#a-runs-cost-line-by-line)); beside them its browser sessions (`runusage/2`) and the computers it made, each from its create to its proven delete (`runusage/3`). Lines once the run ended; `reason` says why there are none. |
+| `GET /runs/{id}/usage` | This server's own (`runusage/1`): what one run cost, line by line: its model requests by model and provider, its paid tool calls by who charged for them, its browser time by provider, its computers' time by provider and resource (`runusage/4`), each line by the attempt it was made in and whether that attempt is billable, with `infra_usd` beside them (`runusage/5`) and the absorbed time of browsers a create race left (`runusage/7`), joining to its `cost.usd` ([A run's cost, line by line](#a-runs-cost-line-by-line)); beside them its browser sessions (`runusage/2`) and the computers it made, each from its create to its proven delete (`runusage/3`). Lines once the run ended; `reason` says why there are none. |
 | `GET /runs/{id}/trace` | A run's trace, for a person who debugs it: each model request that answered and each tool call as one span, in the order they started. A span has its `kind` (`model` or `tool`), its `name` (the model, or the tool), when it started and ended, how it ended (`status`), and the span it ran under (`parent_id`: the request that made a call, the call a subagent's request was started by). A model request also has its `tokens` (`input` not read from cache, `cache_read`, `cache_write`, `output`, and `reasoning` where reported), and its `usd`. A tool call also has the head of its arguments and of its output, as its Timeline rows show them, and what was charged under it (`usd`, `charged`, `not_metered`). A call that asked for approval ends as its approval did: `waiting` until it is answered, `refused` on a deny, `interrupted` when it was withdrawn with its run. Nothing is measured again or estimated: `model_requests` says what the run's record keeps. `priced`: each request is a span with its cost. `tokens_only`: a workflow run. Its model nodes' requests carry tokens and no cost, since the run's cost is its booking's; each of its decisions (a judge's, a route's, a verify's request) is a span too (`decision: true`), named by the model its provider answered with and labelled by its node, with its own cost. `not_recorded`: a CLI harness's record keeps no request, so its trace is its tool calls. A computer's own time is its provider's to bill and is in no span. Readable while the run goes; one read serves the run's first 2,000 spans and counts the rest in `dropped`. Its words are cut as the Timeline's are, and a run whose handed sign-in can't be read back is refused (`403`), as its graph is. The console's Dev tools tab reads it. |
 | `POST /runs/{id}/pause`, `POST /runs/{id}/resume` | A workflow run: what is in flight finishes, and no node, model call or decision starts until it is resumed. Its status reads `paused`, and stays so across a server restart. An agentic run is `501`, an ended one `409`. |
 | `POST /workflows/validate` | `{workflow, tools?}`: every issue a save would refuse (`[{path, code, message}]`, the DSL's validation with code not run) and what this host lacks as `warnings`. Writes nothing. A refused save's `422` carries each issue as a field under `definition.workflow`, with its `code`. |
@@ -5275,6 +5275,14 @@ and says how its figure was reached.
   turn left out, as its `usd` does: a follow-up's turns are the job's, not learning's. 0 when it made no paid call. Null while a paid call's charge is unknown (as `usd` is then); while the run
   is at work (until it ended, stopped or failed); and for an imported, native or SDK run, whose `usd` is its import's or its harness's own figure
   and whose tool calls the server never books. Each call's own charge is its span's `usd` on `GET /runs/{id}/trace`.
+  Since `toolsusd/4`, the time of a browser a create race left running that the run never held is not in `tools_usd`:
+  it is absorbed (`absorbed: "create_race"` on its usage line), booked in `usd` and never billed.
+- `billable_usd` (on `GET /runs/{id}` alone, `billable/1`): `usd` less what its absorbed usage lines cost, the figure a
+  caller bills the run's owner by. `usd`, `total` and `all_in_usd` keep the absorbed time so the run's cost record is
+  whole; `billable_usd` alone leaves it out. With no absorbed line it is exactly `usd` (an imported, native or SDK run
+  has none), so a run whose `usd` is known never has it null for want of a race; while the run is at work it is `usd`
+  less the absorbed time booked so far, read from the same journal records as `usd`, and a bound `usd` gives a bound. Null only when `usd` is null or an absorbed
+  line's cost is unknown.
 - `GET /stats` (`cost.basis`) and `GET /usage` (`basis`) say the same words over the runs they sum: `estimate` when any
   run's is, else `reported` when any run's is, else `unpriced`. A run whose end stored no basis (one that ended before
   this, or a workflow run: its run read still says its basis from its booking) counts as `estimate` when it cost anything.
@@ -5394,6 +5402,16 @@ every line.
   flight never got an answer, so its cost is unknown, and `infra_usd` reads null for a run that has one, as `total`
   does. It is also null with no lines.
 - A run from before this server kept attempts reads `attempt: null` and `billable: true` on every line.
+
+The time of browsers a create race left running that the run never held ([Spend cap](#spend-cap)) is the infrastructure's too (`runusage/7`). The run's ledger books it, so
+`total` and `cost.usd` hold it and the run's cost record is whole, but it is on a `browser_time` line of its own with
+`absorbed: "create_race"` and `billable: false`, and in `infra_usd`. A bill for the run's task is its billable lines,
+which leave it out:
+
+```json
+{ "meter": "browser_time", "model": null, "provider": "browserbase", "charged_by": "browserbase", "quantity": 60,
+  "unit": "second", "basis": "estimate", "attempt": 1, "billable": false, "absorbed": "create_race", "usd": 0.002 }
+```
 
 The attempts live in the store's `run_attempts` table: one row per claim, written in the claim's own transaction. Each
 row holds the claim's turn and attempt, and `cause`, which says why the attempt before it was cut:
@@ -5622,12 +5640,31 @@ call returns. So what the run spent plus what it holds stays within the cap thro
 idle time between them and its release. A session a create's lost answer left to a release after the create deadline is
 held for that deadline and a stretch until its release is billed. Across a restart of the run's process, every session
 custody still tracks (kept, unreached, still releasing) is held from the reopen, at a stretch beside what it ran since
-its last charge, and one kept is released an idle window later unless a call uses it. Three
+its last charge, and one kept is released an idle window later unless a call uses it. Four
 things can still pass the cap, each by what it ran over, booked and shown: a single browser call that runs longer than a
-stretch, a release that takes longer than 30 s to be confirmed, and the time a run's process was down while it held a
-session (spent before any process could hold it). A session whose release is never confirmed is billed in full
+stretch, a release that takes longer than 30 s to be confirmed, the time a run's process was down while it held a
+session (spent before any process could hold it), and a browser no session held (below). A session whose release is never confirmed is billed in full
 (what it ran and its minimum) when the run gives up on it. When the run is let go, its sessions are released and their
-last charges booked before its process exits.
+last charges booked before its process exits. Then, when the run ends, is stopped or parks, every browser at its vendor
+that carries the run's labels and the claim's epoch and that nothing the run holds names (not a session's browser by id,
+nor one whose tag a session still being created owns) is released: one a create made and then lost, kept by its
+recovery because another create's browser was answered, is such a browser, and it would otherwise run to the vendor's
+lifetime. What the run holds is read once the vendor's list has answered: every browser its custody held in this process
+counts, released since or not, so one the vendor still lists a moment past its own release is billed by its own record
+alone, and a browser whose create this process still has in flight is left to that create and named. A release by a
+session's tag that ends such a browser beside the session's own (the vendor already lists it) charges it there. Either
+way its time, from when its vendor listing says it was made, is charged on the run with the rest (one whose listing
+gives no time is charged unpriced, never $0), under one key per browser (`unheld:<id>`), so whichever release sees it
+end charges it once and a reopen books it once. The let-go records each such browser on the run's root before its
+release is sent and charges and says it in one commit once that release answers, before the next is sent, so a process
+that ends, or a release that does not answer, leaves every released browser charged and said, or recorded; the next
+claim's open charges and says a recorded one: to when that claim's sweep of the run's older-epoch sessions answered,
+where that sweep released it, else to when its release went out (one its vendor says still runs is released then and
+charged to then). The run's timeline and its root record say it, one line per browser: `AgentRun: Released 1
+browser a create race left running (…); this run did not hold it, and its time is booked on the run and absorbed, not
+billed.` On the run's usage that time is a `browser_time` line of its own, `absorbed` and not billable ([Attempts: what
+the infrastructure redid](#attempts-what-the-infrastructure-redid)). A browser of another run, or of a later claim, is
+never touched.
 
 A computer's minutes (a sandbox's, a desktop's or a phone's) are billed by its provider to your own account there, and
 AgentRun does not count them yet: they are in no run's cost and are not held against its cap.
