@@ -35,7 +35,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
-import { API_ONLY_ROUTES, WORKSPACE_ROUTES, apiOnlyMcpSave, apiOnlyRefusal, apiOnlyTriggerEdit, apiOnlyTriggerSkipped, apiOnlyTurnsOn, servedApiOnly, servedScoped } from "./api-only.js";
+import { API_ONLY_ROUTES, WORKSPACE_ROUTES, apiOnlyMcpSave, apiOnlyRefusal, apiOnlyTriggerEdit, apiOnlyTriggerMade, apiOnlyTriggerSkipped, apiOnlyTurnsOn, servedApiOnly, servedScoped } from "./api-only.js";
 import { inWorkspace, outOfScope, scopedSlot, slotPath, WORKSPACE, WORKSPACE_HEADER, WORKSPACE_NAME, WORKSPACE_TOKENS_ENV, workspaceNow, workspaceTokensFrom } from "./workspace-scope.js";
 import { API_ONLY_ENV, API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV } from "./env-switch.js";
 import { pricesInForce } from "./prices.js";
@@ -2297,6 +2297,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** Whether the agent or run `id` is in another workspace than the scoped request's, or in none: read as missing. */
   const agentOutOfScope = async (id: string) => workspaceNow() !== undefined && outOfScope(await store.agents.workspace(id));
   const runOutOfScope = async (id: string) => workspaceNow() !== undefined && outOfScope(await store.runs.workspace(id));
+  // A trigger is its agent's: it is in a workspace when its agent is (an unknown one goes on to its own 404).
+  const triggerOutOfScope = async (id: string) => {
+    if (workspaceNow() === undefined) return false;
+    const row = await store.triggers.get(id);
+    return row !== undefined && row !== null && (await agentOutOfScope(row.agentId));
+  };
   const agents = {
     get: (id: string) => getAgent(store, id),
     // A scoped request (workspace-scope.ts) lists its workspace's agents alone, and stamps the ones it makes.
@@ -2709,9 +2715,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const triggerDeps: TriggerTargetDeps = {
     ...(options.beforeSubmit ? { beforeSubmit: options.beforeSubmit } : {}),
     start: startDeps,
-    getAgent: async (agentId: string) => (await getAgent(store, agentId)) ?? undefined,
+    // A scoped request's trigger names its own workspace's agent or run: another's reads as unknown (workspace-scope.ts).
+    getAgent: async (agentId: string) => ((await agentOutOfScope(agentId)) ? undefined : ((await getAgent(store, agentId)) ?? undefined)),
     needAgent,
-    momentOf: (runId: string) => momentOverStore(store, runId, viewDepsFor(ownOriginOf())),
+    momentOf: async (runId: string) => ((await runOutOfScope(runId)) ? undefined : momentOverStore(store, runId, viewDepsFor(ownOriginOf()))),
     // A trigger never messages a run on a plan-billed recipe whose keys are not all saved: its turn would run on its
     // owner's own sign-in. With them saved, the turn runs on them (harness-keys.ts), and a claim that opens not every one
     // is refused (cli-run-spec.ts).
@@ -5590,6 +5597,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (id && ID.test(id) && workspaceNow() !== undefined) {
       if (found.pattern.source.startsWith("^\\/runs\\/([^/]+)") && (await runOutOfScope(id))) throw new ApiError("not_found", `no run ${id}`);
       if (found.pattern.source.startsWith("^\\/agents\\/([^/]+)") && (await agentOutOfScope(id))) throw new ApiError("not_found", `no agent ${id}`);
+      if (found.pattern.source.startsWith("^\\/triggers\\/([^/]+)") && (await triggerOutOfScope(id))) throw new ApiError("not_found", `no trigger ${id}`);
     }
     // A purged run or agent (DELETE /runs/{id}, /agents/{id}): every route of it but its DELETE answers 410 purged, with
     // its tombstone in the details.
@@ -6979,10 +6987,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, await slack.attemptsView());
       case "redeliverSlack":
         return send(res, 200, await slack.redeliver(id));
-      case "listTriggers":
-        return send(res, 200, { triggers: (await triggers.list()).triggers.map(withSecretOf) });
+      case "listTriggers": {
+        // A scoped request lists the triggers of its own workspace's agents alone.
+        const listed = (await triggers.list()).triggers;
+        const unseen = new Set<string>();
+        if (workspaceNow() !== undefined) for (const row of await store.triggers.all()) if (await agentOutOfScope(row.agentId)) unseen.add(row.id);
+        return send(res, 200, { triggers: listed.filter((view) => !unseen.has(view.id)).map(withSecretOf) });
+      }
       case "createTrigger": {
         const body = await bodyOf(req);
+        // On an API-only server, made only where its apply would make it (api-only.ts); routing serves this to a scoped request alone.
+        if (options.apiOnly) {
+          const refused = apiOnlyTriggerMade(body, options.launchHook !== undefined);
+          if (refused.length) throw invalid(refused);
+        }
         // A webhook trigger's secret is in its first answer alone: the Idempotency-Key's record keeps the trigger and a
         // note, so a retry under the key gets the same trigger, never a second one, and never the secret.
         let secret: string | undefined;
@@ -7086,6 +7104,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "fireTrigger": {
         const key = req.headers["idempotency-key"];
         if (typeof key !== "string" || key.length < 1 || key.length > 255) throw new ApiError("bad_request", "Running a trigger now takes an Idempotency-Key of 1 to 255 characters: a retry with the same key fires it once.");
+        // On an API-only server, fired only where it may be on (api-only.ts apiOnlyTurnsOn), so the firing goes to the launch hook.
+        if (options.apiOnly) {
+          const trigger = await triggers.get(id);
+          if (!apiOnlyTurnsOn(trigger.source.kind, trigger.target.kind, options.launchHook !== undefined)) {
+            throw invalid([{ field: "id", reason: "not_an_option", message: `This server serves the run API only (${API_ONLY_ENV}=1), where a trigger is run now only if it may be on here: a schedule or a feed that starts runs, with the launch hook set, so its firing goes to your backend.` }]);
+          }
+        }
         const fired = await triggers.fire(id, key);
         return send(res, fired.created ? 202 : 200, fired.firing, fired.created ? {} : { "idempotent-replayed": "true" });
       }

@@ -4107,14 +4107,20 @@ as before.
 A request in a workspace is served only: the runs' reads and lists (`GET /runs`, `/runs/{id}`, its timeline, files and
 export), a run's message, stop and cancel; the agents' list, read, create, revisions, definition and current revision,
 and a run started on one; the templates' list, read, import and apply; the uploaded files' create, upload, list, read and
-delete (`/files`); and `/capabilities`, `/health` and `/openapi.json`. Every other route is `403 forbidden` with
+delete (`/files`); the triggers' list, read, firings, create, edit, delete and run now (`/triggers`); and
+`/capabilities`, `/health` and `/openapi.json`. Every other route is `403 forbidden` with
 `details.reason: "not_scoped"`. In it, an agent, run, imported template package or file of another workspace (or of none)
 answers the same `404` as an id no row has, and every list holds the workspace's rows alone, paged within them; bundled
 template packages are every workspace's. What it makes is the workspace's: an agent (made or applied), an imported
 package (an import whose name another workspace holds is `409 name_taken`), a file. A run is its agent's workspace's,
 whoever started it, so a run a request with no header starts on that agent is the workspace's too. A run's `file_ids`
 take the workspace's files alone: one out of it reads as no file. An `Idempotency-Key` is the workspace's own: the same
-key in another workspace starts afresh. An import with no header of a name a workspace holds is `409 name_taken` too,
+key in another workspace starts afresh. A trigger is its agent's workspace's: another's answers the same `404` as an id
+no trigger has, and a new one naming another workspace's agent or run is refused in the words an unknown one gets. A
+request in a workspace makes what an apply here makes, a schedule or a feed that starts runs, with the launch hook set;
+any other source or target, or no hook, is `422` and nothing is made. Its edit is `enabled` alone, as above, and its run
+now (`POST /triggers/{id}/fire`) is served only for a trigger that may be on here, so the firing goes to the backend
+through the launch hook. An import with no header of a name a workspace holds is `409 name_taken` too,
 never replacing that workspace's package: the operator deletes it first.
 
 Launch disks (`archil_disk` on a run's start) are the backend's to map to its tenants: the server keeps no record of which
