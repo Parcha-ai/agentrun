@@ -45,7 +45,8 @@
 //   cancel, a lost claim), when the run stops (`stopped`, for a paid call or a decision too), when its booking stops (`halted`: thrown, as a stop that came during the check), or when the
 //   run parks meanwhile (`parked`: refused in its own words, so nothing more is sent until a raise).
 // - Nothing is admitted once its signal is aborted: a step that comes, or reaches its turn, after its client went or the
-//   run stopped is refused with the signal's reason, before any read, so no call starts or is charged after a stop.
+//   run stopped is refused with the signal's reason, before any read, so no call starts or is charged after a stop. Money
+//   already owed (`paid.owed`) is the run's stop's exception: nothing starts with it, and the run books it as it lets go.
 import { type BeforeRequest, type InFlight, sessionSpendOf } from "./runner.js";
 import { freeRequestsIn, localRequestsIn } from "./kernel/cap/free.js";
 import type { SessionRecord } from "./types.js";
@@ -65,7 +66,8 @@ export interface RunBookingOptions {
   parked?(): boolean;
   /** How long a waiter waits with none of the steps it waits on settling before it is refused (default WAIT_STALL_MS). */
   stallMs?: number;
-  /** The run's stop (a stop, a cancel, a lost claim): every waiter leaves the line at it, admitted for nothing. */
+  /** The run's stop (a stop, a cancel, a lost claim): every waiter but an owed step leaves the line at it, admitted for
+   *  nothing. */
   stopped?: AbortSignal;
 }
 
@@ -224,8 +226,10 @@ export function runBooking(sessions: RunSessions, before: BeforeRequest, options
 
   return async (request) => {
     // What ends its wait: its own client's going (a model request's), or the run's stop (any step's: a paid call's or a
-    // decision's has no client of its own here).
-    const signal = request.signal && options.stopped ? AbortSignal.any([request.signal, options.stopped]) : (request.signal ?? options.stopped);
+    // decision's has no client of its own here), but for money already owed: nothing starts with it, so the stop never
+    // refuses it (a computer's last stretch, a session's release, booked as the run lets go of them after its stop).
+    const stopped = request.paid?.owed ? undefined : options.stopped;
+    const signal = request.signal && stopped ? AbortSignal.any([request.signal, stopped]) : (request.signal ?? stopped);
     // Every step joins the line as it comes, before its first ask, and asks only once it is first: steps that come together
     // are asked in the order they came, so one behind a step that must wait never goes ahead of it. The first leaving
     // (admitted, refused or gone) wakes the next at once. A paid call whose own session has a request in flight goes ahead

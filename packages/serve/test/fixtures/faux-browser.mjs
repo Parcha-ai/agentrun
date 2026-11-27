@@ -20,7 +20,9 @@
 // With $FAUX_BROWSER_SESSION_USAGE, the provider keeps a record of each session it ran (see sessionUsage, below).
 // With $FAUX_BROWSER_STATE (a file), the backend's sessions outlive the run's process, as a vendor's do: each one created
 // or released is written there, and a process that starts finds the ones still running.
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+// With $FAUX_BROWSER_RELEASE_HOLD (a path), a release writes `<path>.asked` and answers only once `<path>` exists: a
+// vendor's release that hangs until the test lets it go.
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { FakeBackend, fakeDriver, fixturePage } from "@parcha/pi-browser/testing";
@@ -189,6 +191,11 @@ export default function browser(env = process.env, vendor = "browserbase", signI
     },
     async release(ref) {
       try {
+        const hold = process.env.FAUX_BROWSER_RELEASE_HOLD;
+        if (hold) {
+          writeFileSync(`${hold}.asked`, "");
+          while (!existsSync(hold)) await new Promise((resolve) => setTimeout(resolve, 25));
+        }
         await fake.release(refOf(ref.id));
         return ok(undefined);
       } catch (error) {

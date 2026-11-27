@@ -15,8 +15,9 @@ services:
     # it would budget the whole server's memory, the platform's and other apps' included. Set AGENTRUN_MEMORY (1g, 4g, ...)
     # to change it.
     mem_limit: ${AGENTRUN_MEMORY:-2g}
-    # The runner's close bound is 31 s (a 6 s drain, then 25 s): Docker's default 10 s would cut a busy run's turn.
-    stop_grace_period: 35s
+    # The runner's close bound is 40 s (a 6 s drain, then 25 s, or a browser's release: 40 s from the SIGTERM): Docker's
+    # default 10 s would cut a busy run's turn.
+    stop_grace_period: 45s
     healthcheck:
       test: ["CMD", "env", "-i", "/usr/local/bin/node", "-e", "fetch('http://127.0.0.1:7340/v2/health').then(({ ok, status }) => { if (!ok) throw new Error(String(status)) })"]
       interval: 10s
