@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
 import { JEV_PUBLISHED_PRICING, jevProvider } from "@parcha/agentrun-jev";
-import { createWeb, destinationsWords, type FetchProvider, type Guard, jevWebDecider, type KeyedProvider, providerOf, type SearchProvider, type Web, type WebClient } from "@parcha/agentrun-web";
+import { createWeb, destinationsWords, type FetchProvider, type Guard, jevWebDecider, type KeyedProvider, providerOf, type Receipt, type SearchProvider, type Web, type WebClient } from "@parcha/agentrun-web";
 import { FAUX_JEV_ENV, FAUX_PARALLEL_ENV, fauxFetch, handedKeyOf, JEV_KEY_ENV } from "./decisions.js";
 import { webJevOff } from "./env-switch.js";
 import { hostedSearched, type SearchModels } from "./hosted-search.js";
@@ -56,6 +56,37 @@ export type SearchOn = () => Promise<SearchModels | undefined>;
 export const searchingOn = new AsyncLocalStorage<SearchOn | undefined>();
 
 const serverLog = (line: string): void => void process.stderr.write(`agentrun-serve: ${line}\n`);
+
+/** A code as a log line may carry it: a short identifier (HTTP_429, CONNECT), else nothing. */
+const codeWord = (code: unknown): string | undefined => (typeof code === "string" && /^[A-Za-z0-9_.-]{1,40}$/.test(code) ? code : undefined);
+
+/** A web call's receipt as one log line, `web_receipt`: its `op`, the `provider` that answered (none where none did),
+ *  `tries` (each provider asked, in turn, as provider:outcome, a failure's code after a "/"), the `classifier` (off,
+ *  or ran or not_run with the items it was given and kept, its model, and its error's code or why it skipped), the
+ *  call's `cost_usd`, and `cache=hit` for a page the run had read. Ids, counts and figures only: never the URL asked,
+ *  the objective or queries, a page's or result's text, an error's message or a key. */
+export function receiptLine(receipt: Receipt): string {
+  const tries = receipt.tries.map((one) => {
+    const code = codeWord(one.failure?.code);
+    return `${one.provider}:${one.outcome}${code ? `/${code}` : ""}`;
+  });
+  const record = receipt.classifier === "off" ? undefined : receipt.classifier;
+  const error = codeWord(record?.error?.code);
+  const classifier: Record<string, string | number> = record
+    ? {
+        classifier: record.ran ? "ran" : "not_run",
+        classifier_in: record.items.in,
+        classifier_kept: record.items.kept,
+        ...(record.model ? { classifier_model: record.model } : {}),
+        ...(error ? { classifier_error: error } : {}),
+        ...(record.skipped ? { classifier_skipped: record.skipped } : {}),
+      }
+    : { classifier: "off" };
+  return logLine("web_receipt", { op: receipt.op, provider: receipt.provider ?? "none", tries: tries.length ? tries.join(",") : "none", ...classifier, cost_usd: Number(receipt.cost.usd.toFixed(6)), ...(receipt.cache ? { cache: receipt.cache } : {}) });
+}
+
+/** `receipt`'s line (receiptLine) on the server's log: one per web_search or web_fetch call a run's Web answers. */
+export const logReceipt = (receipt: Receipt): void => serverLog(receiptLine(receipt));
 
 /** What each resolution of web_search asks, in turn: keyless Firecrawl has keyless Exa behind it. */
 const SEARCH_CHAINS: Readonly<Record<string, readonly SearchProvider[]>> = { parallel: ["parallel"], native: ["native"], "firecrawl-keyless": ["firecrawl-keyless", "exa-keyless"], "exa-keyless": ["exa-keyless"] };
