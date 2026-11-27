@@ -341,6 +341,65 @@ test("the read after a run's head reads each title through the decodings that op
   assert.deepEqual(over, []);
 });
 
+// Padding every view reads apart (every decoder's family is in the text) and shows one character of in 39: the read for
+// a run's head and tail and past a call's stop reads such a stretch through every view from every place its join can
+// start, hundreds of characters per character, so it stops at its budget and the text is withheld whole.
+const FAMILIES = String.raw`%41+\n\\xA&#65;'"\x41` + "\u001b[m";
+const sparse = (length) => {
+  let text = FAMILIES;
+  while (text.length < length) text += `${"\u200b".repeat(38)}a`;
+  return text;
+};
+test("padding every view reads apart and shows little of, in runs too long to read or past a call's stop, is withheld at most 48 characters visited per character", async () => {
+  const { scanned } = await import("../dist/redact/match.js");
+  const over = [];
+  for (const [what, text, stop] of [
+    ["six runs of a piece", Array.from({ length: 6 }, () => sparse(8300)).join(" ")],
+    ["six runs of a piece in a JSON string", wrapped("json", Array.from({ length: 6 }, () => sparse(8300)).join(" "))],
+    ["one run just over a piece", sparse(8193)],
+    ["9,000 characters with no whitespace after a call's stop", wrapped("json", `${"word ".repeat(50)}${sparse(9000)}`), 200],
+  ]) {
+    scanned.chars = 0;
+    const out = stop === undefined ? redactedAnswer(text, [`${PY_HEAD}${PY_REST}`]) : redactedCall(text, [`${PY_HEAD}${PY_REST}`], stop);
+    if (out !== "[redacted]") over.push(`${what}: shown`);
+    if (scanned.chars > 48 * text.length) over.push(`${what}: ${scanned.chars} for ${text.length}`);
+  }
+  assert.deepEqual(over, []);
+});
+
+// What stands outside a read decides what the views show of it. A backspace after the read strikes out characters
+// inside it: the read counts as many more as there are backspaces after it (in any encoding), and one that would strike
+// out what stands before the read withholds the text. A read that starts inside a terminal sequence (a call's stop, or
+// a run's tail, inside a long title) shows nothing of it: the views read it after that sequence's opener. And a
+// whitespace run inside a CSI is written short as every view reads it: a no-break space, a tab or a line break is no
+// space there. Each padding below, between a held value's halves, is longer than the read takes when it counts it.
+const OUTSIDE_THE_READ = [
+  ["300 x and 300 backspaces", "plain", `${"x".repeat(300)}${"\b".repeat(300)}`],
+  ["1,000 x and 1,000 backspaces", "plain", `${"x".repeat(1000)}${"\b".repeat(1000)}`],
+  ["300 x and 300 JSON backspaces", "json", `${"x".repeat(300)}${String.raw`\b`.repeat(300)}`],
+  ["1,000 x and 1,000 JSON backspaces", "json", `${"x".repeat(1000)}${String.raw`\b`.repeat(1000)}`],
+  ["an OSC title of 300 words", "plain", `\u001b]0;${"word ".repeat(300)}\u0007`],
+  ["an OSC title of 1,500 characters", "plain", `\u001b]0;${"t".repeat(1500)}\u0007`],
+  ["a CSI holding 1,500 é", "plain", `\u001b[${"é".repeat(1500)}m`],
+  ["300 CSIs holding a no-break space", "plain", "\u001b[ 1m".repeat(300)],
+  ["300 CSIs holding a tab", "plain", "\u001b[1\t2m".repeat(300)],
+  ["300 CSIs holding a line break", "plain", "\u001b[1\n2m".repeat(300)],
+];
+const inKind = (kind, body) => (kind === "plain" ? body : wrapped(kind, body));
+
+for (const [what, kind, pad] of OUTSIDE_THE_READ) {
+  test(`kr-9 (${what}): a held value split at a call's stop, the padding past the read after the stop, is withheld`, () => {
+    let body = "";
+    while (body.length < 8192 - 100) body += "word ";
+    assert.equal(redactedCall(inKind(kind, `${body}see ${PY_HEAD} ${pad} ${PY_REST} more`), [`${PY_HEAD}${PY_REST}`], 200), "[redacted]");
+  });
+
+  test(`kr-10 (${what}): a held value whose head ends a run too long to read, the padding after it, and whose rest follows is withheld`, () => {
+    const text = inKind(kind, `${"a".repeat(9000)}${PY_HEAD}${pad} ${PY_REST} more`);
+    for (const out of [redactedCall(text, [`${PY_HEAD}${PY_REST}`], 100_000), redactedAnswer(text, [`${PY_HEAD}${PY_REST}`])]) assert.equal(out.includes(PY_REST), false);
+  });
+}
+
 test("kr-11: control padding after a word, with no held value split around it, is shown (control)", () => {
   let body = "";
   while (body.length < 8192 - 100) body += "word ";
