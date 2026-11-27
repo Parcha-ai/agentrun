@@ -13,7 +13,7 @@
 //     locked before it is read again, so a heal another server commits meanwhile stands;
 //   - a run a follow-up opened again whose row a build before #4050's split wrote (its job the first round's figure) is
 //     recorded again once, at the server's open, a page at a time, then marked (store_meta.ledger_rerecorded); Postgres
-//     0033 adds the mark, breaking for runners, as SQLite's version 18;
+//     0034 adds the mark, breaking for runners, as SQLite's version 18;
 //   - a store the ledger's first release left (version 15, which a runner refuses until the server brings it to 18) has
 //     its wrong rows recorded again at the open that drops their epoch (a shadow with no path or audit spend, a stale
 //     row, an unknown cost its run now has, a run by hand with no path), by the ledger step alone (no earlier step runs
@@ -556,14 +556,14 @@ test("a run a follow-up opened again whose row an earlier build wrote (its job t
   assert.deepEqual((await again.learning.ledger("agent-1", ["R"])).rows.map((row) => [row.jobUsd, row.lookBackUsd]), [[0.9, 5.7]], "marked: no open reads the runs again");
 });
 
-test("Postgres migration 0033 adds the same mark only where missing, unset, and is breaking for runners (an earlier runner writes a reopened run's row under the split before)", async () => {
+test("Postgres migration 0034 adds the same mark only where missing, unset, and is breaking for runners (an earlier runner writes a reopened run's row under the split before)", async () => {
   const { readFile } = await import("node:fs/promises");
   const { STORE_META_LEDGER_RERECORDED } = await import("../dist/store/schema.js");
   const { marksBreaking } = await import("../dist/store/postgres/migrate.js");
-  const sql = await readFile(new URL("../dist/store/postgres/migrations/0033_learning_ledger_rerecorded.sql", import.meta.url), "utf8");
+  const sql = await readFile(new URL("../dist/store/postgres/migrations/0034_learning_ledger_rerecorded.sql", import.meta.url), "utf8");
   assert.ok(marksBreaking(sql), "-- runners: breaking in its leading comment");
   const text = sql.replace(/--[^\n]*/g, "").replace(/\s+/g, " ").trim();
   assert.ok(text.includes("ALTER TABLE store_meta ADD COLUMN IF NOT EXISTS ledger_rerecorded BIGINT NOT NULL DEFAULT 0 CHECK (ledger_rerecorded IN (0, 1));"), text);
   assert.match(STORE_META_LEDGER_RERECORDED, /ledger_rerecorded INTEGER NOT NULL DEFAULT 0 CHECK \(ledger_rerecorded IN \(0, 1\)\)/);
-  assert.ok(text.endsWith("UPDATE store_meta SET schema_version = 33 WHERE singleton = 1;"), text);
+  assert.ok(text.endsWith("UPDATE store_meta SET schema_version = 34 WHERE singleton = 1;"), text);
 });
