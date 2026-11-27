@@ -100,7 +100,7 @@ import { type RunMoment, type State, type Status } from "./run-view.js";
 import { keepPresence, type Presence, refusedEnd, runnersRefused } from "./runner/presence.js";
 import { openRoundsOf } from "./learning-rounds.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, prepareLaunch, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore } from "./runs-over-store.js";
-import { builtOfNow, factsOverStore, keptFactory, listedItem, liveOf, lookingBackEnd, momentOverStore, summaryOverStore, timelineOverStore, toolsUsdOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { builtOfNow, factsOverStore, keptFactory, listedItem, liveOf, lookingBackEnd, momentOverStore, runCostOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { healEndedCosts } from "./cost-heal.js";
 import { reconcileProjectCheckpoints } from "./source-sync/checkpoints.js";
 import { acknowledgeProjects } from "./source-sync/checkpoint-gate.js";
@@ -174,7 +174,7 @@ import { type CostBasis, joinedBasis } from "./runner/metrics.js";
 import { unifiedUsage } from "./unified-usage.js";
 import { agentLoopOverStore } from "./store-reads/loop.js";
 import { printable } from "./learn/index.js";
-import { agentCostOverStore, agentLearningOverStore, costStopOverStore, learningCountsOverStore, learningSpendOverStore, runAllInOverStore, runLearningEnd } from "./store-reads/learning.js";
+import { agentCostOverStore, agentLearningOverStore, costStopOverStore, learningCountsOverStore, learningSpendOverStore, runLearningEnd } from "./store-reads/learning.js";
 import { costCsv, learningCostQuery, RUN_PATHS } from "./learning-cost.js";
 import { keyOf, SEAL_KEY_ENV, TOOL_FIELDS } from "./tool-keys.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
@@ -2240,16 +2240,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  (`learning_usd`) and the two (`all_in_usd`), with what makes up `learning_usd` (`compile_usd`, `followup_usd`,
    *  `shadow_usd`, `check_usd`, `share_usd`): the figures the agent's cost page gives the run (learn/ledger.ts figuresOf, one formula).
    *  A cost known only as a bound keeps its bound, and all-in is unknown.
-   *  `tools_usd`: the part of `usd` its paid tool calls cost (store-view.ts toolsUsdOverStore). Both are read in one
-   *  snapshot of the store: a follow-up that opens the run again between the two reads never puts its paid calls beside
-   *  the previous end's `usd` (run-usage.ts reads a run's lines the same way). */
+   *  `tools_usd`: the part of `usd` its paid tool calls cost (store-view.ts toolsUsdOverStore), read with `usd` at one
+   *  moment (store-view.ts runCostOverStore). */
   const allInViewOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {
     const cost = (view.cost ?? {}) as { usd?: unknown; upper_bound?: unknown };
     const own = typeof cost.usd === "number" && cost.upper_bound !== true ? cost.usd : null;
-    const { all, tools_usd } = await store.snapshot(async (snapshot) => {
-      const all = await runAllInOverStore(snapshot, runId, own);
-      return { all, tools_usd: all ? await toolsUsdOverStore(snapshot, runId) : null };
-    });
+    const { all, tools_usd } = await runCostOverStore(store, runId, own);
     if (!all) return {};
     // A bound stays the view's bound. Otherwise usd is the job's (its ledger row's, the same figure the cost series
     // gives): known as it answered even when its compile turn's cost is not; the row's while the run is at work.
