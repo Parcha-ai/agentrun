@@ -339,6 +339,26 @@ test("a let-go records each browser a create race left running before its releas
   assert.deepEqual(Object.keys(owed).sort(), ["at", "createdAt", "id", "tag"], "the owed record keeps what books its time: its id, tag, when its vendor made it, and when its release went out");
 });
 
+test("two let-gos of one process that reach the same browser at once (a cut release's and the release it cut) charge it once and say it once, whichever answers first", async (t) => {
+  const { ctx, harness, session, spendOf, kinds } = await unheldRoot(t);
+  const spend = spendOf();
+  // Both send its release before either answers; each then hears it answer.
+  let sent = 0;
+  let bothSent;
+  const both = new Promise((resolve) => (bothSent = resolve));
+  const letGo = () => spend.letGo(harness, async ({ releasing, released }) => {
+    await releasing(session("bb-raced"));
+    if (++sent === 2) bothSent();
+    await both;
+    await released(session("bb-raced"));
+    return { released: [session("bb-raced")], failed: [], creating: [] };
+  }, ctx);
+  await Promise.all([letGo(), letGo()]);
+  const seen = await kinds();
+  assert.deepEqual(seen.filter(([kind]) => kind === "charged"), [["charged", "unheld:bb-raced"]], `charged once: ${JSON.stringify(seen)}`);
+  assert.deepEqual(seen.filter(([kind]) => kind === "said"), [["said", ["bb-raced"]]], "said once");
+});
+
 test("the next claim's open charges a browser an earlier let-go owed and never charged, once: one that stopped to when its release went out, one its vendor says still runs released then and charged to now; a status read that fails leaves it owed for the open after", async (t) => {
   const { ctx, harness, session, spendOf, kinds, entries } = await unheldRoot(t);
   const before = spendOf();

@@ -224,7 +224,8 @@ export default function browser(env = process.env, vendor = "browserbase", signI
     },
     async release(ref) {
       try {
-        const hold = process.env.FAUX_BROWSER_RELEASE_HOLD;
+        // A session nobody holds (FAUX_BROWSER_UNHELD) is released at once: the hold is the run's own sessions'.
+        const hold = late.has(ref.id) ? undefined : process.env.FAUX_BROWSER_RELEASE_HOLD;
         if (hold) {
           writeFileSync(`${hold}.asked`, "");
           while (!existsSync(hold)) await new Promise((resolve) => setTimeout(resolve, 25));
