@@ -1845,7 +1845,7 @@ const GRADE_FIELDS = {
   graded_at: DATE_TIME,
   path: { enum: [...RUN_PATHS], description: "The path the run took, read from its record when it was graded." },
   workflow: { ...NULL_STRING, description: "The learned workflow that served it, when one did." },
-  workflow_digest: { ...NULL_STRING, description: "That workflow's digest (the first 16 hex of its workflow.json's sha256), when it was served first." },
+  workflow_digest: { ...NULL_STRING, description: "That workflow's digest (the first 16 hex of its workflow.json's sha256), when it served the run: first, or called by its agent." },
   feedback: { enum: [...FEEDBACK_ROUNDS, null], description: "What the grade asked of the run's learning, a round the run opened again on (no turn of the job's: its end-of-run step alone, learning spend): `correction`, a run the agent finished graded with a `label`, whose words are appended to its agent's corrections.md as one line. null: nothing more (a grade of a run its learned workflow answered alone, right or wrong, is kept and costs $0: the workflow's graded hold reads it), or a run that does not learn or that can't be opened again. Kept with the grade once the round opened, so a later read still says it." },
 };
 const RUN_LEARNING = {
@@ -4869,6 +4869,16 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       properties: { routes: { type: "boolean" }, events: { type: "array", items: { enum: [...WEBHOOK_EVENTS] } }, signing: { const: "standard-webhooks/v1" }, at_rest: { const: "sealed" } },
       description: "/settings/webhook: one URL each of `events` is POSTed to, signed by the Standard Webhooks spec; its secret kept `sealed` under the seal key the server was handed, `unavailable` with none, when no webhook is set.",
       "x-agentrun-serve": "webhook/1",
+    },
+    workspaces: {
+      type: "object", additionalProperties: false, required: ["header", "enforced", "routes"],
+      properties: {
+        header: { const: "AgentRun-Workspace", description: "The request header that names a request's workspace: an opaque name, 1 to 128 letters, digits, `:`, `.`, `_` or `-`, sent with a server token." },
+        enforced: { type: "boolean", description: "Whether this server keeps workspaces apart: true on an API-only server (AGENTRUN_API_ONLY=1), where a request that names a workspace reaches that workspace's agents, runs and imported template packages alone, another workspace's reading as missing (404), and is refused any operation outside `routes` (403 not_scoped). False on any other server, which refuses the header (400). A proxy that forwards one tenant's requests checks this first." },
+        routes: { type: "array", items: { type: "string" }, description: "The operationIds a request in a workspace is served, sorted." },
+      },
+      description: "Workspaces: how a backend in front of this server keeps each of its tenants to its own rows.",
+      "x-agentrun-serve": "workspaces/1",
     },
     api_keys: {
       type: "object", additionalProperties: false, required: ["routes", "limit", "at_rest"],

@@ -4088,6 +4088,34 @@ whole server, as before; any value other than these and `1` or `true` stops the 
 So on an API-only server a run is launched inline (`POST /runs` with its definition), on an agent a template's apply
 made, or on an agent made before the profile was turned on.
 
+#### Workspaces
+
+A backend in front of an API-only server can keep each of its tenants to its own rows: it names the tenant's workspace
+in the `AgentRun-Workspace` header, 1 to 128 letters, digits, `:`, `.`, `_` or `-`, an opaque name the server keeps and
+never checks against anything. The header is taken only on an API-only server and only on a request a server token
+(`AGENTRUN_TOKENS`) opened; anywhere else, or malformed, it is `400 bad_request`. `AGENTRUN_WORKSPACE_TOKENS` lists the
+ids of the tokens whose every request must carry it (comma-separated): such a token without it is `403 forbidden`, so a
+backend that forgot the header is refused rather than handed every tenant's rows. A request with no header is served
+as before.
+
+A request in a workspace is served only: the runs' reads and lists (`GET /runs`, `/runs/{id}`, its timeline, files and
+export), a run's message, stop and cancel; the agents' list, read, create, revisions, definition and current revision,
+and a run started on one; the templates' list, read, import and apply; and `/capabilities`, `/health` and
+`/openapi.json`. Every other route is `403 forbidden` with `details.reason: "not_scoped"`. In it, an agent, run or
+imported template package of another workspace (or of none) answers the same `404` as an id no row has, and every list
+holds the workspace's rows alone; bundled template packages are every workspace's. What it makes is the workspace's: an
+agent (made or applied), an imported package (an import whose name another workspace holds is `409 name_taken`). A run
+is its agent's workspace's, so a run a request with no header starts on that agent is the workspace's too. A run's
+`file_ids` naming a file out of the workspace read as no file. An `Idempotency-Key` is the workspace's own: the same key
+in another workspace starts afresh. `GET /capabilities` says so in `features.workspaces`: the header's name, `enforced`
+(true on an API-only server alone) and the operations a scoped request is served, so a proxy can check before it forwards.
+
+`agentrun-serve workspace-backfill FILE [--apply]` puts agents made before the backend sent the header in a workspace:
+FILE is `{"<agent id>": "<workspace>"}`. It sets an agent with none, refuses one in another workspace and keeps it, and
+without `--apply` writes nothing and prints what it would do. On SQLite it adds the workspace columns first when a server
+of this build has not yet opened the store. A store behind this build (on Postgres, below migration 0033) is refused with
+exit 2 and never migrated: start a server of this build once, then run it again.
+
 ### Share host
 
 `agentrun-serve --share-host` (or `AGENTRUN_SHARE_HOST=1`) is the server behind a public share link such as
