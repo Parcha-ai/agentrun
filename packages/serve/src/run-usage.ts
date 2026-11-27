@@ -267,7 +267,7 @@ function upstreamOf(model: string | null, launch: Pick<RunLaunch, "model"> | und
  *  provider (`browser_time`); and their join, `total`. A meter with nothing booked has no line. `launch` names the
  *  run's own model's provider; `receipts`, a workflow's decisions by id, the model and provider each was answered on
  *  (its booking names the decision alone), which this server called itself. */
-export function usageLinesOf(entries: readonly EntryLike[], launch?: Pick<RunLaunch, "model">, receipts: ReadonlyMap<string, DecisionReceiptLike> = new Map(), computers: { readonly rows: readonly ComputerIntervalRow[]; readonly at: number } = { rows: [], at: 0 }, attempts: readonly RunAttemptRow[] = []): { lines: RunUsageLine[]; total: CostWords } {
+export function usageLinesOf(entries: readonly EntryLike[], launch?: Pick<RunLaunch, "model">, receipts: ReadonlyMap<string, DecisionReceiptLike> = new Map(), computers: { readonly rows: readonly ComputerIntervalRow[]; readonly at: number } = { rows: [], at: 0 }, attempts: readonly RunAttemptRow[] = [], all: readonly EntryLike[] = entries): { lines: RunUsageLine[]; total: CostWords } {
   const conversation = (key: string) => entries.find((e) => e.kind === KINDS.sessionKey && (e.data as { key?: unknown } | undefined)?.key === key)?.data as { conversation?: unknown } | undefined;
   const paidConv = Number(conversation(TOOL_SESSION)?.conversation ?? Number.NaN);
   const conv = (e: EntryLike) => Number(e.conversationId);
@@ -283,11 +283,16 @@ export function usageLinesOf(entries: readonly EntryLike[], launch?: Pick<RunLau
   const tags = attemptTags(attempts);
   // A browser charge is the attempt's whose claim wrote it on the root (BROWSER_CHARGED), even when its booking landed
   // under a later claim (browser-cost.ts bookRootCharges books one its process lost): the booking names it by its ref
-  // (browserChargeRef, the one rule the booking takes).
+  // (browserChargeRef, the one rule the booking takes). Read over the whole journal (`all`): a charge whose record sits in
+  // a range the read leaves out (a round's end-of-run turn) and whose booking is in `entries` is still that booking's.
   const chargeAt = new Map<string, AttemptTag>();
-  for (const e of entries) {
+  const chargeOf = new Map<string, EntryLike>();
+  for (const e of all) {
     const d = (e.data ?? {}) as { tag?: unknown; at?: unknown; final?: unknown };
-    if (e.kind === BROWSER_CHARGED && typeof d.tag === "string") chargeAt.set(browserChargeRef({ tag: d.tag, at: d.at, final: d.final }), tags.atEntry(e.id));
+    if (e.kind !== BROWSER_CHARGED || typeof d.tag !== "string") continue;
+    const ref = browserChargeRef({ tag: d.tag, at: d.at, final: d.final });
+    chargeAt.set(ref, tags.atEntry(e.id));
+    chargeOf.set(ref, e);
   }
   // A model request its attempt sent and never finished: no answer booked (a crash cut it off), or booked as cut (a stop
   // cut it, at its hold). The claim that takes the turn over sends it again, so when a later claim redid that turn it is
@@ -354,12 +359,20 @@ export function usageLinesOf(entries: readonly EntryLike[], launch?: Pick<RunLau
     else if (e.kind === RUNNER_RECORDS.turn && d.usage === undefined) noUsage.add(turnOf(e));
   }
   // Browser seconds by provider, from the charges' own records on the root (BROWSER_CHARGED): the seconds each charge was
-  // for, as the browser_time meter of GET /usage counts them.
+  // for, as the browser_time meter of GET /usage counts them. Each charge in `entries`, and each one outside them whose
+  // booking (a request naming its ref) is in them.
   const seconds = new Map<string, number>();
+  const inEntries = new Set(entries.map((e) => String(e.id)));
+  const outside: EntryLike[] = [];
+  for (const e of entries) {
+    const ref = (e.data as { ref?: unknown } | undefined)?.ref;
+    const charge = e.kind === RUNNER_RECORDS.request && typeof ref === "string" ? chargeOf.get(ref) : undefined;
+    if (charge && !inEntries.has(String(charge.id)) && !outside.includes(charge)) outside.push(charge);
+  }
   // Tool calls with no price, run outside the run's cost (an MCP tool its owner set none for, TOOL_UNMETERED), by who
   // would charge for them, as GET /usage's `not_metered_calls` counts them.
   const unpricedCalls = new Map<string, number>();
-  for (const e of entries) {
+  for (const e of [...entries, ...outside]) {
     const d = (e.data ?? {}) as { tool?: unknown; seconds?: unknown; charged_by?: unknown; tag?: unknown };
     if (e.kind === TOOL_UNMETERED) {
       const group: Group = { meter: "tools", name: named(d.charged_by), at: tags.atEntry(e.id) };
@@ -598,7 +611,7 @@ export async function runUsageOverStore(store: Store, runId: string): Promise<Ru
     const rows = snapshot.computerIntervals ? await snapshot.computerIntervals.forRun(runId) : [];
     // Its claims' attempts in the same snapshot; a store that keeps none (a test's) reads as a run of no attempts.
     const attempts = snapshot.runAttempts ? await snapshot.runAttempts.forRun(runId) : [];
-    const { lines, total } = usageLinesOf(entries, launch, receipts, { rows, at: Date.now() }, attempts);
+    const { lines, total } = usageLinesOf(entries, launch, receipts, { rows, at: Date.now() }, attempts, records.entries as unknown as readonly EntryLike[]);
     const computers = computerIntervalsOf(rows, attempts);
     return { run_id: runId, ended_at: ended, currency: "USD", total, lines, browser_sessions: jobSessions(entries, records.entries as unknown as readonly EntryLike[], attempts), computer_intervals: computers, infra_usd: infraUsdOf(lines), reason: null };
   });

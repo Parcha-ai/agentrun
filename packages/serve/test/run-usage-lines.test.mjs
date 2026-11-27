@@ -288,6 +288,18 @@ test("reopened: a learning run a follow-up opened again has every round's job an
   assert.deepEqual(read.total, { usd: 0.036 });
 });
 
+test("reopened: a browser charge recorded in a round's learning turn and booked by the follow-up keeps its seconds on the store's read", async () => {
+  const { runUsageOverStore } = await import("../dist/run-usage.js");
+  const job = [...keys(), ...reported(7, 1, "m", 0.01, usage(10, 1))];
+  // Round 1's learning turn holds the raced browser's charge; its booking failed there.
+  const look1 = [e(7, "agentrun.end-of-run.turn", { role: "person", requestId: "learn-reflect-1" }), e(1, "agentrun.browser_charged", { tool: "browser", charged_by: "browserbase", seconds: 600, tag: "unheld:bb-raced", final: true }), e(1, "agentrun.end", { status: "completed" })];
+  // The follow-up's reopen books it.
+  const follow = [...paid(2, "browser", "browserbase", 0.02, { tool: "browser", tag: "unheld:bb-raced", ref: "browser:unheld:bb-raced/final" })];
+  const { store } = snapshotStore(ended(), { rounds: 1, entries: [...job, ...look1, ...follow] });
+  const read = await runUsageOverStore(store, "run_1");
+  assert.deepEqual(read.lines.filter((one) => one.meter === "browser_time").map((one) => [one.quantity, one.usd, one.absorbed]), [[600, 0.02, "create_race"]]);
+});
+
 test("the end-of-run learning turn is not on the lines: it is the server's work for the agent, which cost.usd leaves out too", async () => {
   const { runUsageOverStore } = await import("../dist/run-usage.js");
   const job = [...keys(), ...reported(7, 1, "m", 0.01, usage(10, 1))];
@@ -573,4 +585,34 @@ test("browser time a create race left (charged under unheld:<id>) is booked and 
   assert.equal(micro(billed), micro(0.012), "a bill of the billable lines leaves the raced browser's time out");
   assert.ok(lines.every((one) => one.absorbed === undefined || one.absorbed === "create_race"));
   assert.equal(lines.filter((one) => "absorbed" in one).length, 1, "absent on every other line");
+});
+
+test("a browser charge whose record sits in an end-of-run range the read leaves out, booked by a later claim: its line keeps the charge's seconds and its claim, read from the whole journal; a charge whose booking is left out with it adds none", () => {
+  const ENDED = Date.UTC(2026, 10, 19, 10, 0, 0);
+  const claimRow = (epoch, turn, journalFrom, claimedAt) => ({ runId: "run_1", epoch, turn, attempt: 1, cause: null, cut: null, runner: "r", from: epoch === 1 ? "queued" : "running", journalFrom, claimedAt });
+  const attempts = [claimRow(1, 1, 1, ENDED - 900_000), claimRow(2, 2, 100, ENDED - 600_000)];
+  const at = (from, entries) => entries.map((one, i) => ({ ...one, id: String(from + i) }));
+  const charge = { tool: "browser", charged_by: "browserbase", seconds: 600, tag: "unheld:bb-raced", at: "2026-11-19T09:55:00.000Z", final: true };
+  const learned = { tool: "browser", charged_by: "browserbase", seconds: 30, tag: "ar-learn", at: "2026-11-19T09:56:00.000Z", final: true };
+  const round1 = at(1, [...keys(), ...reported(7, 1, "m", 0.01, usage(10, 1))]);
+  // Round 1's end-of-run range: the raced browser's charge (its booking failed there), and a session the learning turn
+  // opened, charged and booked inside it.
+  const reflect = at(50, [e(1, "agentrun.browser_charged", charge), e(1, "agentrun.browser_charged", learned), ...paid(4, "browser", "browserbase", 0.001, { tool: "browser", tag: learned.tag, ref: "browser:ar-learn@2026-11-19T09:56:00.000Z/final" })]);
+  // The follow-up claim's reopen books the raced charge.
+  const followUp = at(100, [...paid(2, "browser", "browserbase", 0.02, { tool: "browser", tag: charge.tag, ref: "browser:unheld:bb-raced/final" }), ...reported(7, 2, "m", 0.01, usage(10, 1))]);
+  const job = [...round1, ...followUp];
+  const { lines } = usageLinesOf(job, undefined, new Map(), { rows: [], at: 0 }, attempts, [...round1, ...reflect, ...followUp]);
+  const browser = lines.filter((one) => one.meter === "browser_time");
+  assert.equal(browser.length, 1, JSON.stringify(browser));
+  assert.equal(browser[0].quantity, 600, "the raced charge's seconds, from its record in the left-out range");
+  assert.equal(browser[0].usd, 0.02);
+  assert.equal(browser[0].absorbed, "create_race");
+  assert.equal(browser[0].attempt, 1);
+  // A booking a later attempt of the same turn wrote (a claim that took the run over) stays on the attempt whose claim
+  // wrote the charge.
+  const retried = [claimRow(1, 1, 1, ENDED - 900_000), { ...claimRow(1, 1, 100, ENDED - 600_000), attempt: 2 }];
+  const again = usageLinesOf(job, undefined, new Map(), { rows: [], at: 0 }, retried, [...round1, ...reflect, ...followUp]).lines.filter((one) => one.meter === "browser_time" && one.absorbed === "create_race");
+  assert.deepEqual(again.map((one) => [one.attempt, one.quantity]), [[1, 600]], JSON.stringify(again));
+  // Read over the job alone, as before: the dollars stay, the seconds are unknown.
+  assert.equal(usageLinesOf(job, undefined, new Map(), { rows: [], at: 0 }, attempts).lines.find((one) => one.meter === "browser_time").quantity, null);
 });
