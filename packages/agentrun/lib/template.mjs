@@ -87,6 +87,21 @@ async function uploadFromGithub({ values, args, env, io, cli, client }) {
   } catch (error) {
     throw cli.fail(1, `${args[0]} could not be read from GitHub, so nothing was uploaded: ${error.message}`);
   }
+  // A source's package is named by its folder (the path's last part, or the repository's for a root package), and the
+  // server's own import refuses an agent.md that says otherwise; an upload is named by its agent.md alone, so that check
+  // is made here, before anything is sent. A manifest that names nothing is left to the server to refuse.
+  const manifest = files.get("agent.md");
+  if (manifest !== undefined) {
+    let manifestOf;
+    try {
+      ({ manifestOf } = await import(`${SERVE_PACKAGE}/manifest`));
+    } catch {
+      throw cli.fail(2, `AgentRun's server (${SERVE_PACKAGE}) is not installed beside this command, and it is the server's reader that reads agent.md: nothing was sent.`);
+    }
+    const named = manifestOf(manifest.toString("utf8"))?.name;
+    const folder = source.id.split("/").at(-1);
+    if (typeof named === "string" && named !== folder) throw cli.fail(1, `${source.id}'s agent.md names the package ${JSON.stringify(named)}, and a package's name is its folder's, ${JSON.stringify(folder)}: the server's own import of the source refuses it, so nothing was uploaded.`);
+  }
   io.stderr.write(`This server takes uploaded packages only, so this command read ${source.id} from GitHub itself at ${sha} and uploads its files.\n`);
   const sent = new Map([...files].filter(([path]) => !path.split("/").some((part) => part.startsWith("."))));
   const body = JSON.stringify({ files: filesBody(sent), ...(values["dry-run"] ? { dry_run: true } : {}) });
