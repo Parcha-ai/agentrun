@@ -45,7 +45,7 @@ import { inMemory } from "./memory.js";
 import { dropAgentLearning, dropRunLearning, learningRows } from "./learning-rows.js";
 import { Connection, DEFAULT_BUSY_TIMEOUT_MS, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
 import { applyRunPatch, backfillLedger, BY_HAND_BEFORE, EXACT_COST_USD, NOT_A_LEARNING_RUN, recordLedger, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
-import { launchDiskOf, readableJson,readLaunch, readLearningStarts, readSeededBefore, readUsageMetadata, writeLaunch, writeLaunchSealed } from "./run-launch.js";
+import { launchDiskOf, readableJson,readLaunch, readLearningStarts, readSeededBefore, readUsageMetadata, writeLaunch, writeLaunchLearning, writeLaunchSealed } from "./run-launch.js";
 import { canonical } from "../agent-body.js";
 import { mcpRecordKeys } from "../mcp-record-keys.js";
 import type { LedgerRow, SpendRow } from "../../learn/ledger.js";
@@ -1520,6 +1520,7 @@ class SqliteStore implements Store {
         return row && runOf(row);
       },
       launch: (runId) => readLaunch(db, runId),
+      reseedLearning: (runId, learning, epoch) => db.transaction((tx) => writeLaunchLearning(tx, runId, learning, epoch, d.shareLock)),
       learningDeadlines: async (runIds) => {
         const out = new Map<string, number>();
         if (runIds.length === 0) return out;

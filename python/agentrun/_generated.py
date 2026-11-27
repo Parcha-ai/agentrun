@@ -4679,7 +4679,7 @@ class WriteHomeFileResponse(_WriteHomeFileResponseRequired, total=False):
 class GetLearningCorrectionsResponse(TypedDict):
     text: str
     etag: str
-    cap_bytes: Literal[2048]
+    cap_bytes: Literal[8192]
 
 
 class GetLearningCostResponse(TypedDict):
@@ -5021,7 +5021,7 @@ class PutLearningCorrectionsBody(TypedDict):
 class PutLearningCorrectionsResponse(TypedDict):
     text: str
     etag: str
-    cap_bytes: Literal[2048]
+    cap_bytes: Literal[8192]
 
 
 class ConnectGitHubBody(TypedDict, total=False):
@@ -8124,9 +8124,13 @@ class _GetRunLearningResponseObjectRequired(TypedDict):
     detail: str | None
     at: str
     seed: str | None
+    seed_failed: Literal["unreadable", "not_copied", "other_disk"] | None
+    seed_waited: Literal["ended", "timed_out"] | None
+    learned_chars: int
     merged: str | None
     workflows: list[GetRunLearningResponseObjectWorkflowsItem]
     corrections: int
+    dropped_lines: int
     problems: list[GetRunLearningResponseObjectProblemsItem]
     compiled: GetRunLearningResponseObjectCompiled | None
     draft_errors: list[str]
@@ -8216,6 +8220,7 @@ class _MessageCreateRequired(TypedDict):
 
 
 class MessageCreate(_MessageCreateRequired, total=False):
+    said: str
     model_key: str
     mcp_auth: dict[str, MessageCreateMcpAuthValue | ComposioRunBinding]
     keys: dict[str, str]
@@ -8539,7 +8544,7 @@ class GetRunUsageResponse(TypedDict):
     browser_sessions: list[GetRunUsageResponseBrowserSessionsItem] | None
     computer_intervals: list[GetRunUsageResponseComputerIntervalsItem] | None
     infra_usd: float | None
-    reason: Literal["running", "not_booked", "reopened"] | None
+    reason: Literal["running", "not_booked"] | None
 
 
 class _GetRunUsageResponseTotalRequired(TypedDict):
@@ -8903,11 +8908,15 @@ class FeaturesRuns(_FeaturesRunsRequired, _FeaturesRunsOptional):
     pass
 
 
-class FeaturesMessages(TypedDict):
+class _FeaturesMessagesRequired(TypedDict):
     steer: bool
     answer: bool
     follow_up: bool
     steer_workflow_runs: bool
+
+
+class FeaturesMessages(_FeaturesMessagesRequired, total=False):
+    said: bool
 
 
 class _FeaturesTimelineRequired(TypedDict):

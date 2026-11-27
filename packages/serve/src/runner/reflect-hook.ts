@@ -29,10 +29,11 @@ export type DraftCommit = {
   readonly bases?: Readonly<Record<string, string>>;
 };
 
-/** What a merge landed: the commit (and the correction it left out beside its draft, learn/commit.ts
- *  LearningCommitResult `refusedCorrection`), or why it did not. */
+/** What a merge landed: the commit (the correction it left out beside its draft, and how many of corrections.md's oldest
+ *  lines its kept correction dropped: learn/commit.ts LearningCommitResult `refusedCorrection`, `droppedLines`), or why
+ *  it did not. */
 export type Committed =
-  | { readonly ok: true; readonly commit: string; readonly refusedCorrection?: readonly Problem[] }
+  | { readonly ok: true; readonly commit: string; readonly refusedCorrection?: readonly Problem[]; readonly droppedLines?: number }
   | { readonly ok: false; readonly reason: "conflict" | "refused" | "purged" | "unavailable"; readonly problems: readonly Problem[] };
 
 /** What the step reads of the run and the host. */
@@ -46,8 +47,8 @@ export interface ReflectDeps {
   readonly facts: (runId: string) => Promise<{ learns: boolean; cancelled?: boolean; capReached?: boolean; costUsd: number | null } & ({ capUsd?: undefined } | { capUsd: number; spentUsd: number | null })>;
   /** What the run's owner said of it: a grade's words, and each message they sent after its first, in order. */
   readonly feedback: (runId: string) => Promise<readonly string[]>;
-  /** Why the owner's words would be refused as a line of corrections.md on main now (learn/commit.ts correctionRefused);
-   *  empty when they would be taken. */
+  /** Why the owner's words would be refused as a line of corrections.md (learn/commit.ts correctionRefused: the line
+   *  alone, since a kept line drops the file's oldest lines to fit); empty when they would be taken. */
   readonly correctionRefused: (input: { runId: string; agentId: string; round: number; text: string; refuse: readonly string[] }) => Promise<readonly Problem[]>;
   /** The compile turn's facts (learn/compile.ts CompileAsk), `refuse` cut from what they quote: undefined when the run
    *  compiles nothing (its job not due, a workflow that answered). Absent, or a read that throws: no compile turn. */
@@ -194,12 +195,14 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
         const readme = draft?.files.find((file) => file.path.endsWith("/README.md"));
         const json = draft?.files.find((file) => file.path.endsWith("/workflow.json"));
         const workflows: LearnedFile[] = draft && json ? [{ file: json.path, name: draft.name, ...(readme && draft.held?.includes(readme.path) ? { pending: true as const } : {}) }] : [];
-        // The draft and the correction are judged apart: one the merge left out (corrections.md filled during the compile)
-        // is reported as the check before the compile reports one.
+        // The draft and the correction are judged apart: one the merge left out (its line past the cap alone) is reported
+        // as the check before the compile reports one.
         const left = done.refusedCorrection?.length ? done.refusedCorrection : undefined;
         const corrections = taken !== undefined && !left ? 1 : 0;
+        // How many of corrections.md's oldest lines the kept correction pushed out to fit the cap.
+        const dropped = corrections && done.droppedLines ? done.droppedLines : 0;
         const problems = [...refusedCorrection, ...(left ?? []), ...draftProblems];
-        return close(keptRow({ state: "merged", reason: null, merged: done.commit, ...(workflows.length ? { workflows } : {}), ...(corrections ? { corrections } : {}), ...(problems.length ? { problems } : {}), ...compiledFields, detail: said.merged(workflows, corrections, problems) }));
+        return close(keptRow({ state: "merged", reason: null, merged: done.commit, ...(workflows.length ? { workflows } : {}), ...(corrections ? { corrections } : {}), ...(dropped ? { dropped_lines: dropped } : {}), ...(problems.length ? { problems } : {}), ...compiledFields, detail: said.merged(workflows, corrections, problems, dropped) }));
       }
       if (done.reason === "unavailable") return close(dropped("reflect_failed", said.stopped(STOPPED.failed), compiledFields));
       // A run's purge came after this run's seed: nothing of its merge was written (learn/commit.ts `purged`).

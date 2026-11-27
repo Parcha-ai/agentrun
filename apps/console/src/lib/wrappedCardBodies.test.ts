@@ -297,14 +297,14 @@ describe("leak", () => {
         { label: "Sessions with a key", value: "2" },
         { label: "Sessions checked", value: "9" },
       ],
-      footnote: "Cut on import from the 9 runs imported here; counts only, no key shown.",
+      footnote: "From the 9 runs counted on import; counts only, no key shown.",
     });
   });
 
   it("draws no leak card when no run of the year was counted, and says one key, one run and none in their own words", () => {
     expect(body("leak", { ...YEAR, secrets: null })).toBeNull();
     const one = body("leak", { ...YEAR, secrets: { runs: 1, runs_holding: 1, removed: 1 } })!;
-    expect([one.figure, one.footnote]).toEqual([{ value: "1", unit: "key or token cut" }, "Cut on import from the 1 run imported here; counts only, no key shown."]);
+    expect([one.figure, one.footnote]).toEqual([{ value: "1", unit: "key or token cut" }, "From the 1 run counted on import; counts only, no key shown."]);
     const none = body("leak", { ...YEAR, secrets: { runs: 12_345, runs_holding: 0, removed: 0 } })!;
     expect([none.figure, none.rows]).toEqual([{ value: "0", unit: "keys and tokens cut" }, [{ label: "Sessions with a key", value: "0" }, { label: "Sessions checked", value: "12,345" }]]);
   });

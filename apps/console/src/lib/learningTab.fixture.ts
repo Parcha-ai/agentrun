@@ -144,8 +144,8 @@ export function fixtureClient(over: Partial<{ cost: LearningCost; audits: AuditR
   return {
     agentLearning: async () => view,
     listAgentRuns: async () => ({ runs: [], next_cursor: null }),
-    corrections: async () => ({ text: view.corrections, etag: '"c-v1"', cap_bytes: 2048 }),
-    writeCorrections: async (_id: string, text: string) => ({ text, etag: '"c-v2"', cap_bytes: 2048 }),
+    corrections: async () => ({ text: view.corrections, etag: '"c-v1"', cap_bytes: 8192 }),
+    writeCorrections: async (_id: string, text: string) => ({ text, etag: '"c-v2"', cap_bytes: 8192 }),
     readLearningFile: async (_id: string, file: string) => ({ text: "{}\n", etag: `"v-${file}"` }),
     retireWorkflow: async () => ({ text: "", etag: '"v3"' }),
     approveWorkflow: async () => ({ text: "", etag: '"v4"' }),

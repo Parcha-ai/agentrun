@@ -463,7 +463,6 @@ function lineParts(lines: readonly UsageLine[]) {
 const NO_LINES: Record<NonNullable<RunUsage["reason"]>, string> = {
   running: "Cost by line appears when the run ends.",
   not_booked: "This run's cost is its harness's own figure, so it can't be split by line.",
-  reopened: "A follow-up reopened this learning run, so its cost can't be split by round.",
 };
 
 /** The run's cost line by line, from the server's booking: a row a line, with its quantity, its cost and how the cost
