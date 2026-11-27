@@ -4134,7 +4134,7 @@ credential is sealed in the workspace's own row and sent by its own agents' runs
 it); or a per-run Composio save (`user_id: "per_run"`, no `auth_config_id`, else `422 not_allowed`) whose key the install
 names (`api_key_env`). Anything else is the refused route's `404`, before anything is sent. The token with no header still
 writes no credential. One of a workspace's sealed servers at an origin taken off the list can't be used, as a token's
-`per_run` one can't. The owner's shared
+`per_run` one can't: a run already going when the list changes stops sending its credential at its next call. The owner's shared
 servers still guard it: a workspace's save never stands on an auth config one of them stands on, and its run never binds
 the owner's Composio user. A workspace's server is kept as `<workspace>/<name>`, its sealed credential bound to that row,
 so a credential copied to another workspace's row does not open. A preview is of its own server by name, or of an address at the

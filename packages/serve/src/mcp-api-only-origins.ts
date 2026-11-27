@@ -18,6 +18,10 @@ export async function holdApiOnlyMcpOrigins(store: SettingsWriter, apiOnly: bool
   else await store.settings.remove(API_ONLY_MCP_ORIGINS_KEY);
 }
 
+/** The auth types a server the API token saves may have (api-only.ts apiOnlyMcpSave): per_run anywhere, headers or a
+ *  bearer token in a workspace, sealed in its own row. The ones a run's claim reads the list again for before each call. */
+export const TOKEN_SAVED_MCP_AUTHS: readonly string[] = ["per_run", "headers", "bearer"];
+
 /** The list the store holds, or undefined when it holds none (a full server's store). */
 export async function heldApiOnlyMcpOrigins(store: SettingsReader): Promise<readonly unknown[] | undefined> {
   const held = await store.settings.get(API_ONLY_MCP_ORIGINS_KEY);

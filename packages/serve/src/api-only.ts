@@ -5,6 +5,7 @@
 // endpoint, triggers but their reads, their turn on or off (apiOnlyTriggerEdit) and a firing's release (which the launch
 // hook's host sends), their webhook hooks, the rest of agents and templates. Off by default.
 import { API_ONLY_ENV } from "./env-switch.js";
+import { TOKEN_SAVED_MCP_AUTHS } from "./mcp-api-only-origins.js";
 import type { InputIssue } from "./errors.js";
 import { NOT_SET_UP } from "./runnable.js";
 import type { Route } from "./server.js";
@@ -131,7 +132,7 @@ export function apiOnlyMcpSave(body: unknown, preset: boolean, origins: readonly
   if (preset || origins.length === 0 || body === null || typeof body !== "object") return false;
   const { url, auth } = body as { url?: unknown; auth?: unknown };
   const type = auth !== null && typeof auth === "object" ? (auth as { type?: unknown }).type : undefined;
-  if (!(scoped ? ["per_run", "headers", "bearer"] : ["per_run"]).includes(String(type)) || typeof url !== "string") return false;
+  if (!(scoped ? TOKEN_SAVED_MCP_AUTHS : ["per_run"]).includes(String(type)) || typeof url !== "string") return false;
   try {
     return origins.includes(new URL(url).origin);
   } catch {
