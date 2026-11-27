@@ -329,11 +329,9 @@ test("the fallback stores the very package, at the very commit, that a serve imp
   const imported = await storedFiles(direct);
   const uploaded = await storedFiles(hosted);
   assert.deepEqual([imported.id, imported.sha, uploaded.id], [ID, SHA, "upload:kyb"]);
-  // serve's own import stores the folder whole, hidden files too; an upload never keeps a hidden path (serve's
-  // template-import.ts uploadFiles), so those are the one difference.
-  const shown = Object.fromEntries(Object.entries(imported.files).filter(([path]) => !hidden(path)));
-  assert.deepEqual(Object.keys(imported.files).filter(hidden), [".env", "skills/.cache/x"]);
-  assert.deepEqual(uploaded.files, shown, "the same files, byte for byte, but the hidden ones");
+  // One rule on both paths: neither keeps a hidden file or folder (the faux package has .env and skills/.cache/x).
+  assert.deepEqual(Object.keys(imported.files).filter(hidden), [], "serve's own import keeps no hidden path");
+  assert.deepEqual(uploaded.files, imported.files, "the same files, byte for byte");
 });
 
 // A folder the package's import refuses (another folder beside skills/, rules/ and evals/) is refused through the

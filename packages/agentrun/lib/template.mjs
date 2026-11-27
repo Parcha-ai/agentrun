@@ -65,8 +65,9 @@ function githubReach(env, hosts) {
  *  import's limits), at the commit its ref is at now, and uploaded ({files}, encoded as `agentrun deploy` sends a
  *  folder's) with --dry-run passed on: for a server that takes uploads alone. The upload is the folder whole, as the
  *  server's own import of the source keeps it, so the server checks the same package and refuses what that import
- *  refuses; only a hidden file or folder is not sent, as an upload never keeps one. An upload keeps no publisher, so without --dry-run it needs --trust, asked before
- *  anything is read. `{ response, bytes, code, read }`, `read` the source and the commit uploaded. */
+ *  refuses. The reader skips a hidden file or folder, as both of the server's paths do. An upload keeps no publisher,
+ *  so without --dry-run it needs --trust, asked before anything is read. `{ response, bytes, code, read }`, `read` the
+ *  source and the commit uploaded. */
 async function uploadFromGithub({ values, args, env, io, cli, client }) {
   if (!values.trust && !values["dry-run"]) throw cli.fail(1, `This server takes uploaded packages only and keeps no publisher's trust, so this command reads ${args[0]} from GitHub itself and uploads its files. Read it first (--dry-run), then run this again with --trust.`);
   // Loaded here: start.mjs loads cli.mjs, which loads this module.
@@ -103,8 +104,7 @@ async function uploadFromGithub({ values, args, env, io, cli, client }) {
     if (typeof named === "string" && named !== folder) throw cli.fail(1, `${source.id}'s agent.md names the package ${JSON.stringify(named)}, and a package's name is its folder's, ${JSON.stringify(folder)}: the server's own import of the source refuses it, so nothing was uploaded.`);
   }
   io.stderr.write(`This server takes uploaded packages only, so this command read ${source.id} from GitHub itself at ${sha} and uploads its files.\n`);
-  const sent = new Map([...files].filter(([path]) => !path.split("/").some((part) => part.startsWith("."))));
-  const body = JSON.stringify({ files: filesBody(sent), ...(values["dry-run"] ? { dry_run: true } : {}) });
+  const body = JSON.stringify({ files: filesBody(files), ...(values["dry-run"] ? { dry_run: true } : {}) });
   return { ...(await cli.request(client, { method: "POST", path: "/templates/import", body, type: "application/json" })), read: { source, sha } };
 }
 
