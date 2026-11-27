@@ -180,6 +180,26 @@ test("a fetch that comes once every waiter has stopped the shared check, before 
   assert.equal(thirdEnded.receipt.wall.verdict, "content", "the new fetch gets its own check's verdict");
 });
 
+test("a fetch that comes in the same turn as the last waiter's stop, before the stopped check has been let go, asks a check of its own and gets its verdict", async () => {
+  const { w, release, guardAsked, signals } = heldGuard();
+  const one = new AbortController();
+  const ended = [];
+  const first = w.fetch(PUBLIC, { task: TASK, signal: one.signal }).then((got) => ended.push(got));
+  await guardAsked;
+  one.abort();
+  // Same turn: the stopped check is still the page's, its verdict not yet settled.
+  let nextEnded;
+  const next = w.fetch(PUBLIC, { task: TASK }).then((got) => (nextEnded = got));
+  await turnsUntil(() => ended.length === 1 && signals.length === 2, 200);
+  try {
+    assert.deepEqual([signals.length, signals[0].aborted, signals[1]?.aborted], [2, true, false], "the stopped check is not joined: the new fetch asks its own, live");
+  } finally {
+    release();
+  }
+  await Promise.all([first, next]);
+  assert.equal(nextEnded.receipt.wall.verdict, "content", "the new fetch gets its own check's verdict, not the stopped one's");
+});
+
 test("under searchInTurn's deadline (the real AbortSignal.any), a provider sees a TimeoutError when the bound ran out and an AbortError when the call was stopped", async () => {
   const bound = AbortSignal.any([AbortSignal.timeout(1), new AbortController().signal]);
   await new Promise((resolve) => bound.addEventListener("abort", resolve, { once: true }));
