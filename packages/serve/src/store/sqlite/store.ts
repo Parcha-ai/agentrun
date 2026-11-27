@@ -2630,8 +2630,10 @@ class SqliteStore implements Store {
         return (result?.changes ?? 0) === 1;
       },
       workspaces: async () => new Map((await db.all<{ id: string; workspace: string | null }>("SELECT id, workspace FROM imported_templates")).map((row) => [row.id, row.workspace])),
-      remove: async (id) => {
-        const [result] = await db.write([{ sql: "DELETE FROM imported_templates WHERE id = ?", params: [id] }]);
+      remove: async (id, workspace, read) => {
+        const where = ["id = ?", ...(workspace === undefined ? [] : ["workspace = ?"]), ...(read === undefined ? [] : ["sha = ?", "imported_at = ?"])];
+        const params = [id, ...(workspace === undefined ? [] : [workspace]), ...(read === undefined ? [] : [read.sha, read.importedAt])];
+        const [result] = await db.write([{ sql: `DELETE FROM imported_templates WHERE ${where.join(" AND ")}`, params }]);
         return (result?.changes ?? 0) === 1;
       },
     };
