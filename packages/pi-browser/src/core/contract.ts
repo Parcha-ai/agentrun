@@ -93,10 +93,13 @@ const run: ToolContract = {
   effect: "effect", replay: "unsafe", executionMode: "sequential", evidence: "none", listedWhen: "always",
 };
 
+/** save_as's words, as the screenshot tool keeps them (tools.ts savePlanOf). */
+const SAVE_AS = "Also save the capture as this file: a path relative to the workspace, folders separated by a forward slash, ending .png, .jpg or .jpeg (shots/home.png). A .png name captures a PNG; a .png name with type jpeg, or a .jpg name with type png, is refused. Missing folders are made and a file already there is replaced. The answer says where it was saved, or why it was not (a PNG over the size budget comes back as a JPEG, which is not saved under a .png name).";
+
 const screenshot: ToolContract = {
   name: "screenshot",
   label: "Browser: screenshot",
-  description: 'Capture a screenshot of the active page. For size-constrained MCP clients, prefer a viewport JPEG: {"type":"jpeg","quality":40,"fullPage":false}.',
+  description: 'Capture a screenshot of the active page. For size-constrained MCP clients, prefer a viewport JPEG: {"type":"jpeg","quality":40,"fullPage":false}. With save_as, the capture is also saved as a file in the workspace.',
   parameters: object({
     fullPage: { type: "boolean" },
     type: { type: "string", enum: ["png", "jpeg"] },
@@ -105,6 +108,7 @@ const screenshot: ToolContract = {
     clip: { ...object({ x: { type: "number" }, y: { type: "number" }, width: { type: "number" }, height: { type: "number" } }, ["x", "y", "width", "height"]), description: "Capture only this region, in CSS pixels from the viewport's top-left corner (what the page shows now). Width and height 0 mean no clip: leave it out, or send zeros, to capture the whole viewport. A region that leaves the viewport is refused. Use one of clip, id or selector; an empty id or selector means none." },
     id: { type: "string", description: "Capture only this element: a bracketed ID from the latest snapshot, as a string. It is scrolled into view first. It must match one element." },
     selector: { type: "string", description: "Capture only the element this CSS selector matches (when there is no snapshot ID for it). It is scrolled into view first. It must match exactly one element." },
+    save_as: { type: "string", description: SAVE_AS },
   }),
   effect: "read", replay: "safe", executionMode: "sequential", evidence: "image", listedWhen: "always",
 };

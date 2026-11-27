@@ -342,10 +342,11 @@ test("the runner's handed keys, the run's subagent tier routes and a replay's gr
     assert.deepEqual([...routed.routes.keys()], tiers.map((tier) => `subagent-${tier}`), `${words}: the run routes those tiers`);
     assert.deepEqual(asked.map(({ tier, ref }) => [tier, ref]), tiers.map((tier) => [tier, revision.body.modelTiers?.[tier]]), `${words}: each tier on its model`);
     for (const route of asked) assert.deepEqual(route.keys, keys, `${words}: the routes read those tiers' keys alone`);
-    // A replay's grader routes the fast tier when it is one of them, and no route when it is not.
-    let graded = 0;
-    await spec.graderRouteOf(revision.body, false, undefined, {}, heldRedactor((text) => text), () => {}, { store, sealKey: KEY, env, routeOf: async () => (graded++, { model: { id: "grader" } }) });
-    assert.equal(graded, tiers.includes("fast") ? 1 : 0, `${words}: the grader routes the fast tier only when it is routed`);
+    // A replay's grader routes the fast tier when it is one of them, else the run's own model (its "default" route).
+    const graded = [];
+    const grader = await spec.graderRouteOf(revision.body, false, undefined, {}, heldRedactor((text) => text), () => {}, { store, sealKey: KEY, env, routeOf: async (_ref, _env, tier) => (graded.push(tier), { model: { id: "grader" } }) }, undefined, undefined, env.AGENT_MODEL);
+    assert.deepEqual(graded, [tiers.includes("fast") ? "fast" : "default"], `${words}: the grader routes the fast tier when it is routed, else the run's own model`);
+    assert.equal(grader.own, !tiers.includes("fast"), `${words}: the grader says whether it is the run's own model`);
   }
 });
 
@@ -378,14 +379,16 @@ test("a replay's grader on the runner reads the saved key of its fast tier's mod
   }
 });
 
-test("a grader with no fast tier reads no saved key and routes nothing, nor does a run with its own key read one; beside them, a fast tier's grader reads its model's key", async (t) => {
+test("a grader with no fast tier routes the run's own model and reads no saved key, nor does a run with its own key read one; beside them, a fast tier's grader reads its model's key", async (t) => {
   const { store } = await storeOn(t);
   await savedThree(store);
   const reads = [];
   const counted = { ...store, sealedKeys: { get: (name) => (reads.push(name), store.sealedKeys.get(name)) } };
-  const graderOf = (env, keyed) => spec.graderRouteOf({}, keyed, undefined, {}, heldRedactor((text) => text), () => {}, { store: counted, sealKey: KEY, env, routeOf: async () => ({ model: { id: "grader" } }) });
-  // A host with a strong tier and no fast one: nothing to grade on, so nothing read.
-  assert.equal(await graderOf({ AGENT_MODEL: "openai/gpt-6.1-sol", AGENT_MODEL_STRONG: "anthropic/claude-sonnet-5-5" }, false), undefined, "no fast tier: no grader route");
+  const routed = [];
+  const graderOf = (env, keyed) => spec.graderRouteOf({}, keyed, undefined, {}, heldRedactor((text) => text), () => {}, { store: counted, sealKey: KEY, env, routeOf: async (ref, _env, tier) => (routed.push([tier, ref]), { model: { id: "grader" } }) }, undefined, undefined, env.AGENT_MODEL);
+  // A host with a strong tier and no fast one: the grader is the run's own model, on the claim's keys: no saved key read.
+  const own = await graderOf({ AGENT_MODEL: "openai/gpt-6.1-sol", AGENT_MODEL_STRONG: "anthropic/claude-sonnet-5-5" }, false);
+  assert.deepEqual([own?.own, routed], [true, [["default", "openai/gpt-6.1-sol"]]], "no fast tier: the run's own model grades");
   assert.deepEqual(reads, [], "no fast tier: no saved key read");
   assert.ok(await graderOf(FAST_ON_XAI, true), "a run with its own key: a grader route");
   assert.deepEqual(reads, [], "a run with its own key: no saved key read");
@@ -444,7 +447,7 @@ test("a replay's or audit's process is handed the saved key of its grader's prov
     const held = heldOf(store, { env, launch });
     assert.deepEqual(await tierKeysHanded(held), { OPENAI_API_KEY: OPENAI_DUMMY }, `${what}: its fast tier's provider's saved key, and no other`);
     const lines = [];
-    const route = await graded(held, lines);
+    const route = (await graded(held, lines))?.route;
     assert.ok(route, `${what}: a grader route (${lines.join("; ")})`);
     assert.deepEqual([route.provider.origin, route.model, await route.provider.credential()], ["https://api.openai.com", "gpt-6-luna", OPENAI_DUMMY], what);
     assert.deepEqual(lines, [], what);
@@ -460,7 +463,8 @@ test("a replay's or audit's process is handed the saved key of its grader's prov
   // A revision that names agree_on has no grader: its replay is handed no key.
   const agreeOn = { kind: "agentic", body: { learning: { agree_on: ["answer"] } } };
   assert.deepEqual(await tierKeysHanded(heldOf(store, { env, revision: agreeOn, launch: { ...ask, replay } })), {}, "a revision that names agree_on");
-  // No fast tier named by the revision or the runner: the grader has no route, and no key is handed.
+  // No fast tier named by the revision or the runner: the grader is the run's own model, on the key its claim already
+  // holds, and no key is handed.
   assert.deepEqual(await tierKeysHanded(heldOf(store, { env: { AGENT_MODEL: env.AGENT_MODEL }, launch: { ...ask, replay } })), {}, "no fast tier");
   // A run that is no replay or audit (no subagent, no learning harness, no SDK): none of the server's keys.
   assert.deepEqual(await tierKeysHanded(heldOf(store, { env, launch: ask })), {}, "a run of its own");

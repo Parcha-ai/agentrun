@@ -12,7 +12,9 @@ export const CORRECTIONS_FILE = "corrections.md";
 export const CORRECTIONS_CAP = 8192;
 
 /** One correction as the file keeps it: the owner's words on one line, its whitespace folded, as a list item. */
-export const correctionLine = (text: string): string => `- ${text.replace(/\s+/g, " ").trim()}\n`;
+export const correctionLine = (text: string): string => `- ${correctionWords(text)}\n`;
+/** A correction's words as its line holds them (correctionLine): every run of whitespace one space, trimmed. */
+export const correctionWords = (text: string): string => text.replace(/\s+/g, " ").trim();
 
 /** corrections.md `before` with `line` (correctionLine, within the cap alone) appended on a line of its own, and as many
  *  of its oldest lines dropped as the cap needs: the newest correction wins. `dropped`, how many lines went (blank ones

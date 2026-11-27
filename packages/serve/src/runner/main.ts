@@ -452,8 +452,9 @@ const isStoreFactory = (made: LoopFactory | StoreFactory): made is StoreFactory 
 /** How long a runner process lets each busy run finish its turn on SIGTERM, unless --drain-timeout or
  *  AGENTRUN_DRAIN_TIMEOUT says: the image's server drain (its CMD's --drain-timeout 6s), so a runner beside a --no-runner
  *  server drains as the server's own runner would.
- *  BOUND: this drain plus the stuck-loop stop after it (runner.ts runnerCloseBoundMs: the claim's lease less its margin,
- *  30 s - 5 s = 25 s) is 6 + 25 = 31 s, inside deploy/compose.yaml's 35 s stop_grace_period for its runners
+ *  BOUND: the close is this drain plus the stuck-loop stop after it (the claim's lease less its margin, 30 s - 5 s), or
+ *  a computer provider's cleanup bound from the close's start and its margins (30 s + 5 s + 5 s), whichever is longer
+ *  (runner.ts runnerCloseBoundMs): 40 s, inside deploy/compose.yaml's 45 s stop_grace_period for its runners
  *  (runner-beside-flags.test.mjs pins it). Raise this default only with that grace. */
 export const RUNNER_DRAIN_TIMEOUT = "6s";
 /** The environment's drain for a runner process when --drain-timeout gives none. */

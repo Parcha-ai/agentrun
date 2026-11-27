@@ -124,7 +124,7 @@ or the same decision by the grader's verdict on the draft and that answer, which
 whether the agent's own answer was right). The agent said `{"answer":42,"note":"checked"}` and the grade expects
 `{"answer":41}`: a draft of `{"answer":41,"note":"checked"}` is right. A disagreement still shows the recompile the
 grade's own expected answer. With no grade, it is judged against the agent's answer (equal, or the grader's same
-decision). No field name is ever taken from a
+decision). A run its owner corrected by message (no grade's expected answer, nor a grade that said right) keeps its recorded answer, never written over: the replay's grader is shown it with the owner's correction beside it (kept on the run's learning row as `correction`, and on the verdict as `replay.compared.corrected`), the correction winning where they differ; the agent's answer counts as wrong, and only a verdict asked with the correction counts: its same decision is right, equal answers or not (equal ones ask it too; with no verdict kept the input is unjudged: a message may be a question or thanks, not a correction), and a disagreement shows the owner's words as known `correction`; under agree_on it changes nothing. No field name is ever taken from a
 grade's keys: they are a person's data, and a run's purge leaves them nowhere in the record. A grade with no expected answer still says something: not
 correct, on the whole answer, makes a draft that repeats it wrong there, and leaves any other answer unjudged (under
 agree_on it names no field, so it changes nothing); correct changes nothing (the agent's answer is known as with no
@@ -159,7 +159,7 @@ path must resolve in both answers' values (bare JSON, a whole fence, or the last
 a path that resolves in neither or in only one (a key missing, a segment through an array, text or null) disagrees.
 Without it, two answers equal as JSON or as trimmed text agree with no model call, and two that differ are read by the
 grader (`learn/promote.ts` gradeAnswers, `runner/compare-end.ts`): the agent's fast model (its `model_tiers.fast`, else
-AGENT_MODEL_FAST), asked once by the replay run itself at its end whether its answer and the known one (the agent's, or
+AGENT_MODEL_FAST), else, with neither set, the agent's own model (`runner/adapter-run-spec.ts` graderRouteOf), asked once by the replay run itself at its end whether its answer and the known one (the agent's, or
 for a graded run the known answer above) reach the same decision, its system text GRADER_PROMPT and its reply `{"same": boolean, "differs_on": string | null}`. Its request goes
 through the run's own session on a tier proxy of its own (route `grader`), judged by the run's cap before it leaves and
 booked as the run's spend, so it is the check's cost (`check_usd`); a cap refusal never parks the run. It is asked once
@@ -175,15 +175,14 @@ pair is not the two answers read at the check (the agent's run answered again af
 follow-up) is stale, and that input differs ("the comparison read an earlier answer: ..."), as one with no verdict
 does: no claim asks the grader again. The record keeps `check.grader` (the
 model) and each disagreement's `differs_on` (cut to CHECK_TEXT_MAX), its reason says "compared by the fast model
-(<model>)", and a hold says "its answers reached a different decision from the agent's on k of n (for example:
-<differs_on>)". With no fast model the whole answer decides, and a hold that answered some inputs alone and agreed on
-none says "its answers never matched the agent's word for word, and no fast model compared their decisions (...); name
-the fields that carry the decision (learning.agree_on)". No field is read off the `output_schema`: its enum can be an echo of the owner's setting (kyb's
+(<model>)", or "compared by the agent's own model (<model>; no fast model is set)", and a hold says "its answers reached a different decision from the agent's on k of n (for example:
+<differs_on>)". When no grader's verdict was kept (no route to it could be made) the whole answer decides, and a hold that answered
+some inputs alone and agreed on none says "its answers never matched the agent's word for word, and no model compared
+their decisions (...); name the fields that carry the decision (learning.agree_on)". No field is read off the `output_schema`: its enum can be an echo of the owner's setting (kyb's
 `risk_appetite`) while the decision sits deeper (`verdict.decision`), and a default that promotes on the wrong field is
 worse than one that never promotes. A shipped template whose answer carries a decision declares it (kyb, inbound-lead),
 each path a required property of its output schema at every level (`templates.ts` readPackage refuses one an answer may
-leave out); one whose answer is generated text (market-monitor, release-notes) goes to the grader, or the whole answer
-with no fast model. The record keeps `check.agree_on` when it compared paths, and its reason says "said what the agent
+leave out); one whose answer is generated text (market-monitor, release-notes) goes to the grader. The record keeps `check.agree_on` when it compared paths, and its reason says "said what the agent
 said on mcc and riskTier": agree_on asks no model, free and exact where the definition can name the fields. Of the
 inputs it ran on, `alone` is the share
 it answered with no escalate and no failed step (a replay obeys an escalate, so an input one of them hands back is no

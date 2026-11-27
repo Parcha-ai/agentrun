@@ -410,8 +410,9 @@ const fenced = (what: string, text: string): string[] => {
 };
 
 /** A check's disagreement as the prompt fences it (learn/promote.ts CheckDisagreement): with the known answer of each
- *  field a grade gave, where the draft missed it, or that the owner marked the agent's answer wrong without
- *  giving the right one, or that the owner's grade contradicts itself. */
+ *  field a grade gave, where the draft missed it, or the owner's correction of the agent's answer in their words, or
+ *  that the owner marked the agent's answer wrong without giving the right one, or that the owner's grade contradicts
+ *  itself. */
 const disagreementText = (one: CheckDisagreement, i: number): string => clean([
   `Input ${i + 1}: ${one.input}`,
   `Your answer: ${one.agent ?? "(none recorded)"}`,
@@ -419,6 +420,8 @@ const disagreementText = (one: CheckDisagreement, i: number): string => clean([
   ...(one.fields?.length ? [`The fields it had wrong: ${one.fields.join(", ")}`] : []),
   ...(one.expected ?? []).map((known) => (known.known === "unknown"
     ? `On ${known.field}, the owner marked your answer wrong without giving the right one.`
+    : known.known === "correction"
+    ? `On ${known.field}, the owner corrected your answer, in their words (the known answer is yours as this changes it): ${known.value ?? ""}`
     : known.known === "contradicts"
     ? `On ${known.field}, the owner's grade contradicts itself: it marked your answer wrong, yet the right answer it gave is yours. There is no known answer there.`
     : `The known answer of ${known.field} (from a grade): ${known.value ?? ""}`)),

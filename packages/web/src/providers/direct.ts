@@ -5,6 +5,7 @@ import { askedUrl, clip, linksWithin, type Page, type Part, partOfRead, type Rea
 import { defineProvider, type ProviderRun } from "../provider.js";
 import { bare, type Failure, type FailureClass } from "../search.js";
 import { linksOf } from "../text-urls.js";
+import { thrownFailure } from "./keyed.js";
 
 /** A page the direct fetch did not read, with why typed (the provider's own; readDirect answers it bare). */
 export type UnreadTyped = Unread & { failure: Failure };
@@ -51,7 +52,8 @@ async function readTyped(url: unknown, guard: Guard | undefined, options: GuardO
     // Never a URL's user name or password: undici's refusal of a redirect to a URL holding them quotes it whole.
     const message = withoutUserinfo((error as Error)?.message ?? String(error));
     if (isRefused(error)) return failed("refused", "GUARD", { refused: message });
-    return failed("infra", (error as Error)?.name === "TimeoutError" ? "TIMEOUT" : "CONNECT", { error: message });
+    // Typed as every provider types a thrown failure (thrownFailure); the page says what the error said, whole.
+    return failed("infra", thrownFailure(error, { who: "the direct fetch", what: "fetch", signal: options.signal }).failure.code, { error: message });
   }
 }
 

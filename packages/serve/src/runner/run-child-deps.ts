@@ -31,6 +31,8 @@ export interface ChildInit {
   readonly composioMcpOrigin?: string;
   /** The runner traces its runs: this run's trace is posted to it (tracer.ts postedTracing). */
   readonly traced?: true;
+  /** The runner's bound on the claim's tool hosts' release (LoopDeps.releaseBoundMs), when it sets one. */
+  readonly releaseBoundMs?: number;
   /** The plane the runner capped and chose this process's keys by (run-child-host.ts): the claim's, as it is. */
   readonly plane?: AdapterSpecDeps["claimedPlane"];
 }

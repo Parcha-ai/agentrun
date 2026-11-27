@@ -62,7 +62,8 @@ import { pinAnnotations, type Recorded, recordedCalls, type ReplayCalls, replayC
 import { listed } from "../learning-words.js";
 import { isObject, type Json } from "../validate.js";
 import { agentRun, lastOwnRuns, newCompileAttempt, sinceReset, STOP_RESTARTS, stoppedRecord, stopsOf } from "../learn/compile.js";
-import { answerAt, answerValue, type CheckBar, type CheckDisagreement, type CheckKnown, type CheckRecord, type CheckTurns, checkShares, CHECK_TEXT_MAX, championOf, compareAnswers, type Compared, comparedGrade, comparedOf, gradesOf, knownAnswerText, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, type ReplayLaunch, type ReplayOutcomes, type ReplayScore, replayingOf, sameAnswer, type SkippedTool, skippedToolsOf, valueAtPath } from "../learn/promote.js";
+import { answerAt, answerValue, type CheckBar, type CheckDisagreement, type CheckKnown, type CheckRecord, type CheckTurns, checkShares, CHECK_TEXT_MAX, championOf, compareAnswers, type Compared, comparedGrade, comparedOf, correctionCounts, gradesOf, knownAnswerText, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, type ReplayLaunch, type ReplayOutcomes, type ReplayScore, replayingOf, sameAnswer, type SkippedTool, skippedToolsOf, valueAtPath } from "../learn/promote.js";
+import { CORRECTIONS_CAP, correctionWords } from "../learn/corrections.js";
 import { check as checkFields, type CheckInput, type CheckTally, type FieldAnswers, jointSaid, KNOWN, tallyOf } from "../learn/field-check.js";
 import { sendCommand } from "./commands.js";
 import { ClaimRefused } from "./loop-contract.js";
@@ -482,8 +483,9 @@ async function startCheck(deps: PromotionDeps, workflow: LearnedWorkflow, digest
 /** The words a stopped check's record starts with when it had nothing to check its draft on. */
 export const NOTHING_TO_CHECK = "nothing to check it on";
 /** What a held check compared on the whole answer says when it answered some inputs alone and agreed on none: only a
- *  check no grader compared (no agree_on, and no fast model to read the answers). */
-export const NEVER_WORD_FOR_WORD = "its answers never matched the agent's word for word, and no fast model compared their decisions (a learning agent with no agree_on wants one: AGENT_MODEL_FAST, or its model_tiers.fast); name the fields that carry the decision (learning.agree_on)";
+ *  check no grader compared (no agree_on, and no model's verdict was kept: its route could not be made, or its run kept
+ *  none). */
+export const NEVER_WORD_FOR_WORD = "its answers never matched the agent's word for word, and no model compared their decisions (the replays kept no grader's verdict); name the fields that carry the decision (learning.agree_on)";
 /** What a held check the grader compared says of the inputs it disagreed on: k of n, with one of the decisions. */
 export const differentDecisionWords = (k: number, n: number, example: string | undefined): string => `its answers reached a different decision from the agent's on ${k} of ${n}${example ? ` (for example: ${example})` : ""}`;
 
@@ -510,8 +512,10 @@ const stopUnchecked = (deps: DecideDeps, name: string, digest: string, bar: Chec
  *  reserved input whose replay run was never created, or never ended, by the check's deadline failed (`unstarted` for
  *  the first). `expected` and `correct`: the agent run's newest grade (learn/promote.ts Grade), when it has one: its
  *  expected answer is the known answer (written over the agent's, or at each agree_on path it holds); and whether
- *  the agent's answer was right. */
-export type CheckRow = { readonly of: string; readonly input: string; readonly agent: string | null; readonly outcome: ReplayOutcome; readonly answer: string | null; readonly escalated?: string; readonly skipped?: Skipped; readonly unstarted?: true; readonly compared?: Compared; readonly expected?: Readonly<Record<string, unknown>>; readonly correct?: boolean };
+ *  the agent's answer was right. `corrected`: the owner's correction that run took by message (correctionOf), in their
+ *  words, when no grade's expected answer stands (learn/promote.ts correctionCounts): the known answer is the agent's
+ *  as the correction changes it, the agent's own known wrong. */
+export type CheckRow = { readonly of: string; readonly input: string; readonly agent: string | null; readonly outcome: ReplayOutcome; readonly answer: string | null; readonly escalated?: string; readonly skipped?: Skipped; readonly unstarted?: true; readonly compared?: Compared; readonly expected?: Readonly<Record<string, unknown>>; readonly correct?: boolean; readonly corrected?: string };
 
 /** The field a check judges a whole answer as, with no agree_on. */
 export const WHOLE_ANSWER = "answer";
@@ -521,11 +525,17 @@ export const WHOLE_ANSWER = "answer";
  *  that does not resolve on a side is never right), else one field, the whole answer (`answer`), right as compareAnswers
  *  says (`compared`, answered with it: equal, or the same decision by the grader's verdict its run kept) against its
  *  best known answer: a grade's expected answer written over the agent's (learn/promote.ts knownAnswerText), the grade
- *  saying whether the agent's was right; else the agent's answer, known wrong when a grade with no expected answer said
- *  so. The field's `grade` is the grade's own expected answer, the part its owner gave, which a disagreement shows the
- *  recompile (and a purge blanks). Field names are never taken from a grade: its keys are a person's data, which a
- *  run's purge must leave nowhere. Under agree_on a grade that said the answer was wrong, with no expected answer, names
- *  no field, so it changes nothing there. */
+ *  saying whether the agent's was right; else, when its owner corrected the run by message (`corrected`), the agent's
+ *  answer as that correction changes it: the agent's known wrong, and the draft right only as a grader's verdict asked
+ *  with the correction says (only that verdict counts, equal answers or not). With no such verdict kept (no fast model, a
+ *  request that failed) the input is unjudged, neither right nor wrong: a message's words are not known to correct
+ *  anything (an owner's question or thanks is taken as one too) until a model reads them beside the answer, so its
+ *  disagreement names the correction unjudged (FieldAnswers.unasked), never a grade; else the agent's
+ *  answer, known wrong when a grade with no expected answer said so. The field's `grade` is the grade's own expected
+ *  answer, the part its owner gave, and its `correction` the owner's words, which a disagreement shows the recompile
+ *  (and a purge blanks). Field names are never taken from a grade: its keys are a person's data, which a run's purge
+ *  must leave nowhere. Under agree_on a grade that said the answer was wrong, with no expected answer, names no field,
+ *  so it changes nothing there, nor does a correction, whose words name no field either. */
 function checkInputOf(row: CheckRow, on: readonly string[] | undefined): { readonly input: CheckInput; readonly compared?: Compared } {
   const outcome = row.outcome === "skipped_write" ? "skipped" : row.outcome;
   if (outcome !== "answered") return { input: { input_id: row.of, outcome } };
@@ -538,8 +548,9 @@ function checkInputOf(row: CheckRow, on: readonly string[] | undefined): { reado
   // A grade that marked the agent's answer wrong, yet whose expected answer written over it is that answer, contradicts
   // itself: no known answer there, neither right nor wrong (unjudged).
   const contradicts = row.correct === false && row.expected !== undefined && row.agent !== null && sameAnswer(knownAnswerText(row.agent, row.expected), row.agent);
-  const graded = contradicts ? { no_known: true as const } : row.expected ? { grade: row.expected, ...(row.correct !== undefined ? { agent_correct: row.correct } : {}) } : row.correct === false ? { agent_correct: false } : {};
-  const compared = compareAnswers(row.answer, row.expected ? knownAnswerText(row.agent, row.expected) : row.agent, row.compared);
+  const corrected = row.expected === undefined ? row.corrected : undefined;
+  const graded = contradicts ? { no_known: true as const } : row.expected ? { grade: row.expected, ...(row.correct !== undefined ? { agent_correct: row.correct } : {}) } : corrected !== undefined ? (row.compared?.corrected !== undefined ? { correction: corrected, agent_correct: false } : { correction: corrected, agent_correct: false, unasked: true as const }) : row.correct === false ? { agent_correct: false } : {};
+  const compared = compareAnswers(row.answer, row.expected ? knownAnswerText(row.agent, row.expected) : row.agent, row.compared, corrected !== undefined);
   // The answers as sameAnswer reads them, so a draft that says the agent's answer in another dress repeats it.
   return { input: { input_id: row.of, outcome, fields: { [WHOLE_ANSWER]: { workflow: answerValue(row.answer), agent: answerValue(row.agent), agrees: compared.same, ...graded } } }, compared };
 }
@@ -573,7 +584,8 @@ async function settleAhead(deps: PromotionDeps, name: string, ahead: PromotionRe
  *  never created by then (`unstarted`: the server stopped after reserving it, say), its input read from the agent's run
  *  the record names for it. With what its runs cost, the rows' outcomes (one per row, the never created failed), and how
  *  many were never created by the deadline. Each row carries its agent run's newest grade's expected answer (when not
- *  empty) and whether it was right (CheckRow.expected, correct). */
+ *  empty) and whether it was right (CheckRow.expected, correct), and the owner's correction it took by message
+ *  (CheckRow.corrected). */
 async function checkRows(deps: Pick<PromotionDeps, "store" | "agentId" | "context" | "now">, record: PromotionRecord): Promise<{ rows: CheckRow[]; cost: number | null; outcomes: ReplayOutcomes; unstarted: number } | undefined> {
   const { store, context } = deps;
   const runs = await Promise.all((record.runs ?? []).map((id) => store.runs.get(id)));
@@ -581,9 +593,16 @@ async function checkRows(deps: Pick<PromotionDeps, "store" | "agentId" | "contex
   if (!late && runs.some((row) => !row || !FINAL_STATES.includes(row.state))) return undefined;
   // The newest grade of each run (gradesOf keeps them oldest first): a re-grade replaces what an earlier one said.
   const grades = new Map((await gradesOf(store.learning, deps.agentId)).map((grade) => [grade.run, grade] as const));
-  // An input whose grader was asked is judged on the grade it was asked against (Compared.graded): a grade given after
-  // that is not the pair's, so it counts from the next check, never makes this verdict stale.
-  const graded = (of: string, compared: Compared | undefined) => (compared?.graded !== undefined ? compared.graded : comparedGrade(grades.get(of))) ?? {};
+  // An input whose grader was asked is judged on the grade and the correction it was asked against (Compared.graded,
+  // corrected): one given after that is not the verdict's, so it counts from the next check, never makes this verdict
+  // stale. With no verdict kept, on the run's newest grade and the correction it took (correctionOf), when that grade
+  // leaves room for one (correctionCounts): an answered input's alone, which is all the check judges on them.
+  const graded = async (of: string, compared: Compared | undefined, answered: boolean): Promise<Pick<CheckRow, "expected" | "correct" | "corrected">> => {
+    if (compared?.graded !== undefined) return { ...(compared.graded ?? {}), ...(compared.corrected !== undefined ? { corrected: compared.corrected } : {}) };
+    const grade = comparedGrade(grades.get(of));
+    const corrected = answered && correctionCounts(grade) ? await correctionOf(store, of) : undefined;
+    return { ...(grade ?? {}), ...(corrected !== undefined ? { corrected } : {}) };
+  };
   const rows: CheckRow[] = [];
   for (const [i, run] of runs.entries()) {
     const reservedOf = record.inputs?.[i];
@@ -606,7 +625,7 @@ async function checkRows(deps: Pick<PromotionDeps, "store" | "agentId" | "contex
       answer: outcome === "answered" ? await answerOf(store, run.id, context) : null,
       ...(outcome === "handed_back" ? { escalated: (await handedBackOf(store, run.id, context)) ?? "" } : {}),
       ...(stoppedAt ? { skipped: stoppedAt } : {}),
-      ...graded(replayed, compared),
+      ...(await graded(replayed, compared, outcome === "answered")),
     });
   }
   // The outcomes are the rows', so they add up to its n: a reserved run never created is a failed input there too.
@@ -645,28 +664,30 @@ async function settleCheck(deps: PromotionDeps, workflow: LearnedWorkflow, diges
 /** A check's rows judged field by field (learn/field-check.ts check) on its bar, added to `before` (a connected agent's
  *  turns checked so far): each field of agree_on, else the whole answer (checkInputOf), against its best known answer;
  *  the inputs it did not agree on (not answered alone, or a field wrong), each naming the fields it had wrong, each text
- *  cut of the host's secrets whole, then shortened (learn/secrets.ts excerptShown); and the fast model that compared,
- *  when it read any input's answers. */
+ *  cut of the host's secrets whole, then shortened (learn/secrets.ts excerptShown); and the model that compared, when it
+ *  read any input's answers: the fast model, else the agent's own (`own`). */
 async function judgeRows(deps: Pick<DecideDeps, "shown">, bar: CheckBar, rows: readonly CheckRow[], before: CheckTurns | undefined) {
   const ran = rows.filter((row) => row.outcome !== "skipped_write");
   // With no agree_on, the draft's answer is compared whole with its known answer: equal, else the grader's verdict on
-  // that pair, which its replay run asked (with no grader, no fast model, they differ). Under agree_on, fields and
+  // that pair, which its replay run asked (with no verdict, they differ). Under agree_on, fields and
   // grades are compared as values (checkInputOf).
   const on = bar.agree_on?.length ? bar.agree_on : undefined;
   const judged = new Map(rows.map((row) => [row, checkInputOf(row, on)]));
   const verdict = checkFields([...judged.values()].map((one) => one.input), bar, before);
   const missed = new Map<string, string[]>();
   for (const miss of verdict.misses) missed.set(miss.input_id, [...(missed.get(miss.input_id) ?? []), miss.field]);
-  const grader = [...judged.values()].find((one) => one.compared?.grader !== undefined)?.compared?.grader;
+  const by = [...judged.values()].find((one) => one.compared?.grader !== undefined)?.compared;
+  const grader = by?.grader;
+  const own = by?.own === true;
   const shown = await deps.shown();
   const cut = (text: string) => excerptShown(text, shown, CHECK_TEXT_MAX);
-  // The known answers (a grade's) each input's draft missed, for the recompile: never the agent's own (shown);
-  // where a grade marked the agent's answer wrong without the right one ("unknown") or contradicts itself
-  // ("contradicts"), that it did, no value made up.
+  // The known answers (a grade's, or the owner's correction in their words) each input's draft missed, for the
+  // recompile: never the agent's own (shown); where a grade marked the agent's answer wrong without the right one
+  // ("unknown") or contradicts itself ("contradicts"), that it did, no value made up.
   const known = new Map<string, CheckKnown[]>();
   for (const miss of verdict.misses) {
     if (miss.known === "agent") continue;
-    const value = miss.known !== "grade" ? undefined : cut(typeof miss.expected === "string" ? miss.expected : JSON.stringify(miss.expected) ?? "");
+    const value = miss.known !== "grade" && miss.known !== "correction" ? undefined : cut(typeof miss.expected === "string" ? miss.expected : JSON.stringify(miss.expected) ?? "");
     known.set(miss.input_id, [...(known.get(miss.input_id) ?? []), { field: miss.field, known: miss.known, ...(value !== undefined ? { value } : {}) }]);
   }
   const disagreements: CheckDisagreement[] = [...(before?.disagreements ?? []), ...ran.filter((row) => row.outcome !== "answered" || missed.has(row.of)).map((row) => {
@@ -681,7 +702,7 @@ async function judgeRows(deps: Pick<DecideDeps, "shown">, bar: CheckBar, rows: r
       ...(expected ? { expected } : {}),
     };
   })];
-  return { verdict, disagreements, grader };
+  return { verdict, disagreements, grader, own };
 }
 
 /** Two outcome counts added. */
@@ -697,7 +718,7 @@ const outcomesAdded = (a: ReplayOutcomes, b: ReplayOutcomes | undefined): Replay
 export async function decideCheck(deps: DecideDeps, name: string, digest: string, bar: CheckBar, read: { rows: readonly CheckRow[]; cost: number | null; outcomes: ReplayOutcomes; unstarted: number; exactMismatchReason?: string; fresh_reads?: number; before?: CheckTurns }, still: Parameters<typeof recordPromotion>[3], extra: Partial<PromotionRecord>) {
   const now = deps.now ?? Date.now;
   const { before } = read;
-  const { verdict, disagreements, grader } = await judgeRows(deps, bar, read.rows, before);
+  const { verdict, disagreements, grader, own } = await judgeRows(deps, bar, read.rows, before);
   const { tally, fields, failing, joint } = verdict;
   const score = { n: tally.n, agreed: tally.agreed, alone: tally.alone };
   const fieldCount = Object.keys(fields).length;
@@ -727,7 +748,7 @@ export async function decideCheck(deps: DecideDeps, name: string, digest: string
   // and the words say none ran.
   const said = read.unstarted === score.n
     ? `none of its ${plural(score.n, "check run")} started by the check's deadline (its launch was interrupted: the server stopped after reserving it, say): nothing was checked`
-    : `checked on ${score.n} of the agent's inputs: answered ${score.alone} alone (${pct(shares.alone)}, the bar ${pct(bar.alone_min)})${Object.keys(fields).length ? `; ${Object.values(fields).map((one) => one.reason).join("; ")}` : ""}${saysJoint ? `; right on every field at once: ${joint.agreed} of ${joint.alone} (${pct(shares.agreement)}, the bar ${pct(bar.agree_min)})` : ""}${grader ? `; compared by the fast model (${grader})` : ""}${aside ? ` (${aside})` : ""}`;
+    : `checked on ${score.n} of the agent's inputs: answered ${score.alone} alone (${pct(shares.alone)}, the bar ${pct(bar.alone_min)})${Object.keys(fields).length ? `; ${Object.values(fields).map((one) => one.reason).join("; ")}` : ""}${saysJoint ? `; right on every field at once: ${joint.agreed} of ${joint.alone} (${pct(shares.agreement)}, the bar ${pct(bar.agree_min)})` : ""}${grader ? (own ? `; compared by the agent's own model (${grader}; no fast model is set)` : `; compared by the fast model (${grader})`) : ""}${aside ? ` (${aside})` : ""}`;
   // The whole answer compared with the agent's: with the grader, how many answered alone reached another decision, with
   // one it named; never once the same and no grader: free text two runs never repeat, most likely, so the owner is told
   // what to set.
@@ -1108,6 +1129,33 @@ export async function answerRowOf(store: PromotionDeps["store"], runId: string, 
 
 /** A run's final answer, whole (answerRowOf's text; `turn`: that row's), or null. */
 export const answerOf = async (store: PromotionDeps["store"], runId: string, context: Context, turn?: string): Promise<string | null> => (await answerRowOf(store, runId, context, turn))?.text ?? null;
+
+/** The owner's correction run `runId` took by message: what each round's end-of-run step took (runner/reflect-hook.ts
+ *  `taken`: past the refuse list and the checks, merged into corrections.md, cut of what the run must never learn), as
+ *  its kept row holds it (merged, with `corrections` and the words in `correction`), oldest round first, one line each,
+ *  its whitespace folded as corrections.md's line holds it (correctionWords),
+ *  the oldest dropped past CORRECTIONS_CAP bytes all told (corrections.md's own cap). Undefined when it took none: a correction refused or dropped is none, and a purged run's rows keep no words. */
+export async function correctionOf(store: Pick<Store, "learning">, runId: string): Promise<string | undefined> {
+  const newest = await store.learning.proposal(runId);
+  if (!newest) return undefined;
+  const rounds = [];
+  for (let round = 1; round < newest.round; round++) rounds.push(await store.learning.proposal(runId, round));
+  rounds.push(newest);
+  const words = rounds.flatMap((kept) => {
+    const row = (kept?.proposal ?? null) as { state?: unknown; corrections?: unknown; correction?: unknown } | null;
+    return row?.state === "merged" && typeof row.corrections === "number" && row.corrections >= 1 && typeof row.correction === "string" && correctionWords(row.correction) ? [correctionWords(row.correction)] : [];
+  });
+  // Within corrections.md's own cap all told, the newest kept first: one round's alone always fits, folded as its merge
+  // measured it (correctionLine).
+  const kept: string[] = [];
+  let bytes = 0;
+  for (const line of words.reverse()) {
+    bytes += Buffer.byteLength(line, "utf8") + (kept.length ? 1 : 0);
+    if (bytes > CORRECTIONS_CAP) break;
+    kept.unshift(line);
+  }
+  return kept.length ? kept.join("\n") : undefined;
+}
 
 const metricsOf = (row: RunRow | undefined) => (isObject(row?.metrics as Json) ? (row!.metrics as { replay?: { outcome?: unknown; skipped?: Skipped; compared?: unknown }; path?: unknown; workflow?: unknown; workflow_digest?: unknown }) : {});
 
