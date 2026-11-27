@@ -155,11 +155,18 @@ export const apiOnlyRefusal = (raw: string): string => `this server serves the r
 /** The operations a scoped request (the AgentRun-Workspace header, workspace-scope.ts) is served: its own agents, runs,
  *  imported template packages and uploaded files, and the server's description. Every other is refused with 403 not_scoped, whatever
  *  API_ONLY_ROUTES serves an unscoped request. listAgents, createAgent, updateDefinition, getTemplate, listTemplates,
- *  deleteTemplate and getOpenapi are not in API_ONLY_ROUTES: an API-only server serves them to a scoped request alone. */
+ *  deleteTemplate and getOpenapi are not in API_ONLY_ROUTES: an API-only server serves them to a scoped request alone.
+ *  So are an agent's learning texts and writes (corrections, files, log, workflows, replays, a run's diff): a workspace's
+ *  agent learns from that workspace's runs alone, so its learning is the workspace's own. A learned workflow's approve,
+ *  restore and replay are not here: they take the owner's signed-in page, never a token. */
 export const WORKSPACE_ROUTES: ReadonlySet<string> = new Set([
   "listAllRuns", "listRuns", "getRun", "getTimeline", "listRunFiles", "readRunFile", "getRunExport",
   "listAgents", "getAgent", "listRevisions", "createAgent", "updateDefinition", "setCurrent",
   "archiveAgent", "unarchiveAgent", "deleteAgent",
+  "getAgentLearning", "deleteAgentLearning", "getLearningCost", "listLearningPromotions", "listLearningAudits",
+  "getLearningLoop", "listLearningLog", "getLearningCorrections", "putLearningCorrections", "readLearningFile",
+  "retireLearningFile", "listLearnedWorkflowRevisions",
+  "getLearnedWorkflowReplay", "getRunLearning", "getRunLearningDiff",
   "importTemplate", "applyTemplate", "getTemplate", "listTemplates", "deleteTemplate",
   "createRun", "sendMessage", "stopRun", "cancelRun",
   "createFile", "listFiles", "getFile", "uploadFile", "deleteFile",
