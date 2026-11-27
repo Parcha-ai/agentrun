@@ -239,6 +239,23 @@ test("a workspace archives, unarchives and deletes its own agent and deletes its
   assert.deepEqual([bundled.status, bundled.body.error?.code], [403, "forbidden"], bundled.text);
 });
 
+test("with no header, the operator archives, unarchives and deletes any agent as before, and a template's delete stays refused on an API-only server", { timeout: 120_000 }, async (t) => {
+  const server = await scopedServer(t);
+  const { agent, template } = await seedW1(server);
+  const archived = await unscoped(server, "POST", `/v2/agents/${agent}/archive`);
+  assert.equal(archived.status, 200, archived.text);
+  assert.equal((await unscoped(server, "POST", `/v2/agents/${agent}/unarchive`)).status, 200);
+  const made = await inW2(server, "POST", "/v2/agents", { body: { definition: { version: 1, name: "W2 spare", instructions: "Answer.", skills: [], tools: [] } } });
+  assert.equal((await unscoped(server, "POST", `/v2/agents/${made.body.agent_id}/archive`)).status, 200);
+  assert.equal((await unscoped(server, "DELETE", `/v2/agents/${made.body.agent_id}`)).status, 204, "another workspace's agent, with no header");
+  for (const id of [template, "deployed"]) {
+    const refused = await unscoped(server, "DELETE", `/v2/templates/${encodeURIComponent(id)}`);
+    assert.deepEqual([refused.status, refused.body.error?.code], [404, "not_found"], refused.text);
+    assert.match(refused.body.error.message, /serves the run API only/);
+  }
+  assert.equal((await inW1(server, "GET", `/v2/templates/${encodeURIComponent(template)}`)).status, 200, "W1's package stands");
+});
+
 test("an Idempotency-Key used in one workspace starts afresh in another, and replays in its own", { timeout: 120_000 }, async (t) => {
   const server = await scopedServer(t);
   const key = { "idempotency-key": "apply-once" };
