@@ -8,11 +8,13 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+// start.sh's server binds the port after the test picked it: one below the ephemeral range, so no listen(0) or outbound
+// connection of the suite's other files takes it in between.
+import { freePort } from "./fixtures/ports.mjs";
 
 const START = fileURLToPath(new URL("../docker/start.sh", import.meta.url));
 
@@ -66,15 +68,6 @@ const keep = setInterval(() => {}, 1000);
 const exit = process.env["STUB_" + upper + "_EXIT"];
 if (exit !== undefined) setTimeout(() => { log("exits " + exit); server?.close(); clearInterval(keep); process.exit(Number(exit)); }, 300);
 `;
-
-/** A free port on loopback. */
-async function freePort() {
-  const server = createServer().listen(0, "127.0.0.1");
-  await new Promise((resolve) => server.once("listening", resolve));
-  const { port } = server.address();
-  await new Promise((resolve) => server.close(resolve));
-  return port;
-}
 
 /** The script beside the stand-in, in a scratch directory, and its log. */
 async function scratch(t) {
