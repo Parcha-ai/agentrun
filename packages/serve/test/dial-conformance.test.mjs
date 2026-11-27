@@ -17,6 +17,10 @@ import { fileURLToPath } from "node:url";
 import { conformanceCases, MACHINE_TOKEN_SOURCE, newMachineToken, readPng, runConformance } from "@parcha/agentrun-computer";
 import { fakeDevices, fakeFetch, testClock } from "../../computer/test/fake-device.mjs";
 import { driftedVersion, fixtureFor, frameLines, listenConformance, patchVersion, reachesThisRun, scrubMachineTokens } from "../scripts/dial-conformance.mjs";
+// The script binds $PORT after the test picked it: a port below the ephemeral range, so no listen(0) or outbound
+// connection of the suite's other files takes it in between. A listen(0) pick could be taken, and the script then
+// died before its report.
+import { freePort } from "./fixtures/ports.mjs";
 
 const SCRIPT = fileURLToPath(new URL("../scripts/dial-conformance.mjs", import.meta.url));
 const FIXTURE = fileURLToPath(new URL("./fixtures/dial-fake-provider.mjs", import.meta.url));
@@ -29,15 +33,6 @@ const BUILT = !existsSync(DAEMON) ? "no computerd-linux-amd64: run npm run build
 /** What the fake's daemon answers: Core's provider and drift groups whole, and health but for the declaration and the
  *  planted key, which a module given by path has none of. The exec, files and process groups need a real daemon. */
 const ONLY = "provider,drift,health.hello,health.ping,health.unknown-method,health.kind-consistent,health.kind-served";
-
-/** A port nothing listens on now. */
-async function freePort() {
-  const server = createServer();
-  await new Promise((done) => server.listen(0, "127.0.0.1", done));
-  const { port } = server.address();
-  await new Promise((done) => server.close(done));
-  return port;
-}
 
 /**
  * The script run with `args` and `env` (beside PATH alone), with --exit unless `exit` is false: its exit code and what it
@@ -57,15 +52,16 @@ function run(args, env, onLine = () => {}, { exit = true } = {}) {
     partial = lines.pop();
     for (const line of lines) if (line) onLine(line, child);
   });
-  return new Promise((done) => child.once("exit", (code, signal) => done({ code, signal, stdout, stderr })));
+  // "close", not "exit": a child that wrote its report and ended at once can exit before its stdout is read to the end.
+  return new Promise((done) => child.once("close", (code, signal) => done({ code, signal, stdout, stderr })));
 }
 
-/** The report between the marker lines, parsed. */
-function reportOf(stdout) {
+/** The report between the marker lines of a run's stdout, parsed; without them, the run's stderr says why. */
+function reportOf({ stdout, stderr, code }) {
   const lines = stdout.split("\n");
   const begin = lines.indexOf("DIAL-CONFORMANCE-REPORT-BEGIN");
   const end = lines.indexOf("DIAL-CONFORMANCE-REPORT-END");
-  assert.ok(begin >= 0 && end > begin, `the markers, in order: ${stdout.slice(0, 500)}`);
+  assert.ok(begin >= 0 && end > begin, `the markers, in order (exit ${code}): ${stdout.slice(0, 500)}\nstderr: ${stderr.slice(-1500)}`);
   return JSON.parse(lines.slice(begin + 1, end).join("\n"));
 }
 
@@ -95,7 +91,7 @@ test(
       if (line.startsWith("dial-conformance: listening on port ")) health = fetch(`http://127.0.0.1:${port}/v2/health`).then((res) => res.status);
     });
     assert.equal(await health, 200, "GET /v2/health while the run is on");
-    const report = reportOf(ran.stdout);
+    const report = reportOf(ran);
     const status = (id) => report.results.find((result) => result.id === id)?.status;
     assert.deepEqual(
       report.results.filter((result) => result.status === "fail").map(({ id, reason }) => `${id}: ${reason}`),
@@ -120,7 +116,7 @@ test("a run whose Core does not pass still prints its report between the markers
   const port = await freePort();
   // A module given by path declares nothing, so health.declared skips, which Core counts against it.
   const ran = await run(["--provider", FIXTURE, "--only", "health.declared"], { PORT: String(port), AGENTRUN_PUBLIC_URL: `http://127.0.0.1:${port}` });
-  const report = reportOf(ran.stdout);
+  const report = reportOf(ran);
   assert.deepEqual(report.results.map(({ id, status }) => [id, status]), [["health.declared", "skip"]]);
   assert.equal(report.core, "fail");
   assert.equal(ran.code, 1, ran.stderr);
@@ -231,7 +227,7 @@ test("without --exit the run's report is printed, then the script idles, /v2/hea
     { exit: false },
   );
   assert.equal(await idled, 200, "health while it idles, past the 5 s an exiting run is given");
-  assert.deepEqual(reportOf(ran.stdout).results.map(({ id }) => id), ["health.declared"]);
+  assert.deepEqual(reportOf(ran).results.map(({ id }) => id), ["health.declared"]);
   assert.deepEqual([ran.code, ran.signal], [1, null], ran.stderr);
 });
 
@@ -257,7 +253,7 @@ test("a request target no URL parses (//[/) is refused, a socket's and a plain r
     ]);
   });
   assert.deepEqual(await refused, ["HTTP/1.1 404 Not Found", "HTTP/1.1 404 Not Found"]);
-  assert.deepEqual(reportOf(ran.stdout).results.map(({ id }) => id), ["health.declared"]);
+  assert.deepEqual(reportOf(ran).results.map(({ id }) => id), ["health.declared"]);
   assert.equal(ran.code, 1, ran.stderr);
 });
 
@@ -291,7 +287,7 @@ test("nothing runs until AGENTRUN_PUBLIC_URL reaches the script: an address stil
     assert.ok(at(`${health} reaches this process (3 answers in a row, after`) > at(`${health} reaches another process`), ran.stderr);
     assert.match(ran.stderr, /and 4 answers from another\)/);
     assert.ok(at("skip health.declared") > at(`${health} reaches this process`), "the run's first case comes after");
-    assert.deepEqual(reportOf(ran.stdout).results.map(({ id }) => id), ["health.declared"]);
+    assert.deepEqual(reportOf(ran).results.map(({ id }) => id), ["health.declared"]);
   } finally {
     await new Promise((done) => front.close(done));
   }
