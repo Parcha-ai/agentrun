@@ -107,9 +107,13 @@ export interface BrowserProvider {
   downloads?: { list(ref: LeaseRef): Promise<RemoteFile[]>; read(ref: LeaseRef, name: string, maxBytes: number): Promise<AsyncIterable<Uint8Array>> };
 }
 
-/** The host owns the file boundary for `browser_upload`: a path the model names is resolved here or refused. */
+/** The host owns the file boundary for `browser_upload` and a screenshot's `save_as`: a path the model names is resolved
+ *  or written here, or refused. */
 export interface WorkspaceFiles {
   resolve(rel: string): Promise<{ bytes: Uint8Array; name: string; mime: string } | { refused: string }>;
+  /** File `rel` made or replaced with `bytes`, its parent directories made, as the host's own file-write tool writes one;
+   *  `path` is where it went, relative to the workspace. Absent: the host saves no screenshot. */
+  write?(rel: string, bytes: Uint8Array): Promise<{ path: string } | { refused: string }>;
 }
 
 export type HandoffOutcome = "done" | "cancelled" | "expired";

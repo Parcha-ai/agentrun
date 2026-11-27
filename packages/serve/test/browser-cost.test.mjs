@@ -24,7 +24,7 @@ const PRICE_ENV = priceEnvOf("browserbase");
  *  taking `readS`, on a `provider` browser at `price`, under `cap` (none: no cap), booked on its one ledger `paid`.
  *  `seen(at, spent, held)` runs at every moment the run can spend, with the ledger's figures: inside each call, before
  *  each model turn and after the release (its ledger steps all written). */
-async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, readS = 3, thinkS = 20, cap, idleS = 180, end = "close", setup = () => {}, pump = false, options = {}, lastTurn = () => {}, after = async () => {}, cutRelease = false, seen = () => {} }) {
+async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, readS = 3, thinkS = 20, cap, idleS = 180, end = "close", setup = () => {}, pump = false, options = {}, lastTurn = () => {}, after = async () => {}, cutRelease = false, seen = () => {}, bind = () => {} }) {
   t.mock.timers.enable({ apis: ["Date"], now: T0 });
   const [{ BACKGROUND_CONTEXT: ctx }, { createModels }, faux, durable, { createBrowserExtension }, { FakeBackend, fakeDriver, fixturePage }] = await Promise.all([
     import("@earendil-works/chord/context"), import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-ai/providers/faux"),
@@ -44,8 +44,11 @@ async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, re
     await new Promise((_, reject) => signal?.addEventListener("abort", () => reject(signal.reason), { once: true }));
   } };
   const releases = [];
+  // What the spend logged, still said.
+  const logged = [];
+  const log = (line) => { logged.push(line); process.stderr.write(`agentrun-serve: ${line}\n`); };
   // A refusal's release, waited for here so its charge is billed at the moment of the refusal.
-  const spend = browserSpend(provider, price, idleS, async (conversation, context) => { releases.push(conversation.id); await browser.release(conversation, "close", context); await browser.drain(harness, context); }, undefined, { paid });
+  const spend = browserSpend(provider, price, idleS, async (conversation, context) => { releases.push(conversation.id); await browser.release(conversation, "close", context); await browser.drain(harness, context); }, log, { paid });
   const browser = createBrowserExtension({ ...options,
     provider: () => (cutRelease ? cutting : backend.provider), driver: fakeDriver(backend), evidence: { file: async () => null },
     prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge,
@@ -70,6 +73,8 @@ async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, re
   spend.watch(harness);
   const policy = { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: idleS, batchTimeoutMs: 60_000 };
   root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } }, init: async (tx, id) => { Object.assign(await tx.doc(browser.docs.Config, id), { label: "run", run: "run-cost", policy }); } });
+  // `bind`: the run's browser, root and context, for a test's own hooks (onSession) to act on.
+  bind({ browser, root, ctx, spend });
   await browser.reconcile(harness, () => true, ctx);
   await (await root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);
   t.mock.timers.tick(5_000);
@@ -87,7 +92,7 @@ async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, re
   const entries = (await harness.commit((tx) => tx.scanEntries({ conversationId: durable.ROOT_CONVERSATION_ID, order: "ascending" }, 500), ctx)).items;
   const booked = entries.filter((entry) => entry.kind === BROWSER_CHARGED).map((entry) => entry.data);
   const results = entries.map((entry) => JSON.stringify(entry)).filter((text) => text.includes("spend_cap_reached"));
-  return { record, booked, spent: paid.spentUsd(), paid, releases, results, backend, stretch: spend.stretch };
+  return { record, booked, spent: paid.spentUsd(), paid, releases, results, backend, stretch: spend.stretch, logged };
 }
 
 const pico = (usd) => Math.round(usd * 1e12) / 1e12;
@@ -104,6 +109,30 @@ test("uncapped: every charge is booked under its call, idle time between calls i
   assert.ok(Math.abs(record.spent.usd - 74 * 0.12 / 3600) < 1e-11, String(record.spent.usd));
   assert.deepEqual(releases, [], "nothing refused");
   assert.equal(pico(paid.spentUsd()), record.spent.usd, "the run's ledger books each charge once");
+  assert.equal(paid.heldUsd(), 0, "no hold is left");
+});
+
+test("a cut release's charge that billed past the release's own time: the release books 0 s and the run's record says by how much the cut went past it; every second booked once", async (t) => {
+  // The cut's charge (tools.ts releaseCut: BrowserExtensionHandle.charge) lands after the vendor answered the release and
+  // before its confirm commits: 7 s past the release's time.
+  const bound = {};
+  const { record, booked, paid, logged } = await run(t, {
+    reads: 1, price: { usdPerHour: 0.12, minimumS: 0 }, bind: (handles) => Object.assign(bound, handles),
+    options: { onSession: async (_row, change) => {
+      if (change !== "released") return;
+      t.mock.timers.tick(7_000);
+      await bound.browser.charge(bound.root, bound.ctx);
+      await bound.spend.ledgerIdle();
+    } },
+  });
+  // 3 s, the last answer's 20 s and 5 s to the release; then the cut's 7 s past it, and the release's own 0 s.
+  assert.deepEqual(booked.map((row) => [row.seconds, row.final, row.overbooked_s ?? null]), [[3, false, null], [25 + 7, false, null], [0, true, 7]], JSON.stringify(booked));
+  const said = logged.filter((line) => line.includes("browser_spend_overbooked"));
+  assert.equal(said.length, 1, `the log says it once: ${JSON.stringify(logged)}`);
+  assert.match(said[0], new RegExp(`browser session ${booked[2].tag} was charged 7 s past its release`));
+  assert.deepEqual([record.spent.seconds, record.spent.final], [35, true], "the session is billed what was charged, never less than 0 more");
+  assert.equal(total(booked), record.spent.usd, "booked is what the session's record bills");
+  assert.equal(pico(paid.spentUsd()), record.spent.usd, "the run's ledger books each second once");
   assert.equal(paid.heldUsd(), 0, "no hold is left");
 });
 

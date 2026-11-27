@@ -1397,6 +1397,7 @@ export function buildToolHost(opts: {
     onConversation: life.register.onConversation,
     beforeResume: life.register.beforeResume,
     beforeRelease: life.register.beforeRelease,
+    releaseCut: life.register.releaseCut,
     personWait: life.register.personWait,
     // The run row's summary staged on a commit of the run's (a hand-over's wait, its claim held: run.needs_input).
     ...(run.rowSummaryOn ? { rowSummaryOn: run.rowSummaryOn } : {}),

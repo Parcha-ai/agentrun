@@ -79,7 +79,7 @@ type LedgerRefusal = Refusal;
 /** Up to the millionth of a dollar, so the cap's words name a figure never below the hold. */
 const microUsd = (usd: number) => Math.ceil(Math.round(usd * 1e12) / 1e6) / 1e6;
 /** A browser charge as its BROWSER_CHARGED record holds it. */
-type Booked = { tool: "browser"; charged_by: string; call: string | null; usd: number | null; seconds: number; tag: string; conversation: number; at: string; final: boolean };
+type Booked = { tool: "browser"; charged_by: string; call: string | null; usd: number | null; seconds: number; tag: string; conversation: number; at: string; final: boolean; overbooked_s?: number };
 /** An open session: its conversation, its reserve, the through of its last charge and its last call. `refused`: the cap
  *  refused its reserve (askReserve), so nothing is held for it, and its next charge asks again. */
 type Open = { cid: number; reserve: Hold; at: number; call: string | null; refused?: boolean };
@@ -254,7 +254,10 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
   async function onCharge(charge: SessionCharge, tx: Tx, call?: { callId: string }): Promise<void> {
     if (rate === 0) return;
     const usd = charge.state === "priced" ? charge.usd : null;
-    const data: Booked = { tool: "browser", charged_by: charge.provider, call: call?.callId ?? sessions.get(charge.tag)?.call ?? null, usd, seconds: charge.seconds, tag: charge.tag, conversation: charge.conversationId, at: charge.at, final: charge.final };
+    // `overbooked_s`: an earlier charge (one a cut release took: tools.ts releaseCut) billed the session past this one's
+    // time, by that much; this one bills none of it again, and the record says so.
+    const data: Booked = { tool: "browser", charged_by: charge.provider, call: call?.callId ?? sessions.get(charge.tag)?.call ?? null, usd, seconds: charge.seconds, tag: charge.tag, conversation: charge.conversationId, at: charge.at, final: charge.final, ...(charge.overbookedS ? { overbooked_s: charge.overbookedS } : {}) };
+    if (charge.overbookedS) log(logLine("browser_spend_overbooked", { said: `browser session ${charge.tag} was charged ${charge.overbookedS} s past its release, by a charge its cut release took: its release bills none of it again` }));
     // Its money is the ledger's, booked once this commit is in (booked): the root keeps the record under a kind no cost reads.
     await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BROWSER_CHARGED, data });
   }

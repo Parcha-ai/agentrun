@@ -54,7 +54,7 @@ const outputRetried = (entries: readonly { readonly kind?: string; readonly data
   const at = entries.findLastIndex((entry) => entry.kind === KINDS.input && (originOf((entry.data as { origin?: unknown } | undefined)?.origin) as { reason?: string } | undefined)?.reason === OUTPUT_RETRY_ORIGIN.reason);
   return at >= 0 && entries.slice(at + 1).some((entry) => entry.kind === "pi.assistant" || (entry.kind === KINDS.message && (entry.data as { role?: unknown } | undefined)?.role === "model"));
 };
-import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutcome, deniedText, type EndOfRunAnswer, type EndOfRunKept, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, stopEnd, type StopReason } from "./loop-contract.js";
+import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutcome, deniedText, type EndOfRunAnswer, type EndOfRunKept, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, RELEASE_MARGIN_MS, releaseBoundMs, stopEnd, type StopReason } from "./loop-contract.js";
 import { type HeldRedact, mustHold } from "./redact.js";
 import { deniedText as setToDenyText, ENDED_WHILE_WAITING, refusedText, STOPPED_WHILE_WAITING } from "../refusal-words.js";
 import { ADAPTER_API } from "../turn-end.js";
@@ -313,6 +313,9 @@ export interface HostLifecycle {
   readonly onConversation: readonly ((tx: Tx, conversationId: number) => void | Promise<void>)[];
   readonly beforeResume: readonly ((harness: Harness) => void | Promise<void>)[];
   readonly beforeRelease: readonly ((harness: Harness) => void | Promise<void>)[];
+  /** Run when the claim stops waiting on its beforeRelease (the release's bound passed), with the Harness still open and
+   *  their writes still taken: what a host books of the time it knows so far, for what it could not let go. */
+  readonly releaseCut?: readonly ((harness: Harness) => void | Promise<void>)[];
   /** Asked when the run's turn ends on its question to the person (ask_person), before it parks: a tool host holding
    *  something the person may still use while they answer (the browser's open session, its live view, its page) holds the
    *  person's time for it under the run's cap and answers a PersonWait, and the run waits in its claim (the browser's
@@ -401,18 +404,20 @@ export interface PersonWait {
 
 /** A HostLifecycle and the ToolHost members that fill it: what a spec's ToolHost takes, and hands the loop. */
 export function hostLifecycle(): HostLifecycle & {
-  register: { onConversation(write: HostLifecycle["onConversation"][number]): void; beforeResume(settle: HostLifecycle["beforeResume"][number]): void; beforeRelease(stop: HostLifecycle["beforeRelease"][number]): void; personWait(hold: NonNullable<HostLifecycle["personWait"]>[number]): void };
+  register: { onConversation(write: HostLifecycle["onConversation"][number]): void; beforeResume(settle: HostLifecycle["beforeResume"][number]): void; beforeRelease(stop: HostLifecycle["beforeRelease"][number]): void; releaseCut(book: NonNullable<HostLifecycle["releaseCut"]>[number]): void; personWait(hold: NonNullable<HostLifecycle["personWait"]>[number]): void };
 } {
   const onConversation: HostLifecycle["onConversation"][number][] = [];
   const beforeResume: HostLifecycle["beforeResume"][number][] = [];
   const beforeRelease: HostLifecycle["beforeRelease"][number][] = [];
   const personWait: NonNullable<HostLifecycle["personWait"]>[number][] = [];
+  const releaseCut: NonNullable<HostLifecycle["releaseCut"]>[number][] = [];
   return {
-    onConversation, beforeResume, beforeRelease, personWait,
+    onConversation, beforeResume, beforeRelease, releaseCut, personWait,
     register: {
       onConversation: (write) => void onConversation.push(write),
       beforeResume: (settle) => void beforeResume.push(settle),
       beforeRelease: (stop) => void beforeRelease.push(stop),
+      releaseCut: (book) => void releaseCut.push(book),
       personWait: (hold) => void personWait.push(hold),
     },
   };
@@ -1040,6 +1045,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  stop() aborts it first, with the stop's Interrupted, so the reason a cut call reads is the stop's. */
   const stopAbort = new AbortController();
   void stopping.then(() => stopAbort.abort(new Error("the run was stopped")));
+  /** The loop was stopped for its runner's shutdown (first, or after a person's stop): the runner still holds the claim
+   *  until the loop ends, though its close seals the journal and aborts the claim's signal at once. */
+  const shutDown = (): boolean => stopReason?.kind === "shutdown" || laterStop?.kind === "shutdown";
+  /** The claim's signal as the run's ledger reads it (its sessions' context): aborted with the claim's, but for a
+   *  shutdown's, so the ledger still books a tool host's release under the claim (releaseHost); the claim's fence refuses
+   *  those writes once the claim is lost. */
+  const ledgerAbort = new AbortController();
   let parked: () => void = () => {};
   const parking = new Promise<void>((resolve) => (parked = resolve));
   /** The claim is parking: it waits for the calls already running beside the parked one (siblingsSettled), and no call
@@ -1079,16 +1091,102 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   let specNow: AdapterRunSpec | undefined;
   /** Whether this claim's tool host was let go (its beforeRelease run), once. */
   let hostReleased = false;
+  /** While the tool hosts' release runs: sets its cut again by its bound and LoopDeps.releaseBy as they read now (a
+   *  shutdown that comes while it runs, its close's window then known). */
+  let releaseRearm: (() => void) | undefined;
+  /** Ends the hold a shutdown's stop puts on the claim's journal (holdForRelease), while it stands. */
+  let releaseHold: (() => void) | undefined;
   /** A tool host's beforeRelease, once per claim: before a park's seal and before the end's commit (the end is the
    *  claim's release), so what it writes (a browser release's charge, its paid booking on run.ledger.paid) lands in its
-   *  own commits under the live claim, just before. A hook that throws is logged; the run's end or park stands. */
+   *  own commits under the live claim, just before. A shutdown seals the journal first, while the runner still holds the
+   *  claim: the hooks' commits are taken through the seal then (Gate.through), so the runner's close resolves only once
+   *  they have landed. A hook that throws is logged; the run's end or park stands. The hooks run in the order they were
+   *  registered, all of them within the release's bound (releaseBoundMs): past it the loop goes on without the hook under
+   *  way and those after it, and writes the cut on the run's root (KINDS.releaseCut), so a release that did not finish is
+   *  never silent. What the hooks booked before the cut stands; a hook still running then writes nothing more on a
+   *  shutdown (the seal stands again). Before the cut is written each host's releaseCut books what it knows of the time
+   *  it could not let go (a browser session's, through now), within RELEASE_MARGIN_MS. A runner's close bounds the
+   *  release by its own window too (LoopDeps.releaseBy), whichever ends first, and a release already under way when the
+   *  shutdown comes (one a run began in the close's drain) takes both from then: its cut is set again by the window, and
+   *  its commits, the cut's charge and record among them, are taken through the seal the shutdown makes. */
   const releaseHost = async (on: Harness | undefined): Promise<void> => {
+    try {
+      await releaseHostNow(on);
+    } finally {
+      releaseHold?.();
+    }
+  };
+  const releaseHostNow = async (on: Harness | undefined): Promise<void> => {
     endWait();
     if (hostReleased || !on) return;
     hostReleased = true;
-    for (const stop of specNow?.lifecycle?.beforeRelease ?? []) {
-      await Promise.resolve().then(() => stop(on)).catch((error: unknown) => console.warn(`[runner] a tool host's beforeRelease failed: ${(error as Error)?.message ?? String(error)}`));
-    }
+    const release = async (): Promise<void> => {
+      const hooks = specNow?.lifecycle?.beforeRelease ?? [];
+      if (hooks.length === 0) return;
+      const began = Date.now();
+      const boundMs = (): number => Math.max(0, Math.min(deps.releaseBoundMs ?? releaseBoundMs(), (deps.releaseBy?.() ?? Infinity) - began));
+      let finished = 0;
+      let cut = false;
+      const running = (async () => {
+        for (const stop of hooks) {
+          if (cut) return;
+          await Promise.resolve().then(() => stop(on)).catch((error: unknown) => console.warn(`[runner] a tool host's beforeRelease failed: ${(error as Error)?.message ?? String(error)}`));
+          finished += 1;
+        }
+      })();
+      let timer: NodeJS.Timeout | undefined;
+      // The cut comes once Date.now() reads the bound passed, the clock its record reads: a timer runs on the monotonic
+      // clock, which Date.now() may read behind when the timer comes, and the rest is waited for then.
+      const late = new Promise<"late">((resolve) => {
+        const arm = (): void => {
+          clearTimeout(timer);
+          timer = setTimeout(() => (Date.now() - began >= boundMs() ? resolve("late") : arm()), Math.max(0, began + boundMs() - Date.now()));
+        };
+        releaseRearm = arm;
+        arm();
+      });
+      const ended = await Promise.race([running.then(() => "done" as const), late]);
+      clearTimeout(timer);
+      releaseRearm = undefined;
+      if (ended === "done") return;
+      cut = true;
+      const bound = boundMs();
+      const data = { bound_ms: bound, after_ms: Date.now() - began, hooks: hooks.length, finished };
+      console.warn(`[runner] the run's tool hosts did not let it go within ${bound} ms (${finished} of ${hooks.length} finished): the loop goes on without them`);
+      const books = specNow?.lifecycle?.releaseCut ?? [];
+      if (books.length > 0) {
+        let bookTimer: NodeJS.Timeout | undefined;
+        const booking = Promise.all(books.map((book) => Promise.resolve().then(() => book(on)).catch((error: unknown) => console.warn(`[runner] a tool host's releaseCut failed: ${(error as Error)?.message ?? String(error)}`))));
+        await Promise.race([booking, new Promise<void>((resolve) => (bookTimer = setTimeout(resolve, RELEASE_MARGIN_MS)))]);
+        clearTimeout(bookTimer);
+      }
+      await on.commit((tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: KINDS.releaseCut, data }), BACKGROUND_CONTEXT).catch((error: unknown) => console.warn(`[runner] the release's cut could not be written: ${(error as Error)?.message ?? String(error)}`));
+    };
+    const journal = gate;
+    await (journal ? journal.through(release, shutDown) : release());
+  };
+  /** A shutdown's stop seals the claim's journal while the run may still be making a commit it began before (its claim's
+   *  open booking what an earlier claim left, a turn's step): a commit refused there fails the run's Session, and its tool
+   *  hosts' release with it. So the stop holds the journal open (Gate.through) from the seal until the release has run
+   *  (releaseHost returns) or the close's window ends (LoopDeps.releaseBy; the release's bound from the stop when no close
+   *  set one), whichever comes first, and once the loop has ended in any case: the seal refuses every commit after that.
+   *  Only while the release is still owed: one already under way takes its own commits through the seal. */
+  const holdForRelease = (): void => {
+    const journal = gate;
+    if (!journal || journal.sealed || hostReleased || releaseHold || !finished) return;
+    const by = deps.releaseBy?.() ?? Date.now() + (deps.releaseBoundMs ?? releaseBoundMs());
+    let end = (): void => {};
+    const ended = new Promise<void>((resolve) => (end = resolve));
+    const timer = setTimeout(() => releaseHold?.(), Math.max(0, by - Date.now()));
+    timer.unref();
+    releaseHold = () => {
+      clearTimeout(timer);
+      releaseHold = undefined;
+      end();
+    };
+    void journal.through(() => ended);
+    const over = (): void => releaseHold?.();
+    void finished.then(over, over);
   };
   /** The current pass's spec's release, until it is called (closeSession). */
   let releaseNow: AdapterRunSpec["release"];
@@ -1794,9 +1892,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     });
     const signalAbort = () => {
       gate?.seal(new Interrupted("its claim's signal aborted"));
+      if (!shutDown()) ledgerAbort.abort(deps.signal.reason);
       // A lost claim's MCP credentials go at once, a call still out among them.
       mcp?.release();
     };
+    if (deps.signal.aborted) ledgerAbort.abort(deps.signal.reason);
     deps.signal.addEventListener("abort", signalAbort, { once: true });
     let fault: KernelFault | undefined;
     try {
@@ -1838,7 +1938,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // What was spent beside them on the run's behalf (its spec's runCap.beside) is read with them at each admission
         // (runBooking), the spec's once it is known.
         const besideNow = async (): Promise<number | null> => (specNow?.runCap?.beside ? await specNow.runCap.beside() : 0);
-        const sessions = Object.assign(journalSessions(harness, context, { flush: () => deps.flush(), claim }), { beside: besideNow });
+        const sessions = Object.assign(journalSessions(harness, withAbortSignal(ledgerAbort.signal, BACKGROUND_CONTEXT), { flush: () => deps.flush(), claim }), { beside: besideNow });
         let capBuilt: RunCap | undefined;
         /** What the run keeps back beside a request of its own session while it streams (RunCapOptions.keepBackUsd), set
          *  once the wrap-up's reserve is known (below): a tool call it makes mid-stream finds room for the steps after it. */
@@ -4556,11 +4656,18 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         cutHeld();
       }
       stopReason ??= reason;
+      if (reason.kind === "shutdown") holdForRelease();
       if (reason.kind !== "command") gate?.seal(new Interrupted(reason.kind));
+      // A release under way takes the close's window as its cut from now (releaseHost).
+      if (reason.kind === "shutdown") releaseRearm?.();
       stopped();
       stopAbort.abort(new Interrupted(reason.kind));
       wakeInbox();
       await finished?.catch(() => undefined);
+    },
+    closing() {
+      // A release under way takes the close's window as its cut from now, its stop left as it was (releaseHost).
+      releaseRearm?.();
     },
   };
 }

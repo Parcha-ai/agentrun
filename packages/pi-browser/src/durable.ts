@@ -791,7 +791,9 @@ async function releasePlane<D extends PageDriver>(c: Custody<D>, conversation: P
 }
 
 /** The open sessions' time through now, not final, in one commit (BrowserExtensionHandle.charge): no lock is taken, so a
- *  release under way (its record `releasing`) never holds it back. */
+ *  release under way (its record `releasing`) never holds it back. A record with no session id (its create under way, or
+ *  its answer lost and the session not yet found by its tag) has nothing at the provider to bill yet: its release's charge
+ *  bills the whole session once it is found. One already charged through now has no time to charge, and gets no $0 one. */
 async function chargeOpen<D extends PageDriver>(c: Custody<D>, conversation: Pick<Conversation, "id" | "commit">, context: Context): Promise<number> {
   return conversation.commit(async (tx) => {
     const state = await tx.doc(c.Sessions, conversation.id);
@@ -799,6 +801,7 @@ async function chargeOpen<D extends PageDriver>(c: Custody<D>, conversation: Pic
     let charged = 0;
     for (const record of state.sessions) {
       if ((record.state !== "live" && record.state !== "held" && record.state !== "releasing") || record.resourceId === null || record.spent.final) continue;
+      if (Date.parse(record.spent.chargedThrough) >= Date.parse(at)) continue;
       if (await c.bill(tx, conversation.id, record, at, false)) charged += 1;
     }
     return charged;
