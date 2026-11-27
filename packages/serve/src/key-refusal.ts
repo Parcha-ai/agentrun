@@ -106,6 +106,21 @@ function widths(count: number): number[] {
   return 4 * count + 64 < ANSWER_PIECE ? [4 * count + 64, ANSWER_PIECE] : [ANSWER_PIECE];
 }
 
+/** What the reads for the head or the tail of a run and past a call's stop (peek, tailOf) have visited in this process,
+ *  as match.ts's `scanned` counts it: in all, and the most one read visited. A test reads it to bound the reads' part
+ *  of a text's cost. */
+export const readCost = { chars: 0, most: 0 };
+
+/** `read`'s result, what it visited counted in readCost. */
+function counted<T>(read: () => T): T {
+  const before = scanned.chars;
+  const out = read();
+  const visited = scanned.chars - before;
+  readCost.chars += visited;
+  readCost.most = Math.max(readCost.most, visited);
+  return out;
+}
+
 /** How many texts redactedAnswer has read in this process: a test reads it to see a run's view served from what an
  *  earlier view redacted (runs.ts servedOnce). */
 export const answerPasses = { count: 0 };
@@ -220,8 +235,9 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
       // The run is shown as "[redacted]": its head is read, covered, for the rest of a value split before it, and its
       // tail (tailOf: `hold` characters the matcher sees, at most a piece), covered too, for the head of a value whose
       // rest comes after it. One read, the two joined by a line break, as each piece is one.
-      const head = peek(text, start, hold, fold, marks());
-      const tail = head === undefined ? undefined : tailOf(text, start, to, hold, fold, marks());
+      const outside = marks();
+      const head = counted(() => peek(text, start, hold, fold, outside));
+      const tail = head === undefined ? undefined : counted(() => tailOf(text, start, to, hold, fold, outside));
       if (head === undefined || tail === undefined) unread = true;
       else {
         shapes.push(`${redactSecrets(head, secrets, Buffer.byteLength(head))}[redacted]`);
@@ -250,7 +266,8 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
     const space = run ? text.slice(from, from + ANSWER_PIECE).search(/\s/) : 0;
     scanned.chars += space < 0 ? Math.min(ANSWER_PIECE, text.length - from) : space + 1;
     const runTo = from + (space < 0 ? ANSWER_PIECE : space);
-    const ahead = peek(text, from, hold, fold, marks());
+    const outside = marks();
+    const ahead = counted(() => peek(text, from, hold, fold, outside));
     if (ahead === undefined) unread = true;
     else {
       const rest = runTo > from + ahead.length ? text.slice(from, runTo) : ahead;

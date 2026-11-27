@@ -7,7 +7,10 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { test } from "node:test";
 import { agent, follow, serve, withEnv } from "./support.mjs";
-import { redactedAnswer, redactedCall } from "../dist/key-refusal.js";
+import { readCost, redactedAnswer, redactedCall } from "../dist/key-refusal.js";
+import { marksOf, OPEN_OSC, scanned, shownIn } from "../dist/redact/match.js";
+import { CALL_RESULT_CHARS, scrubUrls } from "../dist/timeline/index.js";
+import { cut } from "../dist/timeline/util.js";
 
 const KEY = `not-a-secret-${"openrouter-key"}`;
 const ONLY = { OPENROUTER_API_KEY: KEY };
@@ -341,30 +344,145 @@ test("the read after a run's head reads each title through the decodings that op
   assert.deepEqual(over, []);
 });
 
-// Padding every view reads apart (every decoder's family is in the text) and shows one character of in 39: the read for
-// a run's head and tail and past a call's stop reads such a stretch through every view from every place its join can
-// start, hundreds of characters per character, so it stops at its budget and the text is withheld whole.
+// What the reads cost. A read for the head or the tail of a run too long to read, or past a call's stop (key-refusal.ts
+// peek, tailOf), reads its stretch through every view from every place its join can start, so padding every view reads
+// apart and shows little of costs it hundreds of characters per character. It gives up, and the text is withheld, once
+// it has visited its budget (READ_BUDGET, 92 pieces), checked after each reading: one view's reading of one stretch of
+// at most a piece. So one read visits at most READ_MOST, and as a run is read only where it is longer than a piece, at
+// most twice, the reads of a text visit at most READS_PER_CHARACTER per character of it, under the matcher's bound
+// (WORK, redact-contract.test.mjs). READING is measured, not built in: the test below holds it.
+const PIECE = 8192;
+const BUDGET = 92;
+const READING = 178;
+const READ_MOST = (BUDGET + READING) * PIECE;
+const READS_PER_CHARACTER = (2 * READ_MOST) / (PIECE + 1);
+const WORK = 1024;
+const ZWSP = "\u200b";
+// Every decoder's family, so every view reads what follows.
 const FAMILIES = String.raw`%41+\n\\xA&#65;'"\x41` + "\u001b[m";
-const sparse = (length) => {
+const fill = (unit, size) => unit.repeat(Math.ceil(size / unit.length)).slice(0, size);
+/** A run of `length` characters that every view reads apart and shows one character of in 39: `pad` between letters. */
+const sparse = (length, pad = ZWSP) => {
   let text = FAMILIES;
-  while (text.length < length) text += `${"\u200b".repeat(38)}a`;
-  return text;
+  while (text.length < length) text += `${pad.repeat(Math.max(1, Math.floor(38 / pad.length)))}a`;
+  return text.slice(0, length);
 };
-test("padding every view reads apart and shows little of, in runs too long to read or past a call's stop, is withheld at most 48 characters visited per character", async () => {
-  const { scanned } = await import("../dist/redact/match.js");
+/** Runs of 8,300 such characters, one after another, about `size` characters in all. */
+const runs = (size, pad) => Array.from({ length: Math.max(1, Math.round(size / 8301)) }, () => sparse(8300, pad)).join(" ");
+const VALUE = `${PY_HEAD}${PY_REST}`;
+
+test("one reading of a stretch visits at most READING characters per character of it, read as if it starts inside every kind of terminal sequence, folded or not", () => {
   const over = [];
-  for (const [what, text, stop] of [
-    ["six runs of a piece", Array.from({ length: 6 }, () => sparse(8300)).join(" ")],
-    ["six runs of a piece in a JSON string", wrapped("json", Array.from({ length: 6 }, () => sparse(8300)).join(" "))],
-    ["one run just over a piece", sparse(8193)],
-    ["9,000 characters with no whitespace after a call's stop", wrapped("json", `${"word ".repeat(50)}${sparse(9000)}`), 200],
-  ]) {
+  let most = 0;
+  for (const [what, stretch] of [
+    ["padding every view reads apart", sparse(PIECE)],
+    // The costliest measured: a JSON string holding a single-quoted dict never closed.
+    ["a JSON string holding a dict never closed", `"{'a': '${fill("ab ", PIECE - 9)}`],
+    ["OSC titles ended by ST", fill("\u001b]0;t\u001b\\", PIECE)],
+  ])
+    for (const open of [0, 7])
+      for (const fold of [false, true]) {
+        const readings = shownIn(stretch, fold, undefined, stretch.length, open);
+        for (let before = scanned.chars, done = false; !done; before = scanned.chars) {
+          done = readings.next().done;
+          const per = (scanned.chars - before) / stretch.length;
+          most = Math.max(most, per);
+          if (per > READING) over.push(`${what}, open ${open}, fold ${fold}: ${per.toFixed(1)}`);
+        }
+      }
+  assert.deepEqual(over, []);
+  assert.ok(most > READING - 1, `the most measured, ${most.toFixed(1)}, is READING`);
+});
+
+// The texts the reads cost most on, 32 KiB to 512 KiB, each read through an answer and a call's result: runs of padding
+// every view reads apart (zero-width spaces, and the same as JSON's escapes written twice, as HTML references and
+// percent-encoded, which the marks walk reads most), and a call's stop inside an OSC title never ended, so the read past
+// it reads each view also as the title's own (shownIn's `open`). Each is withheld whole; each visits at most WORK per
+// character in all, each of its reads at most READ_MOST, and its reads at most READS_PER_CHARACTER per character.
+// The matcher's own worst texts read no run and stop no read: DENSE (redact-contract.test.mjs) is in for its total, and
+// k100 for its reads alone. k100 (prose's apostrophe, then JSON strings each holding 100 single-quoted strings joined by
+// "+") visits 1,022.6, 1,033.3 and 1,037.5 per character here, over WORK by the matcher's own n log n term (a view's
+// finds each checked against its covered stretches by a search from the first), which a change to the matcher fixes.
+const DENSE = ["q8Vx", "R2mT"].join("");
+const ALL_FAMILIES_STRING = String.raw`"%41+&#65;\"\\x41\\'",`;
+const K100 = `${ALL_FAMILIES_STRING}${`x's "{${"'q8VxR2mT'+".repeat(100)}}"+\\\n`.repeat(4)}`;
+const COSTLY = [
+  ["runs of zero-width spaces", (size) => runs(size)],
+  ["runs of zero-width spaces in a JSON string", (size) => wrapped("json", runs(size))],
+  ["runs of JSON's \\u200b written twice", (size) => runs(size, String.raw`\\u200b`)],
+  ["runs of HTML's &#8203;", (size) => runs(size, "&#8203;")],
+  ["runs of percent-encoded zero-width spaces", (size) => runs(size, "%E2%80%8B")],
+  ["a call's stop inside an OSC title never ended", (size) => wrapped("json", `${"word ".repeat(1000)}${FAMILIES} \u001b]0;${fill(`${ZWSP.repeat(37)}a `, size - 5040)}`), true],
+  ["DENSE", (size) => fill(`${ALL_FAMILIES_STRING}${`"${DENSE}",`.repeat(370)}`, size), false, [DENSE]],
+  ["k100", (size) => fill(K100, size), false, [DENSE], "reads only"],
+];
+const READS = {
+  "an answer": (text, values) => redactedAnswer(text, values),
+  "a call's result": (text, values) => cut(redactedCall(text, values, CALL_RESULT_CHARS, scrubUrls), CALL_RESULT_CHARS),
+  "a call's result shown to 200": (text, values) => redactedCall(text, values, 200),
+};
+test("the texts the reads cost most on visit at most WORK characters per character, each read at most READ_MOST, 32 KiB to 512 KiB", (t) => {
+  assert.ok(READS_PER_CHARACTER < WORK);
+  const over = [];
+  for (const size of [32 * 1024, 128 * 1024, 512 * 1024])
+    for (const [what, make, stop, values = [VALUE], readsOnly] of COSTLY) {
+      const text = make(size);
+      // The prefixed reading runs: the read past the stop starts inside the title.
+      if (stop) assert.ok(marksOf(text).openAt(PIECE) & OPEN_OSC, what);
+      for (const [reader, read] of Object.entries(READS)) {
+        scanned.chars = 0;
+        readCost.chars = 0;
+        readCost.most = 0;
+        const out = read(text, values);
+        const [total, reads] = [scanned.chars / text.length, readCost.chars / text.length];
+        t.diagnostic(`${size / 1024} KiB, ${what}, ${reader}: ${total.toFixed(1)} per character, reads ${reads.toFixed(1)}, most one read ${readCost.most.toFixed(0)}`);
+        if (!readsOnly && total > WORK) over.push(`${size}, ${what}, ${reader}: ${total.toFixed(1)} per character`);
+        if (reads > READS_PER_CHARACTER || readCost.most > READ_MOST) over.push(`${size}, ${what}, ${reader}: reads ${reads.toFixed(1)}, one ${readCost.most}`);
+        // Withheld whole where the read gives up: every read of the runs, and the read past the stop in the title.
+        const gives = values[0] === VALUE && (!stop || reader === "a call's result shown to 200");
+        if (gives && out !== "[redacted]") over.push(`${size}, ${what}, ${reader}: shown`);
+      }
+    }
+  assert.deepEqual(over, []);
+});
+
+// A call's stop after prose, then a run too long to read of padding every view reads apart. With a lead-in of 8,092
+// characters, the pieces that show the lead-in are redacted at about 50 characters per character of the text whatever
+// follows; the read past the stop adds at most READ_MOST. Measured per character (in all, the read past the stop): no
+// budget 749.5 and 224.6; this budget 100.8 and 49.5; before reads counted each view (e1e80a1694), 520.2 in all. With a
+// lead-in of 250 characters, the read is most of it: 107.1 and 91.3.
+test("a call's stop after a lead-in of 8,092 or 250 characters, then padding every view reads apart, visits at most WORK per character, the read past the stop at most READ_MOST", () => {
+  const over = [];
+  let body = "";
+  while (body.length < 8092) body += "word ";
+  for (const [what, lead] of [["8,092", body], ["250", "word ".repeat(50)]]) {
+    const text = wrapped("json", `${lead}${sparse(9000)}`);
     scanned.chars = 0;
-    const out = stop === undefined ? redactedAnswer(text, [`${PY_HEAD}${PY_REST}`]) : redactedCall(text, [`${PY_HEAD}${PY_REST}`], stop);
-    if (out !== "[redacted]") over.push(`${what}: shown`);
-    if (scanned.chars > 48 * text.length) over.push(`${what}: ${scanned.chars} for ${text.length}`);
+    readCost.chars = 0;
+    readCost.most = 0;
+    if (redactedCall(text, [VALUE], 200) !== "[redacted]") over.push(`${what}: shown`);
+    if (scanned.chars > WORK * text.length) over.push(`${what}: ${scanned.chars} for ${text.length}`);
+    if (readCost.chars > READ_MOST) over.push(`${what}: the read past the stop visits ${readCost.chars}`);
   }
   assert.deepEqual(over, []);
+});
+
+// The walk that marks what stands outside a read (match.ts marksOf) reads the text once for all its streams: as many
+// characters per character at 512 KiB as at 32 KiB, over text that opens and closes sequences in every encoding.
+test("the marks walk visits as many characters per character at 512 KiB as at 32 KiB, over text that opens and closes terminal sequences in every encoding", () => {
+  const unit = `\u001b[31ma\u001b[0m \u009b1m b\u001b]0;t\u0007 ${String.raw`\u001b[1m \\u001b]0;t\\u0007 \x1b[0m \\x1b(B`} %1B[0m %1B]0;t%1B%5C &#27;[0m &#x1b;]0;t&#7; x\b `;
+  const per = {};
+  for (const size of [32 * 1024, 512 * 1024]) {
+    const text = fill(unit, size);
+    scanned.chars = 0;
+    const marks = marksOf(text);
+    per[size] = scanned.chars / text.length;
+    let open = 0;
+    for (let at = 0; at < text.length; at += 7) if (marks.openAt(at) !== 0) open++;
+    assert.ok(open > text.length / 14, `${open} of ${Math.ceil(text.length / 7)} places open`);
+  }
+  assert.ok(per[512 * 1024] - per[32 * 1024] < 0.01, JSON.stringify(per));
+  assert.ok(per[512 * 1024] < 24, JSON.stringify(per));
 });
 
 // What stands outside a read decides what the views show of it. A backspace after the read strikes out characters
