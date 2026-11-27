@@ -4142,6 +4142,9 @@ Known limits:
 - `workspace-backfill` maps agents alone. A template package imported before the backend sent the header stays in no
   workspace: no workspace sees it, an import of its name is `409 name_taken`, and an agent made from it is not applied
   again in a workspace (its package reads as missing). Delete the package and import it again with the header.
+- Launch disks are not a workspace's. A disk no agent owns, one another workspace's run named at launch included, is
+  served to a run in any workspace that names it. A backend that lets its tenants pick a launch disk keeps their disks
+  apart itself; one that maps each tenant's disk at launch, and takes no disk from the caller, needs nothing more.
 - On Postgres, migration 0033 builds its two indexes (`agents_by_workspace`, `runs_by_workspace`) inside the migrate
   transaction, which holds writes to `runs` and `agents` for the build: on a large `runs` table runners wait that long.
 
