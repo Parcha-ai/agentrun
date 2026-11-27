@@ -13,7 +13,11 @@
 //     locked before it is read again, so a heal another server commits meanwhile stands;
 //   - a run a follow-up opened again whose row a build before #4050's split wrote (its job the first round's figure) is
 //     recorded again once, at the server's open, a page at a time, then marked (store_meta.ledger_rerecorded); Postgres
-//     0034 adds the mark, breaking for runners, as SQLite's version 18;
+//     0034 adds the mark, breaking for runners, as SQLite's version 18; the mark is set only by a pass that started with
+//     no runner of an earlier build there (its row's `knows` null or below the floor): until then the server's next try
+//     (Store.rerecordReopened, on a timer) records the runs again, so one such a runner ended meanwhile under the split
+//     before is recorded under this one, with no restart; a runner of this build (keepPresence says what it knows) holds
+//     no mark;
 //   - a store the ledger's first release left (version 15, which a runner refuses until the server brings it to 18) has
 //     its wrong rows recorded again at the open that drops their epoch (a shadow with no path or audit spend, a stale
 //     row, an unknown cost its run now has, a run by hand with no path), by the ledger step alone (no earlier step runs
@@ -32,7 +36,8 @@ import { raw, sqliteOnly } from "./store-target.mjs";
 
 const { agentCostOverStore, pastRunsOverStore, runAllInOverStore } = await import("../dist/store-reads/learning.js");
 const { BY_HAND_BEFORE } = await import("../dist/store/sqlite/run-patch.js");
-const { SCHEMA_VERSION, StoreAwaitsServer } = await import("../dist/store/index.js");
+const { RUNNER_STALE_MS, SCHEMA_VERSION, StoreAwaitsServer } = await import("../dist/store/index.js");
+const { keepPresence } = await import("../dist/runner/presence.js");
 const { PAST_RUNS, workflowCostsOf } = await import("../dist/runner/workflow-first.js");
 const { keepResetAt } = await import("../dist/learn/promote.js");
 const { noteLearningChild } = await import("../dist/learning-work.js");
@@ -556,14 +561,86 @@ test("a run a follow-up opened again whose row an earlier build wrote (its job t
   assert.deepEqual((await again.learning.ledger("agent-1", ["R"])).rows.map((row) => [row.jobUsd, row.lookBackUsd]), [[0.9, 5.7]], "marked: no open reads the runs again");
 });
 
-test("Postgres migration 0034 adds the same mark only where missing, unset, and is breaking for runners (an earlier runner writes a reopened run's row under the split before)", async () => {
+/** store_meta.ledger_rerecorded on the store at `file`, read beside the store open on it. */
+async function rerecordedMark(file) {
+  const db = await raw(file);
+  try {
+    return Number((await db.get("SELECT ledger_rerecorded AS split FROM store_meta WHERE singleton = 1")).split);
+  } finally {
+    await db.close();
+  }
+}
+
+test("the reopened runs are marked recorded again only by a pass that started with no runner of an earlier build there: one that ends a reopened run under the split before after the open's pass has it recorded under this build's split at the server's next try, with no restart, which then marks it; a runner of this build holds no mark", async (t) => {
+  const { store, file, clock, end } = await ledgerStore(t);
+  // R: recorded again by the open's pass. S: ended by the earlier runner after that pass, under the split before.
+  await end("R", 6.6, { path: "agent" }, { also: [kept(1, 0.9, 0.1), kept(2, 6.5, 0.1)] });
+  await end("S", 2, { path: "agent" }, { also: [kept(1, 0.5, 0.1), kept(2, 1.8, 0.2)] });
+  const rows = (await store.learning.ledger("agent-1")).rows;
+  // A runner of an earlier build, there now on the store's clock: its row says no schema version it knows (a build before
+  // runners.knows), as a runner of 17 (SQLite) or before 0034 (Postgres) writes it.
+  await store.runners.put({ runner: "runner-before", incarnation: "i-before", refused: null, version: "0.1.0", slots: 4 });
+  await store.close();
+  let db = await raw(file);
+  await oldSplit(db, "R", 0.9, 6.6);
+  await db.close();
+  const { store: again } = await storeOn(t, { file, clock });
+  assert.deepEqual((await again.learning.ledger("agent-1", ["R"])).rows, rows.filter((row) => row.runId === "R"), "the open's pass records R again all the same");
+  assert.equal(await rerecordedMark(file), 0, "an earlier runner was there at the pass's start: not marked");
+  assert.equal(await again.rerecordReopened(), false, "still there at the next try: not marked");
+  assert.equal(await rerecordedMark(file), 0);
+  // That runner ends S as its build does: the row under the split before, after the server's passes.
+  db = await raw(file);
+  await db.run("UPDATE learning_ledger SET job_usd = 0.5, look_back_usd = 1.5 WHERE run_id = 'S'");
+  await db.close();
+  // Its row goes stale (it stopped at the floor and left): the server's next try, the same store, no restart.
+  clock.now += RUNNER_STALE_MS + 1;
+  assert.equal(await again.rerecordReopened(), true, "none there at its start: marked");
+  assert.deepEqual((await again.learning.ledger("agent-1")).rows, rows, "S recorded under this build's split");
+  assert.equal(await rerecordedMark(file), 1);
+  assert.equal(await again.rerecordReopened(), true, "marked: a try after reads no run again");
+  // A runner of this build says on its row the version it knows (keepPresence, from the store it opened): at the floor or
+  // above, so it holds no mark.
+  db = await raw(file);
+  await db.run("UPDATE store_meta SET ledger_rerecorded = 0 WHERE singleton = 1");
+  await db.close();
+  const presence = keepPresence(again.runners, "runner-now", null, { renewMs: 3_600_000 });
+  t.after(() => presence.stop());
+  await presence.relay(null);
+  const { known, runnerFloor } = await again.schemaState();
+  const [now] = await again.runners.live(RUNNER_STALE_MS);
+  assert.deepEqual([now.runner, now.knows], ["runner-now", known], "its row says the version its build knows");
+  assert.ok(now.knows >= runnerFloor, `${now.knows} at the floor (${runnerFloor}) or above`);
+  assert.equal(await again.rerecordReopened(), true, "a runner of this build there: marked");
+});
+
+test("a SQLite store at 17 gains runners.knows at the split's step (18): the row a runner of 17 put reads as knowing nothing, and while that runner is there the mark waits", sqliteOnly("SQLite's upgrade chain; Postgres 0034 adds the column"), async (t) => {
+  const { store, file, clock, end } = await ledgerStore(t);
+  await end("R", 6.6, { path: "agent" }, { also: [kept(1, 0.9, 0.1), kept(2, 6.5, 0.1)] });
+  await store.close();
+  const db = await raw(file);
+  await db.run("ALTER TABLE runners DROP COLUMN knows");
+  await db.run("ALTER TABLE store_meta DROP COLUMN ledger_rerecorded");
+  await db.run("INSERT INTO runners (runner, incarnation, refused, host, port, seen_at, version, slots) VALUES ('runner-17', 'i-17', NULL, NULL, NULL, ?, '0.1.0', 4)", clock.now);
+  await db.run("UPDATE store_meta SET schema_version = 17 WHERE singleton = 1");
+  await db.close();
+  const { store: reopened } = await storeOn(t, { file, clock });
+  assert.deepEqual((await reopened.runners.live(RUNNER_STALE_MS)).map((row) => [row.runner, row.knows]), [["runner-17", null]]);
+  assert.equal(await rerecordedMark(file), 0, "the runner of 17 there at the open's pass: not marked");
+  clock.now += RUNNER_STALE_MS + 1;
+  assert.equal(await reopened.rerecordReopened(), true, "gone: marked at the next try");
+});
+
+test("Postgres migration 0034 adds the same mark and runners.knows only where missing, the mark unset, and is breaking for runners (an earlier runner writes a reopened run's row under the split before)", async () => {
   const { readFile } = await import("node:fs/promises");
-  const { STORE_META_LEDGER_RERECORDED } = await import("../dist/store/schema.js");
+  const { RUNNERS, STORE_META_LEDGER_RERECORDED } = await import("../dist/store/schema.js");
   const { marksBreaking } = await import("../dist/store/postgres/migrate.js");
   const sql = await readFile(new URL("../dist/store/postgres/migrations/0034_learning_ledger_rerecorded.sql", import.meta.url), "utf8");
   assert.ok(marksBreaking(sql), "-- runners: breaking in its leading comment");
   const text = sql.replace(/--[^\n]*/g, "").replace(/\s+/g, " ").trim();
   assert.ok(text.includes("ALTER TABLE store_meta ADD COLUMN IF NOT EXISTS ledger_rerecorded BIGINT NOT NULL DEFAULT 0 CHECK (ledger_rerecorded IN (0, 1));"), text);
   assert.match(STORE_META_LEDGER_RERECORDED, /ledger_rerecorded INTEGER NOT NULL DEFAULT 0 CHECK \(ledger_rerecorded IN \(0, 1\)\)/);
+  assert.ok(text.includes("ALTER TABLE runners ADD COLUMN IF NOT EXISTS knows INTEGER;"), text);
+  assert.match(RUNNERS, /\bknows INTEGER\b/, "SQLite's fresh runners table has it too");
   assert.ok(text.endsWith("UPDATE store_meta SET schema_version = 34 WHERE singleton = 1;"), text);
 });
