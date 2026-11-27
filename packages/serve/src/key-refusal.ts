@@ -93,10 +93,11 @@ const ANSWER_PIECE = 8192;
  *  characters per character of the stretch. Checked after each reading (one view's, over one stretch of at most a
  *  piece), so a read visits at most this and one reading more: the costliest reading measured visits 174.8 characters
  *  per character of its stretch (READING in key-refusal.test.mjs, 175). 356 pieces: every view's readings together
- *  visited at most 355.6 characters per character of a stretch read with no sequence open, the most measured over the
- *  contract's adversarial texts and the padding the cost test reads, before the views read the values' pass, main's join
- *  and the again join from outside a string; with them, the most is 392.7 (padding of every family the views decode,
- *  then zero-width spaces), so a read gives up within a piece of that padding, and the text is withheld. A run is read
+ *  visited at most 355.6 characters per character of a stretch read with no sequence open when the budget was set, the
+ *  most measured over the contract's adversarial texts and the padding the cost test reads. The views read more since
+ *  (main's matcher merged, the values' pass, main's join, the again join from outside a string): the most is now 392.7
+ *  (padding of every family the views decode, then zero-width spaces), so a read gives up within a piece of that
+ *  padding, and the text is withheld. A run is read
  *  only where it is longer than a piece, at most twice (its head and its tail), so the reads cost at most
  *  2 x (356 + 175) pieces over a piece and one character, about 1,062 per character of the text. That is
  *  over the matcher's bound (WORK in redact-contract.test.mjs) by construction; measured, the reads and the matcher's
