@@ -47,7 +47,8 @@ import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-ho
  *    (mcp-secret-writes.ts tokenWriteOverRefused), and never writes a secret (secret-writes.ts). A Composio server names
  *    its key by api_key_env (COMPOSIO_API_KEY, on the launcher's list of secrets, read at each use through secrets.ts
  *    secret, sent to Composio's origin alone: composio-made.ts composioEnvKey), and its body names no address or headers.
- *    There is no list or read of the servers here (listMcpServerNames above is the listing). The generic save
+ *    The Composio listings (the toolkits, a toolkit's actions) read the catalog with that key, named the same way, for the
+ *    backend's own picker. There is no list or read of the servers here (listMcpServerNames above is the listing). The generic save
  *    (saveMcpServer) is apiOnlyMcpSave: the serve README's API-only section states it. Previews, refreshes, sign-ins
  *    and Composio's triggers stay refused;
  *  - the launch hook's host (the backend in front of this server) releases a firing it took and will start no run for
@@ -66,6 +67,7 @@ export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "getCapabilities", "getHealth", "getUsage", "getCapacity", "listMcpServerNames", "getPrices",
   "importTemplate", "applyTemplate", "getAgent", "listRevisions", "setCurrent", "archiveAgent", "unarchiveAgent",
   "saveComposioServer", "deleteMcpServer", "releaseTriggerFiring",
+  "listComposioToolkits", "listComposioTools",
   "listTriggers", "getTrigger", "listTriggerFirings", "updateTrigger",
   // Refused in its own words (403): it reads the machine's session files, which a server behind a backend does not have to give.
   "getWrapped",
@@ -155,8 +157,8 @@ export const apiOnlyRefusal = (raw: string): string => `this server serves the r
 /** The operations a scoped request (the AgentRun-Workspace header, workspace-scope.ts) is served: its own agents, runs,
  *  imported template packages and uploaded files, and the server's description. Every other is refused with 403 not_scoped, whatever
  *  API_ONLY_ROUTES serves an unscoped request. listAgents, createAgent, updateDefinition, getTemplate, listTemplates,
- *  getOpenapi, getRunGraph, getRunTrace, pauseRun, resumeRun, archiveRun, unarchiveRun and startRun are not in
- *  API_ONLY_ROUTES: an API-only server serves them to a scoped request alone. Every run route here names its run first
+ *  deleteTemplate, getOpenapi, getRunGraph, getRunTrace, pauseRun, resumeRun, archiveRun, unarchiveRun and startRun are not
+ *  in API_ONLY_ROUTES: an API-only server serves them to a scoped request alone. Every run route here names its run first
  *  in its path, which the route's scope check reads as missing when it is another workspace's. answerApproval is not
  *  here: it takes the owner's session alone, never a token. Nor are the agent extras in API_ONLY_ROUTES; each names its
  *  agent first in its path, as the run routes name their run, and validateWorkflow names none. writeHomeFile is not here:
@@ -165,12 +167,16 @@ export const apiOnlyRefusal = (raw: string): string => `this server serves the r
 export const WORKSPACE_ROUTES: ReadonlySet<string> = new Set([
   "listAllRuns", "listRuns", "getRun", "getTimeline", "listRunFiles", "readRunFile", "getRunExport",
   "listAgents", "getAgent", "listRevisions", "createAgent", "updateDefinition", "setCurrent",
+  "archiveAgent", "unarchiveAgent", "deleteAgent",
   "getAgentPackage", "getRevisionSkills", "validateWorkflow", "listHomeFiles", "readHomeFile", "deleteHomeFile",
-  "importTemplate", "applyTemplate", "getTemplate", "listTemplates",
+  "importTemplate", "applyTemplate", "getTemplate", "listTemplates", "deleteTemplate",
   "createRun", "sendMessage", "stopRun", "cancelRun",
   "deleteRun", "raiseRunCap", "getRunGraph", "getRunTrace", "pauseRun", "resumeRun", "archiveRun", "unarchiveRun", "gradeRun", "startRun",
   "createFile", "listFiles", "getFile", "uploadFile", "deleteFile",
   "getCapabilities", "getHealth", "getOpenapi",
+  // Composio's catalog, read with the server's own key (api_key_env alone: mcp-secret-writes.ts composioListingOwners): no
+  // workspace's row in it.
+  "listComposioToolkits", "listComposioTools",
 ]);
 
 /** How a scoped request for `method` on `raw` is served: "served" for a /v2 path one of WORKSPACE_ROUTES matches,

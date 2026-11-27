@@ -214,3 +214,76 @@ test("a close during a claim recovery whose read-back never answers is held no l
   assert.ok(closed, "close resolved while the recovery's read never answered");
   assert.ok(Date.now() - started < 3_000, `close took ${Date.now() - started} ms, the window is 1000 ms`);
 });
+
+test("a close with a busy run and a claim recovery in flight drains from the close's start: the recovery shares the drain and the close's window, never adding a window of its own", { timeout: 30_000 }, async (t) => {
+  // A turn far longer than the drain: the drain runs to its bound, and the shutdown's stop ends the turn at once.
+  const faux = fauxLoops({ turns: 2, turnMs: 20_000 });
+  const { server, runners: [one] } = await stores({ runners: 1 });
+  await queue(server, "run-1");
+  const store = observed(one, recorder());
+  let claims = 0;
+  const wrapped = {
+    ...store,
+    runs: {
+      ...store.runs,
+      // The first claim (run-1) lands; every later one is answered Unanswered, and its read-back never answers.
+      async claimMany(runner, k, options) {
+        if (claims++ === 0) return store.runs.claimMany(runner, k, options);
+        throw unanswered();
+      },
+      claimsOf: () => new Promise(() => {}),
+    },
+  };
+  const leaseMs = 3_000;
+  const stopMarginMs = 500;
+  const drainMs = 1_000;
+  const runner = startRunner({ store: wrapped, createLoop: faux.createLoop, name: "runner-a", ...TIMING, leaseMs, renewEveryMs: 500, stopMarginMs, drainMs });
+  t.after(() => runner.close());
+  await until(() => faux.loops[0]?.claim, "run-1 held");
+  // run-2 is queued: the next poll's claim is answered Unanswered and its recovery's read never answers.
+  await queue(server, "run-2");
+  await until(() => claims >= 2, "a claim in recovery");
+  const started = Date.now();
+  await runner.close();
+  const took = Date.now() - started;
+  const [stop] = faux.loops[0].stopCalls;
+  assert.equal(stop?.kind, "shutdown");
+  // The drain is counted from the close's start, not from the end of a wait for the claim in flight.
+  assert.ok(stop.at - started < drainMs + 400, `run-1 was stopped ${stop.at - started} ms into the close, its drain is ${drainMs} ms`);
+  // The claim in flight is waited for inside the close's window (the lease less its margin), not after the drain.
+  assert.ok(took < leaseMs - stopMarginMs + 400, `close took ${took} ms, its window is ${leaseMs - stopMarginMs} ms`);
+});
+
+test("a close with a claim in flight resolves only once that claim has landed and been given back: the runner holds nothing after its close", { timeout: 30_000 }, async (t) => {
+  const faux = fauxLoops({ turns: 2, turnMs: 5 });
+  const { server, runners: [one] } = await stores({ runners: 1 });
+  const store = observed(one, recorder());
+  let land;
+  const landing = new Promise((resolve) => (land = resolve));
+  let asked = false;
+  const wrapped = {
+    ...store,
+    runs: {
+      ...store.runs,
+      // The claim is in flight until the case lets it land: the store answers late.
+      async claimMany(runner, k, options) {
+        asked = true;
+        await landing;
+        return store.runs.claimMany(runner, k, options);
+      },
+    },
+  };
+  const runner = startRunner({ store: wrapped, createLoop: faux.createLoop, name: "runner-a", ...TIMING });
+  t.after(() => runner.close());
+  await queue(server, "run-1");
+  await until(() => asked, "a claim in flight");
+  let closed = false;
+  const closing = runner.close().then(() => (closed = true));
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(closed, false, "close resolved with a claim still in flight");
+  land();
+  await closing;
+  const run = await server.runs.get("run-1");
+  assert.equal(run.runner, null, "the claim that landed as the runner closed was given back");
+  assert.equal(faux.loops.length, 0, "no loop started on it");
+});
