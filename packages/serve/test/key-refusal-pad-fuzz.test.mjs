@@ -74,67 +74,68 @@ const SAMPLE = 260;
 
 // A known family the matcher itself shows: padding whose quotes the matcher pairs one way three times over and the
 // other way 300 times over, so redactSecrets withholds the short text and shows the held value's rest in the long one,
-// with or without the lead-in. The read can't withhold what the matcher shows, so these rows of seeds 2 to 5 are
-// pinned as shown now (past the read after a call's stop, and for all but one of them after a run too long to read too;
-// that one is withheld there with no budget too), and left out of the seeds' runs; a change either way fails here.
-// Follow-up: the matcher's quote pairing (#3999).
-// [seed, padding, wrap, shown after a run too long to read]
+// with or without the lead-in. The read can't withhold what the matcher shows where the pass after it reads the text as
+// the matcher does; where the pass reads the padding's quotes as main's reading pairs them, it finds the value and
+// withholds the text. These rows of seeds 2 to 5 are pinned as found (33 of the 40 shown past the read after a call's
+// stop, 31 after a run too long to read; main shows all 40 both ways), and left out of the seeds' runs; a change either
+// way fails here. Follow-up: the matcher's quote pairing.
+// [seed, padding, wrap, shown past a call's stop, shown after a run too long to read]
 const SHOWN_BY_THE_MATCHER = [
-  [2, "\\x1b\\u005d\"'\\x1b\\", "json", true],
-  [2, "\\x1b\\u005d\"'\\x1b\\", "jj", true],
-  [2, "\\\\u001b\\x5db'\u001b\\", "json", true],
-  [2, "\\u001b\\u005d'%20B\\\\x07\"", "jj", true],
-  [2, "\\\\x1b]\\\\u005c\\\\'\\u0007\"", "jj", true],
-  [2, "\\u001b]\\x07'", "py", true],
-  [2, "%1B]\u0007\"", "jj", true],
-  [2, "\\\\u001b\\\\x5d\\\\\"'\\\\u001b\\\\", "json", true],
-  [2, "\\\\u001b\\\\x5d\\\\\"'\\\\u001b\\\\", "jj", true],
-  [3, "\\u001b]\u0007\"", "jj", true],
-  [3, "\u001b]\\x07'", "py", true],
-  [3, "\u001b\\\\x5d'B\\u001b\\", "json", true],
-  [3, "&#27;\\u005d\\\\u0020\\\\u0007\"", "py", true],
-  [3, "&#27;\\u005d\\\\u0020\\\\u0007\"", "plain", true],
-  [3, "\u001b]\\u0007'", "py", true],
-  [3, "\\\\x1b\\\\u005d%00'\\x1b\\", "json", true],
-  [3, "\\\\u001b]\\\\u0007\"", "jj", true],
-  [3, "\\\\u001b\\\\x5d'\\u0026\\\\u001b\\", "json", false],
-  [3, "\u001b\\x5d' \\\\x1b\\", "json", true],
-  [3, "\\\\u001b]\\u0007\"", "jj", true],
-  [3, "\u001b]'\\x07", "py", true],
-  [3, "\\x1b]\\u0007'", "py", true],
-  [4, "\u001b]\u0007'", "py", true],
-  [4, "\\\\x1b\\u005db'\\\\u001b\\", "json", true],
-  [4, "%1B\\u005d\\\\u0007\"", "py", true],
-  [4, "%1B\\u005d\\\\u0007\"", "plain", true],
-  [4, "\\\\x1b]#'\\u001b\\\\\"", "jj", true],
-  [4, "\\\\u001b\\\\x5d'\u001b\\", "json", true],
-  [4, "\\u001b\\u005d&#7;\"", "py", true],
-  [4, "\\u001b\\u005d&#7;\"", "plain", true],
-  [5, "%1B\\u005d&#7;\"", "py", true],
-  [5, "%1B\\u005d&#7;\"", "plain", true],
-  [5, "\\\\u001b]\\u0007\"", "jj", true],
-  [5, "\\u001b\\x5d'\\x23\\\\u001b\\", "json", true],
-  [5, "\\\\u001b\\\\u005d\"'\\x1b\\\\", "json", true],
-  [5, "\\\\u001b\\\\u005d\"'\\x1b\\\\", "jj", true],
-  [5, "\\\\u001b]\u0007\"", "jj", true],
-  [5, "&#27;\\u005d\u0007\"", "py", true],
-  [5, "&#27;\\u005d\u0007\"", "plain", true],
-  [5, "\\\\x1b\\u005d'\\\\u001b\\", "json", true],
+  [2, "\\x1b\\u005d\"'\\x1b\\", "json", true, true],
+  [2, "\\x1b\\u005d\"'\\x1b\\", "jj", true, true],
+  [2, "\\\\u001b\\x5db'\u001b\\", "json", true, true],
+  [2, "\\u001b\\u005d'%20B\\\\x07\"", "jj", true, true],
+  [2, "\\\\x1b]\\\\u005c\\\\'\\u0007\"", "jj", true, true],
+  [2, "\\u001b]\\x07'", "py", false, false],
+  [2, "%1B]\u0007\"", "jj", true, true],
+  [2, "\\\\u001b\\\\x5d\\\\\"'\\\\u001b\\\\", "json", true, true],
+  [2, "\\\\u001b\\\\x5d\\\\\"'\\\\u001b\\\\", "jj", true, true],
+  [3, "\\u001b]\u0007\"", "jj", true, true],
+  [3, "\u001b]\\x07'", "py", false, false],
+  [3, "\u001b\\\\x5d'B\\u001b\\", "json", true, false],
+  [3, "&#27;\\u005d\\\\u0020\\\\u0007\"", "py", true, true],
+  [3, "&#27;\\u005d\\\\u0020\\\\u0007\"", "plain", true, true],
+  [3, "\u001b]\\u0007'", "py", false, false],
+  [3, "\\\\x1b\\\\u005d%00'\\x1b\\", "json", true, true],
+  [3, "\\\\u001b]\\\\u0007\"", "jj", true, true],
+  [3, "\\\\u001b\\\\x5d'\\u0026\\\\u001b\\", "json", true, false],
+  [3, "\u001b\\x5d' \\\\x1b\\", "json", false, false],
+  [3, "\\\\u001b]\\u0007\"", "jj", true, true],
+  [3, "\u001b]'\\x07", "py", false, false],
+  [3, "\\x1b]\\u0007'", "py", false, false],
+  [4, "\u001b]\u0007'", "py", false, false],
+  [4, "\\\\x1b\\u005db'\\\\u001b\\", "json", true, true],
+  [4, "%1B\\u005d\\\\u0007\"", "py", true, true],
+  [4, "%1B\\u005d\\\\u0007\"", "plain", true, true],
+  [4, "\\\\x1b]#'\\u001b\\\\\"", "jj", true, true],
+  [4, "\\\\u001b\\\\x5d'\u001b\\", "json", true, true],
+  [4, "\\u001b\\u005d&#7;\"", "py", true, true],
+  [4, "\\u001b\\u005d&#7;\"", "plain", true, true],
+  [5, "%1B\\u005d&#7;\"", "py", true, true],
+  [5, "%1B\\u005d&#7;\"", "plain", true, true],
+  [5, "\\\\u001b]\\u0007\"", "jj", true, true],
+  [5, "\\u001b\\x5d'\\x23\\\\u001b\\", "json", true, true],
+  [5, "\\\\u001b\\\\u005d\"'\\x1b\\\\", "json", true, true],
+  [5, "\\\\u001b\\\\u005d\"'\\x1b\\\\", "jj", true, true],
+  [5, "\\\\u001b]\u0007\"", "jj", true, true],
+  [5, "&#27;\\u005d\u0007\"", "py", true, true],
+  [5, "&#27;\\u005d\u0007\"", "plain", true, true],
+  [5, "\\\\x1b\\u005d'\\\\u001b\\", "json", true, true],
 ];
 const known = new Set(SHOWN_BY_THE_MATCHER.map(([, pad, wrap]) => `${wrap} ${pad}`));
 
-test("padding the matcher itself shows 300 times over (its quote pairing, #3999) is shown as pinned, past the read after a call's stop and after a run too long to read", async () => {
+test("padding the matcher itself shows 300 times over (its quote pairing) is shown as pinned, past the read after a call's stop and after a run too long to read", async () => {
   const { redactSecrets } = await import("../dist/learn/secrets.js");
   let body = "";
   while (body.length < 8092) body += "word ";
   const changed = [];
-  for (const [seed, pad, wrap, kr10] of SHOWN_BY_THE_MATCHER) {
+  for (const [seed, pad, wrap, kr9, kr10] of SHOWN_BY_THE_MATCHER) {
     const write = WRAPS[wrap];
     const long = `${pad.repeat(300)} `;
     const row = `seed ${seed} ${JSON.stringify(pad)} ${wrap}`;
     if (redactSecrets(write(`see ${HEAD}${pad.repeat(3)} ${REST} more`), [VALUE], Number.POSITIVE_INFINITY).includes(REST)) changed.push(`${row}: the matcher shows the short text`);
     if (!redactSecrets(write(`see ${HEAD} ${long}${REST} more`), [VALUE], Number.POSITIVE_INFINITY).includes(REST)) changed.push(`${row}: the matcher withholds the long text`);
-    if (redactedCall(write(`${body}see ${HEAD} ${long}${REST} more`), [VALUE], 200) === "[redacted]") changed.push(`${row}: kr-9 withheld`);
+    if ((redactedCall(write(`${body}see ${HEAD} ${long}${REST} more`), [VALUE], 200) !== "[redacted]") !== kr9) changed.push(`${row}: kr-9 ${kr9 ? "withheld" : "shown"}`);
     const run = write(`${"a".repeat(9000)}${HEAD}${long}${REST} more`);
     if ((redactedAnswer(run, [VALUE]).includes(REST) || redactedCall(run, [VALUE], 100_000).includes(REST)) !== kr10) changed.push(`${row}: kr-10 ${kr10 ? "withheld" : "shown"}`);
   }
