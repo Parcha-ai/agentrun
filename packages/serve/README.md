@@ -454,7 +454,9 @@ The token is in the log of the start that made it. A `docker stop` reaches both 
 6 s (`--drain-timeout 6s`) to finish its turn, so a busy `docker stop` ends in about 7.5 s; a turn cut off resumes at
 the next start. Signed in with ChatGPT, a stop also waits up to 25 s for a renewal OpenAI is answering to save its new
 pair, so Compose's `stop_grace_period` is 35 s, and a plain `docker stop` needs `-t 35`: Docker's default 10 s can cut
-that wait short and lose the sign-in. Compose publishes the port
+that wait short and lose the sign-in. A stop signal again while it closes (a second `docker stop`, a second Ctrl-C on a
+runner started by hand) is said once and changes nothing, so that save is never cut; a close that never ends (a store
+that no longer answers) ends only with SIGKILL (`docker kill`, `kill -9`). Compose publishes the port
 on this machine's loopback only (port 7340, or `AGENTRUN_PORT`; set `AGENTRUN_PUBLIC_URL` with it, so the printed link names that port), and
 the volume `agentrun-data` keeps `/data` across `down` and `up`. In the container the server listens on `0.0.0.0`, so
 setup takes the code the start prints (`Set up this server: <url>/setup#code=<code>`), and every route but `GET /v2/capabilities` and `GET /v2/health` still needs the token. Compose's `healthcheck` and
@@ -1936,7 +1938,10 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   Sign out again. The runner's own renewal, for
   runs that are users of their own, never writes back to a removed login. This machine's own login (`place` `machine`)
   is the person's: the sign-out is refused (403) with nothing touched, and the words say to run `claude auth logout` in
-  a terminal there. The console's Claude login row offers Sign out only while AgentRun's own login is signed in.
+  a terminal there. The console's Claude login row offers Sign out only while AgentRun's own login is signed in. Its
+  Turn on, where the login then reads `signed_out` and the server says the sign-in can start here (`can_start`), also
+  starts the CLI's sign-in (`POST /v2/settings/claude-login/login`), which opens the browser; the API's turn-on alone
+  never does.
 
 While it is on, a claude-agent run on an `anthropic/<model>` model goes on the login: its CLI gets no
 `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` or key, no model proxy runs, and the CLI's sandbox denies its commands
@@ -2259,6 +2264,9 @@ each tool says what it sends TypeSafe, or that Jev is off: for `web_search` `…
 search sends that and each result's URL, title, snippet and published date to TypeSafe …`, for `web_fetch` `…; a fetch given an
 objective sends the page's text and the objective to TypeSafe …`, and for either `…; Jev off: no TypeSafe key` or
 `…; Jev off (AGENTRUN_WEB_JEV_OFF)`.
+An agent's own `jev: "off"` on `web_search` or `web_fetch` (`definition.tool_settings.web_search.jev`) turns Jev off for
+both of that agent's web tools the same way: its runs' planes carry it and no TypeSafe key is handed. `off` is its one
+value; the server's own tool settings refuse it, and leaving it out runs Jev as the server has it.
 
 | | `claude-agent` | `codex` | pi |
 | --- | --- | --- | --- |
@@ -3964,6 +3972,8 @@ serves these routes alone:
 - `GET /capabilities`, `GET /health`, `GET /usage` and `GET /capacity`;
 - the names of the MCP servers saved here (`GET /settings/mcp-server-names`, `{names}`), never a URL or a credential:
   a backend that builds runs from saved servers holds back a job whose server isn't saved, before its launch is refused;
+- the prices this server meters computer and browser time at (`GET /settings/prices`), each a decimal string with
+  its source, never a key: a backend bounds a run's budget in this server's figures before its launch;
 - a deploy, for a backend that deploys agents here: a template's apply (`POST /templates/{id}/apply`, a redeploy with
   its `agent_id`), the agent's read (`GET /agents/{id}`), its revisions (`GET /agents/{id}/revisions`), a rollback
   (`POST /agents/{id}/current`), and its archive and unarchive (`POST /agents/{id}/archive`, `/unarchive`). The archive

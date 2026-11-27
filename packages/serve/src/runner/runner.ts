@@ -275,6 +275,8 @@ interface Held {
   stopping: boolean;
   /** The first stop asked of the loop: a shutdown's release says the run was drained (run_attempts cut). */
   stoppedFor?: StopReason["kind"];
+  /** A hand-back under way (LoopDeps.handBack): its read of the run's untaken stop rows, then its stop. */
+  handingBack?: Promise<void>;
   /** start() has returned: the run's end (its sweep, flush and release) is under way. A Fenced answer now is no lost claim. */
   ending: boolean;
   /** The write that ends the run has landed (the loop's own end commit, or the runner's end of it): the claim is spent,
@@ -1070,13 +1072,26 @@ export function startRunner(options: RunnerOptions): Runner {
         emit({ type: "refused", runId: held.claim.runId, commandId, reason });
       },
       redact,
-      // Only in a close, and once: the loop is stopped for a shutdown and its signal aborted, as at the drain's end, so
-      // the run is handed back (cut "drain") and its turn resumes on the next claim.
+      // Only in a close, and once (every reader that asks meanwhile waits on the one answer): a stop or cancel a person
+      // sent that no delivery has handed on yet is the run's end, read as the close reads it (closingEnds), since a loop
+      // stopping is handed no more rows and the close reads none for it. Else, or past it (a stop that keeps the run's
+      // computer), the loop is stopped for a shutdown and its signal aborted, as at the drain's end, so the run is handed
+      // back (cut "drain") and its turn resumes on the next claim.
       handBack: () => {
         const now = heldNow;
-        if (!closed || !now || now.ending || now.stopping || now.fence.lost) return;
-        stopLoop(now, { kind: "shutdown" });
-        now.abort.abort(new Error("the runner is closing"));
+        if (!closed || !now || now.ending || now.stopping || now.fence.lost) return now?.handingBack ?? Promise.resolve();
+        now.handingBack ??= (async () => {
+          const end = (await closingEnds([now])).get(now.claim.runId);
+          if (now.ending || now.stopping || now.fence.lost) return;
+          if (end) {
+            now.cursor = Math.max(now.cursor, end.id);
+            stopLoop(now, { kind: "command", commandId: end.id, ...(end.kind === "cancel" ? { cancel: true as const } : {}) });
+            if (now.stopping) return;
+          }
+          stopLoop(now, { kind: "shutdown" });
+          now.abort.abort(new Error("the runner is closing"));
+        })();
+        return now.handingBack;
       },
     });
     const held: Held = { passed: new Set(), claim, loop, fence, abort, cursor: 0, stopping: false, ending: false, landed: false, sealed: false, renewing: false, delivering: false, deliverAgain: false, mib, ...(learningDeadline !== undefined && pastDeadline ? { learningDeadline, pastDeadline } : {}) };

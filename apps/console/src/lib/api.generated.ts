@@ -429,10 +429,12 @@ export interface components {
       web_fetch?: {
         provider?: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
         permission?: "allow" | "ask" | "deny";
+        jev?: "off";
       };
       web_search?: {
         provider?: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
+        jev?: "off";
       };
       web_save?: {
         permission?: "allow" | "ask" | "deny";
@@ -506,9 +508,11 @@ export interface components {
       } | {
         provider?: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
         permission?: "allow" | "ask" | "deny";
+        jev?: "off";
       } | {
         provider?: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
+        jev?: "off";
       } | {
         permission?: "allow" | "ask" | "deny";
         scope?: "thread" | "mailbox";

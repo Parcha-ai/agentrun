@@ -35,7 +35,11 @@ const page = await web.fetch("https://example.org/", { offset: 0, maxChars: 20_0
   every URL `guard.fetch` would refuse: a check that passes everything sends private and internal URLs to a provider.
   A guard is the Web's alone; one passed with a `fetch` call is ignored.
 - `keys.parallel` is Parallel's key. `pay(fee, send)` is the run's cap: it sends the request when the fee fits, or
-  throws a `PaidRefused`. Without it, a request is unmetered.
+  throws a `PaidRefused`. Without it, a request is unmetered. A request on a call already stopped is never handed to
+  `pay`. One whose send failed before it left (stopped as the send began, or a fetch that failed connecting: a name
+  not resolved, a connection refused or not made, a TLS certificate or handshake refused) gives `pay` a 400 to settle at
+  $0, its receipt line says `not billed (not sent: <code>)`, and the call then fails as it would have. A cap books a 4xx
+  at nothing; any other failure stays at the fee.
 - `words.rateLimited` is what a keyless provider's rate limit says to the model.
 - `native` is the model's own hosted search, as a function. `send` and `endpoints` replace a provider's fetch or
   address (a test's fakes). `now` is the breakers' clock. `bounds` sets the searches' deadlines. `log` receives what a

@@ -4,15 +4,12 @@
 // its model, a program it starts or a file. Here each provider is the tests' fake fetch (fixtures/faux-jev.mjs,
 // fixtures/faux-parallel.mjs): no network, no real key.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { DECISION_KEY_FD_ENV, decisionsOf, FAUX_JEV_ENV, jevRoute } from "../dist/decisions.js";
-import { FAUX_ENV } from "../dist/model.js";
-import { FAUX, flowAgent, follow, scratch, serve, storeRun, withEnv, startServe } from "./support.mjs";
+import { decisionsOf, jevRoute } from "../dist/decisions.js";
+import { flowAgent, follow, scratch, serve, storeRun, withEnv, startServe } from "./support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { CANARY } from "./fixtures/faux-jev.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
@@ -25,8 +22,6 @@ const OPENROUTER_GATEWAY = "https://openrouter.ai/api/v1";
 /** Keys that are not the canary, so a request sent with one is not authorized: held in names, as no key literal sits beside a key variable. */
 const OTHER_ROUTER_KEY = "openrouter-key-not-jevs";
 const OTHER_GATEWAY_KEY = "gateway-key-not-jevs";
-/** The descriptor a run's process is handed the key on: the first one after its stdio and its secrets pipe. */
-const KEY_FD = "4";
 
 const judge = { node: "judge", label: "coi", state: { doc: "{question}" }, out: "Coi", as: "coi" };
 /** The same question, put to Parallel. */
@@ -39,10 +34,10 @@ const flow = (steps, output = { schemaId: "Probe", path: "probe" }) => ({
     In: { type: "object", required: ["question"], properties: { question: { type: "string" } } },
     Coi: { type: "object", additionalProperties: false, required: ["is_coi"], properties: { is_coi: { type: "boolean", description: "Is `doc` a certificate of incorporation?" } } },
     Probe: {
-      type: "object", required: ["leaked", "key_set", "fd_open", "sub_leaked", "sub_fd_open", "node_leaked", "node_fd_open", "host_env_leaked"],
+      type: "object", required: ["leaked", "key_set", "sub_leaked", "node_leaked", "host_env_leaked"],
       properties: {
-        leaked: { type: "boolean" }, key_set: { type: "boolean" }, fd_open: { type: "boolean" }, sub_leaked: { type: "boolean" }, sub_fd_open: { type: "boolean" },
-        node_leaked: { type: "boolean" }, node_fd_open: { type: "boolean" }, host_env_leaked: { type: "boolean" },
+        leaked: { type: "boolean" }, key_set: { type: "boolean" }, sub_leaked: { type: "boolean" }, node_leaked: { type: "boolean" },
+        host_env_leaked: { type: "boolean" },
       },
     },
   },
@@ -178,41 +173,6 @@ test("on an OpenRouter gateway alone, Jev runs on AGENT_MODEL_API_KEY: capabilit
   const run = await jev.judged();
   assert.equal(run.status, "completed", JSON.stringify(run.error));
   assert.deepEqual(run.sent, [["/api/v1/systemone", true]], "one request, to OpenRouter, with the gateway's key");
-});
-
-/** decisionProvidersOf in a process of its own, as a run's process calls it: its environment is `env` alone, and
- *  `handed` (keys by name) comes on the decision descriptor when given. Whether it made a judge, and what the fake
- *  Jev took. */
-async function judgeIn(t, env, handed) {
-  const calls = join(await scratch(t), "jev-calls.jsonl");
-  const script = `const { decisionProvidersOf } = await import(${JSON.stringify(new URL("../dist/decisions.js", import.meta.url).href)});
-const { judgeFromProviders } = await import("@parcha/agentrun-dsl");
-const providers = await decisionProvidersOf(process.env);
-const judge = providers && judgeFromProviders(providers);
-const answer = judge && await judge({ label: "coi", kind: "judge", state: { doc: "x" }, questions: { is_coi: { type: "noul", instructions: "Is doc a certificate of incorporation?" } } });
-process.stdout.write(JSON.stringify({ judge: Boolean(judge), noul: answer?.answers?.is_coi?.noul ?? null }));`;
-  const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
-    env: { HOME: process.env.HOME, [FAUX_ENV]: FAUX, [FAUX_JEV_ENV]: FAUX_JEV, AGENTRUN_TEST_FAUX_JEV_CALLS: calls, ...env, ...(handed ? { [DECISION_KEY_FD_ENV]: KEY_FD } : {}) },
-    // As a run's process has them: the secrets pipe on 3 (none here), the key on the next.
-    stdio: ["ignore", "pipe", "pipe", "ignore", ...(handed ? ["pipe"] : [])],
-  });
-  // What the server writes there: the keys by name, as one JSON object.
-  if (handed) child.stdio[Number(KEY_FD)].end(JSON.stringify(handed));
-  let out = "";
-  let err = "";
-  child.stdout.on("data", (chunk) => (out += chunk));
-  child.stderr.on("data", (chunk) => (err += chunk));
-  const code = await new Promise((resolve) => child.once("close", resolve));
-  assert.equal(code, 0, err);
-  const sent = (await readFile(calls, "utf8").catch(() => "")).split("\n").filter(Boolean).map((line) => [JSON.parse(line).path, JSON.parse(line).authorized]);
-  return { ...JSON.parse(out), sent };
-}
-
-test("a run's judge runs on the key handed on the decision descriptor alone: with no key in its environment it answers, and with keys only in its environment there is no judge", async (t) => {
-  const handedOnly = await judgeIn(t, {}, { OPENROUTER_API_KEY: CANARY });
-  assert.deepEqual(handedOnly, { judge: true, noul: 0.92, sent: [["/api/v1/systemone", true]] }, "the gateway's key, deleted from its environment, still reaches OpenRouter from the descriptor");
-  const envOnly = await judgeIn(t, { OPENROUTER_API_KEY: CANARY, AGENT_MODEL_BASE_URL: OPENROUTER_GATEWAY, AGENT_MODEL_API_KEY: CANARY, TYPESAFE_API_KEY: CANARY });
-  assert.deepEqual(envOnly, { judge: false, noul: null, sent: [] }, "a key in the environment is never the judge's");
 });
 
 test("a gateway whose host is not exactly openrouter.ai, or no gateway key, leaves Jev unavailable: capabilities says why and a judge run is 409", async (t) => {

@@ -26,6 +26,8 @@ import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-ho
  *    is the console's, refused with the rest of it;
  *  - an operator or a scaler reads the runners' capacity (getCapacity, capacity.ts) from the server whose runners run apart;
  *  - a backend reads the saved MCP servers' names (listMcpServerNames), never a URL or a credential;
+ *  - a backend reads the prices this server meters computer and browser time at (getPrices, prices.ts), to bound a run's
+ *    budget in this server's figures before its launch: decimal prices and their source, never a key or an address;
  *  - a backend uploads an agent's package (importTemplate, as {files} alone: a GitHub source is refused in this profile's
  *    words, template-import.ts), which an apply then makes into its agent;
  *  - a backend that deploys agents here applies their template, reads the agent and its revisions, moves its current
@@ -61,7 +63,7 @@ export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "sendMessage", "stopRun", "cancelRun", "raiseRunCap", "gradeRun",
   "listRunFiles", "readRunFile", "getRunExport",
   "createFile", "listFiles", "getFile", "uploadFile", "deleteFile",
-  "getCapabilities", "getHealth", "getUsage", "getCapacity", "listMcpServerNames",
+  "getCapabilities", "getHealth", "getUsage", "getCapacity", "listMcpServerNames", "getPrices",
   "importTemplate", "applyTemplate", "getAgent", "listRevisions", "setCurrent", "archiveAgent", "unarchiveAgent",
   "saveComposioServer", "deleteMcpServer", "releaseTriggerFiring",
   "listTriggers", "getTrigger", "listTriggerFirings", "updateTrigger",

@@ -14,12 +14,12 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { CANARY as JEV_KEY } from "./fixtures/faux-jev-web.mjs";
 import { CANARY as PARALLEL_KEY } from "./fixtures/faux-parallel.mjs";
-import { paidBookings, toolLedger } from "./support.mjs";
+import { agent, paidBookings, serve, toolLedger } from "./support.mjs";
 
 const { searchFor, webSearchTool } = await import("../dist/web-search.js");
 const { webFetchTool } = await import("../dist/web-fetch.js");
 const { webOf } = await import("../dist/web-run.js");
-const { handsJevWeb, explainsView, planeFor, recheckPlane, TOOL_PLANE_ENV } = await import("../dist/tool-plane.js");
+const { canonicalToolSettings, checkToolSettings, claimPlane, handsJevWeb, explainsView, planeFor, recheckPlane, relaunchPlane, settingsIssues, TOOL_PLANE_ENV } = await import("../dist/tool-plane.js");
 const { decisionKeysFor } = await import("../dist/decisions.js");
 const { bookedIn } = await import("../dist/paid-calls.js");
 const { claimSecrets } = await import("../dist/runner/claim-secrets.js");
@@ -364,3 +364,89 @@ for (const [status, code] of [["401", "auth"], ["402", "payment_required"]]) {
     assert.deepEqual(read.rows.filter((row) => row.charged_by === "jev"), [], "nothing held or booked for Jev");
   });
 }
+
+// An agent's own Jev switch: `jev: "off"` on web_search or web_fetch in its definition's tool_settings turns Jev off for
+// both of its web tools, as the server's AGENTRUN_WEB_JEV_OFF does for every agent. The run's plane carries it, so no
+// TypeSafe key is handed and its Web has no decider.
+
+/** A server holding TypeSafe's key and Parallel's, with no Jev switch of its own. */
+const KEYED = { TYPESAFE_API_KEY: JEV_KEY, PARALLEL_API_KEY: PARALLEL_KEY };
+/** A pi agent granted both web tools, its own tool settings `overrides`. */
+const webAgent = (overrides) => ({ harness: "pi", tools: ["web_search", "web_fetch"], ...(overrides ? { overrides } : {}) });
+
+for (const on of ["web_search", "web_fetch"]) {
+  test(`an agent's own jev "off" on ${on} turns Jev off for both web tools: its plane says so, no TypeSafe key is handed, its Web has no decider`, async (t) => {
+    const calls = jevCalls(t);
+    const claim = await nativeClaims(t);
+    const tooling = webAgent({ [on]: { jev: "off" } });
+    const plane = planeFor(KEYED, tooling, {}, { run: true });
+    assert.equal(plane.jev, "off", `the run's plane says Jev is off: ${JSON.stringify(plane)}`);
+    assert.equal(handsJevWeb(plane, KEYED, "pi"), false, "the run is not handed TypeSafe's key for its web tools");
+    assert.deepEqual(Object.keys(decisionKeysFor(KEYED, { providers: [], parallelWeb: false, jevWeb: handsJevWeb(plane, KEYED, "pi") })), [], "its decision keys hold no TypeSafe key");
+    assert.equal(await claim("pi", tooling.tools, plane), "none", "a claim of it is handed no TypeSafe key");
+    const toolEnv = claimEnv({ TYPESAFE_API_KEY: JEV_KEY, [TOOL_PLANE_ENV]: JSON.stringify(plane) });
+    const found = (await onLedger(() => search(toolEnv))).got;
+    assert.equal(found.sift, undefined, "a run handed the key anyway has no decider: its plane says Jev is off");
+    assert.deepEqual(calls(), [], "Jev was never asked");
+  });
+}
+
+test("an agent's Jev off is kept at every later launch and claim: relaunchPlane (with a plane kept, and for a run kept before planes were) and claimPlane, past a ceiling too", () => {
+  const tooling = webAgent({ web_search: { jev: "off" } });
+  const kept = planeFor(KEYED, tooling, {}, { run: true });
+  assert.equal(kept.jev, "off");
+  const runner = { PARALLEL_API_KEY: PARALLEL_KEY };
+  assert.equal(relaunchPlane(kept, runner, tooling, {}).jev, "off", "a relaunch keeps it on a runner with no switch");
+  assert.equal(relaunchPlane(undefined, KEYED, tooling, {}).jev, "off", "a run kept before its plane was resolves today's, with it");
+  assert.equal(relaunchPlane(undefined, KEYED, tooling, {}, { first: true }).jev, "off", "and at its first launch");
+  assert.equal(claimPlane(kept, KEYED, tooling, {}).jev, "off", "a claim keeps it");
+  const ceiling = { web_search: { provider: "native" } };
+  const past = claimPlane(kept, KEYED, tooling, ceiling);
+  assert.notEqual(past.web_search, kept.web_search, `the claim resolved web_search again under the ceiling: ${JSON.stringify(past)}`);
+  assert.equal(past.jev, "off", "and keeps Jev off");
+});
+
+test("an agent with no jev setting is unchanged: Jev on, the key handed, the why the server's", () => {
+  for (const overrides of [undefined, { web_search: { provider: "parallel" }, web_fetch: { permission: "allow" } }]) {
+    const tooling = webAgent(overrides);
+    const plane = planeFor(KEYED, tooling, {}, { run: true });
+    assert.equal(Object.hasOwn(plane, "jev"), false, `no jev field: ${JSON.stringify(plane)}`);
+    assert.equal(handsJevWeb(plane, KEYED, "pi"), true, "the run is handed TypeSafe's key");
+    assert.equal(relaunchPlane(undefined, KEYED, tooling, {}).jev, undefined);
+  }
+  const view = explainsView({ TYPESAFE_API_KEY: JEV_KEY }, {}, { web_search: { provider: "auto" } });
+  for (const why of Object.values(view.web_search.why).filter((one) => one.includes("Jev"))) assert.ok(why.endsWith(`; ${ON}`), why);
+  for (const why of Object.values(view.web_fetch.why)) assert.ok(why.endsWith(`; ${FETCH_ON}`), why);
+  assert.equal(planeFor(KEYED, { harness: "pi", tools: ["read"], overrides: { web_search: { jev: "off" } } }, {}).jev, undefined, "a plane with no web tool carries no jev, as under the server's switch");
+});
+
+test("settings: jev is an agent's own, on web_search or web_fetch, and only \"off\"; the one form keeps it; the server's file drops it", () => {
+  const issues = (value, layer) => settingsIssues(value, "tool_settings", layer).map((issue) => [issue.field, issue.reason]);
+  assert.deepEqual(settingsIssues({ web_search: { jev: "off" } }, "tool_settings", "agent"), [], "off on web_search");
+  assert.deepEqual(settingsIssues({ web_fetch: { jev: "off", provider: "auto", permission: "allow" } }, "tool_settings", "agent"), [], "off on web_fetch, beside its provider and permission");
+  assert.deepEqual(issues({ web_search: { jev: "on" } }, "agent"), [["tool_settings.web_search.jev", "not_an_option"]], "on is not an option: leaving it out is on");
+  assert.deepEqual(issues({ web_search: { jev: true } }, "agent"), [["tool_settings.web_search.jev", "not_an_option"]]);
+  const bash = settingsIssues({ bash: { jev: "off" } }, "tool_settings", "agent");
+  assert.deepEqual(bash.map((issue) => [issue.field, issue.reason]), [["tool_settings.bash.jev", "not_allowed"]], "never on another tool");
+  assert.match(bash[0].message, /definition\.tool_settings\.web_search\.jev/, bash[0].message);
+  const server = settingsIssues({ web_search: { jev: "off" } });
+  assert.deepEqual(server.map((issue) => [issue.field, issue.reason]), [["web_search.jev", "not_allowed"]], "never the server's");
+  assert.match(server[0].message, /definition\.tool_settings\.web_search\.jev/, server[0].message);
+  assert.match(settingsIssues({ web_fetch: "off" }, "tool_settings", "agent")[0].message, /\bjev\b/, "an agent's web tool's setting lists jev among its fields");
+  assert.equal(JSON.stringify(canonicalToolSettings({ web_search: { provider: "auto", jev: "off" }, web_fetch: { jev: "off" } })), JSON.stringify({ web_fetch: { jev: "off" }, web_search: { jev: "off", provider: "auto" } }), "a revision body keeps jev");
+  const read = checkToolSettings({ web_search: { provider: "parallel", jev: "off" } }, "tools.json");
+  assert.deepEqual(read.settings, { web_search: { provider: "parallel" } }, "the server's file keeps what reads and drops jev");
+  assert.deepEqual(read.problems, ["tools.json: web_search.jev not_allowed"]);
+});
+
+test("the API: POST /v2/agents keeps an agent's jev off and GET answers it; jev on, on another tool or in the server's settings is refused", async (t) => {
+  const { api } = await serve(t, {});
+  const made = await api("POST", "/agents", agent("unranked", { tools: ["web_search", "web_fetch"], tool_settings: { web_search: { jev: "off" } } }));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  assert.deepEqual((await api("GET", "/agents/unranked")).body.definition.tool_settings, { web_search: { jev: "off" } });
+  const on = await api("POST", "/agents", agent("ranked", { tools: ["web_search"], tool_settings: { web_search: { jev: "on" } } }));
+  assert.equal(on.status, 422);
+  assert.ok(JSON.stringify(on.body).includes("tool_settings.web_search.jev"), JSON.stringify(on.body));
+  assert.equal((await api("POST", "/agents", agent("bash-jev", { tool_settings: { bash: { jev: "off" } } }))).status, 422);
+  assert.equal((await api("PUT", "/settings/tools", { web_search: { jev: "off" } })).status, 422);
+});

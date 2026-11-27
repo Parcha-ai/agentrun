@@ -272,7 +272,7 @@ test("a learning run's metrics keep its calls and its first choice's reason; a r
   const metrics = pathMetrics(launch, { path: "workflow", workflow: "a" }, entries, "none_fit");
   assert.deepEqual(metrics.workflow_calls, [{ workflow: "a", digest: D, caller: "agent", outcome: "answered", usd: 0.25 }]);
   assert.equal(metrics.first_choice, "none_fit");
-  assert.equal(metrics.workflow_digest, undefined, "the top-level digest stays the platform's call's, which the audits read");
+  assert.equal(metrics.workflow_digest, undefined, "the top-level digest is the classifier's (runPathOverStore), never read off the calls here");
   assert.deepEqual(pathMetrics(launch, { path: "agent", workflow: null }, []).workflow_calls, [], "a learning run that called none keeps an empty list");
   const replay = pathMetrics({ ...launch, replay: { of: "r0", workflow: "a", digest: D } }, { path: "workflow", workflow: "a" }, entries, "replay");
   assert.equal(replay.workflow_calls, undefined);
