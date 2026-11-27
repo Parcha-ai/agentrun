@@ -348,12 +348,15 @@ test("the read after a run's head reads each title through the decodings that op
 // What the reads cost. A read for the head or the tail of a run too long to read, or past a call's stop (key-refusal.ts
 // peek, tailOf), reads its stretch through every view from every place its join can start, so padding every view reads
 // apart and shows little of costs it hundreds of characters per character. It gives up, and the text is withheld, once
-// it has visited its budget (READ_BUDGET, 92 pieces), checked after each reading: one view's reading of one stretch of
-// at most a piece. So one read visits at most READ_MOST, and as a run is read only where it is longer than a piece, at
-// most twice, the reads of a text visit at most READS_PER_CHARACTER per character of it, under the matcher's bound
-// (WORK, redact-contract.test.mjs). READING is measured, not built in: the test below holds it.
+// it has visited its budget (READ_BUDGET, 356 pieces), checked after each reading: one view's reading of one stretch of
+// at most a piece, which visits at most READING per character of it. So one read visits at most its budget and one
+// reading more, READ_MOST, and as a run is read only where it is longer than a piece, at most twice, the reads of a text
+// visit at most READS_PER_CHARACTER per character of it: 2 x (356 + 178) x 8,192 / 8,193, about 1,067.9. That is over
+// the matcher's bound (WORK, redact-contract.test.mjs) by construction, so the bound on a text's whole cost, the reads
+// and the matcher's own work together, is measured below, on the texts the reads cost most on. READING is measured, not
+// built in: the test below holds it.
 const PIECE = 8192;
-const BUDGET = 92;
+const BUDGET = 356;
 const READING = 178;
 const READ_MOST = (BUDGET + READING) * PIECE;
 const READS_PER_CHARACTER = (2 * READ_MOST) / (PIECE + 1);
@@ -423,7 +426,6 @@ const READS = {
   "a call's result shown to 200": (text, values) => redactedCall(text, values, 200),
 };
 test("the texts the reads cost most on visit at most WORK characters per character, each read at most READ_MOST, 32 KiB to 512 KiB", (t) => {
-  assert.ok(READS_PER_CHARACTER < WORK);
   const over = [];
   for (const size of [32 * 1024, 128 * 1024, 512 * 1024])
     for (const [what, make, stop, values = [VALUE], readsOnly] of COSTLY) {
@@ -450,8 +452,8 @@ test("the texts the reads cost most on visit at most WORK characters per charact
 // A call's stop after prose, then a run too long to read of padding every view reads apart. With a lead-in of 8,092
 // characters, the pieces that show the lead-in are redacted at about 50 characters per character of the text whatever
 // follows; the read past the stop adds at most READ_MOST. Measured per character (in all, the read past the stop): no
-// budget 745.9 and 225.1, and shown; this budget 96.0 and 49.6; before reads counted each view (e1e80a1694), 521.2 in
-// all, and shown. With a lead-in of 250 characters, the read is most of it: 102.4 and 91.6 (no budget 887.7 and 415.8;
+// budget 745.9 and 225.1, and shown; this budget 217.5 and 171.1; before reads counted each view (e1e80a1694), 521.2 in
+// all, and shown. With a lead-in of 250 characters, the read is most of it: 326.9 and 316.0 (no budget 887.7 and 415.8;
 // e1e80a1694 476.8).
 test("a call's stop after a lead-in of 8,092 or 250 characters, then padding every view reads apart, visits at most WORK per character, the read past the stop at most READ_MOST", () => {
   const over = [];

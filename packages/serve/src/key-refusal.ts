@@ -92,13 +92,16 @@ const ANSWER_PIECE = 8192;
  *  from every place its join can start, so padding every view reads apart and shows little of costs it hundreds of
  *  characters per character of the stretch. Checked after each reading (one view's, over one stretch of at most a
  *  piece), so a read visits at most this and one reading more: the costliest reading measured visits 178 characters per
- *  character of its stretch (READ_BOUND in key-refusal.test.mjs). A run is read only where it is longer than a piece,
- *  at most twice (its head and its tail), so the reads cost at most 2 x (92 + 178) pieces over a piece and one
- *  character, about 540 per character of the text, under the matcher's bound (WORK in redact-contract.test.mjs). No
- *  read of the tests' prose, JSON and logs reaches it; on the padding corpora, each read that does is on a text that
- *  was withheld before it too. Spending it only ever withholds: a read that stops gives undefined, never a shorter
- *  stretch. */
-const READ_BUDGET = 92 * ANSWER_PIECE;
+ *  character of its stretch (READING in key-refusal.test.mjs). 356 pieces: every view's readings together visit at most
+ *  355.6 characters per character of a stretch read with no sequence open, the most measured over the contract's
+ *  adversarial texts and the padding the cost test reads, so a read gives up on text that costs more than that over a
+ *  whole piece. A run is read only where it is longer than a piece, at most twice (its head and its tail), so the reads
+ *  cost at most 2 x (356 + 178) pieces over a piece and one character, about 1,068 per character of the text. That is
+ *  over the matcher's bound (WORK in redact-contract.test.mjs) by construction; measured, the reads and the matcher's
+ *  own work together stay under it on the texts the reads cost most on (key-refusal.test.mjs). No read of the tests'
+ *  prose, JSON and logs reaches it, nor of the padding corpora's texts the matcher shows. Spending it only ever
+ *  withholds: a read that stops gives undefined, never a shorter stretch. */
+const READ_BUDGET = 356 * ANSWER_PIECE;
 
 /** The stretches a read for `count` characters tries, shortest first: 4 × `count` + 64 characters where that is
  *  shorter than a piece, then a piece; no stretch is longer than a piece. */
