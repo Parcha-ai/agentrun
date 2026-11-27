@@ -5824,7 +5824,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           skills: (isObject(revision.skills) ? revision.skills : {}) as Record<string, string>,
           template: entry.template ? { id: entry.template.id, version: entry.template.version, ...(entry.template.secrets ? { secrets: entry.template.secrets } : {}) } : null,
           origin: entry.template ? registry.get(entry.template.id) : undefined,
-          servers: mcpMeta,
+          // The saved MCP servers are the server's, by one name across workspaces: a workspace's package reads none of them.
+          servers: workspaceNow() === undefined ? mcpMeta : new Map(),
           triggers: views,
           signIns: await store.signIns.list(id),
           now: options.triggerClock?.now() ?? Date.now(),

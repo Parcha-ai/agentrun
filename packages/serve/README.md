@@ -4107,9 +4107,13 @@ as before.
 A request in a workspace is served only: the runs' reads and lists (`GET /runs`, `/runs/{id}`, its timeline, files,
 export, graph and trace), a run's message, stop, cancel, cap raise, pause, resume, archive, unarchive, grade, held start
 and purge (`DELETE /runs/{id}`); the agents' list, read, create, revisions, definition and current revision,
-and a run started on one; the templates' list, read, import and apply; the uploaded files' create, upload, list, read and
-delete (`/files`); and `/capabilities`, `/health` and `/openapi.json`. Every other route is `403 forbidden` with
-`details.reason: "not_scoped"`. In it, an agent, run, imported template package or file of another workspace (or of none)
+package, a revision's skills, its home's list, reads and removals (not a write: nothing bounds a home's size on a disk
+the workspaces share), and a run started on one; a workflow's check (`POST /workflows/validate`); the templates' list,
+read, import and apply; the uploaded files' create, upload, list, read and delete (`/files`); and `/capabilities`,
+`/health` and `/openapi.json`. Every other route is `403 forbidden` with `details.reason: "not_scoped"`, a sign-in's
+removal among them (removing a secret takes the owner's session). A workspace's package reads no MCP server saved
+here: each is the server's, by one name across workspaces, so a granted tool of one is blocked as a server saved
+nowhere. In it, an agent, run, imported template package or file of another workspace (or of none)
 answers the same `404` as an id no row has, and every list holds the workspace's rows alone, paged within them; bundled
 template packages are every workspace's. What it makes is the workspace's: an agent (made or applied), an imported
 package (an import whose name another workspace holds is `409 name_taken`), a file. A run is its agent's workspace's,

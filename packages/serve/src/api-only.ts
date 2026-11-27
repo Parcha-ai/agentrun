@@ -158,10 +158,14 @@ export const apiOnlyRefusal = (raw: string): string => `this server serves the r
  *  getOpenapi, getRunGraph, getRunTrace, pauseRun, resumeRun, archiveRun, unarchiveRun and startRun are not in
  *  API_ONLY_ROUTES: an API-only server serves them to a scoped request alone. Every run route here names its run first
  *  in its path, which the route's scope check reads as missing when it is another workspace's. answerApproval is not
- *  here: it takes the owner's session alone, never a token. */
+ *  here: it takes the owner's session alone, never a token. Nor are the agent extras in API_ONLY_ROUTES; each names its
+ *  agent first in its path, as the run routes name their run, and validateWorkflow names none. writeHomeFile is not here:
+ *  nothing bounds a home's size on a disk the workspaces share. Nor is forgetSignIn: removing a secret takes the owner's
+ *  console session, never a token (secret-writes.ts). */
 export const WORKSPACE_ROUTES: ReadonlySet<string> = new Set([
   "listAllRuns", "listRuns", "getRun", "getTimeline", "listRunFiles", "readRunFile", "getRunExport",
   "listAgents", "getAgent", "listRevisions", "createAgent", "updateDefinition", "setCurrent",
+  "getAgentPackage", "getRevisionSkills", "validateWorkflow", "listHomeFiles", "readHomeFile", "deleteHomeFile",
   "importTemplate", "applyTemplate", "getTemplate", "listTemplates",
   "createRun", "sendMessage", "stopRun", "cancelRun",
   "deleteRun", "raiseRunCap", "getRunGraph", "getRunTrace", "pauseRun", "resumeRun", "archiveRun", "unarchiveRun", "gradeRun", "startRun",

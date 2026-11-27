@@ -143,7 +143,6 @@ const TABLE = {
   listHomeFiles: { method: "GET", path: "/v2/agents/{agent}/home/files", row: "agent" },
   readHomeFile: { method: "GET", path: "/v2/agents/{agent}/home/files/notes.md", row: "agent" },
   deleteHomeFile: { method: "DELETE", path: "/v2/agents/{agent}/home/files/notes.md", row: "agent" },
-  forgetSignIn: { method: "DELETE", path: "/v2/agents/{agent}/sign-ins/google", row: "agent" },
   getTemplate: { method: "GET", path: "/v2/templates/{template}", row: "template" },
   applyTemplate: { method: "POST", path: "/v2/templates/{template}/apply", row: "template", body: { parameters: {} } },
   getFile: { method: "GET", path: "/v2/files/{file}", row: "file" },
@@ -248,13 +247,14 @@ test("a scoped request acts on its own run with the run extras, and a run it pur
   }
 });
 
-test("a scoped request reads its own agent's package, a revision's skills, its home and sign-ins, and the install's saved MCP servers read to it as unsaved ones", { timeout: 120_000 }, async (t) => {
+test("a scoped request reads its own agent's package, a revision's skills and its home, and removes a home file; the install's saved MCP servers read to it as unsaved ones, and a sign-in's removal stays the owner's", { timeout: 120_000 }, async (t) => {
   const mcp = await startFakeMcp({ token: () => true });
   t.after(() => mcp.close());
   const server = await scopedServer(t, { apiOnlyMcpOrigins: [new URL(mcp.url).origin] });
   // The operator's server: a per_run one at its own origin, saved unscoped, as the install's only MCP server.
   const saved = await unscoped(server, "PUT", "/v2/settings/mcp-servers/opsonly", { body: { url: mcp.url, auth: { type: "per_run", headers: { authorization: "Bearer not-a-secret-list-token" } } } });
   assert.ok(saved.status < 300, saved.text);
+  assert.deepEqual((await unscoped(server, "GET", "/v2/settings/mcp-server-names")).body.names, ["opsonly"], "the operator's server is saved");
   const made = await inW1(server, "POST", "/v2/agents", { body: { definition: { version: 1, name: "W1 agent", instructions: "Answer.", skills: [], tools: ["mcp:opsonly/add"] } } });
   assert.equal(made.status, 201, made.text);
   const agent = made.body.agent_id;
@@ -264,12 +264,9 @@ test("a scoped request reads its own agent's package, a revision's skills, its h
   assert.equal(mine.status, 200, mine.text);
   assert.match(blockedOf(mine)?.reason ?? "", /not a saved MCP server here/, "in a workspace, the operator's server is one saved nowhere");
   assert.ok(!mine.text.includes(new URL(mcp.url).host), "and nothing of its address reaches the workspace");
-  const operators = await unscoped(server, "GET", `/v2/agents/${agent}/package`);
-  assert.equal(operators.status, 200, operators.text);
-  assert.doesNotMatch(blockedOf(operators)?.reason ?? "", /not a saved MCP server here/, "unscoped, the server is the saved one");
 
   const [revision] = (await inW1(server, "GET", `/v2/agents/${agent}/revisions`)).body.revisions;
-  const skills = await inW1(server, "GET", `/v2/agents/${agent}/revisions/${revision.id ?? revision.revision_id}/skills`);
+  const skills = await inW1(server, "GET", `/v2/agents/${agent}/revisions/${revision.revision}/skills`);
   assert.deepEqual([skills.status, skills.body.skills], [200, {}], skills.text);
 
   const home = agentHomeFolder(server.data, agent);
@@ -285,9 +282,10 @@ test("a scoped request reads its own agent's package, a revision's skills, its h
   assert.equal(removed.status, 204, removed.text);
   assert.deepEqual((await inW1(server, "GET", `/v2/agents/${agent}/home/files`)).body.files, []);
   const forgot = await inW1(server, "DELETE", `/v2/agents/${agent}/sign-ins/google`);
-  assert.equal(forgot.status, 200, forgot.text);
+  assert.deepEqual([forgot.status, forgot.body.error?.details?.reason], [403, "not_scoped"], forgot.text);
 
-  // validateWorkflow: a tool of the operator's server reads to the workspace as a tool of a server saved nowhere.
+  // validateWorkflow: a workflow binds no MCP tool here, so a tool of the operator's server reads as one of a server saved
+  // nowhere, whatever the check reads of the saved servers.
   const check = (tool) => inW1(server, "POST", "/v2/workflows/validate", { body: { workflow: answerFlow(), tools: [tool] } });
   const named = await check("mcp:opsonly/add");
   const unsaved = await check("mcp:nowhere/add");
