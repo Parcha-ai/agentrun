@@ -33,7 +33,7 @@ export function AgentsPage({ v2, archived, go, learning }: { v2: Client; archive
     const n = ++asked.current;
     if (!quiet) { setAgents(null); setError(null); setUnarchiveProblem(null); }
     allPages((cursor) => v2.listAgents({ archived, cursor }), (p) => p.agents)
-      .then((a) => { if (n === asked.current) setAgents(a); })
+      .then((a) => { if (n === asked.current) { setAgents(a); setError(null); } })
       .catch((e) => { if (n === asked.current) setError(problemOf(e).message); });
   };
   // The view shown now, for a write's answer that lands after the person moved between Active and Archived.
