@@ -244,16 +244,17 @@ test("the path compares the workflow's answer as it produced it and as the agent
   assert.equal(runPathOverStore.length >= 3, true);
 });
 
-test("a run with rounds: its impact and its cost per run read the same split: the job is its first round's, every later turn its learning", async () => {
+test("a run with rounds: its impact and its cost per run read the same split: the job and its follow-up turns are the job's, every round's look-back its learning", async () => {
   const { impactLearningOf } = await import("../dist/store-reads/learning.js");
   const { roundsLooked } = await import("../dist/learn/ledger.js");
   const rounds = { answered_at: "2026-11-13T00:00:00.000Z", job_cost_usd: 0.6, look_back_usd: 0.1 };
-  // Round 1's job $0.60, a follow-up turn $0.30, two compile turns $0.10: the row holds $1.00.
-  assert.deepEqual(roundsLooked(rounds, 1.0), { answered_at: rounds.answered_at, job_cost_usd: 0.6, look_back_usd: 0.4 });
-  assert.deepEqual(roundsLooked(rounds, null), { answered_at: rounds.answered_at, job_cost_usd: 0.6, look_back_usd: null }, "an unknown row cost with the job known: the spend after the job is unknown, never the rounds' turns added up as settled");
+  // Round 1's job $0.60, a follow-up turn $0.30, two compile turns $0.10: the row holds $1.00. A grade's feedback round
+  // asks no job turn (feedback-round.ts): its spend is all in its look-back, learning's either way.
+  assert.deepEqual(roundsLooked(rounds, 1.0), { answered_at: rounds.answered_at, job_cost_usd: 0.9, look_back_usd: 0.1 });
+  assert.deepEqual(roundsLooked(rounds, null), { answered_at: rounds.answered_at, job_cost_usd: null, look_back_usd: 0.1 }, "an unknown row cost: the job, which holds the follow-up, is unknown, never round 1's figure");
   const impact = impactLearningOf({ state: "merged", reason: null, at: "2026-11-13T00:01:00.000Z" }, { seed: "a".repeat(40), section: "" }, undefined, rounds, 1.0);
-  assert.equal(impact.job_cost_usd, 0.6, "the job is round 1's");
-  assert.equal(impact.look_back_usd, 0.4, "the follow-up turn is learning, as the cost per run counts it");
+  assert.equal(impact.job_cost_usd, 0.9, "the job and its follow-up turn");
+  assert.equal(impact.look_back_usd, 0.1, "the look-backs alone are learning, as the cost per run counts them");
 });
 
 test("a run whose agent called learned_workflow itself, graded wrong, label and all: the grade is kept and opens no round; the path stays workflow (#2648 review)", { timeout: 120_000 }, async (t) => {
