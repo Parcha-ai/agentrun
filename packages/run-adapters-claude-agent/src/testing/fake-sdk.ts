@@ -24,6 +24,9 @@ import type { ClaudeAgentSdk } from '../harness.js';
  *   a dangling tool_use with a synthetic "interrupted" result.
  * - `exit-during <tool> <json args>` starts the call and exits at once (the
  *   CLI dying mid-call), leaving the handler running.
+ * - `parallel <json>` is one answer making several calls at once, `{ usage, calls: [{ name, args }] }`: its stream
+ *   events as the CLI streams them (`message_start` with `usage`, a `tool_use` block per call, `message_delta` stopping
+ *   for tools, `message_stop`), then every call at once, then one reply naming each result's length.
  * - A message sent at priority `next` while a call runs is folded into that
  *   turn (one result consumes both), as Claude Code does with a steer, and
  *   mirrored as the CLI does: a `queued_command` attachment naming its uuid.
@@ -469,6 +472,38 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
               await mirror([entry('user', { isMeta: true, message: { role: 'user', content: RECOVERY_NOTE } })]);
             }
             yield { type: 'result', subtype: 'success', is_error: false, result: 'ok', stop_reason: stop, usage: { output_tokens: 12 }, session_id: sessionId, user_message_uuids: consumed, queued_turn_count: 0 };
+            await mirror([{ type: 'last-prompt' }]);
+            continue;
+          }
+          const parallel = /^parallel (.*)$/s.exec(command);
+          if (parallel) {
+            const answer = JSON.parse(parallel[1]!) as { usage?: Record<string, number>; calls: { name: string; args?: unknown }[] };
+            const made = answer.calls.map((c) => ({ id: `toolu_${randomUUID().slice(0, 8)}_${++calls}`, name: c.name, args: c.args ?? {} }));
+            const event = (e: Record<string, unknown>) => ({ type: 'stream_event', parent_tool_use_id: null, event: e });
+            yield event({ type: 'message_start', message: { id: `msg_${randomUUID().slice(0, 8)}`, type: 'message', role: 'assistant', content: [], usage: { ...answer.usage, output_tokens: 1 } } });
+            for (const [index, c] of made.entries()) {
+              yield event({ type: 'content_block_start', index, content_block: { type: 'tool_use', id: c.id, name: `mcp__hands__${c.name}`, input: {} } });
+              yield event({ type: 'content_block_stop', index });
+            }
+            yield event({ type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: answer.usage?.output_tokens ?? 12 } });
+            yield event({ type: 'message_stop' });
+            const a = entry('assistant', { message: { role: 'assistant', content: made.map((c) => ({ type: 'tool_use', id: c.id, name: `mcp__hands__${c.name}`, input: c.args })) } });
+            yield { type: 'assistant', parent_tool_use_id: null, uuid: a.uuid, session_id: sessionId, message: a.message };
+            await mirror([a], lag);
+            const toolset = await tools;
+            const results = await Promise.all(made.map(async (c) => {
+              const tool = toolset.get(c.name);
+              return tool ? await tool.handler(c.args, { _meta: { 'claudecode/toolUseId': c.id } }) : { content: [{ type: 'text', text: `no tool ${c.name}` }], isError: true };
+            }));
+            if (signal?.aborted) return;
+            const r = entry('user', { message: { role: 'user', content: made.map((c, i) => ({ type: 'tool_result', tool_use_id: c.id, is_error: !!results[i]!.isError, content: results[i]!.content[0]?.text })) } });
+            await mirror([r]);
+            yield { type: 'user', parent_tool_use_id: null, message: r.message };
+            const reply = made.map((c, i) => `${c.name} returned ${String(results[i]!.content[0]?.text ?? '').length} characters.`).join(' ');
+            const b = entry('assistant', { message: { role: 'assistant', content: [{ type: 'text', text: reply }] } });
+            await mirror([b]);
+            yield { type: 'assistant', parent_tool_use_id: null, uuid: b.uuid, session_id: sessionId, message: b.message };
+            yield { type: 'result', subtype: 'success', is_error: false, result: 'ok', session_id: sessionId, user_message_uuids: consumed, queued_turn_count: 0 };
             await mirror([{ type: 'last-prompt' }]);
             continue;
           }

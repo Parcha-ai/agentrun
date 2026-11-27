@@ -22,8 +22,9 @@ const FAR = T + 365 * 24 * 3_600_000;
 const SHA = "a".repeat(64);
 const WORDS = "AGENTRUN_RUN_USER=bogus is not a setting this runner knows: set AGENTRUN_RUN_USER=same.";
 /** Which of runners' columns are NOT NULL, on either store. */
-// version and slots: what each runner says of itself for the capacity read (0024_runner_capacity.sql; schema.ts RUNNERS_ADDED).
-const NOT_NULL = { runner: true, incarnation: true, host: false, port: false, seen_at: true, refused: false, version: false, slots: false };
+// version and slots: what each runner says of itself for the capacity read (0024_runner_capacity.sql; schema.ts RUNNERS_ADDED);
+// knows: the schema version its build knows (0034_learning_ledger_rerecorded.sql; schema.ts splitUpgrade).
+const NOT_NULL = { runner: true, incarnation: true, host: false, port: false, seen_at: true, refused: false, version: false, slots: false, knows: false };
 
 /** A store on this run's database, with `now` as its clock, closed (and its schema dropped) at the test's end. */
 async function storeOf(t, now) {
@@ -244,8 +245,8 @@ test("Postgres: a store at 0019 holding runner_relays rows takes 0020 in place: 
   assert.deepEqual(await pgRelayTables(sql, schema), ["runners"], "runner_relays is runners now, and no other table is left");
   assert.deepEqual(await pgRunnersShape(sql, schema), { notNull: NOT_NULL, constraints: ["runners_pkey"] });
   assert.deepEqual(await store.runners.list(), [
-    { runner: "runner-live", incarnation: "inc-live", refused: null, host: "127.0.0.1", port: 40_000, seenAt: T - 5_000, version: null, slots: null },
-    { runner: "runner-stale", incarnation: "inc-stale", refused: null, host: "runner-stale.example", port: 40_001, seenAt: T - 60_000, version: null, slots: null },
+    { runner: "runner-live", incarnation: "inc-live", refused: null, host: "127.0.0.1", port: 40_000, seenAt: T - 5_000, version: null, slots: null, knows: null },
+    { runner: "runner-stale", incarnation: "inc-stale", refused: null, host: "runner-stale.example", port: 40_001, seenAt: T - 60_000, version: null, slots: null, knows: null },
   ], "every relay's row kept, with no refusal");
   assert.deepEqual((await liveRelays(store.runners)).map((row) => [row.runner, row.host, row.port]), [["runner-live", "127.0.0.1", 40_000]], "the relay reads the live row, and not the stale one");
   assert.equal(await runnersRefused(store.runners), undefined, "a relay's row refuses nothing");

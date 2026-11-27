@@ -81,7 +81,7 @@ test("keyed Exa's and keyless Exa's wire bodies: the objective as their query, t
   const exa = keyed(() => json({ results: [{ url: "https://a.example/", title: "A", highlights: ["An excerpt."] }] }));
   const keyedWeb = web.createWeb({ order: { search: ["exa"], fetch: [] }, keys: { exa: KEY }, send: { exa: exa.send } });
   const { answer } = await keyedWeb.search({ objective: OBJECTIVE, queries: QUERIES }, { n: 4 });
-  assert.deepEqual(exa.sent, [{ path: "/search", body: { query: OBJECTIVE, type: "auto", numResults: 4, contents: { highlights: { maxCharacters: 3_000 } } } }], "keyed Exa is sent the objective as its query");
+  assert.deepEqual(exa.sent, [{ path: "/search", body: { query: OBJECTIVE, type: "auto", numResults: 4, contents: { highlights: true } } }], "keyed Exa is sent the objective as its query");
   assert.deepEqual([answer.objective, answer.queries], [OBJECTIVE, QUERIES], "keyed Exa's answer carries the objective and the queries");
   const free = mcp(() => toolText("Title: A\nURL: https://a.example/\nPublished: N/A\nAuthor: N/A\nHighlights:\nAn excerpt."));
   const keyless = web.createWeb({ order: { search: ["exa-keyless"], fetch: [] }, send: { "exa-keyless": free.send } });
@@ -104,7 +104,7 @@ test("keyed Firecrawl's wire bodies: up to 3 of the queries at once, each limit 
   assert.deepEqual(one.sent.map(({ body }) => body), [{ query: "widgets", limit: 2, scrapeOptions: SCRAPE }], "one query: one request of limit n");
 });
 
-test("keyed Firecrawl's failures: some requests failing answers the merged rest and hands the quota met to the breaker; every one failing answers the first, typed", async () => {
+test("keyed Firecrawl's failures: some requests failing answers the merged rest and hands the quota met to the breaker; every one failing, a limit among them, answers the breaker's words, the receipt the first, typed", async () => {
   const some = keyed((_path, body) => (body.query === QUERIES[0] ? json({ error: "credits" }, 402) : body.query === QUERIES[1] ? firecrawlRows([row("b")]) : json({ error: "slow" }, 429, { "retry-after": "30" })));
   const w = web.createWeb({ order: { search: ["firecrawl"], fetch: [] }, keys: { firecrawl: KEY }, send: { firecrawl: some.send } });
   const first = await w.search({ objective: OBJECTIVE, queries: QUERIES.slice(0, 3) }, { n: 3 });
@@ -113,7 +113,7 @@ test("keyed Firecrawl's failures: some requests failing answers the merged rest 
   assert.deepEqual([again.answer, some.sent.length], [{ error: SEARCH_UNAVAILABLE }, 3], "the 402 among them turned Firecrawl off for the run: the next search is not sent");
   const all = keyed((_path, body) => (body.query === QUERIES[0] ? json({ error: "down" }, 500) : json({ error: "slow" }, 429, { "retry-after": "30" })));
   const failing = await web.createWeb({ order: { search: ["firecrawl"], fetch: [] }, keys: { firecrawl: KEY }, send: { firecrawl: all.send } }).search({ objective: OBJECTIVE, queries: QUERIES.slice(0, 3) }, { n: 3 });
-  assert.deepEqual([failing.answer, failing.receipt.tries[0]?.failure?.code], [{ error: "Firecrawl's search answered 500" }, "HTTP_500"], "every request failing: the first failure in query order, typed");
+  assert.deepEqual([failing.answer, failing.receipt.tries[0]?.error, failing.receipt.tries[0]?.failure?.code], [{ error: "search is busy; try again in 30 s, or answer from what you have" }, "Firecrawl's search answered 500", "HTTP_500"], "every request failing, a rate limit among them: the breaker's words for the model; the receipt keeps the first failure in query order, typed");
 });
 
 test("Firecrawl, keyed and keyless: two queries answering and one rate-limited past 15 minutes answers the two's hits, and the next search is held", async () => {
@@ -207,7 +207,7 @@ test("the classifier ranks a search against its objective, never a query, unless
   assert.deepEqual(unscored.asked[1]?.request.state.task, "Where is Widgets, Inc. registered?", "the caller's task is still given");
 });
 
-test("web_fetch's objective is what findInPage looks for; looking_for is its alias, and objective wins over it; with no classifier the part says nothing of it", async () => {
+test("web_fetch's objective is what findInPage looks for; looking_for is its alias, and objective wins over it; with no classifier the part says it was not applied", async () => {
   const page = Array.from({ length: 12 }, (_, i) => `${String(i + 1).padStart(2, "0")} ${"x".repeat(987)}\n\n`).join("");
   const chunks = web.passagesOf(page, web.FIND_CHUNKS_MAX).map(([from, to]) => page.slice(from, to));
   const NEED = "the year Widgets, Inc. was registered";
@@ -220,7 +220,7 @@ test("web_fetch's objective is what findInPage looks for; looking_for is its ali
   }
   const plain = fakeWeb({ send: { parallel: pagesOf(page) } });
   const part = (await plain.fetch(PUBLIC, { offset: 100, maxChars: 500 })).answer;
-  assert.deepEqual((await plain.fetch(PUBLIC, { objective: NEED, offset: 100, maxChars: 500 })).answer, part, "no classifier: the part asked for, and no word of the objective");
+  assert.deepEqual((await plain.fetch(PUBLIC, { objective: NEED, offset: 100, maxChars: 500 })).answer, { ...part, sift: "objective not applied (no classifier in this run); this part is in page order" }, "no classifier: the part asked for, saying the objective was not applied");
 });
 
 /** The names a tool's text must not hold: each provider's label and id, and the model providers', each as a word. */

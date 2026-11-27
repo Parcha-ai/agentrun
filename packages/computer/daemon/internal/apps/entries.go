@@ -3,21 +3,24 @@ package apps
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 )
 
 // Entry is one app a desktop file describes (the freedesktop.org Desktop Entry Specification 1.5): its desktop file id,
-// its name, the command line that opens it, and the window class its windows have when it says so.
+// its name, the command line that opens it, the window class its windows have when it says so, and the desktop file.
 type Entry struct {
 	ID      string
 	Name    string
 	Exec    string
 	WMClass string
+	Path    string
 }
 
 // ApplicationDirs is where desktop files are, first first (XDG Base Directory Specification): $XDG_DATA_HOME, else
@@ -46,7 +49,20 @@ func ApplicationDirs() []string {
 // not it is an app. An app is a desktop file of type Application with a name and an Exec, not hidden (deleted), not
 // NoDisplay (not for a menu), and whose TryExec, when it has one, is a program there is.
 func Entries(dirs []string) []Entry {
+	entries, _ := entriesOpened(dirs, os.Open)
+	return entries
+}
+
+// refusal is a desktop file whose open refused it: its path, and why in words.
+type refusal struct {
+	path, why string
+}
+
+// entriesOpened is Entries with each desktop file read from what open gives for its path. One open refuses is no app,
+// though it still hides the later ones of its id: it is in refused by its id, with open's words, and never read.
+func entriesOpened(dirs []string, open func(path string) (*os.File, error)) ([]Entry, map[string]refusal) {
 	seen := map[string]bool{}
+	refused := map[string]refusal{}
 	var out []Entry
 	for _, dir := range dirs {
 		_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
@@ -62,24 +78,25 @@ func Entries(dirs []string) []Entry {
 				return nil
 			}
 			seen[id] = true
-			if e, ok := readEntry(path); ok {
-				e.ID = id
+			f, err := open(path)
+			if err != nil {
+				refused[id] = refusal{path: path, why: err.Error()}
+				return nil
+			}
+			defer f.Close()
+			if e, ok := readEntry(f); ok {
+				e.ID, e.Path = id, path
 				out = append(out, e)
 			}
 			return nil
 		})
 	}
 	slices.SortFunc(out, func(a, b Entry) int { return strings.Compare(a.ID, b.ID) })
-	return out
+	return out, refused
 }
 
-// readEntry reads a desktop file's [Desktop Entry] group, and whether it is an app.
-func readEntry(path string) (Entry, bool) {
-	f, err := os.Open(path)
-	if err != nil {
-		return Entry{}, false
-	}
-	defer f.Close()
+// readEntry reads a desktop file's [Desktop Entry] group from f, and whether it is an app.
+func readEntry(f io.Reader) (Entry, bool) {
 	keys := map[string]string{}
 	group := ""
 	scan := bufio.NewScanner(f)
@@ -140,8 +157,14 @@ func unescape(value string) string {
 }
 
 // Argv is the program and arguments that open the app (the Exec key's rules), with url in place of its %u, %U, %f or
-// %F. A url for an app whose Exec has none of those is refused: the app would open without it.
+// %F. A url for an app whose Exec has none of those is refused: the app would open without it. So is one that is not
+// a url (checkURL).
 func (e Entry) Argv(url string) ([]string, error) {
+	if url != "" {
+		if err := checkURL(url); err != nil {
+			return nil, err
+		}
+	}
 	words, err := split(e.Exec)
 	if err != nil {
 		return nil, fmt.Errorf("%s's Exec %q: %v", e.ID, e.Exec, err)
@@ -168,6 +191,25 @@ func (e Entry) Argv(url string) ([]string, error) {
 		return nil, fmt.Errorf("%s opens no url or file: its Exec %q has no %%u or %%f", e.ID, e.Exec)
 	}
 	return argv, nil
+}
+
+// scheme is an absolute URL's start (RFC 3986): a letter, then letters, digits, "+", "-" or ".", then ":", and
+// something after it.
+var scheme = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*:.`)
+
+// checkURL refuses a url that is neither an absolute URL with a scheme nor an absolute path. The url is one word of the
+// app's argv, so one starting with "-" would be a flag (Chromium's --renderer-cmd-prefix runs a command, whatever exec
+// allows), and a relative path a file found from the daemon's own folder. Leading whitespace is no URL either, and is
+// passed over only to say when a dash follows it.
+func checkURL(url string) error {
+	const is = "url is an absolute URL with a scheme (https://…, file:///…) or an absolute path (/…)"
+	if strings.HasPrefix(strings.TrimLeft(url, " \t\r\n\v\f"), "-") {
+		return fmt.Errorf("url %q starts with \"-\": the app would take it as a flag, not a url; %s", url, is)
+	}
+	if !scheme.MatchString(url) && !strings.HasPrefix(url, "/") {
+		return fmt.Errorf("url %q is neither an absolute URL with a scheme nor an absolute path; %s", url, is)
+	}
+	return nil
 }
 
 // split is an Exec value's words: separated by spaces, a word in double quotes with \", \`, \$ and \\ inside it.

@@ -19,6 +19,19 @@ export const ARCHIL_CONTROL_URLS: Readonly<Record<string, string>> = Object.free
   "gcp-us-central1": "https://control.blue.us-central1.gcp.prod.archil.com",
 });
 
+/** Whether each region serve knows has Archil's serverless exec (https://docs.archil.com/reference/regions): its AWS
+ *  regions do; gcp-us-central1 doesn't, and every exec there answers "Exec is not enabled". */
+export const ARCHIL_EXEC_REGIONS: Readonly<Record<string, boolean>> = Object.freeze({
+  "aws-us-east-1": true,
+  "aws-us-west-2": true,
+  "aws-eu-west-1": true,
+  "gcp-us-central1": false,
+});
+
+/** Whether region `region` has Archil's serverless exec (ARCHIL_EXEC_REGIONS). A region serve doesn't know (one given
+ *  with its own S3 URL, a BYOC deployment) is taken to have it: Archil's own error says why where it hasn't. */
+export const archilHasExec = (region: string): boolean => !Object.hasOwn(ARCHIL_EXEC_REGIONS, region) || ARCHIL_EXEC_REGIONS[region] === true;
+
 const LOOPBACK = /^(?:127\.\d+\.\d+\.\d+|localhost|\[::1\])$/; // key-gate: loopback-rule names loopback hosts to allow plain http only to them, in tests
 
 /** Archil's control plane, for the account's calls (archil-disks.ts) as for a disk's. */

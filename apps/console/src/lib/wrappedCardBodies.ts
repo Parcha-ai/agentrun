@@ -8,10 +8,11 @@ import { compact, dollars } from "@/lib/format";
 import type { Wrapped } from "@/lib/v2";
 import type { CardWait, WrappedCard } from "@/lib/wrappedCards";
 
-/** The waits met in this build: the card renderer. The cache analyzer, the leak scan's counts-only mode and the launch
- *  benchmark have not landed, and no card's derived rules can be computed from the year alone (the agent type's need
- *  subagent shares and parallelism; the laptop's need last month's cost and an electricity estimate). */
-export const SATISFIED_WAITS: ReadonlySet<CardWait> = new Set<CardWait>(["race-card-renderer"]);
+/** The waits met in this build: the card renderer, the cache analyzer (the year's `cache`, from the runs imported here)
+ *  and the import's key count (the year's `secrets`). `opt-in` is met only on the page, when the person turns the card
+ *  on. The launch benchmark has not landed, and no card's derived rules can be computed from the year alone (the agent
+ *  type's need subagent shares and parallelism; the laptop's need last month's cost and an electricity estimate). */
+export const SATISFIED_WAITS: ReadonlySet<CardWait> = new Set<CardWait>(["race-card-renderer", "cache-analyzer", "secret-count"]);
 
 /** A card's body from the year, or null to draw nothing. Reads only the fields its card's `reads` names. */
 export type BodyOf = (data: Wrapped) => CardBody | null;
@@ -152,8 +153,63 @@ const summary: BodyOf = (data) => {
   };
 };
 
-/** The cards with a body, by id. The others (cache, laptop, leak, type, launch) need what the year does not hold. */
-export const CARD_BODIES: Readonly<Record<string, BodyOf>> = { cover, split, hours, summary };
+type YearCache = NonNullable<Wrapped["cache"]>;
+type CacheCause = keyof YearCache["breaks"];
+
+/** Each cause of a break as a column's label (short enough to sit under its column), in the order the analyzer tries them:
+ *  a model switch, an idle gap past the cache's life, a compaction, an edit of the history, a sidechain, none recorded. */
+const CAUSE_NAMES: Readonly<Record<CacheCause, string>> = { model: "Model", idle: "Idle", compaction: "Compact", edited: "Edited", sidechain: "Sidechain", unknown: "Unknown" };
+
+/** The grade a hit rate earns: the least rate for each, three points apart, set so the prototype's example (88%) is a
+ *  B+. Under the last step, F. */
+export const CACHE_GRADES: readonly (readonly [number, string])[] = [[0.97, "A+"], [0.94, "A"], [0.91, "A-"], [0.88, "B+"], [0.85, "B"], [0.82, "B-"], [0.78, "C+"], [0.74, "C"], [0.7, "C-"], [0.6, "D"]];
+const gradeOf = (rate: number) => CACHE_GRADES.find(([least]) => rate >= least)?.[1] ?? "F";
+
+/** The year's cache: its grade, hit rate, what its breaks cost above a cache read (unknown when none was priced) and
+ *  why they happened. Only the runs imported here are in it, and the card says so; none drawn with none analyzed. */
+const cache: BodyOf = (data) => {
+  const year = data.cache;
+  if (!year || year.hit_rate === null) return null;
+  const causes = Object.keys(CAUSE_NAMES) as CacheCause[];
+  const breaks = causes.reduce((n, cause) => n + year.breaks[cause], 0);
+  const lost = causes.reduce((n, cause) => n + year.extra_cost_usd[cause], 0);
+  // Every cause a column, in the analyzer's order: a rows chart beside the grade fits two bars, and the causes are six.
+  const bars = causes.map((cause) => ({ label: CAUSE_NAMES[cause], value: year.breaks[cause], text: compact(year.breaks[cause]) }));
+  return {
+    eyebrow: eyebrow(data),
+    title: "How your cache held",
+    figure: { value: gradeOf(year.hit_rate), unit: "cache grade" },
+    rows: [
+      { label: "Hit rate", value: percent(Math.round(year.hit_rate * 10_000), 10_000) },
+      { label: "Lost to breaks", value: breaks === 0 ? "$0.00" : year.unpriced_breaks >= breaks ? "Unknown" : usd(Math.round(lost * 100) / 100) },
+      { label: "Breaks", value: count(breaks) },
+    ],
+    ...(breaks > 0 ? { charts: [{ label: "Breaks by cause", kind: "columns" as const, bars }] } : {}),
+    // The unpriced breaks in the foot line: a fourth row does not fit beside the grade and the chart.
+    footnote: `From the ${plural(year.runs, "run", "runs")} imported here${year.unpriced_breaks > 0 && year.unpriced_breaks < breaks ? `; ${plural(year.unpriced_breaks, "break", "breaks")} with no known price ${year.unpriced_breaks === 1 ? "is" : "are"} not in the loss` : ""}.`,
+  };
+};
+
+/** The year's leak receipt: the keys and tokens the import cut out of the sessions it counted, how many sessions held
+ *  one and how many were counted. Counts alone, never a key; none drawn with no run counted. Off the page until the person
+ *  turns it on (its `opt-in` wait). */
+const leak: BodyOf = (data) => {
+  const year = data.secrets;
+  if (!year) return null;
+  return {
+    eyebrow: eyebrow(data),
+    title: "Your leak receipt",
+    figure: { value: count(year.removed), unit: year.removed === 1 ? "key or token cut" : "keys and tokens cut" },
+    rows: [
+      { label: "Sessions with a key", value: count(year.runs_holding) },
+      { label: "Sessions checked", value: count(year.runs) },
+    ],
+    footnote: `From the ${plural(year.runs, "run", "runs")} counted on import; counts only, no key shown.`,
+  };
+};
+
+/** The cards with a body, by id. The others (laptop, type, launch) need what the year does not hold. */
+export const CARD_BODIES: Readonly<Record<string, BodyOf>> = { cover, split, hours, cache, leak, summary };
 
 /** `card`'s body from `data`: none for an empty year (no sessions or no requests) or a card with no body in `bodies`. */
 export function toBody(card: WrappedCard, data: Wrapped, bodies: Readonly<Record<string, BodyOf>> = CARD_BODIES): CardBody | null {

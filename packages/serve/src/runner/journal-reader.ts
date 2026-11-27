@@ -75,6 +75,23 @@ export async function journalEntries(journal: JournalReads, context: Context): P
   return entries;
 }
 
+/** A page of the newest-first read (newestRootEntryOf). */
+const TAIL_PAGE = 50;
+
+/** The newest entry of the run's root (its first conversation, as runner.ts reads it) whose kind is one of `kinds`, else
+ *  undefined (none, or no conversation yet). Read newest first, a page at a time, stopping at the page that holds it:
+ *  what it reads grows with the entries after that one, never with the run's whole journal. */
+export async function newestRootEntryOf(journal: JournalReads, kinds: readonly string[], context: Context): Promise<EntryRecord | undefined> {
+  const [root] = (await journal.scanConversations({ order: "ascending" } as never, 1, undefined, context)).items;
+  if (root === undefined) return undefined;
+  for (let cursor: unknown = undefined; ; ) {
+    const page = await journal.scanEntries({ conversationId: root.id as ConversationId, order: "descending" }, TAIL_PAGE, cursor as never, context);
+    const found = page.items.find((entry) => kinds.includes(entry.kind));
+    if (found !== undefined || page.next === undefined) return found;
+    cursor = page.next;
+  }
+}
+
 const entryNumber = (entry: EntryRecord): number => Number(entry.id);
 const dataOf = <T>(entry: EntryRecord): T => entry.data as unknown as T;
 const asRecords = (from: readonly EntryRecord[] | JournalRecords): JournalRecords => (Array.isArray(from) ? { entries: from, tasks: [] } : (from as JournalRecords));

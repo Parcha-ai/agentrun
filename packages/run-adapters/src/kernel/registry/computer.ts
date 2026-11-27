@@ -61,8 +61,8 @@ export const unsavedScreenshot = <T extends { readonly description: string; read
   ({ ...def, description: SCREENSHOT_ALONE, parameters: COMPUTER_TOOL_SCHEMAS.computer_screenshot });
 
 /** `given` as a path in the run's folder a screenshot is saved to (relative, inside it, ending .png), normalized; any
- *  other is refused in words. */
-function savePathOf(given: unknown): string {
+ *  other is refused in words. Exported so a host's gate holds a save_as as it is saved, not by a reading of its own. */
+export function savePathOf(given: unknown): string {
   if (typeof given !== "string" || given === "" || posix.isAbsolute(given) || given.includes("\\")) throw new Error(`save_as is a path relative to the run's folder (shots/home.png): not ${JSON.stringify(given)}`);
   const path = posix.normalize(given);
   if (path === ".." || path.startsWith("../")) throw new Error(`save_as must stay inside the run's folder: ${JSON.stringify(given)} leaves it`);
@@ -82,12 +82,14 @@ const OP_ARGS: Readonly<Record<string, string>> = Object.freeze({
   "files.stat": "{path}",
 });
 
-/** What every offer of a computer's ops says of its input: leaving bash out does not keep a script from a terminal app. */
-export const INPUT_REACHES_SHELL = "Input ops on a computer with a terminal app can do what a shell does, whatever bash's setting.";
+/** What every offer of a computer's ops says of its screen: leaving bash, read or write out does not keep a script from
+ *  a terminal app, a file manager, or an app opened on a URL or a path; and where write is granted, an app opened on
+ *  neither runs with config the agent can write (an app reads its config from the user's home). */
+export const GUI_REACH = "Input ops on a computer with a terminal app or a GUI file manager, and apps.open with a URL or a path, can do what a shell or the file ops do, whatever bash's, read's or write's setting; where write is granted, apps.open can do what a shell does even with no URL or path, since an app reads its config from the user's home.";
 
 /** computer_op's words for the ops it offers. */
 const opWords = (ops: readonly string[]): string =>
-  `One of the computer's ops no other tool runs, as a script's \`computer\` calls it: ${ops.map((op) => (OP_ARGS[op] ? `${op} ${OP_ARGS[op]}` : op)).join(", ")}. An op this computer does not offer is refused. ${INPUT_REACHES_SHELL}`;
+  `One of the computer's ops no other tool runs, as a script's \`computer\` calls it: ${ops.map((op) => (OP_ARGS[op] ? `${op} ${OP_ARGS[op]}` : op)).join(", ")}. An op this computer does not offer is refused. ${GUI_REACH}`;
 
 const OP = opWords(Object.keys(COMPUTER_OPS));
 

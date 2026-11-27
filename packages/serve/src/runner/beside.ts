@@ -2,7 +2,7 @@
 // the template eval's in-process server (template-eval.ts), which would otherwise leave every run it starts queued.
 import { maxRunsOf } from "../host.js";
 import { durationMs } from "../print.js";
-import { RUNNER_LOOPS, type RunnerEvent, runnerCloseBoundMs } from "./runner.js";
+import { RUNNER_LOOPS, RUNNER_RENEWAL_BOUND_MS, type RunnerEvent, runnerCloseBoundMs } from "./runner.js";
 
 /** How long a busy run may finish its turn when the server stops, unless --drain-timeout says (cli.ts). */
 export const DRAIN_TIMEOUT = "30s";
@@ -21,9 +21,13 @@ export function besideRunnerOptions(serve: { maxRuns?: number; drainTimeout?: st
 
 /** What the CLI's stop waits on (stop-signals.ts StopDeps.stopping) with a runner beside the server: the server's runs
  *  and the runs the runner holds, and the longer of the server's bound and the runner's whole close (its drain, then
- *  the stop of the loops left: runnerCloseBoundMs), so the stop's deadline never cuts a run's end and release short. */
+ *  the stop of the loops left, or a release's window from the close's start: runnerCloseBoundMs), so the stop's deadline
+ *  never cuts a run's end and release short. The runner's ChatGPT renewals stop RUNNER_RENEWALS_SERVED_MS into the close
+ *  at the latest, and drain for the window the close hands from then (stopRenewals for renewalDrainFor: at most
+ *  RENEWAL_DRAIN_MS), so the bound is also at least RUNNER_RENEWAL_BOUND_MS: with a short drain, a renewal may outlast
+ *  the close. */
 export function besideStopping(server: { runs: number; boundMs: number }, held: number, drainMs: number): { runs: number; boundMs: number } {
-  return { runs: server.runs + held, boundMs: Math.max(server.boundMs, runnerCloseBoundMs(drainMs)) };
+  return { runs: server.runs + held, boundMs: Math.max(server.boundMs, runnerCloseBoundMs(drainMs), RUNNER_RENEWAL_BOUND_MS) };
 }
 
 /** A runner beside the server on the same data directory (the CLI start's server-and-runner, and the `runner` subcommand):
@@ -150,7 +154,26 @@ export async function runnerBeside(dataDir: string, { loops, loopsTold, drainMs,
   // Its gauge (runner-metrics.ts): the runs it holds of its loops, and the process's memory (the server's with it), every
   // minute until its close.
   const gauge = startRunnerGauge({ runner: name, held: () => runner.held().length, slots: held ?? RUNNER_LOOPS, write: (line) => (onLine ?? console.log)(line) });
-  return { runner, close: async () => { gauge.stop(); await Promise.all([swept?.close(), runner.close()]); paired?.stop(); await claimInstallsStopped(); await store.close(); seal.release(); } };
+  // Its close stops the ChatGPT renewals its claims' readers make on its store once the close tells it
+  // (RUNNER_RENEWALS_SERVED_MS in, or the drain's end if sooner: a run the drain lets finish may need one), and drains
+  // the ones out, within the window the close hands, before the store closes: a refresh token OpenAI spent leaves its
+  // new pair saved (chatgpt-plan.ts stopRenewals, renewalDrainFor).
+  const { closeStoreAfter, renewalDrainFor, stopRenewals } = await import("../chatgpt-plan.js");
+  return {
+    runner,
+    close: async () => {
+      gauge.stop();
+      let renewalsStopped: Promise<void> | undefined;
+      const stopRenewing = (by?: number) => (renewalsStopped ??= stopRenewals(store, renewalDrainFor(by)));
+      // The renewals' drain and the store's close run whatever the steps before them throw (closeStoreAfter).
+      await closeStoreAfter(async () => {
+        await Promise.all([swept?.close(), runner.close(stopRenewing)]);
+        paired?.stop();
+        await claimInstallsStopped();
+      }, () => stopRenewing(), store);
+      seal.release();
+    },
+  };
 }
 
 /** The lines runner `name` beside a server says for `event`, in order, each with whether it goes to stderr (`error`): its

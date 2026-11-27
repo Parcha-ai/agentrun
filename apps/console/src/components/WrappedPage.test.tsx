@@ -16,7 +16,7 @@ afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.in
 
 const YEAR: Wrapped = {
   year: 2025, sessions: 12, turns: 40, requests: 300, tokens: { input: 1_000_000, output: 200_000, cache_read: 5_000_000, cache_write: 100_000 },
-  cost_usd: 42.5, unpriced_requests: 3, unread_files: 0,
+  cost_usd: 42.5, unpriced_requests: 3, unread_files: 0, cache: null, secrets: null,
   days: [{ day: "2025-03-02", requests: 100, tokens: 4_000_000 }, { day: "2025-03-03", requests: 200, tokens: 2_300_000 }],
   hours: Array.from({ length: 24 }, (_, h) => (h === 14 ? 120 : h === 9 ? 80 : 4)), weekdays: [0, 200, 100, 0, 0, 0, 0], active_ms: 7_200_000,
   harnesses: [{ harness: "claude-agent", sessions: 10, requests: 250, tokens: 6_000_000, sources: ["claude-code"] }, { harness: "pi", sessions: 2, requests: 50, tokens: 300_000, sources: ["gemini", "pi"] }],
@@ -127,7 +127,9 @@ describe("WrappedPage", () => {
     for (const c of WRAPPED_CARDS) expect(c.waits).toContain("race-card-renderer");
     for (const id of ["laptop", "type"]) expect(by[id]!.waits).toContain("derived");
     expect(WRAPPED_CARDS.filter((c) => c.waits.includes("derived")).map((c) => c.id)).toEqual(["laptop", "type"]);
-    expect(by.leak!.waits).toEqual(expect.arrayContaining(["race-card-renderer", "scrubber-count-mode"]));
+    expect(by.leak!.waits).toEqual(expect.arrayContaining(["race-card-renderer", "secret-count", "opt-in"]));
+    expect(WRAPPED_CARDS.filter((c) => c.waits.includes("opt-in")).map((c) => c.id)).toEqual(["leak"]);
+    expect(by.leak!.reads).toEqual(["year", "secrets"]);
     expect(by.launch!.waits).toEqual(expect.arrayContaining(["race-card-renderer", "benchmark"]));
     expect(by.cover!.reads).toEqual(expect.arrayContaining(["tokens", "days"]));
     expect(by.hours!.reads).toEqual(expect.arrayContaining(["hours", "weekdays", "active_ms"]));
@@ -140,6 +142,36 @@ describe("WrappedPage", () => {
     const alts = [...document.querySelectorAll("[data-cards] img")].map((img) => img.getAttribute("alt") ?? "");
     expect(alts.map((alt) => alt.split(". ")[1])).toEqual(["Your 2025 in agents", "Where your tokens went", "When your agents work", "2025 in agents"]);
     for (const img of document.querySelectorAll("[data-cards] img")) expect(img.getAttribute("src")?.startsWith("data:image/svg+xml;")).toBe(true);
+  });
+
+  it("keeps the leak receipt off until the user turns it on, and offers it only for a year whose keys were counted", async () => {
+    await mount(async () => YEAR, vi.fn(), 2025);
+    expect(document.querySelector("[data-leak-opt-in]"), "no count, no offer").toBeNull();
+    act(() => root?.unmount());
+    document.body.innerHTML = "";
+    await mount(async () => ({ ...YEAR, secrets: { runs: 9, runs_holding: 2, removed: 3 } }), vi.fn(), 2025);
+    const box = document.querySelector<HTMLInputElement>("[data-leak-opt-in] input[type=checkbox]")!;
+    expect(box.checked).toBe(false);
+    expect(document.querySelector("[data-leak-opt-in]")?.textContent).toContain("Show the leak receipt");
+    const titles = () => [...document.querySelectorAll("[data-cards] img")].map((img) => (img.getAttribute("alt") ?? "").split(". ")[1]);
+    expect(titles()).not.toContain("Your leak receipt");
+    await act(async () => { box.click(); });
+    expect(titles()).toEqual(["Your 2025 in agents", "Where your tokens went", "When your agents work", "Your leak receipt", "2025 in agents"]);
+    await act(async () => { box.click(); });
+    expect(titles()).not.toContain("Your leak receipt");
+  });
+
+  it("asks again for the leak receipt in each year: turned on for one year, it is off when the page moves to another", async () => {
+    const counted = (year: number) => ({ ...YEAR, year, secrets: { runs: 9, runs_holding: 2, removed: 3 } });
+    const { v2, go } = await mount(async () => counted(2025), vi.fn(), 2025);
+    (v2.wrapped as ReturnType<typeof vi.fn>).mockImplementation(async (year: number) => counted(year));
+    await act(async () => { document.querySelector<HTMLInputElement>("[data-leak-opt-in] input[type=checkbox]")!.click(); });
+    const titles = () => [...document.querySelectorAll("[data-cards] img")].map((img) => (img.getAttribute("alt") ?? "").split(". ")[1]);
+    expect(titles()).toContain("Your leak receipt");
+    await act(async () => { root!.render(createElement(WrappedPage, { v2, year: 2024, go })); });
+    expect(document.body.textContent).toContain("Wrapped 2024");
+    expect(document.querySelector<HTMLInputElement>("[data-leak-opt-in] input[type=checkbox]")?.checked).toBe(false);
+    expect(titles()).not.toContain("Your leak receipt");
   });
 
   it("shows no cards section, and no empty box, when the renderer draws none or the year has no sessions", async () => {
@@ -155,10 +187,15 @@ describe("WrappedPage", () => {
   it("calls an injected renderer for each of the nine cards, in order, with the body, and shows what it returns", async () => {
     const seen: string[] = [];
     const bodies: Wrapped[] = [];
-    const cards: CardRenderer = (card, data) => { seen.push(card.id); bodies.push(data); return card.id === "cover" || card.id === "launch" ? createElement("p", { key: card.id, "data-fake": card.id }, `fake ${card.id}`) : null; };
+    const optIns: boolean[] = [];
+    const cards: CardRenderer = (card, data, optIn) => { seen.push(card.id); bodies.push(data); optIns.push(optIn); return card.id === "cover" || card.id === "launch" ? createElement("p", { key: card.id, "data-fake": card.id }, `fake ${card.id}`) : null; };
     await mount(async () => YEAR, vi.fn(), 2025, cards);
-    expect(seen).toEqual(["cover", "split", "hours", "cache", "laptop", "leak", "type", "summary", "launch"]);
+    // Each render asks for the nine, in order (React may render the page more than once; the count is not the contract).
+    const nine = ["cover", "split", "hours", "cache", "laptop", "leak", "type", "summary", "launch"];
+    expect(seen.length > 0 && seen.length % nine.length === 0, String(seen.length)).toBe(true);
+    for (let at = 0; at < seen.length; at += nine.length) expect(seen.slice(at, at + nine.length)).toEqual(nine);
     expect(bodies.every((b) => b.year === 2025 && b.requests === 300)).toBe(true);
+    expect(optIns.every((on) => on === false), "the opt-in cards off by default").toBe(true);
     expect([...document.querySelectorAll("[data-cards] [data-fake]")].map((e) => e.textContent)).toEqual(["fake cover", "fake launch"]);
   });
 

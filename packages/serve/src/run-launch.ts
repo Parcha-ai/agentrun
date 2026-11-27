@@ -71,8 +71,12 @@ export interface RunLaunch {
    *  workflow binding); `model`, the model an SDK run's compile turn is asked on (its agent's own); `seedFailed`, why it
    *  starts with nothing learned when it does (SeedFailed); `use`, a run started with `learning: "use"` (learning.ts
    *  RUN_LEARNING_USE): it starts from all of the above and keeps nothing; `seededAt`, when its seed was read (learning.ts
-   *  Seed.at), which the agent's reset watermark is read against. Absent when the run does not learn. */
-  readonly learning?: { readonly seed: string | null; readonly section: string; readonly workflows?: readonly string[]; readonly noWorkflows?: true; readonly model?: string; readonly seedFailed?: SeedFailed; readonly use?: true; readonly seededAt?: number };
+   *  Seed.at), which the agent's reset watermark is read against; `after`, the agent's runs whose learning round was open
+   *  when the seed was read (runs-over-store.ts openRoundsOf): its claim waits for them, bounded, then reads the seed again
+   *  (runner/learning-reseed.ts), which writes the start it read without `after` and with `waited`: `ended`, every one of them
+   *  ended (or left its round: queued, parked) before it read; `timed_out`, its bound ran out first and it read main as it
+   *  was then. Absent when the run does not learn. */
+  readonly learning?: { readonly seed: string | null; readonly section: string; readonly workflows?: readonly string[]; readonly noWorkflows?: true; readonly model?: string; readonly seedFailed?: SeedFailed; readonly use?: true; readonly seededAt?: number; readonly after?: readonly string[]; readonly waited?: SeedWaited };
   /** `false`: the run never starts on a learned workflow, even one that fits its input (RunCreate `workflow_first`,
    *  runner/workflow-first.ts); its agent takes it from its first turn. Absent: a fitting one serves first. */
   readonly workflowFirst?: false;
@@ -131,11 +135,16 @@ export function sourceProjectOf(value: unknown): SourceProjectLaunch | undefined
   return value as unknown as SourceProjectLaunch;
 }
 
-/** What a replay run replays: the graded run, and the learned workflow at the digest it decides. */
+/** What a replay run replays: the graded run, and the learned workflow at the digest it decides. `paidBy`: a replay
+ *  that spends on run `paidBy`'s own model key (a keyed check, runner/promotion.ts), whose learning its cost is
+ *  (learn/ledger.ts record), never its revision's. `deadlineAt` (ms): a learning child's deadline, its start +
+ *  learning-work.ts LEARNING_CHILD_MS; the runner holding it cancels it there (runner.ts). */
 export interface Replay {
   readonly of: string;
   readonly workflow: string;
   readonly digest: string;
+  readonly paidBy?: string;
+  readonly deadlineAt?: number;
 }
 
 /** The disk a launch record names, and whose it is. */
@@ -149,8 +158,14 @@ const readDisk = (value: unknown): LaunchDisk | undefined =>
   isObject(value) && typeof value.disk_id === "string" && (value.kind === "launch" || value.kind === "agent") ? { diskId: value.disk_id, kind: value.kind } : undefined;
 
 /** The replay a launch body names, as read back, or undefined. */
-const readReplay = (value: unknown): Replay | undefined =>
-  isObject(value) && typeof value.of === "string" && typeof value.workflow === "string" && typeof value.digest === "string" ? { of: value.of, workflow: value.workflow, digest: value.digest } : undefined;
+const readReplay = (value: unknown): Replay | undefined => {
+  if (!(isObject(value) && typeof value.of === "string" && typeof value.workflow === "string" && typeof value.digest === "string")) return undefined;
+  const deadline = typeof value.deadline_at === "string" ? Date.parse(value.deadline_at) : Number.NaN;
+  return { of: value.of, workflow: value.workflow, digest: value.digest, ...(typeof value.paid_by === "string" ? { paidBy: value.paid_by } : {}), ...(Number.isFinite(deadline) ? { deadlineAt: deadline } : {}) };
+};
+
+/** A replay or an audit as a launch body keeps it. */
+const replayBody = (replay: Replay): Record<string, string> => ({ of: replay.of, workflow: replay.workflow, digest: replay.digest, ...(replay.paidBy ? { paid_by: replay.paidBy } : {}), ...(replay.deadlineAt !== undefined ? { deadline_at: new Date(replay.deadlineAt).toISOString() } : {}) });
 
 /** The trigger a launch body names, as read back: `{ id, firing_key }` and its firing's `attrs` (each a string) when it
  *  kept them, or null (triggerOf of the old serve.json). */
@@ -210,10 +225,10 @@ export function launchBody(launch: RunLaunch): Json {
     ...(launch.files?.length ? { files: launch.files } : {}),
     ...(launch.filesPlaced ? { files_placed: true } : {}),
     ...(launch.sourceProject ? { source_project: launch.sourceProject } : {}),
-    ...(launch.learning ? { learning: { seed: launch.learning.seed, section: launch.learning.section, ...(launch.learning.workflows?.length ? { workflows: [...launch.learning.workflows] } : {}), ...(launch.learning.noWorkflows ? { noWorkflows: true } : {}), ...(launch.learning.model ? { model: launch.learning.model } : {}), ...(launch.learning.seedFailed ? { seedFailed: launch.learning.seedFailed } : {}), ...(launch.learning.use ? { use: true } : {}), ...(launch.learning.seededAt !== undefined ? { seededAt: launch.learning.seededAt } : {}) } } : {}),
+    ...(launch.learning ? { learning: { seed: launch.learning.seed, section: launch.learning.section, ...(launch.learning.workflows?.length ? { workflows: [...launch.learning.workflows] } : {}), ...(launch.learning.noWorkflows ? { noWorkflows: true } : {}), ...(launch.learning.model ? { model: launch.learning.model } : {}), ...(launch.learning.seedFailed ? { seedFailed: launch.learning.seedFailed } : {}), ...(launch.learning.use ? { use: true } : {}), ...(launch.learning.seededAt !== undefined ? { seededAt: launch.learning.seededAt } : {}), ...(launch.learning.after?.length ? { after: [...launch.learning.after] } : {}), ...(launch.learning.waited ? { waited: launch.learning.waited } : {}) } } : {}),
     ...(launch.workflowFirst === false ? { workflow_first: false } : {}),
-    ...(launch.replay ? { replay: { of: launch.replay.of, workflow: launch.replay.workflow, digest: launch.replay.digest } } : {}),
-    ...(launch.audit ? { audit: { of: launch.audit.of, workflow: launch.audit.workflow, digest: launch.audit.digest } } : {}),
+    ...(launch.replay ? { replay: replayBody(launch.replay) } : {}),
+    ...(launch.audit ? { audit: replayBody({ of: launch.audit.of, workflow: launch.audit.workflow, digest: launch.audit.digest, ...(launch.audit.deadlineAt !== undefined ? { deadlineAt: launch.audit.deadlineAt } : {}) }) } : {}),
     ...(launch.trigger ? { trigger: launch.trigger } : {}),
     ...(launch.inputOrigin ? { input_origin: launch.inputOrigin } : {}),
     ...(launch.followUp ? { follow_up: true } : {}),
@@ -230,7 +245,8 @@ function readLearning(value: unknown): NonNullable<RunLaunch["learning"]> | unde
   const seed = typeof value.seed === "string" ? value.seed : null;
   const section = typeof value.section === "string" ? value.section : "";
   const workflows = Array.isArray(value.workflows) ? value.workflows.filter((name): name is string => typeof name === "string") : [];
-  return { seed, section, ...(workflows.length ? { workflows } : {}), ...(value.noWorkflows === true ? { noWorkflows: true as const } : {}), ...(typeof value.model === "string" && value.model !== "" ? { model: value.model } : {}), ...(typeof value.seedFailed === "string" && SEED_FAILURES.includes(value.seedFailed) ? { seedFailed: value.seedFailed as SeedFailed } : {}), ...(value.use === true ? { use: true as const } : {}), ...(typeof value.seededAt === "number" && Number.isFinite(value.seededAt) ? { seededAt: value.seededAt } : {}) };
+  const after = Array.isArray(value.after) ? value.after.filter((id): id is string => typeof id === "string" && id !== "") : [];
+  return { seed, section, ...(workflows.length ? { workflows } : {}), ...(value.noWorkflows === true ? { noWorkflows: true as const } : {}), ...(typeof value.model === "string" && value.model !== "" ? { model: value.model } : {}), ...(typeof value.seedFailed === "string" && SEED_FAILURES.includes(value.seedFailed) ? { seedFailed: value.seedFailed as SeedFailed } : {}), ...(value.use === true ? { use: true as const } : {}), ...(typeof value.seededAt === "number" && Number.isFinite(value.seededAt) ? { seededAt: value.seededAt } : {}), ...(after.length ? { after } : {}), ...(value.waited === "ended" || value.waited === "timed_out" ? { waited: value.waited } : {}) };
 }
 
 /** The launch a runner runs (runner/dispatch.ts, run-child-host.ts): on a disk the launch names as its own (kind
@@ -263,7 +279,7 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
   const model = readModel(stored.model);
   const boxAllow = readBoxAllow(stored.box_allow);
   const archilDisk = readDisk(stored.archil_disk);
-  const refused = isObject(stored.hold) ? readRefusal(stored.hold.refused) : undefined;
+  const hold = readHold(stored.hold);
   return {
     input: stored.input,
     ...(isObject(stored.sdk) && sdkBindingOf(stored.sdk) && typeof stored.sdk.instructions === "string" ? {sdk: stored.sdk as unknown as NonNullable<RunLaunch["sdk"]>} : {}),
@@ -292,16 +308,29 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
     ...(inputOrigin ? { inputOrigin } : {}),
     ...(stored.follow_up === true ? { followUp: true } : {}),
     ...(archilDisk ? { archilDisk } : {}),
-    ...(isObject(stored.hold) ? { hold: { minutes: typeof stored.hold.minutes === "number" ? stored.hold.minutes : HOLD_MINUTES, ...(refused ? { refused } : {}) } } : {}),
+    ...(hold ? { hold } : {}),
   };
 }
+
+/** A launch's hold as it keeps it, else undefined (none kept). A minutes that isn't a number waits HOLD_MINUTES. A hold
+ *  kept that is not an object (a corrupt row, another version's) is a hold whose model was refused, in words that name
+ *  the field and never what it holds: read as none, the run would start and its claim open its model's keys. */
+function readHold(value: unknown): RunLaunch["hold"] {
+  if (value === undefined) return undefined;
+  if (!isObject(value)) return { minutes: HOLD_MINUTES, refused: unreadable("hold") };
+  const refused = readRefusal(value.refused);
+  return { minutes: typeof value.minutes === "number" ? value.minutes : HOLD_MINUTES, ...(refused ? { refused } : {}) };
+}
+
+/** The refusal of a held run whose launch's `field` can't be read. */
+const unreadable = (field: string): HeldRefusal => ({ message: `This run's model was kept from running at its create, and its launch's ${field} can't be read: it holds its computer only. Start a new run to run its agent.`, fields: [], details: {} });
 
 /** A held run's model refusal as its launch keeps it, else undefined (none kept). One kept that can't be read (a corrupt
  *  row, another version's) is a refusal still, in words that name the field and never what it holds: read as none, the
  *  run would start and its claim open the keys its model was refused for. */
 function readRefusal(value: unknown): HeldRefusal | undefined {
   if (value === undefined) return undefined;
-  if (!isObject(value) || typeof value.message !== "string" || !Array.isArray(value.fields) || !isObject(value.details)) return { message: "This run's model was kept from running at its create, and its launch's hold.refused can't be read: it holds its computer only. Start a new run to run its agent.", fields: [], details: {} };
+  if (!isObject(value) || typeof value.message !== "string" || !Array.isArray(value.fields) || !isObject(value.details)) return unreadable("hold.refused");
   return { message: value.message, fields: value.fields as InputIssue[], details: value.details };
 }
 
@@ -317,6 +346,8 @@ export const learningStartOfStored = (stored: unknown): RunLaunch["learning"] =>
  *  STOPPED.notCopied), or its launch names a disk of its own, whose learning the server does not read
  *  (`other_disk`, STOPPED.otherDisk): a run on a named disk learns nothing (learn/learning-of.ts). */
 export type SeedFailed = "unreadable" | "not_copied" | "other_disk";
+/** How a claim's wait on its agent's open rounds ended before it read the run's seed again (runner/learning-reseed.ts). */
+export type SeedWaited = "ended" | "timed_out";
 const SEED_FAILURES: readonly string[] = ["unreadable", "not_copied", "other_disk"];
 
 /** A learning start with no seed (no commit of main, runs-over-store.ts learningStartFor): the run learns nothing, is

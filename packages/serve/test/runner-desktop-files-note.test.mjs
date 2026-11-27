@@ -309,23 +309,34 @@ test("a CLI harness (opencode) not given write, or given write set to ask where 
 });
 
 // What a claim's spec offers a script on its desktop (computer_op's op list and the script's `computer`) leaves out the
-// file ops its gate refuses for want of a tool, on the pi spec and a CLI harness's alike. The declarations those ops
-// leave out are computer-op-grants.test.mjs's; --faux's desktop has no files group to declare.
-test("the pi spec and a CLI harness's (opencode) offer a script on the desktop only the file ops the agent is given: computer_op's op list and the script's computer leave the others out", { timeout: 120_000 }, async (t) => {
+// ops its gate refuses whatever their arguments (not given, denied, or an ask no one can approve), on the pi spec and a
+// CLI harness's alike. The declarations those ops leave out are computer-op-grants.test.mjs's; --faux's desktop has no
+// files group to declare.
+test("the pi spec and a CLI harness's (opencode) offer a script on the desktop only the ops its gate lets through: computer_op's op list and the script's computer leave out one not given, denied, or asked where no one can approve", { timeout: 180_000 }, async (t) => {
   const READS = ["files.read", "files.list", "files.stat"];
-  for (const [tools, notGiven] of [[["read", "write"], []], [["write"], READS], [["read"], ["files.write"]], [undefined, [...READS, "files.write"]]]) {
+  const SHELL = ["shell.run", "processes.start"];
+  const allowed = { desktop: { permission: "allow" } };
+  for (const [body, approvers, refused] of [
+    [{ tools: ["read", "write"] }, undefined, []],
+    [{ tools: ["write"] }, undefined, READS],
+    [{ tools: ["read"] }, undefined, ["files.write"]],
+    [{}, undefined, [...READS, "files.write"]],
+    [{ tools: ["read", "write"], toolSettings: { ...allowed, read: { permission: "deny" } } }, undefined, READS],
+    [{ tools: ["read", "write"], toolSettings: { ...allowed, write: { permission: "ask" } } }, false, ["files.write"]],
+    [{ tools: ["read", "write"], toolSettings: { ...allowed, bash: { permission: "deny" } } }, undefined, SHELL],
+  ]) {
     for (const harness of ["pi", "opencode"]) {
-      const what = `${harness}, tools ${JSON.stringify(tools)}`;
+      const what = `${harness}, ${JSON.stringify(body)}, approvers ${approvers}`;
       const cli = harness === "opencode" ? { env: (await opencodeGateway(t)).env } : undefined;
-      const one = await desktopRun(t, { script: [{ say: "done" }], body: { ...(harness === "opencode" ? { harness } : {}), ...(tools ? { tools } : {}) }, ...(cli ? { cli } : {}) });
+      const one = await desktopRun(t, { script: [{ say: "done" }], body: { ...(harness === "opencode" ? { harness } : {}), ...body }, approvers, ...(cli ? { cli } : {}) });
       const row = await rests(one, ["ended"]);
       assert.equal(row.state, "ended", `${what}: ${JSON.stringify(row)}`);
       const [spec] = one.specs;
       const opTool = spec.session.tools.find((tool) => tool.name === "computer_op");
       assert.ok(opTool, `${what}: computer_op is bound: ${JSON.stringify(spec.session.tools.map((tool) => tool.name))}`);
       const offered = opTool.inputSchema.properties.op.enum;
-      for (const op of [...READS, "files.write"]) assert.equal(offered.includes(op), !notGiven.includes(op), `${what}: ${op} in ${JSON.stringify(offered)}`);
-      assert.deepEqual([...(spec.scriptComputer.opsNotGiven ?? [])].sort(), [...notGiven].sort(), `${what}: the script's computer leaves them out`);
+      for (const op of [...READS, "files.write", ...SHELL]) assert.equal(offered.includes(op), !refused.includes(op), `${what}: ${op} in ${JSON.stringify(offered)}`);
+      assert.deepEqual([...(spec.scriptComputer.opsRefused ?? [])].sort(), [...refused].sort(), `${what}: the script's computer leaves them out`);
     }
   }
 });

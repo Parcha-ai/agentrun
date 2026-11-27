@@ -229,8 +229,9 @@ export interface Machine {
 	createdAt?: Date;
 	/** The vendor's words for a machine that is gone because it failed: a create stops in them. */
 	why?: string;
-	/** What the vendor's answer says the machine was given (its CPUs, memory, disk, GPUs), where it says it: a create
-	 *  returns these as its computer's resources. Absent where the answer says none. */
+	/** What the vendor's answer says the machine was given (its CPUs, memory, disk, GPUs), where it says it, or the
+	 *  limits its create set where the vendor reads none back and bills by use up to them (ComputerResources): a create
+	 *  returns these as its computer's resources. Absent where neither says any. */
 	resources?: ComputerResources;
 }
 
@@ -285,9 +286,14 @@ export interface HostFacts {
 	 * list by, the map in parts of at most valueBytes each), unpacks those get and list answer, and asks list for that
 	 * name alone; the host stores and answers them as they are. count and bytes are then the packed labels'. unpacked:
 	 * the host's machines may also carry their labels as given (made before it packed): one with no packed map reads as
-	 * its stored labels, and a listing by name asks for the labels as given beside the packed name.
+	 * its stored labels, and a listing by name asks for the labels as given beside the packed name. named: the host's
+	 * machine names carry the run and epoch labels beside the adapter's name (Render's), so a create's sweeps for the
+	 * machine it made (the wait to be listed, the sweep after a failed create) ask for its run and epoch too where its
+	 * spec has both, and the host can look up the one whole name; the machines kept are still those whose get carries the
+	 * name's labels. Its first check and convergence ask by the name alone: they look for the request's machine whatever
+	 * run or epoch it was made with.
 	 */
-	labels?: { count?: number; bytes?: number; packed?: { valueBytes?: number; unpacked?: true } };
+	labels?: { count?: number; bytes?: number; packed?: { valueBytes?: number; unpacked?: true }; named?: true };
 	/**
 	 * Paths of the vendor's image that root runs or reads and whose permissions its template build sets wider than
 	 * root's: create makes each root's alone (owned by root, writable by no group or other user), and everything under a

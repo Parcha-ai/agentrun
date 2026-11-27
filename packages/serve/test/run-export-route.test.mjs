@@ -88,10 +88,11 @@ const mapped = {
   root: { node: "chain", steps: [{ node: "map", label: "each", itemsPath: "items", as: "answers", resultPath: "answer", maxConcurrency: 1, body: { node: "call", label: "answer", via: "tool", tool: "llm", args: { prompt: "Answer." }, out: "Llm", as: "answer", deadline_s: 60 } }] },
 };
 
-test("the API-only profile does not serve the export: its allowlist leaves it out, so it answers 404 there", () => {
+test("the API-only profile serves the export (a backend's share of its run, api-only.test.mjs); the share page stays the console's", () => {
   assert.ok(ROUTES.some((route) => route.name === "getRunExport" && route.method === "GET" && route.pattern.test("/runs/run_1/export")), "the route is in the table");
-  assert.ok(!API_ONLY_ROUTES.has("getRunExport"));
-  assert.equal(servedApiOnly(ROUTES, "GET", "/v2/runs/run_1/export"), false);
+  assert.ok(API_ONLY_ROUTES.has("getRunExport"));
+  assert.equal(servedApiOnly(ROUTES, "GET", "/v2/runs/run_1/export"), true);
+  assert.equal(servedApiOnly(ROUTES, "GET", "/share/run_1"), false);
 });
 
 test("GET /runs/{id}/export: an ended run's bundle, cut of every planted value; byte-identical again; restore; 409, 403, 404, 400 and a failed scrub's empty 500", { timeout: 240_000 }, async (t) => {

@@ -71,6 +71,7 @@ export function acpRecipeFor(recipe: Recipe, binary: string, release: RecipeArch
     ...(planModel ? { model: planModel } : {}),
     files: { ...recipe.files },
     state: [...recipe.state],
+    ...(recipe.mcpConfigs?.length ? { mcpConfigs: [...recipe.mcpConfigs] } : {}),
     declares: { ...recipe.declares },
     billing: recipe.model.billing === "proxy" ? { kind: "proxy" } : { kind: "plan", maxTurns: recipe.model.maxTurns, maxToolCalls: recipe.model.maxToolCalls },
     ...(recipe.allowFile ? { allowFile: { path: recipe.allowFile.path, form: recipe.allowFile.form as NonNullable<AcpRecipe["allowFile"]>["form"] } } : {}),

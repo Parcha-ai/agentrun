@@ -1,4 +1,5 @@
 import { SourceSyncPanel } from "@/components/SourceSync";
+import { agentKindWords } from "@/lib/workflowDoc";
 import { cliLearningOf, cliLearningLabel } from "@/lib/cliLearning";
 import { queryPlaygroundHref } from "@/lib/playgroundRoutes";
 import { useScrollQuiet } from "@/lib/useScrollQuiet";
@@ -222,6 +223,7 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
           </nav>
         ) : <strong className="min-w-0 truncate text-body font-semibold">{d.name}</strong>}
         <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-2">
+          {!editing && agent.archived_at && <UnarchiveButton agent={agent} v2={v2} onAgent={onAgent} />}
           {!editing && <Button size="sm" aria-label="Agent settings" onClick={() => go(agentHash(agent.agent_id, "settings"))}><Settings aria-hidden /> Settings</Button>}
           <div className="flex min-w-0 max-w-full shrink-0 flex-wrap items-center justify-end gap-2">
             <Button size="icon" aria-label="Refresh agent" onClick={() => { history.refresh(); refreshNative(); }} disabled={history.reading}><RefreshCw className={cn(history.reading && "animate-spin")} aria-hidden /></Button>
@@ -280,7 +282,7 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
           {!native && <section className="border bg-card p-4" aria-label="Agent configuration">
             <h2 className="mb-4 text-body font-semibold">Configuration</h2>
             <dl className="space-y-3 text-small">
-              <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Kind</dt><dd>{agent.kind}</dd></div>
+              <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Kind</dt><dd>{agentKindWords(agent)}</dd></div>
               <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Skills</dt><dd className="max-w-[75%] break-words text-right">{cli ? "Managed in your CLI" : sdk ? "Managed by your backend" : d.skills.join(", ") || "None configured"}</dd></div>
             </dl>
             {d.instructions && <details className="mt-4 text-small"><summary className="cursor-pointer">Instructions</summary><pre className="mt-3 whitespace-pre-wrap break-words font-sans leading-relaxed text-muted-foreground">{d.instructions}</pre></details>}
@@ -307,10 +309,9 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
   );
 }
 
-/** Connected definitions stay at their source; their console settings still provide archive and restore actions. */
-function ConnectedAgentSettings({ agent, native, v2, onAgent, stale, onRefresh }: {
-  agent: Agent; native?: NativeBinding; v2: Client; onAgent: (agent: Agent) => void; stale: boolean; onRefresh: () => void;
-}) {
+/** Archive or unarchive `agent`, one write at a time. The answer's archive state lands on the newest copy of the agent the
+ *  page holds (`onAgent`), and a write that fails says so in `error`; neither lands once the caller is gone. */
+function useArchive(agent: Agent, v2: Client, onAgent: (agent: Agent) => void) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const pending = useRef(false);
@@ -335,6 +336,23 @@ function ConnectedAgentSettings({ agent, native, v2, onAgent, stale, onRefresh }
       if (shown.current) setBusy(false);
     }
   };
+  return { busy, error, archive };
+}
+
+/** An archived agent's page says how it comes back, by name, in its toolbar (Status reads Archived beside the details). */
+function UnarchiveButton({ agent, v2, onAgent }: { agent: Agent; v2: Client; onAgent: (agent: Agent) => void }) {
+  const { busy, error, archive } = useArchive(agent, v2, onAgent);
+  return <>
+    {error && <span role="alert" className="font-mono text-small text-destructive-text">{error}</span>}
+    <Button size="sm" variant="primary" disabled={busy} aria-busy={busy} onClick={() => void archive()}><ArchiveRestore aria-hidden />{busy ? "Unarchiving…" : "Unarchive"}</Button>
+  </>;
+}
+
+/** Connected definitions stay at their source; their console settings still provide archive and restore actions. */
+function ConnectedAgentSettings({ agent, native, v2, onAgent, stale, onRefresh }: {
+  agent: Agent; native?: NativeBinding; v2: Client; onAgent: (agent: Agent) => void; stale: boolean; onRefresh: () => void;
+}) {
+  const { busy, error, archive } = useArchive(agent, v2, onAgent);
   return <div className="flex h-full min-h-0 flex-col">
     <header className={cn(pageToolbarClass, "flex-wrap gap-3 px-5 md:px-8")}>
       <div role="group" aria-label="About this agent" className="flex min-w-0 flex-1 flex-wrap items-center gap-3">

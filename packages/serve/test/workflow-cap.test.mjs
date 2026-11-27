@@ -16,6 +16,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { journalRecords } from "../dist/runner/journal-reader.js";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 import { client, flowAgent, follow, letGo, runDir, scratch, serve, startServe, storeRun, withEnv } from "./support.mjs";
+import { raw } from "./store-target.mjs";
 
 /** The faux model at $100 a million output tokens, each answer 400 of them: a request costs $0.04, and is admitted only
  *  while its least, $0.1024, fits what is left of the cap. */
@@ -397,3 +398,143 @@ test("a polled call held at its cap and resumed by a raise while its window stil
 
 // A decision's booking lost by a crash while its receipt names its charge does not happen on the runner: its settle commits
 // before its receipt. workflow-decision-money.test.mjs crashes a runner at each of the two commits.
+
+/** The run's `agentrun.budget` entries (its pauses at the cap), oldest first. */
+async function budgetsOnStore(store, runId) {
+  const { entries } = await journalRecords(store.readJournal(runId), BACKGROUND_CONTEXT);
+  return entries.filter((entry) => entry.kind === "agentrun.budget").map((entry) => entry.data);
+}
+
+/** The runner's events (serve's `onEvent`), and waits on them by count: the n-th event that matches, or the runner's polls
+ *  passing. No wall-clock bound: the test's own timeout is the only one. */
+function runnerEvents() {
+  const seen = [];
+  const waiters = new Set();
+  const runOf = (event) => event.runId ?? event.claim?.runId;
+  return {
+    onEvent: (event) => {
+      seen.push(event);
+      for (const wake of [...waiters]) wake();
+    },
+    /** The events of run `runId` of type `type` so far. */
+    of: (runId, type) => seen.filter((event) => runOf(event) === runId && event.type === type),
+    /** The `n`-th event of run `runId` of type `type`, once it has come. */
+    nth: (runId, type, n) =>
+      new Promise((resolve) => {
+        const check = () => {
+          const hits = seen.filter((event) => runOf(event) === runId && event.type === type);
+          if (hits.length < n) return;
+          waiters.delete(check);
+          resolve(hits[n - 1]);
+        };
+        waiters.add(check);
+        check();
+      }),
+  };
+}
+
+/** Once the runner has polled `n` more times (serve's runnerBeats): a run claimable in that time would have been claimed. */
+async function polls(server, n) {
+  const target = server.runnerBeats() + n;
+  while (server.runnerBeats() < target) await new Promise((resolve) => setImmediate(resolve));
+}
+
+/** A capped workflow ($0.12, every request $0.04, the second node's least $0.1024) parked at its cap at node "second":
+ *  its server, the run's id, its one budget entry and the runner's events. */
+async function parkedAtCap(t) {
+  withEnv(t, {}, KEYS);
+  const events = runnerEvents();
+  const server = await serve(t, { faux: PRICED, onEvent: events.onEvent });
+  const { api } = server;
+  assert.equal((await api("POST", "/agents", flowAgent("twice", twoNodes()))).status, 201);
+  const started = await api("POST", "/agents/twice/runs", { input: { question: "What is six times seven?" }, max_cost_usd: 0.12 });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  const released = await events.nth(runId, "released", 1);
+  assert.equal(released.end, "parked", JSON.stringify(released));
+  const parked = await view(api, runId);
+  assert.deepEqual([parked.status, parked.pending?.kind, parked.pending?.node], ["input_required", "budget", "second"]);
+  const [pause, ...more] = await budgetsOnStore(server.store, runId);
+  assert.deepEqual(more, [], "one pause");
+  return { server, runId, pause, events };
+}
+
+/** The run's row of command `id` once the runner answered it (taken or refused). */
+const rowOf = async (store, runId, id) => (await store.commands(runId, id - 1)).find((r) => r.id === id);
+
+test("a capped workflow paused at its cap that a refused raise wakes: the raise is answered refused and the run is claimed once for it", { timeout: 120_000 }, async (t) => {
+  const { sendCommand } = await import("../dist/runner/commands.js");
+  const { server, runId, pause, events } = await parkedAtCap(t);
+  const { api, data, store } = server;
+  const words = storeRun(data, runId).summary;
+  assert.equal(words, pause.words, "parked in the pause's words");
+  // A raise not above the cap, as a race of two raises or a retry leaves one for the run's next claim (the API refuses
+  // such a raise itself): the row as the server writes it.
+  const refused = await sendCommand(store, runId, { kind: "raise", body: { capUsd: 0.12 } });
+  // The claim it wakes, and that claim's release.
+  await events.nth(runId, "released", 2);
+  const answered = await rowOf(store, runId, refused.id);
+  assert.match(answered?.refused ?? "", /only raised/, `the raise refused in the cap's words: ${JSON.stringify(answered)}`);
+  // Three polls of the runner after that release: the row answered, nothing is left to wake the run, so none claims it.
+  await polls(server, 3);
+  assert.equal(events.of(runId, "claimed").length, 2, "claimed once for the refused raise, and never again");
+  const again = await view(api, runId);
+  assert.deepEqual([again.status, again.pending?.kind, again.pending?.node, again.pending?.cap_usd], ["input_required", "budget", "second", 0.12], JSON.stringify(again));
+  assert.deepEqual(await budgetsOnStore(store, runId), [pause], "the refused raise wrote no budget entry");
+  assert.equal(storeRun(data, runId).summary, words, "parked again in the pause's words");
+  assert.equal(await answeredOnStore(store, runId), 1, "the second node's request never sent");
+  const raised = await api("PATCH", `/runs/${runId}`, { max_cost_usd: 1 });
+  assert.deepEqual([raised.status, raised.body.resumed], [200, true], JSON.stringify(raised.body));
+  await events.nth(runId, "ended", 1);
+  const run = await view(api, runId);
+  assert.deepEqual([run.status, run.result?.output], ["completed", { answer: 42 }], JSON.stringify(run));
+  assert.deepEqual(await budgetsOnStore(store, runId), [pause], "one pause in the run's life");
+  assert.equal(await answeredOnStore(store, runId), 2);
+});
+
+test("a retry of the raise that resumed a capped workflow, reaching it once it parked again at the raised cap: taken, the new pause left standing, no third budget entry", { timeout: 120_000 }, async (t) => {
+  // MUTATION: the raise entry naming the pause the run stands at (raising.state.pause), not the one the raise answered
+  // (lastRaise.pause): the retry reads as answering the new pause, the workflow runs, and its held step writes a third entry.
+  const { sendCommand } = await import("../dist/runner/commands.js");
+  const { server, runId, pause, events } = await parkedAtCap(t);
+  const { api, store } = server;
+  // A raise to $0.13 resumes it, short of the second node's least ($0.04 spent + $0.1024): it parks again at $0.13.
+  const raise = await sendCommand(store, runId, { kind: "raise", body: { capUsd: 0.13 } });
+  await events.nth(runId, "released", 2);
+  assert.notEqual((await rowOf(store, runId, raise.id))?.takenAt ?? null, null, "the raise taken");
+  const [, second, ...more] = await budgetsOnStore(store, runId);
+  assert.deepEqual([second?.pending?.cap_usd, more], [0.13, []], "parked again at the raised cap, a second pause");
+  // The same raise again (a retry: the first's PATCH answered late), as its row reaches the run parked anew.
+  const retry = await sendCommand(store, runId, { kind: "raise", body: { capUsd: 0.13 } });
+  await events.nth(runId, "released", 3);
+  const answered = await rowOf(store, runId, retry.id);
+  assert.ok(answered?.takenAt != null && answered.refused == null, `the retry taken, as the raise it repeats: ${JSON.stringify(answered)}`);
+  await polls(server, 3);
+  assert.equal(events.of(runId, "claimed").length, 3, "one claim for the retry, and none after it");
+  assert.deepEqual((await budgetsOnStore(store, runId)).map((entry) => entry.pending?.cap_usd), [pause.pending.cap_usd, 0.13], "no third budget entry: the second pause stands");
+  const now = await view(api, runId);
+  assert.deepEqual([now.status, now.pending?.kind, now.pending?.cap_usd], ["input_required", "budget", 0.13], JSON.stringify(now));
+  assert.equal(await answeredOnStore(store, runId), 1, "the second node's request never sent");
+});
+
+test("a capped workflow paused at its cap whose woken claim was lost before its release (its row left running): the next claim parks it again on its pause, no second budget entry", { timeout: 120_000 }, async (t) => {
+  // MUTATION: the park-again guard for a claim from "parked" alone: the claim from "running" runs the workflow, and its
+  // held step writes a second budget entry at the same cap.
+  const { server, runId, pause, events } = await parkedAtCap(t);
+  const { api, data, store } = server;
+  // A claim that took the parked run and was lost before its release leaves the row running, no runner on it, its pause
+  // unanswered in the journal: written straight into the store's file, as that claim would have left it.
+  const db = await raw(join(data, "store.sqlite"), { timeout: 15_000 });
+  try {
+    assert.equal((await db.run("UPDATE runs SET state = 'running', runner = NULL WHERE id = ?", runId)).changes, 1);
+  } finally {
+    await db.close();
+  }
+  await events.nth(runId, "released", 2);
+  await polls(server, 3);
+  assert.equal(events.of(runId, "claimed").length, 2, "one claim takes it back, and none after it");
+  assert.deepEqual(await budgetsOnStore(store, runId), [pause], "no second budget entry at the same cap");
+  const now = await view(api, runId);
+  assert.deepEqual([now.status, now.pending?.kind, now.pending?.node, now.pending?.cap_usd], ["input_required", "budget", "second", 0.12], JSON.stringify(now));
+  assert.equal(await answeredOnStore(store, runId), 1, "the second node's request never sent");
+});

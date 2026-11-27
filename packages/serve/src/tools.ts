@@ -4,7 +4,7 @@
 // nothing here: a run's runner binds them from its workspace's registry (workspace/run-tools.ts), each call made on the
 // run's folder or its computer. `bash` and the background tools may be named only by an agent whose place is a box
 // (runnable.ts).
-import { blurbOf, isHostTool } from "./tool-list.js";
+import { adapterBinds, blurbOf } from "./tool-list.js";
 import { EMAIL_DESCRIPTIONS, EMAIL_DRAFT, EMAIL_FILE, EMAIL_READ, EMAIL_SEARCH, EMAIL_SEND, fileSummary, sendSummary } from "./email/names.js";
 // The email tools' timeline lines (registerLabel), registered as this module loads.
 import "./email/labels.js";
@@ -110,6 +110,9 @@ export type ToolHost = {
   beforeResume(settle: (harness: Harness) => void | Promise<void>): void;
   /** Runs when the run's process lets the run go (its work done, or a SIGTERM), while the Harness is still open. */
   beforeRelease(stop: (harness: Harness) => void | Promise<void>): void;
+  /** Runs when the run's process stops waiting on beforeRelease (its bound passed), while the Harness is still open: what
+   *  a binding books of the time it knows so far, for what its release has not let go yet. Absent: none is asked. */
+  releaseCut?(book: (harness: Harness) => void | Promise<void>): void;
   /** On the runner: asked when the run's turn ends on its question to the person (ask_person, call `callId`), before the
    *  run parks. A binding that keeps something open the person may still use while they answer holds the person's time for
    *  it and answers a hold, and the run waits in its claim instead (adapter-loop.ts HostLifecycle.personWait); `lapsed`
@@ -325,7 +328,10 @@ export const evidenceIn = (work: Workspace) => {
 
 /** What browser_upload may choose: a file of the run's Workspace, the one its read opens, by a path relative to it. The
  *  Workspace refuses a path that would leave it (absolute, "..", a link anywhere on the way), so nothing outside the run's
- *  folder is ever read; a file must be a regular one of at most `maxBytes`. `mime` names its media type by its name. */
+ *  folder is ever read; a file must be a regular one of at most `maxBytes`. `mime` names its media type by its name.
+ *  `write` is where a browser screenshot's save_as goes: the Workspace's own write, the one the agent's write tool makes
+ *  (pi-env.ts writeFile), refusing a path that would leave the folder as that tool is refused, its folders made and a
+ *  file already there replaced. */
 export const uploadsFrom = (work: Workspace, maxBytes: number, mime: (name: string) => string) => ({
   async resolve(rel: string): Promise<{ bytes: Uint8Array; name: string; mime: string } | { refused: string }> {
     if (typeof rel !== "string" || !rel.trim()) return { refused: "path must name a file in the workspace" };
@@ -343,6 +349,17 @@ export const uploadsFrom = (work: Workspace, maxBytes: number, mime: (name: stri
       return { bytes, name, mime: mime(name) };
     } catch (error) {
       return { refused: refusal(error) };
+    }
+  },
+  async write(rel: string, bytes: Uint8Array): Promise<{ path: string } | { refused: string }> {
+    if (typeof rel !== "string" || !rel.trim()) return { refused: "path must name a file in the workspace" };
+    try {
+      await work.write(rel, bytes);
+      return { path: rel };
+    } catch (error) {
+      // A refusal's own words name the path relative to the folder; an unavailable folder's may name it on this machine.
+      const said = isWorkspaceError(error, "REFUSED") || isWorkspaceError(error, "EXISTS") || isWorkspaceError(error, "NOT_FOUND") ? `: ${(error as Error).message}` : "";
+      return { refused: isWorkspaceError(error, "ESCAPE") ? `${rel} resolves outside the workspace, or a link is on the way to it` : `${rel} could not be written${said}` };
     }
   },
 });
@@ -475,7 +492,7 @@ const browserTool: ToolEntry = {
   // Its downloads go into work/ by path (pi-browser), which a box's command could turn through a link.
   runnerOnly: true,
   bind: async (host) => {
-    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY, BrowserFailureError, browserFailure, MAX_UPLOAD_BYTES, uploadMime }, { createDrivingGates, createLiveView, liveViewProvider }, live, person, { claimBrowserProvider, closeHeldSockets, planeBrowser, planeComputer, releaseOlderBrowsers }, { cdpDriver }] = await Promise.all([
+    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY, BrowserFailureError, browserFailure, MAX_UPLOAD_BYTES, uploadMime }, { createDrivingGates, createLiveView, liveViewProvider }, live, person, { claimBrowserProvider, closeHeldSockets, openPlaneBrowser, planeBrowser, planeComputer, raceReleasedSessions, releaseUnheldBrowsers }, { cdpDriver }] = await Promise.all([
       import("@earendil-works/chord/context"),
       import("@parcha/pi-browser/durable"),
       import("@parcha/pi-browser"),
@@ -513,9 +530,9 @@ const browserTool: ToolEntry = {
           try {
             if (computer) return { browser: computer };
             const provider = stand ? (stand.computer as Parameters<typeof planeBrowser>[0]) : await planeComputer(vendor, host.env);
-            const plane = planeBrowser(provider, host.claim);
-            if (host.claim && !stand) await releaseOlderBrowsers(provider, host.claim);
-            return { browser: plane };
+            // The run's older-epoch sessions released first; the ones released ride on the browser (sweptOlder), so an owed one
+            // is charged to when the sweep answered (recoverOwed).
+            return { browser: await openPlaneBrowser(provider, host.claim, { sweep: !stand }) };
           } catch (error) {
             if (error instanceof BrowserFailureError) return { refused: error };
             return { refused: new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${error instanceof Error ? error.message : String(error)}.`)) };
@@ -642,7 +659,12 @@ const browserTool: ToolEntry = {
       commit: (change) => (opened ? opened.commit(change, context) : Promise.reject(new Error("the run's journal is not open"))),
     });
     // Both hosts of a session's changes: the live view's hand-over, and the sign-in's save (its verified_at, in the store).
+    // Every session id the run's custody held in this process: the let-go's release of the browsers nothing held never
+    // takes one (browserHolds), released by its own record, though its vendor may list it a moment past its release.
+    const custodyIds = new Set<string>();
     const onSessions = async (row: Parameters<typeof savedOnRelease>[0] & Parameters<typeof onSession>[0], change: string) => {
+      const heldId = (row as unknown as { session: { resourceId?: string | null } }).session.resourceId;
+      if (typeof heldId === "string") custodyIds.add(heldId);
       // A session let go ends a wait on the person's answer that kept it open (personWait, below): the run parks.
       if (change === "released") hands.sessionEnded(row.session.tag);
       if (change === "released") await sessionEnded((row as unknown as { session: Parameters<typeof sessionEnded>[0] }).session, (row as unknown as { conversationId: number }).conversationId);
@@ -652,11 +674,18 @@ const browserTool: ToolEntry = {
       await saved?.(row, change);
       await onSession(row, change);
     };
+    // A release by a session's tag that ended sessions beside it (a create race left them running, with no record): each
+    // one's time charged as the let-go's release of the browsers nothing held charges it (spend.unheld, one key per
+    // session, so whichever of the two sees it end charges it once), from when its vendor made it (raceReleasedSessions).
+    const raceReleased = async (released: { tag: string; ids: string[]; madeAt?: Record<string, string> }): Promise<void> => {
+      if (!opened || !("browser" in made)) return;
+      await spend.unheld(opened as never, raceReleasedSessions(released, made.browser), context);
+    };
     // The pointer is cut from everything the browser hands the model (its results, their details, its failures): a
     // vendor's refusal can quote it, as pi-browser's one-saver rule names Kernel's profile.
     // A run handed its agent's sign-in tells the model its browser keeps it (`run`'s description): one with none claims
     // cookies across pages only.
-    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(work) as never, ...files, gates, handoff: hands.handoff, onSession: onSessions as never, signIns: kept !== undefined, beforeCreate: spend.opening, redact: { values: () => [...runnerSecrets(host.env), ...(kept ? [kept.ref] : [])] }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
+    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(work) as never, ...files, gates, handoff: hands.handoff, onSession: onSessions as never, signIns: kept !== undefined, beforeCreate: spend.opening, redact: { values: () => [...runnerSecrets(host.env), ...(kept ? [kept.ref] : [])] }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge, onRaceReleased: raceReleased });
     // On the runner, every answer the browser's tools give passes the run's one redactor inside the call, so what pi stores
     // (its result record) and what the model reads hold no value the runner or the claim holds.
     const tools = (browser.tools as unknown as ToolRegistration[]).map(spend.capped).map((tool) => answersCutInside(tool, host.redact));
@@ -697,6 +726,15 @@ const browserTool: ToolEntry = {
       // unless a call uses it.
       await browser.reconcile(harness as never, () => true, context);
       await spend.reopened(harness, browser.docs, context);
+      // A browser an earlier process's let-go released, or sent the release of, and never charged (spend.letGo's record)
+      // is charged now; one this cannot settle stays owed, said in the log, and never fails the open.
+      if ("browser" in made) {
+        try {
+          await spend.recoverOwed(harness as never, made.browser, context);
+        } catch (error) {
+          runLog(`the browsers an earlier let-go released could not be charged: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
       // A session kept across the restart has no viewer in this process yet, and reconcile tells no session's change: each
       // one's viewer is opened here and handed over, as a launch's is. It starts with nobody holding the browser.
       const kept = Object.values(((await harness.snapshot(browser.docs.Inventory as never, context)) as { rows?: Record<string, { tag: string; resourceId: string | null; state: string }> } | undefined)?.rows ?? {});
@@ -728,15 +766,34 @@ const browserTool: ToolEntry = {
       if ("refused" in waited) { letGo(); return undefined; }
       return { lapsed: waited.lapsed, confirmed: waited.confirmed, drop: () => { waited.drop(); letGo(); } };
     });
+    // A session of the run's labels that nothing holds now (a create whose reply was lost, which its recovery kept) goes
+    // with the claim, and its time is charged (releaseUnheld, spend.letGo), before the ledger is waited on: each one
+    // recorded before its release is sent and charged as its release answers, so one this process cannot charge is owed
+    // to the next claim's open. What the run holds is read once the vendor's list answered (the inventory, and every id
+    // its custody held here); a session whose create is still in flight is left to it. One that cannot be released, or a
+    // list that fails, is said in the log and never fails the let-go. The release runs it after its sessions' own
+    // releases, and a cut release (releaseCut) runs it too, so a session's release that never answers leaves none of
+    // these to the vendor's lifetime; a browser both see is charged once (spend.letGo).
+    const letGoUnheld = async (harness: Harness): Promise<void> => {
+      if (!("browser" in made)) return;
+      try {
+        const rows = async () => Object.values(((await harness.snapshot(browser.docs.Inventory as never, context)) as { rows?: Record<string, { tag: string; resourceId: string | null }> } | undefined)?.rows ?? {});
+        await spend.letGo(harness as never, (hooks) => releaseUnheldBrowsers(made.browser, rows, custodyIds, hooks), context);
+      } catch (error) {
+        runLog(`the browsers a create race left running could not be released: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    };
     host.beforeRelease(async (harness) => {
       try {
         if (refused) return;
-        const held = await harness.snapshot(browser.docs.Inventory as never, context) as { rows?: Record<string, { conversationId: number; state: string }> } | undefined;
+        const held = await harness.snapshot(browser.docs.Inventory as never, context) as { rows?: Record<string, { conversationId: number; state: string; resourceId: string | null }> } | undefined;
+        for (const row of Object.values(held?.rows ?? {})) if (row.resourceId !== null) custodyIds.add(row.resourceId);
         for (const id of new Set(Object.values(held?.rows ?? {}).filter((row) => row.state !== "released").map((row) => row.conversationId))) {
           const conversation = await harness.conversation(id as never, context);
           if (conversation) await browser.release(conversation as never, "close", context);
         }
         await browser.drain(harness as never, context);
+        await letGoUnheld(harness);
         // The releases' charges are booked on the claim's one ledger before the run's release returns, so the run's end
         // commit, which ends the claim, never fences one (nothing to wait for off the ledger).
         await spend.ledgerIdle();
@@ -750,6 +807,19 @@ const browserTool: ToolEntry = {
         // opens its own): one left open would keep the process from exiting.
         if ("browser" in made) await closeHeldSockets(made.browser);
       }
+    });
+    // The release did not finish within its bound (a vendor's release that does not answer): each session still open is
+    // charged through now, its watermark moved with the charge, so the release's own charge, when it lands (here, or at
+    // the next claim, whose reopen books it), bills only the time after. The session's reserve stays held until then.
+    host.releaseCut?.(async (harness) => {
+      if (refused) return;
+      const held = await harness.snapshot(browser.docs.Inventory as never, context) as { rows?: Record<string, { conversationId: number; state: string }> } | undefined;
+      for (const id of new Set(Object.values(held?.rows ?? {}).filter((row) => row.state !== "released").map((row) => row.conversationId))) {
+        const conversation = await harness.conversation(id as never, context);
+        if (conversation) await browser.charge(conversation as never, context);
+      }
+      await letGoUnheld(harness);
+      await spend.ledgerIdle();
     });
     return { tools, extensions: [extension] };
   },
@@ -945,7 +1015,7 @@ export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}
     // Unavailable says why: a sandbox-only tool no box here can run, why none can (`noBox`); on a tool a user picks a
     // provider for, the resolutions' own words (`web_search is turned off in settings`); else the variables it needs.
     const reason = available ? undefined : refusal ?? boxless ?? (plane ? [...new Set(Object.values(plane).filter(isUnavailable).map(whyUnavailable))].join("; ") : `Needs ${keyNeeded(missing)}`);
-    return { name, summary: entry.summary, ...(blurbOf(name) ? { blurb: blurbOf(name) } : {}), nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), ...(entry.runnerOnly ? { runner_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: isHostTool(name) ? [...everyHarness] : [...generalSpec], ...serverGate(name, settings), ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane, why: view!.why } : {}) };
+    return { name, summary: entry.summary, ...(blurbOf(name) ? { blurb: blurbOf(name) } : {}), nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), ...(entry.runnerOnly ? { runner_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: adapterBinds(name) ? [...everyHarness] : [...generalSpec], ...serverGate(name, settings), ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane, why: view!.why } : {}) };
   });
   // The host tools over a run's own tools (META_TOOLS): not in the table, never granted or named by a node (`meta`), listed
   // so the owner sees them and their setting (allow or deny; a deny is not offered at all).

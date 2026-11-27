@@ -430,6 +430,7 @@ test("a first claim gets no such line and never asks the journal, nor does a lat
   assert.equal(made.replaced, undefined);
   assert.deepEqual(asked, [], "a first claim has nothing before it to ask about");
   assert.equal(made.made, "sandbox", "its computer recorded, for a later claim");
+  assert.equal(made.fresh, true, "one this claim started");
   assert.equal(computerReadyWords(said[0]), "The sandbox is ready: Linux (amd64), from Docker.");
   await made.release();
   const later = await claim({ kind: "sandbox", provider: "docker" }, { onConnected: (one) => void said.push(one) });
@@ -467,6 +468,7 @@ test("a computer that isn't the run's own is neither recorded nor called a new o
   const fauxDeps = { mode: 1, kinds: faux.kinds, keyTable: faux.keyTable, launch: faux.launch, providers: {}, spec: () => ({ image: "faux", lifetimeMs: 60_000, network: "open" }), check: { readBackOf }, workspace: localWorkspace(scratch()), hadComputer };
   const fauxDesk = await computerForClaim({ runId: "run-1", epoch: 3, computer: { kind: "desktop", provider: "faux-desktop" } }, memoryStore(), fauxDeps);
   assert.deepEqual([fauxDesk.made, fauxDesk.replaced], [undefined, undefined], "--faux's desktop");
+  assert.equal(fauxDesk.fresh, true, "--faux's desktop is started by the claim all the same");
   await fauxDesk.release();
 
   const driver = new FakeUiDriver({ groups: ["screen", "input.pointer", "input.keys", "apps", "ui"] });
@@ -481,6 +483,7 @@ test("a computer that isn't the run's own is neither recorded nor called a new o
     const pairedDeps = { mode: 1, kinds: KINDS, sealKey: randomBytes(32), providers: {}, spec: () => ({ image: "attached", lifetimeMs: 60_000, network: "open" }), check: { readBackOf, epoch: 3 }, workspace: localWorkspace(scratch()), attached: { rows: async () => [row], hub }, hadComputer, onConnected: (one) => void said.push(one) };
     const held = await computerForClaim({ runId: "run-1", epoch: 3, computer: { kind: "desktop", provider: row.id } }, store, pairedDeps);
     assert.deepEqual([held.made, held.replaced], [undefined, undefined], "a paired computer");
+    assert.equal(held.fresh, undefined, "a paired computer is never one the claim started: a person's own machine");
     assert.deepEqual(said.map((one) => one.replaced), [undefined], "its ready line says no new one");
     await held.release();
   } finally {

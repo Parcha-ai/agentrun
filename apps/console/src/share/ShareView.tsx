@@ -12,7 +12,7 @@ import { Redactions } from "@/lib/redaction";
 import type { RunGraph } from "@/lib/runGraph";
 import { cn } from "@/lib/utils";
 import type { ApiError, Run, RunFile } from "@/lib/v2";
-import { publishCommand, type Omitted, type ShareBundle } from "./bundle";
+import { publishCommand, SHARE_HOST, type Omitted, type ShareBundle } from "./bundle";
 import { CutsPanel } from "./CutsPanel";
 
 /** The owner's preview: the run the bundle is of (for the publish command), what a switch asks for, and whether an
@@ -151,11 +151,12 @@ function ShareFooter({ bundle, preview, width }: { bundle: ShareBundle; preview:
           ? <p className="font-mono text-small text-muted-foreground" role="status">Exporting again with your restores…</p>
           : (
             <div className="flex flex-wrap items-center gap-3">
+              <span className="text-label text-muted-foreground">Publish to your share host with</span>
               <code className="min-w-0 flex-1 break-all border bg-background px-3 py-2 font-mono text-small">{command}</code>
               <CopyButton text={command} label="Copy" />
             </div>
           )}
-        <p className="text-label text-muted-foreground max-sm:hidden">Publishing comes with a share host in a later beta. The command checks a fresh export against this sha256 and refuses if the run changed.</p>
+        <p className="text-label text-muted-foreground max-sm:hidden">The command checks a fresh export against this sha256 and refuses if the run changed. Sign in to the share host once with <code className="font-mono">agentrun login --share {SHARE_HOST} &lt; TOKEN_FILE</code>.</p>
       </div>
     </footer>
   );

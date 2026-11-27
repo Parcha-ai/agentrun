@@ -29,11 +29,15 @@
 // `infra_usd` is their sum: the cost of the infrastructure's own redo, not of the run's task. Data only: `total` and
 // `cost.usd` still hold every line, billable or not, as the run was charged before. A run whose claims kept no attempt
 // (one made before them) reads each line's `attempt` as null and every line billable.
+//
+// The time of browsers a create race left running that the run never held (charged under browser-cost.ts unheldTag) is
+// a `browser_time` line of its own, `absorbed: "create_race"` and not billable: booked on the run's ledger and in `total`
+// and `cost.usd`, so the run's cost record is whole, and in `infra_usd`, the infrastructure's to absorb, never billed.
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { type BrowserSessionLine, browserSessionsOf } from "./browser-sessions.js";
-import { BROWSER_CHARGED } from "./cap.js";
+import { BROWSER_CHARGED, browserChargeRef, unheldBrowserTag } from "./cap.js";
 import { launchOf } from "./handed-values.js";
 import { inReflect, reflectRanges } from "./runner/end-of-run.js";
 import { journalRecords } from "./runner/journal-reader.js";
@@ -41,7 +45,6 @@ import { KINDS } from "./runner/journal-kinds.js";
 import { type BookedSpend, bookedSpend, type CostBasis, costBasisOf, costWordsOf, type CostWords } from "./runner/metrics.js";
 import { unbookedCli } from "./store-reads/cap.js";
 import { booksDecisions, chargedByParallel, decisionsOverStore, PARALLEL_CHARGER, receiptIdOf } from "./store-reads/decisions.js";
-import { roundsOf } from "./store-reads/learning.js";
 import { MODEL_PROVIDER } from "./model.js";
 import type { RunLaunch } from "./run-launch.js";
 import { ApiError } from "./errors.js";
@@ -78,8 +81,12 @@ export type RunUsageLine = {
    *  claims kept no attempt. */
   attempt: number | null;
   /** False for an attempt that was cut and whose turn another attempt worked again: its requests were made again, the
-   *  infrastructure's cost (the run's `infra_usd`), not the task's. Charging does not read it yet. */
+   *  infrastructure's cost (the run's `infra_usd`), not the task's; and for an absorbed line (`absorbed`). */
   billable: boolean;
+  /** Why the line's cost is the infrastructure's own, absorbed and never billed, though booked on the run's ledger and in
+   *  `total`: `create_race`, on `browser_time`, the time of browsers a create race left running that the run never held
+   *  (released at its let-go, or by a release by a session's tag beside its own). Absent on every other line. */
+  absorbed?: Absorbed;
   /** On `compute_time`: the resource (vcpu, memory, gpu, disk), a GPU's type, the part of `quantity` no claim held (in
    *  no cost), and how many of its computers are still open, their time counted up to `measured_to`. */
   resource?: ComputeResource;
@@ -93,11 +100,13 @@ export type RunUsageLine = {
   not_metered_calls?: number;
 } & CostWords;
 
+/** Why a line's cost is absorbed (RunUsageLine.absorbed). */
+export type Absorbed = "create_race";
+
 /** Why a run has no lines: `running`, it is at work and its booking still moves; `not_booked`, its figure is not its
- *  booking's (an imported run's, a native or SDK run's harness's own, a CLI run whose model requests went past its proxy);
- *  `reopened`, a learning run a follow-up opened again, whose `cost.usd` is its first round's and whose booking can't be
- *  split by round. */
-export type UsageReason = "running" | "not_booked" | "reopened";
+ *  booking's (an imported run's, a native or SDK run's harness's own, a CLI run whose model requests went past its proxy).
+ *  A learning run a follow-up opened again has lines: its job's and its follow-ups' together, up to its latest end. */
+export type UsageReason = "running" | "not_booked";
 
 export type RunUsage = {
   run_id: string;
@@ -116,8 +125,8 @@ export type RunUsage = {
   /** One record per computer the run made (computerIntervalsOf), by when each was made; null exactly when `lines` is.
    *  Computer time is not priced: its cost is in no line and not in `total`. */
   computer_intervals: ComputerIntervalLine[] | null;
-  /** The sum of the lines that are not billable (`billable: false`): what the infrastructure's redo of cut attempts cost.
-   *  0 for a run no attempt of which was cut; null with no lines, and when one such line's cost is unknown. Inside
+  /** The sum of the lines that are not billable (`billable: false`): what the infrastructure's redo of cut attempts and
+   *  its absorbed lines (`absorbed`) cost. 0 for a run with neither; null with no lines, and when one such line's cost is unknown. Inside
    *  `total`, never beside it. */
   infra_usd: number | null;
   reason: UsageReason | null;
@@ -213,7 +222,7 @@ export function attemptTags(rows: readonly RunAttemptRow[]): { atEntry(id: unkno
 }
 const attemptKey = (at: AttemptTag) => `${at.attempt ?? ""}:${at.billable ? 1 : 0}`;
 
-type Group = { meter: UsageMeter; name: string | null; provider?: string | null; tag?: string | null; at: AttemptTag };
+type Group = { meter: UsageMeter; name: string | null; provider?: string | null; tag?: string | null; at: AttemptTag; absorbed?: Absorbed };
 
 /** A workflow decision's receipt as the lines read it (store-reads/decisions.ts): by its `decision_id`, which its
  *  request's booking names (`decision:<id>`), the model and provider that answered it, and how its cost was reached. */
@@ -258,23 +267,32 @@ function upstreamOf(model: string | null, launch: Pick<RunLaunch, "model"> | und
  *  provider (`browser_time`); and their join, `total`. A meter with nothing booked has no line. `launch` names the
  *  run's own model's provider; `receipts`, a workflow's decisions by id, the model and provider each was answered on
  *  (its booking names the decision alone), which this server called itself. */
-export function usageLinesOf(entries: readonly EntryLike[], launch?: Pick<RunLaunch, "model">, receipts: ReadonlyMap<string, DecisionReceiptLike> = new Map(), computers: { readonly rows: readonly ComputerIntervalRow[]; readonly at: number } = { rows: [], at: 0 }, attempts: readonly RunAttemptRow[] = []): { lines: RunUsageLine[]; total: CostWords } {
+export function usageLinesOf(entries: readonly EntryLike[], launch?: Pick<RunLaunch, "model">, receipts: ReadonlyMap<string, DecisionReceiptLike> = new Map(), computers: { readonly rows: readonly ComputerIntervalRow[]; readonly at: number } = { rows: [], at: 0 }, attempts: readonly RunAttemptRow[] = [], all: readonly EntryLike[] = entries): { lines: RunUsageLine[]; total: CostWords } {
   const conversation = (key: string) => entries.find((e) => e.kind === KINDS.sessionKey && (e.data as { key?: unknown } | undefined)?.key === key)?.data as { conversation?: unknown } | undefined;
   const paidConv = Number(conversation(TOOL_SESSION)?.conversation ?? Number.NaN);
   const conv = (e: EntryLike) => Number(e.conversationId);
   const turnOf = (e: EntryLike) => `${String(e.conversationId)}:${String((e.data as { turn?: unknown } | undefined)?.turn)}`;
   // A line is one meter, one name and, on `tokens`, one route: a model reached two ways (the run's own requests behind a
   // gateway, a decision on its provider) is two lines, never one labelled with either's provider.
-  const keyOf = (group: Group) => `${group.meter}\u0000${group.name ?? ""}\u0000${group.provider ?? ""}\u0000${group.tag ?? ""}\u0000${attemptKey(group.at)}`;
+  const keyOf = (group: Group) => `${group.meter}\u0000${group.name ?? ""}\u0000${group.provider ?? ""}\u0000${group.tag ?? ""}\u0000${attemptKey(group.at)}\u0000${group.absorbed ?? ""}`;
+  // A browser a create race left running that the run never held (its charge's tag, browser-cost.ts unheldTag): its time
+  // is on a line of its own, booked and in `total`, and not billable (absorbed).
+  const browserGroup = (name: string | null, tag: unknown, at: AttemptTag): Group => (unheldBrowserTag(tag) ? { meter: "browser_time", name, at: { ...at, billable: false }, absorbed: "create_race" } : { meter: "browser_time", name, at });
   // Each booked request's attempt: the claim that wrote its first record (its hold, or its booking), never a later
   // claim's settling of it.
   const tags = attemptTags(attempts);
   // A browser charge is the attempt's whose claim wrote it on the root (BROWSER_CHARGED), even when its booking landed
-  // under a later claim (browser-cost.ts bookRootCharges books one its process lost): the booking names it by its ref.
+  // under a later claim (browser-cost.ts bookRootCharges books one its process lost): the booking names it by its ref
+  // (browserChargeRef, the one rule the booking takes). Read over the whole journal (`all`): a charge whose record sits in
+  // a range the read leaves out (a round's end-of-run turn) and whose booking is in `entries` is still that booking's.
   const chargeAt = new Map<string, AttemptTag>();
-  for (const e of entries) {
+  const chargeOf = new Map<string, EntryLike>();
+  for (const e of all) {
     const d = (e.data ?? {}) as { tag?: unknown; at?: unknown; final?: unknown };
-    if (e.kind === BROWSER_CHARGED && typeof d.tag === "string") chargeAt.set(`browser:${d.tag}@${String(d.at)}${d.final ? "/final" : ""}`, tags.atEntry(e.id));
+    if (e.kind !== BROWSER_CHARGED || typeof d.tag !== "string") continue;
+    const ref = browserChargeRef({ tag: d.tag, at: d.at, final: d.final });
+    chargeAt.set(ref, tags.atEntry(e.id));
+    chargeOf.set(ref, e);
   }
   // A model request its attempt sent and never finished: no answer booked (a crash cut it off), or booked as cut (a stop
   // cut it, at its hold). The claim that takes the turn over sends it again, so when a later claim redid that turn it is
@@ -306,7 +324,7 @@ export function usageLinesOf(entries: readonly EntryLike[], launch?: Pick<RunLau
     if (e.kind !== RUNNER_RECORDS.request) continue;
     const d = (e.data ?? {}) as { model?: unknown; tool?: unknown; charged_by?: unknown; reported?: unknown; tag?: unknown };
     // A computer's time (compute-cost.ts) by its provider and resource (its tag); a browser's by its provider.
-    if (conv(e) === paidConv) groups.set(turnOf(e), d.tool === COMPUTE_TOOL ? { meter: "compute_time", name: named(d.charged_by), tag: named(d.tag), at: at(e) } : { meter: d.tool === "browser" ? "browser_time" : "tools", name: named(d.charged_by), at: at(e) });
+    if (conv(e) === paidConv) groups.set(turnOf(e), d.tool === COMPUTE_TOOL ? { meter: "compute_time", name: named(d.charged_by), tag: named(d.tag), at: at(e) } : d.tool === "browser" ? browserGroup(named(d.charged_by), d.tag, at(e)) : { meter: "tools", name: named(d.charged_by), at: at(e) });
     else if (named(d.model)?.startsWith("decision:")) {
       const receipt = receipts.get(String(d.model).slice("decision:".length));
       if (receipt && chargedByParallel(receipt)) {
@@ -341,13 +359,21 @@ export function usageLinesOf(entries: readonly EntryLike[], launch?: Pick<RunLau
     else if (e.kind === RUNNER_RECORDS.turn && d.usage === undefined) noUsage.add(turnOf(e));
   }
   // Browser seconds by provider, from the charges' own records on the root (BROWSER_CHARGED): the seconds each charge was
-  // for, as the browser_time meter of GET /usage counts them.
+  // for, as the browser_time meter of GET /usage counts them. Each charge in `entries`, and each one outside them whose
+  // booking (a request naming its ref) is in them.
   const seconds = new Map<string, number>();
+  const inEntries = new Set(entries.map((e) => String(e.id)));
+  const outside: EntryLike[] = [];
+  for (const e of entries) {
+    const ref = (e.data as { ref?: unknown } | undefined)?.ref;
+    const charge = e.kind === RUNNER_RECORDS.request && typeof ref === "string" ? chargeOf.get(ref) : undefined;
+    if (charge && !inEntries.has(String(charge.id)) && !outside.includes(charge)) outside.push(charge);
+  }
   // Tool calls with no price, run outside the run's cost (an MCP tool its owner set none for, TOOL_UNMETERED), by who
   // would charge for them, as GET /usage's `not_metered_calls` counts them.
   const unpricedCalls = new Map<string, number>();
-  for (const e of entries) {
-    const d = (e.data ?? {}) as { tool?: unknown; seconds?: unknown; charged_by?: unknown };
+  for (const e of [...entries, ...outside]) {
+    const d = (e.data ?? {}) as { tool?: unknown; seconds?: unknown; charged_by?: unknown; tag?: unknown };
     if (e.kind === TOOL_UNMETERED) {
       const group: Group = { meter: "tools", name: named(d.charged_by), at: tags.atEntry(e.id) };
       unpricedCalls.set(keyOf(group), (unpricedCalls.get(keyOf(group)) ?? 0) + 1);
@@ -355,7 +381,7 @@ export function usageLinesOf(entries: readonly EntryLike[], launch?: Pick<RunLau
       continue;
     }
     if (e.kind !== BROWSER_CHARGED || d.tool !== "browser" || typeof d.seconds !== "number" || !Number.isFinite(d.seconds)) continue;
-    const group: Group = { meter: "browser_time", name: named(d.charged_by), at: tags.atEntry(e.id) };
+    const group = browserGroup(named(d.charged_by), d.tag, tags.atEntry(e.id));
     seconds.set(keyOf(group), (seconds.get(keyOf(group)) ?? 0) + d.seconds);
     if (!found.has(keyOf(group))) found.set(keyOf(group), group);
   }
@@ -402,7 +428,7 @@ export function usageLinesOf(entries: readonly EntryLike[], launch?: Pick<RunLau
       if (booked.requests === 0 && s === undefined) continue;
       // A browser provider whose time no charge booked (none, or each given back) still ran: its seconds with no figure.
       const words: CostWords = booked.requests === 0 ? { usd: null } : costWordsOf(booked.parts);
-      lines.push({ meter: "browser_time", model: null, provider: group.name, charged_by: null, quantity: s === undefined ? null : Math.round(s * 1e6) / 1e6, unit: "second", basis: priced > 0 ? "estimate" : "unpriced", ...group.at, ...words });
+      lines.push({ meter: "browser_time", model: null, provider: group.name, charged_by: null, quantity: s === undefined ? null : Math.round(s * 1e6) / 1e6, unit: "second", basis: priced > 0 ? "estimate" : "unpriced", ...group.at, ...(group.absorbed ? { absorbed: group.absorbed } : {}), ...words });
     }
   }
   lines.push(...computeLinesOf(computers.rows, computers.at, computeBooked, tags.spans));
@@ -512,6 +538,43 @@ function jobSessions(job: readonly EntryLike[], all: readonly EntryLike[], attem
  *  and whether that attempt is billable (RunUsageLine). */
 export type RunBrowserSession = BrowserSessionLine & AttemptTag;
 
+/** Whether `entries` hold any absorbed time: a charge, or a paid step, of a browser a create race left running that the
+ *  run never held (its tag, cap.ts unheldBrowserTag). Most runs hold none, so their readers skip the line rule below. */
+export function holdsAbsorbed(entries: readonly EntryLike[]): boolean {
+  return entries.some((e) => (e.kind === BROWSER_CHARGED || e.kind === RUNNER_RECORDS.request) && unheldBrowserTag((e.data as { tag?: unknown } | undefined)?.tag));
+}
+
+/** `entries` less the paid-tools session's requests and bookings of absorbed time (the turns whose request is a browser
+ *  charge under an unheld tag, the ones usageLinesOf puts on an `absorbed` line), so bookedSpend over them counts every
+ *  paid charge but those. */
+export function withoutAbsorbed(entries: readonly EntryLike[]): EntryLike[] {
+  const paid = entries.find((e) => e.kind === KINDS.sessionKey && (e.data as { key?: unknown } | undefined)?.key === TOOL_SESSION)?.data as { conversation?: unknown } | undefined;
+  const paidConv = Number(paid?.conversation ?? Number.NaN);
+  const turnOf = (e: EntryLike) => `${String(e.conversationId)}:${String((e.data as { turn?: unknown } | undefined)?.turn)}`;
+  const absorbed = new Set<string>();
+  for (const e of entries) {
+    const d = (e.data ?? {}) as { tool?: unknown; tag?: unknown };
+    if (e.kind === RUNNER_RECORDS.request && Number(e.conversationId) === paidConv && d.tool === "browser" && unheldBrowserTag(d.tag)) absorbed.add(turnOf(e));
+  }
+  if (absorbed.size === 0) return [...entries];
+  return entries.filter((e) => !((e.kind === RUNNER_RECORDS.request || e.kind === RUNNER_RECORDS.turn) && absorbed.has(turnOf(e))));
+}
+
+/** What the absorbed lines of a run whose journal is `entries` cost, the run read's absorbed part of `usd`
+ *  (`cost.billable_usd` is `usd` less this): the sum of its `absorbed` lines' `usd` as GET /runs/{run_id}/usage serves
+ *  them (usageLinesOf, the one line rule, over its claims' `attempts`), 0 with none, null when one of them has no known
+ *  figure. */
+export function absorbedUsdOf(entries: readonly EntryLike[], attempts: readonly RunAttemptRow[]): number | null {
+  if (!holdsAbsorbed(entries)) return 0;
+  let sum = 0;
+  for (const line of usageLinesOf(entries, undefined, new Map(), { rows: [], at: 0 }, attempts).lines) {
+    if (!line.absorbed) continue;
+    if (line.usd === null) return null;
+    sum += line.usd;
+  }
+  return Math.round(sum * 1e12) / 1e12;
+}
+
 /** The sum of the lines no customer is charged for (`billable: false`): null when one of them has no known figure. */
 export function infraUsdOf(lines: readonly RunUsageLine[]): number | null {
   let sum = 0;
@@ -524,8 +587,9 @@ export function infraUsdOf(lines: readonly RunUsageLine[]): number | null {
 }
 
 /** Run `runId`'s usage lines (GET /runs/{run_id}/usage); undefined for an unknown run. No lines (`reason`) while it is at
- *  work, for a run whose figure is not its booking's, and for a learning run a follow-up opened again: the cases where
- *  `cost.tools_usd` is null for the same reasons. Its state, launch, learning rounds and journal are read in one snapshot
+ *  work and for a run whose figure is not its booking's: the cases where `cost.tools_usd` is null for the same reasons. A
+ *  learning run a follow-up opened again reads every round's job and follow-up turns, each round's end-of-run turn left
+ *  out (reflectRanges), so each end's lines hold the last end's and what the follow-up added. Its state, launch, learning rounds and journal are read in one snapshot
  *  of the store (one moment): a follow-up that reopens the run between two reads can't put its requests under its end. */
 export async function runUsageOverStore(store: Store, runId: string): Promise<RunUsage | undefined> {
   return store.snapshot(async (snapshot) => {
@@ -536,7 +600,6 @@ export async function runUsageOverStore(store: Store, runId: string): Promise<Ru
     if (!FINAL_STATES.includes(run.state)) return none("running");
     const launch = await launchOf(snapshot, runId);
     if (run.importedFrom || launch?.native || launch?.sdk) return none("not_booked");
-    if ((await roundsOf(snapshot, runId)).length > 1) return none("reopened");
     const records = await journalRecords(snapshot.readJournal(runId), BACKGROUND_CONTEXT);
     if (unbookedCli(records.entries as never)) return none("not_booked");
     const turns = reflectRanges(records.submissions ?? [], records.entries);
@@ -548,7 +611,7 @@ export async function runUsageOverStore(store: Store, runId: string): Promise<Ru
     const rows = snapshot.computerIntervals ? await snapshot.computerIntervals.forRun(runId) : [];
     // Its claims' attempts in the same snapshot; a store that keeps none (a test's) reads as a run of no attempts.
     const attempts = snapshot.runAttempts ? await snapshot.runAttempts.forRun(runId) : [];
-    const { lines, total } = usageLinesOf(entries, launch, receipts, { rows, at: Date.now() }, attempts);
+    const { lines, total } = usageLinesOf(entries, launch, receipts, { rows, at: Date.now() }, attempts, records.entries as unknown as readonly EntryLike[]);
     const computers = computerIntervalsOf(rows, attempts);
     return { run_id: runId, ended_at: ended, currency: "USD", total, lines, browser_sessions: jobSessions(entries, records.entries as unknown as readonly EntryLike[], attempts), computer_intervals: computers, infra_usd: infraUsdOf(lines), reason: null };
   });

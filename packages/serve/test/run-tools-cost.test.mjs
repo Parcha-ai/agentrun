@@ -12,6 +12,7 @@ import { REQUEST_USD } from "./fixtures/faux-tools-cost.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { ended, started } from "./learn-support.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { raw } from "./store-target.mjs";
 
 const FAUX = new URL("./fixtures/faux-tools-cost.mjs", import.meta.url).pathname;
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
@@ -46,6 +47,7 @@ test("a run with one monid call: tools_usd is that call's charge, and usd is sti
   assert.equal(requests, 2, "the call, then the answer");
   assert.equal(micro(view.cost.usd), micro(requests * REQUEST_USD + 0.003), "usd: the model's requests and monid's $0.003, as on main");
   assert.equal(view.cost.tools_usd, 0.003, "tools_usd: monid's charge for the call");
+  assert.equal(view.cost.billable_usd, view.cost.usd, "no browser race: billable_usd is usd exactly");
 });
 
 test("a run with no paid tool call: tools_usd is 0, and usd is its model requests alone", { timeout: 120_000 }, async (t) => {
@@ -56,6 +58,7 @@ test("a run with no paid tool call: tools_usd is 0, and usd is its model request
   assert.equal(requests, 1);
   assert.equal(micro(view.cost.usd), micro(requests * REQUEST_USD), "usd: the one model request");
   assert.equal(view.cost.tools_usd, 0, "no paid call: $0, never absent or null");
+  assert.equal(view.cost.billable_usd, view.cost.usd, "no browser race: billable_usd is usd exactly");
 });
 
 test("a run with a priced MCP call and a monid call: tools_usd is their sum, inside usd", { timeout: 120_000 }, async (t) => {
@@ -80,9 +83,10 @@ test("a run whose paid call charged an unknown amount: tools_usd is null, as usd
   assert.equal(view.cost.usd, null, "usd: unknown");
   assert.ok(view.cost.so_far_usd >= 0, "usd's known part is said beside it");
   assert.equal(view.cost.tools_usd, null, "tools_usd: unknown too");
+  assert.equal(view.cost.billable_usd, null, "billable_usd: null with usd, never a figure");
 });
 
-test("a learning run a follow-up opened again: its job's paid calls can't be told from its learning's, so tools_usd is null, never more than usd; a run with no follow-up keeps its whole charge (#3234 review)", { timeout: 240_000 }, async (t) => {
+test("a learning run a follow-up opened again: the follow-up's paid call is the job's, in tools_usd, usd and the usage lines; a run with no follow-up keeps its whole charge (#3234 review)", { timeout: 240_000 }, async (t) => {
   const { api, calls } = await server(t, { learning: "on" });
   // The enrich runs monid answered (its run requests, never an endpoint's inspection).
   const enriched = () => readFileSync(calls, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((one) => one.path === "/v1/run" && one.endpoint === "/person/enrich").length;
@@ -98,8 +102,8 @@ test("a learning run a follow-up opened again: its job's paid calls can't be tol
   assert.equal(once.cost.tools_usd, 0.003, `no follow-up: monid's whole charge: ${JSON.stringify(once.cost)}`);
   assert.ok(once.cost.tools_usd <= once.cost.usd, `inside usd: ${JSON.stringify(once.cost)}`);
 
-  // A follow-up that makes a second paid call: the run's usd is what its first round had cost, the follow-up learning's,
-  // and the booking can't split its paid calls by that, so tools_usd is unknown.
+  // A follow-up that makes a second paid call: the follow-up's turn is the job's, so usd grows by it and tools_usd holds
+  // both calls; the usage lines at each end are cumulative.
   const runId = await started(api, "again", CALL);
   const first = (await ended(api, runId)).view;
   assert.equal(first.cost.tools_usd, 0.003, `the first round's charge: ${JSON.stringify(first.cost)}`);
@@ -108,8 +112,14 @@ test("a learning run a follow-up opened again: its job's paid calls can't be tol
   const second = (await ended(api, runId)).view;
   assert.equal(second.status, "completed", JSON.stringify(second.error));
   assert.equal(enriched(), 3, "the follow-up made its own paid call: one for each run's first round, one in the follow-up");
-  assert.equal(micro(second.cost.usd), micro(first.cost.usd), `usd stays the first round's job: ${JSON.stringify(second.cost)}`);
-  assert.equal(second.cost.tools_usd, null, `tools_usd: unknown once a follow-up opened the run again: ${JSON.stringify(second.cost)}`);
+  assert.ok(second.cost.usd > first.cost.usd, `usd holds the follow-up's turn: ${JSON.stringify([first.cost, second.cost])}`);
+  assert.equal(second.cost.tools_usd, 0.006, `tools_usd: both rounds' monid calls: ${JSON.stringify(second.cost)}`);
+  assert.ok(second.cost.tools_usd <= second.cost.usd, `inside usd: ${JSON.stringify(second.cost)}`);
+  const usage = (await api("GET", `/runs/${runId}/usage`)).body;
+  assert.equal(usage.reason, null, JSON.stringify(usage));
+  const tools = usage.lines.filter((one) => one.meter === "tools");
+  assert.deepEqual(tools.map((one) => [one.charged_by, one.quantity, micro(one.usd)]), [["monid", 2, micro(0.006)]], `the tools lines: ${JSON.stringify(usage.lines)}`);
+  assert.equal(micro(usage.total.usd), micro(second.cost.usd), `the lines join to usd: ${JSON.stringify([usage.total, second.cost])}`);
 });
 
 test("a run still at work: tools_usd is null, never a figure read apart from usd's, which a paid call booked between the two reads would put past usd (#3234 review)", { timeout: 120_000 }, async (t) => {
@@ -127,4 +137,38 @@ test("a run still at work: tools_usd is null, never a figure read apart from usd
   assert.equal(view.pending?.kind, "approval", `the run waits on the second call's approval: ${JSON.stringify(view.pending)}`);
   assert.equal(readFileSync(calls, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((one) => one.path === "/v1/run" && one.endpoint === "/person/enrich").length, 1, "the paid call ran before the wait");
   assert.equal(view.cost.tools_usd, null, `a run at work: tools_usd is unknown until it ends: ${JSON.stringify(view.cost)}`);
+  assert.equal(typeof view.cost.usd, "number", `a run at work has its usd so far: ${JSON.stringify(view.cost)}`);
+  assert.equal(view.cost.billable_usd, view.cost.usd, `a run at work with no browser race: billable_usd is usd, never null: ${JSON.stringify(view.cost)}`);
+});
+
+test("a learning run a follow-up opened again whose ledger row an earlier build wrote (its job the first round's figure) reads as this build's split once the server opens again: usd holds tools_usd, the follow-up is not learning, and the usage lines join to usd (#4050 review)", { timeout: 240_000 }, async (t) => {
+  const first = await server(t, { learning: "on" });
+  const CALL = 'Call monid__faux__person__enrich with {"body":{"name":"Ada"}}';
+  const saved = await first.api("POST", "/agents", agent("again", { learning: true, tools: [ENRICH], tool_settings: allowed(ENRICH) }));
+  assert.equal(saved.status, 201, JSON.stringify(saved.body));
+  const runId = await started(first.api, "again", CALL);
+  await ended(first.api, runId);
+  const sent = await first.api("POST", `/runs/${runId}/messages`, { content: CALL });
+  assert.equal(sent.status, 202, JSON.stringify(sent.body));
+  const now = (await ended(first.api, runId)).view;
+  assert.equal(now.status, "completed", JSON.stringify(now.error));
+  assert.equal(now.cost.tools_usd, 0.006, `both rounds' monid calls: ${JSON.stringify(now.cost)}`);
+  await first.stop();
+  // The row as a build before this split wrote it: the job its first round's figure, the follow-up and every end-of-run
+  // turn its look-back; and the store at that build's version, 17, with no mark that its rows were recorded again.
+  const db = await raw(join(first.data, "store.sqlite"), { timeout: 15_000 });
+  const firstJob = JSON.parse((await db.get("SELECT proposal FROM learning_proposals WHERE run_id = ? AND round = 1", runId)).proposal).job_cost_usd;
+  const rowUsd = (await db.get("SELECT cost_usd FROM runs WHERE id = ?", runId)).cost_usd;
+  assert.ok(firstJob > 0 && firstJob < rowUsd, JSON.stringify({ firstJob, rowUsd }));
+  await db.run("UPDATE learning_ledger SET job_usd = ?, look_back_usd = ? WHERE run_id = ?", firstJob, Math.round((rowUsd - firstJob) * 1e9) / 1e9, runId);
+  await db.run("ALTER TABLE store_meta DROP COLUMN ledger_rerecorded");
+  await db.run("UPDATE store_meta SET schema_version = 17 WHERE singleton = 1");
+  await db.close();
+
+  const { api } = await server(t, { learning: "on", data: first.data });
+  const view = (await api("GET", `/runs/${runId}`)).body;
+  assert.ok(view.cost.tools_usd <= view.cost.usd, `tools_usd inside usd: ${JSON.stringify(view.cost)}`);
+  assert.deepEqual([micro(view.cost.usd), micro(view.cost.learning_usd), micro(view.cost.followup_usd)], [micro(now.cost.usd), micro(now.cost.learning_usd), micro(now.cost.followup_usd)], `this build's split, as the run's end recorded it: ${JSON.stringify([view.cost, now.cost])}`);
+  const usage = (await api("GET", `/runs/${runId}/usage`)).body;
+  assert.equal(micro(usage.total.usd), micro(view.cost.usd), `the lines join to usd: ${JSON.stringify([usage.total, view.cost])}`);
 });

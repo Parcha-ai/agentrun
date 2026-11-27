@@ -14,7 +14,7 @@ import type { InputIssue } from "./errors.js";
 import { envValue, type KeyEnv } from "./key-meta.js";
 import type { Settings } from "./store/index.js";
 import { pinnedImage } from "./workspace/archil-disk.js";
-import { ARCHIL_CONTROL_URLS } from "./workspace/archil-mount-credential.js";
+import { ARCHIL_CONTROL_URLS, archilHasExec } from "./workspace/archil-mount-credential.js";
 
 /** The settings key the Archil configuration lives under in store.settings. */
 export const ARCHIL_SETTINGS_KEY = "archil";
@@ -142,6 +142,15 @@ export async function clearArchilSettings(store: { settings: Pick<Settings, "rem
   await store.settings.remove(ARCHIL_SETTINGS_KEY);
 }
 
+/** The Archil region of a Mode 2 server (its settings, `archil`) where the region has no serverless exec
+ *  (archil-mount-credential.ts archilHasExec): a run there with no computer that mounts its folder has no shell
+ *  (resolve-computer.ts shellPlaceOf). Undefined in Mode 1 (`archil` undefined) and where the region has exec. */
+export const noExecRegionOf = (archil: { readonly region: string } | undefined): string | undefined => (archil !== undefined && !archilHasExec(archil.region) ? archil.region : undefined);
+
+/** Why a run with no computer has no shell on a Mode 2 server whose Archil region `region` has no serverless exec
+ *  (noExecRegionOf), in the words each refusal and note of it starts from. */
+export const noExecWords = (region: string): string => `this server's Archil region ${region} has no serverless exec`;
+
 /** Whether the server is in Mode 2 (the Archil settings are set, in `env` or saved). */
 export async function inArchilMode(store: { settings: Pick<Settings, "get"> }, env: KeyEnv = {}): Promise<boolean> {
   return (await loadArchilSettings(store, env)) !== undefined;
@@ -170,6 +179,13 @@ export async function agentDiskOf(store: { settings: Pick<Settings, "get"> }, ag
   const row = typeof read === "object" && read !== null ? (read as Record<string, unknown>) : {};
   if (typeof row.diskId !== "string" || !ARCHIL_DISK_ID.test(row.diskId)) return undefined;
   return { diskId: row.diskId, ...(row.removing === true ? { removing: true as const } : {}), ...(row.pending === true ? { pending: true as const } : {}) };
+}
+
+/** The agents whose own disk (agentDiskOf) is `diskId`, read from every agent's disk row. */
+export async function agentsOnDisk(store: { settings: Pick<Settings, "all"> }, diskId: string): Promise<string[]> {
+  const prefix = agentDiskKey("");
+  const rows = await store.settings.all({ prefix });
+  return rows.filter((row) => typeof row.value === "object" && row.value !== null && (row.value as Record<string, unknown>).diskId === diskId).map((row) => row.key.slice(prefix.length));
 }
 
 /** Stores `disk` on agent `agentId`, as removing when it says so. */

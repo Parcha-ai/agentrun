@@ -72,7 +72,7 @@ test("on SQLite, a runner waits only for a version its server upgrades in place 
     return [report.server, report.runner];
   };
   assert.deepEqual([...SQLITE_UPGRADES], Array.from({ length: SCHEMA_VERSION - OLDEST_UPGRADED }, (_, i) => OLDEST_UPGRADED + i), "every version from OLDEST_UPGRADED to the one before this build's");
-  assert.deepEqual([OLDEST_UPGRADED, SCHEMA_VERSION], [11, 17], "11 is still upgraded, and 16 (the ledger's epoch dropped) is in the window");
+  assert.deepEqual([OLDEST_UPGRADED, SCHEMA_VERSION], [11, 18], "11 is still upgraded, and 17 (the reopened runs' rows under the split before) is in the window");
   assert.deepEqual(verdict(10), ["refuses", "refused"], "10: no in-place upgrade, so neither waits on it");
   for (const version of SQLITE_UPGRADES) assert.deepEqual(verdict(version), ["migrates", "waits"], String(version));
   assert.deepEqual(verdict(SCHEMA_VERSION), ["opens", "opens"]);
@@ -80,16 +80,20 @@ test("on SQLite, a runner waits only for a version its server upgrades in place 
   assert.deepEqual(verdict(null), ["sets up", "refused"]);
 });
 
-// The two steps the last two versions take, in order: a 15 store's ledger keeps each row's epoch, which ledgerUpgrade
-// drops (writing 16); then learningRowsUpgrade makes the learning rows and writes 17. A 16 store takes the rows step alone.
-// A runner of this build waits on either until its server has brought it to this version.
-for (const from of [15, 16]) test(`a store at version ${from} comes to ${SCHEMA_VERSION} at its server's open, never at a runner's: ${from === 15 ? "the ledger's epoch dropped, then the learning rows made" : "the learning rows made"}`, async (t) => {
-  assert.equal(SCHEMA_VERSION, 17);
+// The steps the last three versions take, in order: a 15 store's ledger keeps each row's epoch, which ledgerUpgrade
+// drops (writing 16); then learningRowsUpgrade makes the learning rows and writes 17; then splitUpgrade writes 18, the
+// mark that reopened runs' rows are recorded again added at the same open (and set by its backfill). A 16 store takes the
+// last two steps, a 17 store the last alone. A runner of this build waits on each until its server has brought it to
+// this version.
+const STEPS = { 15: "the ledger's epoch dropped, then the learning rows made, then the split's mark", 16: "the learning rows made, then the split's mark", 17: "the split's mark" };
+for (const from of [15, 16, 17]) test(`a store at version ${from} comes to ${SCHEMA_VERSION} at its server's open, never at a runner's: ${STEPS[from]}`, async (t) => {
+  assert.equal(SCHEMA_VERSION, 18);
   const dir = await serverMade(t);
   const file = join(dir, STORE_FILE);
   const db = new DatabaseSync(file);
-  for (const table of ["learning_records", "learning_items", "learning_saves"]) db.exec(`DROP TABLE ${table}`);
+  if (from <= 16) for (const table of ["learning_records", "learning_items", "learning_saves"]) db.exec(`DROP TABLE ${table}`);
   if (from === 15) db.exec("ALTER TABLE learning_ledger ADD COLUMN epoch INTEGER");
+  db.exec("ALTER TABLE store_meta DROP COLUMN ledger_rerecorded");
   db.exec(`UPDATE store_meta SET schema_version = ${from} WHERE singleton = 1`);
   db.close();
   assert.deepEqual((await readStoreSchema(dir, sqliteEnv)).runner, "waits");
@@ -97,7 +101,8 @@ for (const from of [15, 16]) test(`a store at version ${from} comes to ${SCHEMA_
   await (await openSqliteStore({ dataDir: dir, role: "server" })).close();
   const after = new DatabaseSync(file, { readOnly: true });
   t.after(() => after.close());
-  assert.equal(after.prepare("SELECT schema_version AS v FROM store_meta").get().v, SCHEMA_VERSION, "the rows step ran last: it writes 17 after the ledger's 16");
+  assert.equal(after.prepare("SELECT schema_version AS v FROM store_meta").get().v, SCHEMA_VERSION, "the split's step ran last: it writes 18 after the rows step's 17");
+  assert.equal(after.prepare("SELECT ledger_rerecorded AS split FROM store_meta").get().split, 1, "the mark added, then set by the open's backfill");
   const tables = new Set(after.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((row) => row.name));
   assert.deepEqual(["learning_saves", "learning_items", "learning_records"].filter((table) => !tables.has(table)), [], "the learning rows are made");
   assert.equal(after.prepare("SELECT COUNT(*) AS n FROM pragma_table_info('learning_ledger') WHERE name = 'epoch'").get().n, 0, "no ledger row keeps an epoch");

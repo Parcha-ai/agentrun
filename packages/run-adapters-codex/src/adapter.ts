@@ -15,7 +15,7 @@ import { HOST_RESULT_MAX_CHARS, READ_SKILL_FILE, hostedTool, readSkillFileTool, 
 import type { AdapterEvent, AdapterSession, AgentAdapter, CapCut, GateCall, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, SessionHalt, type Drive } from "@parcha/agentrun-kernel/kernel";
 import { pendingSubmissions } from "@parcha/agentrun-kernel/kernel";
-import { bridgeTool, NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
+import { bridgeTool, NativeJournal, recoveryNote, settleTurn, transcriptOf, windowBudget } from "@parcha/agentrun-kernel/process";
 import { codexSchemaProblems, describedDescription } from "./schema.js";
 import { markParked } from "./scripts.js";
 import { withCheckedBinary } from "./host/sandbox.js";
@@ -76,7 +76,9 @@ export interface CodexAdapterOptions {
   webSearch?: CodexWebSearch;
   /** The most output tokens one request may ask for. Default 32 000. */
   maxOutputTokens?: number;
-  /** The model's context window. Default 272 000. */
+  /** The model's context window, in tokens: Codex is told it (`model_context_window`), and the host's bound on one tool
+   *  result is its share of it (the kernel's resultMaxChars). A session's own (SessionSpec.contextWindow) wins. With
+   *  neither, Codex is told 272 000 and the host's bound alone holds a result. */
   contextWindow?: number;
   /** Where sessions keep their private directories when the host lends none (`io.dir`): one per session key. */
   sessionsDir?: string;
@@ -193,6 +195,10 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
       const hostNames = new Map(tools.map((t) => [codexToolName(t.name), t.name] as const));
       const hostName = (name: string) => hostNames.get(name) ?? name;
       const effort = spec.effort ?? spec.thinking;
+      const window = spec.contextWindow ?? options.contextWindow;
+      // Each tool result held to the model's share of the window, and a turn's results to what it has left, which the
+      // session's model proxy reads from each answer (its turn).
+      const budget = windowBudget(window, spec.system);
       // The live search runs inside a model request, where no call reaches the gate: it is offered only while the host's
       // web_search setting allows it, read before each request (a deny or ask set mid-run drops it from the next one).
       const searchAllowed = options.webSearch && io.permission ? async () => (await io.permission!("web_search")) === "allow" : undefined;
@@ -229,7 +235,10 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         ...(effort ? { effort } : {}),
         credential: async () => options.provider.credential(),
         gatewayUrl: options.provider.origin,
-        contextWindow: options.contextWindow ?? 272_000,
+        // The window the host knows (the session's, from its catalog; else this adapter's). Only with neither is Codex told
+        // 272,000, a guess at a large OpenAI model's, and then no tool result is held to it: the host's bound alone.
+        contextWindow: window ?? 272_000,
+        ...budget,
         ...(options.log ? { log: options.log } : {}),
         ...(options.standIn ? { test: { command: options.standIn.command, args: options.standIn.args ?? [] } } : {}),
         machine: {
@@ -246,6 +255,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
             ...(options.webSearch ? { webSearch: options.webSearch, ...(searchAllowed ? { searchAllowed } : {}) } : {}),
             proxy: {
               hooks: io.models,
+              ...(budget.resultBudget?.turn ? { turn: budget.resultBudget.turn } : {}),
               tools: tools.map((t) => codexToolName(t.name)),
               ...(options.log ? { log: options.log } : {}),
               ...(options.price ? { price: options.price } : {}),

@@ -1671,3 +1671,106 @@ test("a run of several actions whose connection drops partway is a dropped brows
   assert.equal(dropped, 1, "the dropped driver was let go, so the next call reconnects");
   assert.deepEqual(acts, ["1-1"]);
 });
+
+/** A workspace inside a scratch folder of its own, so a path that left it would land beside it, where it can be seen. */
+const saveRig = (t) => {
+  const around = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), "save-as-"));
+  t.after(() => fs.rmSync(around, { recursive: true, force: true }));
+  const workspace = path.join(around, "work");
+  fs.mkdirSync(workspace);
+  return { around, workspace };
+};
+const tree = (dir) => fs.readdirSync(dir, { recursive: true }).map(String).sort();
+
+test("screenshot save_as: the file holds the evidence capture's own bytes, its folders are made, and the evidence is filed as without save_as", async (t) => {
+  const { workspace } = saveRig(t);
+  const run = await session(t, [["screenshot", { type: "png" }], ["screenshot", { save_as: "shots/walk/walk-1.png" }]], { workspace });
+  const [plain, saved] = run.filed.map((f) => f.record);
+  const written = fs.readFileSync(path.join(workspace, "shots", "walk", "walk-1.png"));
+  assert.deepEqual(written, Buffer.from(saved.body), "the saved file is the filed capture, byte for byte");
+  assert.equal(sha(written), run.seen[1].details.sha256, "the result's hash is the saved file's");
+  assert.deepEqual(written, Buffer.from(run.seen[1].content[1].data, "base64"), "and the image the model sees");
+  assert.deepEqual({ ...saved, facts: { ...saved.facts, sha256: null } }, { ...plain, facts: { ...plain.facts, sha256: null } }, "the evidence is filed as a png capture with no save_as is");
+  assert.equal(saved.facts.sha256, plain.facts.sha256);
+  assert.equal(run.seen[1].isError, false);
+  assert.match(run.texts[1], /^url: https:\/\/example\.test\/start\nevidence: evidence\/node-a\/2-screenshot\.md\nsaved: shots\/walk\/walk-1\.png$/);
+  assert.deepEqual(run.seen[1].details.save_as, { path: "shots/walk/walk-1.png", saved: true });
+  assert.deepEqual(run.seen[1].details.media.mime, "image/png", "a .png name takes a PNG");
+  assert.deepEqual(tree(workspace), ["shots", "shots/walk", "shots/walk/walk-1.png"], "nothing else is written, no temporary file left");
+});
+
+test("screenshot save_as replaces a file already at the path, and a .jpg name keeps the capture as it was asked", async (t) => {
+  const { workspace } = saveRig(t);
+  fs.writeFileSync(path.join(workspace, "walk.jpg"), "stale");
+  const run = await session(t, [["screenshot", { save_as: "./walk.jpg" }]], { workspace });
+  assert.deepEqual(fs.readFileSync(path.join(workspace, "walk.jpg")), Buffer.from(run.filed[0].record.body));
+  assert.deepEqual([run.filed[0].record.ext, run.filed[0].record.args], ["jpg", {}], "the capture and its receipt are a plain screenshot's");
+  assert.deepEqual(run.seen[0].details.save_as, { path: "walk.jpg", saved: true });
+});
+
+test("screenshot save_as that leaves the workspace, or names no image or the wrong format, is refused before any browser call: nothing captured, filed or written", async (t) => {
+  const { around, workspace } = saveRig(t);
+  const asks = [
+    { save_as: "../escape.png" }, { save_as: "shots/../../escape.png" }, { save_as: path.join(around, "escape.png") }, { save_as: "" },
+    { save_as: "notes.txt" }, { save_as: "shots/.png" }, { save_as: "walk.png", type: "jpeg" }, { save_as: "walk.jpg", type: "png" },
+  ];
+  const run = await session(t, asks.map((args) => ["screenshot", args]), { workspace });
+  for (const [i, args] of asks.entries()) {
+    assert.equal(run.seen[i].isError, true, JSON.stringify(args));
+    const answer = failure(run.texts[i]);
+    assert.equal(answer.code, "refused", JSON.stringify(args));
+    assert.match(answer.message, /save_as/, answer.message);
+  }
+  assert.match(failure(run.texts[0]).message, /'\.\.'/);
+  assert.match(failure(run.texts[2]).message, /absolute/);
+  assert.match(failure(run.texts[6]).message, /type asks for a JPEG/);
+  assert.equal(run.backend.dispatched.filter((row) => row.op === "screenshot").length, 0, "no capture was taken");
+  assert.equal(run.backend.tally().creates, 0, "no session was opened");
+  assert.deepEqual(run.filed, [], "nothing was filed");
+  assert.deepEqual(tree(around), ["work"], "nothing was written beside the workspace");
+  assert.deepEqual(tree(workspace), [], "nor in it");
+});
+
+test("screenshot save_as on a host that gives the browser no workspace is refused before any browser call", async (t) => {
+  const run = await session(t, [["screenshot", { save_as: "walk.png" }]]);
+  assert.equal(run.seen[0].isError, true);
+  assert.match(failure(run.texts[0]).message, /no workspace to save a screenshot into/);
+  assert.equal(run.backend.tally().creates, 0);
+});
+
+test("screenshot save_as of a PNG the size budget retook as a JPEG saves nothing, is no error, and says why in the text and the details", async (t) => {
+  const { workspace } = saveRig(t);
+  const run = await session(t, [["screenshot", { fullPage: true, save_as: "page.png" }]], { workspace, backend: new FakeBackend({ start: START, pages: { [START]: ARTICLE }, deviceScale: 2 }) });
+  assert.equal(run.seen[0].isError, false);
+  assert.equal(run.filed[0].record.ext, "jpg", "the capture is filed as the JPEG it became");
+  assert.equal(run.seen[0].content[1].mimeType, "image/jpeg");
+  assert.match(run.texts[0], /\nnot saved: the PNG was over the size budget and was taken as a JPEG, so it was not saved as page\.png; save a \.jpg name, or capture a smaller region/);
+  assert.equal(run.seen[0].details.save_as.saved, false);
+  assert.deepEqual([run.seen[0].details.save_as.path, run.seen[0].details.save_as.reason], ["page.png", "format_changed"]);
+  assert.deepEqual(tree(workspace), [], "no file whose bytes are not what its name says");
+});
+
+test("screenshot with no save_as writes nothing into the workspace and its answer names no save", async (t) => {
+  const { workspace } = saveRig(t);
+  const run = await session(t, [["screenshot", {}]], { workspace });
+  assert.equal("save_as" in run.seen[0].details, false);
+  assert.doesNotMatch(run.texts[0], /saved/);
+  assert.deepEqual(tree(workspace), []);
+});
+
+test("screenshot save_as with a backslash is refused before any browser call, so a folder the run's gate reads by '/' cannot be reached another way", async (t) => {
+  const { around, workspace } = saveRig(t);
+  const asks = ["stripe\\pages\\shot.png", "stripe/pages\\shot.png", "..\\escape.png"];
+  const run = await session(t, asks.map((save_as) => ["screenshot", { save_as }]), { workspace });
+  for (const [i, given] of asks.entries()) {
+    assert.equal(run.seen[i].isError, true, given);
+    assert.equal(failure(run.texts[i]).code, "refused", given);
+  }
+  assert.match(failure(run.texts[0]).message, /never a backslash/);
+  assert.match(failure(run.texts[1]).message, /never a backslash/);
+  assert.match(failure(run.texts[2]).message, /'\.\.'|never a backslash/);
+  assert.equal(run.backend.tally().creates, 0, "no session was opened");
+  assert.deepEqual(run.filed, []);
+  assert.deepEqual(tree(workspace), [], "nothing reached stripe/pages/ or anywhere in the workspace");
+  assert.deepEqual(tree(around), ["work"]);
+});

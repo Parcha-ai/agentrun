@@ -39,6 +39,8 @@ const booked = (turn, usd, data = {}) => [
   { kind: "runner.turn", conversationId: SESSION, data: { turn, usd, usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } },
 ];
 const node = (turn, usd) => booked(turn, usd, { host: "learned_workflow", side: true });
+/** The mark the gate keeps when it lets an agent's learned_workflow call go, before the tool runs (LEARNED_ALLOWED). */
+const allowed = (call) => ({ kind: LEARNED_ALLOWED, conversationId: ROOT, data: { call } });
 
 test("an agent's call is its record's: its workflow, digest, caller and outcome, and what its nodes booked in its window, the agent's own requests left out", () => {
   const entries = [
@@ -153,6 +155,41 @@ test("a call whose record says refused is refused only while nothing was booked 
   assert.deepEqual(outcomes([...booked(2, 0.1, { call: WORKFLOW_FIRST_CALL }), kept(WORKFLOW_FIRST_CALL, refused)]), [["platform", "failed", null]]);
   // Nothing booked under it (the agent's own turns beside it are never its): refused at $0.
   assert.deepEqual(outcomes([...booked(1, 1), start("c1"), kept("c1", refused), end("c1"), ...booked(3, 1)]), [["agent", "refused", 0]]);
+  // Its window shared with a sibling call issued beside it, its spend a model node's (a host label, no call id): the
+  // attempt let go before the one refused (its allow mark) may have run, so it failed, its $ unknown, never $0.
+  assert.deepEqual(outcomes([allowed("c1"), start("c1"), start("r1", "read"), ...node(2, 0.25), allowed("c1"), kept("c1", refused), end("r1"), end("c1")]), [["agent", "failed", null]]);
+  // The same, its window its own: failed at what its node booked.
+  assert.deepEqual(outcomes([allowed("c1"), start("c1"), ...node(2, 0.25), allowed("c1"), kept("c1", refused), end("c1")]), [["agent", "failed", 0.25]]);
+  // Its one attempt let go, refused at runLearned's check: it ran nothing, sibling or not.
+  assert.deepEqual(outcomes([allowed("c1"), start("c1"), start("r1", "read"), kept("c1", refused), end("r1"), end("c1")]), [["agent", "refused", 0]]);
+  // The attempt let go was refused, and its gate refused it again since: nothing ran.
+  assert.deepEqual(outcomes([allowed("c1"), start("c1"), start("r1", "read"), kept("c1", refused), end("r1"), end("c1"), kept("c1", refused)]), [["agent", "refused", 0]]);
+  // Another call's mark is no attempt of this one.
+  assert.deepEqual(outcomes([allowed("c2"), allowed("c1"), start("c1"), start("r1", "read"), kept("c1", refused), end("r1"), end("c1")]), [["agent", "refused", 0]]);
+  // Every attempt counts, not only the one before the newest: the oldest let go and cut after its node booked (no record),
+  // the next refused at runLearned, a crash again, the newest refused too. The oldest is still open: failed, $ unknown.
+  const twoEarlier = [
+    allowed("c1"), start("c1"), start("r1", "read"), ...node(2, 0.25),
+    allowed("c1"), kept("c1", refused), end("r1"), end("c1"),
+    allowed("c1"), start("c1"), kept("c1", refused), end("c1"),
+  ];
+  assert.deepEqual(outcomes(twoEarlier), [["agent", "failed", null]]);
+  // An attempt let go after the refused record, with none of its own kept since (a crash cut it): open, so failed, and
+  // its $ unknown: it spent past the refused record's window, which never closed on it.
+  assert.deepEqual(outcomes([allowed("c1"), start("c1"), kept("c1", refused), end("c1"), allowed("c1"), start("c1"), ...node(2, 0.25)]), [["agent", "failed", null]]);
+  // An attempt whose record says it ran (no node ended: it threw) is no refusal of it: failed.
+  assert.deepEqual(outcomes([allowed("c1"), start("c1"), kept("c1", { ended: "failed" }), end("c1"), allowed("c1"), start("c1"), kept("c1", refused), end("c1")]), [["agent", "failed", 0]]);
+});
+
+test("a CLI's own side request in a refused call's window (its title or summary helper on another model) is no proof the call spent: it stays refused at $0", () => {
+  const refused = { ended: "failed", refused: true };
+  const outcomes = (entries) => workflowCallsOf(entries).map(({ caller, outcome, usd }) => [caller, outcome, usd]);
+  const helper = (turn) => booked(turn, 0.01, { model: "small", side: true });
+  assert.deepEqual(outcomes([...booked(1, 1), start("c1"), ...helper(2), kept("c1", refused), end("c1")]), [["agent", "refused", 0]]);
+  // A host's request in the window (a node's, or a host tool's a call node ran) is the call's own: failed at its window's $,
+  // which leaves the helper's out as well: it is never the call's, so it is never in its price either.
+  assert.deepEqual(outcomes([start("c1"), ...node(2, 0.25), ...helper(3), start("c1"), kept("c1", refused), end("c1")]), [["agent", "failed", 0.25]]);
+  assert.deepEqual(outcomes([start("c1"), ...booked(2, 0.1, { host: "web_fetch", side: true }), start("c1"), kept("c1", refused), end("c1")]), [["agent", "failed", 0.1]]);
 });
 
 test("whether an attempt of a call refused at its gate may have run: its newest allow mark or record says, and with neither, the bridge's word that it is issued again", () => {
@@ -235,7 +272,7 @@ test("a learning run's metrics keep its calls and its first choice's reason; a r
   const metrics = pathMetrics(launch, { path: "workflow", workflow: "a" }, entries, "none_fit");
   assert.deepEqual(metrics.workflow_calls, [{ workflow: "a", digest: D, caller: "agent", outcome: "answered", usd: 0.25 }]);
   assert.equal(metrics.first_choice, "none_fit");
-  assert.equal(metrics.workflow_digest, undefined, "the top-level digest stays the platform's call's, which the audits read");
+  assert.equal(metrics.workflow_digest, undefined, "the top-level digest is the classifier's (runPathOverStore), never read off the calls here");
   assert.deepEqual(pathMetrics(launch, { path: "agent", workflow: null }, []).workflow_calls, [], "a learning run that called none keeps an empty list");
   const replay = pathMetrics({ ...launch, replay: { of: "r0", workflow: "a", digest: D } }, { path: "workflow", workflow: "a" }, entries, "replay");
   assert.equal(replay.workflow_calls, undefined);

@@ -5,7 +5,7 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import type { TSchema } from "typebox";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import { askedUrl, type FetchOptions, type FoundPage, type Page, type Part, partProblem, WEB_FETCH_DESCRIPTION, WEB_FETCH_PARAMETERS, webFetchText, type WebPage } from "@parcha/agentrun-web";
-import { fetchOptions, webOf } from "./web-run.js";
+import { fetchOptions, logReceipt, webOf } from "./web-run.js";
 import { FAUX_ENV } from "./model.js";
 import { forModel } from "./result.js";
 import { isUnavailable, planeOf, whyUnavailable } from "./tool-plane.js";
@@ -13,12 +13,14 @@ import { isUnavailable, planeOf, whyUnavailable } from "./tool-plane.js";
 export const WEB_FETCH_TOOL = "web_fetch";
 
 /** The part `options` names of the page at `url`, through the run's Web (where `options.objective` is given and a
- *  decider runs, the page's likeliest chunks); a failed Page saying why where web_fetch does not run here. A part a
- *  call may not ask for is refused first. */
+ *  decider runs, the page's likeliest chunks), its receipt on the server's log (web-run.ts logReceipt); a failed Page
+ *  saying why where web_fetch does not run here. A part a call may not ask for is refused first. */
 export async function fetchFor(env: NodeJS.ProcessEnv, url: unknown, options: FetchOptions = {}): Promise<WebPage | Page | FoundPage> {
   const resolved = planeOf(env).web_fetch;
   if (isUnavailable(resolved) && !partProblem(options)) return { ok: false, url: askedUrl(url), status: 0, title: "", text: "", links: [], error: `web_fetch does not run here: ${whyUnavailable(resolved)}` };
-  return (await webOf(env).fetch(url, options)).answer;
+  const { answer, receipt } = await webOf(env).fetch(url, options);
+  logReceipt(receipt);
+  return answer;
 }
 
 /** The agent's tool, named `name`. The run's Web is made as the tool is made, when the run opens: it reads the key of

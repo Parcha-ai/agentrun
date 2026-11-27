@@ -28,6 +28,7 @@ const { META_REASON } = await import("../dist/mcp-meta.js");
 const { TOOL_COST, TOOL_UNMETERED } = await import("../dist/timeline/index.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
 const { mcpForClaim } = await import("../dist/runner/mcp-run.js");
+const { heldRedactor, keepText } = await import("../dist/runner/redact.js");
 const { adapterRunGate } = await import("../dist/runner/adapter-run-spec.js");
 const { GITHUB_UNUSABLE } = await import("../dist/runner/mcp-github.js");
 const { UNUSABLE } = await import("../dist/mcp-probe.js");
@@ -98,7 +99,7 @@ async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], p
   t.after(() => rmSync(work, { recursive: true, force: true }));
   const loop = createAdapterLoop(async (claim, run) => {
     // As a spec builder does: the claim's MCP first (mcpForClaim), before anything the spec would have to let go.
-    const mcp = await mcpForClaim({ loopback: true, claim, store: { mcp: store.mcp, runs: store.runs, agents: store.agents, settings: store.settings, triggerSettings: store.triggerSettings, where: store.where }, sealKey: KEY, grants, harness: run.harness, work: () => work, ...(held ? { hold: (values) => held.push(...values) } : {}), ...(network ? { network } : {}), ...(githubAppAccess ? { githubAppAccess, launchInput, githubMcpOrigin: new URL(fake.url).origin } : {}) });
+    const mcp = await mcpForClaim({ redact: heldRedactor(keepText), loopback: true, claim, store: { mcp: store.mcp, runs: store.runs, agents: store.agents, settings: store.settings, triggerSettings: store.triggerSettings, where: store.where }, sealKey: KEY, grants, harness: run.harness, work: () => work, ...(held ? { hold: (values) => held.push(...values) } : {}), ...(network ? { network } : {}), ...(githubAppAccess ? { githubAppAccess, launchInput, githubMcpOrigin: new URL(fake.url).origin } : {}) });
     if (mcp) opened.push(mcp);
     return {
       ...(await base(claim, run)),

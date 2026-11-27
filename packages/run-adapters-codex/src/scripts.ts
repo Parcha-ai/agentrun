@@ -12,7 +12,7 @@
 // `exec` anyway makes two live, and then a nested call cannot be told from the other's.
 import { HOST_RESULT_MAX_CHARS } from "@parcha/agentrun-kernel";
 import type { DriveContext } from "@parcha/agentrun-kernel/kernel";
-import { boundResult } from "./host/process.js";
+import { boundResult, resultMaxChars, type ResultBudget } from "./host/process.js";
 import { parseLine } from "./rollout.js";
 
 /** The id Codex gives a host tool called from a code-mode script. */
@@ -140,7 +140,7 @@ export interface NestedFact {
   callId: string;
   tool: string;
   /** The session's own record (the effect of `tool:<id>`): none when the call never started. */
-  store?: { status: "completed" | "failed" | "started"; text?: string; interrupted?: boolean; /** What a script's nested call was sent for a tool with a value (scriptAnswer: the value as JSON, its images' data in it), which the rollout holds instead of `text`. */ sent?: string };
+  store?: { status: "completed" | "failed" | "started"; text?: string; interrupted?: boolean; /** What a script's nested call was sent for a tool with a value (scriptAnswer: the value as JSON, its images' data in it), which the rollout holds instead of `text`. */ sent?: string; /** How the bridge cut the result it handed Codex (its record, `boundKey`): the characters kept and the whole length. */ bound?: { kept: number; whole: number } };
   /** What the harness's recovery note of the same turn calls it (the kernel's one rule, process/recovery.ts): `retryable` is a
    *  safe tool's call that a crash cut off, which the note tells the model is safe to repeat. */
   told?: "completed" | "failed" | "interrupted" | "retryable" | "running";
@@ -166,17 +166,24 @@ export const markParked = (ctx: DriveContext, callId: string): Promise<unknown> 
 /** What a nested call came to. A call the host parked is `parked`, whatever else holds: it never ran. Else the store's record first, the rollout's completion second: both complete and agreeing, or
  *  one of them, is that outcome; both complete and disagreeing, or a call that started and has no end in either, is
  *  interrupted (its effect is unknown), and a failure the store marks interrupted is interrupted. They agree when the
- *  rollout holds what the bridge handed Codex for the stored text: the store's text held to the host's bound
- *  (`boundResult`), since the store keeps a result whole and Codex got its cut; or the stored text itself, as a session
- *  written before that bound holds it in both records. */
+ *  rollout holds what the bridge handed Codex for the stored text: the stored text itself; or, where the bridge recorded
+ *  its cut (`store.bound`), a text that starts with the stored text's kept characters, the stored text as long as the
+ *  record says, compared on those lengths and never on the cut's note, whose words are free to change; or the stored
+ *  text cut at the host's bound, as a session written before the record (a release before it) holds it. Any other cut
+ *  with no record is no proof the two are one call's. */
 export function settle(fact: NestedFact): Settled {
   if (fact.parked) return { kind: "parked" };
   const { store, rollout } = fact;
   const stored = store?.status === "completed" ? ({ kind: "completed", text: store.text ?? "" } as const) : store?.status === "failed" && !store.interrupted ? ({ kind: "failed", text: store.text ?? "" } as const) : undefined;
   const rolled = rollout ? ({ kind: rollout.ok ? "completed" : "failed", text: rollout.text } as const) : undefined;
-  if (stored && rolled) return stored.kind === rolled.kind && (rolled.text === stored.text || rolled.text === boundResult(stored.text).text || (store?.sent !== undefined && rolled.text === store.sent)) ? stored : { kind: "interrupted" };
+  if (stored && rolled) return stored.kind === rolled.kind && (rolled.text === stored.text || cutOf(rolled.text, stored.text, store?.bound) || rolled.text === boundResult(stored.text).text || (store?.sent !== undefined && rolled.text === store.sent)) ? stored : { kind: "interrupted" };
   return stored ?? rolled ?? { kind: "interrupted" };
 }
+
+/** Whether `text` is the cut of `whole` the bridge recorded (`bound`): `whole` as long as the record says, and `text`
+ *  starting with its kept characters. */
+const cutOf = (text: string, whole: string, bound: { kept: number; whole: number } | undefined): boolean =>
+  bound !== undefined && whole.length === bound.whole && bound.kept <= whole.length && text.startsWith(whole.slice(0, bound.kept));
 
 /** The most a recovered script's output holds (a cut-off `exec`'s, or the `wait` on its cell): one result at the host's bound, as
  *  the script was handed it, and the words that tell each call's outcome around it. It stands in for the script's own output,
@@ -185,6 +192,14 @@ export function settle(fact: NestedFact): Settled {
  *  call's outcome is still told. Only when the lines alone pass it is the output itself cut, with its note: the calls past
  *  the cut are not in it, and the recovery note does not say they are (`Recovered.shown`). */
 export const EXEC_RECOVERY_MAX_CHARS = HOST_RESULT_MAX_CHARS + 2_000;
+
+/** The most a recovered output holds for a model of `budget` (the session's window): EXEC_RECOVERY_MAX_CHARS with none, or
+ *  one too large to bind (as it always was); else the per-model bound itself (the kernel's resultMaxChars), words and all,
+ *  since the output is one tool result the model reads. */
+export function recoveryMaxChars(budget?: ResultBudget): number {
+  const max = resultMaxChars(budget);
+  return max < HOST_RESULT_MAX_CHARS ? max : EXEC_RECOVERY_MAX_CHARS;
+}
 
 /** A last line longer than this is not kept when a result is cut: it is the result's own text, not a pointer to the rest. */
 const LAST_LINE_MAX = 1_000;
@@ -219,10 +234,11 @@ export interface Recovered {
 }
 
 /** A recovered output built by `build` from its calls' lines (`told`, in the order `build` writes them) at a cap on each
- *  quoted text: whole when it fits in EXEC_RECOVERY_MAX_CHARS; else at the largest cap that fits (the same for every quoted
+ *  quoted text: whole when it fits in recoveryMaxChars(budget); else at the largest cap that fits (the same for every quoted
  *  text); else, the lines alone passing the bound, the output cut to the bound with its note, and the calls past the cut
  *  not in it. */
-function fitted(told: readonly Told[], build: (cap: number) => string): Recovered {
+function fitted(told: readonly Told[], build: (cap: number) => string, budget?: ResultBudget): Recovered {
+  const max = recoveryMaxChars(budget);
   const at = (cap: number, output: string, limit = output.length): Recovered => {
     const shown: string[] = [];
     let from = 0;
@@ -236,17 +252,21 @@ function fitted(told: readonly Told[], build: (cap: number) => string): Recovere
     return { output, shown };
   };
   const whole = build(Number.POSITIVE_INFINITY);
-  if (whole.length <= EXEC_RECOVERY_MAX_CHARS) return at(Number.POSITIVE_INFINITY, whole);
+  if (whole.length <= max) return at(Number.POSITIVE_INFINITY, whole);
   const least = build(0);
-  if (least.length > EXEC_RECOVERY_MAX_CHARS) {
-    const { text, kept } = cut(least, EXEC_RECOVERY_MAX_CHARS);
+  if (least.length > max) {
+    const { text, kept } = cut(least, max);
+    // A window too small for even the lines, where cut keeps a short last line past its cap: held to the kernel's bound
+    // (which refuses it in words), and then it tells no call's outcome. With no window binding this is never taken, and
+    // the output and the calls it tells are exactly as they always were.
+    if (max < EXEC_RECOVERY_MAX_CHARS && text.length > max) return { output: boundResult(text, budget).text, shown: [] };
     return at(0, text, kept);
   }
   let lo = 0;
   let hi = whole.length;
   while (lo < hi) {
     const mid = Math.ceil((lo + hi) / 2);
-    if (build(mid).length <= EXEC_RECOVERY_MAX_CHARS) lo = mid;
+    if (build(mid).length <= max) lo = mid;
     else hi = mid - 1;
   }
   return at(lo, build(lo));
@@ -271,11 +291,12 @@ export function recoveryFacts<T>(execs: readonly string[], ties: readonly Nested
 }
 
 /** What a call of a recovered script came to, as its line tells it. A result or an error it quotes is the one the script was
- *  handed live: held to the host's bound as the bridge holds it (`boundResult`); the session's record keeps it whole. */
-const describeCall = (fact: NestedFact, label: string): Told => {
+ *  handed live: held to the bound for the session's model as the bridge holds it (`boundResult` at `budget`); the
+ *  session's record keeps it whole. */
+const describeCall = (fact: NestedFact, label: string, budget?: ResultBudget): Told => {
   const settled = settle(fact);
   const shows = outcomeShown(fact);
-  const told = (head: string, text: string, tail: string): Told => ({ head, text: boundResult(text).text, tail, callId: fact.callId, shows });
+  const told = (head: string, text: string, tail: string): Told => ({ head, text: boundResult(text, budget).text, tail, callId: fact.callId, shows });
   if (settled.kind === "parked") return { head: `${label} was waiting for a person's approval and did not run; it was not run again.`, tail: "" };
   const again = fact.resumed;
   if (again && !again.ran) return told(`${label} waited for a person's approval, then: `, again.text, ". It did not run.");
@@ -301,14 +322,14 @@ export function outcomeShown(fact: NestedFact): boolean {
  *  whose script could not be told (given to the last cut-off exec only), listed apart under their own heading. */
 /** What a dangling `wait` on a yielded exec's cell is told when calls of that script that waited for a person's approval
  *  were answered on this resume (code-mode.ts recoverItems): each call's outcome, in order. */
-export function waitResumedText(cell: string, resumed: readonly NestedFact[]): string {
-  return waitResumed(cell, resumed).output;
+export function waitResumedText(cell: string, resumed: readonly NestedFact[], budget?: ResultBudget): string {
+  return waitResumed(cell, resumed, budget).output;
 }
 
 /** waitResumedText, and the calls whose outcome it tells. */
-export function waitResumed(cell: string, resumed: readonly NestedFact[]): Recovered {
-  const told = resumed.map((fact, i) => describeCall(fact, `${i + 1}. ${fact.tool}`));
-  return fitted(told, (cap) => `${waitCutOpener(cell)}${told.map((t) => lineOf(t, cap)).join("\n")}\nNothing else of the script was run again. Check the actual state before relying on it.`);
+export function waitResumed(cell: string, resumed: readonly NestedFact[], budget?: ResultBudget): Recovered {
+  const told = resumed.map((fact, i) => describeCall(fact, `${i + 1}. ${fact.tool}`, budget));
+  return fitted(told, (cap) => `${waitCutOpener(cell)}${told.map((t) => lineOf(t, cap)).join("\n")}\nNothing else of the script was run again. Check the actual state before relying on it.`, budget);
 }
 
 /** The words a resumed `wait`'s output opens with (waitResumed): the model is told its cell's script went with the session. */
@@ -337,22 +358,22 @@ export function recoveredFailed(own: readonly NestedFact[]): boolean {
   return settle(last).kind !== "completed";
 }
 
-export function execRecoveryOutput(facts: readonly NestedFact[], loose: readonly NestedFact[] = []): string {
-  return execRecovery(facts, loose).output;
+export function execRecoveryOutput(facts: readonly NestedFact[], loose: readonly NestedFact[] = [], budget?: ResultBudget): string {
+  return execRecovery(facts, loose, budget).output;
 }
 
 /** execRecoveryOutput, and the calls whose outcome it tells: only those the recovery note may say are above. */
-export function execRecovery(facts: readonly NestedFact[], loose: readonly NestedFact[] = []): Recovered {
+export function execRecovery(facts: readonly NestedFact[], loose: readonly NestedFact[] = [], budget?: ResultBudget): Recovered {
   if (facts.length === 0 && loose.length === 0) return { output: `The exec was cut short before any tool call of it was recorded; it ran none. Run it again if it is still needed.`, shown: [] };
-  const own = facts.map((fact, i) => describeCall(fact, `${i + 1}. ${fact.tool}`));
-  const others = loose.map((fact, i) => describeCall(fact, `${i + 1}. ${fact.tool}`));
+  const own = facts.map((fact, i) => describeCall(fact, `${i + 1}. ${fact.tool}`, budget));
+  const others = loose.map((fact, i) => describeCall(fact, `${i + 1}. ${fact.tool}`, budget));
   return fitted([...own, ...others], (cap) => {
     const apart = others.length
       ? `\n${others.length} ${others.length === 1 ? "call" : "calls"} ran whose script could not be told (an answer of the model's could not be read to its end):\n${others.map((t) => lineOf(t, cap)).join("\n")}`
       : "";
     if (own.length === 0) return `The exec was cut short, and no call of its own was recorded; the calls below ran, though which script made them could not be told, so do not run it again to find out.${apart}`;
     return `${EXEC_CUT_OPENER}${own.map((t) => lineOf(t, cap)).join("\n")}${apart}`;
-  });
+  }, budget);
 }
 
 /** The text of a tool's recorded output (a string, or `{ text }` with images). */
