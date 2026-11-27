@@ -854,6 +854,51 @@ test("a new session is never held nowhere: its call's two stretches hold it unti
   await landUntil(spend.ledgerIdle());
 });
 
+test("a person's time asked as a call that opened a session gives its hold back waits for the session's reserve: the reserve is held in the room the call kept for it, and the person's time is judged beside it", async (t) => {
+  // A $0.035 cap: the call holds two stretches ($0.018); the person's 15 minutes ($0.03) fit beside the call's charge, not
+  // beside the session's reserve ($0.009) too. Asked between the call's hold given back and the reserve asked, the
+  // person's time would take the room the call kept for the reserve: the reserve refused, the run paused at its cap for
+  // a step the agent never took, and its session held nowhere. Each ask and settle lands only when the test lets it.
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  const inner = await toolLedger(0.035);
+  const { later, landUntil } = heldWrites();
+  const events = [];
+  const logs = [];
+  const paused = [];
+  let spend;
+  let person;
+  const paid = {
+    admit: async (request) => {
+      events.push(["asked", request.id]);
+      await later();
+      try {
+        const out = await inner.admit(request);
+        events.push(["held", request.id]);
+        return out;
+      } catch (error) {
+        events.push(["refused", request.id]);
+        throw error;
+      }
+    },
+    settle: async (id, usd, options) => {
+      await later();
+      const out = await inner.settle(id, usd, options);
+      events.push(["landed", id, options?.givenBack === true]);
+      // The owner takes over the moment the call's hold is given back, before its session's reserve is asked.
+      if (id.startsWith("c1#") && options?.givenBack === true) person = spend.personTime("taking over the browser", 900, { pauses: false, tag: "ar-new", from: Date.now() });
+      return out;
+    },
+  };
+  spend = browserSpend("browserbase", BROWSERBASE, 180, async () => {}, (line) => logs.push(line), { paid, pause: async (refusal) => void paused.push(refusal) });
+  await landUntil(callOpening(spend));
+  const taken = await landUntil(person);
+  await landUntil(spend.ledgerIdle());
+  assert.deepEqual([logs, paused], [[], []], `the session's reserve is not refused, and the run is not paused: ${JSON.stringify(events)}`);
+  assert.ok("refused" in taken, `the person's time has no room beside the reserve: ${JSON.stringify(taken)} (${JSON.stringify(events)})`);
+  assert.match(taken.refused, /^spend_cap_reached: .*the next step, taking over the browser, could cost up to \$0\.03\b/);
+  assert.ok(Math.abs(inner.heldUsd() - 0.009) < 1e-9, `the session's reserve is held, one stretch: ${inner.heldUsd()}`);
+});
+
 // ---- a call that opens a session and then throws ----
 
 /** The run's one ledger `inner` as its writes see it: each admit and settle lands only when the test lets it

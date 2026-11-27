@@ -192,8 +192,13 @@ when alone is at least `learning.alone_min` (0.7), `agreed` is at least `learnin
 every field passes (above). Otherwise
 it is held, and the agent's next run it fits asks one revision with the inputs it did not agree on as data (each one's
 input, the agent's answer, and the draft's answer or why it handed it back); that revision is checked the same way.
-Held again, it stops (`check.stopped`): the agent keeps the runs and nothing compiles again until a hold or its owner
-acts. The record keeps `check`: the bar it was held to, `n`, `agreed`, `alone`, the runs it read, the tools that stopped
+Held again, it stops (`check.stopped`): the agent keeps the runs and nothing compiles again until new evidence after the
+stop restarts it (`runner/learning-end.ts` compileAskOf): a correction merged into `corrections.md` after it (a run's or a
+person's save), or `compile_after` of the agent's own completed runs started after it, the ending one counted. A
+restart is a first compile again: the stopped revision's revise (or, after a first compile's failed drafts, a new
+compile) is attempt 1, and its one recompile attempt 2, which stops again (`reviseAttemptOf`, `newCompileAttempt`).
+Evidence from before the newest stop restarts nothing, so each restart costs at most two compiles. A stop with nothing
+checked and a recompile's failed draft restart the same way. The record keeps `check`: the bar it was held to, `n`, `agreed`, `alone`, the runs it read, the tools that stopped
 skipped inputs (`skipped_tools`), each field's verdict (`fields`) and, on a hold, the disagreements. A promotion by
 check is never moved by its served runs' grades. The
 inputs are the agent's last `compile_after` runs of its own picked first, however many runs its workflow served since.

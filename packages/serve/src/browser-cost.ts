@@ -227,8 +227,9 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     [...(active.get(tag) ?? [])].reduce((sum, { from, to }) => sum + usdOf(Math.max(0, Math.min(to, now) - Math.max(from, since)) / 1000), 0);
   /** Each call under way, by its id: its conversation, its hold, `givenBack` (settles once its hold on the run's ledger
    *  is given back) and `reserves`, the reserves of the sessions it opened, each asked on the ledger once that has landed
-   *  (the call returns only once they are held, or refused and acted on). */
-  const calls = new Map<string, { cid: number; hold: Hold; givenBack: Promise<void>; reserves: Promise<void>[] }>();
+   *  (the call returns only once they are held, or refused and acted on), and `returning`, set once its tool has run: its
+   *  hold is being given back, and its reserves asked in the room it kept for them (personTime waits for those). */
+  const calls = new Map<string, { cid: number; hold: Hold; givenBack: Promise<void>; reserves: Promise<void>[]; returning: boolean }>();
   const take = (hold: Hold | undefined, usd: number) => void (hold && (hold.usd = Math.max(0, hold.usd - usd)));
 
   /** Session `tag`'s reserve, one stretch, asked of the cap and not owed: a new session's, or one whose reserve the cap
@@ -454,7 +455,7 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
         // One hold-only step, held at that figure and given back when the call returns (or its claim is lost): the call's
         // charges are each their own step (booked).
         let landed!: () => void;
-        const entry = { cid: api.conversationId, hold: { usd, drop: () => {} }, givenBack: new Promise<void>((resolve) => (landed = resolve)), reserves: [] as Promise<void>[] };
+        const entry = { cid: api.conversationId, hold: { usd, drop: () => {} }, givenBack: new Promise<void>((resolve) => (landed = resolve)), reserves: [] as Promise<void>[], returning: false };
         calls.set(api.callId, entry);
         try {
           // A provider whose time has no price is held at no figure: the cap's rule refuses it for good, as main does.
@@ -464,7 +465,14 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
           // paidStep returns once the call's hold is given back on the ledger (its settle): the reserves of the sessions
           // the call opened are asked then, and the call returns once they are held, so nothing the run does next is judged
           // while the session is held nowhere.
-          const stepped = await paidStep(paid, api.callId, { name: "this browser call", holdUsd: rate === null ? Number.NaN : usd, basis, by: provider, tool: BROWSER_TOOL, hold: true }, () => tool.execute(args, api as never, context), () => 0, ledger.pause).finally(async () => {
+          const stepped = await paidStep(paid, api.callId, { name: "this browser call", holdUsd: rate === null ? Number.NaN : usd, basis, by: provider, tool: BROWSER_TOOL, hold: true }, async () => {
+            try {
+              return await tool.execute(args, api as never, context);
+            } finally {
+              // Its hold is given back next, and its sessions' reserves asked after it: personTime waits for them.
+              entry.returning = true;
+            }
+          }, () => 0, ledger.pause).finally(async () => {
             landed();
             await Promise.all(entry.reserves);
           });
@@ -503,6 +511,12 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     // Up to the millionth of a dollar, so the cap's words name a figure never below the hold.
     const usd = Math.ceil(Math.round(usdOf(seconds) * 1e12) / 1e6) / 1e6;
     const basis = `${provider}'s session time at $${rate} an hour for the ${Math.round(seconds / 60)} minutes it may last`;
+    // A session a call opened is held by the call's hold until that is given back, then by its reserve, asked in the room
+    // that hold kept for it (askReserve). Asked between the two, a person's time (an owner's take-over in the session's
+    // first moments) would take that room: the reserve refused, the run paused at its cap for a step the agent never
+    // took. So it is asked once the reserves of every call returning are held or refused; a call still running holds its
+    // sessions itself, and the person's time is judged beside its hold.
+    await Promise.all([...calls.values()].flatMap((call) => (call.returning ? call.reserves : [])));
     // Held on the run's one ledger up front, refused in the cap's words when it has no room (an unpriced provider's time
     // held at no figure, which the rule refuses for good; with no ledger, refused); let go at its end, the time itself
     // booked by the session's next charge.
