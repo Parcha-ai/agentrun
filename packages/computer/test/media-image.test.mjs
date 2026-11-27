@@ -125,3 +125,59 @@ test("the package ships it", () => {
   const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   assert.ok(pkg.files.includes("media"), JSON.stringify(pkg.files));
 });
+
+// --- the release's media job (.github/workflows/release.yml) ---
+
+/** The command that names the image's tag: the first 12 hex digits of the Dockerfile's sha256. */
+const HASH_LINE = "sha256sum packages/computer/media/Dockerfile | cut -c1-12";
+
+test("the release publishes it beside the box image, amd64, tagged by its Dockerfile's hash and the release, under the release's approval, and checks it public", async () => {
+  const { parse } = await import("yaml");
+  const workflow = parse(readFileSync(new URL("../../../.github/workflows/release.yml", import.meta.url), "utf8"));
+  const { media: job, box } = workflow.jobs;
+  assert.ok(job, "a media job");
+  assert.equal(job.needs, "gate", "after the gate alone, so it asks for the npm-release approval with the publish job");
+  assert.equal(job.if, box.if);
+  assert.equal(job.environment, "npm-release", "nothing is published for a release nobody approved");
+  assert.deepEqual(job.permissions, { contents: "read", packages: "write" });
+  assert.equal(job.env.IMAGE, "ghcr.io/parcha-ai/agentrun-media");
+  for (const step of job.steps.filter((step) => step.uses)) assert.match(step.uses, /@[0-9a-f]{40}$/, `${step.uses} is pinned by commit`);
+  const uses = (name) => (steps) => steps.find((step) => (step.uses ?? "").startsWith(`${name}@`));
+  for (const name of ["actions/checkout", "actions/setup-node", "docker/setup-buildx-action", "docker/login-action", "docker/build-push-action"]) {
+    assert.deepEqual(uses(name)(job.steps)?.uses, uses(name)(box.steps).uses, `${name} as the box job pins it`);
+  }
+  assert.deepEqual(uses("docker/setup-buildx-action")(job.steps).with, uses("docker/setup-buildx-action")(box.steps).with, "BuildKit by digest");
+  // The tag is the one the Dockerfile's and the README's build lines give.
+  const hash = job.steps.find((step) => step.id === "hash");
+  assert.ok(hash.run.includes(`hash="$(${HASH_LINE})"`), hash.run);
+  assert.ok(DOCKERFILE.includes(`tag=agentrun-media:$(${HASH_LINE})`), "the Dockerfile's build line");
+  const readme = readFileSync(new URL("../../serve/README.md", import.meta.url), "utf8");
+  assert.ok(readme.includes(`tag=agentrun-media:$(${HASH_LINE})`), "the README's build line");
+  const root = new URL("../../../", import.meta.url);
+  assert.match(execFileSync("bash", ["-c", HASH_LINE], { cwd: root, encoding: "utf8" }).trim(), /^[0-9a-f]{12}$/);
+  // Built once per Dockerfile, as a box recipe is, by the box job's own published check.
+  const published = job.steps.find((step) => step.id === "published");
+  assert.equal(published.run, box.steps.find((step) => step.id === "published").run);
+  assert.equal(published.env.RECIPE, "${{ steps.hash.outputs.hash }}");
+  const build = uses("docker/build-push-action")(job.steps);
+  assert.equal(build.if, "steps.published.outputs.published != 'true'");
+  assert.equal(build.with.context, "packages/computer/media");
+  assert.equal(build.with.file, "packages/computer/media/Dockerfile");
+  assert.equal(build.with.platforms, "linux/amd64");
+  assert.equal(build.with.provenance, "mode=max");
+  assert.equal(build.with.sbom, true);
+  assert.equal(build.with.push, true);
+  assert.equal(build.with["build-args"], undefined);
+  assert.equal(build.with.secrets, undefined);
+  assert.deepEqual(build.with.tags.trim().split("\n"), ["${{ env.IMAGE }}:${{ steps.hash.outputs.hash }}", "${{ env.IMAGE }}:${{ inputs.tag }}"]);
+  assert.ok(!INSTRUCTIONS.some((line) => /^(COPY|ADD) /.test(line)), "it takes nothing from its context");
+  assert.match(job.steps.find((step) => step.if === "steps.published.outputs.published == 'true'").run, /imagetools create --tag "\$IMAGE:\$RELEASE_TAG" "\$IMAGE:\$RECIPE"/, "a published Dockerfile is tagged with the release");
+  // A stranger pulls it with no credentials: a private package stops the job, after the push, in words.
+  const at = (pattern) => job.steps.findIndex((step) => pattern.test(step.run ?? step.uses ?? ""));
+  const pub = job.steps[at(/ghcr-published\.mjs/)];
+  assert.ok(at(/ghcr-published\.mjs/) > at(/^docker\/build-push-action@/) && at(/ghcr-published\.mjs/) > at(/imagetools create --tag/));
+  assert.equal(pub.env.MEDIA_IMAGE, "${{ env.IMAGE }}:${{ steps.hash.outputs.hash }}");
+  assert.match(pub.run, /^node scripts\/ghcr-published\.mjs "\$MEDIA_IMAGE" \|\| \{ echo "::error::[^\n]*; exit 1; \}$/m);
+  const secrets = (JSON.stringify(job).match(/secrets\.\w+/g) ?? []).filter((name) => name !== "secrets.GITHUB_TOKEN");
+  assert.deepEqual(secrets, [], "no secret beside this run's GITHUB_TOKEN, which pushes the image");
+});

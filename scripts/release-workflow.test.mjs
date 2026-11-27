@@ -48,7 +48,7 @@ const upstream = (name, seen = new Set()) => { for (const dep of needs(name)) if
 test('every other job starts after the gate, and the jobs npm-release holds all wait for it at the same moment, so one approval covers them', () => {
   for (const name of Object.keys(jobs).filter(name => name !== 'gate')) assert.ok(upstream(name).has('gate'), `${name} runs after the gate`);
   const held = Object.keys(jobs).filter(name => jobs[name].environment === 'npm-release').sort();
-  assert.deepEqual(held, ['box', 'publish', 'pypi'], 'the jobs that publish or read the release environment\'s secret');
+  assert.deepEqual(held, ['box', 'media', 'publish', 'pypi'], 'the jobs that publish or read the release environment\'s secret');
   for (const name of held) assert.deepEqual(needs(name), ['gate'], `${name} waits for nothing but the gate, so it asks for approval with the others`);
 });
 
@@ -149,7 +149,7 @@ test('the publish job folds the changelog fragments the tag carries only after c
 
 test('the GitHub release is published once every publish job passed, from the folded changelog, by the only job that may write the repository', () => {
   const release = jobs['github-release'];
-  assert.deepEqual(needs('github-release').sort(), ['box', 'chart', 'image-release', 'publish', 'pypi'], 'after npm, PyPI, the server image, the Helm chart and the box image');
+  assert.deepEqual(needs('github-release').sort(), ['box', 'chart', 'image-release', 'media', 'publish', 'pypi'], 'after npm, PyPI, the server image, the Helm chart, the box image and the media image');
   assert.equal(release.if, jobs.publish.if);
   assert.equal(release.environment, undefined, 'no secret: the approval was given to the jobs it waits for');
   assert.deepEqual(release.permissions, { contents: 'write' });
