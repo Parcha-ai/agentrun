@@ -191,7 +191,10 @@ function ServerRow({ v2, server: s, settings, settingsBusy, settingsProblem, onS
   const [note, setNote] = useState<McpRefresh | null>(null);
   const [problem, setProblem] = useState<Problem | null>(null);
   const run = async (work: () => Promise<void>) => { setBusy(true); setProblem(null); try { await work(); } catch (e) { setProblem(mcpProblem(e)); } setBusy(false); };
-  const [said, tone] = s.credential ? CREDENTIAL[s.credential] ?? [s.credential, "plain"] : ["no credential", "plain" as const];
+  // A github_app server's credential is its GitHub App, which signs a token for each run: it keeps none of its own unless
+  // optional headers were saved, so having none is its normal state, not a missing credential.
+  const app = s.auth.type === "github_app";
+  const [said, tone] = s.credential ? CREDENTIAL[s.credential] ?? [s.credential, "plain"] : app ? ["GitHub App", "success" as const] : ["no credential", "plain" as const];
   const oauth = s.auth.type === "oauth";
   const changes = note && [["Added", note.added], ["Removed", note.removed], ["Changed", note.changed]].filter(([, names]) => names.length).map(([what, names]) => `${what} ${(names as string[]).join(", ")}`);
   return (
@@ -214,7 +217,7 @@ function ServerRow({ v2, server: s, settings, settingsBusy, settingsProblem, onS
           </details>
           {/* Its one secret ("mcp:<server>": its bearer token, its headers' values, or its sign-in), as every secret's row.
               Replace opens the server's form; a sign-in's has none: its Sign in is the write. */}
-          {s.secret && <ul className="mt-2"><SecretRow field={s.secret} label={AUTH_LABEL[s.auth.type]} writable={writable} onPaste={oauth ? undefined : onPaste} /></ul>}
+          {s.secret && !(app && !s.secret.set) && <ul className="mt-2"><SecretRow field={s.secret} label={AUTH_LABEL[s.auth.type]} writable={writable} onPaste={oauth ? undefined : onPaste} /></ul>}
           {s.source === "composio" && <AppTriggers v2={v2} server={s.name} writable={writable} />}
           {changes && <p className="mt-2 font-mono text-small" role="status">{changes.length ? changes.join(" · ") : "No change: it lists the same tools."}</p>}
         </div>
