@@ -4,6 +4,24 @@
 
 ## 0.1.0-beta.66 (2026-11-27)
 
+This release books a learning run's follow-up as the job's on every run it opened again, the ones that ended before it included (#4065). It also fixes several paths where a learned workflow never served or stopped for good. A learning agent with no fast model has its check's answers compared by its own model (#4091). A run corrected by message is checked against the owner's correction (#4089). A workflow whose recompile was held restarts on new evidence (#4090). A runner's graceful close books the browser and computer time it cuts (#4051). A cloud browser that a create race left running is released when the run lets its claim go, and its time is booked and absorbed, not billed (#4059). The browser's `screenshot` tool can save its capture into the workspace with `save_as` (#4068). Web providers type a thrown failure one way (#4088). Settings says why the Claude sign-in never starts where `AGENTRUN_PUBLIC_URL` is set (#4093). A run opened again right after its end gets its grade or message in its first turn (#4065). On a run with a spend cap, an owner who takes over its browser just as the session opens no longer takes the room kept for the session's reserve (#4094).
+
+**Upgrading and going back:**
+
+- **Store migration `0034` (Postgres), SQLite version 18. The runner floor rises to 34.** Runners of earlier builds break against it, so move servers and runners together. At its first start, the server records again the ledger row of every learning run that a follow-up opened again and that ended before this release, a page of 64 a transaction. Those runs' `cost.usd` moves up by the follow-up's spend and `learning_usd` down by the same amount, once. A backend that reconciles `cost.usd` against what it billed sees each such run move.
+- **Breaking for clients:** `GET /v2/runs/{run_id}/usage`'s `reason` no longer has `reopened` (`runusage/6`), in the TypeScript and Python clients alike. A TypeScript program keyed on the whole enum stops compiling until it drops `reopened`.
+- The deploy templates give a runner more time to stop: 45 s in compose, Helm, Coolify, Dokploy and Railway, and 50 s on Fly.
+- Going back to beta.65 needs a schema backup taken before the upgrade, plus beta.65's image.
+
+**Known issues:**
+
+- A run stopped while it was still queued and then reopened by a message ends `ended`, and its first input reaches the model, because its end is written off the run's root conversation. The fix ships in a later beta.
+- In Mode 2, a run with no computer mounting its folder files no fal results (`evidence/fal`); the call works as before (#3777).
+- A learned workflow refused for a host setting (a tool gated, denied or missing) still reads `serving`, while every run it is given hands back to the agent.
+- For up to about 10 minutes after the release is published, an install can fail while npm shows the new packages one by one. Try again a few minutes later.
+- An API token's `GET /v2/settings/calendar` is refused 403 in the words for saving a secret. Reading the calendar's settings takes the owner's signed-in session in the console, as saving them does.
+- Workspaces: a caller-picked agent id another workspace holds answers `409 agent_exists`; trusting a template publisher applies to every workspace; packages imported before the backend sent the header belong to no workspace; and a launch disk no agent owns is served to any workspace. The serve README's Workspaces section lists these.
+
 **Breaking:**
 
 - A learning run that a follow-up opened again and that ended before this release has its ledger row recorded again under the new split at the server's first start on this release. Its `cost.usd`, `learning_usd` and `followup_usd`, the agent's cost page and its bill read the follow-up as the job's, as `tools_usd` and the usage lines do. Before, such a run kept its job at its first round's figure, so its read could show `tools_usd` above `usd` and count the follow-up both in `learning_usd` and in its usage lines. The pass reads only the runs whose learning kept a second round, a page of 64 a transaction. A stop partway keeps the pages it committed, and the next start walks every such run again from the first: recording one again writes the same row. Those runs' earlier figures change once, as intended: `cost.usd` moves up by the follow-up's spend and `learning_usd` down by the same amount. A backend that reconciles `cost.usd` against what it billed before sees each such run move. <!-- changes/reopened-run-ledger-rerecorded.md -->
