@@ -17,6 +17,10 @@ const SHA = /^[0-9a-f]{40}$/;
 /** What one import may take: the tarball as sent, the tarball unpacked (the whole repository streams through, counted), the
  *  package's own files together and how many there are, and the time the whole read may take. The package's own limits (templates.ts) hold too. */
 export const IMPORT_LIMITS = { downloadBytes: 128 << 20, unpackedBytes: 1 << 30, packageBytes: 8 << 20, files: MAX_PACKAGE_FILES, ms: 120_000 } as const;
+/** Whether `path` (a package's file, by its path in the package) is hidden or under a hidden folder (.env, .DS_Store,
+ *  .cache/x): no part of a package (templates.ts readPackage reads none), so neither an import from GitHub nor an upload
+ *  (template-import.ts uploadFiles) counts, stores or shows one. */
+export const hiddenPath = (path: string): boolean => path.split("/").some((part) => part.startsWith("."));
 /** How many redirects an import follows, each to GitHub's own hosts. */
 const MAX_REDIRECTS = 3;
 
@@ -165,9 +169,10 @@ export async function resolveSha(source: GithubSource, reach: GithubReach, signa
 type TarEntry = { path: string; type: string; size: number };
 
 /** The package's files at `sha`: the repository's tarball streamed from GitHub, unpacked as it comes, its folder
- *  `source.path` (the root when null) kept in memory by path under it; every other entry is counted and dropped. A link,
- *  a device or any other entry that is not a regular file or a folder in the package's folder refuses the import, as do a
- *  path that climbs out, a file over the package's limits, and a tarball past IMPORT_LIMITS. */
+ *  `source.path` (the root when null) kept in memory by path under it, but for a hidden file (hiddenPath); every other
+ *  entry is counted and dropped. A link, a device or any other entry that is not a regular file or a folder in the
+ *  package's folder refuses the import, as do a path that climbs out, a file over the package's limits, and a tarball
+ *  past IMPORT_LIMITS. */
 export async function fetchPackageFiles(source: GithubSource, sha: string, reach: GithubReach, signal: AbortSignal): Promise<Map<string, Buffer>> {
   const limits = { ...IMPORT_LIMITS, ...reach.limits };
   const api = reach.api.replace(/\/+$/, "");
@@ -285,6 +290,12 @@ async function untarPackage(body: ReadableStream<Uint8Array>, source: GithubSour
       if (!own) throw new ImportRefused("source", `${source.path ?? "The root"} in ${source.owner}/${source.repo} is ${entry.type === "2" ? "a symbolic link" : "a file"}, not a package's folder.`);
       if (entry.type !== "0" && entry.type !== "\0" && entry.type !== "7") throw new ImportRefused("package", `${own} is ${entry.type === "2" ? "a symbolic link" : entry.type === "1" ? "a hard link" : "not a regular file or a folder"}: a package holds files and folders alone, so the import was refused.`);
       found = true;
+      // A hidden file (a committed .env, a tool's .cache/) is skipped unread, as an upload leaves one out: never counted
+      // against the package's limits, kept or stored.
+      if (hiddenPath(own)) {
+        await skip(padded);
+        continue;
+      }
       kept += entry.size;
       if (kept > limits.packageBytes) throw new ImportRefused("package", `The package's files are over the ${limits.packageBytes} bytes an import keeps.`);
       if (files.size >= limits.files) throw new ImportRefused("package", `The package holds over ${limits.files} files.`);

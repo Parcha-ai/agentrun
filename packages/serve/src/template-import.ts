@@ -7,7 +7,7 @@
 import { packageSha256 } from "./agent-package.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { type Store, UPLOAD_PREFIX } from "./store/index.js";
-import { fetchPackageFiles, type GithubReach, type GithubSource, ImportRefused, IMPORT_LIMITS, parseSource, resolveSha } from "./template-source.js";
+import { fetchPackageFiles, type GithubReach, type GithubSource, hiddenPath, ImportRefused, IMPORT_LIMITS, parseSource, resolveSha } from "./template-source.js";
 import { manifestOf } from "./manifest.js";
 import { MANIFEST, memoryFiles, type Package, PackageError, readPackage, type TemplateRegistry } from "./templates.js";
 import { isObject, type Json, unknownFields } from "./validate.js";
@@ -60,8 +60,8 @@ function uploadFiles(raw: unknown): Map<string, Buffer> {
   for (const [path, data] of read) {
     if (NOT_PLAIN(path)) throw new ImportRefused("package", `The package holds ${JSON.stringify(path)}, a path that is not plain: refused.`);
     // A hidden file or folder (.env, .DS_Store, .cache/) is no part of a package (templates.ts reads none): left out here,
-    // before anything is counted, stored or hashed, so a client's .env is never kept.
-    if (path.split("/").some((part) => part.startsWith("."))) continue;
+    // before anything is counted, stored or hashed, so a client's .env is never kept. An import from GitHub skips it too.
+    if (hiddenPath(path)) continue;
     if (files.has(path)) throw new ImportRefused("package", `The package holds ${JSON.stringify(path)} twice: refused.`);
     kept += data.length;
     if (kept > IMPORT_LIMITS.packageBytes) throw new ImportRefused("package", `The package's files are over the ${IMPORT_LIMITS.packageBytes} bytes an import keeps.`);
