@@ -1769,21 +1769,27 @@ const PLACELESS_SPACES = /[\t-\r\ufeff]/g;
  *  characters before it can a terminal strike out. */
 export type Marks = { readonly openAt: (at: number) => number; readonly backspacesFrom: (at: number) => number };
 
-/** JSON's punctuation: a join drops it between strings (and writes a space), so a sequence a join reads may run on
- *  over it, where one that reads the text as it stands ends there. */
+/** JSON's punctuation and whitespace: a join drops it between strings (and writes a space), so a sequence a join reads
+ *  may run on over it, where one that reads the text as it stands ends there. */
 const DROPPED = new Set(['"', "'", ",", ":", "{", "}", "[", "]"]);
+const dropped = (unit: string): boolean => DROPPED.has(unit) || isSpace(unit.charCodeAt(0));
 /** The decoders a view reads a character of a terminal sequence through, each read alone (marksOf). JSON_ESCAPE is
  *  JSON_ESCAPE_QUOTED with its escaped quotes gone, as a quote may be gone (DROPPED) in any; "+" decodes to a space,
  *  which ends no sequence a "+" does not. */
 const STREAMS: readonly Decoder[] = [PERCENT, JSON_ESCAPE_QUOTED, JSON_ESCAPE_ONCE, PYTHON_ESCAPE, PYTHON_ESCAPE_TWICE, ENTITY];
 /** As much as any decoder of a family could read at a character that starts one of its escapes: the backslash
- *  family's (any backslashes, then "u" and up to four hex digits, "x" and up to two, or any one character), a run of
- *  percent-encoded bytes, an HTML character reference. */
+ *  family's (any backslashes, then "u" and up to four hex digits, "x" and up to two, or any one character but one
+ *  another family's escape, a terminal sequence or a backspace starts at, which no backslash decoder reads as another
+ *  character, so each stream reads it on its own), a run of percent-encoded bytes, an HTML character reference. */
 const FOREIGN: Readonly<Record<string, RegExp>> = {
-  "\\": /\\+(?:u[0-9a-fA-F]{0,4}|x[0-9a-fA-F]{0,2}|[^])/y,
+  "\\": /\\+(?:u[0-9a-fA-F]{0,4}|x[0-9a-fA-F]{0,2}|[^%&\u001b\u009b\u009d\b])?/y,
   "%": /(?:%[0-9a-fA-F]{2})+/y,
   "&": /&(?:#[xX]?[0-9a-fA-F]{1,8};?|[A-Za-z]{2,4};)/y,
 };
+/** An escape of any family for a backslash, at the end of what FOREIGN read. */
+const BACKSLASH_LAST = /(?:u005[cC]|x5[cC]|%5[cC]|&#0*92;?|&#[xX]0*5[cC];?)$/;
+/** A character each stream reads on its own: a family's escape, a terminal sequence or a backspace starts at it. */
+const OWN_UNIT = /[\\%&\u001b\u009b\u009d\b]/;
 /** Where each stream can decode an ESC, a U+009B, a U+009D or a backspace: a stream with none of these to read is not
  *  read (a sequence it could read on in, another stream opens). */
 const STREAM_NEEDS: Readonly<Record<string, RegExp>> = {
@@ -1826,8 +1832,11 @@ export function marksOf(text: string): Marks {
       const found = FOREIGN[char]!;
       found.lastIndex = at;
       if (!found.test(text)) return -1;
-      scanned.chars += found.lastIndex - at;
-      return found.lastIndex;
+      let end = found.lastIndex;
+      // An escape that decodes to a backslash: a view that reads its text again reads it with the character after it.
+      if (BACKSLASH_LAST.test(text.slice(Math.max(at, end - 8), end)) && end < text.length && !OWN_UNIT.test(text[end]!)) end++;
+      scanned.chars += end - at;
+      return end;
     };
     const ends = (kind: number, code: number, char: string): "after" | "at" | undefined => {
       if (passedIn(code, char, kind === OPEN_OSC)) return undefined;
@@ -1849,6 +1858,9 @@ export function marksOf(text: string): Marks {
         let kinds = foreign ? OPEN_OSC | OPEN_CSI | OPEN_ESCAPE : dropped ? OPEN_ESCAPE : 0;
         if (!foreign) kinds |= code === 0x5b ? OPEN_CSI : code === 0x5d ? OPEN_OSC : code >= 0x20 && code <= 0x2f ? OPEN_ESCAPE : 0;
         for (const kind of [OPEN_OSC, OPEN_CSI, OPEN_ESCAPE]) if (kinds & kind && !open.some((sequence) => sequence.kind === kind && sequence.start === start)) open.push({ kind, start });
+        // An ESC and a final byte: an escape of two characters, which hides the final byte as one with intermediate
+        // bytes hides it (OPEN_ESCAPE).
+        if (!kinds && !foreign && code >= 0x30 && code <= 0x7e) spans.push([OPEN_ESCAPE, start, to]);
         if (kinds || foreign || (code >= 0x30 && code <= 0x7e) || code === 0x18 || code === 0x1a) return;
       }
       if (foreign || dropped) return;
@@ -1872,14 +1884,21 @@ export function marksOf(text: string): Marks {
       if (short !== undefined && (SHORT_ESCAPES.includes(short) || (short === "\\" && (decoder === JSON_ESCAPE_ONCE || decoder === PYTHON_ESCAPE)))) {
         const unit = ESCAPED[short]!;
         scanned.chars += 2;
-        step(unit.charCodeAt(0), unit, at, at + 2, false, DROPPED.has(unit));
+        step(unit.charCodeAt(0), unit, at, at + 2, false, dropped(unit));
         return at + 2;
       }
       if (decoder && char === decoder.trigger) {
         const units: [string, number, number][] = [];
         const end = decoder.decode(text, at, (unit, from, to) => units.push([unit, from, to]));
         if (end >= 0) {
-          for (const [unit, from, to] of units) step(unit.charCodeAt(0), unit, from, to, false, DROPPED.has(unit));
+          for (const [unit, from, to] of units) step(unit.charCodeAt(0), unit, from, to, false, dropped(unit));
+          return end;
+        }
+        // A backslash that starts no escape of the decoder's: a join reads a string's backslash with what follows it,
+        // so a view may read the two as anything.
+        if (family === "backslash") {
+          const end = at + 1 < text.length && !OWN_UNIT.test(text[at + 1]!) ? at + 2 : at + 1;
+          step(0, "", at, end, true, false);
           return end;
         }
       }
@@ -1888,7 +1907,7 @@ export function marksOf(text: string): Marks {
         step(0, "", at, other, true, false);
         return other;
       }
-      step(char.charCodeAt(0), char, at, at + 1, false, DROPPED.has(char));
+      step(char.charCodeAt(0), char, at, at + 1, false, dropped(char));
       return at + 1;
     };
     return {
