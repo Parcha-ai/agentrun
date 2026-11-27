@@ -7,7 +7,7 @@
 import { packageSha256 } from "./agent-package.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { type Store, UPLOAD_PREFIX } from "./store/index.js";
-import { fetchPackageFiles, type GithubReach, type GithubSource, ImportRefused, IMPORT_LIMITS, parseSource, resolveSha } from "./template-source.js";
+import { fetchPackageFiles, type GithubReach, type GithubSource, hiddenPath, ImportRefused, IMPORT_LIMITS, parseSource, resolveSha } from "./template-source.js";
 import { manifestOf } from "./manifest.js";
 import { outOfScope, workspaceNow } from "./workspace-scope.js";
 import { MANIFEST, memoryFiles, type Package, PackageError, readPackage, type TemplateRegistry } from "./templates.js";
@@ -61,8 +61,8 @@ function uploadFiles(raw: unknown): Map<string, Buffer> {
   for (const [path, data] of read) {
     if (NOT_PLAIN(path)) throw new ImportRefused("package", `The package holds ${JSON.stringify(path)}, a path that is not plain: refused.`);
     // A hidden file or folder (.env, .DS_Store, .cache/) is no part of a package (templates.ts reads none): left out here,
-    // before anything is counted, stored or hashed, so a client's .env is never kept.
-    if (path.split("/").some((part) => part.startsWith("."))) continue;
+    // before anything is counted, stored or hashed, so a client's .env is never kept. An import from GitHub skips it too.
+    if (hiddenPath(path)) continue;
     if (files.has(path)) throw new ImportRefused("package", `The package holds ${JSON.stringify(path)} twice: refused.`);
     kept += data.length;
     if (kept > IMPORT_LIMITS.packageBytes) throw new ImportRefused("package", `The package's files are over the ${IMPORT_LIMITS.packageBytes} bytes an import keeps.`);
@@ -207,21 +207,27 @@ export async function importTemplate(deps: TemplateImportDeps, raw: unknown, sig
   return { status: 201, pkg, trusted: true, replaced };
 }
 
-/** A scoped import's refusal of a package name held outside its workspace. */
-const nameTaken = (id: string) => new ApiError("name_taken", `A template package named ${id} is already on this server, outside this workspace: give the package another name in its manifest.`);
+/** An import's refusal of a package name held outside its workspace: a scoped import's, of a name another workspace or
+ *  the operator holds; an unscoped one's, of a name a workspace holds, which the operator deletes first to replace. */
+const nameTaken = (id: string) =>
+  new ApiError("name_taken", workspaceNow() !== undefined
+    ? `A template package named ${id} is already on this server, outside this workspace: give the package another name in its manifest.`
+    : `A template package named ${id} is already on this server, imported in a workspace: an import with no workspace never replaces it. Delete it first (DELETE /v2/templates/${id}), or give the package another name in its manifest.`);
 
 /** The sha of the package an import of `id` replaces, or null. In a workspace (workspace-scope.ts), a package of that id
- *  another workspace imported, or an unscoped request did, or one bundled here, is never replaced: the import is 409. */
+ *  another workspace imported, or an unscoped request did, or one bundled here, is never replaced: the import is 409.
+ *  Unscoped, one a workspace imported is never replaced either. */
 async function replacedOf(deps: Pick<TemplateImportDeps, "registry" | "store">, id: string): Promise<string | null> {
   const held = deps.registry.get(id);
   if (!held) return null;
-  if (workspaceNow() !== undefined && outOfScope((await deps.store.importedTemplates.workspaces()).get(id))) throw nameTaken(id);
+  const workspace = (await deps.store.importedTemplates.workspaces()).get(id);
+  if (workspaceNow() !== undefined ? outOfScope(workspace) : typeof workspace === "string") throw nameTaken(id);
   return held.origin?.sha ?? null;
 }
 
-/** The import's row written in the request's workspace. The write keeps a row of another workspace or of none
+/** The import's row written in the request's workspace. The write keeps a row of another workspace (or, scoped, of none)
  *  (ImportedTemplates.put), so a name another import took between replacedOf's check and here is 409, as replacedOf's. */
-async function keep(deps: Pick<TemplateImportDeps, "store">, row: Parameters<TemplateImportDeps["store"]["importedTemplates"]["put"]>[0]): Promise<void> {
+async function keep(deps: { store: { importedTemplates: Pick<Store["importedTemplates"], "put"> } }, row: Parameters<Store["importedTemplates"]["put"]>[0]): Promise<void> {
   if (!(await deps.store.importedTemplates.put(row, workspaceNow()))) throw nameTaken(row.id);
 }
 
@@ -241,7 +247,7 @@ export async function applyImported<T>(
   const templates = deps.store.importedTemplates;
   const row = async () => (await templates.list()).find((one) => one.id === pkg.id);
   const before = await row();
-  await templates.put({ id: pkg.id, source: origin.source, sha: origin.sha, publisher: origin.publisher, files: Object.fromEntries([...files].map(([path, data]) => [path, data.toString("base64")])) });
+  await keep({ store: { importedTemplates: templates } }, { id: pkg.id, source: origin.source, sha: origin.sha, publisher: origin.publisher, files: Object.fromEntries([...files].map(([path, data]) => [path, data.toString("base64")])) });
   // The row as this call kept it, stamped by the store: the undo below touches it only while it is still this one.
   const kept = await row();
   let made: T;

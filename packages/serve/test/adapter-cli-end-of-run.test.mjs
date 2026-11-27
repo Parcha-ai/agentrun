@@ -220,8 +220,9 @@ test("a CLI feedback round whose runner died mid end-of-run turn: the next claim
   const hold = (text) => /graded/.test(text) && held++ === 0;
   let round = 1;
   const answers = [];
+  // The round's own ask says it was graded: how the stand-in tells it from the first round's.
   const endOfRun = async (input) => {
-    answers.push(await input.ask("What did you learn?", { origin: "reflect", deadlineMs: 5_000, round }));
+    answers.push(await input.ask(round === 1 ? "What did you learn?" : "You were graded wrong. What did you learn?", { origin: "reflect", deadlineMs: 5_000, round }));
     return undefined;
   };
   const createLoop = createAdapterLoop((claim) => ({

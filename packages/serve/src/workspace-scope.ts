@@ -1,6 +1,6 @@
 // A request's workspace: an opaque name a backend in front of an API-only server (AGENTRUN_API_ONLY=1) sends in the
-// AgentRun-Workspace header, so each of its tenants sees and makes only its own agents, runs and imported template
-// packages. The server keeps nothing about who the tenant is: the backend authenticates its callers, and this server
+// AgentRun-Workspace header, so each of its tenants sees and makes only its own agents, runs, imported template
+// packages and uploaded files. The server keeps nothing about who the tenant is: the backend authenticates its callers, and this server
 // trusts the name because a server token (AGENTRUN_TOKENS) opened the request. A token named in AGENTRUN_WORKSPACE_TOKENS
 // must send it on every request, so a backend that forgot it is refused, never handed every tenant's rows. A request
 // with no header is served as before, every row in reach.
@@ -25,6 +25,10 @@ export const workspaceNow = (): string | undefined => scope.getStore();
 
 /** `work` run as a request in `workspace` (unscoped when undefined). */
 export const inWorkspace = <T>(workspace: string | undefined, work: () => T): T => (workspace === undefined ? work() : scope.run(workspace, work));
+
+/** `work` run as no request's, whatever request is being served: the server's own work that outlives a request (a timer
+ *  one armed), which acts for every workspace. */
+export const outsideWorkspace = <T>(work: () => T): T => scope.exit(work);
 
 /** Whether a row in `held` (null: in none) is out of reach of the request being served: never for an unscoped one. */
 export const outOfScope = (held: string | null | undefined): boolean => {

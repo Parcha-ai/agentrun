@@ -34,13 +34,19 @@ const page = await web.fetch("https://example.org/", { offset: 0, maxChars: 20_0
   not read, and the model is told why. `guard.check` decides which URLs go to Firecrawl and Parallel, so it must refuse
   every URL `guard.fetch` would refuse: a check that passes everything sends private and internal URLs to a provider.
   A guard is the Web's alone; one passed with a `fetch` call is ignored.
+- A page's `links` come with its first part. A page a provider read as markdown (Parallel, Firecrawl, Exa) writes each of
+  its links in its text, so that part lists only the links its own text does not write, within the caps, and
+  `links_omitted` counts those of them the caps left out. A page fetched directly lists its link targets as before.
 - `keys.parallel` is Parallel's key. `pay(fee, send)` is the run's cap: it sends the request when the fee fits, or
   throws a `PaidRefused`. Without it, a request is unmetered. A request on a call already stopped is never handed to
   `pay`. One whose send failed before it left (stopped as the send began, or a fetch that failed connecting: a name
   not resolved, a connection refused or not made, a TLS certificate or handshake refused) gives `pay` a 400 to settle at
   $0, its receipt line says `not billed (not sent: <code>)`, and the call then fails as it would have. A cap books a 4xx
   at nothing; any other failure stays at the fee.
-- `words.rateLimited` is what a keyless provider's rate limit says to the model.
+- `words.rateLimited` is what a keyless provider's rate limit says to the model. A keyed provider's limit (Parallel's,
+  keyed Exa's or Firecrawl's 402 or 429, a hosted search's) says, on the call that met it as on every call it holds,
+  what its breaker says: that search is busy for the seconds left of its wait, or unavailable for the rest of the run;
+  the receipt's turn keeps the provider's words.
 - `native` is the model's own hosted search, as a function. `send` and `endpoints` replace a provider's fetch or
   address (a test's fakes). `now` is the breakers' clock. `bounds` sets the searches' deadlines. `log` receives what a
   fetch notes that the model is not told.
@@ -123,9 +129,11 @@ const { answer, receipt } = await web.search({ objective: "Where Widgets, Inc. i
   in page order, `found: [{ offset, relevance, text }]` (`relevance` as on a labelled search result, none where
   refused), in place of `text` and the part's offsets, and its `sift` reads `"jev showed the 8 of 31 chunks of the page
   most likely to hold what your objective asks for (relevance 0 to 1), in page order; to read on from one, call
-  web_fetch with its offset and no objective"`. `offset` and `maxChars` are not used. With no decider the answer is the
-  part asked for, word for word as without an objective; with one that fails, the part asked for with `sift: "objective
-  not applied (<why>); this part is in page order"`. The page is read once a run either way; a blank objective is none.
+  web_fetch with its offset and no objective"`. `offset` and `maxChars` are not used: where a call gives an offset past 0
+  or a `maxChars`, the `sift` line ends `"; offset ignored: found chunks come from the whole page, each with its
+  offset"` (`max_chars`, or `offset and max_chars`, as given). With no decider the answer is the part asked for, its
+  `sift` `"objective not applied (no classifier in this run); this part is in page order"`; with one that fails, the
+  part asked for with `sift: "objective not applied (<why>); this part is in page order"`. The page is read once a run either way; a blank objective is none.
 - A fetched part is judged in passages (`passagesOf`: whole paragraphs packed to about 1,000 characters, at most 50).
   The kept ones stay in order, `LEFT_OUT` stands for each run left out, and the part's `chars`, `offset` and
   `next_offset` are unchanged. A fetch with no `task` is not judged.

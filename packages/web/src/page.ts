@@ -153,17 +153,37 @@ export function linksWithin(links: Iterable<string>): Pick<Page, "links" | "link
 }
 
 /** A page read once, before any part of it is taken: its final url, status and title, its Text, the links its first part
- *  holds (linksWithin), and readPage's `html_chars` and `converted` where it gave them. */
-export type Read = { ok: true; url: string; status: number; title: string; links: string[]; links_omitted?: number; html_chars?: number; converted?: "text" } & Text;
+ *  holds (linksWithin), and readPage's `html_chars` and `converted` where it gave them. `written`, where its text writes
+ *  every link it holds (a reading service's markdown, writtenRead): each link the service's whole answer writes, before
+ *  any cap or cut, from which its first part lists only those its own text does not write (unwrittenLinks). */
+export type Read = { ok: true; url: string; status: number; title: string; links: string[]; links_omitted?: number; html_chars?: number; converted?: "text"; written?: readonly string[] } & Text;
 /** A Page that was not read, saying why. */
 export type Unread = Page & { ok: false };
 
-/** The part `part` names of a page read once, as a Page: the links with its first part only. */
-export function partOfRead({ text, beyond, length, links, links_omitted, html_chars, converted, ...page }: Read, part: Part = {}): Page {
-  const first = partOf(part).offset === 0;
-  return { ...page, ...pageText({ text, beyond, length }, part), ...(html_chars === undefined ? {} : { html_chars }), ...(converted ? { converted } : {}), links: first ? links : [], ...(first && links_omitted ? { links_omitted } : {}) };
+/** The links of `written` (a Read's) that `text`, the part the model is given, does not write, within the caps
+ *  (linksWithin), with the count the caps left out: a link the model reads in the text is never listed again beside it. */
+export function unwrittenLinks(written: readonly string[], text: string): Pick<Page, "links" | "links_omitted"> {
+  const inText = new Set(linksOf(text));
+  return linksWithin(written.filter((link) => !inText.has(link)));
 }
 
+/** The part `part` names of a page read once, as a Page: the links with its first part only, and of a read whose text
+ *  writes them (`written`) only those the part's own text does not write (unwrittenLinks). */
+export function partOfRead({ text, beyond, length, links, links_omitted, html_chars, converted, written, ...page }: Read, part: Part = {}): Page {
+  const first = partOf(part).offset === 0;
+  const held = pageText({ text, beyond, length }, part);
+  const listed = !first ? { links: [] } : written ? unwrittenLinks(written, held.text) : { links, ...(links_omitted ? { links_omitted } : {}) };
+  return { ...page, ...held, ...(html_chars === undefined ? {} : { html_chars }), ...(converted ? { converted } : {}), ...listed };
+}
+
+/** A page's text as a reading service gives it, as a Read's: textOf, the links its whole answer writes (linksWithin),
+ *  and every one of them (`written`), the text's cut aside. */
+export const writtenRead = (text: string, whole: boolean): Pick<Read, "links" | "links_omitted" | "written"> & Text => {
+  const written = [...linksOf(text)];
+  return { ...textOf(text, whole), ...linksWithin(written), written };
+};
+
 /** A page a provider read for us as markdown (Parallel's extract, keyless Firecrawl's scrape), as a Read: its url,
- *  title and status, the text (`whole`: all of the page's, so its length is the page's) and the links it holds. */
-export const markdownRead = (url: string, title: string, text: string, whole: boolean, status = 200): Read => ({ ok: true, url: clip(withoutCredentials(url), URL_MAX), status, title: clip(title, TITLE_CAP), ...textOf(text, whole), ...linksWithin(linksOf(text)) });
+ *  title and status, the text (`whole`: all of the page's, so its length is the page's) and the links it holds, each
+ *  written in its text (writtenRead). */
+export const markdownRead = (url: string, title: string, text: string, whole: boolean, status = 200): Read => ({ ok: true, url: clip(withoutCredentials(url), URL_MAX), status, title: clip(title, TITLE_CAP), ...writtenRead(text, whole) });

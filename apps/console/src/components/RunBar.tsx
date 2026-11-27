@@ -149,9 +149,11 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, freeNote, play
         {/* Beside the files, the same run handed to the person's coding agent: its input and effort as typed when pressed. A
             coding agent works on a computer, and a phone's run row keeps Attach, Effort and Run on one line: under 640 px
             it is not shown. Files attached here are uploads for this page's run, deleted when it is left, so the handoff
-            is off while any are attached rather than hand over a run without them. */}
+            is off while any are attached rather than hand over a run without them. The files keep at least 20rem: where the
+            row has no room for that and the handoff beside it, the handoff wraps under them, never squeezing their words to
+            a word a line. */}
         <div className="mt-3 flex flex-wrap items-center gap-2 max-sm:mt-0">
-          <div className="min-w-0 flex-1"><FilePicker attachments={attachments} limits={limits} disabled={!!blocked} compact /></div>
+          <div className="min-w-0 flex-[1_1_20rem]"><FilePicker attachments={attachments} limits={limits} disabled={!!blocked} compact /></div>
           <CodingAgentHandoff label="Run with your coding agent" className="max-sm:hidden"
             unavailable={attachments.items.length ? "Remove the attached files first: they are for a run started here, and are deleted when you leave this page. Your coding agent uploads its own."
               : !built.ok && built.field === "max_cost_usd" && cap.trim() ? "Fix the spend cap first: the handoff carries it, and a cap that is not a positive number of dollars cannot be handed over." : undefined}

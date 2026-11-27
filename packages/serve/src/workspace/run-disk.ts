@@ -42,12 +42,15 @@ export interface RunDiskOptions {
 export const diskLimitWords = (limit: number | undefined): string =>
   limit === undefined ? "your Archil plan's disk limit is reached; upgrade or delete an agent" : `your Archil plan allows ${limit} disks; upgrade or delete an agent`;
 
+/** The words of a launch disk Archil does not have in `region`. */
+export const noDiskWords = (diskId: string, region: string): string => `Archil has no disk ${diskId} in region ${region}, the region of this server's Archil key: name a disk in ${region}.`;
+
 /** Why disk `diskId`, named by a launch, can't hold a run here, in words naming the region; undefined when it can. A call
  *  that fails (Archil not reached, or refusing the key) throws its ArchilDiskError. */
 export async function launchDiskProblem(control: ArchilControlOptions, diskId: string, context: { readonly signal?: AbortSignal } = {}): Promise<string | undefined> {
   const region = control.region;
   const disk = await getDisk(control, diskId, context);
-  if (disk === undefined) return `Archil has no disk ${diskId} in region ${region}, the region of this server's Archil key: name a disk in ${region}.`;
+  if (disk === undefined) return noDiskWords(diskId, region);
   if (disk.region !== "" && disk.region !== region) return `The disk ${diskId} is in region ${disk.region}, and this server's Archil key is for region ${region}: name a disk in ${region}.`;
   return undefined;
 }

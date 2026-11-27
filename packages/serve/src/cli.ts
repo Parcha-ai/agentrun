@@ -136,8 +136,8 @@ is off unless set to an address.
 AGENTRUN_API_ONLY=1 serves the run API alone, for a server behind its caller's backend (the routes in api-only.ts; every
 other address is a 404, and there are no accounts). AGENTRUN_API_ONLY_MCP_ORIGINS: the MCP origins the token may save a
 per_run MCP server at (README, API only). AGENTRUN_WORKSPACE_TOKENS: the ids of the AGENTRUN_TOKENS tokens whose every
-request carries the AgentRun-Workspace header, which keeps each of the backend's workspaces to its own agents, runs and
-templates (README, API only).
+request carries the AgentRun-Workspace header, which keeps each of the backend's workspaces to its own agents, runs,
+templates and files (README, API only).
 
 AGENTRUN_LAUNCH_HOOK_URL with AGENTRUN_LAUNCH_HOOK_SECRET (a whsec_ secret): each trigger firing that would start a run
 is POSTed to that URL, signed as Standard Webhooks, and the host starts the run through the API; this server starts

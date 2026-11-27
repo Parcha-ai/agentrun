@@ -1148,8 +1148,8 @@ export interface Runs {
    *  `started_at`); absent, now. With `firing` (a launch hook's host starting the firing it was handed), that firing is
    *  started with the run in the same transaction, its trigger's last run and failure streak as a started firing's
    *  are, only while it has no run and is still due or sent with a start_by: any other (released, failed, settled) is
-   *  refused (FiringMoved), and nothing is written. `workspace`: the scoped request's that made it (workspace-scope.ts),
-   *  written only when given, by a server alone. */
+   *  refused (FiringMoved), and nothing is written. `workspace`: the run's own, written only when given. The server's
+   *  start gives none: a run is its agent's workspace's (Runs.workspace), never the request's that started it. */
   create(run:{ id: string; agentId: string; revisionId: string; origin?: RunOrigin; labels?: RunLabels;
     expectedCurrent?: string | null; settingsGuards?: readonly SettingsGuard[]; startedAt?: number; firing?: { triggerId: string; key: string }; workspace?: string }, launch?: RunLaunchInput): Promise<RunRow>;
   /** A run whose agent is given inline and mapped to a source system by `agent.ref` and `revision.version`. In one
@@ -1896,9 +1896,9 @@ export interface ImportedTemplates {
   /** Every imported package's id, sorted, with none of its files read. */
   ids(): Promise<string[]>;
   /** Keeps the package under its id, in place of the one there (a re-import at a new SHA replaces it): true. `workspace`:
-   *  the workspace a scoped request imported it in (workspace-scope.ts), written with it, and the one there is replaced
-   *  only while it is that workspace's: one of another workspace or none is kept, nothing is written, and the answer is
-   *  false. Absent, the row is written whatever its workspace, which stays as it was. */
+   *  the workspace a scoped request imported it in (workspace-scope.ts), written with it; absent, none. The one there is
+   *  replaced only while it is in that same workspace (or none): one of another is kept, nothing is written, and the
+   *  answer is false. */
   put(row: Omit<ImportedTemplateRow, "importedAt">, workspace?: string): Promise<boolean>;
   /** Every imported package's workspace by id (null: none), with none of its files read. */
   workspaces(): Promise<ReadonlyMap<string, string | null>>;

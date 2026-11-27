@@ -117,9 +117,9 @@ export function heldAs(name: string, args: unknown): { readonly tool: string; re
   const fields = (given !== null && typeof given === "object" ? given : {}) as Record<string, unknown>;
   return { tool, args: SHELL_OPS.has(op as string) ? { command: fields.command, ...(fields.cwd !== undefined ? { cwd: fields.cwd } : {}) } : { path: fields.path } };
 }
+const SCREENSHOT_TOOL = "computer_screenshot";
 /** The path a computer_screenshot call saves the screen to in the run's folder (its `save_as`), held to write's setting
  *  as a file the write tool writes is; undefined for any other call, a screenshot with no save_as included. */
-const SCREENSHOT_TOOL = "computer_screenshot";
 function savedAs(name: string, args: unknown): { readonly path: unknown } | undefined {
   if (name !== SCREENSHOT_TOOL || args === null || typeof args !== "object") return undefined;
   const path = (args as { save_as?: unknown }).save_as;
@@ -559,11 +559,11 @@ export class RunGate {
     return gate.policyRefusal(gate.keyOf(held) ?? held, held) !== undefined ? "policy" : bar;
   }
 
-  /** The computer ops this run's gate refuses whatever their arguments (opBar): what computer_op's op list and a
-   *  script's `computer` declarations leave out. */
   /** Why a learned workflow's call node of `tool` with `args` is refused for a filed folder (filedRefusal, as the agent's
    *  own call of a tool is in decide), or undefined: its tool's setting is read apart (policy), as a call node can't ask. */
   readonly filedRefused = (tool: string, args: unknown): string | undefined => this.filedRefusal(this.keyOf(tool) ?? tool, tool, args, "no");
+  /** The computer ops this run's gate refuses whatever their arguments (opBar): what computer_op's op list and a
+   *  script's `computer` declarations leave out. */
   readonly opsRefused = (): readonly string[] => Object.keys(OP_HELD_AS).filter((op) => this.opBar(op) !== undefined);
 
   /** The refusal of a call (`what`, in words) that needs `tool` among the agent's tools, for an agent not given it (none

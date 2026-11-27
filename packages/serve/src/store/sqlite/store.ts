@@ -2617,16 +2617,12 @@ class SqliteStore implements Store {
       ids: async () => (await db.all<{ id: string }>("SELECT id FROM imported_templates ORDER BY id")).map((row) => row.id),
       put: async ({ id, source, sha, publisher, files }, workspace) => {
         const replace = "ON CONFLICT (id) DO UPDATE SET source = excluded.source, sha = excluded.sha, publisher = excluded.publisher, files = excluded.files, imported_at = excluded.imported_at";
-        if (workspace === undefined) {
-          await db.write([{ sql: `INSERT INTO imported_templates (id, source, sha, publisher, files, imported_at) VALUES (?, ?, ?, ?, ?, ?) ${replace}`, params: [id, source, sha, publisher, JSON.stringify(files), now()] }]);
-          return true;
-        }
-        // In one statement: the row is made in the workspace, or replaced only while it is that workspace's, so of two
-        // imports of one name at once the later one writes nothing (and is refused), whatever each checked before.
-        const [result] = await db.write([{
-          sql: `INSERT INTO imported_templates (id, source, sha, publisher, files, imported_at, workspace) VALUES (?, ?, ?, ?, ?, ?, ?) ${replace} WHERE imported_templates.workspace = excluded.workspace`,
-          params: [id, source, sha, publisher, JSON.stringify(files), now(), workspace],
-        }]);
+        // In one statement: the row is made in the workspace (none, unscoped), or replaced only while it is that workspace's
+        // (none's), so of two imports of one name at once the later one writes nothing (and is refused), whatever each
+        // checked before.
+        const [result] = await db.write([workspace === undefined
+          ? { sql: `INSERT INTO imported_templates (id, source, sha, publisher, files, imported_at) VALUES (?, ?, ?, ?, ?, ?) ${replace} WHERE imported_templates.workspace IS NULL`, params: [id, source, sha, publisher, JSON.stringify(files), now()] }
+          : { sql: `INSERT INTO imported_templates (id, source, sha, publisher, files, imported_at, workspace) VALUES (?, ?, ?, ?, ?, ?, ?) ${replace} WHERE imported_templates.workspace = excluded.workspace`, params: [id, source, sha, publisher, JSON.stringify(files), now(), workspace] }]);
         return (result?.changes ?? 0) === 1;
       },
       workspaces: async () => new Map((await db.all<{ id: string; workspace: string | null }>("SELECT id, workspace FROM imported_templates")).map((row) => [row.id, row.workspace])),
