@@ -450,8 +450,9 @@ test("the texts the reads cost most on visit at most WORK characters per charact
 // A call's stop after prose, then a run too long to read of padding every view reads apart. With a lead-in of 8,092
 // characters, the pieces that show the lead-in are redacted at about 50 characters per character of the text whatever
 // follows; the read past the stop adds at most READ_MOST. Measured per character (in all, the read past the stop): no
-// budget 749.5 and 224.6; this budget 100.8 and 49.5; before reads counted each view (e1e80a1694), 520.2 in all. With a
-// lead-in of 250 characters, the read is most of it: 107.1 and 91.3.
+// budget 745.9 and 225.1, and shown; this budget 96.0 and 49.6; before reads counted each view (e1e80a1694), 521.2 in
+// all, and shown. With a lead-in of 250 characters, the read is most of it: 102.4 and 91.6 (no budget 887.7 and 415.8;
+// e1e80a1694 476.8).
 test("a call's stop after a lead-in of 8,092 or 250 characters, then padding every view reads apart, visits at most WORK per character, the read past the stop at most READ_MOST", () => {
   const over = [];
   let body = "";
