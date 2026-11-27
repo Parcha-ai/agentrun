@@ -5028,7 +5028,10 @@ round on the agent's learning, whatever its harness:
   secrets, text shaped like a secret or a hidden character, or that is past 8192 bytes alone, is refused whole,
   nothing of it written, and the run's learning says why (`problems`). A line that would take the file past 8192
   bytes drops the file's oldest lines until it fits: the newest correction wins, and the run's learning says how many
-  lines went (`dropped_lines`).
+  lines went (`dropped_lines`). A line it keeps is that run's known correction too: with no grade's expected answer, a
+  promotion check judges a replay of the run against its recorded answer as the correction changes it, the agent's
+  answer counted wrong: only the fast model's verdict, asked with the correction, says a draft agrees, never equal
+  answers alone.
 - Its job, when a compile is due: once the agent has its `learning.compile_after` completed runs (20 by default) and no
   learned workflow, or once per hold of one its promotion held, the server asks the same session one more turn, under
   the fixed request id `learn-reflect-<run id>` and the origin `reflect`, so a server that restarts mid-turn asks again

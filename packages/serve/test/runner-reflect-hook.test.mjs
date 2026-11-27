@@ -153,7 +153,8 @@ test("the owner's words are one line of corrections.md: checked against main fir
   assert.deepEqual(calls.asked, [], "no model turn for a correction");
   assert.deepEqual(calls.refusedAsked.map(({ agentId, text }) => [agentId, text]), [["agent-1", "Keep the summary to three lines."]]);
   assert.deepEqual(calls.committed.map(({ runId, agentId, round, draft, correction }) => ({ runId, agentId, round, draft, correction })), [{ runId: "run-1", agentId: "agent-1", round: 1, draft: undefined, correction: "Keep the summary to three lines." }]);
-  assert.deepEqual(kept(rows), { state: "merged", reason: null, merged: "c1", corrections: 1, detail: said.merged([], 1), ...ANSWERED });
+  // The words it took kept whole on its row: what its replays' check reads as the run's correction (promotion.ts correctionOf).
+  assert.deepEqual(kept(rows), { state: "merged", reason: null, merged: "c1", corrections: 1, correction: "Keep the summary to three lines.", detail: said.merged([], 1), ...ANSWERED });
 });
 
 test("a correction the checks refuse is dropped in their words, never written; one past the cap says the cap's own sentence", async () => {
@@ -162,6 +163,7 @@ test("a correction the checks refuse is dropped in their words, never written; o
   const rows = await refusedOne.hook(refusedOne.input());
   assert.deepEqual(refusedOne.calls.committed, [], "nothing written");
   assert.deepEqual([kept(rows).state, kept(rows).reason, kept(rows).detail, kept(rows).problems], ["dropped", "checker", said.checker(secret), secret]);
+  assert.equal(kept(rows).correction, undefined, "a refused correction's words are never kept as the run's correction");
   const full = [{ rule: "too_large", path: "corrections.md", detail: "corrections.md would be past its 2 KB cap." }];
   const capped = hookWith({ words: ["One more."], refused: full });
   assert.equal(kept(await capped.hook(capped.input())).detail, said.correctionsFull(full[0].detail));

@@ -320,6 +320,15 @@ test("held on a grade that contradicts itself: the revise ask says so in its own
   assert.doesNotMatch(prompt, /without giving the right one|from a contradicts/);
 });
 
+// A run its owner corrected by message: the revise ask shows the owner's words as theirs, never as a grade's answer.
+test("held on a run its owner corrected by message: the revise ask shows the owner's correction in their words", () => {
+  const one = { run: "r1", input: "Question 1", agent: JSON.stringify({ answer: 42 }), draft: JSON.stringify({ answer: 42 }), fields: ["answer"], expected: [{ field: "answer", known: "correction", value: "It is 41 here." }] };
+  const check = { n: 5, compile_after: 5, alone: 5, agreed: 0, alone_min: 0.7, agree_min: 0.8, attempt: 1, of: ["r1"], joint: false, disagreements: [one], fields: {} };
+  const prompt = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{\"v\":2}", held: { workflow: "answer", digest: "0123456789abcdef", reason: "held", check } }));
+  assert.match(prompt, /On answer, the owner corrected your answer, in their words \(the known answer is yours as this changes it\): It is 41 here\./);
+  assert.doesNotMatch(prompt, /\(from a grade\)/);
+});
+
 // CompiledRecord.promoted is the promotion step's (learn/promote.ts): the kept draft's digest, read against the agent's
 // promotion records when the run's learning is read.
 test("a held revision asks its compile turn for a revision while its champion serves, however often the champion is checked after; a champion's own hold asks too", () => {

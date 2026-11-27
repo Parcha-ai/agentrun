@@ -1,13 +1,14 @@
 // A replay run's and an audit shadow's own comparison, at its end (learn/promote.ts gradeAnswers): with no agree_on and
 // a fast model, the run asks that model once whether its answer and the other one (the agent's; for a replay of a graded
-// run, the grade's expected answer written over the agent's) reach the same decision, through its
+// run, the grade's expected answer written over the agent's; of a run its owner corrected by message, the agent's with
+// the owner's correction beside it, which wins) reach the same decision, through its
 // own session (the grader's route, a tier proxy beside the session's) on its own cap, booked as its own spend: a replay's
 // is the check's cost, a shadow's the served run's learning cost. Its verdict is a root entry of the run's journal
 // (KINDS.compared), which pathMetrics keeps on its record (metrics `replay.compared`, `audit.compared`), where the check
 // (runner/promotion.ts decideCheck) and the audit (runner/audit.ts settleAudits) read it, through checkInputOf.
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { answersPair, type Compared, type ComparedGrade, comparedGrade, type GraderReply, gradeAnswers, gradesOf, knownAnswerText, sameAnswer } from "../learn/promote.js";
+import { answersPair, type Compared, type ComparedGrade, comparedGrade, correctionCounts, type GraderReply, gradeAnswers, gradesOf, knownAnswerText, sameAnswer } from "../learn/promote.js";
 import type { PortModels } from "../port-models.js";
 import type { RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
@@ -15,7 +16,7 @@ import { runPathOverStore } from "../store-reads/learning.js";
 import { auditedAnswerOf } from "./audit.js";
 import { held, heldEndOfRun } from "./held.js";
 import type { EndOfRunTurn } from "./loop-contract.js";
-import { answerOf } from "./promotion.js";
+import { answerOf, correctionOf } from "./promotion.js";
 
 /** The grader's route among a run's tier routes (never a learned workflow's tier, nor a subagent's), which is also the
  *  label its requests carry on the run's record. */
@@ -36,18 +37,24 @@ const inputText = (input: unknown): string => (typeof input === "string" ? input
 /** The two answers a replay run or a shadow compares at its end: the known one and the workflow's. A replay's workflow
  *  answer is its own, when the workflow it replays answered it; its known answer is its source run's newest grade's
  *  expected answer written over that run's own answer (knownAnswerText, which the check reads too), else that run's
- *  own answer, with that grade (`graded`, null for none), which its verdict keeps. A shadow's agent answer is its own;
- *  the workflow's is the served run's answer it audits (its open ledger line's turn). Null: nothing to compare. */
-async function pairOf(launch: RunLaunch, deps: CompareEndDeps, runId: string): Promise<{ agent: string; workflow: string; graded?: ComparedGrade | null } | null> {
+ *  own answer, with that grade (`graded`, null for none), which its verdict keeps. A source run its owner corrected by
+ *  message, with no grade's expected answer (correctionCounts), keeps its own answer as the known one, never written
+ *  over: the correction is words, not an answer, handed the grader beside it (`corrected`, promotion.ts correctionOf,
+ *  cut as the run's other texts are), which its verdict keeps too. A shadow's agent answer is its own; the workflow's is
+ *  the served run's answer it audits (its open ledger line's turn). Null: nothing to compare. */
+async function pairOf(launch: RunLaunch, deps: CompareEndDeps, runId: string): Promise<{ agent: string; workflow: string; graded?: ComparedGrade | null; corrected?: string } | null> {
   if (launch.replay) {
     const path = await runPathOverStore(deps.store, runId, launch.learning, deps.redact);
     if (path.path !== "workflow" || path.workflow !== launch.replay.workflow) return null;
     const workflow = await answerOf(deps.store, runId, BACKGROUND_CONTEXT);
     const said = await answerOf(deps.store, launch.replay.of, BACKGROUND_CONTEXT);
-    // The grade read once: the verdict keeps it, so the check judges this input on the grade its grader was asked against.
+    // The grade and the correction read once: the verdict keeps both, so the check judges this input on what its grader
+    // was asked against.
     const graded = await gradeOf(deps.store, launch.replay.of);
+    const words = correctionCounts(graded) ? await correctionOf(deps.store, launch.replay.of) : undefined;
+    const corrected = words === undefined ? undefined : deps.redact(words);
     const agent = graded?.expected ? knownAnswerText(said, graded.expected) : said;
-    return workflow === null || agent === null ? null : { agent, workflow, graded };
+    return workflow === null || agent === null ? null : { agent, workflow, graded, ...(corrected?.trim() ? { corrected } : {}) };
   }
   if (launch.audit) {
     // The shadow's agent's audit ledger: the shadow run is its agent's, as the served run it audits is.
@@ -68,9 +75,10 @@ async function gradeOf(store: Store, of: string): Promise<ComparedGrade | null> 
 /** The end-of-run step of a replay run or an audit's shadow (its callers pass no other run): its comparison (above),
  *  asked only when the run completed, was not cut, has a grader (its route exists only for a revision that names no
  *  agree_on, graderRouteOf), and the two answers are not already the same (then a replay keeps only the grade it was judged
- *  with, `same` and no model asked). In a run's own process the step is its runner's (held.ts endOfRun): it reads other runs and the
- *  learning ledger, which no run's process may. A comparison that fails keeps no verdict: the pair then differs, compared
- *  whole (compareAnswers), in the log's words. */
+ *  with, `same` and no model asked). A replay of a run its owner corrected takes no such shortcut: only a verdict asked
+ *  with the correction counts there, so the grader is asked even of an equal one. In a run's own process the step is its runner's (held.ts
+ *  endOfRun): it reads other runs and the learning ledger, which no run's process may. A comparison that fails keeps no
+ *  verdict: the pair then differs, compared whole (compareAnswers), in the log's words. */
 export function compareEndOfRun(launch: RunLaunch, deps: CompareEndDeps): EndOfRunTurn | undefined {
   if (held()) return heldEndOfRun();
   return async (input) => {
@@ -79,10 +87,10 @@ export function compareEndOfRun(launch: RunLaunch, deps: CompareEndDeps): EndOfR
       const pair = await pairOf(launch, deps, input.runId);
       if (!pair) return undefined;
       // Equal answers ask no model; a replay's record still keeps the grade it was judged with (Compared.graded).
-      if (sameAnswer(pair.agent, pair.workflow)) return pair.graded === undefined ? undefined : { also: [], compared: { same: true, pair: answersPair(pair.agent, pair.workflow), graded: pair.graded } };
+      if (pair.corrected === undefined && sameAnswer(pair.agent, pair.workflow)) return pair.graded === undefined ? undefined : { also: [], compared: { same: true, pair: answersPair(pair.agent, pair.workflow), graded: pair.graded } };
       const grade = input.grade;
-      const verdict = await gradeAnswers(inputText(launch.input), pair.agent, pair.workflow, { model: input.grader, ask: (request) => grade(request) });
-      const compared: Compared = pair.graded !== undefined ? { ...verdict, graded: pair.graded } : verdict;
+      const verdict = await gradeAnswers(inputText(launch.input), pair.agent, pair.workflow, { model: input.grader, ask: (request) => grade(request) }, pair.corrected);
+      const compared: Compared = pair.graded !== undefined ? { ...verdict, graded: pair.graded, ...(pair.corrected !== undefined ? { corrected: pair.corrected } : {}) } : verdict;
       return { also: [], compared };
     } catch (error) {
       deps.log(`learning: run ${input.runId}'s comparison was not asked (${(error as Error)?.message ?? error})`);

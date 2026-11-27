@@ -48,6 +48,7 @@ const { readLaunchBody } = await import("../dist/run-launch.js");
 const { promotionsOf, putGrade, GRADER_PROMPT, graderVerdictOf, gradeAnswers, compareAnswers, answersPair, COMPARE_UNREAD, COMPARE_CAP_HELD, COMPARE_STALE } = await import("../dist/learn/promote.js");
 const { answerJudged, answerOf, decideCheck, differentDecisionWords, NEVER_WORD_FOR_WORD } = await import("../dist/runner/promotion.js");
 const { graderAsk } = await import("../dist/runner/compare-end.js");
+const { check: checkFields } = await import("../dist/learn/field-check.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
 const { learningOf } = await import("../dist/learn/rows.js");
 const { workflowDigest } = await import("../dist/runner/workflow-first.js");
@@ -537,6 +538,26 @@ test("the one comparison: agree_on's fields decide alone; compareAnswers: equal 
   assert.deepEqual(compareAnswers('{"a":1}', '{"a":3}', verdict), { same: false, grader: "fast-1", differs_on: COMPARE_STALE });
   assert.deepEqual(compareAnswers('{"a":1}', '{"a":2}', { same: true, grader: "fast-1" }), { same: false, grader: "fast-1", differs_on: COMPARE_STALE });
   assert.notEqual(answersPair("a", "b"), answersPair("ab", ""), "the pair's two answers never run together");
+});
+
+test("a known answer its owner corrected: only a verdict asked with the correction counts, equal answers or not; the field is known from the owner, the agent's answer wrong", async () => {
+  const [agent, draft, words] = ['{"a":1}', '{"a":2}', "It is 2, not 1."];
+  const asked = { same: true, grader: "fast-1", pair: answersPair(draft, agent), corrected: words };
+  assert.deepEqual(compareAnswers(agent, agent, undefined, true), { same: false }, "equal answers, no verdict: they differ");
+  assert.deepEqual(compareAnswers(draft, agent, asked, true), asked);
+  const { corrected: _, ...unasked } = asked;
+  assert.deepEqual(compareAnswers(draft, agent, unasked, true), { same: false }, "a verdict asked without the correction is none");
+  assert.deepEqual(compareAnswers(agent, agent, { ...asked, pair: answersPair(agent, agent) }, true), { ...asked, pair: answersPair(agent, agent) }, "equal answers: the verdict asked with the correction decides");
+  // Judged field by field: right only as the verdict says, equal to the agent's answer or not; the agent's own wrong.
+  const field = (workflow, agrees) => ({ input_id: "r", outcome: "answered", fields: { answer: { workflow, agent: { a: 1 }, agrees, agent_correct: false, correction: words } } });
+  const verdict = checkFields([field({ a: 2 }, true), field({ a: 1 }, true), field({ a: 1 }, false), field({ a: 3 }, undefined)], { agree_min: 0.8, alone_min: 0.7 });
+  assert.deepEqual(verdict.fields.answer.by, { grade: { n: 4, workflow_right: 2, agent_right: 0 } });
+  assert.deepEqual(verdict.misses.map((one) => [one.known, one.expected]), [["correction", words], ["correction", words]]);
+  // The grader is told the correction wins, and reads it fenced as data beside the known answer.
+  assert.match(GRADER_PROMPT, /the correction wins where the two differ/);
+  const users = [];
+  await gradeAnswers("q", agent, draft, { model: "fast-1", ask: async (request) => (users.push(request.user), { text: '{"same": true}' }) }, words);
+  assert.ok(users[0].includes(`The known answer:\n<<<\n${agent}\n>>>\n\nThe owner's correction of the known answer:\n<<<\n${words}\n>>>`), users[0]);
 });
 
 /** The learning rows a promotion record is written through, in memory: one agent's records of each kind, and workflow

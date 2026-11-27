@@ -6,7 +6,8 @@
 //     checked (`checkDraft`: the workflow checks, its dry run, the secret and hidden-character refusals) and committed
 //     directly, with the compiled record on the run's learning. A compile whose drafts all failed is recorded on the
 //     agent's promotion records (compile once: `compileFailed`), never silent.
-// How it ended is kept beside the run's end (learning_proposals): merged with what it wrote, or dropped with its reason
+// How it ended is kept beside the run's end (learning_proposals): merged with what it wrote (a correction it took kept
+// whole as `correction`, which its replays' check reads: runner/promotion.ts correctionOf), or dropped with its reason
 // and words. What the run must never learn (`refuse`: the host's secrets and what it was handed, its sign-in pointer
 // among them) is refused by the checks and cut from everything the step keeps; a run whose list can't be read learns
 // nothing.
@@ -202,7 +203,7 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
         // How many of corrections.md's oldest lines the kept correction pushed out to fit the cap.
         const dropped = corrections && done.droppedLines ? done.droppedLines : 0;
         const problems = [...refusedCorrection, ...(left ?? []), ...draftProblems];
-        return close(keptRow({ state: "merged", reason: null, merged: done.commit, ...(workflows.length ? { workflows } : {}), ...(corrections ? { corrections } : {}), ...(dropped ? { dropped_lines: dropped } : {}), ...(problems.length ? { problems } : {}), ...compiledFields, detail: said.merged(workflows, corrections, problems, dropped) }));
+        return close(keptRow({ state: "merged", reason: null, merged: done.commit, ...(workflows.length ? { workflows } : {}), ...(corrections ? { corrections, correction: taken } : {}), ...(dropped ? { dropped_lines: dropped } : {}), ...(problems.length ? { problems } : {}), ...compiledFields, detail: said.merged(workflows, corrections, problems, dropped) }));
       }
       if (done.reason === "unavailable") return close(dropped("reflect_failed", said.stopped(STOPPED.failed), compiledFields));
       // A run's purge came after this run's seed: nothing of its merge was written (learn/commit.ts `purged`).

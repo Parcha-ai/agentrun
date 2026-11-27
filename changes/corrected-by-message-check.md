@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: fix
+---
+A run its owner corrected by message, with no grade's expected answer, is now checked against that correction. Before, the check compared a learned workflow's replay with the run's recorded answer, which stays wrong unless the agent's own reply took the correction, so a workflow that answered as the owner said was held and one that repeated the wrong answer counted as agreeing: on a host with no grade path, an agent whose recent runs were corrected could not promote a workflow. Now each replay's grader is shown the recorded answer with the owner's correction beside it (the correction wins where they differ), the agent's answer counts as wrong, and only a grader verdict asked with the correction counts as agreement: equal answers alone never do, and with no verdict kept the replay differs. A check record's disagreement on such an input names its known answer `correction` (a new value of `expected[].known`), with the owner's words as its `value`, which the recompile is shown. A grade's expected answer still wins, `agree_on` checks are unchanged, and a correction the checks refused counts for nothing.

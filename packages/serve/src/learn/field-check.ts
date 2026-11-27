@@ -1,5 +1,5 @@
 // Checking a learned workflow, field by field, against the best answer each field has: a grade's expected answer, else
-// the agent's own answer. Pure: rows and a bar in, a verdict out; no store, no settings, no secrets, no prose beyond
+// the agent's own answer (as its owner's correction changes it, when they corrected the run by message). Pure: rows and a bar in, a verdict out; no store, no settings, no secrets, no prose beyond
 // each field's numbers in words. The caller turns its replays (or native turns) into rows, and stores and words what
 // comes back (runner/promotion.ts decideCheck).
 //
@@ -29,7 +29,7 @@ export type Known = (typeof KNOWN)[number];
  *  when one exists. `agrees`: whether the workflow's value is right against the field's best known answer
  *  when something other than equal values decides it (a whole answer: equal, else the grader's verdict on that pair);
  *  absent, equal JSON values are right. `agent_correct`: what a grade said of the agent's answer. False says the agent's
- *  answer was wrong, so a value equal to it is never right, whatever `agrees` says. Against the grade's value, it decides
+ *  answer was wrong, so a value equal to it is never right, whatever `agrees` says (save with a `correction`, below). Against the grade's value, it decides
  *  whether the agent was right. With no grade value, false leaves any other value with no known answer (unjudged); true
  *  changes nothing: the agent's answer is known as it is with no grade, at the same bar (a thumbs-up never makes the
  *  check stricter than none). */
@@ -42,6 +42,12 @@ export type FieldAnswers = {
   /** No known answer here, though a grade was given: it contradicts itself (marked the agent's answer wrong, yet its
    *  expected answer, as the caller reads it, is the agent's answer). Unjudged, whatever the workflow said. */
   readonly no_known?: true;
+  /** Its owner's correction of the agent's answer, in their words (a run corrected by message, with no grade's expected
+   *  answer): the known answer is the agent's as the correction changes it, which `agrees` was judged against. Known as
+   *  a grade's is: the agent's answer wrong, the workflow's right only as `agrees` says (the caller's: a verdict asked
+   *  with the correction, never equal answers alone). A workflow equal to the agent's answer can be right: an agent
+   *  that answered again after the correction recorded the corrected answer. */
+  readonly correction?: string;
 };
 
 /** One input: what the workflow did with it (`answered` alone, handed it back, failed, or skipped at a write: no evidence
@@ -94,9 +100,10 @@ export type FieldVerdict = FieldCount & {
 };
 
 /** One field the workflow had wrong on one input it answered alone: its value, the known one, and where that came from;
+ *  "correction" (the owner's words its value) where the owner corrected the agent's answer (FieldAnswers.correction),
  *  "unknown" (no expected value) where a grade marked the agent's answer wrong without giving the right one, and
  *  "contradicts" (none) where its grade contradicts itself (FieldAnswers.no_known). */
-export type Miss = { readonly field: string; readonly input_id: string; readonly workflow: unknown; readonly expected: unknown; readonly known: Known | "unknown" | "contradicts" };
+export type Miss = { readonly field: string; readonly input_id: string; readonly workflow: unknown; readonly expected: unknown; readonly known: Known | "correction" | "unknown" | "contradicts" };
 
 export type CheckVerdict = {
   readonly verdict: "serve" | "hold";
@@ -133,9 +140,12 @@ function knownOf(one: FieldAnswers): { value: unknown; known: Known } {
  *  undefined when it has none (the agent's answer graded wrong with no expected one, and the workflow said another).
  *  `marked`: judged by a grade that gave no right answer (the workflow repeated the answer it marked wrong). A value equal
  *  to an answer a grade marked wrong is never right, whatever `agrees` says; where the agent gave no value, the agent is
- *  never right either. */
-function judged(one: FieldAnswers): { known: Known; expected: unknown; workflow: boolean; agent: boolean; marked?: true } | undefined {
+ *  never right either. `corrected`: judged against its owner's correction (FieldAnswers.correction), counted as a
+ *  grade's known answer: the agent never right, the workflow right only as `agrees` says (only a verdict asked with the
+ *  correction counts), equal to the agent's answer or not. */
+function judged(one: FieldAnswers): { known: Known; expected: unknown; workflow: boolean; agent: boolean; marked?: true; corrected?: true } | undefined {
   if (one.no_known) return undefined;
+  if (one.correction !== undefined) return { known: "grade", expected: one.correction, workflow: one.agrees === true, agent: false, corrected: true };
   const { value, known } = knownOf(one);
   const repeatsWrong = one.agent_correct === false && right(one.workflow, one.agent);
   if (known === "grade") {
@@ -196,7 +206,7 @@ export function missesOf(rows: readonly CheckInput[]): Miss[] {
   return rows.flatMap((row) => row.outcome !== "answered" ? [] : Object.entries(row.fields ?? {}).flatMap(([field, one]): Miss[] => {
     const j = judged(one);
     if (j?.workflow) return [];
-    return [{ field, input_id: row.input_id, workflow: one.workflow, expected: j?.expected, known: one.no_known ? "contradicts" : !j || j.marked ? "unknown" : j.known }];
+    return [{ field, input_id: row.input_id, workflow: one.workflow, expected: j?.expected, known: one.no_known ? "contradicts" : !j || j.marked ? "unknown" : j.corrected ? "correction" : j.known }];
   }));
 }
 
