@@ -184,27 +184,54 @@ async function earlierRunnerThere(connection: Pick<StoreConnection, "all" | "dia
   return there.length > 0;
 }
 
+/** Whether a run is held now by a claim taken before `before` on the store's clock (its attempt row's claimed_at for the
+ *  run's epoch), or by one with no attempt row to say when (a claim before run_attempts, or its row gone). A runner of an
+ *  earlier build stops claiming at its first floor read after the floor rose (every RUNNER_RENEW_EVERY_MS), so every
+ *  claim it holds was taken before the server's open and RUNNER_STALE_MS: this finds it even when a rolling restart's
+ *  runner of this build took its name, and its row is no longer the earlier build's. */
+async function claimHeldFrom(connection: Pick<StoreConnection, "all" | "dialect">, now: () => number, before: number): Promise<boolean> {
+  const d = connection.dialect;
+  const n = storeNow(d, now);
+  const held = await connection.all(
+    `SELECT 1 AS held FROM runs LEFT JOIN run_attempts ON run_attempts.run_id = runs.id AND run_attempts.epoch = runs.epoch WHERE runs.runner IS NOT NULL AND runs.claimed_until >= ${n.sql} AND (run_attempts.claimed_at IS NULL OR run_attempts.claimed_at < ${d.bigintParam}) LIMIT 1`,
+    ...n.params,
+    before,
+  );
+  return held.length > 0;
+}
+
+/** The server's pass over the ledger on either store (backfillLedger), from its store's open on: reads the store's clock
+ *  now, the open's time, and answers the pass that holds the reopened runs' mark on the claims taken before it and
+ *  RUNNER_STALE_MS. The open runs it once, and the server's timer until it answers true (Store.rerecordReopened). */
+export async function ledgerPasses(connection: Pick<StoreConnection, "all" | "dialect" | "get" | "transaction">, now: () => number, floor: () => Promise<number>): Promise<() => Promise<boolean>> {
+  const n = storeNow(connection.dialect, now);
+  const opened = Number((await connection.get<{ at: number | string }>(`SELECT ${n.sql} AS at`, ...n.params))?.at);
+  return () => backfillLedger(connection, now, floor, opened + RUNNER_STALE_MS);
+}
+
 /** The server's pass over the ledger on either store, at its open and on its timer until it answers true (server.ts):
  *  records every final run that has no ledger row (UNRECORDED), as its end would have (recordLedger), then marks the
  *  ledger whole (store_meta.ledger_backfilled), after which no pass reads those runs again; and records again every
  *  final run, not purged, whose learning kept more than one round (REOPENED_PAGE), whose row a build before this split
  *  (learn/ledger.ts roundsLooked) wrote with its job at its first round's figure. The row is the journal's, so it is
- *  recorded again, never read two ways. That second pass reads the live runners before it starts and marks its runs done
- *  (store_meta.ledger_rerecorded) only when no runner of an earlier build was there then (earlierRunnerThere, against
- *  `floor()`, the store's runner floor): such a runner, ending its in-flight runs until its floor read stops it, writes a
- *  reopened run's row under the split before after any pass, so while one is there each try records every such run
- *  again and leaves the mark unset, and the first try that starts with none there marks it. Answers whether the mark is
+ *  recorded again, never read two ways. That second pass reads, before it starts, whether a runner of an earlier build
+ *  may still end a run: one is there (earlierRunnerThere, against `floor()`, the store's runner floor), or a run is held
+ *  by a claim taken before `claimedBefore`, the server's open and RUNNER_STALE_MS (claimHeldFrom), which finds an
+ *  earlier runner whose name a rolling restart's runner of this build took. Such a runner, ending its in-flight runs
+ *  until its floor read stops it, writes a reopened run's row under the split before after any pass, so while either
+ *  holds each try records every such run again and leaves the mark (store_meta.ledger_rerecorded) unset, and the first
+ *  try that starts with neither marks it. Answers whether the mark is
  *  set. Once it is, no pass reads those runs again: each end, heal and import writes its own row, and no reader records
  *  one. Each pass goes by id, BACKFILL_PAGE runs a transaction, each read again in it; a mark is set only after the last
  *  page of a pass that may set it, so a stop partway keeps each page it committed and the next try walks again from the
  *  first id (a run recorded again gets the same row). Each run's row is locked before it is read again (a no-op on
  *  SQLite's one writer): on Postgres another server's heal or end of it in flight commits first and the read sees its
  *  row, so a pass never writes over it with what it read before, and two servers trying at once write the same row. */
-export async function backfillLedger(connection: Pick<StoreConnection, "all" | "dialect" | "get" | "transaction">, now: () => number, floor: () => Promise<number>): Promise<boolean> {
+export async function backfillLedger(connection: Pick<StoreConnection, "all" | "dialect" | "get" | "transaction">, now: () => number, floor: () => Promise<number>, claimedBefore: number): Promise<boolean> {
   const marks = await connection.get<{ whole: number; split: number }>("SELECT ledger_backfilled AS whole, ledger_rerecorded AS split FROM store_meta WHERE singleton = 1");
   if (Number(marks?.whole) !== 1) await recordEach(connection, now, UNRECORDED_PAGE, UNRECORDED, "ledger_backfilled");
   if (Number(marks?.split) === 1) return true;
-  const held = await earlierRunnerThere(connection, now, await floor());
+  const held = (await earlierRunnerThere(connection, now, await floor())) || (await claimHeldFrom(connection, now, claimedBefore));
   await recordEach(connection, now, REOPENED_PAGE, FINAL_KEPT, held ? undefined : "ledger_rerecorded");
   return !held;
 }

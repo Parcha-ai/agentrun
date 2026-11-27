@@ -2477,8 +2477,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await refusedSweep;
   });
   // The reopened runs' ledger rows, recorded again at the store's open (run-patch.ts backfillLedger), are marked done only
-  // by a pass that started with no runner of an earlier build there: one such runner ends its runs until its floor read
-  // stops it, under the split before. Until a pass marks it, the pass runs again every RUNNER_STALE_MS (the age at which
+  // by a pass that started with no runner of an earlier build there and no run held by a claim taken before the store's
+  // open and RUNNER_STALE_MS (an earlier runner whose name a rolling restart took): one such runner ends its runs until
+  // its floor read stops it, under the split before. Until a pass marks it, the pass runs again every RUNNER_STALE_MS (the age at which
   // such a runner's row reads as gone), so a run it ended meanwhile is recorded under this build's split with no restart;
   // then the timer stops. A pass that fails is said on stderr and tried at the next tick.
   let rerecordPass: Promise<void> = Promise.resolve();

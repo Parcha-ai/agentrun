@@ -104,7 +104,7 @@ export function learningRowsUpgrade(): readonly string[] {
  *  each runner's build knows (runners.knows, RUNNERS) where missing, every row there null (a runner of 17's), and the
  *  version; its mark (STORE_META_LEDGER_RERECORDED) added at the same open. No runner of 17, whose end writes a reopened
  *  run's ledger row under the split before (its job the first round's figure), opens the store again; one still there
- *  holds the mark until its row goes stale (run-patch.ts backfillLedger). */
+ *  holds the mark until its row goes stale and its claims are handed back (run-patch.ts backfillLedger). */
 export function splitUpgrade(runnerColumns: ReadonlySet<string>): readonly string[] {
   return [...(runnerColumns.has("knows") ? [] : ["ALTER TABLE runners ADD COLUMN knows INTEGER"]), "UPDATE store_meta SET schema_version = 18 WHERE singleton = 1"];
 }
@@ -421,7 +421,8 @@ export const STORE_META_LEDGER_BACKFILLED = `ALTER TABLE store_meta ADD COLUMN $
 /** Whether every final run not purged whose learning kept more than one round (a follow-up opened it again) has had its
  *  ledger row recorded again under this build's split (learn/ledger.ts roundsLooked: its job the row less every round's
  *  look-back), which backfillLedger writes once it has recorded the last in a pass that started with no runner of an
- *  earlier build there (RunnerRow.knows): a build before wrote such a row with its job at its first round's figure, and
+ *  earlier build there (RunnerRow.knows) and no run held by a claim taken before the server's open and RUNNER_STALE_MS:
+ *  a build before wrote such a row with its job at its first round's figure, and
  *  the row is the journal's, so it is recorded again, never read two ways. 0 on a store no server of this build marked
  *  yet. In STORE_DDL, and added at the server open that brings a store to 18. */
 const LEDGER_RERECORDED = "ledger_rerecorded INTEGER NOT NULL DEFAULT 0 CHECK (ledger_rerecorded IN (0, 1))";

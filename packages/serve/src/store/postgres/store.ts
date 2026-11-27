@@ -4,7 +4,7 @@
 // run on one ahead of them while its runner floor is at most what they know (migrate.ts runnerFloorOf).
 import { SchemaVersionUnknown, StoreAwaitsServer, type Store, type StoreOwned, type StoreRole } from "../store.js";
 import { backfillNativeCommandOwners } from '../native-command-owner.js';
-import { backfillLedger } from "../sqlite/run-patch.js";
+import { ledgerPasses } from "../sqlite/run-patch.js";
 import { storeOver } from "../sqlite/store.js";
 import { PgConnection, SCHEMA_NAME } from "./connection.js";
 import { migrate, migrationsIn, placeOf, refuseBelowFloor, runnerFloorOf, versionOf } from "./migrate.js";
@@ -93,6 +93,8 @@ export async function openPostgresStore(options: PostgresStoreOptions): Promise<
     const state = await connection.withClient((client) => runnerFloorOf(client, schema));
     return state.runnerFloor ?? state.version ?? known;
   };
+  // The server's pass over the ledger, from its open (run-patch.ts ledgerPasses): set by the open's, a server's alone.
+  let rerecord: (() => Promise<boolean>) | undefined;
   try {
     if (role === "server") {
       const found = await connection.withClient((client) => migrate(client, schema, now(), migrations));
@@ -108,8 +110,12 @@ export async function openPostgresStore(options: PostgresStoreOptions): Promise<
     if(role==="server")await backfillNativeCommandOwners(connection);
     // Every run an earlier build ended gets its ledger row once, here, and every run a follow-up opened again its row
     // recorded again under this build's split, as on SQLite (run-patch.ts backfillLedger): marked done only when no
-    // runner below the floor was there at its start, else tried again on the server's timer (Store.rerecordReopened).
-    if (role === "server") await backfillLedger(connection, now, floor);
+    // runner below the floor was there at its start and no run was held by a claim taken before this open and
+    // RUNNER_STALE_MS, else tried again on the server's timer (Store.rerecordReopened).
+    if (role === "server") {
+      rerecord = await ledgerPasses(connection, now, floor);
+      await rerecord();
+    }
     if (role === "runner" && options.warn) {
       const gap = now() - (await connection.clock());
       if (Math.abs(gap) > CLOCK_WARN_MS) {
@@ -125,5 +131,5 @@ export async function openPostgresStore(options: PostgresStoreOptions): Promise<
   // nor the store's close, which waits for every call in flight.
   const schemaState = async () => ({ ...(await connection.withClient((client) => runnerFloorOf(client, schema), SCHEMA_STATE_MS)), known });
   if (role !== "server") return Object.assign(store, { schemaState });
-  return Object.assign(store, { schemaState, rerecordReopened: () => backfillLedger(connection, now, floor) });
+  return Object.assign(store, { schemaState, rerecordReopened: rerecord! });
 }

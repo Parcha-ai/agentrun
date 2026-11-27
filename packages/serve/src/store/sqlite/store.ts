@@ -44,7 +44,7 @@ import { cleanText, type Dialect, settledBody } from "../dialect.js";
 import { inMemory } from "./memory.js";
 import { dropAgentLearning, dropRunLearning, learningRows } from "./learning-rows.js";
 import { Connection, DEFAULT_BUSY_TIMEOUT_MS, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
-import { applyRunPatch, backfillLedger, BY_HAND_BEFORE, EXACT_COST_USD, NOT_A_LEARNING_RUN, recordLedger, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
+import { applyRunPatch, BY_HAND_BEFORE, EXACT_COST_USD, ledgerPasses, NOT_A_LEARNING_RUN, recordLedger, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
 import { launchDiskOf, readableJson,readLaunch, readLearningStarts, readSeededBefore, readUsageMetadata, writeLaunch, writeLaunchLearning, writeLaunchSealed } from "./run-launch.js";
 import { canonical } from "../agent-body.js";
 import { mcpRecordKeys } from "../mcp-record-keys.js";
@@ -475,6 +475,8 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     file = options.file;
   }
   const connection = await Connection.open(file, { owner: role === "server", ...(options.busyTimeoutMs === undefined ? {} : { busyTimeoutMs: options.busyTimeoutMs }) });
+  // The server's pass over the ledger, from its open (run-patch.ts ledgerPasses): set by the open's, a server's alone.
+  let rerecord: (() => Promise<boolean>) | undefined;
   try {
     let found = await versionOf(connection);
     if (found === null && role === "server") {
@@ -670,8 +672,10 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
       }
       // Every run an earlier build ended gets its ledger row once, here, on the schema this build reads, and every run a
       // follow-up opened again has its row recorded again under this build's split: marked done only when no runner of 17
-      // was there at its start, else tried again on the server's timer (Store.rerecordReopened).
-      await backfillLedger(connection, options.now ?? Date.now, SQLITE_FLOOR);
+      // was there at its start and no run was held by a claim taken before this open and RUNNER_STALE_MS, else tried
+      // again on the server's timer (Store.rerecordReopened).
+      rerecord = await ledgerPasses(connection, options.now ?? Date.now, SQLITE_FLOOR);
+      await rerecord();
     }
   } catch (error) {
     await connection.close().catch(() => undefined);
@@ -685,7 +689,7 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     return { version, runnerFloor: version, known: SCHEMA_VERSION };
   };
   if (role !== "server") return Object.assign(store, { schemaState });
-  return Object.assign(store, { schemaState, rerecordReopened: () => backfillLedger(connection, options.now ?? Date.now, SQLITE_FLOOR) });
+  return Object.assign(store, { schemaState, rerecordReopened: rerecord! });
 }
 
 /** The runner floor of a SQLite store a server of this build opened: the version itself (a runner opens only its own). */

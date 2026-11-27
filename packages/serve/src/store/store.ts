@@ -1805,7 +1805,8 @@ export interface RunnerRow {
   readonly slots: number | null;
   /** The store's schema version the runner's build knows (Runners.knows, which keepPresence writes): null on a row a
    *  runner of a build before this column wrote. A live row whose `knows` is null or below the store's runner floor is a
-   *  runner of an earlier build, which holds the reopened runs' mark (run-patch.ts backfillLedger). Not the package
+   *  runner of an earlier build, which holds the reopened runs' mark, as its claims do once a later build's runner took
+   *  its name (run-patch.ts backfillLedger). Not the package
    *  version, which a build says the same before and after a breaking change until its release. */
   readonly knows: number | null;
 }
@@ -2134,7 +2135,8 @@ export interface Store {
   schemaState?(): Promise<StoreSchemaState>;
   /** The server's pass over the ledger (run-patch.ts backfillLedger), as its open runs it: true once the reopened runs are
    *  marked recorded again under this build's split (store_meta.ledger_rerecorded), which only a pass that started with
-   *  no runner of an earlier build there marks. The server tries again every RUNNER_STALE_MS until it is true (server.ts).
+   *  no runner of an earlier build there and no run held by a claim taken before the open and RUNNER_STALE_MS marks
+   *  (run-patch.ts ledgerPasses). The server tries again every RUNNER_STALE_MS until it is true (server.ts).
    *  On a store opened as the server. */
   rerecordReopened?(): Promise<boolean>;
   /** The clock a claim's lease is judged and stamped on (its `until`), when it is this process's own: the store's clock on

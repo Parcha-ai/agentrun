@@ -10,9 +10,10 @@
 -- split. The mark starts at 0, so the server's next open records each such row again from its run and rounds
 -- (run-patch.ts backfillLedger, a page of runs a transaction). A runner of an earlier build still writes such a row under
 -- the split before at a run's end, after that pass, so the floor rises to 34, and until its floor read stops it, it ends
--- the runs it holds. Its row says no version it knows (knows null, every row here now): while one is there at a pass's
--- start the server leaves the mark unset and records those runs again every 30 s, and it sets the mark after the first
--- pass that started with none there.
+-- the runs it holds. Its row says no version it knows (knows null, every row here now), and every claim it holds was taken
+-- before the server's open and 30 s: while such a row is there or such a claim held at a pass's start, the server leaves
+-- the mark unset and records those runs again every 30 s, and it sets the mark after the first pass that started with
+-- neither.
 --
 -- Added only where missing, so a store whose record of this file was lost applies it again unharmed.
 
