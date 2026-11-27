@@ -3,8 +3,8 @@ name: agentrun
 description: AgentRun Server on Kubernetes, one server and its runner on one volume.
 type: application
 # The chart's version and the server release it installs move together: a release sets both (and render.yaml's image).
-version: 0.1.0-beta.65
-appVersion: "0.1.0-beta.65"
+version: 0.1.0-beta.66
+appVersion: "0.1.0-beta.66"
 home: https://agentrun.ai
 sources:
   - https://github.com/Parcha-ai/agentrun
