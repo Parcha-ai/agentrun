@@ -1,5 +1,0 @@
----
-packages: @parcha/agentrun-web
-kind: fix
----
-Every web provider types a thrown failure the same way: its bound running out is `TIMEOUT`, a stop is `STOPPED`, anything else `CONNECT`. Keyed Exa's and Firecrawl's search or fetch stopped by an AbortError now reads `STOPPED` ("Exa's search was stopped") where it read `TIMEOUT`; Parallel's search stopped by the caller reads `STOPPED` ("Parallel's search was stopped") where it read `CONNECT`; and Parallel's search that failed by a thrown error names no URL's user name or password in its words, which are cut at 300 characters. Keyless Firecrawl reads a page whose metadata title is a list by its first string, as keyed Firecrawl does, where it read no title. Two fetches of one page that share the page guard's check no longer lose it when the first stops: the check is stopped only once every fetch waiting on it has stopped, each fetch still stops waiting at its own signal, and a fetch that comes once every waiter has stopped asks a check of its own.
