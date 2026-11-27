@@ -283,6 +283,21 @@ export function planeBrowser(provider: ComputerProvider, run: { readonly runId: 
   return claimBrowser(provider, spec).browser;
 }
 
+/** The plane's browser for a run's claim (planeBrowser), over `provider`, the plane's vendor: with `sweep` (the default,
+ *  and only under a claim), the run's sessions of a lower claim epoch released first (releaseOlderBrowsers), and the ones
+ *  it released carried on the browser by id with when it answered (ClaimBrowser.sweptOlder), so the claim's open charges
+ *  an owed one to then. A stand-in vendor (a test's) is opened unswept. */
+export async function openPlaneBrowser(
+  provider: ComputerProvider,
+  run: { readonly runId: string; readonly epoch: number } | undefined,
+  { sweep = true, signal, sleep }: { readonly sweep?: boolean; readonly signal?: AbortSignal; readonly sleep?: (ms: number) => Promise<void> } = {},
+): Promise<ClaimBrowser> {
+  const plane = planeBrowser(provider, run);
+  if (!run || !sweep) return plane;
+  const swept = await releaseOlderBrowsers(provider, run, { ...(signal ? { signal } : {}), ...(sleep ? { sleep } : {}) });
+  return swept.size > 0 ? { ...plane, sweptOlder: swept } : plane;
+}
+
 /** What the run's browser holds as its claim lets the run go, from pi-browser's open-session inventory once its releases
  *  have drained: every row still there is a session its custody holds (a release that failed, a lost one reconcile takes
  *  again); its id, or where its create's answer was lost (no id), its tag, any session of which it may hold. `custody`:

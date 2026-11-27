@@ -492,7 +492,7 @@ const browserTool: ToolEntry = {
   // Its downloads go into work/ by path (pi-browser), which a box's command could turn through a link.
   runnerOnly: true,
   bind: async (host) => {
-    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY, BrowserFailureError, browserFailure, MAX_UPLOAD_BYTES, uploadMime }, { createDrivingGates, createLiveView, liveViewProvider }, live, person, { claimBrowserProvider, closeHeldSockets, planeBrowser, planeComputer, raceReleasedSessions, releaseOlderBrowsers, releaseUnheldBrowsers }, { cdpDriver }] = await Promise.all([
+    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY, BrowserFailureError, browserFailure, MAX_UPLOAD_BYTES, uploadMime }, { createDrivingGates, createLiveView, liveViewProvider }, live, person, { claimBrowserProvider, closeHeldSockets, openPlaneBrowser, planeBrowser, planeComputer, raceReleasedSessions, releaseUnheldBrowsers }, { cdpDriver }] = await Promise.all([
       import("@earendil-works/chord/context"),
       import("@parcha/pi-browser/durable"),
       import("@parcha/pi-browser"),
@@ -530,10 +530,9 @@ const browserTool: ToolEntry = {
           try {
             if (computer) return { browser: computer };
             const provider = stand ? (stand.computer as Parameters<typeof planeBrowser>[0]) : await planeComputer(vendor, host.env);
-            const plane = planeBrowser(provider, host.claim);
-            // The older sessions this sweep released ran until it answered: an owed one is charged to then (recoverOwed).
-            const swept = host.claim && !stand ? await releaseOlderBrowsers(provider, host.claim) : undefined;
-            return { browser: swept && swept.size > 0 ? { ...plane, sweptOlder: swept } : plane };
+            // The run's older-epoch sessions released first; the ones released ride on the browser (sweptOlder), so an owed one
+            // is charged to when the sweep answered (recoverOwed).
+            return { browser: await openPlaneBrowser(provider, host.claim, { sweep: !stand }) };
           } catch (error) {
             if (error instanceof BrowserFailureError) return { refused: error };
             return { refused: new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${error instanceof Error ? error.message : String(error)}.`)) };
