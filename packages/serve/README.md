@@ -5256,7 +5256,7 @@ were reached. Nothing is priced here, and nothing is rounded to a billing increm
   fires at each end. A later read with another `ended_at`, or null, means the run moved since.
 - `lines` and `total` are null, with `reason`, while the run is at work (`running`), for a run whose figure is not its
   booking's (`not_booked`: an imported, native or SDK run, or a CLI run whose model requests went past its proxy). A
-  learning run a follow-up opened again has lines (`runusage/5`; before, `reopened` and none): its job's and every
+  learning run a follow-up opened again has lines (`runusage/6`; before, `reopened` and none): its job's and every
   follow-up turn's up to its latest end, each round's end-of-run turn left out. Each end's lines hold the last end's and
   what the follow-up added, so a reader that bills each end bills the difference.
 - `compute_time` (`runusage/4`): one line per computer provider and resource (`resource`: `vcpu`, `memory`, `gpu` with
