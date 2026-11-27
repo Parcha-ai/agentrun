@@ -53,7 +53,8 @@ test("a schedule trigger's firing is handed to the host, signed with the setting
   assert.equal(verify(mintSecret(), headers, body, clock.now()), "bad_signature", "and no other");
   assert.equal(headers["webhook-id"], firing.key, "the firing's id is the message's id");
   const sent = JSON.parse(body.toString("utf8"));
-  assert.deepEqual(Object.keys(sent).sort(), ["agent_id", "fired_at", "firing_id", "input", "revision_id", "trigger_id"]);
+  assert.deepEqual(Object.keys(sent).sort(), ["agent_id", "fired_at", "firing_id", "input", "max_cost_usd", "revision_id", "trigger_id"]);
+  assert.equal(sent.max_cost_usd, 0.5, "the trigger's cap, which bounds the run the host starts");
   assert.equal(sent.firing_id, firing.key);
   assert.equal(sent.trigger_id, created.body.id);
   assert.equal(sent.agent_id, "nightly");
@@ -491,7 +492,10 @@ test("the host's start runs on its trigger's target: the target's cap, else the 
   let api;
   // Each trigger's host sends its own max_cost_usd (none, more than the target's, or less) and effort.
   const host = new Map();
+  // The cap each firing names to its host, by trigger.
+  const named = new Map();
   const hook = await hookServer(t, async (res, sent) => {
+    named.set(sent.trigger_id, sent.max_cost_usd);
     const { cap, effort } = host.get(sent.trigger_id);
     const started = await api("POST", `/agents/${sent.agent_id}/runs`, { input: sent.input, ...(cap === undefined ? {} : { max_cost_usd: cap }), ...(effort ? { effort } : {}), trigger_firing: { trigger_id: sent.trigger_id, firing_id: sent.firing_id } });
     answerJson(res, started.status === 202 ? 202 : 400, {});
@@ -523,6 +527,11 @@ test("the host's start runs on its trigger's target: the target's cap, else the 
   assert.equal(none.effort, "high", "the target's effort");
   assert.equal(more.effort, "high", "the target's effort over the host's");
   assert.equal((await runOf("own")).effort, "low", "the host's effort when the target sets none");
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(ids).map(([name, id]) => [name, named.get(id)])),
+    { none: 0.5, more: 0.5, less: 0.5, own: 0.5, "open-more": null, "open-less": null },
+    "each firing names its target's cap to the host, null with none: the agent's default then bounds the run",
+  );
 });
 
 /** Every model setting a keyless server's tests set or clear: it holds no model key of its own. */
