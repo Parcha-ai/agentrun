@@ -36,6 +36,7 @@ import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
 import { API_ONLY_ROUTES, WORKSPACE_ROUTES, apiOnlyMcpSave, apiOnlyRefusal, apiOnlyTriggerEdit, apiOnlyTriggerMade, apiOnlyTriggerSkipped, apiOnlyTurnsOn, servedApiOnly, servedScoped } from "./api-only.js";
+import { triggersInWorkspace } from "./trigger-scope.js";
 import { inWorkspace, outOfScope, scopedSlot, slotPath, WORKSPACE, WORKSPACE_HEADER, WORKSPACE_NAME, WORKSPACE_TOKENS_ENV, workspaceNow, workspaceTokensFrom } from "./workspace-scope.js";
 import { API_ONLY_ENV, API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV } from "./env-switch.js";
 import { pricesInForce } from "./prices.js";
@@ -6988,11 +6989,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "redeliverSlack":
         return send(res, 200, await slack.redeliver(id));
       case "listTriggers": {
-        // A scoped request lists the triggers of its own workspace's agents alone.
-        const listed = (await triggers.list()).triggers;
-        const unseen = new Set<string>();
-        if (workspaceNow() !== undefined) for (const row of await store.triggers.all()) if (await agentOutOfScope(row.agentId)) unseen.add(row.id);
-        return send(res, 200, { triggers: listed.filter((view) => !unseen.has(view.id)).map(withSecretOf) });
+        // A scoped request lists the triggers of its own workspace's agents alone (trigger-scope.ts).
+        const workspace = workspaceNow();
+        const listed = workspace === undefined ? (await triggers.list()).triggers : await triggersInWorkspace(workspace, store, async (keep) => (await triggers.list(keep)).triggers);
+        return send(res, 200, { triggers: listed.map(withSecretOf) });
       }
       case "createTrigger": {
         const body = await bodyOf(req);
