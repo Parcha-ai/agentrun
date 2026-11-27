@@ -44,7 +44,7 @@
 // id and the agent's), found again by its owner at each later claim and attached under the new claim, and detached, not
 // deleted, at the run's end. A run that finds it held by another run still going is refused, naming that run.
 import { randomUUID } from "node:crypto";
-import type { BrowserComputerProvider, BrowserSpec, ComputerClient, ComputerConnection, ComputerError, ComputerOwner, ComputerProvider, ComputerSpec, DaemonMethod, DaemonMethods, HelloResult, MountKind, MountReadBack, Result, ScreenWatch, ScreenWatchHandlers, WatchOptions } from "@parcha/agentrun-computer";
+import type { BrowserComputerProvider, BrowserSpec, ComputerClient, ComputerConnection, ComputerError, ComputerOwner, ComputerProvider, ComputerRef, ComputerSpec, DaemonMethod, DaemonMethods, HelloResult, MountKind, MountReadBack, Result, ScreenWatch, ScreenWatchHandlers, WatchOptions } from "@parcha/agentrun-computer";
 import { epochOf, isBrowserProvider, ownerFilter, releaseOlder, releaseUnheld, RUN_LABEL, runLabels } from "@parcha/agentrun-computer";
 import { type RecordInput, type Recording, type RecordWatch, startRecording } from "../computer-record.js";
 import { computerOfPlace, type ComputerSetting as RevisionComputer, type PlaceView } from "../computer-setting.js";
@@ -340,18 +340,18 @@ function keptDeletes(provider: ComputerProvider, kept: KeptGone): ComputerProvid
 }
 
 /** The run's computers of a lower claim epoch released (the janitor's releaseOlder: one claim's computer at a time), its
- *  failure thrown in its words; true when it deleted one, an earlier claim's computer its runner never let go (a runner
+ *  failure thrown in its words; the ones it deleted, each an earlier claim's computer its runner never let go (a runner
  *  lost, a crash). A run's first claim is epoch 1 (a queued run is epoch 0; each claim and release moves it up one): no
  *  claim came before it to leave a computer, so the provider is not asked (its list is a vendor round trip before the
  *  create). */
-async function releaseOlderClaims(provider: ComputerProvider, claim: { readonly runId: string; readonly epoch: number }, signal: AbortSignal | undefined, ending?: { readonly entry: string; readonly writes: IntervalWrites; readonly keptGone?: KeptGone }): Promise<boolean> {
-  if (claim.epoch <= 1) return false;
+async function releaseOlderClaims(provider: ComputerProvider, claim: { readonly runId: string; readonly epoch: number }, signal: AbortSignal | undefined, ending?: { readonly entry: string; readonly writes: IntervalWrites; readonly keptGone?: KeptGone }): Promise<readonly ComputerRef[]> {
+  if (claim.epoch <= 1) return [];
   // Each delete that answers ok ends its interval as it answers (computer-intervals.ts endingDeletes), so one deleted
   // before another failed, or before the call was cut, keeps its end; one detached or not let go is left open.
   const releasing = ending ? endingDeletes(provider, ending.entry, ending.writes) : provider;
   const older = await releaseOlder(ending?.keptGone ? keptDeletes(releasing, ending.keptGone) : releasing, claim.runId, claim.epoch, signal ? { signal } : {});
   if (!older.ok) throw new Error(older.error.message);
-  return older.value.released.length > 0;
+  return older.value.released;
 }
 
 /** The agent's computer setting: the launch's, else its revision's (computer, else place), else the launch's place. The
@@ -617,7 +617,7 @@ async function providerLaunch(
   interval: { readonly writes: IntervalWrites; readonly entry: string; readonly kind: string; readonly meter?: ComputeMeter; readonly keptGone?: KeptGone },
 ): Promise<ProviderComputer & { releasedOlder: boolean }> {
   const { writes, entry, keptGone } = interval;
-  const releasedOlder = await releaseOlderClaims(provider, claim, signal, { entry, writes, ...(keptGone ? { keptGone } : {}) });
+  const releasedOlder = (await releaseOlderClaims(provider, claim, signal, { entry, writes, ...(keptGone ? { keptGone } : {}) })).length > 0;
   // Its first stretch held under the run's cap at what the create asks for, before anything is made: refused, nothing is.
   const ahead = await interval.meter?.before(entry, figuresOf(spec));
   // The claim is the request: a retry of this launch under the same epoch gets the computer it made, never a second.
@@ -1299,11 +1299,14 @@ export async function computerForClaim(
       // A browser makes nothing here: the run's browser tool opens each session through it, so a session lives (and is
       // booked) only while the tool holds it.
       if (kind === "browser") {
-        // The run's sessions of a lower claim epoch go first, as a computer's do (the janitor's releaseOlder).
-        await releaseOlderClaims(provider, launch, signal, { entry: entry.id, writes });
+        // The run's sessions of a lower claim epoch go first, as a computer's do (the janitor's releaseOlder); the ones it
+        // released, by id and when, are the browser's sweptOlder.
+        const swept = await releaseOlderClaims(provider, launch, signal, { entry: entry.id, writes });
+        const sweptAt = new Date().toISOString();
         const opened = claimBrowser(provider, spec);
         madeBy = entry;
-        return { id: entry.id, groups: ["cdp"], browser: opened.browser, release: opened.release };
+        const browser = swept.length > 0 ? { ...opened.browser, sweptOlder: new Map(swept.map((ref) => [ref.id, sweptAt])) } : opened.browser;
+        return { id: entry.id, groups: ["cdp"], browser, release: opened.release };
       }
       let launched: Awaited<ReturnType<typeof ownedLaunch>> | ProviderComputer;
       /** The labels the provider lists this computer under: its owner's for the agent's own, else the run's. */

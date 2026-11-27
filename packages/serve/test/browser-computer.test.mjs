@@ -226,8 +226,11 @@ test("a session a dead claim left (a lower epoch's labels) is released when the 
   const s = stand(ALL);
   const lost = await claimBrowserProvider(planeBrowser(s.provider, { runId: "run-1", epoch: 2 })).create(SPEC, signal());
   const slept = [];
-  await releaseOlderBrowsers(s.provider, RUN, { sleep: async (ms) => void slept.push(ms) });
+  const before = Date.now();
+  const swept = await releaseOlderBrowsers(s.provider, RUN, { sleep: async (ms) => void slept.push(ms) });
   assert.deepEqual(s.calls.filter((call) => call.op === "release").map((call) => call.id), [lost.id]);
+  assert.deepEqual([...swept.keys()], [lost.id], "the ones it released are handed back (ClaimBrowser.sweptOlder), with when it answered");
+  assert.ok(Date.parse(swept.get(lost.id)) >= before && Date.parse(swept.get(lost.id)) <= Date.now());
   assert.deepEqual(slept, [], "a provider that writes no profile back after a session is not waited for");
 });
 

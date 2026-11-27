@@ -320,7 +320,7 @@ async function unheldRoot(t) {
   return { ctx, harness, entries, made, session, spendOf, kinds, BROWSERS_UNHELD };
 }
 
-test("a let-go records each browser a create race left running before its release is sent and charges it once its release answers, before the next is sent: a later release that never answers leaves the earlier one charged and said, and the later one owed", async (t) => {
+test("a let-go records each browser a create race left running before its release is sent and charges and says it in one commit once its release answers, before the next is sent: a later release that never answers leaves the earlier one charged and said, and the later one owed", async (t) => {
   const { ctx, harness, session, spendOf, kinds, entries } = await unheldRoot(t);
   const spend = spendOf();
   const stops = [];
@@ -334,7 +334,7 @@ test("a let-go records each browser a create race left running before its releas
     throw new Error("the release window ran out");
   }, ctx), /the release window ran out/);
   assert.deepEqual(stops, ["bb-a", "bb-b"]);
-  assert.deepEqual(await kinds(), [["owed", "bb-a"], ["charged", "unheld:bb-a"], ["owed", "bb-b"], ["said", ["bb-a"]]]);
+  assert.deepEqual(await kinds(), [["owed", "bb-a"], ["charged", "unheld:bb-a"], ["said", ["bb-a"]], ["owed", "bb-b"]], "bb-a's note is in its charge's commit, before bb-b's release is sent, so a process that ends there leaves it said");
   const owed = (await entries()).find((e) => e.kind === BROWSER_UNHELD_OWED && e.data.id === "bb-b").data;
   assert.deepEqual(Object.keys(owed).sort(), ["at", "createdAt", "id", "tag"], "the owed record keeps what books its time: its id, tag, when its vendor made it, and when its release went out");
 });
@@ -368,7 +368,7 @@ test("the next claim's open charges a browser an earlier let-go owed and never c
   assert.equal(charges["unheld:bb-stopped"].at, owedAt["bb-stopped"], "a stopped one is charged to when its release went out");
   assert.ok(Date.parse(charges["unheld:bb-running"].at) >= opened, "one still running is charged to its release at the open");
   for (const tag of ["unheld:bb-stopped", "unheld:bb-running"]) assert.ok(charges[tag].seconds >= 600 && charges[tag].final === true && charges[tag].call === null, JSON.stringify(charges[tag]));
-  assert.deepEqual((await kinds()).filter(([kind]) => kind === "said"), [["said", ["bb-a"]], ["said", ["bb-stopped", "bb-running"]]]);
+  assert.deepEqual((await kinds()).filter(([kind]) => kind === "said"), [["said", ["bb-a"]], ["said", ["bb-stopped"]], ["said", ["bb-running"]]], "each one charged is said with its charge");
   unreadable = false;
   await spendOf().recoverOwed(harness, browser, ctx);
   await spendOf().recoverOwed(harness, browser, ctx);
@@ -1529,4 +1529,29 @@ test("a kept session's non-final charge books a person's carried minutes off the
   await spend.ledgerIdle();
   assert.ok(Math.abs(paidHolds() - base) < 1e-12, "nothing left held");
   assert.ok(Math.abs(paid.spentUsd() - 120 * r) < 1e-12, "each charge booked once");
+});
+
+test("the next claim's open charges an owed browser its own sweep of older sessions released to when that sweep answered, never back to when the earlier release went out: the stretch the browser ran after a release that failed is charged", async (t) => {
+  const { ctx, harness, session, spendOf, kinds, entries } = await unheldRoot(t);
+  await assert.rejects(spendOf().letGo(harness, async ({ releasing }) => {
+    await releasing(session("bb-swept"));
+    await releasing(session("bb-gone"));
+    throw new Error("the process ended");
+  }, ctx));
+  const owedAt = Object.fromEntries((await entries()).filter((e) => e.kind === BROWSER_UNHELD_OWED).map((e) => [e.data.id, e.data.at]));
+  const sweptAt = new Date(Date.parse(owedAt["bb-swept"]) + 300_000).toISOString();
+  const asked = [];
+  const browser = {
+    // Both stopped by now: bb-swept by the claim's sweep, bb-gone by its own release.
+    running: async (id) => void asked.push(id) ?? false,
+    close: async () => assert.fail("nothing is running to close"),
+    sweptOlder: new Map([["bb-swept", sweptAt]]),
+  };
+  await spendOf().recoverOwed(harness, browser, ctx);
+  const charges = Object.fromEntries((await entries()).filter((e) => e.kind === BROWSER_CHARGED).map((e) => [e.data.tag, e.data]));
+  assert.equal(charges["unheld:bb-swept"].at, sweptAt, "the swept one ran until the sweep answered");
+  assert.equal(charges["unheld:bb-gone"].at, owedAt["bb-gone"], "one the sweep did not release is charged to its release");
+  assert.ok(charges["unheld:bb-swept"].seconds >= charges["unheld:bb-gone"].seconds + 299, JSON.stringify(charges));
+  assert.deepEqual(asked, ["bb-gone"], "the vendor is asked only about the one the sweep did not release");
+  assert.deepEqual((await kinds()).filter(([kind]) => kind === "said"), [["said", ["bb-swept"]], ["said", ["bb-gone"]]]);
 });

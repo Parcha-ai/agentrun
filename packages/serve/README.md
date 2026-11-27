@@ -5649,10 +5649,11 @@ session's tag that ends such a browser beside the session's own (the vendor alre
 way its time, from when its vendor listing says it was made, is charged on the run with the rest (one whose listing
 gives no time is charged unpriced, never $0), under one key per browser (`unheld:<id>`), so whichever release sees it
 end charges it once and a reopen books it once. The let-go records each such browser on the run's root before its
-release is sent and charges it once that release answers, before the next is sent, so a process that ends, or a release
-that does not answer, leaves every released browser charged or recorded; the next claim's open charges a recorded one
-to when its release went out (one its vendor says still runs is released then and charged to then). The run's timeline
-and its root record say it: `AgentRun: Released 1
+release is sent and charges and says it in one commit once that release answers, before the next is sent, so a process
+that ends, or a release that does not answer, leaves every released browser charged and said, or recorded; the next
+claim's open charges and says a recorded one: to when that claim's sweep of the run's older-epoch sessions answered,
+where that sweep released it, else to when its release went out (one its vendor says still runs is released then and
+charged to then). The run's timeline and its root record say it, one line per browser: `AgentRun: Released 1
 browser a create race left running (…); this run did not hold it, and its time is booked on the run and absorbed, not
 billed.` On the run's usage that time is a `browser_time` line of its own, `absorbed` and not billable ([Attempts: what
 the infrastructure redid](#attempts-what-the-infrastructure-redid)). A browser of another run, or of a later claim, is

@@ -531,8 +531,9 @@ const browserTool: ToolEntry = {
             if (computer) return { browser: computer };
             const provider = stand ? (stand.computer as Parameters<typeof planeBrowser>[0]) : await planeComputer(vendor, host.env);
             const plane = planeBrowser(provider, host.claim);
-            if (host.claim && !stand) await releaseOlderBrowsers(provider, host.claim);
-            return { browser: plane };
+            // The older sessions this sweep released ran until it answered: an owed one is charged to then (recoverOwed).
+            const swept = host.claim && !stand ? await releaseOlderBrowsers(provider, host.claim) : undefined;
+            return { browser: swept && swept.size > 0 ? { ...plane, sweptOlder: swept } : plane };
           } catch (error) {
             if (error instanceof BrowserFailureError) return { refused: error };
             return { refused: new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${error instanceof Error ? error.message : String(error)}.`)) };

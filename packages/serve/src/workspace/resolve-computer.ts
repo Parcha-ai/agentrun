@@ -124,6 +124,10 @@ export type ClaimBrowser = {
    *  view's, computer-record.ts browserWatch) until the caller stops it at the session's release, or the claim's release
    *  stops it. Absent: nothing is recorded. */
   readonly record?: (id: string, watch: RecordWatch) => Recording;
+  /** The run's sessions of a lower claim epoch that this claim's sweep released as it opened (the janitor's releaseOlder:
+   *  releaseOlderBrowsers, or a browser computer's releaseOlderClaims), by id, each with when that sweep answered (an ISO
+   *  time): such a session ran until then at the latest. Absent where the sweep released none. */
+  readonly sweptOlder?: ReadonlyMap<string, string>;
   /** The provider's own record of session `id` (BrowserComputerProvider.sessionUsage), read once as it is let go: when it
    *  says the session started and ended, and its proxy bytes, each null where it does not say; undefined for a session it
    *  does not know. Absent where the provider keeps no such record. A failed read throws. */

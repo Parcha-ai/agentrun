@@ -259,16 +259,19 @@ export async function planeComputer(vendor: string, env: NodeJS.ProcessEnv): Pro
 /** The run's browser sessions of a lower claim epoch released, as a computer's are when a claim starts it (the janitor's
  *  releaseOlder): a runner that died after the vendor made a session and before its id was kept left one this claim's
  *  labels would never find. One that ended may have been saving to the run's sign-in, and this process holds no saver
- *  for it, so when any was ended the provider's settle time is waited out before the plane's browser opens a session. */
+ *  for it, so when any was ended the provider's settle time is waited out before the plane's browser opens a session.
+ *  The ones released, by id, each with when the sweep answered (ClaimBrowser.sweptOlder). */
 export async function releaseOlderBrowsers(
   provider: ComputerProvider,
   run: { readonly runId: string; readonly epoch: number },
   { signal, sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)) }: { readonly signal?: AbortSignal; readonly sleep?: (ms: number) => Promise<void> } = {},
-): Promise<void> {
+): Promise<ReadonlyMap<string, string>> {
   const older = await releaseOlder(provider, run.runId, run.epoch, signal ? { signal } : {});
   if (!older.ok) throw new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${older.error.message}.`));
+  const at = new Date().toISOString();
   const settleMs = provider.capabilities().browser?.profiles?.settleMs ?? 0;
   if (settleMs > 0 && older.value.released.length + older.value.detached.length > 0) await sleep(settleMs);
+  return new Map(older.value.released.map((ref) => [ref.id, at]));
 }
 
 /** A run's browser over `provider`, a browser computer provider (the plane's vendor, or a test's stand-in), as the claim
