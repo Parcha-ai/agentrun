@@ -186,7 +186,9 @@ export type SessionsState = {
   notice: string | null;
 };
 
-export type InventoryRow = { tag: string; conversationId: number; plane: string; provider: string; resourceId: string | null; state: SessionRecord["state"] };
+/** `owed`: sessions besides the row's own that a release by its tag sent a stop to (or is about to), and that no raced
+ *  call has told yet; each stays until a status read confirms its stop and it is told. */
+export type InventoryRow = { tag: string; conversationId: number; plane: string; provider: string; resourceId: string | null; state: SessionRecord["state"]; owed?: string[] };
 
 export type SessionRow = { conversationId: number; label: string; session: SessionRecord; liveView: LiveView | null };
 export type SessionChange = "launched" | "updated" | "released";

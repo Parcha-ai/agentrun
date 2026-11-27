@@ -69,10 +69,11 @@ export type BrowserExtensionOptions<D extends PageDriver = PageDriver> = VaultOp
   onCharge?: (charge: SessionCharge, tx: Tx, call?: { callId: string }) => void | Promise<void>;
   /** A release by a session's tag ended sessions besides that session's own: a create retried behind the provider's API,
    *  or a create race of the session's tag, left them running, and no record bills their time. Their ids, so a host books
-   *  what they ran, once a status read confirms each stopped, one whose release stopped it and then failed included (a
-   *  release keeps every id it found). One still running after its release failed is left under the tag, where the
-   *  session's own release finds it. Called again for an id only when a process ends between this call and the
-   *  release's last commit. A throw here never fails the release. */
+   *  what they ran, once a status read confirms each stopped, one whose release stopped it and then failed included. Each
+   *  is saved on the session's inventory row (`owed`) before its stop is sent, until it is told: the session's own release
+   *  confirms them, or a run open's reconcile for a row that ended lost or still owes one. Called again for an id only
+   *  when a process ends between this call and the commit that takes it off the row. A throw here never fails the
+   *  release. */
   onRaceReleased?: (released: { conversationId: number; tag: string; ids: string[] }) => void | Promise<void>;
   /** Exact strings to scrub from every output besides the built-in shapes, read at each use. */
   redact?: { values: () => readonly string[] };
