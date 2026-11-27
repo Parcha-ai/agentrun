@@ -159,7 +159,7 @@
    "contract"
   ],
   "main": "cut",
-  "text": "https\u003a//deploy\u003aP@ss#word123456@git.example.com/repo.git",
+  "text": "https://{{login}}@git.example.com/repo.git",
   "values": [
    "P@ss#word123456"
   ]
