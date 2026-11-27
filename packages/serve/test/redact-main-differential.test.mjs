@@ -27,6 +27,15 @@ test("no text main withheld is shown or only cut now", () => {
   assert.deepEqual(regressed.map((row) => ({ sources: row.sources, text: row.text })), []);
 });
 
+// The contract's credential URL is a row of both fixtures: its colons are written as JSON escapes, so neither file holds
+// a URL with a login as written (the source export blocks on one), and a regeneration that writes it plainly fails here.
+test("neither fixture holds a URL with a login as written", () => {
+  const plain = ["redact-main-verdicts.json", "redact-main-glued.json"].filter((name) =>
+    /https?:\/\/[^\s/:]+:[^\s/@]+@/.test(readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8")),
+  );
+  assert.deepEqual(plain, []);
+});
+
 test("no text main cut in place shows as it came now", () => {
   const regressed = rows.filter((row) => row.main === "cut" && redactSecrets(row.text, row.values) === row.text);
   assert.deepEqual(regressed.map((row) => ({ sources: row.sources, text: row.text })), []);
