@@ -91,7 +91,7 @@ test("a fetch writes one web_receipt line, the classifier off with no TypeSafe k
   clean(judged.lines[0], objective);
 
   const secret = "hunter2-secret";
-  const credentialed = await receipts(t, async () => (await webFetchTool(claimEnv()).execute({ url: `http://reader:${secret}@public.example/notes.txt` }, {}, {})).details);
+  const credentialed = await receipts(t, async () => (await webFetchTool(claimEnv()).execute({ url: Object.assign(new URL("http://public.example/notes.txt"), { username: "reader", password: secret }).href }, {}, {})).details);
   assert.equal(credentialed.lines.length, 1, credentialed.lines.join("\n"));
   assert.equal(fieldsOf(credentialed.lines[0]).op, "fetch");
   clean(credentialed.lines[0], secret, "reader:");
