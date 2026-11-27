@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { AsyncResource } from "node:async_hooks";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -141,6 +142,7 @@ const TABLE = {
   getCapabilities: { method: "GET", path: "/v2/capabilities", served: true },
   getHealth: { method: "GET", path: "/v2/health", served: true },
   getOpenapi: { method: "GET", path: "/v2/openapi.json", served: true },
+  listMarketplaceTemplates: { method: "GET", path: "/v2/marketplace/templates", served: true },
 };
 
 test("every operation of WORKSPACE_ROUTES is a route of the server, and the table below covers each", () => {
@@ -200,6 +202,23 @@ test("a scoped request reads another workspace's row as a missing one, the same 
   // The operator's unscoped token reads every row, as before.
   assert.equal((await unscoped(server, "GET", `/v2/runs/${w1.run}`)).status, 200);
   assert.equal((await unscoped(server, "GET", `/v2/runs/${run.body.run_id}`)).status, 200);
+});
+
+test("a scoped request reads the marketplace's list with the package here only where its workspace sees one: a bundled package for every workspace, an import for its own alone", { timeout: 120_000 }, async (t) => {
+  const site = createServer((_req, res) => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify([{ name: "deployed" }, { name: "notes" }, { name: "elsewhere" }])));
+  await new Promise((done) => site.listen(0, "127.0.0.1", done));
+  t.after(() => new Promise((done) => site.close(done)));
+  const server = await scopedServer(t, { marketplace: `http://127.0.0.1:${site.address().port}` });
+  const { template } = await seedW1(server);
+  const hereIn = async (request) => {
+    const answer = await request(server, "GET", "/v2/marketplace/templates");
+    assert.equal(answer.status, 200, answer.text);
+    assert.equal(answer.body.state, "read", answer.text);
+    return answer.body.templates.map((entry) => [entry.name, entry.here ?? null]);
+  };
+  assert.deepEqual(await hereIn(inW1), [["deployed", "deployed"], ["notes", template], ["elsewhere", null]]);
+  assert.deepEqual(await hereIn(inW2), [["deployed", "deployed"], ["notes", null], ["elsewhere", null]], "W1's import is not here for W2");
+  assert.equal((await unscoped(server, "GET", "/v2/marketplace/templates")).status, 404, "unscoped, an API-only server serves it no more than before");
 });
 
 test("an Idempotency-Key used in one workspace starts afresh in another, and replays in its own", { timeout: 120_000 }, async (t) => {

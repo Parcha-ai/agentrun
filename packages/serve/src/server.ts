@@ -7005,9 +7005,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, { templates: listed.map((pkg) => ({ ...packageView(pkg), computer_here: pickView(pkg), model_tiers_here: tiersView(pkg) })) });
       }
       case "listMarketplaceTemplates": {
-        // The marketplace's list as read (or kept), each entry with the package here that it is, when one is.
+        // The marketplace's list as read (or kept), each entry with the package here that it is, when one is (and the
+        // request's workspace sees it).
         const read = await marketplace.list();
-        const here = registry.list();
+        const here = await templatesSeen(registry.list());
         return send(res, 200, { ...read, templates: read.templates.map((entry) => { const id = hereOf(entry, here); return id ? { ...entry, here: id } : entry; }) });
       }
       case "importTemplate": {
