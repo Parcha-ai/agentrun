@@ -6189,7 +6189,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "listRunningComputers": {
         const origin = linkOrigin(req);
-        return send(res, 200, await runningComputers(store, (runId) => runRead(runId, origin)), { "cache-control": "no-store" });
+        return send(res, 200, await runningComputers(store, (runId) => runRead(runId, origin), scopeOf()), { "cache-control": "no-store" });
       }
       case "listComputers":
       case "saveComputerKeys":
@@ -6200,7 +6200,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const body = found.name === "saveComputerKeys" ? await bodyOf(req) : undefined;
         const controller = new AbortController();
         req.once("close", () => controller.abort());
-        return send(res, 200, await settingsComputerRoute(computersOf(), found.name, { ...(provider !== undefined ? { provider } : {}), ...(body !== undefined ? { body } : {}), signal: controller.signal }), { "cache-control": "no-store" });
+        return send(res, 200, await settingsComputerRoute(computersOf(), found.name, { ...(provider !== undefined ? { provider } : {}), ...(body !== undefined ? { body } : {}), signal: controller.signal, scoped: workspaceNow() !== undefined }), { "cache-control": "no-store" });
       }
       case "getWorkspaceArchil":
       case "putWorkspaceArchil":

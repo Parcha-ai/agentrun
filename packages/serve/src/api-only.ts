@@ -153,13 +153,15 @@ export function servedApiOnly(routes: readonly Route[], method: string | undefin
 export const apiOnlyRefusal = (raw: string): string => `this server serves the run API only (${API_ONLY_ENV}=1): ${raw} is not served here`;
 
 /** The operations a scoped request (the AgentRun-Workspace header, workspace-scope.ts) is served: its own agents, runs,
- *  imported template packages and uploaded files, the marketplace's list (its `here` naming only a package the workspace
- *  sees), and the server's description. Every other is refused with 403 not_scoped, whatever API_ONLY_ROUTES serves an
+ *  imported template packages and uploaded files, its agents' Archil disks and the runs of its own computers going now, the
+ *  computers this server offers (never the operator's paired ones), the marketplace's list (its `here` naming only a
+ *  package the workspace sees), and the server's description. Every other is refused with 403 not_scoped, whatever API_ONLY_ROUTES serves an
  *  unscoped request. listAgents, createAgent, updateDefinition, getTemplate, listTemplates, listMarketplaceTemplates and
  *  getOpenapi are not in API_ONLY_ROUTES: an API-only server serves them to a scoped request alone. */
 export const WORKSPACE_ROUTES: ReadonlySet<string> = new Set([
   "listAllRuns", "listRuns", "getRun", "getTimeline", "listRunFiles", "readRunFile", "getRunExport",
   "listAgents", "getAgent", "listRevisions", "createAgent", "updateDefinition", "setCurrent",
+  "getAgentArchil", "deleteAgentArchil", "listComputers", "listRunningComputers",
   "importTemplate", "applyTemplate", "getTemplate", "listTemplates", "listMarketplaceTemplates",
   "createRun", "sendMessage", "stopRun", "cancelRun",
   "createFile", "listFiles", "getFile", "uploadFile", "deleteFile",

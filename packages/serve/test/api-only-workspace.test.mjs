@@ -127,6 +127,8 @@ const TABLE = {
   createRun: { method: "POST", path: "/v2/agents/{agent}/runs", row: "agent", body: { input: { content: "Hello." } } },
   updateDefinition: { method: "PUT", path: "/v2/agents/{agent}/definition", row: "agent", body: { definition: { version: 1, name: "W2 edit", instructions: "Answer.", skills: [], tools: [] } } },
   setCurrent: { method: "POST", path: "/v2/agents/{agent}/current", row: "agent", body: { revision_id: "rev_none" } },
+  getAgentArchil: { method: "GET", path: "/v2/agents/{agent}/archil", row: "agent" },
+  deleteAgentArchil: { method: "DELETE", path: "/v2/agents/{agent}/archil", row: "agent" },
   getTemplate: { method: "GET", path: "/v2/templates/{template}", row: "template" },
   applyTemplate: { method: "POST", path: "/v2/templates/{template}/apply", row: "template", body: { parameters: {} } },
   getFile: { method: "GET", path: "/v2/files/{file}", row: "file" },
@@ -143,6 +145,10 @@ const TABLE = {
   getHealth: { method: "GET", path: "/v2/health", served: true },
   getOpenapi: { method: "GET", path: "/v2/openapi.json", served: true },
   listMarketplaceTemplates: { method: "GET", path: "/v2/marketplace/templates", served: true },
+  // The computers this server offers, never the operator's paired ones (computers.test.mjs); the runs a workspace's
+  // computers are up for, its own alone (computers-running.test.mjs).
+  listComputers: { method: "GET", path: "/v2/computers", served: true },
+  listRunningComputers: { method: "GET", path: "/v2/computers/running", served: true },
 };
 
 test("every operation of WORKSPACE_ROUTES is a route of the server, and the table below covers each", () => {
@@ -219,6 +225,15 @@ test("a scoped request reads the marketplace's list with the package here only w
   assert.deepEqual(await hereIn(inW1), [["deployed", "deployed"], ["notes", template], ["elsewhere", null]]);
   assert.deepEqual(await hereIn(inW2), [["deployed", "deployed"], ["notes", null], ["elsewhere", null]], "W1's import is not here for W2");
   assert.equal((await unscoped(server, "GET", "/v2/marketplace/templates")).status, 404, "unscoped, an API-only server serves it no more than before");
+});
+
+test("a workspace reads and removes its own agent's Archil disk: on a server keeping run folders on its own disk, none", { timeout: 120_000 }, async (t) => {
+  const server = await scopedServer(t);
+  const { agent } = await seedW1(server);
+  const read = await inW1(server, "GET", `/v2/agents/${agent}/archil`);
+  assert.deepEqual([read.status, read.body], [200, { on: false, archil_disk: null }], read.text);
+  const removed = await inW1(server, "DELETE", `/v2/agents/${agent}/archil`);
+  assert.deepEqual([removed.status, removed.body], [200, { on: false, archil_disk: null, removed: null }], removed.text);
 });
 
 test("an Idempotency-Key used in one workspace starts afresh in another, and replays in its own", { timeout: 120_000 }, async (t) => {
