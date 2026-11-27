@@ -238,6 +238,25 @@ test("a charge joins the run's spend and moves its holds only once the commit th
   assert.deepEqual([pico(paid.spentUsd()), paid.heldUsd()], [0.002, 0]);
 });
 
+test("a create-race browser's charge is booked under its tag alone: charged again at another time (another release that ended it), the ledger books it once, under the ref the usage reader matches it by", async (t) => {
+  const [{ BACKGROUND_CONTEXT: ctx }, durable, { createModels }] = await Promise.all([import("@earendil-works/chord/context"), import("@earendil-works/pi-durable"), import("@earendil-works/pi-ai/models")]);
+  const inner = await toolLedger(1);
+  const refs = [];
+  const paid = { ...inner, admit: (request) => (request.ref === undefined || refs.push(request.ref), inner.admit(request)), settle: (id, usd, options) => inner.settle(id, usd, options) };
+  const harness = await durable.Harness.open(new durable.MemoryStorage(), { models: createModels(), registry: durable.createRegistry(), onReport: () => {} }, ctx);
+  t.after(() => harness.close(ctx));
+  await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => undefined, undefined, { paid });
+  spend.watch(harness);
+  const charge = { conversationId: 1, tag: "unheld:bb-raced", provider: "browserbase", at: new Date(T0).toISOString(), seconds: 600, usd: 0.02, final: true, state: "priced" };
+  await harness.commit((tx) => spend.onCharge(charge, tx), ctx);
+  await spend.ledgerIdle();
+  await harness.commit((tx) => spend.onCharge({ ...charge, at: new Date(T0 + 5_000).toISOString(), seconds: 605 }, tx), ctx);
+  await spend.ledgerIdle();
+  assert.deepEqual(refs, ["browser:unheld:bb-raced/final", "browser:unheld:bb-raced/final"], "both charges name one booking, by the tag alone");
+  assert.equal(pico(inner.spentUsd()), 0.02, "booked once");
+});
+
 test("a person's time carried for a session stays held until the session's next charge books it, and goes then", async (t) => {
   const [{ BACKGROUND_CONTEXT: ctx }, durable, { createModels }] = await Promise.all([import("@earendil-works/chord/context"), import("@earendil-works/pi-durable"), import("@earendil-works/pi-ai/models")]);
   const paid = await toolLedger(1);

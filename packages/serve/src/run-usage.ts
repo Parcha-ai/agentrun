@@ -37,7 +37,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { type BrowserSessionLine, browserSessionsOf } from "./browser-sessions.js";
-import { BROWSER_CHARGED, unheldBrowserTag } from "./cap.js";
+import { BROWSER_CHARGED, browserChargeRef, unheldBrowserTag } from "./cap.js";
 import { launchOf } from "./handed-values.js";
 import { inReflect, reflectRanges } from "./runner/end-of-run.js";
 import { journalRecords } from "./runner/journal-reader.js";
@@ -284,11 +284,12 @@ export function usageLinesOf(entries: readonly EntryLike[], launch?: Pick<RunLau
   // claim's settling of it.
   const tags = attemptTags(attempts);
   // A browser charge is the attempt's whose claim wrote it on the root (BROWSER_CHARGED), even when its booking landed
-  // under a later claim (browser-cost.ts bookRootCharges books one its process lost): the booking names it by its ref.
+  // under a later claim (browser-cost.ts bookRootCharges books one its process lost): the booking names it by its ref
+  // (browserChargeRef, the one rule the booking takes).
   const chargeAt = new Map<string, AttemptTag>();
   for (const e of entries) {
     const d = (e.data ?? {}) as { tag?: unknown; at?: unknown; final?: unknown };
-    if (e.kind === BROWSER_CHARGED && typeof d.tag === "string") chargeAt.set(`browser:${d.tag}@${String(d.at)}${d.final ? "/final" : ""}`, tags.atEntry(e.id));
+    if (e.kind === BROWSER_CHARGED && typeof d.tag === "string") chargeAt.set(browserChargeRef({ tag: d.tag, at: d.at, final: d.final }), tags.atEntry(e.id));
   }
   // A model request its attempt sent and never finished: no answer booked (a crash cut it off), or booked as cut (a stop
   // cut it, at its hold). The claim that takes the turn over sends it again, so when a later claim redid that turn it is

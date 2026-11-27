@@ -252,6 +252,12 @@ export const BROWSER_CHARGED = "agentrun.browser_charged";
 export const UNHELD_BROWSER_TAG = "unheld:";
 /** Whether a browser charge's tag is one a create race left (UNHELD_BROWSER_TAG). */
 export const unheldBrowserTag = (tag: unknown): boolean => typeof tag === "string" && tag.startsWith(UNHELD_BROWSER_TAG);
+/** The one booking a browser charge (BROWSER_CHARGED) names on the ledger, its ref: its session, its time, and whether
+ *  it was the session's last. A browser a create race left (UNHELD_BROWSER_TAG) is charged once whatever ended it, so its
+ *  booking is its tag alone. The booking (browser-cost.ts) and the usage read that matches a booking to its charge
+ *  (run-usage.ts) both name it by this. */
+export const browserChargeRef = (data: { tag: string; at: unknown; final?: unknown }): string =>
+  unheldBrowserTag(data.tag) ? `browser:${data.tag}/final` : `browser:${data.tag}@${String(data.at)}${data.final ? "/final" : ""}`;
 
 /** /usage's meter figures from a run's entries by conversation, in log order, and beside them each meter's known dollars:
  *  its settled charges' figures, whether or not another of its charges is unknown (a hold, a call cut or never settled, is

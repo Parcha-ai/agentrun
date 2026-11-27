@@ -67,3 +67,83 @@ test("a host whose onRaceReleased throws never fails the release: the session's 
   assert.equal(backend.sessions.get(record.resourceId).state, "stopped");
   assert.equal(backend.sessions.get(left[0]).state, "stopped");
 });
+
+// A create whose answer was lost and whose tag lookup found nothing yet: the row has no id, and its release task looks
+// again by tag after the create deadline. By then the create left two sessions under the tag, A and B. The release's
+// first attempt finds [A, B], releases A (the row's own, the first found) and fails on B; the next look finds only B,
+// either the task's retry or (`abort`) the abort handler of a task aborted while it waits to retry.
+async function lostCreate(t, { abort = false } = {}) {
+  const backend = new FakeBackend({ start: START, pages: { [START]: fixturePage(START, "The start page.") } });
+  const made = [];
+  let lookups = 0;
+  let failB = true;
+  let failedB;
+  const bFailed = new Promise((resolve) => { failedB = resolve; });
+  const provider = {
+    ...backend.provider,
+    async create(spec, signal) {
+      made.push((await backend.provider.create(spec, signal)).id, (await backend.provider.create(spec, signal)).id);
+      throw new Error("the create's answer was lost");
+    },
+    async findByTag(tag, signal) {
+      return ++lookups === 1 ? [] : backend.provider.findByTag(tag, signal);
+    },
+    async release(ref, signal) {
+      if (ref.id === made[1] && failB) { failB = false; failedB(); throw new Error("the release of B failed"); }
+      return backend.provider.release(ref, signal);
+    },
+  };
+  const heard = [];
+  const browser = createBrowserExtension({
+    provider: () => provider, driver: fakeDriver(backend), evidence: { file: async () => null }, createDeadlineMs: 50,
+    onRaceReleased: (released) => { heard.push(released); },
+    tools: { browser_read: async (_args, port) => { const s = await port.session(); await s.driver.page(); return { content: [{ type: "text", text: "read" }] }; } },
+  });
+  const model = faux.fauxProvider({ models: [{ id: "faux-1" }] });
+  model.setResponses(Array.from({ length: 4 }, () => (context) => {
+    if (context.messages.some((m) => m.role === "toolResult")) return faux.fauxAssistantMessage([faux.fauxText("done")], { stopReason: "stop" });
+    return faux.fauxAssistantMessage([faux.fauxToolCall("browser_read", {})], { stopReason: "toolUse" });
+  }));
+  const models = createModels();
+  models.setProvider(model.provider);
+  const registry = createRegistry();
+  registry.install(browser.extension);
+  const harness = await Harness.open(new MemoryStorage(), { models, registry, onReport: () => {} }, ctx);
+  t.after(async () => { await harness.close(ctx).catch(() => undefined); await browser.close(); });
+  const config = { label: "node-a", run: "run-race", policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 0, batchTimeoutMs: 60_000 } };
+  const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } }, init: async (tx, id) => { Object.assign(await tx.doc(browser.docs.Config, id), config); } });
+  await browser.reconcile(harness, () => true, ctx);
+  await (await root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);
+  if (abort) {
+    // The retry waits backoffMs(0), 500 ms, after the failed attempt: the abort lands inside that wait.
+    await bFailed;
+    await root.abort(ctx, { background: true });
+  }
+  await browser.drain(harness, ctx);
+  const tasks = (await harness.commit((tx) => tx.scanTasks({}, 50), ctx)).items.filter((task) => task.kind === "browser.release");
+  const [a, b] = made;
+  assert.equal(made.length, 2, "one create, two sessions under its tag");
+  assert.equal(failB, false, "the first attempt's release of B failed");
+  const [record] = (await harness.snapshot(browser.docs.Sessions, root.id, ctx)).sessions;
+  return { a, b, record, heard, backend, rootId: root.id, outcomes: tasks.map((task) => task.state.outcome?.status) };
+}
+
+const raceRetryHolds = ({ a, b, record, heard, backend, rootId }) => {
+  assert.equal(record.state, "released");
+  assert.equal(record.resourceId, a, "the record bills the first session its tag found, A");
+  assert.equal(backend.sessions.get(a).state, "stopped");
+  assert.equal(backend.sessions.get(b).state, "stopped");
+  assert.deepEqual(heard, [{ conversationId: rootId, tag: record.tag, ids: [b] }], "B, released by the next look, is told as raced, once; A, the record's own, never");
+};
+
+test("a release that retries after its first attempt released the row's own session and failed on the other: the retry tells the other as raced, once, and the record bills the own one", async (t) => {
+  const seen = await lostCreate(t);
+  assert.deepEqual(seen.outcomes, ["completed"], "the task's own retry released B");
+  raceRetryHolds(seen);
+});
+
+test("a release aborted while it waits to retry, after its first attempt released the row's own session and failed on the other: the abort handler tells the other as raced, once, and the record bills the own one", async (t) => {
+  const seen = await lostCreate(t, { abort: true });
+  assert.deepEqual(seen.outcomes, ["aborted"], "the abort handler released B");
+  raceRetryHolds(seen);
+});

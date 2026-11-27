@@ -26,7 +26,7 @@ import { type Harness, ROOT_CONVERSATION_ID, type Conversation, type Session, ty
 import { PROVIDERS } from "@parcha/agentrun-computer";
 import type { SessionCharge } from "@parcha/pi-browser";
 import type { BeforeCreate } from "@parcha/pi-browser/durable";
-import { BROWSER_CHARGED, SPEND_CAP_REACHED, UNHELD_BROWSER_TAG, unheldBrowserTag } from "./cap.js";
+import { BROWSER_CHARGED, browserChargeRef, SPEND_CAP_REACHED, UNHELD_BROWSER_TAG } from "./cap.js";
 import { BROWSERS_UNHELD } from "./timeline/index.js";
 import type { UnheldSessions } from "./workspace/resolve-computer.js";
 import { type PaidBooking, paidStep, unbookedRefusal } from "./paid-calls.js";
@@ -107,7 +107,7 @@ type Row = { tag: string; conversationId: number; state: string; resourceId: str
 
 /** The tag a browser a create race left running is charged under (BROWSER_CHARGED), whichever release ended it (a let-go's
  *  releaseUnheld, or a release by a session's tag that ended it beside that session): one key, so it is charged once in a
- *  process and booked once on the ledger (chargeRef). */
+ *  process and booked once on the ledger (browserChargeRef). */
 export const unheldTag = (id: string): string => `${UNHELD_BROWSER_TAG}${id}`;
 
 /** What a release of the browsers a create race left running says on the run's timeline and its root (BROWSERS_UNHELD):
@@ -268,7 +268,7 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     // Held at its charge (known: it was billed): a claim lost before its settle leaves it booked at that, never unknown
     // (the kernel's bookCut books an owed step at its hold). A charge of an unknown amount holds nothing.
     const owes = typeof data.usd === "number" && Number.isFinite(data.usd) && data.usd > 0 ? data.usd : 0;
-    const step = paidStep(booking, data.call ?? undefined, { name: "this browser session's time", holdUsd: owes, basis: `${provider}'s session time, billed as it was charged`, by: data.charged_by, tool: BROWSER_TOOL, tag: data.tag, ...OWED.charge, ref: chargeRef(data) }, async () => undefined, () => data.usd).then(
+    const step = paidStep(booking, data.call ?? undefined, { name: "this browser session's time", holdUsd: owes, basis: `${provider}'s session time, billed as it was charged`, by: data.charged_by, tool: BROWSER_TOOL, tag: data.tag, ...OWED.charge, ref: browserChargeRef(data) }, async () => undefined, () => data.usd).then(
       (stepped) => void ("refused" in stepped && log(logLine("browser_spend_unbooked", { said: `a browser charge of ${data.tag} was not booked on the run's ledger (${stepped.refused.slice(0, 200)}): the next claim's reopen books it` }))),
       (error: unknown) => void log(logLine("browser_spend_unbooked", { said: `a browser charge of ${data.tag} was not booked on the run's ledger (${String((error as Error)?.message ?? error).slice(0, 200)}): the next claim's reopen books it` })),
     );
@@ -328,10 +328,6 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
       sessions.set(data.tag, { cid: data.conversation, reserve: askReserve(data.tag, `${provider}'s next stretch of session time, held until its release is booked`, call), at: through, call: data.call });
     }
   }
-
-  /** The one booking a charge names on the ledger: its session, its time, and whether it was the session's last. A
-   *  browser a create race left (unheldTag) is charged once whatever ended it, so its booking is its id alone. */
-  const chargeRef = (data: Pick<Booked, "tag" | "at" | "final">) => (unheldBrowserTag(data.tag) ? `browser:${data.tag}/final` : `browser:${data.tag}@${data.at}${data.final ? "/final" : ""}`);
 
   /** At a reopen, on the runner's one ledger: every charge the root holds (BROWSER_CHARGED) is booked there, once by its
    *  ref, so one whose commit landed and whose booking did not (its process lost between the two) is counted now; one

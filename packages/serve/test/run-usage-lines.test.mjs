@@ -482,6 +482,37 @@ test("a browser charge whose booking the next claim recovered (its ref) stays on
   assert.equal(infraUsdOf(lines), 0, "nothing was sent again");
 });
 
+test("a session's last browser charge whose booking the next claim recovered (its ref names it final) stays one line, the attempt's that wrote the charge, its total known", async () => {
+  const { usageLinesOf } = await import("../dist/run-usage.js");
+  const attempts = [claimRow(1, 1, 1, 1, ENDED - 900_000, { cut: "drain" }), claimRow(3, 1, 2, 100, ENDED - 600_000)];
+  const charge = { tool: "browser", charged_by: "browserbase", seconds: 60, tag: "s1", at: "2026-11-19T09:50:00.000Z", final: true };
+  const entries = [
+    ...ids(1, [...keys(), e(1, "agentrun.browser_charged", charge)]),
+    ...ids(100, [...paid(1, "browser", "browserbase", 0.002, { tool: "browser", tag: "s1", ref: "browser:s1@2026-11-19T09:50:00.000Z/final" }), ...reported(7, 1, "m", 0.01, usage(10, 1))]),
+  ];
+  const { lines, total } = usageLinesOf(entries, undefined, new Map(), { rows: [], at: 0 }, attempts);
+  const browser = lines.filter((one) => one.meter === "browser_time");
+  assert.deepEqual(browser.map((one) => [one.quantity, one.usd, one.attempt, one.billable]), [[60, 0.002, 1, true]], "its seconds and its money on one line, the cut attempt's");
+  assert.equal(micro(total.usd), micro(0.012), "the total is known");
+});
+
+test("a create-race browser's charge committed by one claim and booked by the next (its ref, browserChargeRef) is one absorbed line with its seconds and its money, the totals known", async () => {
+  const { usageLinesOf, infraUsdOf } = await import("../dist/run-usage.js");
+  // Attempt 1 (cut by a drain) released the raced browser and committed its charge on the root, then lost its process
+  // before the booking; attempt 2's reopen booked it by its ref (bookRootCharges), the ref every unheld charge takes.
+  const attempts = [claimRow(1, 1, 1, 1, ENDED - 900_000, { cut: "drain" }), claimRow(3, 1, 2, 100, ENDED - 600_000)];
+  const charge = { tool: "browser", charged_by: "browserbase", seconds: 600, tag: "unheld:bb-raced", at: "2026-11-19T09:50:00.000Z", final: true };
+  const entries = [
+    ...ids(1, [...keys(), e(1, "agentrun.browser_charged", charge)]),
+    ...ids(100, [...paid(1, "browser", "browserbase", 0.02, { tool: "browser", tag: "unheld:bb-raced", ref: "browser:unheld:bb-raced/final" }), ...reported(7, 1, "m", 0.01, usage(10, 1))]),
+  ];
+  const { lines, total } = usageLinesOf(entries, undefined, new Map(), { rows: [], at: 0 }, attempts);
+  const browser = lines.filter((one) => one.meter === "browser_time");
+  assert.deepEqual(browser.map((one) => [one.quantity, one.usd, one.attempt, one.billable, one.absorbed]), [[600, 0.02, 1, false, "create_race"]], "its seconds and its money on one absorbed line, the attempt's that wrote the charge");
+  assert.equal(micro(total.usd), micro(0.03), "the total is known");
+  assert.equal(micro(infraUsdOf(lines)), micro(0.02), "infra_usd is known: the absorbed time");
+});
+
 test("a computer kept across a park is billed by the claims that held it: each claim's window of its time sits with that claim's bookings, never a line of unknown quantity (#3351 review)", async () => {
   const { usageLinesOf } = await import("../dist/run-usage.js");
   // Made under claim 1 (turn 1, parked), kept; claim 2 (turn 2) resumed it and was cut; claim 3 (turn 2, attempt 2)
