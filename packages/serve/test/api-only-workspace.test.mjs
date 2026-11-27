@@ -523,7 +523,8 @@ test("workspace-backfill refuses a Postgres store below the workspace migration 
   const io = { out: (line) => lines.push(line), err: (line) => lines.push(`err ${line}`) };
   assert.equal(await workspaceBackfillMain([map, "--data", dir, "--apply"], dir, "usage", io), 2, lines.join("\n"));
   assert.equal(lines.length, 1, lines.join("\n"));
-  assert.match(lines[0], /^err agentrun-serve workspace-backfill: the store is behind this build, and this command never migrates it: .*from version 32 to 33.*Start a server of this build once \(it applies every migration, the workspace columns' 0033 among them\), then run this again\. Nothing was written\.$/);
+  assert.match(lines[0], /^err agentrun-serve workspace-backfill: the store is behind this build, and this command never migrates it: .*from version 32 to \d+.*Start a server of this build once \(it applies every migration, the workspace columns' 0033 among them\), then run this again\. Nothing was written\.$/);
+  assert.ok(lines[0].includes(`from version 32 to ${Math.max(...migrationsIn().map((m) => m.version))}`), lines[0]);
   assert.equal(await versionNow(), 32, "nothing migrated");
 });
 

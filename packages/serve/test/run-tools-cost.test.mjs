@@ -12,6 +12,7 @@ import { REQUEST_USD } from "./fixtures/faux-tools-cost.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { ended, started } from "./learn-support.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { raw } from "./store-target.mjs";
 
 const FAUX = new URL("./fixtures/faux-tools-cost.mjs", import.meta.url).pathname;
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
@@ -133,4 +134,36 @@ test("a run still at work: tools_usd is null, never a figure read apart from usd
   assert.equal(view.pending?.kind, "approval", `the run waits on the second call's approval: ${JSON.stringify(view.pending)}`);
   assert.equal(readFileSync(calls, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((one) => one.path === "/v1/run" && one.endpoint === "/person/enrich").length, 1, "the paid call ran before the wait");
   assert.equal(view.cost.tools_usd, null, `a run at work: tools_usd is unknown until it ends: ${JSON.stringify(view.cost)}`);
+});
+
+test("a learning run a follow-up opened again whose ledger row an earlier build wrote (its job the first round's figure) reads as this build's split once the server opens again: usd holds tools_usd, the follow-up is not learning, and the usage lines join to usd (#4050 review)", { timeout: 240_000 }, async (t) => {
+  const first = await server(t, { learning: "on" });
+  const CALL = 'Call monid__faux__person__enrich with {"body":{"name":"Ada"}}';
+  const saved = await first.api("POST", "/agents", agent("again", { learning: true, tools: [ENRICH], tool_settings: allowed(ENRICH) }));
+  assert.equal(saved.status, 201, JSON.stringify(saved.body));
+  const runId = await started(first.api, "again", CALL);
+  await ended(first.api, runId);
+  const sent = await first.api("POST", `/runs/${runId}/messages`, { content: CALL });
+  assert.equal(sent.status, 202, JSON.stringify(sent.body));
+  const now = (await ended(first.api, runId)).view;
+  assert.equal(now.status, "completed", JSON.stringify(now.error));
+  assert.equal(now.cost.tools_usd, 0.006, `both rounds' monid calls: ${JSON.stringify(now.cost)}`);
+  await first.stop();
+  // The row as a build before this split wrote it: the job its first round's figure, the follow-up and every end-of-run
+  // turn its look-back; and the store at that build's version, 17, with no mark that its rows were recorded again.
+  const db = await raw(join(first.data, "store.sqlite"), { timeout: 15_000 });
+  const firstJob = JSON.parse((await db.get("SELECT proposal FROM learning_proposals WHERE run_id = ? AND round = 1", runId)).proposal).job_cost_usd;
+  const rowUsd = (await db.get("SELECT cost_usd FROM runs WHERE id = ?", runId)).cost_usd;
+  assert.ok(firstJob > 0 && firstJob < rowUsd, JSON.stringify({ firstJob, rowUsd }));
+  await db.run("UPDATE learning_ledger SET job_usd = ?, look_back_usd = ? WHERE run_id = ?", firstJob, Math.round((rowUsd - firstJob) * 1e9) / 1e9, runId);
+  await db.run("ALTER TABLE store_meta DROP COLUMN ledger_rerecorded");
+  await db.run("UPDATE store_meta SET schema_version = 17 WHERE singleton = 1");
+  await db.close();
+
+  const { api } = await server(t, { learning: "on", data: first.data });
+  const view = (await api("GET", `/runs/${runId}`)).body;
+  assert.ok(view.cost.tools_usd <= view.cost.usd, `tools_usd inside usd: ${JSON.stringify(view.cost)}`);
+  assert.deepEqual([micro(view.cost.usd), micro(view.cost.learning_usd), micro(view.cost.followup_usd)], [micro(now.cost.usd), micro(now.cost.learning_usd), micro(now.cost.followup_usd)], `this build's split, as the run's end recorded it: ${JSON.stringify([view.cost, now.cost])}`);
+  const usage = (await api("GET", `/runs/${runId}/usage`)).body;
+  assert.equal(micro(usage.total.usd), micro(view.cost.usd), `the lines join to usd: ${JSON.stringify([usage.total, view.cost])}`);
 });

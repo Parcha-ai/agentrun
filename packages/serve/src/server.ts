@@ -102,7 +102,7 @@ import { type RunMoment, type State, type Status } from "./run-view.js";
 import { keepPresence, type Presence, refusedEnd, runnersRefused } from "./runner/presence.js";
 import { openRoundsOf } from "./learning-rounds.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, prepareLaunch, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore } from "./runs-over-store.js";
-import { builtOfNow, factsOverStore, keptFactory, listedItem, liveOf, lookingBackEnd, momentOverStore, summaryOverStore, timelineOverStore, toolsUsdOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { builtOfNow, factsOverStore, keptFactory, listedItem, liveOf, lookingBackEnd, momentOverStore, runCostOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { healEndedCosts } from "./cost-heal.js";
 import { reconcileProjectCheckpoints } from "./source-sync/checkpoints.js";
 import { acknowledgeProjects } from "./source-sync/checkpoint-gate.js";
@@ -133,7 +133,7 @@ import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type AgenticBody, type AgentRow, LearningRecordRefused, type McpCredentialMark, type MonidPinBody, type NewRevision, openStore, type RevisionPlace, type RevisionRow, type LaunchSealed, openRunLaunch, type RunMcpAuth, type RunRow, sealRunLaunch, type Store, StoreLaunchMissing, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
+import { type AgenticBody, type AgentRow, LearningRecordRefused, type McpCredentialMark, type MonidPinBody, type NewRevision, openStore, type RevisionPlace, type RevisionRow, type LaunchSealed, openRunLaunch, type RunMcpAuth, RUNNER_STALE_MS, type RunRow, sealRunLaunch, type Store, StoreLaunchMissing, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
 import { agentDeleting, answerOf, logged, purgedAgent } from "./agents.js";
 import { keepGrade } from "./runner/feedback-round.js";
 import { gradeRow, notAuditableOf } from "./runner/audit.js";
@@ -176,7 +176,7 @@ import { type CostBasis, joinedBasis } from "./runner/metrics.js";
 import { unifiedUsage } from "./unified-usage.js";
 import { agentLoopOverStore } from "./store-reads/loop.js";
 import { printable } from "./learn/index.js";
-import { agentCostOverStore, agentLearningOverStore, costStopOverStore, learningCountsOverStore, learningSpendOverStore, runAllInOverStore, runLearningEnd } from "./store-reads/learning.js";
+import { agentCostOverStore, agentLearningOverStore, costStopOverStore, learningCountsOverStore, learningSpendOverStore, runLearningEnd } from "./store-reads/learning.js";
 import { costCsv, learningCostQuery, RUN_PATHS } from "./learning-cost.js";
 import { keyOf, SEAL_KEY_ENV, TOOL_FIELDS } from "./tool-keys.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
@@ -2255,16 +2255,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  (`learning_usd`) and the two (`all_in_usd`), with what makes up `learning_usd` (`compile_usd`, `followup_usd`,
    *  `shadow_usd`, `check_usd`, `share_usd`): the figures the agent's cost page gives the run (learn/ledger.ts figuresOf, one formula).
    *  A cost known only as a bound keeps its bound, and all-in is unknown.
-   *  `tools_usd`: the part of `usd` its paid tool calls cost (store-view.ts toolsUsdOverStore). Both are read in one
-   *  snapshot of the store: a follow-up that opens the run again between the two reads never puts its paid calls beside
-   *  the previous end's `usd` (run-usage.ts reads a run's lines the same way). */
+   *  `tools_usd`: the part of `usd` its paid tool calls cost (store-view.ts toolsUsdOverStore), read with `usd` at one
+   *  moment (store-view.ts runCostOverStore). */
   const allInViewOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {
     const cost = (view.cost ?? {}) as { usd?: unknown; upper_bound?: unknown };
     const own = typeof cost.usd === "number" && cost.upper_bound !== true ? cost.usd : null;
-    const { all, tools_usd } = await store.snapshot(async (snapshot) => {
-      const all = await runAllInOverStore(snapshot, runId, own);
-      return { all, tools_usd: all ? await toolsUsdOverStore(snapshot, runId) : null };
-    });
+    const { all, tools_usd } = await runCostOverStore(store, runId, own);
     if (!all) return {};
     // A bound stays the view's bound. Otherwise usd is the job's (its ledger row's, the same figure the cost series
     // gives): known as it answered even when its compile turn's cost is not; the row's while the run is at work.
@@ -2480,6 +2476,30 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     clearInterval(refusedTimer);
     await refusedSweep;
   });
+  // The reopened runs' ledger rows, recorded again at the store's open (run-patch.ts backfillLedger), are marked done only
+  // by a pass that started with no runner of an earlier build there and no run held by a claim taken before the store's
+  // open and RUNNER_STALE_MS (an earlier runner whose name a rolling restart took): one such runner ends its runs until
+  // its floor read stops it, under the split before. Until a pass marks it, the pass runs again every RUNNER_STALE_MS (the age at which
+  // such a runner's row reads as gone), so a run it ended meanwhile is recorded under this build's split with no restart;
+  // then the timer stops. A pass that fails is said on stderr and tried at the next tick.
+  let rerecordPass: Promise<void> = Promise.resolve();
+  let rerecordStopped = store.rerecordReopened === undefined;
+  const rerecordTimer = setInterval(() => {
+    rerecordPass = rerecordPass.then(async () => {
+      if (rerecordStopped) return;
+      if (!(await store.rerecordReopened!())) return;
+      rerecordStopped = true;
+      clearInterval(rerecordTimer);
+    }).catch((error: Error) => void process.stderr.write(`agentrun-serve: the ledger rows of the runs a follow-up opened again could not be recorded again (tried again in ${RUNNER_STALE_MS / 1000} s): ${error.message}\n`));
+  }, RUNNER_STALE_MS);
+  rerecordTimer.unref();
+  if (rerecordStopped) clearInterval(rerecordTimer);
+  const stopRerecord = async () => {
+    rerecordStopped = true;
+    clearInterval(rerecordTimer);
+    await rerecordPass;
+  };
+  stops.unshift(stopRerecord);
   // The runner beside this server, when its run isolation was refused (cli.ts): its word, kept in this store until the stop.
   let refusedBeside: Presence | undefined;
   const sourceWorkspaces = { data, sealKey, env: withSecrets(process.env, "own"), ...(options.archilControl ? { control: options.archilControl } : {}) };
@@ -7664,6 +7684,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     clearInterval(refusedTimer);
     await refusedSweep;
     await refusedBeside?.close();
+    // No more tries at the reopened runs' ledger mark: a pass in flight ends before the store closes, and the next start
+    // tries again.
+    await stopRerecord();
     // A ChatGPT renewal OpenAI is answering saves its new pair first (renewalsStopped, above): none started since.
     await renewalsStopped;
     // The store's EXCLUSIVE lock is the one-server lock: closing it releases it for the next server.

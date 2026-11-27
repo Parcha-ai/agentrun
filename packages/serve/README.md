@@ -4129,7 +4129,7 @@ the header and serves every row. The backend names the workspace itself: it over
 `agentrun-serve workspace-backfill FILE [--apply]` puts agents made before the backend sent the header in a workspace:
 FILE is `{"<agent id>": "<workspace>"}`. It sets an agent with none, refuses one in another workspace and keeps it, and
 without `--apply` writes nothing and prints what it would do. On SQLite it adds the workspace columns first when a server
-of this build has not yet opened the store. A store behind this build (on Postgres, below migration 0033) is refused with
+of this build has not yet opened the store. A store behind this build (on Postgres, below migration 0034) is refused with
 exit 2 and never migrated: start a server of this build once, then run it again.
 
 Known limits:
@@ -5325,7 +5325,7 @@ were reached. Nothing is priced here, and nothing is rounded to a billing increm
   fires at each end. A later read with another `ended_at`, or null, means the run moved since.
 - `lines` and `total` are null, with `reason`, while the run is at work (`running`), for a run whose figure is not its
   booking's (`not_booked`: an imported, native or SDK run, or a CLI run whose model requests went past its proxy). A
-  learning run a follow-up opened again has lines (`runusage/5`; before, `reopened` and none): its job's and every
+  learning run a follow-up opened again has lines (`runusage/6`; before, `reopened` and none): its job's and every
   follow-up turn's up to its latest end, each round's end-of-run turn left out. Each end's lines hold the last end's and
   what the follow-up added, so a reader that bills each end bills the difference.
 - `compute_time` (`runusage/4`): one line per computer provider and resource (`resource`: `vcpu`, `memory`, `gpu` with

@@ -285,6 +285,12 @@ interface Held {
   /** No more of the claim is written: set once the end stops waiting for an in-flight delivery, before its sweep. */
   sealed: boolean;
   renewing: boolean;
+  /** The claim's first delivery has begun (hold): no delivery before it. A reopened run's claim waits for its earlier hold
+   *  to settle before its loop starts, while polls and written rows come due: a loop not started yet cannot take a row
+   *  (a run process's host answers { later }, which moves the cursor past it for the whole claim; the adapter loop holds a
+   *  steer until it opens, so the first delivery, finding one under way, answered at once and deps.delivered resolved with
+   *  a reopen's follow-up still on its way: the claim read it unsent, and a grade's words ran as a plain turn). */
+  opened: boolean;
   delivering: boolean;
   /** A command was written while a delivery was in flight: one more delivery follows its end. */
   deliverAgain: boolean;
@@ -598,7 +604,7 @@ export function startRunner(options: RunnerOptions): Runner {
    *  once the end has sealed the claim, an answer still to come is dropped: nothing written, nothing said. `given`: the
    *  rows the runner's one read of every run found for it (deliverAll), else it reads its own. */
   const deliver = (held: Held, given?: readonly Command[]): Promise<void> => {
-    if (held.delivering || held.stopping || held.ending || held.fence.lost || killed) return Promise.resolve();
+    if (!held.opened || held.delivering || held.stopping || held.ending || held.fence.lost || killed) return Promise.resolve();
     held.delivering = true;
     // Declared before it is assigned: its own finally reads it.
     let delivery: Promise<void> | undefined;
@@ -690,7 +696,7 @@ export function startRunner(options: RunnerOptions): Runner {
   const deliverAll = () => {
     if (!delivering()) return;
     void (async () => {
-      const due = [...runs.values()].filter((held) => !(held.delivering || held.stopping || held.ending || held.fence.lost));
+      const due = [...runs.values()].filter((held) => held.opened && !(held.delivering || held.stopping || held.ending || held.fence.lost));
       if (due.length === 0) return;
       try {
         const rows = await store.commandsOf(due.map((held) => ({ runId: held.claim.runId, after: held.cursor })));
@@ -1094,7 +1100,7 @@ export function startRunner(options: RunnerOptions): Runner {
         return now.handingBack;
       },
     });
-    const held: Held = { passed: new Set(), claim, loop, fence, abort, cursor: 0, stopping: false, ending: false, landed: false, sealed: false, renewing: false, delivering: false, deliverAgain: false, mib, ...(learningDeadline !== undefined && pastDeadline ? { learningDeadline, pastDeadline } : {}) };
+    const held: Held = { passed: new Set(), claim, loop, fence, abort, cursor: 0, stopping: false, ending: false, landed: false, sealed: false, renewing: false, opened: false, delivering: false, deliverAgain: false, mib, ...(learningDeadline !== undefined && pastDeadline ? { learningDeadline, pastDeadline } : {}) };
     heldNow = held;
     // The loop's own end landed: the run is ending from here, its teardown included (no renew, no lost claim).
     ending = () => {
@@ -1128,8 +1134,13 @@ export function startRunner(options: RunnerOptions): Runner {
       await finish(held, end, threw);
     })();
     // The claim's first delivery, after its loop started: deps.delivered resolves once it has handed on every untaken row
-    // it read.
-    void (settled ? settled.then(() => deliver(held)) : deliver(held)).finally(firstDelivered);
+    // it read. It opens the claim to deliveries (deliver): none reaches the loop before, so the first is the only one
+    // under way and reads every row written until then itself, a reopen's included.
+    const first = () => {
+      held.opened = true;
+      return deliver(held);
+    };
+    void (settled ? settled.then(first) : first()).finally(firstDelivered);
   };
 
   /** The claims this runner holds in the store, read back after a commit was answered Unanswered (it may have landed):
