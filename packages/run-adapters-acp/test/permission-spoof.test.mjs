@@ -10,7 +10,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test as nodeTest } from 'node:test';
-import { fakeEvents, fakeRecipe, openSession, scratch, streamRecords, tool } from './helpers.mjs';
+import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
+import { fakeEvents, fakeRecipe, openSession, scratch, streamRecords, tool, until } from './helpers.mjs';
 
 const test = (name, fn) => nodeTest(name, { timeout: 60_000 }, fn);
 const texts = (events) => events.filter((e) => e.type === 'text').map((e) => e.delta).join('');
@@ -284,6 +285,27 @@ for (const [when, step] of [
   assert.equal((await session.turnEnd()).status, 'completed');
   assert.deepEqual(asked.map((c) => [c.tool, c.args.title, c.args.server]), [['acp_other', 'agentrun-look_up: look_up', 'agentrun'], ['acp_execute', 'ls', undefined]]);
   assert.equal(Object.hasOwn(asked[1].args, 'server'), false, 'a call no server field named carries no server');
+});
+
+// A question about another server's call that parks is asked again by the next start before the agent runs
+// (settlePermissions), from the journal alone: no update has named the call's server in that process yet. The question
+// asked again names the server the first one did, journaled with the ask.
+test("on Cursor's tie, a parked question about a call another server named agentrun makes is asked again after the restart naming that same server", async (t) => {
+  const dir = scratch();
+  const step = { native: 'other', title: 'agentrun-look_up: look_up', input: {}, lateInput: { providerIdentifier: 'agentrun', toolName: 'look_up', args: { q: 'x' } } };
+  const recipe = fakeRecipe(dir, { script: [step, { sayLastResult: true }], style: 'cursor', askNative: ['other'], nativeLog: join(dir, 'native.log') });
+  const store = memorySessionStore();
+  const asked = [];
+  const first = await openSession(t, recipe, { store, tools: [tool('look_up', () => 'found')], gate: async (call) => (asked.push(call), { park: true }) });
+  await first.session.send('go');
+  await until(() => asked.length === 1, 'the gate to be asked');
+  first.stop(new Error('the run parked'));
+  await first.session.turnEnd().catch(() => undefined);
+  assert.deepEqual((await streamRecords(store, 'acp.permission')).filter((r) => r?.type === 'asked').map((r) => r.server), ['agentrun'], 'the ask is journaled with its server');
+  const second = await openSession(t, recipe, { store, tools: [tool('look_up', () => 'found')], gate: async (call) => (asked.push(call), { deny: 'not ours' }) });
+  await second.session.recover();
+  await second.session.turnEnd().catch(() => undefined);
+  assert.deepEqual(asked.map((c) => [c.callId, c.tool, c.args.title, c.args.server]), [0, 0].map(() => [asked[0].callId, 'acp_other', 'agentrun-look_up: look_up', 'agentrun']), 'the same question, naming the same server');
 });
 
 // A recipe of the owner's own may declare the title tie (quirks.permissionTie) with Goose's default prefix

@@ -453,7 +453,7 @@ export type AdapterRun = PiRun & {
   readonly incarnation?: string;
   /** LoopDeps.handBack: a request the run needs refused because the runner is closing hands the run back to resume
    *  (claim-secrets.ts: the plan's renewal). Absent where no loop gave one. */
-  readonly handBack?: () => void;
+  readonly handBack?: () => Promise<void>;
   /** Stages the run row's `summary` on the next commit of this pass that writes a root entry of `kind` whose data `test`
    *  takes, in that commit (a tool host's wait on the person, its claim held: the server tells run.needs_input by the
    *  summary). Absent where no loop gave one. */

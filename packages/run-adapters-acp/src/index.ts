@@ -5,6 +5,7 @@ export { ALLOW_FILE_FORMS, allowFileText, announcesProblems, AUTH_METHOD, homePa
 export { ANNOUNCES_PATH, type AcpAnnounces } from "./calls.js";
 export { CALL_STREAM, contextNote, INSTRUCTIONS_STREAM, MODEL_STREAM, PERMISSION_STREAM, PROMPT_STREAM, REASK_LIMIT, SESSION_STREAM, sentSubmissions, TOOLS_STREAM } from "./harness.js";
 export { STATE_BUDGET, STATE_STREAM, stateBudgetPassed, stateFiles, type StateRecord } from "./state.js";
+export { SERVER_STREAM, type ServerRecord } from "./server-name.js";
 export type { ConfineChild } from "./host/child.js";
 export { GOOSE_INSTALL, GOOSE_NOT_INSTALLED, gooseFacts } from "./goose-facts.js";
 export { gooseAdapter, gooseRecipe, recipeFile, type AcpRecipeFile, type AcpRecipeName, type GooseAdapterOptions, type GooseRecipeOptions } from "./goose.js";

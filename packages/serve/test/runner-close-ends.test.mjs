@@ -194,3 +194,40 @@ test("a close whose read of the stop rows never answers is bounded by the stop m
   assert.deepEqual(faux.loops[0].stopCalls.map((call) => call.kind), ["shutdown"]);
   assert.ok(events.some((event) => event.type === "error" && event.step === "commands" && /took longer than 1000 ms/.test(event.message)), `the close said why: ${JSON.stringify(events.filter((event) => event.type === "error"))}`);
 });
+
+// A run its ChatGPT renewal hands back in a close (LoopDeps.handBack: PlanStopping in the drain) is handed no more rows,
+// and the close reads none for it: a person's stop or cancel sent before it, that no delivery had handed on yet, is read
+// by the hand-back itself, so the run ends on it at this close rather than resuming on the next start to end there.
+for (const kind of ["cancel", "stop"]) {
+  test(`a run handed back in a close (LoopDeps.handBack) ends on a ${kind} sent before it that no delivery handed on: stopped by its row, never for a shutdown, its row taken`, async (t) => {
+    const { server, runners: [store] } = await stores({ runners: 1 });
+    const faux = fauxLoops({ turns: 1_000, turnMs: 20 });
+    // Rows reach the runner only through its reads (no write's wake hands one on); the claim's first read is told.
+    let delivered = () => {};
+    const firstDelivery = new Promise((resolve) => (delivered = resolve));
+    const quiet = new Proxy(store, {
+      get(target, prop) {
+        if (prop === "commands") return (...args) => target.commands(...args).finally(() => delivered());
+        if (prop === "watchCommands") return () => () => {};
+        const value = Reflect.get(target, prop, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const runner = startRunner({ store: quiet, createLoop: faux.createLoop, name: "runner-a", ...TIMING, drainMs: 10_000 });
+    t.after(() => runner.close());
+    await queue(server, "run-1");
+    await until(() => faux.loops.length === 1, "the run claimed");
+    await firstDelivery;
+    // One turn more: the runner's own continuation of that read has run.
+    await new Promise((resolve) => setImmediate(resolve));
+    const row = await sendCommand(server, "run-1", { kind });
+    const closing = runner.close();
+    // In the drain, a renewal the run needs is refused as the runner stops: its plan reader hands the run back.
+    await faux.loops[0].deps.handBack();
+    assert.deepEqual(faux.loops[0].stopCalls.map((call) => [call.kind, call.commandId, call.cancel ?? false]), [["command", row.id, kind === "cancel"]], "stopped by its row, never for a shutdown");
+    await closing;
+    const ended = await server.runs.get("run-1");
+    assert.deepEqual([ended.state, ended.runner], ["stopped", null], `ended at the close: ${JSON.stringify(ended)}`);
+    assert.notEqual((await commandRow(server, "run-1", row.id)).takenAt, null, "its row is taken");
+  });
+}
