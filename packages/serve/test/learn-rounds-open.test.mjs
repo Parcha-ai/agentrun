@@ -81,3 +81,26 @@ test("a run in a follow-up's turn after its round ended reads back to that end o
   assert.equal(long.entries, short.entries, `900 job messages read as many entries as 300: ${short.entries} and ${long.entries}`);
   assert.ok(long.entries < 300, `it reads back to the run's end, not the job: ${long.entries} entries`);
 });
+
+test("a job's end further back than one page of the newest-first read is still found, and a root with none reads to its start", async () => {
+  const { server } = await stores({ runners: 0 });
+  // The look-back asked 120 messages since its job's end: the read goes back three pages of 50 to find it.
+  const far = await runWith(server, "run-far", 300, [KINDS.jobEnd, ...Array(120).fill(KINDS.message)]);
+  // A follow-up's turn 120 messages past the run's end: still no open round, found as far back.
+  const ended = await runWith(server, "run-ended", 300, [KINDS.jobEnd, KINDS.end, ...Array(120).fill(KINDS.message)]);
+  // A run still at its first job: no end of either kind anywhere, every page read, no open round.
+  const working = await runWith(server, "run-working", 130, []);
+  const rows = [far, ended, working];
+  const got = [];
+  for (const row of rows) {
+    const read = { entries: 0 };
+    const open = await roundOpen(counted(server, read), row, []);
+    const whole = keptEndOf(await journalEntries(server.readJournal(row.id), context), []) !== undefined;
+    got.push({ open, whole, entries: read.entries });
+  }
+  assert.deepEqual(got.map((one) => one.open), [true, false, false], "far end open; ended round closed; first job none");
+  assert.deepEqual(got.map((one) => one.open), got.map((one) => one.whole), "each the answer its whole journal gives");
+  assert.ok(got[0].entries > 120 && got[0].entries <= 200, `read back past one page to the job's end, no further than its page: ${got[0].entries}`);
+  assert.ok(got[1].entries > 120 && got[1].entries <= 200, `read back past one page to the run's end: ${got[1].entries}`);
+  assert.equal(got[2].entries, 130, "a root with no end is read to its start, every page");
+});
