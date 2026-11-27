@@ -407,6 +407,10 @@ test("one reading of a stretch visits at most READING characters per character o
 // k100 for its reads alone. k100 (prose's apostrophe, then JSON strings each holding 100 single-quoted strings joined by
 // "+") visits 1,022.6, 1,033.3 and 1,037.5 per character here, over WORK by the matcher's own n log n term (a view's
 // finds each checked against its covered stretches by a search from the first), which a change to the matcher fixes.
+// DENSE past a call's stop (after 200 characters of prose, so a call's stop falls in it) puts the read past the stop on
+// the characters the matcher costs most on: that read visits 29,181 characters, at 356 pieces as at 92, and the text
+// costs 972.0 per character at 512 KiB. Written in a JSON string, the matcher alone visits 1,045.3 and 1,050.3 per
+// character of an answer at 128 and 512 KiB (e1e80a1694 the same, with no read), over WORK as k100 is: its reads only.
 const DENSE = ["q8Vx", "R2mT"].join("");
 const ALL_FAMILIES_STRING = String.raw`"%41+&#65;\"\\x41\\'",`;
 const K100 = `${ALL_FAMILIES_STRING}${`x's "{${"'q8VxR2mT'+".repeat(100)}}"+\\\n`.repeat(4)}`;
@@ -419,6 +423,8 @@ const COSTLY = [
   ["a call's stop inside an OSC title never ended", (size) => wrapped("json", `${"word ".repeat(1000)}${FAMILIES} \u001b]0;${fill(`${ZWSP.repeat(37)}a `, size - 5040)}`), true],
   ["DENSE", (size) => fill(`${ALL_FAMILIES_STRING}${`"${DENSE}",`.repeat(370)}`, size), false, [DENSE]],
   ["k100", (size) => fill(K100, size), false, [DENSE], "reads only"],
+  ["DENSE past a call's stop", (size) => `${"word ".repeat(40)}${fill(`${ALL_FAMILIES_STRING}${`"${DENSE}",`.repeat(370)}`, size - 200)}`, false, [DENSE]],
+  ["DENSE in a JSON string past a call's stop", (size) => `{"a": "${"word ".repeat(40)}${fill(`${ALL_FAMILIES_STRING}${`\\"${DENSE}\\",`.repeat(370)}`, size - 210)}"}`, false, [DENSE], "reads only"],
 ];
 const READS = {
   "an answer": (text, values) => redactedAnswer(text, values),
