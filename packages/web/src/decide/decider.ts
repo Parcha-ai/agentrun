@@ -239,7 +239,8 @@ export function jevWebDecider(jev: JevWeb | null): { decider: WebDecider; policy
   if (jev === null) return undefined;
   if (typeof jev?.key !== "string" || jev.key.trim() === "") throw new TypeError("jevWebDecider needs TypeSafe's key, or null for no Jev");
   const provider = jev.jevProvider({ apiKey: jev.key, ...(jev.fetch ? { fetch: jev.fetch } : {}) });
-  return { decider: deciderFrom(provider, { price: jev.price, model: JEV_MODEL }), policy: "rerank+label", model: JEV_MODEL };
+  // Jev's provider on TypeSafe's route needs TYPESAFE_API_KEY, so deciderFrom pins JEV_MODEL (pinnedModel), as for any caller.
+  return { decider: deciderFrom(provider, { price: jev.price }), policy: "rerank+label", model: JEV_MODEL };
 }
 
 export function deciderFrom(provider: DecisionAsker, options: DeciderOptions): WebDecider {
