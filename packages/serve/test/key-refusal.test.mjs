@@ -263,6 +263,65 @@ for (const [what, text, [head, rest]] of FOLLOWED_TITLES) {
   });
 }
 
+// Padding whose sequences are written in more than one encoding at once: an opener, a terminator, or an ESC inside in
+// another encoding than the rest, so that the views each read the padding their own way. One view reads a terminator
+// where another reads it as the opener of the next sequence; one reads a unit's tail as part of a hidden sequence where
+// another reads it as text; the view that reads a string written in a string drops a "]" or a "[" that another reads
+// as a CSI's or an OSC's. Each padding is withheld by the matcher between a held value's halves (checked first), and
+// then must be withheld 300 times over, past the read after a call's stop (kr-9) and after a run too long to read
+// (kr-10), in each way the text can be written: in a JSON string, a Python repr's string, as it stands, and in a JSON
+// string written in a JSON string.
+const B = "\\";
+const WRAPS = { json: (s) => `{"a": "${s}"}`, py: (s) => `{'a': '${s}'}`, plain: (s) => s, jj: (s) => `{"a": "[\\"${s}\\"]"}` };
+const ALL_WRAPS = ["json", "py", "plain", "jj"];
+const MIXED_PADS = [
+  // A raw OSC ended by JSON's BEL, then an ST written as a percent-encoded ESC and JSON's backslash.
+  ["a raw OSC title ended by JSON's \\u0007, then %1B and JSON's backslash", `\u001b]0;t${B}u0007%1B${B}${B}`, ALL_WRAPS],
+  ["JSON's 8-bit OSC, HTML's ESC, a percent-encoded BEL, then t", `${B}u009d&#27;%07t`, ALL_WRAPS],
+  ["a raw 8-bit OSC, a percent-encoded ESC, JSON's \\u0007 written twice, then B", `\u009d%1B${B}${B}u0007B`, ALL_WRAPS],
+  ["a raw OSC title ended by JSON's \\u0007, then %1B and JSON's \\u0041", `\u001b]0;t${B}u0007%1B${B}u0041`, ALL_WRAPS],
+  ["JSON's ESC ] ESC, then JSON's \\u0041 written twice", `${B}u001b${B}u005d${B}u001b${B}${B}u0041`, ["json"]],
+  ["JSON's 8-bit OSC, a raw ESC, JSON's \\u006e written twice, JSON's \\u0007, ending a string", `${B}u009d\u001b${B}${B}u006e${B}u0007", "`, ALL_WRAPS],
+  ["HTML's ESC and [, then ;]m", "&#27;&#91;;]m", ["json"]],
+  // Read whole by one decoding only: JSON's escapes once (the first), JSON's escapes in the strings (the second).
+  ["JSON's OSC title holding %07, Python's \\x07 and JSON's \\u0007 written twice, ended by JSON's \\u0007", `${B}u001b]0;t%07X${B}x07Y${B}${B}u0007Z${B}u0007`, ALL_WRAPS],
+  ["JSON's OSC title holding %07 and Python's \\x07, ended by an ST written twice that ends a string", `${B}u001b]0;t%07a${B}x07b${B}${B}u001b${B}${B}", "`, ["json", "jj"]],
+  // A raw OSC title holding a terminator, an ESC or a CAN in another encoding, then text, then a raw BEL.
+  ...[
+    ["JSON's \\u0007", `${B}u0007`],
+    ["a percent-encoded BEL", "%07"],
+    ["HTML's &#7;", "&#7;"],
+    ["Python's \\x07", `${B}x07`],
+    ["a percent-encoded ESC", "%1B"],
+    ["JSON's \\u009c", `${B}u009c`],
+    ["a percent-encoded CAN", "%18"],
+  ].map(([what, inner]) => [`a raw OSC title holding ${what} and then XYZW, ended by a raw BEL`, `\u001b]0;t${inner}XYZW\u0007`, ALL_WRAPS]),
+];
+for (const [what, pad, wraps] of MIXED_PADS) {
+  const value = `${PY_HEAD}${PY_REST}`;
+  const held = (wrap) => assert.equal(redactedAnswer(WRAPS[wrap](`see ${PY_HEAD}${pad.repeat(3)} ${PY_REST} more`), [value]).includes(PY_REST), false, `the matcher withholds the padding, ${wrap}`);
+  test(`kr-9 (${what}): a held value split at a call's stop around the padding is withheld, in ${wraps.join(", ")}`, () => {
+    let body = "";
+    while (body.length < 8092) body += "word ";
+    const shown = [];
+    for (const wrap of wraps) {
+      held(wrap);
+      if (redactedCall(WRAPS[wrap](`${body}see ${PY_HEAD} ${pad.repeat(300)} ${PY_REST} more`), [value], 200) !== "[redacted]") shown.push(wrap);
+    }
+    assert.deepEqual(shown, []);
+  });
+
+  test(`kr-10 (${what}): a held value whose head ends a run too long to read, the padding after it, and whose rest follows is withheld, in ${wraps.join(", ")}`, () => {
+    const shown = [];
+    for (const wrap of wraps) {
+      held(wrap);
+      const text = WRAPS[wrap](`${"a".repeat(9000)}${PY_HEAD}${pad.repeat(300)} ${PY_REST} more`);
+      if (redactedAnswer(text, [value]).includes(PY_REST) || redactedCall(text, [value], 100_000).includes(PY_REST)) shown.push(wrap);
+    }
+    assert.deepEqual(shown, []);
+  });
+}
+
 // Each sequence is read through the decodings that read its opener as one, and no other: one that reads "\u001b" as
 // six characters would read on to the bound at each title. Counted as match.ts counts the characters each read visits.
 test("the read after a run's head reads each title through the decodings that open it: 2,000 titles, raw, a JSON writer's, a Python repr's or percent-encoded, at most 48 characters visited per character", async () => {
