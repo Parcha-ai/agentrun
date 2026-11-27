@@ -96,3 +96,20 @@ test("a fetch writes one web_receipt line, the classifier off with no TypeSafe k
   assert.equal(fieldsOf(credentialed.lines[0]).op, "fetch");
   clean(credentialed.lines[0], secret, "reader:");
 });
+
+test("a receipt line carries a failure's code only as a short identifier: a URL-like, spaced or long code, and every error message, are left out", async () => {
+  const { receiptLine } = await import("../dist/web-run.js");
+  const said = "Parallel said: the key sk-private-words was refused for https://private.example/a?b=c";
+  const tries = [
+    { provider: "parallel", outcome: "error", error: said, failure: { class: "rate", code: "HTTP_429", message: said }, ms: 3 },
+    { provider: "exa", outcome: "error", error: said, failure: { class: "infra", code: "https://private.example/a?b=c", message: said }, ms: 1 },
+    { provider: "firecrawl", outcome: "error", error: said, failure: { class: "infra", code: "connect failed: sk-private-words", message: said }, ms: 1 },
+    { provider: "direct", outcome: "error", error: said, failure: { class: "infra", code: "X".repeat(41), message: said }, ms: 1 },
+  ];
+  const classifier = { provider: "jev", op: "search", ran: false, items: { in: 4, kept: 4 }, model: "jev-1.14.0", error: { code: "http://private.example/", message: said }, latency_ms: 0 };
+  const line = receiptLine({ op: "search", asked: "private words", provider: null, tries, classifier, out: { chars: 0 }, cost: { usd: 0.0015, lines: [] } });
+  const fields = fieldsOf(line);
+  assert.equal(fields.tries, "parallel:error/HTTP_429,exa:error,firecrawl:error,direct:error", line);
+  assert.equal(fields.classifier_error, undefined, `an unsafe classifier error code is left out: ${line}`);
+  clean(line, "private", "sk-", "said", "refused", "XXXXXXXXXX");
+});
