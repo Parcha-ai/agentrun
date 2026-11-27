@@ -2,11 +2,11 @@
 // refusal is read by its code (quota: off for the run; limit: held for its wait), and a spent daily limit by the one
 // plain-text answer Firecrawl gives for it (off until 00:00 UTC). Firecrawl's words are never passed on. A call is never
 // retried and ends at FIRECRAWL_MS. A URL the public-host guard refuses is never sent (fetch.ts).
-import { clip, markdownRead, PAGE_MAX_BYTES, type Read, withoutUserinfo } from "../page.js";
+import { clip, PAGE_MAX_BYTES, type Read } from "../page.js";
 import { defineProvider, type ProviderRun, type Reader, readerOf } from "../provider.js";
 import { bare, type Failed, failed, type Hit, keyWide, type Limit, type Search, type SearchAsk, searchBreaker, type Searched } from "../search.js";
-import { firecrawlHits, firecrawlMerged, firecrawlQueries, firecrawlScrapeOptions } from "./firecrawl.js";
-import { KEYED_MAX_BYTES } from "./keyed.js";
+import { firecrawlHits, firecrawlMerged, firecrawlPageOf, firecrawlQueries, firecrawlScrapeOptions } from "./firecrawl.js";
+import { KEYED_MAX_BYTES, thrownFailure } from "./keyed.js";
 import { type Bounded, callTool, MAX_BYTES, RATE_LIMITED, textBlocks, type Words } from "./mcp.js";
 
 export const FIRECRAWL_MCP_URL = "https://mcp.firecrawl.dev/v2/mcp";
@@ -117,9 +117,7 @@ async function firecrawlCall<T>(name: string, args: Record<string, unknown>, wha
   } catch (error) {
     // Firecrawl's own bound, or the caller's: its deadline (a search's, spent) or its stop.
     if (own.aborted) return failed("infra", "TIMEOUT", `Firecrawl's ${what} did not answer within ${timeoutMs / 1000} s`);
-    const reason = signal?.aborted ? (signal.reason as Error)?.name : (error as Error)?.name;
-    if (reason === "TimeoutError") return failed("infra", "DEADLINE", `Firecrawl's ${what} did not answer before the ${what}'s time ran out`);
-    return reason === "AbortError" ? failed("infra", "STOPPED", `the ${what} was stopped`) : failed("infra", "CONNECT", `Firecrawl's ${what} failed: ${withoutUserinfo(String((error as Error)?.message ?? error)).slice(0, 300)}`);
+    return thrownFailure(error, { who: "Firecrawl", what, signal, timeout: `Firecrawl's ${what} did not answer before the ${what}'s time ran out`, timeoutCode: "DEADLINE", stopped: `the ${what} was stopped`, failedWith: (said) => `Firecrawl's ${what} failed: ${said}` });
   }
 }
 
@@ -145,14 +143,7 @@ export async function firecrawlSearch(query: string, n: number, options: Firecra
  *  (PAGE_MAX_BYTES), a failure typed. Firecrawl names no cut, so the text is read as the whole page's. A page whose
  *  status is not 2xx is no read: the caller fetches directly, as for a refusal. */
 function scrapeTyped(url: string, options: FirecrawlOptions): Promise<Read | Typed> {
-  return firecrawlCall<Read>(FIRECRAWL_SCRAPE_TOOL, { url, formats: ["markdown"] }, "fetch", PAGE_MAX_BYTES, (json) => {
-    if (typeof json.markdown !== "string" || json.markdown.trim() === "") return failed("not_text", "NO_TEXT", "Firecrawl's fetch answered no page text");
-    const meta = (typeof json.metadata === "object" && json.metadata !== null ? json.metadata : {}) as { title?: unknown; sourceURL?: unknown; url?: unknown; statusCode?: unknown };
-    const final = [meta.url, meta.sourceURL].find((one): one is string => typeof one === "string" && URL.canParse(one)) ?? url;
-    const status = typeof meta.statusCode === "number" && Number.isInteger(meta.statusCode) ? meta.statusCode : 200;
-    if (status < 200 || status > 299) return failed("error", `PAGE_${status}`, `Firecrawl's fetch: the page answered ${status}`);
-    return markdownRead(final, typeof meta.title === "string" ? meta.title : "", json.markdown, true, status);
-  }, options);
+  return firecrawlCall<Read>(FIRECRAWL_SCRAPE_TOOL, { url, formats: ["markdown"] }, "fetch", PAGE_MAX_BYTES, (json) => firecrawlPageOf(url, json), options);
 }
 
 /** firecrawlScrape's page, or why there is none (as scrapeTyped, bare). */

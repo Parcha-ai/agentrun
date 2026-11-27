@@ -4,6 +4,7 @@
 // never asked of the Pay, and one that failed before it left (paidSend) is settled at $0. Nothing is retried. A
 // provider's own words are never passed on: a failure is said in ours, with its status and, where it gives one, its code.
 import { type Fee, PaidRefused, type Pay, unmetered, unsentAnswer } from "../fees.js";
+import { cutAt, withoutUserinfo } from "../page.js";
 import { type Failed, failed, keyWide, type Limit } from "../search.js";
 
 /** The most bytes of one answer read: past it the answer is not read. */
@@ -129,20 +130,35 @@ async function jsonOf(response: Response): Promise<unknown> {
   }
 }
 
+/** How a provider names a thrown failure: `who` and `what` (its name, the tool), the caller's `signal`, `read` where it
+ *  broke while the answer was read, and the provider's own words where it keeps them: `timeout` (with its `timeoutCode`)
+ *  for a bound it names, `stopped`, and `failedWith`, the words around what the error said. */
+export type ThrownSay = { who: string; what: string; signal?: AbortSignal | undefined; read?: boolean; timeout?: string; timeoutCode?: string; stopped?: string; failedWith?: (said: string) => string };
+/** The most of what a thrown error said that a failure quotes. */
+const THROWN_SAID_MAX = 300;
+
+/** `error`, thrown by a provider's request, typed one way for every provider, by the caller's signal's reason where it
+ *  stopped (a run stops with a reason of its own, which the request fails with), else by the error: a TimeoutError is
+ *  the bound running out (TIMEOUT); an AbortError, or the caller's signal stopped, a stop (STOPPED); anything else
+ *  CONNECT, what it said with no URL's user name or password, cut at THROWN_SAID_MAX ("answer broke off" where it broke
+ *  while the answer was read). A provider without words of its own says "<who>'s <what> ...". */
+export function thrownFailure(error: unknown, { who, what, signal, read = false, timeout, timeoutCode = "TIMEOUT", stopped, failedWith }: ThrownSay): Failed {
+  const name = ((signal?.aborted ? signal.reason : error) as Error | null | undefined)?.name;
+  if (name === "TimeoutError") return failed("infra", timeoutCode, timeout ?? `${who}'s ${what} did not answer in time`);
+  if (name === "AbortError" || signal?.aborted) return failed("infra", "STOPPED", stopped ?? `${who}'s ${what} was stopped`);
+  const said = cutAt(withoutUserinfo(String((error as Error | null | undefined)?.message ?? error)), THROWN_SAID_MAX);
+  return failed("infra", "CONNECT", failedWith ? failedWith(said) : read ? `${who}'s ${what} answer broke off` : `${who}'s ${what} failed to connect`);
+}
+
 /** One paid request to `client`'s `path` for a tool's `what`, read as JSON: its answer, or why there is none, in our
  *  words: no key (`keyEnv` names the variable), the key refused, the cap's refusal, a timeout, a status (its code where
  *  the provider gives one, its limit for the breaker), or an answer that is not JSON. */
 export async function keyedCall(client: Keyed | null, who: string, keyEnv: string, what: "search" | "fetch", path: string, body: unknown, signal?: AbortSignal): Promise<{ json: Record<string, unknown> } | KeyedFailed> {
   if (!client) return failed("refused", "NO_KEY", `web_${what} goes through ${who} here, and this run holds no ${who} key (${keyEnv})`);
   if (!client.live()) return failed("refused", "KEY_REFUSED", `${who} refused this run's key: it is not asked again in this run`);
-  // A request that failed, or an answer whose body broke after its headers came (the request's timeout, its stop, a
-  // reset socket): typed by why, never thrown, so the receipt keeps the turn and the order goes on. A stop is known by
-  // the caller's signal, never by the error's name: a run stops with a reason of its own, which the request fails with.
-  const unanswered = (error: unknown, read: boolean) => {
-    if (signal?.aborted) return failed("infra", "STOPPED", `${who}'s ${what} was stopped`);
-    const name = (error as Error)?.name;
-    return name === "TimeoutError" || name === "AbortError" ? failed("infra", "TIMEOUT", `${who}'s ${what} did not answer in time`) : failed("infra", "CONNECT", read ? `${who}'s ${what} answer broke off` : `${who}'s ${what} failed to connect`);
-  };
+  // A request that failed, or an answer whose body broke after its headers came: typed by why (thrownFailure), never
+  // thrown, so the receipt keeps the turn and the order goes on.
+  const unanswered = (error: unknown, read: boolean) => thrownFailure(error, { who, what, signal, read });
   let response: Response;
   try {
     response = await client.post(path, body, signal);

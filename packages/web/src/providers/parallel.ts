@@ -1,14 +1,15 @@
 // Parallel on the run's key: Extract for web_fetch, Search for web_search. Every request is paid through the injected
 // Pay at its endpoint's price, and a 401 or 403 stops both for the client's life. Nothing is retried; each ends at 60 s.
 import { type ParallelSearchMode, PARALLEL_SEARCH_MODE_USD, type Pay, PaidRefused, parallelFeeOf, unmetered } from "../fees.js";
-import { clip, markdownRead, PAGE_READ_MAX_CHARS, type Read, TITLE_CAP, withoutUserinfo } from "../page.js";
-import { type Failed, failed, failure, type Hit, keyWide, type Limit, type Search, type SearchAsk, type Searched, searchArgs, searchFailed, snippetOf } from "../search.js";
+import { clip, cutAt, markdownRead, PAGE_READ_MAX_CHARS, type Read, TITLE_CAP } from "../page.js";
+import { type Failed, failed, failure, type Hit, keyWide, type Search, type SearchAsk, type Searched, searchArgs, searchFailed, snippetOf } from "../search.js";
 import { defineProvider, type ProviderRun, settingsOf, type WebClient } from "../provider.js";
-import { type Check, domains, matching, oneOf, paidSend, settingsProblems, wholeIn } from "./keyed.js";
+import { type Check, domains, keyedClient, matching, oneOf, settingsProblems, statusLimit, thrownFailure, wholeIn } from "./keyed.js";
 
-
-export const PARALLEL_SEARCH_URL = "https://api.parallel.ai/v1/search";
-export const PARALLEL_EXTRACT_URL = "https://api.parallel.ai/v1/extract";
+/** Parallel's API: every request the web tools send goes below it. */
+const PARALLEL_API_URL = "https://api.parallel.ai";
+export const PARALLEL_SEARCH_URL = `${PARALLEL_API_URL}/v1/search`;
+export const PARALLEL_EXTRACT_URL = `${PARALLEL_API_URL}/v1/extract`;
 const PARALLEL_TIMEOUT_MS = 60_000;
 /** Parallel's cap on a search's session_id, in characters: a longer session is sent as its first SESSION_MAX. */
 const SESSION_MAX = 1_000;
@@ -42,9 +43,10 @@ const fetchPolicy = (settings: ParallelSettings) => (settings.maxAgeSeconds === 
 
 const REFUSED = "Parallel refused this run's key (401 or 403): it is not asked again in this run";
 /** Parallel for one run, on one key: `extract`, its extract of a page (one billed request), the page it read or, for
- *  any failure, why it read none, typed; `read`, the same with why in Parallel's words alone; `post`, one request to another of its endpoints (web_search's, parallelSearched). Neither
- *  retries, and each stops at 60 s. `live` is false once a 401 or 403 to either said the key is not served. */
-export type Extract = { live(): boolean; extract?(url: string, signal?: AbortSignal, client?: WebClient): Promise<Read | Failed>; read(url: string, signal?: AbortSignal, client?: WebClient): Promise<Read | string>; post(url: string, body: unknown, signal?: AbortSignal): Promise<Response> };
+ *  any failure, why it read none, typed; `read`, the same with why in Parallel's words alone; `post`, one request to
+ *  another of its endpoints (web_search's, parallelSearched), a URL below Parallel's API. Neither retries, and each stops
+ *  at 60 s. `live` is false once a 401 or 403 to either said the key is not served. */
+export type Extract = { live(): boolean; extract(url: string, signal?: AbortSignal, client?: WebClient): Promise<Read | Failed>; read(url: string, signal?: AbortSignal, client?: WebClient): Promise<Read | string>; post(url: string, body: unknown, signal?: AbortSignal): Promise<Response> };
 
 /** What Parallel is told of `client` on a search or an extract, as its guidance asks (one session_id for a task's Search
  *  and Extract): its model as client_model, its session as session_id cut at SESSION_MAX, each only where known. */
@@ -57,26 +59,14 @@ const clientFields = (client: WebClient): Record<string, string> => ({
  *  web_fetch reads as the page's text (markdown), its links read from it, status 200 (Parallel answers a page it could
  *  not read in `errors`, with no content), told the read's client (clientFields). */
 export function parallelExtract(apiKey: string, send: typeof fetch = fetch, pay: Pay = unmetered, settings: ParallelSettings = {}): Extract {
-  let refused = false;
-  // Each request is a paid one, sent through `pay` (fees.ts; serve's paid-calls.ts holds it to the run's cap and books it
-  // as the call's cost at its endpoint's price). One the cap refuses is not sent: it throws its refusal (PaidRefused).
+  // One keyed client for both tools (keyed.ts keyedClient): each request paid through `pay` at its endpoint's price
+  // (fees.ts; serve's paid-calls.ts holds it to the run's cap), one with no price, or one the cap refuses, not sent
+  // (PaidRefused), a stopped call sending nothing and one that never left not billed (paidSend).
+  const client = keyedClient({ who: "Parallel", base: PARALLEL_API_URL, headers: { "x-api-key": apiKey }, feeOf: (path, body) => parallelFeeOf(`${PARALLEL_API_URL}${path}`, body), timeoutMs: PARALLEL_TIMEOUT_MS, refuseOn: [401, 403] }, send, pay);
   const post: Extract["post"] = async (url, body, signal) => {
-    const sent = async () => {
-      const response = await send(url, {
-        method: "POST",
-        headers: { "x-api-key": apiKey, "content-type": "application/json" },
-        body: JSON.stringify(body),
-        // It carries the key: a redirect is an error, never followed to an address the key was not meant for.
-        redirect: "error",
-        signal: AbortSignal.any([AbortSignal.timeout(PARALLEL_TIMEOUT_MS), ...(signal ? [signal] : [])]),
-      });
-      if (response.status === 401 || response.status === 403) refused = true;
-      return response;
-    };
-    const fee = parallelFeeOf(url, body);
-    if (!fee) throw new PaidRefused(`Parallel's ${URL.parse(url)?.pathname ?? url} was not sent: it has no price here`);
-    // A stopped call sends nothing, and one that never left is not billed (paidSend).
-    return paidSend(pay, fee, signal, sent);
+    // It carries the key: a URL not below Parallel's API is never sent, as a request with no price here.
+    if (!url.startsWith(`${PARALLEL_API_URL}/`)) throw new PaidRefused(`Parallel's ${URL.parse(url)?.pathname ?? url} was not sent: it has no price here`);
+    return client.post(url.slice(PARALLEL_API_URL.length), body, signal);
   };
   const extract = async (url: string, signal?: AbortSignal, client: WebClient = {}): Promise<Read | Failed> => {
     try {
@@ -97,12 +87,12 @@ export function parallelExtract(apiKey: string, send: typeof fetch = fetch, pay:
       return markdownRead(row.url as string, typeof row.title === "string" ? row.title : "", text, text.length < asked);
     } catch (error) {
       if (error instanceof PaidRefused) return failed("refused", "CAP_REFUSED", error.message);
-      const name = (error as Error)?.name;
-      return name === "TimeoutError" ? failed("infra", "TIMEOUT", "timed out") : name === "AbortError" ? failed("infra", "STOPPED", "was stopped") : failed("infra", "CONNECT", `failed: ${withoutUserinfo(String((error as Error)?.message ?? error)).slice(0, 200)}`);
+      // Said on the page beside Parallel's name: its own words, what an error said cut at 200.
+      return thrownFailure(error, { who: "Parallel", what: "fetch", signal, timeout: "timed out", stopped: "was stopped", failedWith: (said) => `failed: ${cutAt(said, 200)}` });
     }
   };
   return {
-    live: () => !refused,
+    live: client.live,
     post,
     extract,
     read: async (url, signal, client) => {
@@ -111,14 +101,6 @@ export function parallelExtract(apiKey: string, send: typeof fetch = fetch, pay:
     },
   };
 }
-
-/** What a Parallel answer's status says of the run's search: out of credit (402), or rate-limited (429) for its
- *  Retry-After. */
-const parallelLimit = (response: Response): Limit | undefined => {
-  if (response.status === 402) return { kind: "quota" };
-  const retryAfter = response.headers.get("retry-after");
-  return response.status === 429 ? { kind: "rate", ...(retryAfter ? { retryAfter } : {}) } : undefined;
-};
 
 /** The /v1/search request for `ask` (searchArgs), under `settings`, as Parallel's guidance for agents asks: the
  *  objective, a goal in plain words, as its objective; the keyword queries as search_queries; and the model and
@@ -153,7 +135,7 @@ export async function parallelSearched(args: Record<string, unknown>, parallel: 
     const response = await parallel.post(PARALLEL_SEARCH_URL, parallelSearchBody(ask, settings, client), signal);
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
-      const limit = parallelLimit(response);
+      const limit = statusLimit(response);
       if (!parallel.live()) return searchFailed(failed("refused", "KEY_REFUSED", REFUSED));
       const said = failed(limit ? limit.kind : response.status >= 500 ? "infra" : "error", `HTTP_${response.status}`, `Parallel's search answered ${response.status}`, limit);
       return searchFailed(response.status === 402 ? keyWide(said) : said);
@@ -167,7 +149,7 @@ export async function parallelSearched(args: Record<string, unknown>, parallel: 
     return answer({ provider: "parallel", objective, queries, results: hits.slice(0, n) });
   } catch (error) {
     if (error instanceof PaidRefused) return searchFailed(failed("refused", "CAP_REFUSED", error.message));
-    return searchFailed((error as Error)?.name === "TimeoutError" ? failed("infra", "TIMEOUT", "Parallel's search did not answer within 60 s") : failed("infra", "CONNECT", `Parallel's search failed: ${(error as Error)?.message ?? String(error)}`));
+    return searchFailed(thrownFailure(error, { who: "Parallel", what: "search", signal, timeout: "Parallel's search did not answer within 60 s", failedWith: (said) => `Parallel's search failed: ${said}` }));
   }
 }
 
@@ -178,11 +160,7 @@ export function parallelReads(client: Extract | null, told: WebClient = {}): Req
   return {
     async read(url, { signal, client: call }) {
       if (!client) return failed("refused", "NO_KEY", "not tried: this run holds no Parallel key");
-      const asked = { ...told, ...call };
-      // A stand-in client (a test's) may give its read alone, why in words.
-      if (client.extract) return client.extract(url as string, signal, asked);
-      const read = await client.read(url as string, signal, asked);
-      return typeof read === "string" ? { error: read } : read;
+      return client.extract(url as string, signal, { ...told, ...call });
     },
     unready: () => (!client ? failure("refused", "NO_KEY", "not tried: this run holds no Parallel key") : client.live() ? undefined : failure("refused", "KEY_REFUSED", "not tried: refused earlier in this run")),
   };

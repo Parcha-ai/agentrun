@@ -150,3 +150,31 @@ test("the shared guard check is stopped once every fetch waiting on it has stopp
   const again = await w.fetch(PUBLIC, { task: TASK });
   assert.deepEqual([signals.length, again.receipt.wall.verdict], [2, "content"], "a stopped check is not kept: the next fetch asks again");
 });
+
+test("under searchInTurn's deadline (the real AbortSignal.any), a provider sees a TimeoutError when the bound ran out and an AbortError when the call was stopped", async () => {
+  const bound = AbortSignal.any([AbortSignal.timeout(1), new AbortController().signal]);
+  await new Promise((resolve) => bound.addEventListener("abort", resolve, { once: true }));
+  const caller = new AbortController();
+  const stopped = AbortSignal.any([AbortSignal.timeout(600_000), caller.signal]);
+  caller.abort();
+  assert.deepEqual([bound.reason.name, stopped.reason.name], ["TimeoutError", "AbortError"]);
+  for (const [provider, timeout] of [["exa-keyless", ["TIMEOUT", "Exa's search did not answer within 60 s"]], ["firecrawl-keyless", ["DEADLINE", "Firecrawl's search did not answer before the search's time ran out"]]]) {
+    const bounded = web.createWeb({ order: { search: [provider], fetch: [] }, send: { [provider]: untilStopped() } });
+    const out = await bounded.search({ objective: "widgets" }, { bounds: { searchMs: 1 } });
+    assert.deepEqual([out.receipt.tries[0].failure.code, out.receipt.tries[0].failure.message], timeout, `${provider}: the bound ran out`);
+    const stop = new AbortController();
+    let sent = 0;
+    const stoppable = web.createWeb({ order: { search: [provider], fetch: [] }, send: { [provider]: untilStopped(() => (sent += 1, setImmediate(() => stop.abort()))) } });
+    const asked = await stoppable.search({ objective: "widgets" }, { signal: stop.signal, bounds: { searchMs: 600_000 } });
+    assert.ok(sent > 0, `${provider}: it was asked before the stop`);
+    assert.deepEqual([asked.receipt.tries[0].failure.code, asked.receipt.tries[0].failure.message], ["STOPPED", "the search was stopped"], `${provider}: the call was stopped`);
+  }
+});
+
+test("Parallel's client, one keyed client for both tools: a URL not below Parallel's API is never sent with its key", async () => {
+  const sent = [];
+  const client = web.parallelExtract(KEY, async (url) => (sent.push(String(url)), new Response("{}", { status: 200 })));
+  await assert.rejects(client.post("https://elsewhere.example/v1/search", { mode: "fast", search_queries: ["q"] }), (error) => error instanceof web.PaidRefused && error.message === "Parallel's /v1/search was not sent: it has no price here");
+  await client.post(web.PARALLEL_SEARCH_URL, { mode: "fast", search_queries: ["q"] });
+  assert.deepEqual(sent, [web.PARALLEL_SEARCH_URL], "only Parallel's own URL was sent");
+});

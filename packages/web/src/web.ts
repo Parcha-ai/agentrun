@@ -126,20 +126,39 @@ const usd = (lines: Fee[]) => Math.round(lines.reduce((sum, fee) => sum + fee.us
 const outOf = (text: string) => ({ bytes: Buffer.byteLength(text), chars: text.length });
 const unjudged = { wall: { verdict: "unjudged" }, injection: "unjudged" } as const;
 
-/** `shared`, a guard check another call started, or as soon as `signal` stops this call, the page left unjudged as a
- *  stopped check leaves it (code "aborted"). The shared check is not stopped: another call may still need it. */
-function guardUntilStopped(shared: Promise<PageGuard>, signal?: AbortSignal): Promise<PageGuard> {
-  if (!signal) return shared;
-  const stopped = (): PageGuard => ({ wall: { verdict: "unjudged", error: { code: "aborted", message: String((signal.reason as Error)?.message ?? signal.reason).slice(0, 500) } }, injection: "unjudged" });
-  if (signal.aborted) return Promise.resolve(stopped());
-  return new Promise((resolve, reject) => {
-    const onStop = () => resolve(stopped());
-    signal.addEventListener("abort", onStop, { once: true });
-    shared.then(
-      (guard) => (signal.removeEventListener("abort", onStop), resolve(guard)),
-      (error: unknown) => (signal.removeEventListener("abort", onStop), reject(error)),
-    );
-  });
+/** The page left unjudged as a stopped guard check leaves it (code "aborted"), by `signal`'s reason. */
+const stoppedGuard = (signal: AbortSignal): PageGuard => ({ wall: { verdict: "unjudged", error: { code: "aborted", message: String((signal.reason as Error)?.message ?? signal.reason).slice(0, 500) } }, injection: "unjudged" });
+
+/** A page guard check every call fetching one page shares (`ask`, on a signal of its own): each call waits on it until
+ *  its own signal stops it, the page then left unjudged for that call (stoppedGuard); the check itself is stopped only
+ *  once every call waiting on it has stopped (one waiting with no signal never stops). */
+type SharedGuard = { verdict: Promise<PageGuard>; wait(signal?: AbortSignal): Promise<PageGuard> };
+function sharedGuard(ask: (signal: AbortSignal) => Promise<PageGuard>): SharedGuard {
+  const own = new AbortController();
+  let waiting = 0;
+  let settled = false;
+  const verdict = ask(own.signal);
+  void verdict.then(() => (settled = true), () => (settled = true));
+  return {
+    verdict,
+    wait(signal) {
+      if (signal?.aborted) return Promise.resolve(stoppedGuard(signal));
+      waiting += 1;
+      if (!signal) return verdict;
+      return new Promise((resolve, reject) => {
+        const onStop = () => {
+          resolve(stoppedGuard(signal));
+          waiting -= 1;
+          if (waiting === 0 && !settled) own.abort(signal.reason);
+        };
+        signal.addEventListener("abort", onStop, { once: true });
+        verdict.then(
+          (guard) => (signal.removeEventListener("abort", onStop), resolve(guard)),
+          (error: unknown) => (signal.removeEventListener("abort", onStop), reject(error)),
+        );
+      });
+    },
+  };
 }
 
 export function createWeb(config: WebConfig): Web {
@@ -154,17 +173,19 @@ export function createWeb(config: WebConfig): Web {
   const held = config.decider ? heldOnRefusal(config.decider) : undefined;
   /** The page guard's verdict on each read the run's pages hold, kept with the read: it goes when the page is evicted,
    *  and a page read again is asked about again, as is one whose guard failed. */
-  const pageVerdicts = new WeakMap<WebRead, Promise<PageGuard>>();
+  const pageVerdicts = new WeakMap<WebRead, SharedGuard>();
   const guardOf = (decider: WebDecider, url: string, read: WebRead, step: StepOptions): Promise<PageGuard> => {
     // One verdict a page: a read another fragment of its URL shares is that page (sharedRead).
     const page = sharedRead(read);
     const known = pageVerdicts.get(page);
-    // A later caller waits on the check another started only until its own signal stops it; the check goes on.
-    if (known) return guardUntilStopped(known, step.signal);
-    const asked = guardPage(decider, url, read, step);
-    pageVerdicts.set(page, asked);
-    void asked.then((verdict) => verdict.wall.error && pageVerdicts.delete(page));
-    return asked;
+    if (known) return known.wait(step.signal);
+    // A call already stopped starts no check.
+    if (step.signal?.aborted) return Promise.resolve(stoppedGuard(step.signal));
+    // The check is the page's, not the caller's: no caller's stop ends it while another call waits on it (sharedGuard).
+    const shared = sharedGuard((signal) => guardPage(decider, url, read, { ...step, signal }));
+    pageVerdicts.set(page, shared);
+    void shared.verdict.then((verdict) => verdict.wall.error && pageVerdicts.get(page) === shared && pageVerdicts.delete(page));
+    return shared.wait(step.signal);
   };
   /** A receipt's `unsifted`, only in a run with a classifier. */
   const unsifted = (text: () => string) => (config.decider ? { unsifted: text() } : {});

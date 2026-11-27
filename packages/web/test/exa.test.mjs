@@ -189,16 +189,17 @@ test("Exa's answer of something other than its results is a failed turn, never t
   assert.deepEqual(receipt.tries.map((one) => one.outcome), ["error"]);
 });
 
-// An answer whose headers came (200, or a status this server reads) and whose body then broke: a socket reset, or the
-// request's own timeout (a TimeoutError, or an AbortError with no stop by the caller). Exa's fake sends one chunk and
-// then breaks as `breaks` says; Firecrawl's answers whole. A caller's stop is the signal's, tested on its own below.
+// An answer whose headers came (200, or a status this server reads) and whose body then broke: a socket reset, the
+// request's own timeout (a TimeoutError), or a stop (an AbortError, with no stop by the caller's signal: a stop as every
+// provider types one, thrownFailure). Exa's fake sends one chunk and then breaks as `breaks` says; Firecrawl's answers
+// whole. A caller's stop is the signal's, tested on its own below.
 const BROKEN = {
   reset: () => new TypeError("terminated"),
   timeout: () => new DOMException("The operation was aborted due to timeout", "TimeoutError"),
   abort: () => new DOMException("This operation was aborted", "AbortError"),
 };
 /** What each way of breaking is typed as, with no stop by the caller. */
-const BROKEN_CODE = { reset: "CONNECT", timeout: "TIMEOUT", abort: "TIMEOUT" };
+const BROKEN_CODE = { reset: "CONNECT", timeout: "TIMEOUT", abort: "STOPPED" };
 
 /** A send whose answer is `status` with `headers`, one chunk of body, then `breaks()`'s error, or, with `breaks` null, the
  *  request's own signal's reason once it aborts. `asked` counts the requests. */
