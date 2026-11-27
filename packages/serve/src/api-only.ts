@@ -121,12 +121,15 @@ export function apiOnlyTriggerEdit(body: unknown, kind: string, hooked: boolean,
 /** Whether an API-only server saves `body` through the generic save (saveMcpServer) over the name its path gives: a
  *  per_run server (no credential kept) whose url's origin is one of `origins`, under a name that is not a Composio
  *  preset's (`preset`; Composio's own route saves those). Checked before anything reaches the address. A body that
- *  carries a credential never gets here: the secret-write gate refuses it first (403), as it refuses the token's save
- *  over a server it did not save or one that seals a credential (mcp-secret-writes.ts tokenWriteOverRefused). */
-export function apiOnlyMcpSave(body: unknown, preset: boolean, origins: readonly string[]): boolean {
+ *  carries a credential never gets here outside a workspace: the secret-write gate refuses it first (403), as it refuses
+ *  the token's save over a server it did not save or one that seals a credential (mcp-secret-writes.ts
+ *  tokenWriteOverRefused). In a workspace (`scoped`), also a server with headers or a bearer token at one of `origins`:
+ *  its credential is sealed in the workspace's own row (mcp-secret-writes.ts workspaceWriteRefused). */
+export function apiOnlyMcpSave(body: unknown, preset: boolean, origins: readonly string[], scoped = false): boolean {
   if (preset || origins.length === 0 || body === null || typeof body !== "object") return false;
   const { url, auth } = body as { url?: unknown; auth?: unknown };
-  if (auth === null || typeof auth !== "object" || (auth as { type?: unknown }).type !== "per_run" || typeof url !== "string") return false;
+  const type = auth !== null && typeof auth === "object" ? (auth as { type?: unknown }).type : undefined;
+  if (!(scoped ? ["per_run", "headers", "bearer"] : ["per_run"]).includes(String(type)) || typeof url !== "string") return false;
   try {
     return origins.includes(new URL(url).origin);
   } catch {

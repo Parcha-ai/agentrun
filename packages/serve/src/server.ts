@@ -5501,7 +5501,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         }
       });
       // Read through the request's view: a scoped token's save or delete is judged on its workspace's row alone.
-      const checked: SecretRequest = { params, store: mcpStore, apiOnly: options.apiOnly === true };
+      const checked: SecretRequest = { params, store: mcpStore, apiOnly: options.apiOnly === true, workspace: workspaceNow() };
       if (await writesSecretFor(found.name, body, checked)) {
         authFailed(`/v2${path}`, "secret_without_session");
         // Where the person finishes it: the operation's console page, filled with what the request held that is no
@@ -6618,10 +6618,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const body = await bodyOf(req);
         const preset = await mcpServers.composioPreset(id);
         // API-only, where this route is served only with the operator's MCP origins: a per_run server at one of them alone,
-        // under a name no Composio preset has (api-only.ts apiOnlyMcpSave). Anything else is the refused route's own 404,
-        // before anything reaches the address. The secret-write gate has already refused a credential, and a save over a
-        // server the token did not save or one that seals a credential (403).
-        if (options.apiOnly && !apiOnlyMcpSave(body, preset, apiOnlyMcpOrigins)) throw new ApiError("not_found", apiOnlyRefusal(`/v2${path}`));
+        // under a name no Composio preset has (api-only.ts apiOnlyMcpSave); in a workspace, also one with headers or a
+        // bearer token, sealed in its own row. Anything else is the refused route's own 404, before anything reaches the
+        // address. The secret-write gate has already refused a credential outside a workspace, and a save over a server
+        // the token did not save or (outside a workspace) one that seals a credential (403).
+        if (options.apiOnly && !apiOnlyMcpSave(body, preset, apiOnlyMcpOrigins, workspaceNow() !== undefined)) throw new ApiError("not_found", apiOnlyRefusal(`/v2${path}`));
         // A server that isn't a Composio preset's is saved at once, as ever: no save waits on another's listing.
         if (!preset) {
           const saved = await mcpServers.save(id, body, stopping.signal, secretSeen as McpCredentialMark | undefined, undefined, undefined, undefined, undefined, byToken);

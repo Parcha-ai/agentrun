@@ -25,11 +25,12 @@ export async function heldApiOnlyMcpOrigins(store: SettingsReader): Promise<read
 }
 
 /** Why the saved server `name` (`row`) can't be used, or undefined when it can. It can't be used when it is a per_run
- *  server the API token saved, the store holds an API-only list, and its address's origin is not on that list. `held`:
- *  the list a caller already read (heldApiOnlyMcpOrigins); without it, the list is read here, for a per_run row alone.
+ *  server the API token saved, or one that seals a credential the token saved (a workspace's own, mcp-secret-writes.ts
+ *  workspaceWriteRefused), the store holds an API-only list, and its address's origin is not on that list. `held`: the
+ *  list a caller already read (heldApiOnlyMcpOrigins); without it, the list is read here, for such a row alone.
  *  Undefined means "not read", never "none held": a caller passes the list only when the store holds one. */
-export async function offApiOnlyMcpOrigins(store: SettingsReader, name: string, row: { auth: string; url: string; createdAt?: number }, held?: readonly unknown[]): Promise<string | undefined> {
-  if (row.auth !== "per_run") return undefined;
+export async function offApiOnlyMcpOrigins(store: SettingsReader, name: string, row: { auth: string; url: string; sealed?: unknown; createdAt?: number }, held?: readonly unknown[]): Promise<string | undefined> {
+  if (row.auth !== "per_run" && (row.sealed === null || row.sealed === undefined)) return undefined;
   const origins = held ?? (await heldApiOnlyMcpOrigins(store));
   if (!origins) return undefined;
   if (!savedByToken(await store.settings.get(mcpSourceKey(name)), row.createdAt)) return undefined;

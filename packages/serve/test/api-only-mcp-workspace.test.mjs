@@ -4,22 +4,26 @@
 // leaves the other's as it was; a delete never reaches it. Its agents grant its own server of a name before the shared
 // one (the operator's, saved unscoped), and a run's claim reads the same row its save pinned. The unscoped token reaches
 // the shared servers alone. A workspace's row is kept under "<workspace>/<name>", and its credential is sealed there: a
-// sealed value copied to another workspace's row does not open. Fake MCP servers on loopback, the faux MCP model. No key,
+// sealed value copied to another workspace's row does not open. Its token saves its own server's credential (headers or
+// a bearer token at the operator's MCP origins); the unscoped token still saves none. Fake MCP servers on loopback, the faux MCP model. No key,
 // no network.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { startFakeComposio } from "./fixtures/fake-composio.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { follow, serve, withEnv } from "./support.mjs";
+import { follow, serve, serverLog, withEnv } from "./support.mjs";
 import { storeOn } from "./store-helpers.mjs";
 
 const { WORKSPACE_ROUTES } = await import("../dist/api-only.js");
 const { SECRET_WRITE_REFUSAL } = await import("../dist/secret-writes.js");
 const { mcpRowKey, mcpView, requestNames, runMcp } = await import("../dist/mcp-workspace.js");
 const { openMcpRow, saveMcpServer } = await import("../dist/mcp-store.js");
-const { inWorkspace } = await import("../dist/workspace-scope.js");
+const { inWorkspace, WORKSPACE } = await import("../dist/workspace-scope.js");
+const { MCP_SERVER_NAME } = await import("../dist/tool-names.js");
 const { mcpSourceKey } = await import("../dist/mcp-sources.js");
+const { workspaceWriteRefused } = await import("../dist/mcp-secret-writes.js");
+const { API_ONLY_MCP_ORIGINS_KEY, offApiOnlyMcpOrigins } = await import("../dist/mcp-api-only-origins.js");
 const { composioMadeKey } = await import("../dist/store/mcp-record-keys.js");
 const { storedMade } = await import("../dist/composio-made.js");
 const { storedSource } = await import("../dist/mcp-sources.js");
@@ -155,15 +159,123 @@ test("a scoped preview reaches the operator's MCP origins alone: an address ther
   assert.deepEqual(JSON.stringify(bare(theirs)), JSON.stringify(bare(unknown)).replaceAll("never-saved", "contextforge"), "W1's server by name reads as one never saved");
 });
 
-test("a scoped save that carries a credential is the secret-write refusal (403): a workspace keeps none, and no address gets anything", async (t) => {
+test("a workspace saves its own server's credential (headers or a bearer token) at the operator's MCP origins: sealed at its row key, never shown; another workspace reads it as never saved; the unscoped token's credential save is still the secret-write refusal (403); an address off the origins is the refused route's 404, nothing sent", async (t) => {
   const s = await setup(t);
+  for (const auth of [{ type: "headers", headers: { authorization: `Bearer ${RUN}` } }, { type: "bearer", token: RUN }]) {
+    const saved = await s.w1("PUT", PATH, { url: s.one.fake.url, auth });
+    assert.equal(saved.status, 200, `${auth.type}: ${JSON.stringify(saved.body)}`);
+    const row = await s.server.store.mcp.server(mcpRowKey("contextforge", W1));
+    assert.deepEqual([row.auth, Boolean(row.sealed)], [auth.type, true], "sealed in W1's own row");
+    assert.ok(!JSON.stringify(row.sealed).includes(RUN), "sealed, not kept as sent");
+    const read = await s.w1("GET", PATH);
+    assert.equal(read.status, 200);
+    assert.ok(!JSON.stringify(read.body).includes(RUN), "a read never shows it");
+  }
+  assert.equal(await s.server.store.mcp.server("contextforge"), undefined, "no shared row was made");
+  assert.equal((await s.w2("GET", PATH)).status, 404, "W2 reads W1's server as never saved");
+
+  // The unscoped token keeps none, as before: the one secret-write refusal.
   for (const auth of [{ type: "headers", headers: { authorization: `Bearer ${SECRET}` } }, { type: "bearer", token: SECRET }]) {
-    const refused = await s.w1("PUT", PATH, { url: s.one.fake.url, auth });
+    const refused = await s.ops("PUT", "/settings/mcp-servers/shared", { url: s.two.fake.url, auth });
     assert.equal(refused.status, 403, `${auth.type}: ${JSON.stringify(refused.body)}`);
     assert.ok(String(refused.body.error?.message).startsWith(SECRET_WRITE_REFUSAL), refused.body.error?.message);
   }
-  assert.deepEqual(s.one.fake.log, []);
-  assert.deepEqual((await s.w1("GET", "/settings/mcp-server-names")).body, { names: [] });
+  assert.ok(!s.two.sent.includes(`Bearer ${SECRET}`), "the shared address got nothing");
+
+  // A shared row of the name stays the operator's: a workspace's credential save of it makes the workspace's own row.
+  assert.equal((await s.ops("PUT", "/settings/mcp-servers/shared", perRun(s.two.fake.url))).status, 200);
+  assert.equal((await s.w1("PUT", "/settings/mcp-servers/shared", { url: s.one.fake.url, auth: { type: "bearer", token: RUN } })).status, 200);
+  const shared = await s.server.store.mcp.server("shared");
+  assert.deepEqual([shared.url, shared.auth, shared.sealed], [s.two.fake.url, "per_run", null], "the shared row as the operator saved it");
+  assert.ok((await s.server.store.mcp.server(mcpRowKey("shared", W1))).sealed, "W1's save sealed its own row");
+
+  // Off the origins, or a credential no workspace saves (a sign-in's, a GitHub App's): the refused route's 404.
+  const elsewhere = await startFakeMcp({ token: `Bearer ${RUN}` });
+  t.after(() => elsewhere.close());
+  for (const body of [{ url: elsewhere.url, auth: { type: "headers", headers: { authorization: `Bearer ${RUN}` } } }, { url: elsewhere.url, auth: { type: "bearer", token: RUN } }, { url: s.one.fake.url, auth: { type: "oauth" } }, { url: s.one.fake.url, auth: { type: "github_app" } }]) {
+    const refused = await s.w1("PUT", "/settings/mcp-servers/other", body);
+    assert.equal(refused.status, 404, `${JSON.stringify(body.auth)}: ${JSON.stringify(refused.body)}`);
+    assert.match(refused.body.error.message, /is not served here/);
+  }
+  assert.deepEqual(elsewhere.log, [], "nothing reached the other address");
+});
+
+/** A run of `agent` with no credential handed: the server's own sealed one is sent. Followed to its end. */
+async function runSealed(send, agent) {
+  const run = await send("POST", `/agents/${agent}/runs`, { input: { content: 'Call mcp__contextforge__add with {"a":2,"b":3}' } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  await follow((method, path) => send(method, path), run.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
+}
+
+test("a workspace's agent's run sends its own server's sealed credential, which no response and no log line holds; a re-save that sends none keeps it; another workspace reads it as never saved, and its save of the name makes its own and leaves W1's sealed as it was; its delete never reaches W1's, and W1's own removes it", async (t) => {
+  const log = serverLog(t);
+  const s = await setup(t);
+  // Every answer either workspace is given, kept to be searched for the credential.
+  const bodies = [];
+  const kept = (send) => async (...args) => {
+    const answer = await send(...args);
+    bodies.push(JSON.stringify(answer.body ?? null));
+    return answer;
+  };
+  const w1 = kept(s.w1);
+  const w2 = kept(s.w2);
+  const calls = () => s.one.fake.log.filter((entry) => entry.method === "tools/call" && entry.tool === "add").length;
+  const never = await w2("GET", "/settings/mcp-servers/never-saved");
+  assert.equal((await w1("PUT", PATH, { url: s.one.fake.url, auth: { type: "headers", headers: { authorization: `Bearer ${RUN}` } } })).status, 200);
+  const agent = await agentAdd(w1, "ws-sealed");
+  assert.equal(agent.status, 201, JSON.stringify(agent.body));
+  await runSealed(w1, agent.body.agent_id);
+  assert.equal(calls(), 1, "W1's run called W1's server");
+  assert.ok(s.one.sent.includes(`Bearer ${RUN}`), "with the credential W1 sealed");
+
+  const row = () => s.server.store.mcp.server(mcpRowKey("contextforge", W1));
+  const sealed = (await row()).sealed;
+  assert.equal((await w1("PUT", PATH, { url: s.one.fake.url, auth: { type: "headers" } })).status, 200);
+  assert.deepEqual((await row()).sealed, sealed, "a re-save that sends none keeps it");
+  await runSealed(w1, agent.body.agent_id);
+  assert.equal(calls(), 2, "and still sent");
+
+  const theirs = await w2("GET", PATH);
+  assert.equal(JSON.stringify(bare(theirs)), JSON.stringify(bare(never)).replaceAll("never-saved", "contextforge"), "W2 reads W1's server as one never saved");
+  assert.equal((await w2("PUT", PATH, perRun(s.two.fake.url))).status, 200, "W2's save of the name is its own");
+  assert.deepEqual([(await row()).url, (await row()).sealed], [s.one.fake.url, sealed], "W1's row and credential as they were");
+  assert.equal((await s.server.store.mcp.server(mcpRowKey("contextforge", W2))).sealed, null);
+  assert.equal((await w2("DELETE", PATH)).status, 204, "W2's delete removes its own");
+  assert.equal((await w2("DELETE", PATH)).status, 404, "and never reaches W1's");
+  assert.deepEqual((await row()).sealed, sealed);
+  const removed = await w1("DELETE", PATH);
+  assert.ok([200, 204].includes(removed.status), JSON.stringify(removed.body));
+  assert.equal(await row(), undefined, "W1's own delete removed it");
+
+  assert.ok(bodies.length > 10, "the answers were kept");
+  for (const body of bodies) assert.ok(!body.includes(RUN), `an answer holds the credential: ${body.slice(0, 200)}`);
+  assert.ok(!log.text().includes(RUN), "the server's log never holds it");
+});
+
+test("a workspace's write is refused over a row of its name the token did not save (written into its namespace by anything else), and reads the credential it let through against", async (t) => {
+  const { store } = await storeOn(t);
+  const view = mcpView(store, requestNames);
+  const url = "https://mcp.example/mcp";
+  await store.mcp.put({ name: mcpRowKey("github", W1), url, auth: "none", tools: [] });
+  const request = { params: ["github"], store: view, apiOnly: true, workspace: W1 };
+  assert.equal(await inWorkspace(W1, () => workspaceWriteRefused(undefined, request)), true, "no token's mark: refused");
+  assert.deepEqual(request.seen, { auth: "none", sealed: false, changedAt: null });
+  const row = await store.mcp.server(mcpRowKey("github", W1));
+  await store.settings.put(mcpSourceKey(mcpRowKey("github", W1)), storedSource({ source: "url", toolkit: null }, row, false, true));
+  assert.equal(await inWorkspace(W1, () => workspaceWriteRefused(undefined, { ...request })), false, "the token's own: let through");
+  assert.equal(await inWorkspace(W1, () => workspaceWriteRefused(undefined, { ...request, params: ["new-name"] })), false, "a new name: let through");
+});
+
+test("the operator's MCP origins hold a workspace's sealed server: one at an origin taken off the list can't be used, nothing sent; the owner's, and a Composio key read from the environment (none sealed), are as they were", async () => {
+  const row = { name: "x", auth: "headers", url: "https://gone.example/mcp", sealed: "sealed-bytes", createdAt: 1 };
+  const records = new Map([[API_ONLY_MCP_ORIGINS_KEY, { origins: ["https://kept.example"] }], [mcpSourceKey("x"), storedSource({ source: "url", toolkit: null }, row, false, true)]]);
+  const store = { settings: { get: async (key) => records.get(key) } };
+  assert.match(await offApiOnlyMcpOrigins(store, "x", row), /no longer on this server's AGENTRUN_API_ONLY_MCP_ORIGINS/);
+  assert.match(await offApiOnlyMcpOrigins(store, "x", { ...row, auth: "bearer" }), /no longer on/);
+  assert.equal(await offApiOnlyMcpOrigins(store, "x", { ...row, url: "https://kept.example/mcp" }), undefined, "on the list: used");
+  assert.equal(await offApiOnlyMcpOrigins(store, "x", { ...row, sealed: null }), undefined, "none sealed (a Composio key_env row): as before");
+  records.set(mcpSourceKey("x"), storedSource({ source: "url", toolkit: null }, row, false, false));
+  assert.equal(await offApiOnlyMcpOrigins(store, "x", row), undefined, "the owner's: as before");
 });
 
 test("a workspace's agent calls its own server of the name, another workspace's agent the shared one, and one that reaches none is refused, each run with its own token", async (t) => {
@@ -333,3 +445,22 @@ test("the owner's shared servers still guard a workspace: its run is refused a b
   assert.match(standing.body.error.message, /gmail-managed/);
   assert.equal(await s.server.store.mcp.server(mcpRowKey("mail", W2)), undefined, "nothing saved");
 });
+
+test("a row key never collides: a workspace never holds '/', nor a server's name, so ('a', 'b/c') and ('a/b', 'c') never reach the one row 'a/b/c'", async (t) => {
+  assert.equal(WORKSPACE.test("a/b"), false, "workspace-scope.ts WORKSPACE");
+  assert.equal(MCP_SERVER_NAME.test("b/c"), false, "tool-names.ts MCP_SERVER_NAME");
+  const s = await setup(t);
+  const as = (workspace) => (method, path, body) => s.server.api(method, path, body, { authorization: `Bearer ${SCOPED}`, "agentrun-workspace": workspace });
+  const slashed = await as("a")("PUT", `/settings/mcp-servers/${encodeURIComponent("b/c")}`, perRun(s.one.fake.url));
+  assert.ok(slashed.status >= 400 && slashed.status < 500, `a name with '/': ${slashed.status} ${JSON.stringify(slashed.body)}`);
+  const header = await as("a/b")("PUT", "/settings/mcp-servers/c", perRun(s.two.fake.url));
+  assert.equal(header.status, 400, `a workspace with '/': ${JSON.stringify(header.body)}`);
+  assert.deepEqual((await s.server.store.mcp.servers()).map((row) => row.name), [], "neither wrote a row");
+  assert.equal(await inWorkspace("a", () => requestNames.keyOf("b/c")), undefined, "no view resolves a name with '/'");
+
+  // The pair that is allowed lands on two rows: ('a', 'c') and ('a:b', 'c').
+  assert.equal((await as("a")("PUT", "/settings/mcp-servers/c", perRun(s.one.fake.url))).status, 200);
+  assert.equal((await as("a:b")("PUT", "/settings/mcp-servers/c", perRun(s.two.fake.url))).status, 200);
+  assert.deepEqual((await s.server.store.mcp.servers()).map((row) => [row.name, row.url]).sort(), [["a/c", s.one.fake.url], ["a:b/c", s.two.fake.url]]);
+});
+

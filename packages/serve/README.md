@@ -4124,9 +4124,13 @@ same `404` as a name never saved, a save of that name makes the workspace's own 
 shared server is not the workspace's to read, change or delete. `GET /settings/mcp-server-names` holds its own servers'
 names and the shared ones', what its agents may grant; with no header, the shared ones alone. An agent of the workspace
 reaches its own server of a name before the shared one, at its save and at each run's claim; one that reaches neither is
-refused as a server never saved. A save in a workspace seals no credential: it is `per_run` (each run hands its own in
-`mcp_auth`), or a per-run Composio save (`user_id: "per_run"`, no `auth_config_id`, else `422 not_allowed`) whose key the
-install names (`api_key_env`); a credential in the body is refused as a token's secret write is. The owner's shared
+refused as a server never saved. A save in a workspace is of an address at the operator's MCP origins
+(`AGENTRUN_API_ONLY_MCP_ORIGINS`): `per_run` (each run hands its own in `mcp_auth`), or `headers` or `bearer`, whose
+credential is sealed in the workspace's own row and sent by its own agents' runs alone (a re-save that sends none keeps
+it); or a per-run Composio save (`user_id: "per_run"`, no `auth_config_id`, else `422 not_allowed`) whose key the install
+names (`api_key_env`). Anything else is the refused route's `404`, before anything is sent. The token with no header still
+writes no credential. One of a workspace's sealed servers at an origin taken off the list can't be used, as a token's
+`per_run` one can't. The owner's shared
 servers still guard it: a workspace's save never stands on an auth config one of them stands on, and its run never binds
 the owner's Composio user. A workspace's server is kept as `<workspace>/<name>`, its sealed credential bound to that row,
 so a credential copied to another workspace's row does not open. A preview is of its own server by name, or of an address at the

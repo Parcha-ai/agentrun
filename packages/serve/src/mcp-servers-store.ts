@@ -7,7 +7,7 @@
 // (runner/mcp-claim.ts), including the OAuth token refresh. So this server-side registry has NO headers()/headersForRun()
 // and does NO token refresh: it is the owner's create/preview/save/refresh(tools)/remove and the OAuth sign-in, and nothing
 // a run's launch calls.
-import { outsideWorkspace } from "./workspace-scope.js";
+import { outsideWorkspace, workspaceNow } from "./workspace-scope.js";
 import { heldApiOnlyMcpOrigins, offApiOnlyMcpOrigins } from "./mcp-api-only-origins.js";
 import { ApiError, invalid, type InputIssue } from "./errors.js";
 import {
@@ -376,7 +376,8 @@ export class McpServersOverStore {
     }
     // The token keeps no sealed credential: the secret-write gate lets its save over no sealed row (mcp-secret-writes.ts
     // tokenWriteOverRefused), so one read here is an owner's, saved since. Refused as changed meanwhile, nothing written.
-    if (byToken && keeping) changedMeanwhile(name, undefined);
+    // A workspace's token keeps its own server's (workspaceWriteRefused): no owner's row is in its reach.
+    if (byToken && keeping && workspaceNow() === undefined) changedMeanwhile(name, undefined);
     // The API-only token's ordinary save (no `made`, on a store that holds the API-only list): its gate let it over no row
     // but one the token saved (mcp-secret-writes.ts tokenWriteOverRefused), so a row read here that the token did not save
     // is one written since. Checked in the write below, on the row this save read.
