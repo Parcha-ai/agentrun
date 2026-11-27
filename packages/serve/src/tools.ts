@@ -766,6 +766,23 @@ const browserTool: ToolEntry = {
       if ("refused" in waited) { letGo(); return undefined; }
       return { lapsed: waited.lapsed, confirmed: waited.confirmed, drop: () => { waited.drop(); letGo(); } };
     });
+    // A session of the run's labels that nothing holds now (a create whose reply was lost, which its recovery kept) goes
+    // with the claim, and its time is charged (releaseUnheld, spend.letGo), before the ledger is waited on: each one
+    // recorded before its release is sent and charged as its release answers, so one this process cannot charge is owed
+    // to the next claim's open. What the run holds is read once the vendor's list answered (the inventory, and every id
+    // its custody held here); a session whose create is still in flight is left to it. One that cannot be released, or a
+    // list that fails, is said in the log and never fails the let-go. The release runs it after its sessions' own
+    // releases, and a cut release (releaseCut) runs it too, so a session's release that never answers leaves none of
+    // these to the vendor's lifetime; a browser both see is charged once (spend.letGo).
+    const letGoUnheld = async (harness: Harness): Promise<void> => {
+      if (!("browser" in made)) return;
+      try {
+        const rows = async () => Object.values(((await harness.snapshot(browser.docs.Inventory as never, context)) as { rows?: Record<string, { tag: string; resourceId: string | null }> } | undefined)?.rows ?? {});
+        await spend.letGo(harness as never, (hooks) => releaseUnheldBrowsers(made.browser, rows, custodyIds, hooks), context);
+      } catch (error) {
+        runLog(`the browsers a create race left running could not be released: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    };
     host.beforeRelease(async (harness) => {
       try {
         if (refused) return;
@@ -776,20 +793,7 @@ const browserTool: ToolEntry = {
           if (conversation) await browser.release(conversation as never, "close", context);
         }
         await browser.drain(harness as never, context);
-        // A session of the run's labels that nothing holds now (a create whose reply was lost, which its recovery kept)
-        // goes with the claim, and its time is charged (releaseUnheld, spend.letGo), before the ledger is waited on: each
-        // one recorded before its release is sent and charged as its release answers, so one this process cannot charge
-        // is owed to the next claim's open. What the run holds is read once the vendor's list answered (the inventory,
-        // and every id its custody held here); a session whose create is still in flight is left to it. One that cannot
-        // be released, or a list that fails, is said in the log and never fails the let-go.
-        if ("browser" in made) {
-          try {
-            const rows = async () => Object.values(((await harness.snapshot(browser.docs.Inventory as never, context)) as { rows?: Record<string, { tag: string; resourceId: string | null }> } | undefined)?.rows ?? {});
-            await spend.letGo(harness as never, (hooks) => releaseUnheldBrowsers(made.browser, rows, custodyIds, hooks), context);
-          } catch (error) {
-            runLog(`the browsers a create race left running could not be released: ${error instanceof Error ? error.message : String(error)}`);
-          }
-        }
+        await letGoUnheld(harness);
         // The releases' charges are booked on the claim's one ledger before the run's release returns, so the run's end
         // commit, which ends the claim, never fences one (nothing to wait for off the ledger).
         await spend.ledgerIdle();
@@ -814,6 +818,7 @@ const browserTool: ToolEntry = {
         const conversation = await harness.conversation(id as never, context);
         if (conversation) await browser.charge(conversation as never, context);
       }
+      await letGoUnheld(harness);
       await spend.ledgerIdle();
     });
     return { tools, extensions: [extension] };
