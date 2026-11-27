@@ -126,6 +126,48 @@ describe("Settings → Model keys, Claude Code's login on this machine: Sign out
     expect(text).toContain("run the command shown in a terminal there");
   });
 
+  it("Turn on leaves a sign-in that already waits alone: another tab started it, and a new start would end the page that person is finishing", async () => {
+    let view: ClaudeLoginView = OFF;
+    const { v2, calls } = server(() => view, () => (view = { ...OFF, state: "signed_out", sign_in: WAITING }));
+    const page = await open(v2);
+    await act(async () => { page.row()!.querySelector<HTMLInputElement>('input[name="only_me"]')!.click(); });
+    await page.click(page.buttons(/^Turn on$/)[0]);
+    expect(calls.filter((c) => c.method !== "GET").map((c) => c.method)).toEqual(["PUT"]);
+    expect(page.row()!.textContent).toContain("Waiting for the browser");
+  });
+
+  it("a refused sign-in whose answer comes after the row went away brings back no alert when it returns", async () => {
+    let view: ClaudeLoginView = OFF;
+    let refuse: () => void = () => {};
+    const fetch = (async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (method === "PUT") return json(200, (view = { ...OFF, state: "signed_out" }));
+      if (method === "POST") {
+        await new Promise<void>((r) => { refuse = r; });
+        return json(403, { error: { code: "forbidden", message: "Refused late." } });
+      }
+      return json(200, view);
+    }) as typeof globalThis.fetch;
+    const v2 = createClient({ fetch });
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    const render = (available: boolean) => act(() => root!.render(createElement("ul", null, createElement(ClaudeLoginRow, { v2, writable: true, available }))));
+    const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+    render(true);
+    await settle();
+    await act(async () => { host.querySelector<HTMLInputElement>('input[name="only_me"]')!.click(); });
+    const turnOn = [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Turn on")!;
+    await act(async () => { turnOn.click(); });
+    await settle();
+    render(false);
+    await settle();
+    await act(async () => { refuse(); });
+    await settle();
+    render(true);
+    await settle();
+    expect(host.textContent).not.toContain("Refused late.");
+  });
+
   it("Check again says it is checking, then that it checked just now", async () => {
     let release: () => void = () => {};
     let reads = 0;
