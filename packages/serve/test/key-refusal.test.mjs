@@ -401,16 +401,17 @@ test("one reading of a stretch visits at most READING characters per character o
 // The texts the reads cost most on, 32 KiB to 512 KiB, each read through an answer and a call's result: runs of padding
 // every view reads apart (zero-width spaces, and the same as JSON's escapes written twice, as HTML references and
 // percent-encoded, which the marks walk reads most), and a call's stop inside an OSC title never ended, so the read past
-// it reads each view also as the title's own (shownIn's `open`). Each is withheld whole; each visits at most WORK per
-// character in all, each of its reads at most READ_MOST, and its reads at most READS_PER_CHARACTER per character.
+// it reads each view also as the title's own (shownIn's `open`). Runs of apostrophes between Hangul fillers read
+// main's join of each stretch too (its quotes paired otherwise), and runs of empty literals joined by "+" read the
+// values' pass with the operators left out. Each is withheld whole; each visits at most WORK per character in all,
+// each of its reads at most READ_MOST, and its reads at most READS_PER_CHARACTER per character.
 // The matcher's own worst texts read no run and stop no read: DENSE (redact-contract.test.mjs) is in for its total, and
 // k100 for its reads alone. k100 (prose's apostrophe, then JSON strings each holding 100 single-quoted strings joined by
-// "+") visits 1,022.6, 1,033.3 and 1,037.5 per character here, over WORK by the matcher's own n log n term (a view's
-// finds each checked against its covered stretches by a search from the first), which a change to the matcher fixes.
-// DENSE past a call's stop (after 200 characters of prose, so a call's stop falls in it) puts the read past the stop on
-// the characters the matcher costs most on: that read visits 29,181 characters, at 356 pieces as at 92, and the text
-// costs 972.0 per character at 512 KiB. Written in a JSON string, the matcher alone visits 1,045.3 and 1,050.3 per
-// character of an answer at 128 and 512 KiB (e1e80a1694 the same, with no read), over WORK as k100 is: its reads only.
+// "+") visits 1,453.7, 1,465.6 and 1,465.2 per character of an answer here, with no read, over WORK by the matcher's own
+// work: main (120f072308) visits the same. DENSE past a call's stop (after 200 characters of prose, so a call's stop
+// falls in it) puts the read past the stop on the characters the matcher costs most on: that read visits 29,181
+// characters, at 356 pieces as at 92. Written in a JSON string, an answer visits 972.1, 1,008.6 and 1,009.4 per
+// character, with no read, as main does.
 const DENSE = ["q8Vx", "R2mT"].join("");
 const ALL_FAMILIES_STRING = String.raw`"%41+&#65;\"\\x41\\'",`;
 const K100 = `${ALL_FAMILIES_STRING}${`x's "{${"'q8VxR2mT'+".repeat(100)}}"+\\\n`.repeat(4)}`;
@@ -424,7 +425,9 @@ const COSTLY = [
   ["DENSE", (size) => fill(`${ALL_FAMILIES_STRING}${`"${DENSE}",`.repeat(370)}`, size), false, [DENSE]],
   ["k100", (size) => fill(K100, size), false, [DENSE], "reads only"],
   ["DENSE past a call's stop", (size) => `${"word ".repeat(40)}${fill(`${ALL_FAMILIES_STRING}${`"${DENSE}",`.repeat(370)}`, size - 200)}`, false, [DENSE]],
-  ["DENSE in a JSON string past a call's stop", (size) => `{"a": "${"word ".repeat(40)}${fill(`${ALL_FAMILIES_STRING}${`\\"${DENSE}\\",`.repeat(370)}`, size - 210)}"}`, false, [DENSE], "reads only"],
+  ["DENSE in a JSON string past a call's stop", (size) => `{"a": "${"word ".repeat(40)}${fill(`${ALL_FAMILIES_STRING}${`\\"${DENSE}\\",`.repeat(370)}`, size - 210)}"}`, false, [DENSE]],
+  ["runs of apostrophes between Hangul fillers", (size) => runs(size, "\u3164'\u3164")],
+  ["runs of empty literals joined by +", (size) => runs(size, "''+")],
 ];
 const READS = {
   "an answer": (text, values) => redactedAnswer(text, values),
@@ -530,7 +533,8 @@ for (const [what, kind, pad] of OUTSIDE_THE_READ) {
 
 // String literals joined by the operators the join leaves out between two strings ("+", a line's ending backslash,
 // or both): the values' pass reads the literals as one, so a read past a call's stop, or after a run too long to read,
-// must read the operators as that pass does, as dropped between two strings. [what, operator, literal between].
+// must read the operators as that pass does, as dropped between two strings. Each held value's head is a literal of its
+// own, so the stop or the run's end stands outside it. [what, operator, literal between].
 const JOINED_LITERALS = [
   ['"+" between empty literals', "+", ""],
   ['"+" between literals holding Python\'s ESC and a CSI', "+", `${B}x1b[31m`],
@@ -545,14 +549,65 @@ for (const [what, op, between] of JOINED_LITERALS) {
   test(`kr-9 (${what}): a held value split at a call's stop, 300 joined literals past the read after the stop, is withheld`, () => {
     let body = "";
     while (body.length < 8192 - 100) body += "word ";
-    assert.equal(redactedCall(`${body}'see ${PY_HEAD}'${joinedPad(op, between, 300)}'${PY_REST} more'`, [`${PY_HEAD}${PY_REST}`], 200), "[redacted]");
+    assert.equal(redactedCall(`${body}x = '${PY_HEAD}'${joinedPad(op, between, 300)}'${PY_REST} more'`, [`${PY_HEAD}${PY_REST}`], 200), "[redacted]");
   });
 
   test(`kr-10 (${what}): a held value whose head ends a run too long to read, 300 joined literals after it, and whose rest follows is withheld`, () => {
-    const text = `x = '${"a".repeat(9000)}${PY_HEAD}'${joinedPad(op, between, 300)}'${PY_REST} more'`;
+    const text = `x = (${"a".repeat(9000)},'${PY_HEAD}'${joinedPad(op, between, 300)}'${PY_REST} more')`;
     for (const out of [redactedCall(text, [`${PY_HEAD}${PY_REST}`], 100_000), redactedAnswer(text, [`${PY_HEAD}${PY_REST}`])]) assert.equal(out.includes(PY_REST), false);
   });
 }
+
+// Apostrophes between two letters a view reads as nothing (Hangul fillers): this reading takes each for prose's and
+// opens no string, so its join shows it; main's reading, which the matcher reads too where the two pair the quotes
+// otherwise, opens a string at each and drops it, and shows nothing between a held value's halves. [what, filler].
+const PROSE_APOSTROPHES = [
+  ["Hangul filler", "\u3164"],
+  ["halfwidth Hangul filler", "\uffa0"],
+  ["Hangul choseong filler", "\u115f"],
+  ["Hangul jungseong filler", "\u1160"],
+];
+
+for (const [what, filler] of PROSE_APOSTROPHES) {
+  const pad = `${filler}'${filler} `.repeat(300);
+  test(`kr-9 (an apostrophe between two of the ${what}, 300 times): a held value split at a call's stop, the padding past the read after the stop, is withheld`, () => {
+    let body = "";
+    while (body.length < 8192 - 100) body += "word ";
+    assert.equal(redactedCall(`${body}see ${PY_HEAD}${filler}${pad}${filler}${PY_REST} more`, [`${PY_HEAD}${PY_REST}`], 200), "[redacted]");
+  });
+
+  test(`kr-10 (an apostrophe between two of the ${what}, 300 times): a held value whose head ends a run too long to read, the padding after it, and whose rest follows is withheld`, () => {
+    const text = `${"a".repeat(9000)}${PY_HEAD}${filler}${pad}${filler}${PY_REST} more`;
+    for (const out of [redactedCall(text, [`${PY_HEAD}${PY_REST}`], 100_000), redactedAnswer(text, [`${PY_HEAD}${PY_REST}`])]) assert.equal(out.includes(PY_REST), false);
+  });
+}
+
+// Not covered: the same literals where the stop falls inside the head's literal ('see <head>', cut at its space), or
+// where the run too long to read starts inside it ('aaa...<head>'). The pass after the pieces reads them joined by a
+// line break, and an apostrophe's string ends at a line break: past the stop, the literal's rest opens a string the
+// operator after it stands in; and the run's tail, read without its opening quote, opens one at the head's closing
+// quote. Either way no join reads the literals as one. Main's pass reads them so too and shows the rest of each shown
+// row below. Pinned as found, [kr-9, kr-10] shown or not, so a change either way fails here.
+const JOINED_PAST_THE_PASS = [
+  [true, false],
+  [true, false],
+  [false, true],
+  [false, true],
+  [false, true],
+  [false, true],
+];
+
+test("the joined literals above, the stop inside the head's literal or the run starting inside it: shown as pinned", () => {
+  let body = "";
+  while (body.length < 8192 - 100) body += "word ";
+  const value = [`${PY_HEAD}${PY_REST}`];
+  const found = JOINED_LITERALS.map(([, op, between]) => {
+    const pad = joinedPad(op, between, 300);
+    const long = `x = '${"a".repeat(9000)}${PY_HEAD}'${pad}'${PY_REST} more'`;
+    return [redactedCall(`${body}'see ${PY_HEAD}'${pad}'${PY_REST} more'`, value, 200) !== "[redacted]", [redactedCall(long, value, 100_000), redactedAnswer(long, value)].some((out) => out.includes(PY_REST))];
+  });
+  assert.deepEqual(found, JOINED_PAST_THE_PASS);
+});
 
 // The smallest texts of the corpus (KEY_REFUSAL_PAD_CORPUS=all) and the fuzz's seeds 2 to 5 (KEY_REFUSAL_PAD_FUZZ=all)
 // a rule of the marks was found missing on, each three times between a held value's halves: [what the marks missed,
@@ -579,8 +634,9 @@ test("the padding above: where a view hides a character as a terminal does, a re
   add(endingAString(`see ${PY_HEAD} `, `${PY_REST} more`));
   for (const [, pad, wraps] of MIXED_PADS) for (const wrap of wraps) add(WRAPS[wrap](`see ${PY_HEAD}${pad.repeat(3)} ${PY_REST} more`));
   for (const [, kind, pad] of OUTSIDE_THE_READ) add(inKind(kind, `see ${PY_HEAD}${pad} ${PY_REST} more`));
+  for (const [, filler] of PROSE_APOSTROPHES) add(`see ${PY_HEAD}${filler}${`${filler}'${filler} `.repeat(3)}${filler}${PY_REST} more`);
   // And a raw ESC whose CSI the next literal holds, joined by each operator: the join reads the sequence whole.
-  for (const [, op, between] of JOINED_LITERALS) for (const fill of [between, `\u001b'${op}'[31m`]) add(`x = 'see ${PY_HEAD}'${joinedPad(op, fill, 3)}'${PY_REST} more'`);
+  for (const [, op, between] of JOINED_LITERALS) for (const fill of [between, `\u001b'${op}'[31m`]) add(`x = '${PY_HEAD}'${joinedPad(op, fill, 3)}'${PY_REST} more'`);
   console.log(`# ${tally.texts} texts, ${tally.checked} hidden places checked, ${tally.misses} missed`);
   assert.ok(tally.checked > 0);
   assert.deepEqual(tally.missed, []);
