@@ -158,6 +158,38 @@ const installerCompose = async () => {
  *  persistent disk, which takes no maxShutdownDelaySeconds. */
 const RENDER_GRACE_S = 30;
 
+test("every target that runs a runner beside the server gives that runner's whole close before the kill: the image's targets more than its 40 s, the CLI's targets more than its 55 s; Render's fixed 30 s is the one under it, and render.yaml says so", async () => {
+  const { renderValue } = await import(new URL("../../../deploy/railway/template.mjs", import.meta.url));
+  // The image runs the server and its runner with --drain-timeout 6s; the CLI (`agentrun start`, its service, the
+  // installer's background start) with the server's default drain.
+  const imageBound = runnerCloseBoundMs(durationMs(RUNNER_DRAIN_TIMEOUT));
+  const cliBound = runnerCloseBoundMs(durationMs(DRAIN_TIMEOUT));
+  assert.equal(imageBound, 40_000, "max(6 + 25, 30 + 5 + 5)");
+  assert.equal(cliBound, 55_000, "30 s drain + 25 s for the loops' stop");
+  const image = [];
+  for (const [path, text] of [["compose.yaml", await repoFile("compose.yaml")], ["install.sh --vps (/opt/agentrun/compose.yaml)", await installerCompose()], ["deploy/coolify/agentrun.yaml", await repoFile("deploy/coolify/agentrun.yaml")], ["deploy/dokploy/agentrun/docker-compose.yml", await repoFile("deploy/dokploy/agentrun/docker-compose.yml")]]) {
+    const service = parseYaml(text, { merge: true }).services.agentrun;
+    assert.equal(service.command, undefined, `${path}'s agentrun runs the image's command: the server and its runner`);
+    image.push([path, Number(/^(\d+)s$/.exec(String(service.stop_grace_period ?? ""))?.[1])]);
+  }
+  image.push(["deploy/helm/agentrun/values.yaml", Number(/^terminationGracePeriodSeconds: (\d+)$/m.exec(await repoFile("deploy/helm/agentrun/values.yaml"))?.[1])]);
+  image.push(["deploy/fly/fly.toml", Number(/^kill_timeout = (\d+)$/m.exec(await repoFile("deploy/fly/fly.toml"))?.[1])]);
+  const railway = JSON.parse(await repoFile("deploy/railway/template.json"));
+  const draining = JSON.stringify(railway).match(/"RAILWAY_DEPLOYMENT_DRAINING_SECONDS":\{"defaultValue":("(?:[^"\\]|\\.)*")/);
+  image.push(["deploy/railway/template.json", Number(renderValue(JSON.parse(draining[1]), { domain: "x" }))]);
+  for (const [path, seconds] of image) assert.ok(seconds * 1_000 > imageBound, `${path}: ${seconds} s is not above the ${imageBound / 1_000} s the runner beside the server takes to close`);
+  const { STOP_WAIT_MS, plistText } = await import(new URL("../../agentrun/lib/service.mjs", import.meta.url));
+  const exitTimeOut = Number(/<key>ExitTimeOut<\/key>\s*<integer>(\d+)<\/integer>/.exec(plistText({ program: "/a", args: [], path: "/b", log: "/c" }))?.[1]);
+  const installerWait = Number(/ours "\$server"; \} && \[ "\$waited" -lt (\d+) \]/.exec(await repoFile("packages/agentrun/install.sh"))?.[1]);
+  for (const [what, ms] of [["launchd's ExitTimeOut", exitTimeOut * 1_000], ["agentrun stop's STOP_WAIT_MS", STOP_WAIT_MS], ["the installer's stop of a background AgentRun", installerWait * 1_000]]) {
+    assert.ok(ms > cliBound, `${what}: ${ms / 1_000} s is not above the ${cliBound / 1_000} s the CLI's runner takes to close`);
+  }
+  // Render: a fixed 30 s for a service with a disk. A stop whose browser release hangs is killed there, and render.yaml
+  // says so.
+  assert.ok(RENDER_GRACE_S * 1_000 < imageBound);
+  assert.match(await repoFile("render.yaml"), /under the 40 s the runner's close takes when a browser's release hangs/);
+});
+
 test("every shipped deploy gives each AgentRun process at least a signed-in server's stop bound (the ChatGPT sign-in's close and a renewal's drain) before it kills: the quickstart, the --no-runner server, its runners, the --vps installer's compose, the chart and the templates", async () => {
   const { PLAN_STOP_BOUND_MS } = await import("../dist/server.js");
   assert.equal(PLAN_STOP_BOUND_MS, 27_000, "2 s close + 15 s refresh + 10 s store write");
