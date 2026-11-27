@@ -134,12 +134,15 @@ export const lostRequests = (lost: readonly Lost[]): string =>
   `The browser lost ${lost.length === 1 ? "a request" : `${lost.length} requests`} your page made before ${lost.length === 1 ? "the request" : "they"} left the browser: ${lost.map((r) => `${r.method} ${r.url}`).join(", ")}. Chrome's network service restarted while ${lost.length === 1 ? "it was" : "they were"} on ${lost.length === 1 ? "its" : "their"} way, so ${lost.length === 1 ? "the request was" : "the requests were"} not sent. Make ${lost.length === 1 ? "it" : "them"} again if you still need ${lost.length === 1 ? "it" : "them"}.`;
 
 /** Where a screenshot's `save_as` saves it and in which format, or why it is refused: a path relative to the workspace
- *  (workspacePathRefusal) naming a .png, .jpg or .jpeg file, whose format agrees with `type` when it is given. A .png
- *  name asks for a PNG; a .jpg name leaves the capture as it was asked (a JPEG unless type says png, which is refused). */
+ *  (workspacePathRefusal), its folders separated by "/" alone (as computer_screenshot's save_as), naming a .png, .jpg
+ *  or .jpeg file, whose format agrees with `type` when it is given. A .png name asks for a PNG; a .jpg name leaves the
+ *  capture as it was asked (a JPEG unless type says png, which is refused). */
 export function savePlanOf(given: unknown, type: "png" | "jpeg" | undefined): { path: string; format: "png" | "jpeg" } | { refused: string } {
   const bad = workspacePathRefusal(given);
   if (bad) return { refused: `save_as: ${bad}` };
-  const path = (given as string).split(/[\\/]/).filter((part) => part !== "" && part !== ".").join("/");
+  // One separator, so the path the run's gate reads is the path written: a backslash is refused, never read as a "/".
+  if ((given as string).includes("\\")) return { refused: `save_as separates folders with "/", never a backslash: not ${JSON.stringify(given)}` };
+  const path = (given as string).split("/").filter((part) => part !== "" && part !== ".").join("/");
   const format = /\.png$/i.test(path) ? "png" : /\.jpe?g$/i.test(path) ? "jpeg" : null;
   if (!format || /(^|\/)\.(png|jpe?g)$/i.test(path)) return { refused: `save_as names a .png, .jpg or .jpeg file: not ${JSON.stringify(given)}` };
   if (type !== undefined && type !== format) return { refused: `save_as ${JSON.stringify(given)} names a ${format === "png" ? "PNG" : "JPEG"} file, and type asks for ${type === "png" ? "a PNG" : "a JPEG"}: give a name that matches type, or leave type out` };

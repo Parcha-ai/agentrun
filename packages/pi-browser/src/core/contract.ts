@@ -94,7 +94,7 @@ const run: ToolContract = {
 };
 
 /** save_as's words, as the screenshot tool keeps them (tools.ts savePlanOf). */
-const SAVE_AS = "Also save the capture as this file: a path relative to the workspace, ending .png, .jpg or .jpeg (shots/home.png). A .png name captures a PNG; a .png name with type jpeg, or a .jpg name with type png, is refused. Missing folders are made and a file already there is replaced. The answer says where it was saved, or why it was not (a PNG over the size budget comes back as a JPEG, which is not saved under a .png name).";
+const SAVE_AS = "Also save the capture as this file: a path relative to the workspace, folders separated by a forward slash, ending .png, .jpg or .jpeg (shots/home.png). A .png name captures a PNG; a .png name with type jpeg, or a .jpg name with type png, is refused. Missing folders are made and a file already there is replaced. The answer says where it was saved, or why it was not (a PNG over the size budget comes back as a JPEG, which is not saved under a .png name).";
 
 const screenshot: ToolContract = {
   name: "screenshot",

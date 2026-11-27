@@ -1757,3 +1757,20 @@ test("screenshot with no save_as writes nothing into the workspace and its answe
   assert.doesNotMatch(run.texts[0], /saved/);
   assert.deepEqual(tree(workspace), []);
 });
+
+test("screenshot save_as with a backslash is refused before any browser call, so a folder the run's gate reads by '/' cannot be reached another way", async (t) => {
+  const { around, workspace } = saveRig(t);
+  const asks = ["stripe\\pages\\shot.png", "stripe/pages\\shot.png", "..\\escape.png"];
+  const run = await session(t, asks.map((save_as) => ["screenshot", { save_as }]), { workspace });
+  for (const [i, given] of asks.entries()) {
+    assert.equal(run.seen[i].isError, true, given);
+    assert.equal(failure(run.texts[i]).code, "refused", given);
+  }
+  assert.match(failure(run.texts[0]).message, /never a backslash/);
+  assert.match(failure(run.texts[1]).message, /never a backslash/);
+  assert.match(failure(run.texts[2]).message, /'\.\.'|never a backslash/);
+  assert.equal(run.backend.tally().creates, 0, "no session was opened");
+  assert.deepEqual(run.filed, []);
+  assert.deepEqual(tree(workspace), [], "nothing reached stripe/pages/ or anywhere in the workspace");
+  assert.deepEqual(tree(around), ["work"]);
+});

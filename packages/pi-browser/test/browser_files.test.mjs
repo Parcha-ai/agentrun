@@ -428,3 +428,62 @@ test("a workspace write the host vetoes is refused with the host's reason", asyn
   assert.equal((await files.write("ledger.json", Buffer.from("{}"))).refused, "ledger.json: reserved by the host");
   assert.equal(fs.existsSync(path.join(workspace, "ledger.json")), false);
 });
+
+/** `fs.promises[name]` replaced by `hook` for the rest of test `t` (the module's named import follows the builtin). */
+const hookFs = (t, name, hook) => {
+  const real = fs.promises[name];
+  fs.promises[name] = async (...args) => hook(real.bind(fs.promises), ...args);
+  syncBuiltinESMExports();
+  t.after(() => { fs.promises[name] = real; syncBuiltinESMExports(); });
+};
+
+for (const procFd of [undefined, false]) {
+  const how = procFd === false ? "by path (no /proc/self/fd)" : "by its held folders";
+  test(`a write ${how}: a folder made by another process as a link out of the workspace between the check and the mkdir is refused, and nothing is made or written outside`, async (t) => {
+    const { workspace, outside } = rig(t);
+    // Forced race: the walk finds shots/ missing; before its mkdir lands, shots/ appears as a link out of the workspace.
+    let swapped = false;
+    hookFs(t, "mkdir", async (real, dir, ...rest) => {
+      if (!swapped && path.basename(String(dir)) === "shots") {
+        swapped = true;
+        fs.symlinkSync(outside, path.join(workspace, "shots"));
+        throw Object.assign(new Error("EEXIST: file already exists"), { code: "EEXIST" });
+      }
+      return real(dir, ...rest);
+    });
+    const out = await workspaceFiles(workspace, procFd === undefined ? {} : { procFd }).write("shots/deep/walk.png", Buffer.from("mine"));
+    assert.ok(swapped, "the race was forced");
+    assert.match(out.refused ?? "", /link is on the way|outside the workspace/, JSON.stringify(out));
+    assert.deepEqual(fs.readdirSync(outside), [], "nothing was made or written outside the workspace");
+  });
+
+  test(`a write ${how}: its folder swapped for a link out of the workspace just before the file is created leaves nothing outside`, async (t) => {
+    const { workspace, outside } = rig(t);
+    fs.mkdirSync(path.join(workspace, "sub"));
+    let swapped = false;
+    hookFs(t, "open", async (real, file, ...rest) => {
+      if (!swapped && String(file).endsWith(".tmp")) {
+        swapped = true;
+        fs.renameSync(path.join(workspace, "sub"), path.join(workspace, "moved"));
+        fs.symlinkSync(outside, path.join(workspace, "sub"));
+      }
+      return real(file, ...rest);
+    });
+    const out = await workspaceFiles(workspace, procFd === undefined ? {} : { procFd }).write("sub/walk.png", Buffer.from("mine"));
+    assert.ok(swapped, "the race was forced");
+    assert.deepEqual(fs.readdirSync(outside), [], `nothing outside the workspace: ${JSON.stringify(out)}`);
+    // Held by its handle, the write lands in the folder it walked (now named moved/); by path, it is refused.
+    if ("path" in out) assert.equal(fs.readFileSync(path.join(workspace, "moved", "walk.png"), "utf8"), "mine");
+    else assert.match(out.refused, /outside the workspace|link is on the way/);
+  });
+}
+
+test("a workspace write takes folders separated by '/' alone: a backslash is refused, and nothing is written", async (t) => {
+  const { workspace } = rig(t);
+  const files = workspaceFiles(workspace);
+  for (const rel of ["shots\\walk.png", "shots/deep\\walk.png", "walk\\.png"]) {
+    const out = await files.write(rel, Buffer.from("mine"));
+    assert.match(out.refused ?? "", /never a backslash/, rel);
+  }
+  assert.deepEqual(fs.readdirSync(workspace), []);
+});
