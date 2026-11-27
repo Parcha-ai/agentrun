@@ -5104,7 +5104,9 @@ A new workflow revision serves only once its promotion check passes. For a serve
 inputs of the agent's last `compile_after` completed runs, one replay run each at workflow cost, and scores each against
 the agent's own recorded answer. It is promoted when it agrees on at least `learning.agree_min` (0.8) of them and
 answers at least `learning.alone_min` (0.7) alone; under either bar it is held, and the next run asks one revision with
-the inputs it disagreed on. Held again, it stops, and nothing compiles again until its owner acts. A promotion by
+the inputs it disagreed on. Held again, it stops, and nothing compiles again until a correction merges after the stop or `compile_after` more of
+the agent's own runs start after it; that restarts it as a first compile (one revise, one recompile, then it stops
+again). A promotion by
 check is never moved by grades. `GET /agents/{agent_id}/learning/promotions` reads every record.
 
 Connected SDK agents (Claude Agent SDK, Codex SDK and Eve) check where their original tools live. When an application

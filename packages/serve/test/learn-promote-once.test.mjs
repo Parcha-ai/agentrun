@@ -381,7 +381,7 @@ test("(c, d) the revision's check holds it too: stopped, its numbers on the reco
   // On the newest 5: run-2 and run-1 (42), prior-4 (42), prior-3 (41), prior-2 (handed back): 4 alone, 3 agree (75%).
   assert.deepEqual([stopped.check.attempt, stopped.check.stopped, stopped.check.n, stopped.check.alone, stopped.check.agreed], [2, true, 5, 4, 3]);
   assert.deepEqual(stopped.check.of, ["run-2", "run-1", "prior-4", "prior-3", "prior-2"]);
-  assert.match(stopped.reason, /; compared by the agent's own model \(claude-sonnet-5-5; no fast model is set\): held on answer; .*, and this was the recompile's check, so it stops: nothing compiles again until a hold or its owner acts$/);
+  assert.match(stopped.reason, /; compared by the agent's own model \(claude-sonnet-5-5; no fast model is set\): held on answer; .*, and this was the recompile's check, so it stops: nothing compiles again until a correction or compile_after new runs of the agent's own restart it$/);
   // Every run after the stop is still the agent's and asks no compile.
   for (let i = 5; i <= 8; i++) {
     const row = await w.start(`run-${i}`, `Question ${10 + i}`);
@@ -430,6 +430,75 @@ test("(c) a stopped workflow is never asked a recompile, whatever else is held: 
   const w = await stoppedAndHeld(t, ["question", "other"]);
   await w.start("run-1", "Question 10");
   assert.deepEqual(w.asks.get("run-1"), []);
+});
+
+// A stop restarts on new evidence: compile_after of the agent's own runs started after it, or a correction merged after
+// it. The restart is attempt 1 again: one compile and its one recompile, then stopped, and only evidence newer than that
+// stop restarts it again.
+test("(g) a stopped compile restarts once compile_after own runs started after the stop: one compile and one recompile, then stopped again; fewer runs since the newest stop compile nothing", { timeout: 240_000 }, async (t) => {
+  const w = await world(t, { learning: { compile_after: 2 }, flows: [] });
+  const asked = [];
+  for (let i = 1; i <= 7; i++) {
+    const row = await w.start(`run-${i}`, `Question ${i}`);
+    assert.equal(row.state, "ended", JSON.stringify(row));
+    asked.push(w.asks.get(`run-${i}`).length > 0);
+  }
+  // run-2 compiles, run-3 recompiles and stops; run-4 is 1 run since the stop; run-5 is 2: restarted, and run-6 is its
+  // recompile, stopped again; run-7 is 1 run since that stop (4 since the first: the first stop restarts nothing more).
+  assert.deepEqual(asked, [false, true, true, false, true, true, false]);
+  const records = await promotionsOf(w.server.learning, "agent-1");
+  assert.deepEqual(records.map(({ decided, check }) => [decided, check?.attempt, check?.stopped ?? false]), [["hold", 1, false], ["hold", 2, true], ["hold", 1, false], ["hold", 2, true]], JSON.stringify(records));
+});
+
+test("(h) a check's stopped workflow restarts on a correction merged after the stop: the next run revises it (attempt 1), the run after recompiles it (attempt 2, stopped); a run before the correction, and one after the second stop, ask nothing", { timeout: 240_000 }, async (t) => {
+  const w = await world(t, { learning: { compile_after: 5 }, prior: 5 });
+  const bar = { compile_after: 5, agree_min: 0.8, alone_min: 0.7 };
+  await recordPromotion(w.server.learning, "agent-1", { workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "hold", reason: "held", check: { ...bar, attempt: 2, n: 5, alone: 5, agreed: 0, stopped: true } }, () => true);
+  const revises = (id) => w.asks.get(id).filter((ask) => ask.startsWith("One more turn: revise your learned workflow `answer`"));
+
+  await w.start("run-1", "Question 10");
+  assert.deepEqual(w.asks.get("run-1"), [], "1 run since the stop and no correction: stopped");
+
+  const corrected = await learningCommit(learningOf(w.server, "agent-1"), { runId: "owner-fix-1", reason: "the owner's correction", files: [{ path: "corrections.md", text: "- The answer to every question is 42.\n" }] });
+  assert.equal(corrected.ok, true, JSON.stringify(corrected));
+
+  await w.start("run-2", "Question 11");
+  assert.ok(revises("run-2").length > 0, `restarted by the correction: ${w.asks.get("run-2")[0]?.slice(0, 160)}`);
+  await w.start("run-3", "Question 12");
+  assert.ok(revises("run-3").length > 0, `the restart's one recompile: ${w.asks.get("run-3")[0]?.slice(0, 160)}`);
+  await w.start("run-4", "Question 13");
+  assert.deepEqual(w.asks.get("run-4"), [], "a third compile in one restart: refused (the correction is older than the newest stop)");
+
+  const failed = (await promotionsOf(w.server.learning, "agent-1")).filter((one) => one.digest !== DIGEST);
+  assert.deepEqual(failed.map(({ workflow, check }) => [workflow, check?.attempt, check?.stopped ?? false]), [["answer", 1, false], ["answer", 2, true]], JSON.stringify(failed));
+});
+
+// Review on #4090 (PRRT_kwDOUmdVMs68v93g): a recompile whose draft failed writes its stop under the failed run's own
+// digest, so main's revision is still an attempt-1 hold, not stopped. Its restart is a first compile all the same: the
+// restart's revise is attempt 1 (its failed draft earns the one recompile), and only that recompile stops it again.
+test("(i) a hold whose recompile's draft failed (the stop under its own digest) restarts on a correction: the restart's revise is attempt 1, its recompile attempt 2 (stopped), then nothing", { timeout: 240_000 }, async (t) => {
+  const { draftFailedDigest } = await import("../dist/runner/learning-end.js");
+  const { DRAFT_FAILED } = await import("../dist/learn/compile.js");
+  const w = await world(t, { learning: { compile_after: 5 }, prior: 5 });
+  const bar = { compile_after: 5, agree_min: 0.8, alone_min: 0.7 };
+  const held = new Date(Date.now() - 2000).toISOString();
+  await recordPromotion(w.server.learning, "agent-1", { workflow: "answer", digest: DIGEST, at: held, decided: "hold", reason: "held", check: { ...bar, attempt: 1, n: 5, alone: 5, agreed: 0 } }, () => true);
+  const stop = draftFailedDigest("old-recompile");
+  await recordPromotion(w.server.learning, "agent-1", { workflow: "answer", digest: stop, at: new Date(Date.now() - 1000).toISOString(), decided: "hold", reason: `${DRAFT_FAILED}: no draft passed. It was the recompile, so it stops`, check: { ...bar, attempt: 2, n: 0, alone: 0, agreed: 0, agent_agreed: 0, of: [], stopped: true } }, () => true, { anyDigest: true });
+  const revises = (id) => w.asks.get(id).filter((ask) => ask.startsWith("One more turn: revise your learned workflow `answer`"));
+
+  const corrected = await learningCommit(learningOf(w.server, "agent-1"), { runId: "owner-fix-1", reason: "the owner's correction", files: [{ path: "corrections.md", text: "- The answer to every question is 42.\n" }] });
+  assert.equal(corrected.ok, true, JSON.stringify(corrected));
+
+  await w.start("run-1", "Question 10");
+  assert.ok(revises("run-1").length > 0, `restarted by the correction: ${w.asks.get("run-1")[0]?.slice(0, 160)}`);
+  await w.start("run-2", "Question 11");
+  assert.ok(revises("run-2").length > 0, `the restart's one recompile: ${w.asks.get("run-2")[0]?.slice(0, 160)}`);
+  await w.start("run-3", "Question 12");
+  assert.deepEqual(w.asks.get("run-3"), [], "a third compile in one restart: refused");
+
+  const failed = (await promotionsOf(w.server.learning, "agent-1")).filter((one) => one.digest !== DIGEST && one.digest !== stop);
+  assert.deepEqual(failed.map(({ workflow, check }) => [workflow, check?.attempt, check?.stopped ?? false]), [["answer", 1, false], ["answer", 2, true]], JSON.stringify(failed));
 });
 
 // Review on #3032 r4 (PRRT_kwDOUmdVMs64MQC-): the compile ask counts the agent's own completed runs before anything limits
