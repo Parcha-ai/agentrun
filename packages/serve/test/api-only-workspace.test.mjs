@@ -241,6 +241,32 @@ test("a workspace reads and removes its own agent's Archil disk: on a server kee
   assert.deepEqual([removed.status, removed.body], [200, { on: false, archil_disk: null, removed: null }], removed.text);
 });
 
+test("a workspace removes its own agent's existing Archil disk: refused until it archives the agent, then deleted at Archil; another workspace's remove is the unknown-path 404", { timeout: 120_000 }, async (t) => {
+  const REGION = "aws-us-east-1";
+  const DISK = "dsk-0000000000000a11";
+  withEnv(t, { ARCHIL_API_KEY: "fake-archil-account-key-0001" });
+  const control = archilControlFetch({ region: REGION, strict: true, disks: [{ id: DISK, name: "w1-agent" }] });
+  const server = await scopedServer(t, { archilControl: { baseUrl: control.baseUrl, fetch: control.fetch } });
+  await saveArchilSettings(server.store, { region: REGION, s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" });
+  const made = await inW1(server, "POST", "/v2/agents", { body: { definition: { version: 1, name: "W1 agent", instructions: "Answer.", skills: [], tools: [] } } });
+  assert.equal(made.status, 201, made.text);
+  const agent = made.body.agent_id;
+  await storeAgentDisk(server.store, agent, { diskId: DISK });
+  const path = `/v2/agents/${agent}/archil`;
+  assert.deepEqual((await inW1(server, "GET", path)).body, { on: true, archil_disk: { disk_id: DISK } });
+  const early = await inW1(server, "DELETE", path);
+  assert.deepEqual([early.status, early.body.error?.code], [412, "precondition_failed"], early.text);
+  assert.match(early.body.error.message, /archive it first/);
+  assert.equal((await inW2(server, "POST", `/v2/agents/${agent}/archive`)).status, 404, "W2 can't archive W1's agent");
+  assert.equal((await inW2(server, "DELETE", path)).status, 404, "W2 can't remove W1's agent's disk");
+  assert.equal(control.disks.has(DISK), true, "nothing removed yet");
+  const archived = await inW1(server, "POST", `/v2/agents/${agent}/archive`);
+  assert.equal(archived.status, 200, archived.text);
+  const removed = await inW1(server, "DELETE", path);
+  assert.deepEqual([removed.status, removed.body], [200, { on: true, archil_disk: null, removed: { disk_id: DISK } }], removed.text);
+  assert.equal(control.disks.has(DISK), false, "its disk deleted at Archil");
+});
+
 test("a workspace archives, unarchives and deletes its own agent and deletes its own imported package; another workspace's calls change none of them", { timeout: 120_000 }, async (t) => {
   const server = await scopedServer(t);
   const { agent, template } = await seedW1(server);
