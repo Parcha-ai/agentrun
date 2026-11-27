@@ -15,7 +15,8 @@ import { test } from "node:test";
 import { atTestEnd, client, dropSchema, freshSchema, onPostgres, PG_URL, postgresOnly, sqliteOnly } from "./store-target.mjs";
 import { storeOn } from "./store-helpers.mjs";
 import { schemaProblems } from "./schema-support.mjs";
-import { scratch, serve, withEnv } from "./support.mjs";
+import { answerFlow, scratch, serve, withEnv } from "./support.mjs";
+import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { archilControlFetch } from "./archil-control-fake.mjs";
 import { fakeClock, until } from "./trigger-support.mjs";
 
@@ -30,6 +31,7 @@ const { TemplateRegistry } = await import("../dist/templates.js");
 const { inWorkspace, workspaceNow } = await import("../dist/workspace-scope.js");
 const { Triggers } = await import("../dist/triggers.js");
 const { saveArchilSettings, storeAgentDisk } = await import("../dist/archil-settings.js");
+const { agentHomeFolder } = await import("../dist/workspace/index.js");
 
 const SCOPED = randomBytes(24).toString("hex");
 const OPERATOR = randomBytes(24).toString("hex");
@@ -136,6 +138,12 @@ const TABLE = {
   createRun: { method: "POST", path: "/v2/agents/{agent}/runs", row: "agent", body: { input: { content: "Hello." } } },
   updateDefinition: { method: "PUT", path: "/v2/agents/{agent}/definition", row: "agent", body: { definition: { version: 1, name: "W2 edit", instructions: "Answer.", skills: [], tools: [] } } },
   setCurrent: { method: "POST", path: "/v2/agents/{agent}/current", row: "agent", body: { revision_id: "rev_none" } },
+  getAgentPackage: { method: "GET", path: "/v2/agents/{agent}/package", row: "agent" },
+  getRevisionSkills: { method: "GET", path: "/v2/agents/{agent}/revisions/rev_none/skills", row: "agent" },
+  listHomeFiles: { method: "GET", path: "/v2/agents/{agent}/home/files", row: "agent" },
+  readHomeFile: { method: "GET", path: "/v2/agents/{agent}/home/files/notes.md", row: "agent" },
+  deleteHomeFile: { method: "DELETE", path: "/v2/agents/{agent}/home/files/notes.md", row: "agent" },
+  forgetSignIn: { method: "DELETE", path: "/v2/agents/{agent}/sign-ins/google", row: "agent" },
   getTemplate: { method: "GET", path: "/v2/templates/{template}", row: "template" },
   applyTemplate: { method: "POST", path: "/v2/templates/{template}/apply", row: "template", body: { parameters: {} } },
   getFile: { method: "GET", path: "/v2/files/{file}", row: "file" },
@@ -151,6 +159,7 @@ const TABLE = {
   getCapabilities: { method: "GET", path: "/v2/capabilities", served: true },
   getHealth: { method: "GET", path: "/v2/health", served: true },
   getOpenapi: { method: "GET", path: "/v2/openapi.json", served: true },
+  validateWorkflow: { method: "POST", path: "/v2/workflows/validate", served: true, body: { workflow: { v: 2, name: "nothing" } } },
 };
 
 test("every operation of WORKSPACE_ROUTES is a route of the server, and the table below covers each", () => {
@@ -186,7 +195,8 @@ test("a scoped request reads another workspace's row as a missing one, the same 
       assert.ok(op.list(mine.body).includes(w1[op.of]), `${name}: W1's list holds its ${op.of}`);
       assert.ok(!op.list(theirs.body).includes(w1[op.of]), `${name}: W2's list holds none of W1's`);
     } else if (op.served) {
-      assert.equal((await inW2(server, op.method, op.path)).status, 200, name);
+      const answer = await inW2(server, op.method, op.path, op.body === undefined ? {} : { body: op.body });
+      assert.equal(answer.status, 200, `${name}: ${answer.text}`);
     }
   }
   // listTemplates still shows W2 the bundled package; a W2 import of the name W1 holds is refused, never replacing it.
@@ -238,6 +248,53 @@ test("a scoped request acts on its own run with the run extras, and a run it pur
   }
 });
 
+test("a scoped request reads its own agent's package, a revision's skills, its home and sign-ins, and the install's saved MCP servers read to it as unsaved ones", { timeout: 120_000 }, async (t) => {
+  const mcp = await startFakeMcp({ token: () => true });
+  t.after(() => mcp.close());
+  const server = await scopedServer(t, { apiOnlyMcpOrigins: [new URL(mcp.url).origin] });
+  // The operator's server: a per_run one at its own origin, saved unscoped, as the install's only MCP server.
+  const saved = await unscoped(server, "PUT", "/v2/settings/mcp-servers/opsonly", { body: { url: mcp.url, auth: { type: "per_run", headers: { authorization: "Bearer not-a-secret-list-token" } } } });
+  assert.ok(saved.status < 300, saved.text);
+  const made = await inW1(server, "POST", "/v2/agents", { body: { definition: { version: 1, name: "W1 agent", instructions: "Answer.", skills: [], tools: ["mcp:opsonly/add"] } } });
+  assert.equal(made.status, 201, made.text);
+  const agent = made.body.agent_id;
+
+  const blockedOf = (answer) => answer.body.report.blocked.find((one) => one.kind === "mcp_server" && one.name === "opsonly");
+  const mine = await inW1(server, "GET", `/v2/agents/${agent}/package`);
+  assert.equal(mine.status, 200, mine.text);
+  assert.match(blockedOf(mine)?.reason ?? "", /not a saved MCP server here/, "in a workspace, the operator's server is one saved nowhere");
+  assert.ok(!mine.text.includes(new URL(mcp.url).host), "and nothing of its address reaches the workspace");
+  const operators = await unscoped(server, "GET", `/v2/agents/${agent}/package`);
+  assert.equal(operators.status, 200, operators.text);
+  assert.doesNotMatch(blockedOf(operators)?.reason ?? "", /not a saved MCP server here/, "unscoped, the server is the saved one");
+
+  const [revision] = (await inW1(server, "GET", `/v2/agents/${agent}/revisions`)).body.revisions;
+  const skills = await inW1(server, "GET", `/v2/agents/${agent}/revisions/${revision.id ?? revision.revision_id}/skills`);
+  assert.deepEqual([skills.status, skills.body.skills], [200, {}], skills.text);
+
+  const home = agentHomeFolder(server.data, agent);
+  mkdirSync(home, { recursive: true });
+  writeFileSync(join(home, "notes.md"), "kept");
+  const listed = await inW1(server, "GET", `/v2/agents/${agent}/home/files`);
+  assert.deepEqual([listed.status, listed.body.files.map((one) => one.path)], [200, ["notes.md"]], listed.text);
+  const read = await inW1(server, "GET", `/v2/agents/${agent}/home/files/notes.md`);
+  assert.deepEqual([read.status, read.text], [200, "kept"]);
+  const owned = await inW1(server, "GET", `/v2/agents/${agent}/home/files/learning/notes.md`);
+  assert.deepEqual([owned.status, owned.body.error?.code], [403, "system_file_forbidden"], "a host-owned path stays the server's");
+  const removed = await inW1(server, "DELETE", `/v2/agents/${agent}/home/files/notes.md`);
+  assert.equal(removed.status, 204, removed.text);
+  assert.deepEqual((await inW1(server, "GET", `/v2/agents/${agent}/home/files`)).body.files, []);
+  const forgot = await inW1(server, "DELETE", `/v2/agents/${agent}/sign-ins/google`);
+  assert.equal(forgot.status, 200, forgot.text);
+
+  // validateWorkflow: a tool of the operator's server reads to the workspace as a tool of a server saved nowhere.
+  const check = (tool) => inW1(server, "POST", "/v2/workflows/validate", { body: { workflow: answerFlow(), tools: [tool] } });
+  const named = await check("mcp:opsonly/add");
+  const unsaved = await check("mcp:nowhere/add");
+  assert.equal(named.status, 200, named.text);
+  assert.equal(named.text.replaceAll("opsonly", "<server>"), unsaved.text.replaceAll("nowhere", "<server>"));
+});
+
 test("an Idempotency-Key used in one workspace starts afresh in another, and replays in its own", { timeout: 120_000 }, async (t) => {
   const server = await scopedServer(t);
   const key = { "idempotency-key": "apply-once" };
@@ -273,7 +330,7 @@ test("a listed token without the header is 403; the header off an API-only serve
     assert.deepEqual([answer.status, answer.body.error?.code], [400, "bad_request"], `${JSON.stringify(workspace)}: ${answer.text}`);
   }
   assert.equal((await send(server, "GET", "/v2/runs", { workspace: "x".repeat(128) })).status, 200, "128 characters is a name");
-  for (const [method, path] of [["DELETE", "/v2/agents/a1"], ["GET", "/v2/usage"], ["GET", "/v2/runs/r1/usage"], ["POST", "/v2/runs/r1/approvals/ap1"], ["GET", "/v2/triggers"], ["POST", "/v2/runs"]]) {
+  for (const [method, path] of [["DELETE", "/v2/agents/a1"], ["GET", "/v2/usage"], ["GET", "/v2/runs/r1/usage"], ["POST", "/v2/runs/r1/approvals/ap1"], ["PUT", "/v2/agents/a1/home/files/notes.md"], ["GET", "/v2/triggers"], ["POST", "/v2/runs"]]) {
     const answer = await inW1(server, method, path, method === "GET" || method === "DELETE" ? {} : { body: {} });
     assert.deepEqual([answer.status, answer.body.error?.code, answer.body.error?.details?.reason], [403, "forbidden", "not_scoped"], `${method} ${path}: ${answer.text}`);
   }
