@@ -5330,7 +5330,9 @@ were reached. Nothing is priced here, and nothing is rounded to a billing increm
   them: `not_metered_calls`, in neither `quantity` nor `usd`.
 - `browser_time`: one line per browser provider (`provider`). `quantity` is the seconds this server's clock charged the
   provider's sessions for, the provider's minimum per session included as the browser charged it; `basis` is
-  `estimate`, the provider's price per hour on this server's clock, never its invoice.
+  `estimate`, the provider's price per hour on this server's clock, never its invoice. A charge's seconds are read from
+  its record wherever the journal holds it: one recorded in a learning round's end-of-run turn and booked later (a
+  follow-up's reopen) counts on the line its booking is on.
 - A field a meter does not use is null, and so is a name the record does not keep: never `""`.
 - A charge of unknown cost makes its line's `usd` null, with `so_far_usd` and `unpriced` beside it, never $0. `total`
   joins the lines by the rule `cost.usd` is, so `total.usd` is the run's `cost.usd`, with the same `so_far_usd`,
