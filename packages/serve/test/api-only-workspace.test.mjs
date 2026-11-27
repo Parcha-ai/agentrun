@@ -110,7 +110,8 @@ async function bytes(server, workspace, { path, id, body = "hello" }) {
 
 /** Every operation of WORKSPACE_ROUTES: how a scoped request reaches it, and what a row of another workspace reads as.
  *  `row`: the operation names W1's row by id (agent, run or template), and W2 gets the 404 a missing id gets. `list`: W2's
- *  list holds none of W1's rows. `made`: a write W2 makes lands in W2 alone. `served`: answered to any workspace. */
+ *  list holds none of W1's rows. `made`: a write W2 makes lands in W2 alone. `served`: answered to any workspace. `mcp`:
+ *  a workspace's MCP server, named by its name, each kept apart in api-only-mcp-workspace.test.mjs. */
 const TABLE = {
   getRun: { method: "GET", path: "/v2/runs/{run}", row: "run" },
   getTimeline: { method: "GET", path: "/v2/runs/{run}/timeline", row: "run" },
@@ -138,6 +139,13 @@ const TABLE = {
   createAgent: { made: true },
   importTemplate: { made: true },
   createFile: { made: true },
+  listMcpServerNames: { mcp: true },
+  listMcpServers: { mcp: true },
+  getMcpServer: { mcp: true },
+  saveMcpServer: { mcp: true },
+  saveComposioServer: { mcp: true },
+  refreshMcpServer: { mcp: true },
+  deleteMcpServer: { mcp: true },
   getCapabilities: { method: "GET", path: "/v2/capabilities", served: true },
   getHealth: { method: "GET", path: "/v2/health", served: true },
   getOpenapi: { method: "GET", path: "/v2/openapi.json", served: true },

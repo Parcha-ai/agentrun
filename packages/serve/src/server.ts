@@ -36,7 +36,8 @@ import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
 import { API_ONLY_ROUTES, WORKSPACE_ROUTES, apiOnlyMcpSave, apiOnlyRefusal, apiOnlyTriggerEdit, apiOnlyTriggerSkipped, apiOnlyTurnsOn, servedApiOnly, servedScoped } from "./api-only.js";
-import { inWorkspace, outOfScope, scopedSlot, slotPath, WORKSPACE, WORKSPACE_HEADER, WORKSPACE_NAME, WORKSPACE_TOKENS_ENV, workspaceNow, workspaceTokensFrom } from "./workspace-scope.js";
+import { inWorkspace, outOfScope, outsideWorkspace, scopedSlot, slotPath, WORKSPACE, WORKSPACE_HEADER, WORKSPACE_NAME, WORKSPACE_TOKENS_ENV, workspaceNow, workspaceTokensFrom } from "./workspace-scope.js";
+import { mcpRowKey, mcpRowWorkspace, mcpView, requestNames } from "./mcp-workspace.js";
 import { API_ONLY_ENV, API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV } from "./env-switch.js";
 import { pricesInForce } from "./prices.js";
 import { composioOutsideNamespaceServers, holdApiOnlyMcpOrigins, offApiOnlyMcpServers } from "./mcp-api-only-origins.js";
@@ -1647,7 +1648,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const fields = { count: outside.length, servers: outside.join(","), line: "runs that grant these Composio servers the API token saved before its Composio users were namespaced are refused, nothing sent: delete each, then save it again" };
     log ? log(logLine("api_only_composio_outside_namespace", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("api_only_composio_outside_namespace", fields)}\n`);
   }
-  const mcpServers =mcpServersOverStore(store, own(withSecrets(base, "own")), VERSION);
+  // The registry as the request being served reaches it (mcp-workspace.ts): a scoped request's workspace servers alone, by
+  // their names; an unscoped one's (and this server's own work's) the shared servers alone.
+  const mcpStore = mcpView(store, requestNames);
+  const mcpServers = mcpServersOverStore(mcpStore, own(withSecrets(base, "own")), VERSION);
   if (options.githubMcpOrigin) mcpServers.appOrigin = options.githubMcpOrigin;
   if (options.composioMcpOrigin) mcpServers.composioOrigin = options.composioMcpOrigin;
   if (options.composioControl) mcpServers.composioControl = options.composioControl;
@@ -1659,18 +1663,45 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // that pin and the credentials from the store at a run's claim (runner/mcp-claim.ts); this server hands a run no MCP
   // source. Each with what it is (its source and toolkit, mcp-sources.ts), which a template's apply maps its MCP needs on,
   // and the variable a Composio server saved with api_key_env reads its key from (`keyEnv`), which a run's start checks.
-  let mcpMeta = new Map<string, { url: string; auth: string; tools: readonly McpTool[]; source: SourceRecord; keyEnv?: string }>();
+  // Every row, by its row key (a workspace's server's "<workspace>/<name>", mcp-workspace.ts), each read in its own
+  // workspace; a reader takes them by name through metaOf and metaSeen.
+  type McpMeta = { url: string; auth: string; tools: readonly McpTool[]; source: SourceRecord; keyEnv?: string };
+  let mcpMeta = new Map<string, McpMeta>();
   const refreshMcpMeta = async (): Promise<void> => {
     mcpMeta = new Map(await Promise.all((await listMcpServers(store)).map(async (row) => {
-      const keyEnv = await mcpServers.keyEnvOf(row);
-      return [row.name, { url: row.url, auth: row.auth, tools: (row.tools as McpTool[]) ?? [], source: await mcpServers.sourceOf(row), ...(keyEnv ? { keyEnv } : {}) }] as const;
+      const workspace = mcpRowWorkspace(row.name);
+      const read = async () => {
+        const shown = workspace === undefined ? row : { ...row, name: row.name.slice(workspace.length + 1), sealedAs: row.name };
+        const keyEnv = await mcpServers.keyEnvOf(shown);
+        return { url: row.url, auth: row.auth, tools: (row.tools as McpTool[]) ?? [], source: await mcpServers.sourceOf(shown), ...(keyEnv ? { keyEnv } : {}) };
+      };
+      return [row.name, await (workspace === undefined ? outsideWorkspace(read) : inWorkspace(workspace, read))] as const;
     })));
   };
   await refreshMcpMeta();
+  /** The saved server a request in `workspace` (or an agent's run there) means by `server`: the workspace's own, else the
+   *  shared one of that name. */
+  const metaOf = (server: string, workspace: string | null | undefined = workspaceNow()): McpMeta | undefined =>
+    (workspace !== null && workspace !== undefined ? mcpMeta.get(mcpRowKey(server, workspace)) : undefined) ?? mcpMeta.get(server);
+  /** Every saved server `workspace` reaches, by name: the shared ones, each under a name the workspace saved one of its own
+   *  under taken by its own. Never another workspace's. */
+  const metaSeen = (workspace: string | null | undefined = workspaceNow()): Map<string, McpMeta> => {
+    const seen = new Map<string, McpMeta>();
+    for (const [key, meta] of mcpMeta) if (mcpRowWorkspace(key) === undefined) seen.set(key, meta);
+    if (workspace !== null && workspace !== undefined) for (const [key, meta] of mcpMeta) if (mcpRowWorkspace(key) === workspace) seen.set(key.slice(workspace.length + 1), meta);
+    return new Map([...seen].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+  };
+  /** A server's listing to pin, from the row `server` means to the request being served: its workspace's own when it
+   *  saved one, else the shared one (read as the server's own work, which reaches the shared rows). */
+  const pinListingOf = (server: string, signal: AbortSignal) => {
+    const workspace = workspaceNow();
+    const own = workspace !== undefined && mcpMeta.has(mcpRowKey(server, workspace));
+    return own ? mcpServers.pinListing(server, signal) : outsideWorkspace(() => mcpServers.pinListing(server, signal));
+  };
   // Each saved server's tools in the harnesses' shape (the registry keeps input_schema; a bound tool takes inputSchema),
   // with whether each can be granted: a known meta tool can't (mcp-meta.ts).
   const mcpTools = (server: string) => {
-    const saved = mcpMeta.get(server);
+    const saved = metaOf(server);
     return saved && marked(saved.url, { tools: saved.tools.map(boundTool) }).tools;
   };
   // The server's tool settings, in the store: capabilities say what they resolve to, again after a PUT. load() reads them
@@ -3623,7 +3654,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const tools = revision.kind === "agentic" ? (body.tools ?? []) : [];
     if (!(revision as { mcpPin?: unknown }).mcpPin && tools.some((tool) => mcpToolOf(tool))) return null;
     try {
-      await runnable(revision, resolvePlace(body.place as Place | undefined, await fallbackPlace(revision.kind, tools)), { capped: body.maxCostUsd !== undefined, price: readDecisionPrice });
+      await runnable(revision, resolvePlace(body.place as Place | undefined, await fallbackPlace(revision.kind, tools)), { capped: body.maxCostUsd !== undefined, price: readDecisionPrice, agent: entry.agent.id });
       return null;
     } catch (error) {
       if (error instanceof ApiError && error.code === "agent_not_runnable") return { message: error.message, fields: error.extra.fields ?? [] };
@@ -3642,7 +3673,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  `carried`: the names of the tool keys the run carries (run-keys.ts), each read as one this host holds. `held`: the
    *  run holds its computer (hold: true): kept from running by its model alone, it is not refused, and the refusal is
    *  returned for its launch, its start to answer it (computer-held.ts). */
-  async function runnable(revision: Revision, place: Place, { capped = false, price = decisionPrice, carried = [], held = false }: { capped?: boolean; price?: (model: string) => Promise<unknown>; carried?: readonly string[]; held?: boolean } = {}): Promise<HeldRefusal | undefined> {
+  async function runnable(revision: Revision, place: Place, { capped = false, price = decisionPrice, carried = [], held = false, agent }: { capped?: boolean; price?: (model: string) => Promise<unknown>; carried?: readonly string[]; held?: boolean; agent?: string } = {}): Promise<HeldRefusal | undefined> {
     if (cliLearningOf(revision.body)) throw new ApiError("agent_not_runnable", "Continue in the original CLI session; this connection records learning without launching its tools.");
     if (sdkOf(revision.body)) throw new ApiError("agent_not_runnable", "This agent runs in its backend SDK. Call its SDK wrapper to start a task; AgentRun does not launch its tools or credentials.");
     const native = nativeOf(revision.body);
@@ -3662,16 +3693,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // An agentic revision's MCP tools are checked as its save pinned them (its pin, never the server's listing now), for
     // a server still saved here; a granted tool its pin does not hold is said first, with how to pin it.
     const pin = ((revision as { mcpPin?: unknown }).mcpPin ?? {}) as McpPin;
+    // The servers its tools name are its agent's (`agent`) workspace's own, else the shared ones (metaOf), as its run's
+    // claim reads them.
+    const workspace = agent === undefined ? undefined : await store.agents.workspace(agent);
     if (revision.kind === "agentic") {
       const unpinned = ((revision.body as { tools?: readonly string[] }).tools ?? []).flatMap((tool, index) => {
         const named = mcpToolOf(tool);
-        if (!named || !mcpMeta.has(named.server)) return [];
+        if (!named || !metaOf(named.server, workspace)) return [];
         const pinned = Object.hasOwn(pin, named.server) && pin[named.server]!.tools.some((one) => one.name === named.tool);
         if (pinned) return [];
         // Its first run could not pin it (mcp-pin-first.ts) because this server refuses its server's address: a loopback
         // one on a server whose operator never said it is a local install. Saving again is refused the same way, so the
         // words say the cause, as the save's refusal does (mcp-servers-store.ts reached).
-        const at = URL.parse(mcpMeta.get(named.server)!.url)?.hostname ?? "";
+        const at = URL.parse(metaOf(named.server, workspace)!.url)?.hostname ?? "";
         const why = options.mcpLoopback !== true && LOOPBACK.test(at) ? `its server ${named.server} can't be listed here to pin it: ${loopbackWords(at)}` : "save the agent again to pin it.";
         return [{ field: `definition.tools[${index}]`, reason: "not_an_option", message: `The MCP tool ${tool} was not pinned when this revision was saved: ${why}`, tool }];
       });
@@ -3681,7 +3715,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // without the server's tools, and nothing sent (composioEnvKey).
       const unset = ((revision.body as { tools?: readonly string[] }).tools ?? []).flatMap((tool, index) => {
         const named = mcpToolOf(tool);
-        const saved = named ? mcpMeta.get(named.server) : undefined;
+        const saved = named ? metaOf(named.server, workspace) : undefined;
         const keyEnv = saved?.keyEnv as typeof COMPOSIO_KEY_ENV | undefined;
         const got = named && saved && keyEnv ? composioEnvKey(named.server, saved.url, keyEnv, mcpServers.composioOrigin) : undefined;
         return got && "refused" in got ? [{ field: `definition.tools[${index}]`, reason: got.reason, message: got.refused, tool, keyEnv: keyEnv!, unset: got.reason === "missing" }] : [];
@@ -3689,7 +3723,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if (unset.length) throw new ApiError("agent_not_runnable", [...new Set(unset.map((one) => one.message))].join(" "), { fields: unset.map(({ tool: _tool, keyEnv: _keyEnv, unset: _unset, ...issue }) => issue), details: { unbound: [], missing: Object.fromEntries(unset.filter((one) => one.unset).map((one) => [one.tool, [one.keyEnv]])) } });
     }
     const pinnedTools = (server: string) => {
-      const saved = mcpMeta.get(server);
+      const saved = metaOf(server, workspace);
       if (!saved || !Object.hasOwn(pin, server)) return undefined;
       // A meta tool at the URL it was pinned on or at the server's URL now (a server moved to a provider's host since).
       return pin[server]!.tools.map((tool) => {
@@ -3763,7 +3797,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const refused: InputIssue[] = [];
     await Promise.all([...new Set(granted.map((tool) => mcpToolOf(tool)!.server))].map(async (server) => {
       try {
-        const listing = await mcpServers.pinListing(server, stopping.signal);
+        const listing = await pinListingOf(server, stopping.signal);
         if (listing) listings.set(server, listing);
       } catch (error) {
         if (!(error instanceof ApiError)) throw error;
@@ -3776,7 +3810,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const bound = (server: string) => {
       const kept = carried.get(server);
       // A carried server's tools are checked as pinned, a meta tool marked at its URL then or now (as runnable does).
-      if (kept) return kept.tools.map((tool) => { const meta = metaToolOf(kept.url, tool.name) ?? (mcpMeta.has(server) ? metaToolOf(mcpMeta.get(server)!.url, tool.name) : undefined); return meta ? { ...tool, grantable: false as const, reason: meta.reason } : tool; });
+      if (kept) return kept.tools.map((tool) => { const now = metaOf(server); const meta = metaToolOf(kept.url, tool.name) ?? (now ? metaToolOf(now.url, tool.name) : undefined); return meta ? { ...tool, grantable: false as const, reason: meta.reason } : tool; });
       return listings.get(server)?.tools.map((tool) => ({ ...boundTool(tool), ...(tool.grantable === false ? { grantable: false as const, reason: tool.reason! } : {}) }));
     };
     return {
@@ -3798,7 +3832,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  can't be listed, or no longer lists a granted tool) is left unpinned, and runnable refuses it (409) as before. */
   async function pinFirst(revision: Revision): Promise<Revision> {
     if (((revision as { mcpPin?: unknown }).mcpPin ?? null) !== null) return revision;
-    const pin = await pinFirstOf(revision, { saved: (server) => mcpMeta.has(server), pinListing: (server) => mcpServers.pinListing(server, stopping.signal), pinOnce: (id, made) => store.agents.pinOnce(id, made) });
+    const pin = await pinFirstOf(revision, { saved: (server) => metaOf(server) !== undefined, pinListing: (server) => pinListingOf(server, stopping.signal), pinOnce: (id, made) => store.agents.pinOnce(id, made) });
     return pin ? ({ ...revision, mcpPin: pin } as unknown as Revision) : revision;
   }
 
@@ -4146,7 +4180,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // Each MCP need on the saved server whose source and toolkit match (the owner's pick when several do, never a silent
     // one: several and no pick is a 422); the package's
     // tool names, mcp:<toolkit>/<tool>, read as that server's from here on (templates.ts onServers).
-    const mapped = serversFor(template, [...mcpMeta].map(([name, meta]) => ({ name, ...meta.source })), picks);
+    const mapped = serversFor(template, [...metaSeen()].map(([name, meta]) => ({ name, ...meta.source })), picks);
     const servers = Object.fromEntries(mapped.flatMap(({ need, server }) => (server ? [[need.toolkit, server]] : [])));
     const pkg = onServers(template, servers);
     const saved: McpServed[] = mapped.flatMap(({ need, server }) => (server ? [{ ...need, server }] : []));
@@ -4399,7 +4433,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // first call is refused; or that the check could not be made (template-github-permissions.ts). An unticked tool is
     // not the agent's, so nothing is said of it.
     const ticked = saved.map((need) => ({ ...need, tools: need.tools.filter((tool) => grants.includes(mcpToolName(need.server, tool))) }));
-    const appShort = await appPermissionWarnings({ name: pkg.name, mcp: ticked }, (server) => mcpMeta.get(server)?.auth === "github_app", () => githubConnect.installationPermissions(stopping.signal));
+    const appShort = await appPermissionWarnings({ name: pkg.name, mcp: ticked }, (server) => metaOf(server)?.auth === "github_app", () => githubConnect.installationPermissions(stopping.signal));
     // A webhook trigger's secret is in no apply answer: each one's warning sends the person to the console for it.
     const hooks = made.triggers.flatMap((trigger, i) => (!hostless.has(i) && isObject(trigger.source) && trigger.source.kind === "webhook" ? [templateTriggerSecret(i)] : []));
     // Each github trigger: what it runs on, when made (a note, never a lack); skipped, what to do about it.
@@ -4501,19 +4535,23 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const auth: Record<string, RunMcpAuth[string]> = {};
       let owners: Set<string> | undefined;
       for (const [server, entry] of Object.entries(mcp ?? {})) {
-        const row = await getMcpServer(store, server);
+        // The server a run in the request's workspace calls by this name, as its claim reads it (mcp-workspace.ts): the
+        // workspace's own, else the shared one, each read and checked in its own reach.
+        const own = workspaceNow() !== undefined && (await getMcpServer(mcpStore, server)) !== undefined;
+        const reading = <T,>(work: () => Promise<T>): Promise<T> => (own ? work() : outsideWorkspace(work));
+        const row = await reading(() => getMcpServer(mcpStore, server));
         const field = `mcp_auth.${server}`;
         if (!row) {
           issues.push({ field, reason: "not_an_option", message: `No MCP server ${server} is saved here.` });
           continue;
         }
         // A per-run Composio server takes a binding (its key is its own); a per_run server takes headers; no other takes either.
-        const perRunComposio = composioPerRun(row, await store.settings.get(composioMadeKey(server)));
+        const perRunComposio = composioPerRun(row, await reading(() => mcpStore.settings.get(composioMadeKey(server))));
         if ("composio" in entry) {
           // A token's binding never calls as a user the owner calls as here (composio-owners.ts), one refusal per profile: on
           // API-only, where every caller is the token, McpServersOverStore.tokenBinding (which also checks a named account
           // is listed under the user); on the full profile, the token's binding here. The owner's session binds any user.
-          const refused = perRunComposio && options.apiOnly ? await mcpServers.tokenBinding(server, row, entry.composio, field, options.composioControl ?? {}, stopping.signal) : undefined;
+          const refused = perRunComposio && options.apiOnly ? await reading(() => mcpServers.tokenBinding(server, row, entry.composio, field, options.composioControl ?? {}, stopping.signal)) : undefined;
           if (!perRunComposio) issues.push({ field, reason: "not_an_option", message: `The MCP server ${server} is not a per-run Composio server: only one saved through the Composio preset with user_id "${COMPOSIO_PER_RUN}" takes a Composio account from a run.` });
           else if (refused) issues.push(refused);
           else if (!options.apiOnly && by === "token" && ownersUser((owners ??= await ownersComposioUsers(store)), entry.composio.user_id)) issues.push({ field: `${field}.composio_user_id`, reason: "not_allowed", message: "That composio_user_id is a Composio user the owner connects on this install: a run the API token starts or messages binds its own person's Composio user, never the owner's." });
@@ -5462,12 +5500,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           return part;
         }
       });
-      const checked: SecretRequest = { params, store, apiOnly: options.apiOnly === true };
+      // Read through the request's view: a scoped token's save or delete is judged on its workspace's row alone.
+      const checked: SecretRequest = { params, store: mcpStore, apiOnly: options.apiOnly === true };
       if (await writesSecretFor(found.name, body, checked)) {
         authFailed(`/v2${path}`, "secret_without_session");
         // Where the person finishes it: the operation's console page, filled with what the request held that is no
         // secret (secretPageFor), at the address people open the console at.
-        const page = await secretPageFor(found.name, body, { params, store });
+        const page = await secretPageFor(found.name, body, { params, store: mcpStore });
         const link = page === undefined ? undefined : `${linkOrigin(req)}${page}`;
         throw new ApiError("forbidden", secretWriteRefusal(link), link === undefined ? {} : { details: { console_url: link } });
       }
@@ -5749,7 +5788,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // read. A revision saved before pins were made at save holds none until its first run, which pins its saved
         // server's listing then (pinFirst): so until then, that listing now (mcp-servers-store.ts).
         const pin = (revision as { mcpPin?: McpPin | null } | undefined)?.mcpPin ?? undefined;
-        const listed = !pin && tooling?.tools.some((name) => mcpToolOf(name)) ? new Map((await store.mcp.servers()).map((row) => [row.name, (row.tools ?? []) as { name: string; annotations?: unknown }[]])) : undefined;
+        const listed = !pin && tooling?.tools.some((name) => mcpToolOf(name)) ? new Map([...metaSeen()].map(([name, meta]) => [name, meta.tools])) : undefined;
         const effectOf = (name: string) => {
           if (pin) return pinnedEffect(pin, name);
           const parsed = mcpToolOf(name);
@@ -5824,7 +5863,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           skills: (isObject(revision.skills) ? revision.skills : {}) as Record<string, string>,
           template: entry.template ? { id: entry.template.id, version: entry.template.version, ...(entry.template.secrets ? { secrets: entry.template.secrets } : {}) } : null,
           origin: entry.template ? registry.get(entry.template.id) : undefined,
-          servers: mcpMeta,
+          servers: metaSeen(),
           triggers: views,
           signIns: await store.signIns.list(id),
           now: options.triggerClock?.now() ?? Date.now(),
@@ -6559,8 +6598,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "listMcpServers":
         return send(res, 200, await mcpServers.list());
       // Names only: what the API-only profile serves in place of the list.
-      case "listMcpServerNames":
-        return send(res, 200, { names: (await listMcpServers(store)).map((row) => row.name).sort() });
+      case "listMcpServerNames": {
+        // A scoped request's: its workspace's servers and the shared ones (the ones its agents may grant), by name.
+        const names = new Set((await outsideWorkspace(() => listMcpServers(mcpStore))).map((row) => row.name));
+        if (workspaceNow() !== undefined) for (const row of await listMcpServers(mcpStore)) names.add(row.name);
+        return send(res, 200, { names: [...names].sort() });
+      }
       case "getMcpServer":
         return send(res, 200, await mcpServers.get(id));
       case "previewMcpServer":
@@ -6614,6 +6657,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // The name is checked before Composio is called: a refused name leaves nothing made there.
         mcpNameOf(id);
         const body = await bodyOf(req);
+        // A workspace's Composio server is per_run on the toolkit's own auth config: each run names its user and account,
+        // checked as the run's binding. A Composio user or auth config of the save's own is the shared project's, which
+        // another workspace's save could name too, so its account would be theirs: 422 before anything is sent.
+        if (workspaceNow() !== undefined && isObject(body)) {
+          const issues: InputIssue[] = [];
+          if (body.user_id !== COMPOSIO_PER_RUN) issues.push({ field: "user_id", reason: "not_allowed", message: `A save in a workspace is per-run: send user_id "${COMPOSIO_PER_RUN}", and each run names its Composio user and account in mcp_auth.` });
+          if (body.auth_config_id !== undefined) issues.push({ field: "auth_config_id", reason: "not_allowed", message: "A save in a workspace stands on the toolkit's own auth config: send no auth_config_id." });
+          if (issues.length) throw invalid(issues);
+        }
         // In the Composio turn. A save over a preset server removes there, once it is saved, the MCP server the save before
         // made and what that save made that this one no longer stands on (an account of another user, an auth config of
         // another toolkit), with the key it was made with, and says so as a delete does; what another saved server uses is

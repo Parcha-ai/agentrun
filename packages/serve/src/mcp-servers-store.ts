@@ -7,6 +7,7 @@
 // (runner/mcp-claim.ts), including the OAuth token refresh. So this server-side registry has NO headers()/headersForRun()
 // and does NO token refresh: it is the owner's create/preview/save/refresh(tools)/remove and the OAuth sign-in, and nothing
 // a run's launch calls.
+import { outsideWorkspace } from "./workspace-scope.js";
 import { heldApiOnlyMcpOrigins, offApiOnlyMcpOrigins } from "./mcp-api-only-origins.js";
 import { ApiError, invalid, type InputIssue } from "./errors.js";
 import {
@@ -869,7 +870,8 @@ export class McpServersOverStore {
    *  mcp-secret-writes.ts), named (before anything is sent) or found as the toolkit's own (before anything is made):
    *  composio-preset.ts composioSave `standsOn`. 403, naming the owner's server, nothing saved. */
   async tokenStandsOn(authConfig: string): Promise<void> {
-    const owners = await ownersAuthConfig(this.store, authConfig);
+    // The owner's servers are shared ones (a save in a workspace is always the token's): read outside any workspace.
+    const owners = await outsideWorkspace(() => ownersAuthConfig(this.store, authConfig));
     if (owners) throw new ApiError("forbidden", `The Composio auth config ${authConfig} is the one the owner's MCP server ${owners} stands on: an API token's server never uses it, so it never acts as the owner's connected account or removes what the owner's server made. Name an auth config of the token's own (auth_config_id). A server the token saved on it before its Composio users were namespaced (0.1.0-beta.56 and earlier) can't be saved again: delete it (DELETE /settings/mcp-servers/{name}), then save a new one. Nothing was saved.`);
   }
 
@@ -880,7 +882,7 @@ export class McpServersOverStore {
    *  bound is refused: a binding is never taken unchecked. Each refusal says which check refused it, and never quotes
    *  what was sent. */
   async tokenBinding(name: string, row: McpServerRow, binding: { user_id: string; connected_account_id?: string }, field: string, control: ComposioControl, signal?: AbortSignal): Promise<InputIssue | undefined> {
-    if (ownersUser(await ownersComposioUsers(this.store), binding.user_id)) return { field: `${field}.composio_user_id`, reason: "not_allowed", message: `That composio_user_id can't be used: ${COMPOSIO_OWNERS_USER_WORDS}. Nothing was started.` };
+    if (ownersUser(await outsideWorkspace(() => ownersComposioUsers(this.store)), binding.user_id)) return { field: `${field}.composio_user_id`, reason: "not_allowed", message: `That composio_user_id can't be used: ${COMPOSIO_OWNERS_USER_WORDS}. Nothing was started.` };
     const account = binding.connected_account_id;
     if (account === undefined) return undefined;
     const { toolkit } = await this.sourceOf(row);

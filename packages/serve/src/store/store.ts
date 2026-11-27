@@ -1378,6 +1378,9 @@ export interface RunChanges {
  *  credential sealed (store/seal.ts): bytes the store never opens. `tools` and `prices` are JSON. */
 export interface McpServerRow {
   readonly name: string;
+  /** The row's key in the store when a view shows it under another name (a workspace's server, mcp-workspace.ts): its
+   *  credential is sealed at that key. Absent on a row as the store reads it, whose name is its key. */
+  readonly sealedAs?: string;
   readonly url: string;
   readonly auth: string;
   readonly protocol: string | null;

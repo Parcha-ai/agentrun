@@ -66,6 +66,7 @@ import { EndpointRefused, REFRESH_REQUEST_MS, refreshed, refused, RequestUnsent,
 import { type McpCredentials, type McpPin } from "../mcp-gateway.js";
 import { type PinListing, pinFirst } from "../mcp-pin-first.js";
 import { mcpNameOf } from "../tool-names.js";
+import { runMcp } from "../mcp-workspace.js";
 import { composioEnvKey, composioMadeKey, composioPerRun, recordedMade } from "../composio-made.js";
 import { COMPOSIO_OWNERS_USER_WORDS, composioRunQuery } from "../composio-preset.js";
 import { META_REASON, metaToolOf } from "../mcp-meta.js";
@@ -161,7 +162,11 @@ export interface McpClaimStep {
 type OAuthCredential = McpCredential & { type: "oauth"; set: TokenSet; expired?: true };
 
 /** The MCP step of `options.claim`: its pin made or read and checked, its credentials opened (refreshed as due). */
-export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> {
+export async function mcpClaim(given: McpClaimOptions): Promise<McpClaimStep> {
+  // Each server its tools name is read from its run's workspace's own row when it has one, else from the shared row of
+  // that name (mcp-workspace.ts runMcp): a workspace's run never reads another's.
+  const granted = [...new Set(given.grants.flatMap((name) => mcpNameOf(name)?.server ?? []))];
+  const options: McpClaimOptions = { ...given, store: await runMcp(given.store, await given.store.runs.workspace(given.claim.runId), granted) };
   const { store, claim, sealKey, signal } = options;
   const now = options.now ?? Date.now;
   const timer = options.timer ?? systemTimer;

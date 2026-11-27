@@ -4107,7 +4107,8 @@ as before.
 A request in a workspace is served only: the runs' reads and lists (`GET /runs`, `/runs/{id}`, its timeline, files and
 export), a run's message, stop and cancel; the agents' list, read, create, revisions, definition and current revision,
 and a run started on one; the templates' list, read, import and apply; the uploaded files' create, upload, list, read and
-delete (`/files`); and `/capabilities`, `/health` and `/openapi.json`. Every other route is `403 forbidden` with
+delete (`/files`); the MCP servers' list, names, read, save, Composio save, refresh and delete (`/settings/mcp-servers`);
+and `/capabilities`, `/health` and `/openapi.json`. Every other route is `403 forbidden` with
 `details.reason: "not_scoped"`. In it, an agent, run, imported template package or file of another workspace (or of none)
 answers the same `404` as an id no row has, and every list holds the workspace's rows alone, paged within them; bundled
 template packages are every workspace's. What it makes is the workspace's: an agent (made or applied), an imported
@@ -4116,6 +4117,20 @@ whoever started it, so a run a request with no header starts on that agent is th
 take the workspace's files alone: one out of it reads as no file. An `Idempotency-Key` is the workspace's own: the same
 key in another workspace starts afresh. An import with no header of a name a workspace holds is `409 name_taken` too,
 never replacing that workspace's package: the operator deletes it first.
+
+A workspace's MCP servers are its own, beside the install's shared ones (saved with no header). In it, the list and the
+reads, saves, refreshes and deletes reach the workspace's servers alone: another workspace's server of a name answers the
+same `404` as a name never saved, a save of that name makes the workspace's own and leaves the other's as it was, and a
+shared server is not the workspace's to read, change or delete. `GET /settings/mcp-server-names` holds its own servers'
+names and the shared ones', what its agents may grant; with no header, the shared ones alone. An agent of the workspace
+reaches its own server of a name before the shared one, at its save and at each run's claim; one that reaches neither is
+refused as a server never saved. A save in a workspace seals no credential: it is `per_run` (each run hands its own in
+`mcp_auth`), or a per-run Composio save (`user_id: "per_run"`, no `auth_config_id`, else `422 not_allowed`) whose key the
+install names (`api_key_env`); a credential in the body is refused as a token's secret write is. The owner's shared
+servers still guard it: a workspace's save never stands on an auth config one of them stands on, and its run never binds
+the owner's Composio user. A workspace's server is kept as `<workspace>/<name>`, its sealed credential bound to that row,
+so a credential copied to another workspace's row does not open. A sign-in (`/oauth/start`), a preview and the Composio
+triggers' routes stay unscoped.
 
 Launch disks (`archil_disk` on a run's start) are the backend's to map to its tenants: the server keeps no record of which
 tenant a disk it did not make is for, and a run in a workspace may name any of them. It names no agent's own disk
