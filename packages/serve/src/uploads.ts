@@ -13,6 +13,7 @@ import { typeOf } from "./file-types.js";
 import { readJson, serialBy, tempOf, writeDurable } from "./files.js";
 import { ID, type Json, unknownFields } from "./validate.js";
 import { type Entry, isWorkspaceError, type Workspace, workspaceAt } from "./workspace/index.js";
+import { outOfScope, workspaceNow } from "./workspace-scope.js";
 
 /** `limits.max_upload_bytes`: the largest file a reservation names and a PUT sends. */
 export const MAX_UPLOAD_BYTES = 50 * 2 ** 20;
@@ -82,6 +83,21 @@ export type UploadedFile = {
   created_at: string;
   expires_at: null;
 };
+
+/** A file's record as kept (file.json): the contract's File, and the workspace of the scoped request that made it
+ *  (workspace-scope.ts), which no answer shows. */
+export type FileRecord = UploadedFile & { workspace?: string };
+
+/** `file`'s record to keep, in `workspace` when it has one. */
+export const recordText = (file: UploadedFile, workspace: string | undefined): string => `${JSON.stringify(workspace === undefined ? file : { ...file, workspace })}\n`;
+
+/** A kept record's File, its workspace cut; null for none. `scoped`: null too when it is out of the request's workspace
+ *  (a run's file_ids). */
+export function fileSeen(record: FileRecord | null, scoped = false): UploadedFile | null {
+  if (!record) return null;
+  const { workspace, ...file } = record;
+  return scoped && outOfScope(workspace ?? null) ? null : file;
+}
 
 /** Why `path` is not the contract's FilePathString (relative, `/` between segments, no empty segment and none that starts
  *  with `.`, no backslash or NUL, at most 1024 characters), or a segment is longer than a name on disk; undefined when it
@@ -155,6 +171,10 @@ export class Uploads {
 
   /** The file `id`, or null when there is none. */
   async get(id: string): Promise<UploadedFile | null> {
+    return fileSeen(await this.kept(id));
+  }
+
+  private async kept(id: string): Promise<FileRecord | null> {
     if (!ID.test(id)) return null;
     const record = await readJson(join(this.root, id, RECORD));
     return isFile(record) && record.file_id === id ? record : null;
@@ -239,7 +259,7 @@ export class Uploads {
             await rename(temp, join(dir, BYTES));
             made = true;
             await uploadTestHooks.beforeRecord?.(dir);
-            await writeDurable(join(dir, RECORD), `${JSON.stringify(file)}\n`);
+            await writeDurable(join(dir, RECORD), recordText(file, workspaceNow()));
           } catch (error) {
             // No record, no file: its folder and bytes go too, so nothing is left that the API cannot list or delete.
             await rm(dir, { recursive: true, force: true }).catch(() => undefined);
@@ -263,7 +283,7 @@ export class Uploads {
     const file = reservation(body, (path) => this.problemOf(path));
     await mkdir(this.root, { recursive: true, mode: 0o700 });
     await mkdir(join(this.root, file.file_id), { mode: 0o700 });
-    await writeDurable(join(this.root, file.file_id, RECORD), `${JSON.stringify(file)}\n`);
+    await writeDurable(join(this.root, file.file_id, RECORD), recordText(file, workspaceNow()));
     return this.answer(file);
   }
 
@@ -320,7 +340,8 @@ export class Uploads {
       await handle.close();
       return await this.exclusive(id, async () => {
         // Read again: another PUT may have made it ready meanwhile, with these bytes or others, or a DELETE removed it.
-        const now = await this.get(id);
+        const record = await this.kept(id);
+        const now = fileSeen(record);
         if (!now) throw new ApiError("not_found", `no file ${id}: it was deleted while its bytes arrived`);
         if (now.status === "ready") {
           const other = mismatch(now);
@@ -330,7 +351,7 @@ export class Uploads {
         await rename(temp, join(dir, BYTES));
         kept = true;
         const ready: UploadedFile = { ...now, sha256, status: "ready" };
-        await writeDurable(join(dir, RECORD), `${JSON.stringify(ready)}\n`);
+        await writeDurable(join(dir, RECORD), recordText(ready, record?.workspace));
         return ready;
       });
     } finally {
@@ -346,7 +367,7 @@ export class Uploads {
 
   /** A run's `file_ids`: each a file that is ready, none twice, at most MAX_FILES_PER_RUN, or 422 at `file_ids`. */
   async readyFiles(ids: readonly unknown[]): Promise<UploadedFile[]> {
-    return readyFilesOf(ids, (id) => this.get(id), (path) => this.problemOf(path));
+    return readyFilesOf(ids, async (id) => fileSeen(await this.kept(id), true), (path) => this.problemOf(path));
   }
 
   /** Copies `files` into the run's `inputs/` through its Workspace, each at its `path` with its folders, in order, before

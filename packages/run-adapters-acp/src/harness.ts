@@ -26,6 +26,7 @@ import { announceCall, announcedField, announcesAt, CallIds, declaresProperty, j
 import { ACP_CODES } from "./facts.js";
 import { allowFileText, homePath, type AcpRecipe } from "./recipe.js";
 import { restoreState, STATE_STREAM, StateMirror, type StateRecord } from "./state.js";
+import { configDeclaring, KEPT_SERVER, nameRefused, SERVER_STREAM, type ServerRecord } from "./server-name.js";
 import { startAgent, type AgentProcess } from "./host/agent.js";
 import { cutKeys, keysToCut } from "./host/key-cut.js";
 import type { ConfineChild } from "./host/child.js";
@@ -651,13 +652,6 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       else absent.push(name);
     }
     if (absent.length) throw new Error(`${ACP_CODES.keyMissing}: ${recipe.label ?? recipe.id} runs on ${absent.join(" and ")}, which this host does not hold; the agent was not started`);
-    // A tool of ours the agent would name past its cap is not listed (capped); the run is told which, and goes on.
-    const serverName = mcpServerName(recipe.announces, recipe.quirks?.permissionTie);
-    if (capped.length) {
-      const words = toolsLeftOut(recipe.label ?? recipe.id, announcesAt(recipe.announces, serverName)?.prefix ?? "", capped);
-      log("acp: tools left out of the agent's listing, named past its cap", { tools: capped });
-      ctx.live({ type: "notice", text: words });
-    }
     mkdirSync(base, { recursive: true, mode: 0o700 });
     // Everything the agent kept goes: what it starts with is the session's records, never an earlier process's files.
     for (const dir of [home, tmp]) {
@@ -667,6 +661,31 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     mkdirSync(root, { recursive: true, mode: 0o700 });
     const records = (await journal.read<StateRecord>(STATE_STREAM)).map((r) => r.data);
     restoreState(home, records);
+    // Our server's name (server-name.ts): under a per-start name and a recipe that lists the configs its agent reads
+    // (mcpConfigs), the one the run kept, unless one of them declares a server under it; then a fresh one, kept from now
+    // on, and the run is told once. Under a per-start name and no list, nothing could check a config the agent wrote
+    // against a kept name, so each start's own. The fixed name, as it is.
+    const minted = mcpServerName(recipe.announces, recipe.quirks?.permissionTie);
+    let serverName = minted;
+    if (minted !== MCP_SERVER && recipe.mcpConfigs?.length) {
+      const kept = journal.records<ServerRecord>(SERVER_STREAM).map((r) => r.data?.name).filter((name): name is string => typeof name === "string" && KEPT_SERVER.test(name)).at(-1);
+      const refusal = kept === undefined ? undefined : configDeclaring(kept, recipe.mcpConfigs, home, root, log);
+      if (kept !== undefined && refusal === undefined) serverName = kept;
+      else {
+        journal.append(SERVER_STREAM, { name: minted, ...(refusal !== undefined ? { refused: kept, file: refusal.file, how: refusal.how } : {}) } satisfies ServerRecord);
+        await journal.flush();
+        if (refusal !== undefined) {
+          log("acp: a config the agent reads has the run's server name refused; this start names ours afresh", { file: refusal.file, how: refusal.how, refused: kept, name: minted });
+          ctx.live({ type: "notice", text: nameRefused(recipe.label ?? recipe.id, refusal.file, kept!, minted, refusal.how) });
+        }
+      }
+    }
+    // A tool of ours the agent would name past its cap is not listed (capped); the run is told which, and goes on.
+    if (capped.length) {
+      const words = toolsLeftOut(recipe.label ?? recipe.id, announcesAt(recipe.announces, serverName)?.prefix ?? "", capped);
+      log("acp: tools left out of the agent's listing, named past its cap", { tools: capped });
+      ctx.live({ type: "notice", text: words });
+    }
     const own = new Set<string>();
     // The recipe's allowFile (Goose's permission file): the tools this start lists, in the agent's own form, and nothing
     // else, so the agent runs them unasked and our gate asks at the MCP call.

@@ -38,7 +38,11 @@ const page = await web.fetch("https://example.org/", { offset: 0, maxChars: 20_0
   its links in its text, so that part lists only the links its own text does not write, within the caps, and
   `links_omitted` counts those of them the caps left out. A page fetched directly lists its link targets as before.
 - `keys.parallel` is Parallel's key. `pay(fee, send)` is the run's cap: it sends the request when the fee fits, or
-  throws a `PaidRefused`. Without it, a request is unmetered.
+  throws a `PaidRefused`. Without it, a request is unmetered. A request on a call already stopped is never handed to
+  `pay`. One whose send failed before it left (stopped as the send began, or a fetch that failed connecting: a name
+  not resolved, a connection refused or not made, a TLS certificate or handshake refused) gives `pay` a 400 to settle at
+  $0, its receipt line says `not billed (not sent: <code>)`, and the call then fails as it would have. A cap books a 4xx
+  at nothing; any other failure stays at the fee.
 - `words.rateLimited` is what a keyless provider's rate limit says to the model. A keyed provider's limit (Parallel's,
   keyed Exa's or Firecrawl's 402 or 429, a hosted search's) says, on the call that met it as on every call it holds,
   what its breaker says: that search is busy for the seconds left of its wait, or unavailable for the rest of the run;

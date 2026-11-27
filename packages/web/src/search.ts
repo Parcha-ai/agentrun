@@ -223,12 +223,16 @@ export const KEYLESS_SEARCH_MS = 60_000;
  *  (FIRECRAWL_MS). */
 export type SearchBounds = { searchMs?: number; firecrawlMs?: number };
 
+/** What a call stopped before any backend was asked answers (searchInTurn): the keyless backends' words for a stop. */
+const SEARCH_STOPPED = "the search was stopped";
+
 /** Whether a search's answer holds nothing for the model: no results and no short answer of its own (`text`). */
 const emptyAnswer = (answer: Search): boolean => !("error" in answer) && !answer.results.length && !answer.text;
 
 /** A call's search through `backends` in turn, each behind its breaker, all under one deadline (`boundMs` or `signal`):
  *  the first with results (or a short answer of its own) answers; one answering none passes the call on, and the first
- *  such answers only when no backend after it has results. None starts on a spent deadline. None left: SEARCH_UNAVAILABLE
+ *  such answers only when no backend after it has results. None starts on a spent deadline: one spent before any was
+ *  asked answers SEARCH_STOPPED, a stopped turn of the first not held. None left: SEARCH_UNAVAILABLE
  *  where every backend is off (a lone backend's own answer where it was asked), else the last failure (one that met a
  *  limit in its breaker's words), else searchBusy for the shortest wait. */
 export async function searchInTurn(backends: readonly Backend[], breakerOf: (name: string) => Breaker, signal?: AbortSignal, boundMs: number = KEYLESS_SEARCH_MS, tries?: Try[]): Promise<Search> {
@@ -244,7 +248,13 @@ export async function searchInTurn(backends: readonly Backend[], breakerOf: (nam
       tries?.push({ provider: backend.name, outcome: "held", ...(holding && "error" in held ? { failure: failure(holding.kind, "HELD", held.error) } : {}), ms: 0 });
       continue;
     }
-    if ((last || empty) && deadline.aborted) break;
+    if (deadline.aborted) {
+      if (last || empty) break;
+      // A call stopped before any backend was asked starts none (a paid one would be held, or sent, for nothing): its
+      // turn is the stopped one the backend would have answered, in the keyless backends' words.
+      tries?.push({ provider: backend.name, outcome: "error", error: SEARCH_STOPPED, failure: failure("infra", "STOPPED", SEARCH_STOPPED), ms: 0 });
+      return { error: SEARCH_STOPPED };
+    }
     const started = tries ? performance.now() : 0;
     const searched = await backend.ask(deadline);
     const answer = breaker.read(searched);

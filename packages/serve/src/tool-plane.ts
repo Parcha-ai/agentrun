@@ -118,7 +118,7 @@ export const DECISION_PROVIDER_KEYS: readonly string[] = ["jev", "parallel", "op
 const isSettingsKey = (name: string): boolean => parseToolName(name) !== undefined && (isTableTool(name) || SERVE_OWN_TOOLS.includes(name) || KIND_KEYS.includes(name) || DECISION_PROVIDER_KEYS.includes(name) || isCatalogName(name));
 /** One tool's settings: its provider (a capability that has a choice), its permission, and an MCP tool's pin (the
  *  arguments its calls must carry, tool-gate.ts pinRefusal). */
-export type ToolSetting = { provider?: string; permission?: Permission; pin?: Pin; /** On an MCP server's wildcard (`mcp:<server>/*`) in the server's settings only: the tools its server marks read-only run with no approval (tool-gate.ts readsLift). Kept only when true. */ allow_reads?: true; /** bash's policy, an agent's own only (bash-read-only.ts). */ policy?: BashPolicy; /** An email read tool's scope, an agent's own only (email/tools.ts): its email run's thread (the default), or the whole account. */ scope?: EmailScope; /** An MCP tool's file setting, an agent's own only, on the tool's own key (filed-tool.ts): its answers filed whole in the run's files, the model reading a summary. */ file?: FileSetting; /** Read as a stand-in for a value not offered (checkToolSettings); never shown or written. */ fallback?: true; /** The stand-in's value as written in the file, which a save that keeps the stand-in writes back (ToolSettings.put). Never shown. */ raw?: unknown; /** A pin in the file that does not read (readToolSettings): the gate refuses every call of the tool, and a save keeps it (ToolSettings.put) until the owner sets a valid pin or removes the tool's setting. Served as `pin_broken: true`. */ brokenPin?: true; /** The broken pin as written in the file, which a save that keeps it writes back. Never shown. */ rawPin?: unknown };
+export type ToolSetting = { provider?: string; permission?: Permission; pin?: Pin; /** On an MCP server's wildcard (`mcp:<server>/*`) in the server's settings only: the tools its server marks read-only run with no approval (tool-gate.ts readsLift). Kept only when true. */ allow_reads?: true; /** bash's policy, an agent's own only (bash-read-only.ts). */ policy?: BashPolicy; /** An email read tool's scope, an agent's own only (email/tools.ts): its email run's thread (the default), or the whole account. */ scope?: EmailScope; /** An MCP tool's file setting, an agent's own only, on the tool's own key (filed-tool.ts): its answers filed whole in the run's files, the model reading a summary. */ file?: FileSetting; /** Jev off for the agent's web tools, an agent's own only, on web_search or web_fetch: either turns it off for both (agentJevOff). */ jev?: "off"; /** Read as a stand-in for a value not offered (checkToolSettings); never shown or written. */ fallback?: true; /** The stand-in's value as written in the file, which a save that keeps the stand-in writes back (ToolSettings.put). Never shown. */ raw?: unknown; /** A pin in the file that does not read (readToolSettings): the gate refuses every call of the tool, and a save keeps it (ToolSettings.put) until the owner sets a valid pin or removes the tool's setting. Served as `pin_broken: true`. */ brokenPin?: true; /** The broken pin as written in the file, which a save that keeps it writes back. Never shown. */ rawPin?: unknown };
 /** The longest pinned string. */
 export const MAX_PIN_TEXT = 1024;
 /** A pinned argument's name: a top-level argument of the tool, as MCP tools name theirs. */
@@ -432,6 +432,11 @@ function browserBy(chosen: string, picked: string, keys: Record<BrowserVendor, b
   return { resolves: NO_BROWSER_KEY, why: whyUnavailable(NO_BROWSER_KEY) };
 }
 
+/** The web tools an agent's own `jev` is set on (settingsIssues). */
+export const JEV_TOOLS: readonly string[] = ["web_search", "web_fetch"];
+/** Whether an agent's own tool settings turn Jev off for its web tools: `jev: "off"` on web_search or on web_fetch turns
+ *  it off for both. */
+export const agentJevOff = (overrides: ToolSettingsMap | undefined): boolean => JEV_TOOLS.some((name) => overrides?.[name]?.jev === "off");
 /** The server's environment's part of every resolution: its gateway and Parallel's key, and where the key is from. */
 const served = (env: NodeJS.ProcessEnv) => {
   const parallelKey = PARALLEL_KEY_ENV in decisionKeysOf(env);
@@ -465,8 +470,8 @@ const picked = (name: Pickable, settings: ToolSettingsMap, overrides: ToolSettin
 
 /** What a run is told: each pickable capability its revision names, resolved; with web_search native on pi, the model
  *  its search asks (the one the resolution read); and `jev: "off"` where the server had Jev turned off for the web tools
- *  (AGENTRUN_WEB_JEV_OFF) when it created the run, on a plane with a web tool, so the switch reaches a runner on another
- *  host; a runner's re-check (recheckPlane) keeps it. */
+ *  (AGENTRUN_WEB_JEV_OFF) when it created the run, or the agent's own tool settings do (agentJevOff), on a plane with a
+ *  web tool, so the switch reaches a runner on another host; a runner's re-check (recheckPlane) keeps it. */
 export type Plane = Partial<Record<Pickable, Resolution>> & { model?: string; jev?: "off" };
 /** The facts of a pinned revision its run's tools resolve from. */
 /** `approvals`: the revision's, kept only when "never" (the agent runs unattended: an ask is an allow, never over a deny). */
@@ -495,7 +500,8 @@ export function planeFor(env: NodeJS.ProcessEnv, tooling: Tooling, settings: Too
   // The model a search through its provider's hosted search asks (hosted-search.ts): pi's own web_search, and on
   // another harness, whose agent searches with its own tool, a learned workflow's call node (learned-workflow.ts).
   if (plane.web_search === "native" && model) plane.model = model;
-  return withJevSwitch(plane, env);
+  // The agent's own Jev off (agentJevOff) holds on a plane with a web tool, as the server's switch does.
+  return withJevSwitch(plane, env, agentJevOff(tooling.overrides) && (plane.web_search !== undefined || plane.web_fetch !== undefined));
 }
 
 /** `plane` with Jev's switch: `jev: "off"` where `keptOff` (the plane was made with it off) or where `env` has the switch
@@ -620,7 +626,7 @@ export function settingsIssues(value: unknown, at = "", layer: "server" | "agent
   return Object.entries(value).flatMap(([name, setting]): InputIssue[] => {
     const pickable = Object.hasOwn(PROVIDERS, name);
     if (!isSettingsKey(name)) return [{ field: field(name), reason: "not_allowed", message: `Tool settings are kept for this server's tools (${[...tableTools(), ...SERVE_OWN_TOOLS, ...KIND_KEYS, ...DECISION_PROVIDER_KEYS].join(", ")}), catalog tools (mcp:<server>/<tool>, monid:<provider>/<endpoint>) and a group's tools (mcp:<server>/*, monid:<provider>/*); ${name} is none of them.` }];
-    if (!isPlain(setting)) return [{ field: field(name), reason: "wrong_type", message: `${field(name)} is an object, {${pickable ? "provider, " : ""}permission${isMcpName(name) ? ", pin" : ""}${layer === "agent" && name === "bash" ? ", policy" : ""}}` }];
+    if (!isPlain(setting)) return [{ field: field(name), reason: "wrong_type", message: `${field(name)} is an object, {${pickable ? "provider, " : ""}permission${isMcpName(name) ? ", pin" : ""}${layer === "agent" && name === "bash" ? ", policy" : ""}${layer === "agent" && JEV_TOOLS.includes(name) ? ", jev" : ""}}` }];
     return Object.entries(setting).flatMap(([key, given]): InputIssue[] => {
       if (key === "pin") return pinIssues(given, field(name, key), name);
       // bash's policy (bash-read-only.ts): an agent's own, on bash's key only, as what its commands may do is the agent's.
@@ -632,6 +638,11 @@ export function settingsIssues(value: unknown, at = "", layer: "server" | "agent
       if (key === "scope") {
         if (layer !== "agent" || !SCOPED_TOOLS.includes(name)) return [{ field: field(name, key), reason: "not_allowed", message: `A scope is set on ${SCOPED_WORDS} in an agent's own tool settings (definition.tool_settings.email_read.scope), never ${layer === "agent" ? `on ${name}` : "in the server's"}.` }];
         return (EMAIL_SCOPES as readonly unknown[]).includes(given) ? [] : [{ field: field(name, key), reason: "not_an_option", message: `${field(name, key)} is one of ${EMAIL_SCOPES.join(", ")}: thread, an email's run reads its thread alone; mailbox, the whole account` }];
+      }
+      // Jev off for the agent's web tools (agentJevOff): an agent's own, on web_search or web_fetch only, set as bash's policy is.
+      if (key === "jev") {
+        if (layer !== "agent" || !JEV_TOOLS.includes(name)) return [{ field: field(name, key), reason: "not_allowed", message: `Jev is turned off on web_search or web_fetch in an agent's own tool settings (definition.tool_settings.web_search.jev), never ${layer === "agent" ? `on ${name}` : "in the server's"}.` }];
+        return given === "off" ? [] : [{ field: field(name, key), reason: "not_an_option", message: `${field(name, key)} is off: Jev ranks neither of the agent's web tools' results; leave it out for Jev on` }];
       }
       // An MCP tool's file setting (filed-tool.ts): an agent's own, on the tool's own key only, set as bash's policy is.
       if (key === "file") {
@@ -661,7 +672,7 @@ export function settingsIssues(value: unknown, at = "", layer: "server" | "agent
   });
 }
 
-/** `map` as a revision body keeps it: each tool's provider, permission, pin, policy, scope and file setting as written (never a stand-in's internal
+/** `map` as a revision body keeps it: each tool's provider, permission, pin, policy, scope, jev and file setting as written (never a stand-in's internal
  *  marks), tools, fields and a pin's arguments sorted, and a tool with none of them gone. The one form, so two
  *  revisions whose settings say the same (a pin's arguments in another order) are the same text, and so one revision
  *  where its id is the body's digest (the store keeps the body as given: store/sqlite/store.ts). */
@@ -669,7 +680,7 @@ export function canonicalToolSettings(map: ToolSettingsMap): ToolSettingsMap {
   const sorted = <T>(record: Readonly<Record<string, T>>): Record<string, T> => Object.fromEntries(Object.keys(record).sort().map((key) => [key, record[key]!]));
   return sorted(Object.fromEntries(Object.entries(map).flatMap(([name, setting]) => {
     if (!setting) return [];
-    const kept: ToolSetting = sorted({ ...(setting.permission ? { permission: setting.permission } : {}), ...(setting.allow_reads === true ? { allow_reads: true as const } : {}), ...(setting.pin ? { pin: sortedPin(setting.pin) } : {}), ...(setting.policy ? { policy: setting.policy } : {}), ...(setting.scope ? { scope: setting.scope } : {}), ...(setting.file ? { file: { folder: setting.file.folder, show: [...setting.file.show] } } : {}), ...(setting.provider ? { provider: setting.provider } : {}) });
+    const kept: ToolSetting = sorted({ ...(setting.permission ? { permission: setting.permission } : {}), ...(setting.allow_reads === true ? { allow_reads: true as const } : {}), ...(setting.pin ? { pin: sortedPin(setting.pin) } : {}), ...(setting.policy ? { policy: setting.policy } : {}), ...(setting.scope ? { scope: setting.scope } : {}), ...(setting.jev ? { jev: setting.jev } : {}), ...(setting.file ? { file: { folder: setting.file.folder, show: [...setting.file.show] } } : {}), ...(setting.provider ? { provider: setting.provider } : {}) });
     return Object.keys(kept).length ? [[name, kept]] : [];
   })));
 }

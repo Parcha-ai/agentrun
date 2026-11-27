@@ -650,7 +650,7 @@ interface ClaimReads {
   /** The runner's presence incarnation (LoopDeps.incarnation): with the claim's runner, who keeps a computer a park pins. */
   readonly incarnation?: string;
   /** LoopDeps.handBack: told when the run's ChatGPT renewal is refused because the runner is closing (PlanStopping). */
-  readonly handBack?: () => void;
+  readonly handBack?: () => Promise<void>;
   /** The Claude login the claim read for this run (staysInRunner), handed down as it was read: none, and a turn-on after
    *  its claim never moves it onto a login its claim did not check; one, and the runner reads the setting again at the
    *  run's start (claudeLogin), handing it only when both reads name the same folder. */

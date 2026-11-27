@@ -7,7 +7,7 @@ import { guardPage, type InjectionVerdict, type PageGuard, type WallVerdict } fr
 import { decisionPay, type DecisionRecord, heldOnRefusal, type Sift, type StepOptions } from "./decide/record.js";
 import { type DecidePolicy, policyOf, siftSearch } from "./decide/search.js";
 import { missesOf, pageKey, type Pages, type Readers, sharedRead, type WebLog, type WebRead, webFetchText, webPart, webRead } from "./fetch.js";
-import { type Fee, type Pay, unmetered } from "./fees.js";
+import { type Fee, type Pay, unmetered, unsentOf } from "./fees.js";
 import type { Guard, GuardOptions } from "./guard.js";
 import { askedUrl, type Page, type Part, partProblem } from "./page.js";
 import { holdingWords, type NativeSearch, type ProviderRun, readerOf, type WebClient } from "./provider.js";
@@ -198,8 +198,23 @@ export function createWeb(config: WebConfig): Web {
     };
   };
   const toolBreaker = (tool: "search" | "fetch", id: ProviderId, own: Breaker, key: Breaker): Breaker => withKeyBreaker(watched(tool, id, own), watched("key", id, key));
-  // A fee goes on the call's receipt once its request is sent, whatever the cap then books.
-  const pay: Pay = (fee, send) => (config.pay ?? unmetered)(fee, () => (feesOfCall.getStore()?.push(fee), send()));
+  // A fee goes on the call's receipt once its request is sent, whatever the cap then books. One that never left (its send
+  // answered unsentAnswer, which the cap settles at $0) is $0 on it, saying so, as decisionPay's line for an unbilled
+  // request is, once the cap's settle is written: a settle that failed leaves the line at the hold, as the cap keeps it.
+  const pay: Pay = async (fee, send) => {
+    const lines = feesOfCall.getStore();
+    let at = -1;
+    let unsent: string | undefined;
+    let booked = true;
+    const answer = await (config.pay ?? unmetered)(fee, async () => {
+      if (lines) at = lines.push(fee) - 1;
+      const response = await send();
+      unsent = unsentOf(response);
+      return response;
+    }, undefined, (landed) => { booked = landed; });
+    if (lines && at >= 0 && unsent !== undefined) lines[at] = booked ? { ...fee, usd: 0, basis: `not billed (not sent: ${unsent})` } : { ...fee, basis: `${fee.basis}; its settle failed, so the hold stands, not $0 (not sent: ${unsent})` };
+    return answer;
+  };
 
   // Each provider an order names is made once per Web, at its first use, from the run's parts for it: one client a
   // provider, so a key refused by one tool is refused by both.

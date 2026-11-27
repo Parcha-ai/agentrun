@@ -137,6 +137,21 @@ function withField<K extends "provider" | "permission">(settings: ToolSettings, 
  *  row takes its default again. Never changes `settings`. */
 export const withProvider = (settings: ToolSettings, tool: string, provider: ToolSetting["provider"], fallback: string): ToolSettings => withField(settings, tool, "provider", provider, fallback);
 
+/** The web tools an agent's own Jev switch is on: `jev: "off"` on either turns Jev off for both. */
+export const JEV_TOOLS = ["web_search", "web_fetch"] as const;
+/** Whether an agent's own `settings` leave Jev on for its web tools: neither carries `jev: "off"`. */
+export const jevOn = (settings: ToolSettings): boolean => !JEV_TOOLS.some((name) => settings[name]?.jev === "off");
+/** `settings` with the agent's Jev switch `on`: off writes `jev: "off"` on web_search; on takes `jev` off both web tools, a
+ *  tool left with no setting gone. Every other key and field is kept. Never changes `settings`. */
+export function withJev(settings: ToolSettings, on: boolean): ToolSettings {
+  if (!on) return { ...settings, web_search: { ...settings.web_search, jev: "off" } };
+  return Object.fromEntries(Object.entries(settings).flatMap(([name, setting]): [string, ToolSetting][] => {
+    if (!(JEV_TOOLS as readonly string[]).includes(name) || setting.jev === undefined) return [[name, setting]];
+    const { jev: _off, ...kept } = setting;
+    return Object.keys(kept).length ? [[name, kept]] : [];
+  }));
+}
+
 /** `settings` with `tool`'s permission set to `permission`, its provider kept. One equal to `fallback` (the owner's default
  *  for the server's, the server's for an agent's), or undefined, is no setting. Never changes `settings`. */
 export const withPermission = (settings: ToolSettings, tool: string, permission: Permission | undefined, fallback: Permission): ToolSettings => withField(settings, tool, "permission", permission, fallback);
