@@ -110,8 +110,9 @@ export const centsUp = (usd: number): string => money(Math.ceil(usd * 100 - 1e-9
 /** The row that says a run's booked spend passed its cap, and by how much, after its usage row: a request's cost is
  *  booked once it answers, never clipped. Each request is held at its worst case, so only a cost its admission never
  *  priced passes the cap: one carrying a native web search is held at an allowance, not a bound, and a provider may bill
- *  past its list price. The next request is then refused. */
-export function withOverCap(rows: TimelineEvent[], cap: number | undefined): TimelineEvent[] {
+ *  past its list price. The next request is then refused. `costWords` false: it says it went over, no figure
+ *  (TimelineOptions.costWords). */
+export function withOverCap(rows: TimelineEvent[], cap: number | undefined, { costWords = true }: { costWords?: boolean } = {}): TimelineEvent[] {
   const at = rows.findLastIndex((row) => row.kind === "usage");
   const usd = rows[at]?.usage?.usd;
   if (cap === undefined || typeof usd !== "number" || usd <= cap + FIT_TOLERANCE) return rows;
@@ -121,7 +122,8 @@ export function withOverCap(rows: TimelineEvent[], cap: number | undefined): Tim
   const parts = usageParts(rows[at]!.usage);
   const spent = parts?.known ?? usd;
   // In cents: what it went over by rounded up.
-  const summary = spent > cap + FIT_TOLERANCE ? `Spent ${cents(spent)}, ${centsUp(spent - cap)} over the run's cap of ${cents(cap)}` : `At most ${cents(usd)} spent, at most ${centsUp(usd - cap)} over the run's cap of ${cents(cap)}`;
+  const summary = !costWords ? (spent > cap + FIT_TOLERANCE ? "Over the run's cap" : "Possibly over the run's cap")
+    : spent > cap + FIT_TOLERANCE ? `Spent ${cents(spent)}, ${centsUp(spent - cap)} over the run's cap of ${cents(cap)}` : `At most ${cents(usd)} spent, at most ${centsUp(usd - cap)} over the run's cap of ${cents(cap)}`;
   const over: TimelineEvent = { ...usage, id: `${usage.id}:over_cap`, kind: "phase", summary, text: null };
   return [...rows.slice(0, at + 1), over, ...rows.slice(at + 1)];
 }

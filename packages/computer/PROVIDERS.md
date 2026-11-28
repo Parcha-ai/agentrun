@@ -392,7 +392,10 @@ without it, AgentRun streams its daemon through `exec`'s stdin as base64 text, s
 (InstaBox's) is no `upload`, so leave it out, or write to a temporary path and move the file as root through `exec`. `download(id, path, ctx)` hands back a file's bytes, read as root;
 give it when your exec's output is slow (Daytona's is a log read at about 0.3 MB/s). A `files.read` past one chunk then
 takes its first chunk from the daemon and the rest from a copy AgentRun makes as the daemon's user (`setpriv`,
-util-linux) and downloads, so the read shows nothing that user can't read. `extend(id, endsAt, ctx)` moves a machine's end when
+util-linux) and downloads, so the read shows nothing that user can't read. A `tar.pull` (a synced folder's new
+directory, or a file past one chunk) is begun by the daemon, then made as a tar by that user (`find` and GNU `tar` in
+the image; one pull's at a time, and at most 256 MiB for the tars a connection holds at once) and downloaded; where a step fails, the daemon's pull is read as
+before. `extend(id, endsAt, ctx)` moves a machine's end when
 an agent extends its deadline: your timer with `lifetime: "vendor"`, AgentRun's deadline label with `"janitor"`. Never
 move it past its `agentrun.computer.max-deadline` label, which AgentRun writes only on a host with `extend`. When no end your API takes lands there, throw
 `HostError("limit", <why>)` and move nothing. AgentRun reads the end back through `get`, from the deadline label: if
@@ -434,6 +437,10 @@ new HostedProvider(host, { daemonPath, dial: { url: process.env.AGENTRUN_PUBLIC_
   host through it, unchanged.
 - **The token sits in the machine's env**, scoped to that machine (its kind, os and arch) until delete or its
   `backstopAt`, whichever comes first. A machine that never dials within `createMs` is deleted.
+- **Gap: one process creates a request.** Two `HostedProvider`s sharing one `MachineTokens` must not create the same
+  request name: a token goes by the machine's name, so the second mint replaces the first's token, and the delete that
+  settles the two machines revokes by name, which can cut the machine that is kept. Serve's requests carry the claim's
+  epoch, so two of its processes never share one.
 - **No Archil mount.** A spec with one is refused in words (`mountsOf` drops it on dial).
 - **A desktop over dial** works as on exec: create adds `DISPLAY` (`:0`) to the boot env, `agentrun-dial` gives it
   to init, and once the machine dials, its X server starts through computerd's `process.start` over that socket, as

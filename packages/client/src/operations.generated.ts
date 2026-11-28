@@ -7742,6 +7742,7 @@ export type GetWrappedResponse = {
   };
   cost_usd: number;
   unpriced_requests: number;
+  tokens_unknown_requests: number;
   days: Array<{
     day: string;
     requests: number;
@@ -7755,6 +7756,7 @@ export type GetWrappedResponse = {
     sessions: number;
     requests: number;
     tokens: number;
+    tokens_unknown_requests: number;
     sources: Array<string>;
   }>;
   models: Array<{
@@ -7763,6 +7765,7 @@ export type GetWrappedResponse = {
     tokens: number;
     cost_usd: number;
     unpriced_requests: number;
+    tokens_unknown_requests: number;
   }>;
   sources: Array<{
     source: string;

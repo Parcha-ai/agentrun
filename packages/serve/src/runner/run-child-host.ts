@@ -41,7 +41,9 @@ import { storeSecrets } from "./store-secrets.js";
 import { FAUX_ENV, GATEWAY_KEY_ENV } from "../model.js";
 import { SAVED_GATEWAY_ENV, savedGatewayIn } from "../model-gateway.js";
 import { FAUX_VENDOR_API_ENV } from "../tools.js";
-import { withinCarried } from "../paid-calls.js";
+import { type PaidBooking, withinCarried } from "../paid-calls.js";
+import type { ComputeLedger } from "../compute-cost.js";
+import type { Refusal } from "@parcha/agentrun-kernel";
 import { sealHandedLaunch } from "../store/seal.js";
 import { runZone } from "../environment.js";
 import { shadowRunId } from "../learn/audit.js";
@@ -983,6 +985,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
         ? await openRunWorkspace({ mode: 1, agentId: run.agentId, runId: claim.runId, data: deps.data, log })
         : await openRunWorkspace({ mode: 2, agentId: run.agentId, runId: claim.runId, archil: made, log });
       const say = typeof ask.say === "function" ? ask.say : undefined;
+      const computeLedger = heldComputeLedger(ask.compute);
       const got = await deps.computerForClaim(
         { runId: claim.runId, epoch: claim.epoch, claim, agentId: run.agentId, revisionId: run.revisionId, place: launch.place, ...(reads.incarnation ? { holder: { runner: claim.runner, incarnation: reads.incarnation } } : {}) } as never,
         store,
@@ -990,6 +993,9 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
           ...deps.computerDeps, mode, noExec, workspace: ws.workspace, sealKey,
           recordings: { folder: recordingsFolder(deps.data, run.agentId, claim.runId), say: (words: string) => say?.(cut(words)) },
           hadComputer: async () => (await ask.hadComputer()) === true,
+          // The run's ledger, in its process: the claim's computers' time metered on it, priced by this runner's settings.
+          ...(computeLedger ? { compute: { ledger: computeLedger, env: deps.env ?? {} } } : {}),
+          ...(typeof ask.stopRun === "function" ? { stopRun: async (words: string) => void (await ask.stopRun!(String(words))) } : {}),
           ...(typeof ask.turnedOff === "string" ? { turnedOff: ask.turnedOff } : {}),
           ...(ask.signal instanceof AbortSignal ? { signal: ask.signal } : {}),
           ...(made ? { revokeMount: () => made.revoke(), inheritMount: () => made.inherit(), mountDisk: () => made.disk.id } : {}),
@@ -1250,6 +1256,22 @@ function withGatewayKey(claimed: NodeJS.ProcessEnv, key: string): NodeJS.Process
   const out = Object.defineProperties({}, Object.getOwnPropertyDescriptors(claimed)) as NodeJS.ProcessEnv;
   Object.defineProperty(out, GATEWAY_KEY_ENV, { value: key, enumerable: false, writable: false, configurable: false });
   return out;
+}
+
+/** The run's ledger a run's process handed with its ask for its computer (HeldComputerAsk.compute), as the runner's meter
+ *  books on it (compute-cost.ts ComputeLedger): its admit, settle and pause called across the channel, and `judges` read
+ *  here at once, false until the process says its cap can judge (`judged`), and false for good when its spec's build
+ *  failed, as the process's own reads it. None when the process handed none, or what it handed is not one. */
+export function heldComputeLedger(given: unknown): ComputeLedger | undefined {
+  const handed = given as { paid?: { admit?: unknown; settle?: unknown }; pause?: unknown; judged?: unknown } | null | undefined;
+  if (!handed || typeof handed !== "object" || !handed.paid || typeof handed.paid.admit !== "function" || typeof handed.paid.settle !== "function" || typeof handed.judged !== "function") return undefined;
+  const paid = handed.paid as PaidBooking;
+  const pause = typeof handed.pause === "function" ? (handed.pause as (refusal: Refusal) => Promise<void>) : undefined;
+  let judges = false;
+  void Promise.resolve()
+    .then(() => (handed.judged as () => Promise<void>)())
+    .then(() => (judges = true), () => undefined);
+  return { paid: { admit: (request) => paid.admit(request), settle: (id, usd, options) => paid.settle(id, usd, options) }, ...(pause ? { pause: (refusal: Refusal) => pause(refusal) } : {}), judges: () => judges };
 }
 
 /** The environment a run's process starts with: the runner's run environment's plain values (runEnv: its secrets are

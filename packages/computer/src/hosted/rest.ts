@@ -75,6 +75,18 @@ export function jsonOf(bytes: Uint8Array): unknown {
 	}
 }
 
+/**
+ * A Retry-After's wait in ms (RFC 9110 10.2.3): delay-seconds, or an HTTP date (0 once it has passed); undefined for no
+ * header or words that are neither.
+ */
+function retryAfterMs(value: string | null): number | undefined {
+	if (value === null) return undefined;
+	const text = value.trim();
+	if (/^[0-9]+$/.test(text)) return Number(text) * 1000;
+	const at = Date.parse(text);
+	return Number.isNaN(at) ? undefined : Math.max(0, at - Date.now());
+}
+
 /** Whether fetch failed on a redirect it was told not to follow. */
 function redirected(cause: unknown): boolean {
 	const inner = (cause as { cause?: unknown } | null)?.cause;
@@ -179,6 +191,8 @@ export function rest(options: RestOptions): Rest {
 			bound?.addEventListener("abort", cut, { once: true });
 			let failure: RestError;
 			let retryable: boolean;
+			// The wait a refused answer's Retry-After asks of a retry.
+			let asked: number | undefined;
 			try {
 				const headers = { ...options.headers(), ...init.headers, ...(init.json === undefined ? {} : { "Content-Type": "application/json" }) };
 				const either = signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal;
@@ -194,6 +208,7 @@ export function rest(options: RestOptions): Rest {
 				const bytes = await bytesOf(response, either);
 				const own = typeof init.retry === "function";
 				retryable = own ? (init.retry as (status: number, bytes: Uint8Array) => boolean)(response.status, bytes) : init.retry === true && (response.status === 429 || response.status >= 500);
+				asked = retryable ? retryAfterMs(response.headers.get("retry-after")) : undefined;
 				const text = decoder.decode(bytes).replace(/\s+/g, " ").slice(0, 300);
 				const said = options.explain?.({ status: response.status, bytes, text, what }) ?? {};
 				failure = errorOf(said.code ?? httpCode(response.status, init.named), said.message ?? `${what}: ${response.status} ${text}`, options.vendor);
@@ -212,7 +227,13 @@ export function rest(options: RestOptions): Rest {
 				bound?.removeEventListener("abort", cut);
 			}
 			if (!retryable || attempt >= attempts) return { ok: false, error: failure };
-			await wait((options.retry?.baseMs ?? 0) * 2 ** (attempt - 1), signal);
+			// A send before the vendor's Retry-After is refused again, so the pause is the longer of it and the backoff. A
+			// Retry-After past the call's bound is not waited out: the call fails now, its words giving the wait.
+			if (asked !== undefined && asked > timeoutMs) {
+				const message = `${failure.message}; the vendor asks a retry to wait (Retry-After ${Math.round(asked / 100) / 10} s), past the call's bound of ${Math.round(timeoutMs / 100) / 10} s`;
+				return { ok: false, error: { ...failure, message } };
+			}
+			await wait(Math.max((options.retry?.baseMs ?? 0) * 2 ** (attempt - 1), asked ?? 0), signal);
 		}
 	}
 

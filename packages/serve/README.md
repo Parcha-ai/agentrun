@@ -1742,6 +1742,15 @@ is saved, before any run, so a template that grants them is still refused at its
 `secrets.MONID_API_KEY`) where the server has none. A run can still bring its own monid key to use in place of the
 server's.
 
+**Timeline rows without cost words: `AGENTRUN_NO_COST_WORDS=1`.** For a backend that prices runs its own way. Off, a
+run's Timeline says its cost in words, as before: "Cost: $0.0624 over 2 model requests and 1 paid tool call", "Tool
+cost: fal charged $0.0600 for mcp:fal/run_model", "Spent $0.06, $0.02 over the run's cap of $0.04". With `1`, the
+served Timeline (`GET /v2/runs/{id}/timeline`, its stream, and the run's export) says the same rows with no figure:
+"2 model requests and 1 paid tool call", "mcp:fal/run_model via fal", "Over the run's cap", and a reply the cap cut
+short "…: all that was left of the run's cap could buy.". A dollar cap's wrap-up note reads "Near this run's spend cap;
+the model was told to wrap up." (the model is told the note with its amount, as before). Each row's `usage` is
+unchanged either way, so a reader that shows a cost reads it there.
+
 ### Direct Particle-1
 
 Save a Particle key in **Settings → Model keys → Particle**, then select `particle/particle-1` with the **Pi** harness.
@@ -3648,9 +3657,11 @@ An agent whose definition says `checkout: pull_request` starts each run a GitHub
 checkout of it, made by the server at each claim before the first turn ([runner/pr-checkout.ts](src/runner/pr-checkout.ts)).
 It reads the repository, number, head and base from the server's own payload tag, only on a run a github trigger started
 (its launch's input origin) and never from anyone's words, and runs one
-command on the run's folder (a process here in Mode 1, Archil's exec in Mode 2): `git init repo`, a fetch of the head and
-the base 50 commits deep, deepened until their merge base is in (about 3,200 commits at most), then a detached checkout
-of the head, with refs `pr/head`, `pr/base` and `pr/merge-base`. The fetch takes an installation token minted for that
+command on the run's folder (a process here in Mode 1, Archil's exec in Mode 2): `git init` in a private folder of that
+machine's own `/tmp`, a fetch of the head and the base 50 commits deep, deepened until their merge base is in (about
+3,200 commits at most), then the repository moved into `repo/` and a detached checkout of the head, with refs `pr/head`,
+`pr/base` and `pr/merge-base`. The fetch never runs in the run's folder, so no `.git/config` there decides where it
+goes, and it always verifies TLS and goes through no proxy. The fetch takes an installation token minted for that
 one repository with `permissions: {contents: "read"}` alone, handed to the command on its stdin and turned there into an
 `Authorization` header in git's environment, scoped to GitHub's site; it is never in argv, `.git/config`, the remote's
 URL (`https://github.com/<owner>/<repo>.git`), the run's folder, the agent's environment or a log line, and it is revoked
@@ -4202,7 +4213,9 @@ refused as a server never saved. A save in a workspace is of an address at the o
 (`AGENTRUN_API_ONLY_MCP_ORIGINS`): `per_run` (each run hands its own in `mcp_auth`), or `headers` or `bearer`, whose
 credential is sealed in the workspace's own row and sent by its own agents' runs alone (a re-save that sends none keeps
 it); or a per-run Composio save (`user_id: "per_run"`, no `auth_config_id`, else `422 not_allowed`) whose key the install
-names (`api_key_env`). Anything else is the refused route's `404`, before anything is sent. The token with no header still
+names (`api_key_env`). Anything else is the refused route's `404`, before anything is sent. A save or delete over a row
+of its name that its token did not save is `403`, in the words every token write over a saved server gets: they name the
+server and say the token did not save it. The token with no header still
 writes no credential. One of a workspace's sealed servers at an origin taken off the list can't be used, as a token's
 `per_run` one can't: a run already going when the list changes stops sending its credential at its next call, and its
 preview or refresh by name is the refused route's `404`, nothing sent. A run started on a workspace's agent, by its

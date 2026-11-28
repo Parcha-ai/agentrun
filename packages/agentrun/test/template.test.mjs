@@ -25,7 +25,7 @@ const { within } = group;
 test("template validate checks a package folder as the server does", (t) => {
   const ok = validate(REVIEW);
   assert.equal(ok.status, 0, ok.stderr);
-  assert.deepEqual(JSON.parse(ok.stdout), { valid: true, name: "code-review", version: "0.4.0", skills: ["review"], evals: ["clean-refactor", "diff-no-head", "injection", "mentions-defused", "never-flag", "null-name", "off-by-one", "other-repo", "pasted-by-reference", "re-review", "re-review-open", "repo-rule", "two-defects"] });
+  assert.deepEqual(JSON.parse(ok.stdout), { valid: true, name: "code-review", version: "0.4.0", skills: ["review"], evals: ["clean-refactor", "diff-no-head", "injection", "mentions-defused", "never-flag", "null-name", "off-by-one", "other-repo", "pasted-by-reference", "re-review", "re-review-force-push", "re-review-near-dismissed", "re-review-open", "repo-rule", "two-defects"] });
 
   const dir = join(mkdtempSync(join(tmpdir(), "agentrun-template-")), "code-review");
   t.after(() => rmSync(join(dir, ".."), { recursive: true, force: true }));
