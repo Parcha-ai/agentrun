@@ -3,7 +3,7 @@
 // Orgo VM, on Orgo's own X display, so the desktop is the same wire as every computer. No key is read from the
 // environment, none leaves the Authorization header, and nothing reaches the network.
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -554,27 +554,37 @@ test("Orgo create: a PRIMARY autocutsel that outlives its signal refuses the cre
 	assert.equal(fakes.channel.calls.some((call) => call.kind === "init"), false, "init never started");
 });
 
-test("Orgo primary sync: the script ends a process whose whole command line is Orgo's PRIMARY autocutsel and no other", async () => {
-	// Real processes with the command lines Orgo's ps showed (perl sets its own), and a lookalike of each kind.
-	const named = (line) => spawn("perl", ["-e", `$0 = ${JSON.stringify(line)}; sleep 600`], { stdio: "ignore" });
-	const alive = (pid) => {
-		const stat = spawnSync("sh", ["-c", `sed -n 's/.*) \\([A-Z]\\).*/\\1/p' /proc/${pid}/stat 2>/dev/null`], { encoding: "utf8" }).stdout.trim();
-		return stat !== "" && stat !== "Z";
-	};
-	const primary = named("autocutsel -fork -selection PRIMARY");
-	const others = [named("autocutsel -fork -selection CLIPBOARD"), named("autocutsel -fork -selection PRIMARY -debug"), named("xautocutsel -fork -selection PRIMARY")];
-	const all = [primary, ...others];
-	try {
-		await new Promise((resolve) => setTimeout(resolve, 300));
-		for (const child of all) assert.ok(alive(child.pid), `${child.pid} started`);
-		const ran = spawnSync("sh", ["-c", orgo.PRIMARY_SYNC_SCRIPT, "sh"], { encoding: "utf8" });
-		assert.equal(ran.status, 0, ran.stdout + ran.stderr);
-		assert.equal(ran.stdout.trim(), `ended ${primary.pid}`);
-		assert.equal(alive(primary.pid), false, "Orgo's PRIMARY autocutsel is gone");
-		for (const child of others) assert.ok(alive(child.pid), `${child.pid} is not Orgo's PRIMARY autocutsel and runs on`);
-		const again = spawnSync("sh", ["-c", orgo.PRIMARY_SYNC_SCRIPT, "sh"], { encoding: "utf8" });
-		assert.deepEqual([again.status, again.stdout.trim()], [0, "none"]);
-	} finally {
-		for (const child of all) child.kill("SIGKILL");
-	}
+test("Orgo primary sync: the script ends a process whose whole command line is Orgo's PRIMARY autocutsel and no other", () => {
+	// Real processes with the command lines Orgo's ps showed (perl sets its own), and a lookalike of each kind, with the
+	// script, all in a PID namespace of their own (and its own /proc): the script sees and signals these alone, never a
+	// PRIMARY autocutsel of the host's or of another run of this test. The namespace's first process is the shell below;
+	// when it ends, the kernel ends every process left in it.
+	const inside = [
+		"alive() { [ -e \"/proc/$1\" ] && [ \"$(sed -n 's/.*) \\([A-Z]\\).*/\\1/p' \"/proc/$1/stat\" 2>/dev/null)\" != Z ]; }",
+		"perl -e '$0 = shift; sleep 600' 'autocutsel -fork -selection PRIMARY' & primary=$!",
+		"perl -e '$0 = shift; sleep 600' 'autocutsel -fork -selection CLIPBOARD' & a=$!",
+		"perl -e '$0 = shift; sleep 600' 'autocutsel -fork -selection PRIMARY -debug' & b=$!",
+		"perl -e '$0 = shift; sleep 600' 'xautocutsel -fork -selection PRIMARY' & c=$!",
+		"sleep 0.3",
+		'for p in $primary $a $b $c; do alive $p && echo "started $p"; done',
+		'echo "primary $primary"',
+		'echo "others $a $b $c"',
+		'out=$(sh -c "$1" sh 2>&1); echo "first $? $out"',
+		'alive $primary && echo "primary alive"',
+		'for p in $a $b $c; do alive $p && echo "runs on $p"; done',
+		'out=$(sh -c "$1" sh 2>&1); echo "again $? $out"',
+	].join("\n");
+	const ran = spawnSync("unshare", ["-Urpf", "--mount-proc", "sh", "-c", inside, "sh", orgo.PRIMARY_SYNC_SCRIPT], { encoding: "utf8", timeout: 30_000 });
+	assert.equal(ran.status, 0, `unshare -Urpf --mount-proc: ${ran.stdout}${ran.stderr}`);
+	const lines = ran.stdout.trim().split("\n");
+	const words = (head) => lines.find((line) => line.startsWith(`${head} `))?.slice(head.length + 1).split(" ") ?? [];
+	const [primary] = words("primary");
+	const others = words("others");
+	assert.ok(primary, ran.stdout);
+	assert.equal(others.length, 3, ran.stdout);
+	for (const pid of [primary, ...others]) assert.ok(lines.includes(`started ${pid}`), `${pid} started: ${ran.stdout}`);
+	assert.deepEqual(words("first"), ["0", "ended", primary], ran.stdout);
+	assert.equal(lines.includes("primary alive"), false, `Orgo's PRIMARY autocutsel is gone: ${ran.stdout}`);
+	for (const pid of others) assert.ok(lines.includes(`runs on ${pid}`), `${pid} is not Orgo's PRIMARY autocutsel and runs on: ${ran.stdout}`);
+	assert.deepEqual(words("again"), ["0", "none"], ran.stdout);
 });
