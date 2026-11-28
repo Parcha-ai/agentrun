@@ -1361,12 +1361,13 @@ export class DockerProvider implements ComputerProvider {
 	 * egress volume, found the same way: a container or volume of the proxy's name without that label is never touched.
 	 * Each is ok when already gone, or once gone when Docker answers that its removal is already in progress (#gone).
 	 */
-	async release(ref: ComputerRef, how: ReleaseHow): Promise<Result<void>> {
+	async release(ref: ComputerRef, how: ReleaseHow, { signal }: CallContext = {}): Promise<Result<void>> {
 		if (!NAME.test(ref.name)) return fail("invalid", `${ref.name} is not the name of a Docker computer (computer-<12 hex digits>)`);
 		if (how !== "stop" && how !== "delete") return fail("invalid", `release is "stop" or "delete", not ${String(how)}`);
+		if (signal?.aborted) return fail("aborted", `docker release of ${ref.name} was aborted`);
 		// A deleted computer's request is spent: the same request id again is refused, never made a second time.
 		if (how === "delete") this.#requests.end(ref.name);
-		return this.#remove(ref, how);
+		return this.#remove(ref, how, signal);
 	}
 
 	/**
@@ -1453,10 +1454,10 @@ export class DockerProvider implements ComputerProvider {
 	 * whose removal fails still has its proxy and volume removed): the first failure, the computer's before its proxy's,
 	 * is the answer. A stop stops the computer, then its proxies, the same way.
 	 */
-	async #remove(ref: ComputerRef, how: "stop" | "delete"): Promise<Result<void>> {
+	async #remove(ref: ComputerRef, how: "stop" | "delete", signal?: AbortSignal): Promise<Result<void>> {
 		const label = `label=${EGRESS_LABEL}=${ref.name}`;
 		const lines = (text: string) => text.split("\n").map((line) => line.trim()).filter(Boolean);
-		const proxies = await this.#run(["ps", "-a", "--no-trunc", "--filter", label, "--format", "{{.ID}}"]);
+		const proxies = await this.#run(["ps", "-a", "--no-trunc", "--filter", label, "--format", "{{.ID}}"], signal);
 		const listed: Result<string[]> = !proxies.ok ? proxies : proxies.value.exitCode !== 0 ? vendorFail("docker", `docker ps for ${ref.name}'s egress proxy failed: ${proxies.value.stderr.trim()}`) : ok(lines(proxies.value.stdout));
 		const ids = listed.ok ? listed.value : [];
 		const proxyWords = `${ref.name}'s egress proxy`;
@@ -1467,32 +1468,32 @@ export class DockerProvider implements ComputerProvider {
 		};
 		const parts = (verb: string): [string, string][] => [[ref.name, `docker ${verb} ${ref.name}`], ...ids.map((id): [string, string] => [id, `docker ${verb} of ${proxyWords}`])];
 		if (how === "delete") {
-			const all = await this.#run(["rm", "--force", "--volumes", ref.name, ...ids]);
+			const all = await this.#run(["rm", "--force", "--volumes", ref.name, ...ids], signal);
 			if (!all.ok) add(all);
 			// Each one that call did not remove, asked again alone: one gone answers No such container, one whose removal is
 			// under way is waited for, and any other answer is its failure in words.
 			else if (all.value.exitCode !== 0) {
 				for (const [key, what] of parts("rm")) {
-					const again = await this.#run(["rm", "--force", ...(key === ref.name ? ["--volumes"] : []), key]);
-					const gone = again.ok ? await this.#gone(again.value, key, what, AbortSignal.timeout(this.#settleBounds.settleMs)) : again;
+					const again = await this.#run(["rm", "--force", ...(key === ref.name ? ["--volumes"] : []), key], signal);
+					const gone = again.ok ? await this.#gone(again.value, key, what, AbortSignal.timeout(this.#settleBounds.settleMs), signal) : again;
 					add(gone);
 				}
 			}
 		} else {
 			for (const [key, what] of parts("stop")) {
-				const ran = await this.#run(["stop", key]);
-				const gone = ran.ok ? await this.#gone(ran.value, key, what, AbortSignal.timeout(this.#settleBounds.settleMs)) : ran;
+				const ran = await this.#run(["stop", key], signal);
+				const gone = ran.ok ? await this.#gone(ran.value, key, what, AbortSignal.timeout(this.#settleBounds.settleMs), signal) : ran;
 				add(gone);
 			}
 		}
 		add(listed);
 		if (how === "delete") {
-			const volumes = await this.#run(["volume", "ls", "--filter", label, "--format", "{{.Name}}"]);
+			const volumes = await this.#run(["volume", "ls", "--filter", label, "--format", "{{.Name}}"], signal);
 			if (!volumes.ok) add(volumes);
 			else if (volumes.value.exitCode !== 0) add(vendorFail("docker", `docker volume ls for ${ref.name}'s egress volume failed: ${volumes.value.stderr.trim()}`));
 			else {
 				for (const volume of lines(volumes.value.stdout)) {
-					const removed = await this.#run(["volume", "rm", "--force", volume]);
+					const removed = await this.#run(["volume", "rm", "--force", volume], signal);
 					if (!removed.ok) add(removed);
 					else if (removed.value.exitCode !== 0) add(vendorFail("docker", `docker volume rm ${volume} failed: ${removed.value.stderr.trim()}`));
 				}
@@ -1543,6 +1544,7 @@ export class DockerProvider implements ComputerProvider {
 	}
 
 	#run(args: string[], signal?: AbortSignal): Promise<Result<Ran>> {
+		if (signal?.aborted) return Promise.resolve(fail("aborted", `docker ${args[0]} was aborted`));
 		return new Promise((done) => {
 			execFile(this.#docker, args, { env: this.#env, signal, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
 				if (error === null) return done(ok({ exitCode: 0, stdout, stderr }));
