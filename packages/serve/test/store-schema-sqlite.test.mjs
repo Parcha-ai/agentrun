@@ -57,6 +57,24 @@ for (const need of SQLITE_RUNNER_NEEDS) {
   });
 }
 
+test("a file of this version an earlier build left without agents.workspace and runs.workspace: the runner waits for its server, in words, instead of a claim failing on the column", async (t) => {
+  const dir = await serverMade(t);
+  const db = new DatabaseSync(join(dir, STORE_FILE));
+  db.exec("DROP INDEX agents_by_workspace; DROP INDEX runs_by_workspace; ALTER TABLE agents DROP COLUMN workspace; ALTER TABLE runs DROP COLUMN workspace");
+  db.close();
+  assert.equal((await readStoreSchema(dir, sqliteEnv)).runner, "waits");
+  await assert.rejects(openSqliteStore({ dataDir: dir, role: "runner" }), (error) => {
+    assert.ok(error instanceof StoreAwaitsServer, String(error));
+    assert.match(error.message, /to keep each agent's and run's workspace \(agents\.workspace, runs\.workspace\) before opening a runner/);
+    return true;
+  });
+  // Its server adds both at its start; then a runner opens and reads a run's workspace (runner/github-app.ts).
+  await (await openSqliteStore({ dataDir: dir, role: "server" })).close();
+  const runner = await openSqliteStore({ dataDir: dir, role: "runner" });
+  t.after(() => runner.close());
+  assert.equal(await runner.runs.workspace("no-such-run"), undefined);
+});
+
 test("every wait the SQLite runner's open says for a column is on SQLITE_RUNNER_NEEDS, so store-schema reads them all", () => {
   const source = readFileSync(new URL("../src/store/sqlite/store.ts", import.meta.url), "utf8");
   const said = [...source.matchAll(/new StoreAwaitsServer\((?:"([^"]*)"|'([^']*)')\)/g)].map((match) => match[1] ?? match[2]);

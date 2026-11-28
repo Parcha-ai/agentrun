@@ -370,6 +370,10 @@ export const SQLITE_RUNNER_NEEDS: readonly { readonly table: string; readonly co
   { table: "learning_ledger", columns: ["run_id", ...Object.keys(LEARNING_LEDGER_ADDED)], why: "write each run's learning ledger row and spend at its end (learning_ledger, learning_spend)" },
   { table: "learning_spend", columns: ["run_id"], why: "write each run's learning ledger row and spend at its end (learning_ledger, learning_spend)" },
   { table: "learning_saves", columns: ["merge_key"], why: "keep each agent's learning as rows (learning_saves, learning_items, learning_records)" },
+  // Every claim with a seal key reads its run's workspace, its own else its agent's (runner/github-app.ts githubAppAccess,
+  // Runs.workspace), before its checkout and MCP setup. The server adds both at its start (addWorkspaceColumns).
+  { table: "agents", columns: ["workspace"], why: "keep each agent's and run's workspace (agents.workspace, runs.workspace)" },
+  { table: "runs", columns: ["workspace"], why: "keep each agent's and run's workspace (agents.workspace, runs.workspace)" },
 ];
 
 /** What a runner of this build waits for on a file of this version (SQLITE_RUNNER_NEEDS' first missing column's `why`),
@@ -579,6 +583,12 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     // waits for the server that adds the tables.
     if (role === "runner" && (await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('learning_saves')")).length === 0) {
       throw new StoreAwaitsServer("keep each agent's learning as rows (learning_saves, learning_items, learning_records)");
+    }
+    // A claim with a seal key reads its run's workspace, its own else its agent's (runner/github-app.ts, Runs.workspace): a
+    // runner waits for the server that adds both columns (addWorkspaceColumns, below).
+    const keepsWorkspace = async (table: "agents" | "runs") => (await connection.all<{ name: string }>(`SELECT name FROM pragma_table_info('${table}') WHERE name = 'workspace'`)).length > 0;
+    if (role === "runner" && !((await keepsWorkspace("agents")) && (await keepsWorkspace("runs")))) {
+      throw new StoreAwaitsServer("keep each agent's and run's workspace (agents.workspace, runs.workspace)");
     }
     // The per-run viewer table was renamed browser_viewers → computer_viewers (schema.ts). Its rows are ephemeral, so none
     // migrate; the server drops a stale browser_viewers an earlier build of this version left, so none lingers beside it.

@@ -26,7 +26,7 @@ import { fakeSaveOptions, type WebFake } from "../web-fake.js";
 import type { SaveSlots } from "../web-save.js";
 import { dialAt, mcpServerAt, type OAuthNetwork, systemNetwork } from "../mcp-oauth.js";
 import { privateOAuthHosts } from "../mcp-private-hosts.js";
-import type { Store, TriggerSettings } from "../store/index.js";
+import type { Store } from "../store/index.js";
 import { mcpNameOf } from "../tool-names.js";
 import { UNUSABLE, unconnectedWords } from "../mcp-probe.js";
 import { type ApprovalPrice, mcpToolName, permissionKeys, pinnedEffect, type ToolEffect } from "../tool-gate.js";
@@ -34,13 +34,14 @@ import type { Claim } from "./loop-contract.js";
 import { mcpClaim, type McpClaimStep } from "./mcp-claim.js";
 import { registryListing } from "../mcp-pin-first.js";
 import type { GithubAppAccess, GithubTimer } from "./mcp-github.js";
+import type { GithubAppStore } from "./github-app.js";
 import { type HeldMcp, type HeldMcpTool, heldOrThrow } from "./held.js";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { filedBy } from "../filed-tool.js";
 
 /** The GitHub App access for a claim (runner/github-app.ts githubAppAccess, tl-triggers'): the server's App, read from
  *  the store with the runner's seal key, bound to the repository the run's launch input names. */
-export type GithubAppAccessOf = (store: { readonly triggerSettings: Pick<TriggerSettings, "get"> }, sealKey: Buffer | undefined, launchInput: unknown) => Promise<GithubAppAccess | undefined>;
+export type GithubAppAccessOf = (store: GithubAppStore, sealKey: Buffer | undefined, launchInput: unknown) => Promise<GithubAppAccess | undefined>;
 
 export interface McpForClaimOptions {
   /** The claim this pass holds: the pin is written under its fence, and a refresh is confirmed against its epoch. */
