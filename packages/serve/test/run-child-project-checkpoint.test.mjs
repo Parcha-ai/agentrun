@@ -1,7 +1,7 @@
 // The held host boundary uses real immutable snapshots, placement, capture and store rows; no model calls.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chmod, symlink, unlink } from 'node:fs/promises';
+import { chmod, mkdir, readFile, symlink, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import { test } from 'node:test';
@@ -287,6 +287,35 @@ test('a superseded claim cannot begin checkpoint work through its retained host 
   assert.equal(syncs, 0, 'the old capability refuses before backend operations');
   assert.deepEqual(await f.store.settings.all({ prefix: sourceIOPrefix('agent') }), initial, 'refusal does not dispatch a new writer');
 });
+
+// The checkpoint's end sweeps the run folder's scratch only while projectOwns still finds this claim on the run's row:
+// a claim superseded mid-capture shares that folder with its re-claimer, whose scratch the old end must leave.
+for (const superseded of [false, true]) {
+  test(`a checkpoint whose claim ${superseded ? 'is superseded mid-capture leaves' : 'still holds sweeps'} the run folder's scratch at its end`, { timeout: 30_000 }, async t => {
+    const entered = Promise.withResolvers(), finish = Promise.withResolvers();
+    const f = await fixture(t, { sync: async () => { entered.resolve(); await finish.promise; } });
+    const scratch = join(runFolder(f.data, 'agent', 'own-run'), '.agentrun', 'tmp');
+    const capture = f.side.held.projectCheckpoint().then(value => ({ value }), error => ({ error }));
+    try {
+      await entered.promise;
+      // Written after settleProject's own sweep: only the end can remove it.
+      await mkdir(scratch, { recursive: true }); await writeFile(join(scratch, 'later-claim.txt'), 'the re-claimer\'s scratch');
+      if (superseded) {
+        f.clock.now += 60_001;
+        const next = await f.store.claim('own-run', 'replacement', { leaseMs: 60_000 });
+        assert.ok(next.epoch > f.claim.epoch);
+      }
+    } finally { finish.resolve(); }
+    const answer = await capture;
+    if (superseded) {
+      assert.notEqual(answer.value?.status, 'candidate', 'a superseded claim never publishes a project');
+      assert.equal(await readFile(join(scratch, 'later-claim.txt'), 'utf8'), 'the re-claimer\'s scratch', 'projectOwns refused: the end leaves the scratch');
+    } else {
+      assert.equal(answer.value?.status, 'candidate');
+      await assert.rejects(readFile(join(scratch, 'later-claim.txt')), { code: 'ENOENT' }, 'the claim still holds: the end sweeps its scratch');
+    }
+  });
+}
 
 test('host resources keep deletion fenced when a superseded child never reaches checkpoint', async t => {
   const f = await fixture(t);

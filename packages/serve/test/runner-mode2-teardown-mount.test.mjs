@@ -61,3 +61,22 @@ for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFro
     });
   }
 }
+
+// A claim the runner lost (its fence says so, LoopDeps.stillHolds): the run's folder may be a later claim's by its end,
+// its scratch at the same paths, so the end sweeps nothing, through the computer or the disk.
+for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFromLaunch], ["the CLI spec (opencode)", "opencode", cliRunSpecFromLaunch]]) {
+  test(`${name} in Mode 2, its claim lost: the run's end leaves the scratch in the run's folder`, async (t) => {
+    const disk = new FakeArchilDisk();
+    const run = await mode2Run(t, { harness, disk });
+    const { spec } = await run.claimNext(build, { stillHolds: () => false });
+    mkdirSync(join(run.scratch, ".agentrun", "output"), { recursive: true });
+    writeFileSync(join(run.scratch, ".agentrun", "output", "call-1"), "a later claim's output\n");
+    const before = disk.calls.length;
+    await spec.endCheckout();
+    assert.ok(existsSync(join(run.scratch, ".agentrun", "tmp")), ".agentrun/tmp is kept");
+    assert.ok(existsSync(join(run.scratch, ".agentrun", "output", "call-1")), "and bash's output");
+    assert.deepEqual(disk.calls.slice(before).filter((call) => call.op === "deleteObject" || call.op === "deleteObjects"), [], "nothing deleted over the disk's file API");
+    await spec.release();
+    assert.ok(existsSync(join(run.scratch, ".agentrun", "tmp")), "nor by the release");
+  });
+}
