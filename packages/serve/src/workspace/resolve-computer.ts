@@ -71,7 +71,7 @@ export type LaunchedComputer = {
    *  run's next call starts the new one. Absent where `client` is it. */
   readonly own?: ComputerClient;
   readonly hello?: HelloResult;
-  readBack?(): Promise<Result<MountReadBack>>;
+  readBack?(options?: { readonly signal?: AbortSignal }): Promise<Result<MountReadBack>>;
   readonly browser?: ClaimBrowser;
   release(): Promise<void>;
 };
@@ -669,7 +669,7 @@ function runComputerOf(kind: Exclude<ComputerSettingKind, "none">, launched: Lau
   const client = recordedClient(sync ? syncingClient(launched.client, sync) : launched.client);
   if (kind === "phone") return hello ? { kind, computer: { client }, hello, ...agent } : "it gave no hello";
   if (check && !launched.readBack) return "it gave no read-back of its mount";
-  const readBack = launched.readBack ? () => launched.readBack!() : async (): Promise<Result<MountReadBack>> => ({ ok: false, error: { code: "unsupported", message: "nothing is mounted in this computer" } });
+  const readBack = launched.readBack ? (options?: { readonly signal?: AbortSignal }) => launched.readBack!(options) : async (): Promise<Result<MountReadBack>> => ({ ok: false, error: { code: "unsupported", message: "nothing is mounted in this computer" } });
   const computer = { id: launched.id, client, readBack };
   if (kind === "sandbox") return check ? { kind, computer, check } : "a sandbox mounts the run's folder";
   return hello ? { kind, computer, hello, ...(check ? { check } : {}), ...agent } : "it gave no hello";

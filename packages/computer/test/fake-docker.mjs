@@ -295,6 +295,8 @@ const noSuch = (key) => { process.stderr.write("Error response from daemon: No s
 // A held step waits for its proceed file, at most a minute.
 const held = (step, then) => {
 	if (!config.hold.includes(step)) return then();
+	// Which process is held (heldPid): a call cut while it waits kills it.
+	writeFileSync(config.dir + "/held-" + step + ".pid", String(process.pid));
 	const bound = Date.now() + 60_000;
 	const timer = setInterval(() => {
 		if (!existsSync(config.dir + "/proceed-" + step) && Date.now() < bound) return;
@@ -657,7 +659,9 @@ switch (args[0]) {
 	/** lateRun's marks: whether the daemon's late create has begun, and the container it made (its name), if it did. */
 	const late = () => ({ started: existsSync(join(dir, "late-started")), committed: existsSync(join(dir, "late-committed")) ? readFileSync(join(dir, "late-committed"), "utf8").replace(/^\//, "") : undefined });
 	const runHeld = () => existsSync(join(dir, "run-held"));
-	return { provider: new DockerProvider(options), options, calls, envs, names, volumeNames, networkNames, alter, add, daemonPath, bound, cache, program, proceed, started, unanswered, late, runHeld };
+	/** The pid of the last docker process held at `step`, once one is. */
+	const heldPid = (step) => (existsSync(join(dir, `held-${step}.pid`)) ? Number(readFileSync(join(dir, `held-${step}.pid`), "utf8")) : undefined);
+	return { provider: new DockerProvider(options), options, calls, envs, names, volumeNames, networkNames, alter, add, daemonPath, bound, cache, program, proceed, started, unanswered, late, runHeld, heldPid };
 }
 
 /** The docker calls that delete computer `name` with nothing else of its own: look for its egress proxy by its label and

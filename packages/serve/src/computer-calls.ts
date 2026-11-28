@@ -235,8 +235,9 @@ export function recordedClient(client: ComputerClient): ComputerClient {
  *  is over), so a call to a daemon that never answers ends with the loop that made it, and the runner's close goes on at
  *  once instead of sitting out its whole stop window. From `release()` on (the run's end: its background processes
  *  ended, its scratch swept through the computer), no call is cut by it, one in flight included: the close's own window
- *  bounds them, as it always did. */
-export function claimCutClient(client: ComputerClient, signal: AbortSignal): { readonly client: ComputerClient; release(): void } {
+ *  bounds them, as it always did. `signal`: the cut itself, aborted with the claim's until `release()` and never after,
+ *  for a call of the computer's that is not the client's (its mount's read-back, AttachableComputer.readBack). */
+export function claimCutClient(client: ComputerClient, signal: AbortSignal): { readonly client: ComputerClient; readonly signal: AbortSignal; release(): void } {
   // Bound: a provider's DaemonClient reads its own fields through `this`.
   const send = client.call.bind(client) as (method: string, params: unknown, options?: { signal?: AbortSignal }) => Promise<unknown>;
   const cut = new AbortController();
@@ -256,6 +257,7 @@ export function claimCutClient(client: ComputerClient, signal: AbortSignal): { r
       }) as ComputerClient["call"],
       close: () => client.close(),
     },
+    signal: cut.signal,
     release: () => {
       released = true;
       signal.removeEventListener("abort", onAbort);
