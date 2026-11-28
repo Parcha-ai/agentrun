@@ -81,6 +81,14 @@ export const RUNNER_RENEWAL_BOUND_MS = RUNNER_RENEWALS_SERVED_MS + RUNNER_LEASE_
 
 /** How often a runner renews the claims it holds, unless told (RunnerOptions.renewEveryMs). */
 export const RUNNER_RENEW_EVERY_MS = 10_000;
+/** How often a free runner asks the store for claimable runs, unless told (RunnerOptions.pollMs). */
+export const RUNNER_POLL_MS = 1_000;
+/** The wait after a parked run's resume first fails, each later one twice the one before, unless told
+ *  (RunnerOptions.resumeBackoffMs). */
+export const RESUME_BACKOFF_MS = 5_000;
+/** The wait before a run whose loop ended interrupted on its own is claimable again, doubling for each such end in a
+ *  row, unless told (RunnerOptions.interruptBackoffMs). */
+export const INTERRUPT_BACKOFF_MS = 1_000;
 /** A runner's name when none is given: its host, its process and a part of a random id. */
 export const runnerName = (): string => `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
 
@@ -352,11 +360,11 @@ export function startRunner(options: RunnerOptions): Runner {
     leaseMs = RUNNER_LEASE_MS,
     renewEveryMs = RUNNER_RENEW_EVERY_MS,
     stopMarginMs = RUNNER_STOP_MARGIN_MS,
-    pollMs = 1_000,
+    pollMs = RUNNER_POLL_MS,
     commandPollMs = 500,
     resumeTries = 3,
-    resumeBackoffMs = 5_000,
-    interruptBackoffMs = 1_000,
+    resumeBackoffMs = RESUME_BACKOFF_MS,
+    interruptBackoffMs = INTERRUPT_BACKOFF_MS,
     unknownBackoffMs = 200,
     endWaitMs = 5_000,
     drainMs = 0,
