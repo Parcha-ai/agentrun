@@ -244,7 +244,8 @@ test("API-only with the origin listed: the token's per_run save over a server it
     const refused = await s.token("PUT", `/settings/mcp-servers/${name}`, perRun(gw.fake.url));
     assert.equal(refused.status, 403, `${name}: ${JSON.stringify(refused.body)}`);
     // In words about the server it would write over, never the secret-write words: the body sent no secret.
-    assert.ok(String(refused.body.error?.message).startsWith(tokenWriteOverWords(name, name === "sealed")), refused.body.error?.message);
+    // An API-only server has no owner's session and serves no console, so the words send the caller to neither.
+    assert.equal(refused.body.error?.message, tokenWriteOverWords(name, name === "sealed", true), name);
     assert.equal(String(refused.body.error?.message).includes(SECRET_WRITE_REFUSAL), false, refused.body.error?.message);
     assert.deepEqual(await rowOf(store, name), before, `${name}: the row is unchanged`);
   }

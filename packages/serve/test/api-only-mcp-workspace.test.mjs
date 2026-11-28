@@ -294,7 +294,7 @@ test("a workspace's write is refused over a row of its name the token did not sa
   const request = { params: ["github"], store: view, apiOnly: true, workspace: W1 };
   assert.equal(await inWorkspace(W1, () => workspaceWriteRefused(undefined, request)), true, "no token's mark: refused");
   assert.deepEqual(request.seen, { auth: "none", sealed: false, changedAt: null });
-  assert.equal(request.words, tokenWriteOverWords("github", false), "refused in the token's write-over words");
+  assert.equal(request.words, tokenWriteOverWords("github", false, true), "refused in the token's write-over words");
   const row = await store.mcp.server(mcpRowKey("github", W1));
   await store.settings.put(mcpSourceKey(mcpRowKey("github", W1)), storedSource({ source: "url", toolkit: null }, row, false, true));
   const own = { params: ["github"], store: view, apiOnly: true, workspace: W1 };
@@ -303,10 +303,13 @@ test("a workspace's write is refused over a row of its name the token did not sa
   assert.equal(await inWorkspace(W1, () => workspaceWriteRefused(undefined, { ...request, params: ["new-name"] })), false, "a new name: let through");
 });
 
-test("the token's write-over words name the server and why: it keeps a credential, or the token did not save it", () => {
-  const tail = "so the token can't save over it or remove it. Use another name, or change it from the owner's signed-in session.";
-  assert.equal(tokenWriteOverWords("github", true), `The MCP server github keeps a credential, ${tail}`);
-  assert.equal(tokenWriteOverWords("github", false), `The MCP server github was not saved by the API token, ${tail}`);
+test("the token's write-over words name the server and why: it keeps a credential, or the token did not save it; only where an owner's session is, they send the caller to it", () => {
+  const tail = "so the token can't save over it or remove it. Use another name";
+  assert.equal(tokenWriteOverWords("github", true), `The MCP server github keeps a credential, ${tail}, or change it from the owner's signed-in session.`);
+  assert.equal(tokenWriteOverWords("github", false), `The MCP server github was not saved by the API token, ${tail}, or change it from the owner's signed-in session.`);
+  // An API-only server has no owner's session and no console: the words end at what its caller can do.
+  assert.equal(tokenWriteOverWords("github", true, true), `The MCP server github keeps a credential, ${tail}.`);
+  assert.equal(tokenWriteOverWords("github", false, true), `The MCP server github was not saved by the API token, ${tail}.`);
 });
 
 // Every route that judges a token's write over a saved server refuses it in the one helper's words (tokenWriteOverWords),
@@ -320,8 +323,11 @@ test("a workspace's save and delete over a row of its name the token did not sav
     const refused = await s.w1(method, "/settings/mcp-servers/github", body);
     assert.equal(refused.status, 403, `${method}: ${JSON.stringify(refused.body)}`);
     const message = String(refused.body.error?.message);
-    assert.ok(message.startsWith(tokenWriteOverWords("github", false)), `${method}: ${message}`);
+    assert.equal(message, tokenWriteOverWords("github", false, true), method);
     assert.equal(message.includes(SECRET_WRITE_REFUSAL), false, `${method}: ${message}`);
+    // An API-only server has no owner's session and serves no console: the refusal sends the caller to neither.
+    assert.doesNotMatch(message, /signed-in session|console/, method);
+    assert.equal(refused.body.error?.details?.console_url, undefined, method);
   }
   assert.deepEqual(await store.mcp.server(mcpRowKey("github", W1)), before, "the row is unchanged");
 });
@@ -584,7 +590,7 @@ test("a workspace's Composio save over a row of its name the token did not save 
   const before = await store.mcp.server(mcpRowKey("mail", W1));
   const refused = await s.w1("PUT", "/settings/mcp-servers/mail/composio", PER_RUN);
   assert.equal(refused.status, 403, JSON.stringify(refused.body));
-  assert.ok(String(refused.body.error?.message).startsWith(tokenWriteOverWords("mail", false)), refused.body.error?.message);
+  assert.equal(refused.body.error?.message, tokenWriteOverWords("mail", false, true));
   assert.deepEqual(s.composio.calls, [], "nothing reached Composio");
   assert.deepEqual(await store.mcp.server(mcpRowKey("mail", W1)), before, "the row is unchanged");
 });

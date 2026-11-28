@@ -17,7 +17,7 @@ import type { KindCapabilities } from "../kinds.js";
 import { type ComputerSettingKind, SETTING_KIND_NAMES } from "../setting-kinds.js";
 import type { MachineHost } from "../host.js";
 import { browserCases, casesFor, conformanceCases } from "./cases/index.js";
-import { checkExecStream, DEFAULT_LONG_MS, formatExecStream, QUICK_LONG_MS } from "./exec-stream.js";
+import { checkExecStream, DEFAULT_LONG_MS, type ExecStreamOptions, formatExecStream, QUICK_LONG_MS } from "./exec-stream.js";
 import { kindRunProblem } from "./kind.js";
 import type { CdpDialer } from "./cdp.js";
 import { formatReport } from "./report.js";
@@ -51,6 +51,11 @@ export interface CliIo {
 	 * is given them, but the env, as create()'s options. A test gives a fake SDK or a shorter bound through it.
 	 */
 	providerOptions?: { env?: ProviderEnv } & Record<string, unknown>;
+	/**
+	 * --exec-stream's bounds, over its defaults (each named in ExecStreamOptions; longMs over --quick's too). A test gives
+	 * shorter ones, so a pre-check of a good exec does not sit out the 10 s stdout is left unread.
+	 */
+	execStreamBounds?: Pick<ExecStreamOptions, "longMs" | "stepMs" | "largeBytes" | "largeMs" | "unreadMs">;
 	/** The clock the run reads, a TTI run's times among it; default the wall clock. A test gives one it moves. */
 	clock?: Clock;
 }
@@ -379,6 +384,7 @@ async function execStreamMain(name: string, { machine, quick }: { machine: strin
 	}
 	const report = await checkExecStream(host, machine, {
 		longMs: quick ? QUICK_LONG_MS : DEFAULT_LONG_MS,
+		...io.execStreamBounds,
 		...(signal ? { signal } : {}),
 		...(progress ? { onCheck: (check) => stderr.write(`${check.status === "pass" ? "✓" : "✗"} ${check.id}\n`) } : {}),
 	});

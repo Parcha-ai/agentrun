@@ -42,6 +42,7 @@ export function wrappedView(wrapped: Wrapped, imported: readonly { source: strin
     cost_usd: wrapped.cost,
     unpriced_requests: wrapped.unpricedRequests,
     tokens_unknown_requests: wrapped.tokensUnknownRequests,
+    time_unknown_requests: wrapped.timeUnknownRequests,
     days: wrapped.days,
     hours: wrapped.hours,
     weekdays: wrapped.weekdays,

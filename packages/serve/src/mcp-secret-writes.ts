@@ -84,7 +84,7 @@ export async function tokenWriteOverRefused(_body: unknown, request: SecretReque
   if (!was) return false;
   const sealed = was.sealed !== null && was.sealed !== undefined;
   if (!sealed && savedByToken(await store.settings.get(mcpSourceKey(name)), was.createdAt)) return false;
-  request.words = tokenWriteOverWords(name, sealed);
+  request.words = tokenWriteOverWords(name, sealed, request.apiOnly === true);
   return true;
 }
 
@@ -102,15 +102,16 @@ export async function workspaceWriteRefused(_body: unknown, request: SecretReque
   request.seen = credentialMark(was);
   if (!was) return false;
   if (savedByToken(await store.settings.get(mcpSourceKey(name)), was.createdAt)) return false;
-  request.words = tokenWriteOverWords(name, false);
+  request.words = tokenWriteOverWords(name, false, request.apiOnly === true);
   return true;
 }
 
 /** The words a token's refused write over a saved server gets, on every route that judges one (tokenWriteOverRefused,
  *  workspaceWriteRefused): it names the server the write would land on and why the token may not write it (it keeps a
- *  credential, or the token did not save it), since the body may hold no secret at all. */
-export const tokenWriteOverWords = (name: string, sealed: boolean): string =>
-  `The MCP server ${name} ${sealed ? "keeps a credential" : "was not saved by the API token"}, so the token can't save over it or remove it. Use another name, or change it from the owner's signed-in session.`;
+ *  credential, or the token did not save it), since the body may hold no secret at all. Only a server with an owner's
+ *  session sends the caller there; an API-only one (`apiOnly`) has none, so its words end at another name. */
+export const tokenWriteOverWords = (name: string, sealed: boolean, apiOnly = false): string =>
+  `The MCP server ${name} ${sealed ? "keeps a credential" : "was not saved by the API token"}, so the token can't save over it or remove it. Use another name${apiOnly ? "" : ", or change it from the owner's signed-in session"}.`;
 
 /** MCP's operations the one gate reads: the predicates above decide each request. */
 export const MCP_SECRET_OPERATIONS = ["saveMcpServer", "startMcpOAuth", "putMcpPrivateHosts", "deleteMcpServer"] as const;
