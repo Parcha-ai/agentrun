@@ -40,8 +40,8 @@ for(const runtime of ['claude-code','codex'])for(const reason of ['cancel','time
  const target=(await discoverNative({project:f.project,runtime,env:f.env})).targets[0];const abort=new AbortController();
  const path=join(f.root,'persisted-events.jsonl');const seen=[];
  const session=await openNativeSession({target,env:{...f.env,NATIVE_TEST_EVENTS:JSON.stringify(transcript(runtime)),NATIVE_TEST_HOLD:'yes'},onEvent:async event=>{
-  // Separate stdout writes may arrive after the first tool callback. Stop only once terminal usage is
-  // actually received, holding its durable write so the caller must still wait for the recorder.
+  // Stop only once terminal usage is actually received, holding its durable write so the caller must
+  // still wait for the recorder.
   if(event.type==='usage'){started.resolve();await release.promise;}
   await appendFile(path,JSON.stringify(event)+'\n');seen.push(event);if(event.type==='usage')recorded.resolve();
  }});
@@ -61,9 +61,10 @@ for(const runtime of ['claude-code','codex'])for(const reason of ['cancel','time
  await assert.rejects(session.send('Never replay.'),e=>e.code==='unavailable');
 });
 
-for(const runtime of ['claude-code','codex'])test(`${runtime} HTTP cancellation records queued tool completion and usage before its durable end`,{timeout:30_000},async t=>{
- // The CLI writes its tool start, then is descheduled: the rest reaches the pipe only after the cancel landed.
- const f=await nativeFixture(t),gate=join(f.root,'tail-gate');withEnv(t,{...Object.fromEntries(['PATH','HOME','CODEX_HOME','CLAUDE_CONFIG_DIR','NATIVE_TEST_LOG'].map(k=>[k,f.env[k]])),NATIVE_TEST_EVENTS:JSON.stringify(transcript(runtime)),NATIVE_TEST_HOLD:'yes',NATIVE_TEST_TAIL_AFTER:'2',NATIVE_TEST_TAIL_GATE:gate});
+for(const runtime of ['claude-code','codex'])for(const late of [false,true])test(`${runtime} HTTP cancellation ${late?'before the CLI wrote its tool completion and usage records only the tool start, its usage unknown':'records queued tool completion and usage before its durable end'}`,{timeout:30_000},async t=>{
+ // Queued: the fixture writes the whole transcript at once, so the server has queued every event before it records the
+ // tool start this test holds. Late: the CLI writes its tool start, then is descheduled until the cancel has landed.
+ const f=await nativeFixture(t),gate=join(f.root,'tail-gate');withEnv(t,{...Object.fromEntries(['PATH','HOME','CODEX_HOME','CLAUDE_CONFIG_DIR','NATIVE_TEST_LOG'].map(k=>[k,f.env[k]])),NATIVE_TEST_EVENTS:JSON.stringify(transcript(runtime)),NATIVE_TEST_HOLD:'yes',...(late?{NATIVE_TEST_TAIL_AFTER:'2',NATIVE_TEST_TAIL_GATE:gate}:{})});
  const {api,data,store:reader}=await serve(t,{runner:false});let runner,store,release=Promise.withResolvers(),started=Promise.withResolvers(),stopped=Promise.withResolvers();let held=false,stopping=false;
  t.after(async()=>{release.resolve();await runner?.close();await store?.close();});
  const connected=await api('POST','/native/connect',{project:f.project,runtime});assert.equal(connected.status,200);const agent=connected.body.agent.agent_id;
@@ -84,18 +85,19 @@ for(const runtime of ['claude-code','codex'])test(`${runtime} HTTP cancellation 
  }});
  runner=startRunner({store,name:'native-event-drain',leaseMs:60_000,renewEveryMs:1000,stopMarginMs:5000,pollMs:20,commandPollMs:30,createLoop:dispatch});
  const start=await api('POST',`/agents/${agent}/runs`,{input:{content:'Stop after the tool has reported.'}});assert.equal(start.status,202);const run=start.body.run_id;
- await within(started.promise);assert.equal((await api('POST',`/runs/${run}/cancel`,{})).status,202);await within(stopped.promise);await appendFile(gate,'');
+ await within(started.promise);assert.equal((await api('POST',`/runs/${run}/cancel`,{})).status,202);await within(stopped.promise);if(late)await appendFile(gate,'');
  // The old path takes its end snapshot immediately and releases this gate there. The drained path has no end read
  // until its pending event commits; release independently rather than making that fixed path depend on the bug.
  await delay(1000);release.resolve();await follow(api,run,['cancelled']);
  const row=await reader.runs.get(run);const {entries}=await journalRecords(reader.readJournal(run),BACKGROUND_CONTEXT);
- assert.equal(row.outcome,'cancelled');assert.equal(row.metrics.output,4,'reported usage survives the stop');
- assert.equal(row.costUsd,runtime==='codex'?null:0.25);
+ // Events the CLI never delivered before the cancel are not invented: the run ends with its usage unknown, never 0.
+ assert.equal(row.outcome,'cancelled');assert.equal(row.metrics.output,late?null:4,'reported usage survives the stop');
+ assert.equal(row.costUsd,runtime==='codex'||late?null:0.25);
  // A native run's paid tool calls are its harness's own, never booked here: what they cost is unknown (null), never $0.
  const read=(await api('GET',`/runs/${run}`)).body;assert.equal(read.cost.tools_usd,null,`a native run's tools_usd is unknown: ${JSON.stringify(read.cost)}`);
  const events=entries.filter(e=>[KINDS.callStart,KINDS.callEnd,'agentrun.native.usage',KINDS.end].includes(e.kind));
- assert.deepEqual(events.map(e=>e.kind),[KINDS.callStart,KINDS.callEnd,'agentrun.native.usage',KINDS.end]);
- assert.equal(events[1].data.output,'ready');assert.equal(events[2].data.usage.output_tokens,4);
+ assert.deepEqual(events.map(e=>e.kind),late?[KINDS.callStart,KINDS.end]:[KINDS.callStart,KINDS.callEnd,'agentrun.native.usage',KINDS.end]);
+ if(!late){assert.equal(events[1].data.output,'ready');assert.equal(events[2].data.usage.output_tokens,4);}
  assert.equal((await f.calls()).filter(c=>c.args.includes('exec')||c.args.includes('--print')).length,1);
 });
 
