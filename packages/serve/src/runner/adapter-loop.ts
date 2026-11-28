@@ -4134,6 +4134,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   }
 
   /** The session and its Harness closed behind the journal's seal: nothing they write after reaches the store. */
+  /** The CLI's session closed, at most CLOSE_MS, before its run's end lets the claim go (writeEnd); closeSession then
+   *  finds none to close. A message taken after it waits for the next claim, as one taken while the run stops does. */
+  async function closeCliSession(): Promise<void> {
+    const open = session;
+    if (!open) return;
+    session = undefined;
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([open.close().catch(() => {}), new Promise<void>((resolve) => (timer = setTimeout(resolve, CLOSE_MS)))]);
+    clearTimeout(timer);
+  }
+
   async function closeSession(): Promise<void> {
     gate?.seal(new Interrupted("the Session is closing"));
     endWait();
@@ -4589,6 +4600,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // end's commit: nothing of the stopped turn lands after the end. One that only nests calls (a harness's own: Codex's
     // `exec`) ends after the rows of its calls (their withdrawals above it in this commit); its own end on its way is
     // written first. Marked `withRun`: a park or a stop failed nothing, so its row reads interrupted, never failed.
+    // A CLI's own session goes before the end is committed, as its checkout does: the end lets the claim go (an ending
+    // patch clears its runner), and a message sent the moment the run reads ended reopens it onto a new session on the
+    // same thread, never beside this one still closing. What its close writes (a turn it halts) lands above the end.
+    if (cliRecord) await closeCliSession();
     while (ownWrites.size > 0) await Promise.allSettled([...ownWrites]);
     const cutOpen = ends.openCalls();
     const ended = theGate.expect(writesEntry(KINDS.end), { run, ...(also.length ? { also } : {}), ...(take.length ? { take } : {}) });
