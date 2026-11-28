@@ -211,6 +211,8 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       ...(po.log ? { log: po.log } : {}),
       // The provider stopped the turn's answer on its content filter: no retry of it can pass, so the turn ends at once.
       onFiltered: (message) => ctx.halt?.(new Error(message)),
+      // The proxy stopped a request the provider sent nothing on for its stall bound: the turn ends in its words.
+      onFinal: (message) => ctx.halt?.(new Error(message)),
       onResponse: ({ path, status }) => {
         if (path !== "/v1/messages/count_tokens" || counted) return;
         counted = true;

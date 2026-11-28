@@ -54,7 +54,7 @@ for (const [how, headers] of [["after its headers and first event", true], ["bef
     assert.equal(row.state, "failed", `the run ended failed: ${JSON.stringify(row)}`);
     assert.equal(row.runner, null, "its claim was let go");
     assert.equal(sent.length, 1, "one request: the stall is not asked again");
-    assert.ok(String(row.summary ?? "").includes(WORDS), `the run's error names the stall: ${row.summary}`);
+    // pi journals its own error: the run's error is its timeline's last error row (the run's summary is the runner's own).
     const rows = timelineOf(await rootEntries(store), { settled: true });
     const failed = rows.filter((r) => r.kind === "error" && String(r.summary ?? "").startsWith("Model request failed"));
     assert.deepEqual(failed.map((r) => r.summary.replace(/ \(its cost is unknown.*$/, "")), [`Model request failed: ${WORDS}`], JSON.stringify(rows.map((r) => [r.kind, r.summary])));

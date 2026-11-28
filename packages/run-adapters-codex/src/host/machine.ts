@@ -297,7 +297,8 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       ...(options.proxy.fetch ? { fetch: options.proxy.fetch } : {}),
       // The provider stopped the turn's answer on its content filter: no retry of it can pass, so the turn ends at once.
       onFiltered: (message) => ctx.halt?.(new Error(message)),
-      // The provider's error answer ends the run (a ChatGPT plan's limit reached): no retry or other key can pass it.
+      // The provider's error answer ends the run (a ChatGPT plan's limit reached), or the proxy stopped a request the
+      // provider sent nothing on for its stall bound: no retry or other key can pass it.
       onFinal: (message) => ctx.halt?.(new Error(message)),
       // The provider cut the turn's answer at its output limit: Codex would ask for it again (it retries an incomplete
       // stream), so the harness ends the turn there, its answer cut.

@@ -125,6 +125,9 @@ export interface PiAdapterOptions {
   readonly price?: (model: string, usage: never) => number | null;
   /** The proxy's upstream fetch (a test's scripted origin). */
   readonly fetch?: typeof fetch;
+  /** How long the provider may send nothing on a request before the session's proxy stops it (ModelProxyOptions.stallMs).
+   *  Default the kernel's MODEL_STALL_MS. */
+  readonly stallMs?: number;
   /** The runner's one redactor, which a provider's error passes through in the session's proxy before pi has it
    *  (ModelProxyOptions.redact; the proxy's own cut of the credential comes first). */
   readonly redact: HeldRedact;
@@ -207,7 +210,7 @@ async function openPi(options: PiAdapterOptions, spec: SessionSpec, io: PiSessio
 
 /** A tier's model as its proxy takes it: its route's provider, model, catalog entry, price and fetch (model-route.ts), and
  *  its catalog's context window, which a conversation on the tier holds each tool result to (boundPiResult). */
-export type TierModel = Pick<PiAdapterOptions, "provider" | "model" | "like" | "price" | "fetch"> & { readonly contextWindow?: number };
+export type TierModel = Pick<PiAdapterOptions, "provider" | "model" | "like" | "price" | "fetch" | "stallMs"> & { readonly contextWindow?: number };
 
 /** The tier proxies a session holds (openTierProxies): each tier's port for a side request under `label`, and their close. */
 export interface TierProxies {
@@ -235,6 +238,7 @@ async function routeProxy(route: TierModel, hooks: SessionIO["models"], tools: r
     ...(price ? { price: price as never } : {}),
     ...(route.provider.headers ? { headers: route.provider.headers } : {}),
     ...(route.fetch ? { fetch: route.fetch } : {}),
+    ...(route.stallMs === undefined ? {} : { stallMs: route.stallMs }),
     redact,
   }, randomBytes(32).toString("base64url"));
 }
