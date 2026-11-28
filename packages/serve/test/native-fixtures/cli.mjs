@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { appendFileSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 const runtime = basename(process.argv[1]);
 const args = process.argv.slice(2);
@@ -11,8 +11,12 @@ const prompt=readFileSync(0,'utf8');
 if(process.env.NATIVE_TEST_INPUT_LOG)appendFileSync(process.env.NATIVE_TEST_INPUT_LOG,JSON.stringify({runtime,prompt})+'\n');
 if(process.env.NATIVE_TEST_MALFORMED==='yes'){console.log('invalid native protocol');process.exit(0);}
 if(process.env.NATIVE_TEST_EVENTS){
- for(const event of JSON.parse(process.env.NATIVE_TEST_EVENTS))console.log(JSON.stringify(event));
- if(process.env.NATIVE_TEST_HOLD==='yes')setInterval(()=>{},1000);else process.exit(0);
+ // NATIVE_TEST_TAIL_GATE holds every event after the first NATIVE_TEST_TAIL_AFTER until that file exists: the order a
+ // descheduled CLI produces when its later lines reach the pipe after the server has already acted on the first ones.
+ const events=JSON.parse(process.env.NATIVE_TEST_EVENTS),gate=process.env.NATIVE_TEST_TAIL_GATE,split=gate?Number(process.env.NATIVE_TEST_TAIL_AFTER):events.length;
+ for(const event of events.slice(0,split))console.log(JSON.stringify(event));
+ const tail=()=>{for(const event of events.slice(split))console.log(JSON.stringify(event));if(process.env.NATIVE_TEST_HOLD==='yes')setInterval(()=>{},1000);else process.exit(0);};
+ if(gate){const poll=setInterval(()=>{if(existsSync(gate)){clearInterval(poll);tail();}},10);}else tail();
 } else
 if (prompt.includes('hang')) { setInterval(()=>{},1000); } else {
  const echoed=process.env.NATIVE_TEST_ECHO;

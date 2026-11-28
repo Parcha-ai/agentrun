@@ -62,7 +62,8 @@ for(const runtime of ['claude-code','codex'])for(const reason of ['cancel','time
 });
 
 for(const runtime of ['claude-code','codex'])test(`${runtime} HTTP cancellation records queued tool completion and usage before its durable end`,{timeout:30_000},async t=>{
- const f=await nativeFixture(t);withEnv(t,{...Object.fromEntries(['PATH','HOME','CODEX_HOME','CLAUDE_CONFIG_DIR','NATIVE_TEST_LOG'].map(k=>[k,f.env[k]])),NATIVE_TEST_EVENTS:JSON.stringify(transcript(runtime)),NATIVE_TEST_HOLD:'yes'});
+ // The CLI writes its tool start, then is descheduled: the rest reaches the pipe only after the cancel landed.
+ const f=await nativeFixture(t),gate=join(f.root,'tail-gate');withEnv(t,{...Object.fromEntries(['PATH','HOME','CODEX_HOME','CLAUDE_CONFIG_DIR','NATIVE_TEST_LOG'].map(k=>[k,f.env[k]])),NATIVE_TEST_EVENTS:JSON.stringify(transcript(runtime)),NATIVE_TEST_HOLD:'yes',NATIVE_TEST_TAIL_AFTER:'2',NATIVE_TEST_TAIL_GATE:gate});
  const {api,data,store:reader}=await serve(t,{runner:false});let runner,store,release=Promise.withResolvers(),started=Promise.withResolvers(),stopped=Promise.withResolvers();let held=false,stopping=false;
  t.after(async()=>{release.resolve();await runner?.close();await store?.close();});
  const connected=await api('POST','/native/connect',{project:f.project,runtime});assert.equal(connected.status,200);const agent=connected.body.agent.agent_id;
@@ -83,7 +84,7 @@ for(const runtime of ['claude-code','codex'])test(`${runtime} HTTP cancellation 
  }});
  runner=startRunner({store,name:'native-event-drain',leaseMs:60_000,renewEveryMs:1000,stopMarginMs:5000,pollMs:20,commandPollMs:30,createLoop:dispatch});
  const start=await api('POST',`/agents/${agent}/runs`,{input:{content:'Stop after the tool has reported.'}});assert.equal(start.status,202);const run=start.body.run_id;
- await within(started.promise);assert.equal((await api('POST',`/runs/${run}/cancel`,{})).status,202);await within(stopped.promise);
+ await within(started.promise);assert.equal((await api('POST',`/runs/${run}/cancel`,{})).status,202);await within(stopped.promise);await appendFile(gate,'');
  // The old path takes its end snapshot immediately and releases this gate there. The drained path has no end read
  // until its pending event commits; release independently rather than making that fixed path depend on the bug.
  await delay(1000);release.resolve();await follow(api,run,['cancelled']);
