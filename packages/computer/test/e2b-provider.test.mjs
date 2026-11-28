@@ -761,11 +761,15 @@ test("AGENTRUN_E2B_API_URL: create and list go to that API, beside the domain, a
 });
 
 test("AGENTRUN_E2B_API_URL that is not https, or carries a login, a query or a fragment, is refused naming the setting, never echoing a login, and nothing is called", async () => {
-	for (const bad of ["http://api.sb.mtm.sh", "https://user:hunter2-not-a-secret@api.sb.mtm.sh", "https://api.sb.mtm.sh/?team=hunter2-not-a-secret", "https://api.sb.mtm.sh/#hunter2-not-a-secret", "api.sb.mtm.sh", "wss://api.sb.mtm.sh"]) {
+	// A login with no password: a user name alone is refused as a password is.
+	const withLogin = new URL("https://api.sb.mtm.sh");
+	withLogin.username = "operator-login";
+	for (const bad of ["http://api.sb.mtm.sh", withLogin.href, "https://api.sb.mtm.sh/?team=hunter2-not-a-secret", "https://api.sb.mtm.sh/#hunter2-not-a-secret", "api.sb.mtm.sh", "wss://api.sb.mtm.sh"]) {
 		const { calls, Sandbox } = callRecorder();
-		await assert.rejects(create({ ...optionsOfKeys({ E2B_API_KEY: KEY, AGENTRUN_E2B_API_URL: bad }), Sandbox, daemonPath: DAEMON_PATH }), (error) => /^the E2B API URL \(AGENTRUN_E2B_API_URL\) /.test(error.message) && !error.message.includes("hunter2") && !error.message.includes(KEY), bad);
+		await assert.rejects(create({ ...optionsOfKeys({ E2B_API_KEY: KEY, AGENTRUN_E2B_API_URL: bad }), Sandbox, daemonPath: DAEMON_PATH }), (error) => /^the E2B API URL \(AGENTRUN_E2B_API_URL\) /.test(error.message) && !error.message.includes("hunter2") && !error.message.includes("operator-login") && !error.message.includes(KEY), bad);
 		assert.deepEqual(calls, [], bad);
 	}
+	await assert.rejects(create({ ...optionsOfKeys({ E2B_API_KEY: KEY, AGENTRUN_E2B_API_URL: withLogin.href }), Sandbox: recorder().Sandbox, daemonPath: DAEMON_PATH }), /takes no user or password/, "the login's own refusal, not another");
 });
 
 test("AGENTRUN_E2B_TEMPLATE: prepareImage answers it in place of the box template, for a desktop and a sandbox, and create starts it; a name that is no E2B template is refused naming the setting", async () => {
