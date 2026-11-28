@@ -437,6 +437,10 @@ new HostedProvider(host, { daemonPath, dial: { url: process.env.AGENTRUN_PUBLIC_
   host through it, unchanged.
 - **The token sits in the machine's env**, scoped to that machine (its kind, os and arch) until delete or its
   `backstopAt`, whichever comes first. A machine that never dials within `createMs` is deleted.
+- **Gap: one process creates a request.** Two `HostedProvider`s sharing one `MachineTokens` must not create the same
+  request name: a token goes by the machine's name, so the second mint replaces the first's token, and the delete that
+  settles the two machines revokes by name, which can cut the machine that is kept. Serve's requests carry the claim's
+  epoch, so two of its processes never share one.
 - **No Archil mount.** A spec with one is refused in words (`mountsOf` drops it on dial).
 - **A desktop over dial** works as on exec: create adds `DISPLAY` (`:0`) to the boot env, `agentrun-dial` gives it
   to init, and once the machine dials, its X server starts through computerd's `process.start` over that socket, as
