@@ -5,6 +5,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { EffectObserver, effectDecider } from "@parcha/pi-browser";
 import { cdpProvider } from "../dist/providers/cdp.js";
@@ -26,10 +27,12 @@ function recorder(observer) {
   const waiting = [];
   const stop = observer.record((row) => { rows.set(row.requestId, row); for (const w of waiting.splice(0)) if (!w()) waiting.push(w); });
   const decided = () => [...rows.values()].filter((row) => row.held !== "pending");
-  const until = (ready, ms = 30_000) => new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { const at = waiting.indexOf(check); if (at !== -1) waiting.splice(at, 1); reject(new Error(`the journal never got there in ${ms} ms: ${JSON.stringify([...rows.values()].map((row) => `${label(row)} ${row.held}`))}`)); }, ms);
+  // `signal` ends the wait early, resolved, as if it had got there: the caller reads the journal for what it has.
+  const until = (ready, ms = 30_000, signal) => new Promise((resolve, reject) => {
+    const forget = () => { clearTimeout(timer); const at = waiting.indexOf(check); if (at !== -1) waiting.splice(at, 1); };
+    const timer = setTimeout(() => { forget(); reject(new Error(`the journal never got there in ${ms} ms: ${JSON.stringify([...rows.values()].map((row) => `${label(row)} ${row.held}`))}`)); }, ms);
     const check = () => { if (!ready()) return false; clearTimeout(timer); resolve(); return true; };
-    if (!check()) waiting.push(check);
+    if (!check()) { waiting.push(check); signal?.addEventListener("abort", () => { forget(); resolve(); }, { once: true }); }
   });
   return { rows, decided, until, stop };
 }
@@ -38,12 +41,14 @@ function recorder(observer) {
  *  the drop and the case runs again, twice at most for a drop the page saw (a refused preflight) and five times for one
  *  Chrome lost when its network service died (Chrome for Testing 155 does that after a cross-origin preflight while Fetch
  *  interception is on, sandbox or not, more often the busier the machine). One still on its way is waited for. `attempts`
- *  is how many runs it took, `lost` how many of them were run again because the network service took them with it. */
-async function journalCase({ driver, observer, server, mode, c }) {
+ *  is how many runs it took, `lost` how many of them were run again because the network service took them with it, `late`
+ *  whether the last run's journal was still short when its wait (`journalMs`) ended, with no drop: a request still on its way. */
+async function journalCase({ driver, observer, server, mode, c, journalMs = 10_000 }) {
   const want = c.expected.length;
   let journal;
   let attempts = 0;
   let lost = 0;
+  let late = false;
   for (;;) {
     attempts += 1;
     server.reset();
@@ -51,7 +56,22 @@ async function journalCase({ driver, observer, server, mode, c }) {
     const drops = await driver.drops();
     const restarts = await driver.restarts();
     await driver.run({ code: JSON.stringify(c.steps) });
-    await journal.until(() => journal.decided().length >= want, 10_000).catch(() => undefined);
+    // The journal's wait ends at a drop too (a refused preflight, a restart of the network service): what was dropped is
+    // never journaled, so the rest of the wait would be spent on nothing.
+    // Checked every 250 ms, first after one wait: a journal that fills by then costs no check.
+    let drop = false;
+    const watch = new AbortController();
+    const dropped = (async () => {
+      for (;;) {
+        await delay(250, undefined, { signal: watch.signal }).catch(() => undefined);
+        if (watch.signal.aborted) return;
+        if ((await driver.drops()) !== drops) { drop = true; watch.abort(); return; }
+      }
+    })();
+    await journal.until(() => journal.decided().length >= want, journalMs, watch.signal).catch(() => undefined);
+    watch.abort();
+    await dropped;
+    late = journal.decided().length < want && !drop;
     // A request the page started that the browser has not ended (a preflight the network answers late) is still on its way,
     // neither journaled nor dropped: it is waited for, not read as an effect the observer missed. A held request is journaled
     // before the observer fails or continues it, so once it has ended its row is there. The wait ends early when the network
@@ -66,7 +86,7 @@ async function journalCase({ driver, observer, server, mode, c }) {
     if ((await driver.restarts()) > restarts) lost += 1;
     if (attempts - lost === 3 || lost === 5) break;
   }
-  return { rows: journal.rows, attempts, lost };
+  return { rows: journal.rows, attempts, lost, late };
 }
 
 /** A Chrome, the fixtures' server, the test driver and an observer that denies every effect. */
@@ -120,10 +140,31 @@ test("a cross-origin POST that Chrome loses with its network service is run agai
 
 test("a cross-origin POST whose preflight the network answers late is waited for, not read as an effect the observer missed: under deny it is journaled and denied", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {
   const { driver, observer, server } = await denyRig(t, "effects-slow");
-  // Longer than the journal's own wait: the request is still on its way, neither journaled nor dropped, when that wait ends.
-  server.slowPreflight("/api/xorigin", 12_000);
+  // Longer than the journal's own wait, by more than the run's own wait after the click: the request is still on its way,
+  // neither journaled nor dropped, when that wait ends. Every preflight on the path is late, so an attempt CI's Chrome
+  // loses with its network service (journalCase runs it again) is late again, and `late`, the last attempt's, still holds.
+  server.slowPreflight("/api/xorigin", 5_000);
   const c = CASES.find((each) => each.name.startsWith("G3"));
-  const { rows, attempts, lost } = await journalCase({ driver, observer, server, mode: "deny", c });
+  const { rows, attempts, lost, late } = await journalCase({ driver, observer, server, mode: "deny", c, journalMs: 2_000 });
+  assert.equal(late, true, "the request was still on its way when the journal's wait ended");
+  assert.deepEqual([...rows.values()].map((row) => `${label(row)} ${row.held}`), ["POST /api/xorigin denied"], `the late request is journaled (the server got ${JSON.stringify(server.nonGet())})`);
+  assert.equal(attempts - lost, 1, "it was waited for, not run again");
+  assert.deepEqual(server.nonGet(), [], "nothing reached the server");
+});
+
+test("a late preflight whose first attempt Chrome loses with its network service is waited for on the attempt that follows: under deny it is journaled and denied", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {
+  const { driver, observer, server } = await denyRig(t, "effects-slow-lost");
+  // The late case above, with its first attempt taken by the network service, as CI's Chrome sometimes does (see journalCase).
+  // The next attempt's navigation ends the request the lost one left (net::ERR_ABORTED), and that is no drop of its own:
+  // its preflight is late too, and it is waited for.
+  const pid = await driver.networkService();
+  assert.ok(pid, "Chrome names its network service's process");
+  server.slowPreflight("/api/xorigin", 5_000);
+  server.onPreflight("/api/xorigin", () => { try { process.kill(pid, "SIGKILL"); } catch {} });
+  const c = CASES.find((each) => each.name.startsWith("G3"));
+  const { rows, attempts, lost, late } = await journalCase({ driver, observer, server, mode: "deny", c, journalMs: 2_000 });
+  assert.ok(lost >= 1, `the first attempt was lost and run again (${attempts} attempts, ${lost} lost)`);
+  assert.equal(late, true, `the attempt that followed was still on its way when the journal's wait ended (${attempts} attempts, ${lost} lost)`);
   assert.deepEqual([...rows.values()].map((row) => `${label(row)} ${row.held}`), ["POST /api/xorigin denied"], `the late request is journaled (the server got ${JSON.stringify(server.nonGet())})`);
   assert.equal(attempts - lost, 1, "it was waited for, not run again");
   assert.deepEqual(server.nonGet(), [], "nothing reached the server");

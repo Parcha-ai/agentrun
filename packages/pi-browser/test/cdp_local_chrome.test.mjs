@@ -90,7 +90,7 @@ test("Browser.setDownloadBehavior lasts as long as the socket that sent it: a do
   await mkdir(chosen);
   const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root, args: ["--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost"] } });
   let ref; let stagehand; let setting;
-  const landed = async (dir, name) => { for (const deadline = Date.now() + 10_000; Date.now() < deadline; await new Promise((r) => setTimeout(r, 200))) if ((await readdir(dir).catch(() => [])).includes(name)) return true; return false; };
+  const landed = async (dir, name, ms = 10_000) => { for (const deadline = Date.now() + ms; ; await new Promise((r) => setTimeout(r, 200))) { if ((await readdir(dir).catch(() => [])).includes(name)) return true; if (Date.now() >= deadline) return false; } };
   try {
     ref = await provider.create({ tag: "cdp-setting-1", maxLifetimeS: 600, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 1000, height: 700 }, metadata: {} }, new AbortController().signal);
     const target = await provider.attach(ref);
@@ -109,7 +109,9 @@ test("Browser.setDownloadBehavior lasts as long as the socket that sent it: a do
     setting.close();
     await new Promise((r) => setTimeout(r, 500));
     await page.evaluate(() => document.getElementById("b").click());
-    assert.equal(await landed(chosen, "closed.bin"), false, "with the socket closed the setting is gone: nothing lands in the directory it chose");
+    // Waited for where it does land, the lease's own downloads directory, instead of for ten seconds of nothing.
+    assert.equal(await landed(path.join(root, "cdp-setting-1.downloads"), "closed.bin"), true, "with the socket closed the download lands in the lease's own directory");
+    assert.equal(await landed(chosen, "closed.bin", 0), false, "with the socket closed the setting is gone: nothing lands in the directory it chose");
   } finally {
     setting?.close();
     await stagehand?.close().catch(() => undefined);

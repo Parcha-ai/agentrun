@@ -16,7 +16,8 @@ export async function startServer() {
   /** By path, how many more preflights (OPTIONS) to refuse (a 403 with no CORS headers): the browser then drops the request
    *  it precedes, and never tries that preflight again itself, as it may after a connection the server cut. */
   const failPreflights = new Map();
-  /** By path, how long to keep the next preflight's answer back, once: the request it precedes waits that long to be sent. */
+  /** By path, how long to keep each preflight's answer back: the request it precedes waits that long to be sent. Every
+   *  preflight, not the next one only, so a run that the network service took with it is run again just as late. */
   const slowPreflights = new Map();
   /** By path, what to run when the next preflight arrives, once, before it is answered. */
   const onPreflights = new Map();
@@ -36,7 +37,7 @@ export async function startServer() {
       for (const w of watchers.splice(0)) if (!w.done()) watchers.push(w);
       const answer = () => respond(req, res, url, `http://localhost:${port}`);
       const slow = req.method === "OPTIONS" ? slowPreflights.get(url.pathname) : undefined;
-      if (slow !== undefined) { slowPreflights.delete(url.pathname); const timer = setTimeout(() => { delayed.delete(timer); answer(); }, slow); delayed.add(timer); }
+      if (slow !== undefined) { const timer = setTimeout(() => { delayed.delete(timer); answer(); }, slow); delayed.add(timer); }
       else if (held.has(url.pathname)) waiting.push(answer); else answer();
     });
   });

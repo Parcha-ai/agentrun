@@ -133,7 +133,11 @@ test("a form submitted by a run a SIGKILL cut reaches the server once: the repea
   const submit = `await page.locator("input[name=name]").fill("Ada Lovelace"); await page.getByRole("button", { name: "Submit" }).click(); await page.waitForSelector("#count"); return await page.locator("#count").innerText();`;
   const script = [["run", { code: `await page.goto(${JSON.stringify(`${site.base}/b`)}); return await page.title();` }], ["run", { code: submit }], ["run", { code: submit }], ["browser_read", { what: "text" }]];
   const landed = site.holdSubmissions();
-  const first = await child({ ...env, MODE: "first", SCRIPT: JSON.stringify(script) }, { killWhen: landed });
+  // Stagehand's extension runs a batch whose client died until the batch's deadline (it checks its abort between
+  // commands), and the second process's attach waits behind it: the run's batches get a deadline that fits them, not
+  // the 60 s default, so the reattach waits seconds, not a minute. (The first process writes it into the run's config,
+  // which the second reads back.)
+  const first = await child({ ...env, MODE: "first", SCRIPT: JSON.stringify(script), BATCH_TIMEOUT_MS: "10000" }, { killWhen: landed });
   assert.equal(first.signal, "SIGKILL", `the first process was cut inside the submitting run: ${first.err.slice(-800)}`);
   assert.equal(site.submissions(), 1);
   site.release();
