@@ -1,5 +1,0 @@
----
-packages: @parcha/agentrun-serve
-kind: fix
----
-A runner started on its own (`agentrun-serve runner`) now makes a census at each end of a Mode 2 run. The census reads the run's files on its Archil disk, and opens the disk with the account key the runner was started with. The launcher keeps that key out of the runner's environment, and the census was given the environment alone, so it found no key there. On a server with no key saved in its Archil settings, every Mode 2 end failed its census (`census <run id>: it failed (UNAVAILABLE)`), wrote "unscanned", and withheld the run's files from a cut read after it. The census now reads the runner's secrets by name, as the server's file routes do. A runner beside the server already did. Each end that makes no census now also says a metric line, `event=runner_census_failed runner=<name> run=<id> cause=<code, name or timeout>`, which a log-based alert can count. Any of them is worth one: a runner that can't count a run's files fails every end the same way.

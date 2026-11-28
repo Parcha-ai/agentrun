@@ -59,7 +59,7 @@
                   "deployment": {
                     "instances": 1,
                     "external": {
-                      "imagePath": "ghcr.io/parcha-ai/agentrun-server:v0.1.0-beta.67"
+                      "imagePath": "ghcr.io/parcha-ai/agentrun-server:v0.1.0-beta.68"
                     },
                     "docker": {
                       "configType": "default"
