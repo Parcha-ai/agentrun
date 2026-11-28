@@ -107,10 +107,11 @@ test("an owner replays a held revision on the inputs its hold was decided on: 20
   const { answered, handed_back, failed, skipped_write } = view.outcomes;
   assert.equal(answered + handed_back + failed + skipped_write, 5, `every input is counted once: ${JSON.stringify(view)}`);
   assert.equal(answered, 5, `each replay run ran the revision at its learning commit, the workflow alone: ${JSON.stringify(view)}`);
-  assert.equal(view.score.n, answered + handed_back, "scored: the inputs it answered or handed back");
   // The record it decided is a replay's, as a claim's is: the Learning tab and the gate read it unchanged.
   const records = (await api("GET", "/agents/source/learning/promotions")).body.promotions;
   const mine = records.filter((one) => one.replay_id === started.json.replay);
+  // An input whose grader's verdict could not be read (this world's faux model gives none) is scored on neither side.
+  assert.equal(view.score.n, answered + handed_back - (mine[1].check.unread ?? 0), "scored: the inputs it answered or handed back, less the unread");
   assert.deepEqual(mine.map(({ decided }) => decided), ["replaying", view.decided], JSON.stringify(records));
   assert.deepEqual([...mine[1].check.of].sort(), [...held].sort(), "replayed on the held inputs");
   assert.deepEqual(mine[1].check.outcomes, view.outcomes, "the read's outcomes are the record's");
@@ -122,6 +123,24 @@ test("an owner replays a held revision on the inputs its hold was decided on: 20
     assert.ok(["completed", "failed", "escalated"].includes(run.status), JSON.stringify(run));
   }
   assert.equal((await api("GET", `${path.slice(0, path.lastIndexOf("/"))}/not-a-replay`)).status, 404, "an unknown replay is 404");
+});
+
+// Review on #3914 (tenancy): a held replay's inputs are read by bare id off the hold's `check.of`, so a record naming
+// another agent's completed run (one no check of this agent's writes) never replays it: only the agent's own are inputs.
+test("an owner's held replay whose hold names another agent's run replays only the agent's own runs", { timeout: 240_000 }, async (t) => {
+  const { api, store, runs, main, replay } = await world(t, { graded: 2 });
+  assert.equal((await api("POST", "/agents", agent("other"))).status, 201);
+  const started = await api("POST", "/agents/other/runs", { input: { content: "What is 7 plus 42?" } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await follow(api, started.body.run_id, ["completed"], { deadlineMs: 60_000 });
+  const named = [...runs, started.body.run_id];
+  await putPromotions(store, "source", [{ workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "hold", reason: "checked on 3 inputs: held",
+    check: { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 3, agreed: 2, alone: 3, of: named, cost_usd: 0.01, outcomes: { answered: 3, handed_back: 0, failed: 0, skipped_write: 0 } }, inputs: named, commit: main }]);
+  const asked = await replay();
+  assert.equal(asked.status, 202, asked.text);
+  const reserved = (await api("GET", "/agents/source/learning/promotions")).body.promotions.find((one) => one.replay_id === asked.json.replay);
+  assert.deepEqual([asked.json.inputs, [...(reserved?.inputs ?? [])].sort()], [runs.length, [...runs].sort()], `only the agent's own runs: ${JSON.stringify(reserved)}`);
+  for (const id of reserved.runs) await follow(api, id, ["completed", "failed", "escalated"], { deadlineMs: 120_000 });
 });
 
 // Review on #3064 (PRRT_kwDOUmdVMs64QeeB): "held" reads the inputs off the revision's decided check (`check.of`), not

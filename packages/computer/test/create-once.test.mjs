@@ -1512,3 +1512,78 @@ test("a create with no request id is refused invalid on each, before any vendor 
 		assert.equal(vendor.made(fake), 0, id);
 	}
 });
+
+for (const [id, cloud] of Object.entries(CLOUD_BROWSERS)) {
+	const vendor = VENDORS[id];
+
+	test(`${id}: three creates of one request, the middle one's reply lost and its browser kept by its recovery: the claim's let-go (releaseUnheld) releases that browser, which nothing holds, and never the one the claim holds, another run's or a later epoch's`, async () => {
+		const { releaseUnheld } = await import("../dist/index.js");
+		const fake = vendor.vendor();
+		const run = "run-once";
+		const labels = { "agentrun.epoch": "1" };
+		const requestId = requestOf(`${id}-three-let-go`);
+		// X, B and A each look and find nothing; then X's POST makes the oldest (O), B's the middle (M, its reply lost once A
+		// has answered) and A's the newest (N). A's converge answers O and ends N, and B's recovery, which reads a newer one
+		// ended, keeps M: nobody holds it.
+		const [lookedX, lookedB, lookedA, madeX, madeB, answeredA] = [openable(), openable(), openable(), openable(), openable(), openable()];
+		const looked = () => Promise.all([lookedX.opened, lookedB.opened, lookedA.opened]);
+		const instance = (onPost) => async (input, init = {}) => (callOf(cloud, input, init).post ? onPost(input, init) : fake.fetch(input, init));
+		const x = await vendor.make({
+			...fake,
+			fetch: instance(async (input, init) => {
+				lookedX.open();
+				await looked();
+				const answer = await fake.fetch(input, init);
+				madeX.open();
+				return answer;
+			}),
+		});
+		const two = await vendor.make({
+			...fake,
+			fetch: instance(async (input, init) => {
+				lookedB.open();
+				await Promise.all([looked(), madeX.opened]);
+				await fake.fetch(input, init);
+				madeB.open();
+				await answeredA.opened;
+				// The vendor made B's browser, and its reply never comes.
+				throw new TypeError("fetch failed");
+			}),
+		});
+		const one = await vendor.make({
+			...fake,
+			fetch: instance(async (input, init) => {
+				lookedA.open();
+				await Promise.all([looked(), madeB.opened]);
+				return fake.fetch(input, init);
+			}),
+		});
+		const [made, b, a] = await Promise.all([
+			x.create(vendor.spec(labels), { requestId }),
+			two.create(vendor.spec(labels), { requestId }),
+			one.create(vendor.spec(labels), { requestId }).finally(() => answeredA.open()),
+		]);
+		const [oldest, middle, newest] = cloud.ids(fake);
+		const held = okOf(made, "X's create");
+		assert.equal(held.id, oldest, "X answers its own, the oldest");
+		assert.equal(okOf(a, "A's create").id, oldest, "A's converge answers the oldest");
+		assert.equal(b.ok, false, "B's create, its reply lost");
+		assert.equal(cloud.live(fake, newest), false, "A's own, the newest, is released");
+		assert.equal(cloud.live(fake, middle), true, "B's recovery kept the middle one: nobody holds it");
+		// Beside them: another run's browser at this epoch, and this run's at a later epoch (a later claim's).
+		const other = okOf(await x.create(vendor.spec({ "agentrun.run": "run-other", ...labels }), { requestId: requestOf(`${id}-other-run`) }), "another run's create");
+		const later = okOf(await x.create(vendor.spec({ "agentrun.epoch": "2" }), { requestId: requestOf(`${id}-later-epoch`) }), "a later epoch's create");
+
+		const swept = okOf(await releaseUnheld(x, run, 1, (info) => info.ref.id === held.id), "the let-go");
+		assert.deepEqual(swept.released.map((one) => one.ref.id), [middle], "the let-go released the browser nothing held");
+		assert.ok(swept.released[0].createdAt instanceof Date && !Number.isNaN(swept.released[0].createdAt.getTime()), "with when the vendor made it, which a host books its time from");
+		assert.deepEqual(swept.held.map((one) => one.id), [oldest], "the claim's browser is held");
+		assert.deepEqual(swept.failed, []);
+		assert.equal(cloud.live(fake, middle), false, "the middle one has ended");
+		assert.equal(cloud.live(fake, oldest), true, "the browser the claim holds still runs");
+		assert.equal(cloud.releases(fake, oldest), 0, "no release of the held browser was asked");
+		assert.equal(cloud.live(fake, other.id), true, "another run's browser still runs");
+		assert.equal(cloud.live(fake, later.id), true, "a later epoch's browser still runs");
+		for (const ref of [held, other, later]) okOf(await x.release(ref, "delete"), "release");
+	});
+}

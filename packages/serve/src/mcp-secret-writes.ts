@@ -10,13 +10,15 @@
 //   drops or changes its credential, moves it, or removes what it made at Composio.
 // A new server with no credential, the token's own server, a preview and a refresh (each keeps nothing new) stay open to a
 // token.
+// - In a workspace (API-only), a save or removal is judged on the workspace's own row alone (workspaceWriteRefused): its
+//   token writes its own server's credential, which no other workspace and no owner reaches.
 import { composioMadeKey, recordedMade } from "./composio-made.js";
 import { COMPOSIO_TOOLKIT } from "./composio-preset.js";
 import type { InputIssue } from "./errors.js";
 import { secretShapes } from "./learn/secrets.js";
 import { urlOf } from "./mcp-probe.js";
 import { mcpSourceKey, savedByToken } from "./mcp-sources.js";
-import { registerNotSecretWrite, registerSecretPage, registerSecretWrite, type SecretRequest } from "./secret-writes.js";
+import { registerNotSecretWrite, registerSecretPage, registerSecretRefusal, registerSecretWrite, registerWorkspaceSecretWrite, type SecretRequest } from "./secret-writes.js";
 import type { McpCredentialMark } from "./store/index.js";
 import { MCP_SERVER_NAME } from "./tool-names.js";
 import { isObject } from "./validate.js";
@@ -80,22 +82,62 @@ export async function tokenWriteOverRefused(_body: unknown, request: SecretReque
   const was = await store.mcp.server(name);
   request.seen = credentialMark(was);
   if (!was) return false;
-  return (was.sealed !== null && was.sealed !== undefined) || !savedByToken(await store.settings.get(mcpSourceKey(name)), was.createdAt);
+  const sealed = was.sealed !== null && was.sealed !== undefined;
+  if (!sealed && savedByToken(await store.settings.get(mcpSourceKey(name)), was.createdAt)) return false;
+  request.words = tokenWriteOverWords(name, sealed);
+  return true;
 }
+
+/** A workspace's token's save or removal of its own server (API-only, mcp-workspace.ts): refused only over a row of the
+ *  name its token did not save. A workspace's server is its own row, its credential sealed at its row key (bound to the
+ *  workspace, so it opens in no other row) and handed only to its own agents' runs, and no other workspace and no owner
+ *  reaches it, so its token saves, replaces and removes its credential. The write lands only while the row's credential
+ *  is still the one read here (request.seen), as every token write's does. What address a save may name is the save's
+ *  own check (api-only.ts apiOnlyMcpSave). */
+export async function workspaceWriteRefused(_body: unknown, request: SecretRequest): Promise<boolean> {
+  const [name] = request.params;
+  if (!name) return false;
+  const store = request.store as SavedServers;
+  const was = await store.mcp.server(name);
+  request.seen = credentialMark(was);
+  if (!was) return false;
+  return !savedByToken(await store.settings.get(mcpSourceKey(name)), was.createdAt);
+}
+
+/** The words tokenWriteOverRefused's refusal gets: it names the saved server the write would land on and why the token
+ *  may not write it (it keeps a credential, or the token did not save it), since the body may hold no secret at all. */
+export const tokenWriteOverWords = (name: string, sealed: boolean): string =>
+  `The MCP server ${name} ${sealed ? "keeps a credential" : "was not saved by the API token"}, so the token can't save over it or remove it. Use another name, or change it from the owner's signed-in session.`;
 
 /** MCP's operations the one gate reads: the predicates above decide each request. */
 export const MCP_SECRET_OPERATIONS = ["saveMcpServer", "startMcpOAuth", "putMcpPrivateHosts", "deleteMcpServer"] as const;
 const STORED: Partial<Record<(typeof MCP_SECRET_OPERATIONS)[number], (body: unknown, request: SecretRequest) => Promise<boolean>>> = { saveMcpServer: tokenWriteOverRefused, deleteMcpServer: tokenWriteOverRefused };
 for (const operation of MCP_SECRET_OPERATIONS) registerSecretWrite(operation, (body) => mcpWritesSecret(operation, body), STORED[operation]);
-// The Composio preset takes the owner's API key and seals it as an MCP header: its routes are the owner's session alone,
-// whatever the body (the listings, of a toolkit's actions and of the toolkits, send the key too, and only the session may
-// type one).
-registerSecretWrite("listComposioTools", () => true);
-registerSecretWrite("listComposioToolkits", () => true);
-registerSecretWrite("saveComposioServer", composioSaveSendsKey, composioSaveDropsSecret);
-// A save's body that sends a key's value, or anything but api_key_env alone in its place: a secret written.
-function composioSaveSendsKey(body: unknown): boolean {
+registerWorkspaceSecretWrite("saveMcpServer", workspaceWriteRefused);
+registerWorkspaceSecretWrite("deleteMcpServer", workspaceWriteRefused);
+// The Composio preset takes the owner's API key and seals it as an MCP header: its routes are the owner's session alone
+// (the listings, of a toolkit's actions and of the toolkits, send the key too, and only the session may type one), but
+// for a body that names the key by api_key_env on an API-only server (composioSaveDropsSecret, composioListingOwners).
+registerSecretWrite("listComposioTools", composioSendsKey, composioListingOwners);
+registerSecretWrite("listComposioToolkits", composioSendsKey, composioListingOwners);
+registerSecretWrite("saveComposioServer", composioSendsKey, composioSaveDropsSecret);
+// A listing keeps nothing, so its refusal says what the token may list with, not the secret write's words.
+registerSecretRefusal(["listComposioTools", "listComposioToolkits"], (request) => (request.apiOnly ? COMPOSIO_LISTING_REFUSAL.apiOnly : COMPOSIO_LISTING_REFUSAL.elsewhere));
+/** A token's refused Composio listing: on an API-only server it lists with the key api_key_env names; anywhere else the
+ *  listings are the owner's session alone. */
+export const COMPOSIO_LISTING_REFUSAL = {
+  apiOnly: "A listing that sends a key's value takes the owner's signed-in session; on this server name the key by api_key_env instead.",
+  elsewhere: "Listing Composio's toolkits or tools takes the owner's signed-in session in the console; the API token lists them only on an API-only server, with the key named by api_key_env.",
+};
+// A body that sends a key's value, or anything but api_key_env alone in its place: a secret written.
+function composioSendsKey(body: unknown): boolean {
   return !(isObject(body) && body.api_key === undefined && body.api_key_env !== undefined);
+}
+/** A listing that names its key by api_key_env keeps nothing and sends no value of the caller's: the token's on an
+ *  API-only server, which has no owner to list from the console, reads Composio's catalog with the server's own key.
+ *  Anywhere else the listings stay the owner's session alone, as the saves do. */
+export async function composioListingOwners(_body: unknown, request: SecretRequest): Promise<boolean> {
+  return request.apiOnly !== true;
 }
 /** A Composio save that names its key by api_key_env (the server keeps the variable's name, never its value) writes no
  *  secret only on an API-only server, which has no owner to save the key from the console: its token's own save, over a

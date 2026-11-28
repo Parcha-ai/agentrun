@@ -177,7 +177,7 @@ test("a write whose arguments the recording does not have is never sent: the inp
   assert.equal(second.metrics?.path, "agent", `held: the agent takes the run: ${JSON.stringify(second.metrics)}\n${logs.join("\n")}`);
   const decided = (await promotionsOf(server.learning, "agent-1")).at(-1);
   assert.deepEqual({ decided: decided.decided, n: decided.check.n, skipped_write: decided.check.outcomes.skipped_write, stopped: decided.check.stopped }, { decided: "hold", n: 0, skipped_write: 5, stopped: true });
-  assert.equal(decided.reason, "nothing to check it on: 5 inputs skipped because each needs a write the recording doesn't have (a check never runs a write). It is not promoted, and it stops: nothing compiles again until a hold or its owner acts");
+  assert.equal(decided.reason, "nothing to check it on: 5 inputs skipped because each needs a write the recording doesn't have (a check never runs a write). It is not promoted, and it stops: nothing compiles again until a correction or compile_after new runs of the agent's own restart it");
   assert.deepEqual(decided.check.skipped_tools, [{ tool: "mcp:fake/delete_thing", inputs: 5, no_read_only_hint: false }], "a destructive tool: a write, never a missing hint");
   assert.doesNotMatch(decided.reason, /readOnlyHint/);
 });
@@ -198,5 +198,5 @@ test("an MCP tool its server lists with no annotations stops every input: held, 
   assert.equal(second.metrics?.path, "agent", `held: the agent takes the run: ${JSON.stringify(second.metrics)}\n${logs.join("\n")}`);
   const decided = (await promotionsOf(server.learning, "agent-1")).at(-1);
   assert.deepEqual({ decided: decided.decided, n: decided.check.n, skipped_write: decided.check.outcomes.skipped_write, skipped_tools: decided.check.skipped_tools, stopped: decided.check.stopped }, { decided: "hold", n: 0, skipped_write: 5, skipped_tools: [{ tool: "mcp:fake/add", inputs: 5, no_read_only_hint: true }], stopped: true });
-  assert.equal(decided.reason, "nothing to check it on: 5 inputs skipped because add has no readOnlyHint, so replay can't run it: if it only reads, mark it read-only in the MCP server. It is not promoted, and it stops: nothing compiles again until a hold or its owner acts");
+  assert.equal(decided.reason, "nothing to check it on: 5 inputs skipped because add has no readOnlyHint, so replay can't run it: if it only reads, mark it read-only in the MCP server. It is not promoted, and it stops: nothing compiles again until a correction or compile_after new runs of the agent's own restart it");
 });

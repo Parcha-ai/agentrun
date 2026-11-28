@@ -38,7 +38,7 @@ export default {
       popover: "var(--layer-popover)",
       toast: "var(--layer-toast)",
     },
-    boxShadow: { none: "none", float: "var(--shadow-float)" },
+    boxShadow: { none: "none", float: "var(--shadow-float)", drawer: "var(--shadow-drawer)" },
     transitionDuration: { DEFAULT: "var(--duration-fast)", fast: "var(--duration-fast)", base: "var(--duration-base)", slow: "var(--duration-slow)" },
     transitionTimingFunction: { DEFAULT: "var(--ease-standard)", standard: "var(--ease-standard)", linear: "linear" },
     extend: {

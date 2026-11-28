@@ -14,12 +14,12 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { CANARY as JEV_KEY } from "./fixtures/faux-jev-web.mjs";
 import { CANARY as PARALLEL_KEY } from "./fixtures/faux-parallel.mjs";
-import { paidBookings, toolLedger } from "./support.mjs";
+import { agent, paidBookings, serve, toolLedger } from "./support.mjs";
 
 const { searchFor, webSearchTool } = await import("../dist/web-search.js");
 const { webFetchTool } = await import("../dist/web-fetch.js");
 const { webOf } = await import("../dist/web-run.js");
-const { handsJevWeb, explainsView, planeFor, recheckPlane, TOOL_PLANE_ENV } = await import("../dist/tool-plane.js");
+const { canonicalToolSettings, checkToolSettings, claimPlane, handsJevWeb, explainsView, planeFor, recheckPlane, relaunchPlane, settingsIssues, TOOL_PLANE_ENV } = await import("../dist/tool-plane.js");
 const { decisionKeysFor } = await import("../dist/decisions.js");
 const { bookedIn } = await import("../dist/paid-calls.js");
 const { claimSecrets } = await import("../dist/runner/claim-secrets.js");
@@ -29,9 +29,14 @@ const { putSealedKey } = await import("../dist/server-keys.js");
 const FAUX_JEV = new URL("./fixtures/faux-jev-web.mjs", import.meta.url).pathname;
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
 const FAUX_WEB = new URL("./fixtures/faux-web.mjs", import.meta.url).pathname;
-const ON = "Jev (jev-1.14.0) ranks results against the objective, or the query when none is given; each search sends that and each result's URL, title, snippet and published date to TypeSafe, billed per request on the server's TypeSafe key";
-/** What capabilities' why adds for a web_fetch the run's own Web serves, where Jev runs on TypeSafe's key. */
-const FETCH_ON = "a fetch given an objective sends the page's text and the objective to TypeSafe for Jev (jev-1.14.0) to pick its chunks, billed per request on the server's TypeSafe key; a fetch with none sends TypeSafe nothing";
+/** What capabilities' why must say for a web_search the run's own Web runs, where Jev runs on TypeSafe's key: Jev and its
+ *  model, TypeSafe, and that each result's URL goes there. Facts, never the sentence, so a rewording keeps them. */
+const ON = [/\bJev\b/, /jev-1\.14\.0/, /TypeSafe/, /\bURL\b/];
+/** What it must say for a web_fetch the run's own Web serves, where Jev runs on TypeSafe's key: Jev and its model,
+ *  TypeSafe, and that the page's text goes there. */
+const FETCH_ON = [/\bJev\b/, /jev-1\.14\.0/, /TypeSafe/, /page's text/];
+/** Whether `why` says each of `facts`. */
+const says = (why, facts) => facts.every((fact) => fact.test(why));
 
 /** A claim's tool environment as the runner hands it: Parallel's key and a plane resolving both web tools to Parallel,
  *  under --faux, with `more` laid over (TypeSafe's key, the off switch). */
@@ -302,9 +307,11 @@ test("capabilities' why says what Jev does with web_search: on with TypeSafe's k
   const resolves = explainsView({}, {}).web_search.resolves;
   const ours = Object.keys(resolves).find((harness) => resolves[harness] === "firecrawl-keyless");
   assert.ok(ours, `a harness whose web_search is the run's own: ${JSON.stringify(resolves)}`);
-  assert.ok(why({ TYPESAFE_API_KEY: JEV_KEY })[ours].endsWith(`; ${ON}`), why({ TYPESAFE_API_KEY: JEV_KEY })[ours]);
-  assert.ok(why({ OPENROUTER_API_KEY: JEV_KEY })[ours].endsWith("; Jev off: no TypeSafe key"), why({ OPENROUTER_API_KEY: JEV_KEY })[ours]);
-  assert.ok(why({ TYPESAFE_API_KEY: JEV_KEY, AGENTRUN_WEB_JEV_OFF: "1" })[ours].endsWith("; Jev off (AGENTRUN_WEB_JEV_OFF)"));
+  assert.ok(says(why({ TYPESAFE_API_KEY: JEV_KEY })[ours], ON), why({ TYPESAFE_API_KEY: JEV_KEY })[ours]);
+  const openRouter = why({ OPENROUTER_API_KEY: JEV_KEY })[ours];
+  assert.ok(/\bJev off\b/.test(openRouter) && /TypeSafe key/.test(openRouter) && !says(openRouter, ON), `an OpenRouter key alone: Jev off, for want of a TypeSafe key: ${openRouter}`);
+  const off = why({ TYPESAFE_API_KEY: JEV_KEY, AGENTRUN_WEB_JEV_OFF: "1" })[ours];
+  assert.ok(/\bJev off\b/.test(off) && /AGENTRUN_WEB_JEV_OFF/.test(off) && !says(off, ON), `the switch: Jev off, naming it: ${off}`);
   assert.doesNotMatch(why({})[ours], /Jev/, "no key: the why is as it was");
   assert.ok(!JSON.stringify(explainsView({ TYPESAFE_API_KEY: JEV_KEY }, {})).includes(JEV_KEY), "the key is in no why");
 });
@@ -315,13 +322,14 @@ test("capabilities' why for web_fetch says what goes to TypeSafe where Jev picks
   assert.ok(harnesses.length > 0, "capabilities lists harnesses");
   for (const harness of harnesses) {
     const on = why({ TYPESAFE_API_KEY: JEV_KEY })[harness];
-    assert.ok(on.endsWith(`; ${FETCH_ON}`), `${harness}: a server holding TypeSafe's key says web_fetch sends the page's text and the objective to TypeSafe: ${on}`);
-    const keyed = why({ TYPESAFE_API_KEY: JEV_KEY, PARALLEL_API_KEY: PARALLEL_KEY })[harness];
-    assert.ok(keyed.startsWith("Parallel's extract") && keyed.endsWith(`; ${FETCH_ON}`), `${harness}: Parallel first, and the same TypeSafe clause: ${keyed}`);
+    assert.ok(says(on, FETCH_ON), `${harness}: a server holding TypeSafe's key says web_fetch sends the page's text to TypeSafe: ${on}`);
+    const keyedEnv = { TYPESAFE_API_KEY: JEV_KEY, PARALLEL_API_KEY: PARALLEL_KEY };
+    const keyed = why(keyedEnv)[harness];
+    assert.ok(explainsView(keyedEnv, {}).web_fetch.resolves[harness] === "parallel" && says(keyed, FETCH_ON), `${harness}: Parallel first, and the same TypeSafe facts: ${keyed}`);
     const off = why({ TYPESAFE_API_KEY: JEV_KEY, AGENTRUN_WEB_JEV_OFF: "1" })[harness];
-    assert.ok(off.endsWith("; Jev off (AGENTRUN_WEB_JEV_OFF)") && !/TypeSafe for Jev|sends the page/.test(off), `${harness}: Jev off claims nothing goes to TypeSafe: ${off}`);
+    assert.ok(/\bJev off\b/.test(off) && /AGENTRUN_WEB_JEV_OFF/.test(off) && !/page's text/.test(off), `${harness}: Jev off claims nothing goes to TypeSafe: ${off}`);
     const openRouter = why({ OPENROUTER_API_KEY: JEV_KEY })[harness];
-    assert.ok(openRouter.endsWith("; Jev off: no TypeSafe key") && !/sends the page/.test(openRouter), `${harness}: an OpenRouter key alone: no web Jev: ${openRouter}`);
+    assert.ok(/\bJev off\b/.test(openRouter) && /TypeSafe key/.test(openRouter) && !/page's text/.test(openRouter), `${harness}: an OpenRouter key alone: no web Jev: ${openRouter}`);
     assert.doesNotMatch(why({})[harness], /Jev|TypeSafe/, `${harness}: no key: the why is as it was`);
     assert.doesNotMatch(why({ TYPESAFE_API_KEY: JEV_KEY }, { web_fetch: { permission: "deny" } })[harness], /TypeSafe/, `${harness}: a denied web_fetch sends nothing, and says nothing of Jev`);
   }
@@ -329,7 +337,8 @@ test("capabilities' why for web_fetch says what goes to TypeSafe where Jev picks
 
 test("web_search's description says a result may carry relevance and a sift line says how the results were ranked, naming no provider", () => {
   const { description } = webSearchTool(claimEnv());
-  assert.match(description, /Each result may carry relevance \(0 to 1\), how likely it holds what the search asks for, and a sift line says how the results were ranked, or why not\./);
+  assert.match(description, /\brelevance \(0 to 1\)/, "a result may carry relevance, 0 to 1");
+  assert.match(description, /\bsift\b/, "a sift line says how the results were ranked");
   assert.doesNotMatch(description, /Jev|TypeSafe/);
 });
 
@@ -344,7 +353,7 @@ for (const [status, code] of [["401", "auth"], ["402", "payment_required"]]) {
     const first = await onLedger(() => webOf(env).search("widgets delaware", { n: 4 }));
     const asked = calls().length;
     assert.ok(asked >= 1, "Jev was asked, and refused");
-    assert.equal(first.got.answer.sift, `not run (${code}); these results are unsifted`);
+    assert.ok(first.got.answer.sift?.startsWith(`not run (${code})`), `the sift names the refusal: ${first.got.answer.sift}`);
     const lines = first.got.receipt.cost.lines.filter((line) => line.by === "jev");
     const charges = first.rows.filter((row) => row.charged_by === "jev" && row.kind === "agentrun.tool_cost");
     assert.equal(lines.length, asked, `a line for each Jev request: ${JSON.stringify(first.got.receipt.cost.lines)}`);
@@ -353,14 +362,100 @@ for (const [status, code] of [["401", "auth"], ["402", "payment_required"]]) {
 
     const second = await onLedger(() => webOf(env).search("widgets delaware", { n: 4 }));
     assert.equal(calls().length, asked, "the run's next search sends Jev nothing");
-    assert.equal(second.got.answer.sift, "not run (held); these results are unsifted");
+    assert.ok(second.got.answer.sift?.startsWith("not run (held)"), `the sift says Jev is held: ${second.got.answer.sift}`);
     assert.deepEqual(second.got.receipt.cost.lines.filter((line) => line.by === "jev"), [], "no Jev line");
     assert.deepEqual(second.rows.filter((row) => row.charged_by === "jev"), [], "nothing held or booked for Jev");
     assert.equal(second.got.receipt.classifier.requests, 0, "the record says no request was sent");
 
     const read = await onLedger(async () => (await webFetchTool(env).execute({ url: "http://public.example/notes.txt", objective: "where widgets are incorporated" }, {}, {})).details);
     assert.equal(calls().length, asked, "nor does its next fetch with an objective");
-    assert.equal(read.got.sift, "objective not applied (held); this part is in page order", "the fetch's sift says Jev is held, in a fetch's words");
+    assert.ok(read.got.sift?.startsWith("objective not applied (held)"), `the fetch's sift says Jev is held, in a fetch's words: ${read.got.sift}`);
     assert.deepEqual(read.rows.filter((row) => row.charged_by === "jev"), [], "nothing held or booked for Jev");
   });
 }
+
+// An agent's own Jev switch: `jev: "off"` on web_search or web_fetch in its definition's tool_settings turns Jev off for
+// both of its web tools, as the server's AGENTRUN_WEB_JEV_OFF does for every agent. The run's plane carries it, so no
+// TypeSafe key is handed and its Web has no decider.
+
+/** A server holding TypeSafe's key and Parallel's, with no Jev switch of its own. */
+const KEYED = { TYPESAFE_API_KEY: JEV_KEY, PARALLEL_API_KEY: PARALLEL_KEY };
+/** A pi agent granted both web tools, its own tool settings `overrides`. */
+const webAgent = (overrides) => ({ harness: "pi", tools: ["web_search", "web_fetch"], ...(overrides ? { overrides } : {}) });
+
+for (const on of ["web_search", "web_fetch"]) {
+  test(`an agent's own jev "off" on ${on} turns Jev off for both web tools: its plane says so, no TypeSafe key is handed, its Web has no decider`, async (t) => {
+    const calls = jevCalls(t);
+    const claim = await nativeClaims(t);
+    const tooling = webAgent({ [on]: { jev: "off" } });
+    const plane = planeFor(KEYED, tooling, {}, { run: true });
+    assert.equal(plane.jev, "off", `the run's plane says Jev is off: ${JSON.stringify(plane)}`);
+    assert.equal(handsJevWeb(plane, KEYED, "pi"), false, "the run is not handed TypeSafe's key for its web tools");
+    assert.deepEqual(Object.keys(decisionKeysFor(KEYED, { providers: [], parallelWeb: false, jevWeb: handsJevWeb(plane, KEYED, "pi") })), [], "its decision keys hold no TypeSafe key");
+    assert.equal(await claim("pi", tooling.tools, plane), "none", "a claim of it is handed no TypeSafe key");
+    const toolEnv = claimEnv({ TYPESAFE_API_KEY: JEV_KEY, [TOOL_PLANE_ENV]: JSON.stringify(plane) });
+    const found = (await onLedger(() => search(toolEnv))).got;
+    assert.equal(found.sift, undefined, "a run handed the key anyway has no decider: its plane says Jev is off");
+    assert.deepEqual(calls(), [], "Jev was never asked");
+  });
+}
+
+test("an agent's Jev off is kept at every later launch and claim: relaunchPlane (with a plane kept, and for a run kept before planes were) and claimPlane, past a ceiling too", () => {
+  const tooling = webAgent({ web_search: { jev: "off" } });
+  const kept = planeFor(KEYED, tooling, {}, { run: true });
+  assert.equal(kept.jev, "off");
+  const runner = { PARALLEL_API_KEY: PARALLEL_KEY };
+  assert.equal(relaunchPlane(kept, runner, tooling, {}).jev, "off", "a relaunch keeps it on a runner with no switch");
+  assert.equal(relaunchPlane(undefined, KEYED, tooling, {}).jev, "off", "a run kept before its plane was resolves today's, with it");
+  assert.equal(relaunchPlane(undefined, KEYED, tooling, {}, { first: true }).jev, "off", "and at its first launch");
+  assert.equal(claimPlane(kept, KEYED, tooling, {}).jev, "off", "a claim keeps it");
+  const ceiling = { web_search: { provider: "native" } };
+  const past = claimPlane(kept, KEYED, tooling, ceiling);
+  assert.notEqual(past.web_search, kept.web_search, `the claim resolved web_search again under the ceiling: ${JSON.stringify(past)}`);
+  assert.equal(past.jev, "off", "and keeps Jev off");
+});
+
+test("an agent with no jev setting is unchanged: Jev on, the key handed, the why the server's", () => {
+  for (const overrides of [undefined, { web_search: { provider: "parallel" }, web_fetch: { permission: "allow" } }]) {
+    const tooling = webAgent(overrides);
+    const plane = planeFor(KEYED, tooling, {}, { run: true });
+    assert.equal(Object.hasOwn(plane, "jev"), false, `no jev field: ${JSON.stringify(plane)}`);
+    assert.equal(handsJevWeb(plane, KEYED, "pi"), true, "the run is handed TypeSafe's key");
+    assert.equal(relaunchPlane(undefined, KEYED, tooling, {}).jev, undefined);
+  }
+  const view = explainsView({ TYPESAFE_API_KEY: JEV_KEY }, {}, { web_search: { provider: "auto" } });
+  for (const why of Object.values(view.web_search.why).filter((one) => one.includes("Jev"))) assert.ok(says(why, ON), why);
+  for (const why of Object.values(view.web_fetch.why)) assert.ok(says(why, FETCH_ON), why);
+  assert.equal(planeFor(KEYED, { harness: "pi", tools: ["read"], overrides: { web_search: { jev: "off" } } }, {}).jev, undefined, "a plane with no web tool carries no jev, as under the server's switch");
+});
+
+test("settings: jev is an agent's own, on web_search or web_fetch, and only \"off\"; the one form keeps it; the server's file drops it", () => {
+  const issues = (value, layer) => settingsIssues(value, "tool_settings", layer).map((issue) => [issue.field, issue.reason]);
+  assert.deepEqual(settingsIssues({ web_search: { jev: "off" } }, "tool_settings", "agent"), [], "off on web_search");
+  assert.deepEqual(settingsIssues({ web_fetch: { jev: "off", provider: "auto", permission: "allow" } }, "tool_settings", "agent"), [], "off on web_fetch, beside its provider and permission");
+  assert.deepEqual(issues({ web_search: { jev: "on" } }, "agent"), [["tool_settings.web_search.jev", "not_an_option"]], "on is not an option: leaving it out is on");
+  assert.deepEqual(issues({ web_search: { jev: true } }, "agent"), [["tool_settings.web_search.jev", "not_an_option"]]);
+  const bash = settingsIssues({ bash: { jev: "off" } }, "tool_settings", "agent");
+  assert.deepEqual(bash.map((issue) => [issue.field, issue.reason]), [["tool_settings.bash.jev", "not_allowed"]], "never on another tool");
+  assert.match(bash[0].message, /definition\.tool_settings\.web_search\.jev/, bash[0].message);
+  const server = settingsIssues({ web_search: { jev: "off" } });
+  assert.deepEqual(server.map((issue) => [issue.field, issue.reason]), [["web_search.jev", "not_allowed"]], "never the server's");
+  assert.match(server[0].message, /definition\.tool_settings\.web_search\.jev/, server[0].message);
+  assert.match(settingsIssues({ web_fetch: "off" }, "tool_settings", "agent")[0].message, /\bjev\b/, "an agent's web tool's setting lists jev among its fields");
+  assert.equal(JSON.stringify(canonicalToolSettings({ web_search: { provider: "auto", jev: "off" }, web_fetch: { jev: "off" } })), JSON.stringify({ web_fetch: { jev: "off" }, web_search: { jev: "off", provider: "auto" } }), "a revision body keeps jev");
+  const read = checkToolSettings({ web_search: { provider: "parallel", jev: "off" } }, "tools.json");
+  assert.deepEqual(read.settings, { web_search: { provider: "parallel" } }, "the server's file keeps what reads and drops jev");
+  assert.deepEqual(read.problems, ["tools.json: web_search.jev not_allowed"]);
+});
+
+test("the API: POST /v2/agents keeps an agent's jev off and GET answers it; jev on, on another tool or in the server's settings is refused", async (t) => {
+  const { api } = await serve(t, {});
+  const made = await api("POST", "/agents", agent("unranked", { tools: ["web_search", "web_fetch"], tool_settings: { web_search: { jev: "off" } } }));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  assert.deepEqual((await api("GET", "/agents/unranked")).body.definition.tool_settings, { web_search: { jev: "off" } });
+  const on = await api("POST", "/agents", agent("ranked", { tools: ["web_search"], tool_settings: { web_search: { jev: "on" } } }));
+  assert.equal(on.status, 422);
+  assert.ok(JSON.stringify(on.body).includes("tool_settings.web_search.jev"), JSON.stringify(on.body));
+  assert.equal((await api("POST", "/agents", agent("bash-jev", { tool_settings: { bash: { jev: "off" } } }))).status, 422);
+  assert.equal((await api("PUT", "/settings/tools", { web_search: { jev: "off" } })).status, 422);
+});

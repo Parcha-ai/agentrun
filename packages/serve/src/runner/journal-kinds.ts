@@ -133,6 +133,11 @@ export const KINDS = {
    *  `inClaim: true` with `at` (ms): the run waits for the answer in its claim instead (adapter-loop waitInClaim), from
    *  `at`, its commit carrying the row's ASK_PERSON_WAITING summary; `answered: true` clears that summary. */
   personAsked: "agentrun.person.asked",
+  /** A claim's tool hosts did not finish letting the run go (their beforeRelease) within its bound (loop-contract.ts
+   *  releaseBoundMs), on the root: `bound_ms`, `after_ms`, how many hooks there were and how many finished. What they had
+   *  booked by then stands; what they had not is left to the next claim (a browser session's reserve stays held, and its
+   *  reopen books it). Neither a call nor a message, so the reader passes over it. */
+  releaseCut: "agentrun.release.cut",
 } as const;
 
 /** The run row's summary while it waits on the person's answer to its question (ask_person), parked or in its claim: the

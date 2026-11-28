@@ -198,3 +198,15 @@ test("computer keys: keyChoices' failures: a refused key names the key to check;
   const none = await keyChoices("orgo", "ORGO_WORKSPACE_ID", { keys: { ORGO_API_KEY: KEY } }, { orgo: choosingModule({ ok: false, error: { code: "not_found", message: "this Orgo key's account has no workspace: make one at orgo.ai" } }).create });
   assert.deepEqual(none, { ok: false, error: { code: "not_found", message: "this Orgo key's account has no workspace: make one at orgo.ai" } });
 });
+
+test("a key split by a control character, a terminal sequence or a box in a vendor's words is withheld with them", async () => {
+  const [head, rest] = [KEY.slice(0, 9), KEY.slice(9)];
+  for (const between of ["\u0000", "\u001b[0m", "\ufffe"]) {
+    const leaky = fakeModule({ ok: true, value: { detail: `token ${head}${between}${rest} works` } });
+    const ok = await testConnection("kernel", { keys: { KERNEL_API_KEY: KEY } }, { kernel: leaky.create });
+    assert.deepEqual(ok, { ok: true, value: { detail: "[the key]" } }, JSON.stringify(between));
+  }
+  // Control: words with no key in them are kept as they came.
+  const plain = fakeModule({ ok: true, value: { detail: "token \u001b[0mworks" } });
+  assert.deepEqual(await testConnection("kernel", { keys: { KERNEL_API_KEY: KEY } }, { kernel: plain.create }), { ok: true, value: { detail: "token \u001b[0mworks" } });
+});

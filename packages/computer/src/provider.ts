@@ -370,7 +370,9 @@ export type ReadBackNotes = string[];
 
 /**
  * What a computer was given, as its vendor's own answer for it says (its get or create answer): the figures the vendor
- * bills by. Each field is absent where the vendor's answer does not say it, never guessed from what was asked.
+ * bills by. Each field is absent where the vendor's answer does not say it, never guessed from what was asked. One
+ * exception: a provider whose vendor reads no size back and bills a computer by its use, up to limits its create set
+ * (Modal), gives those limits, the most the computer's time can bill.
  */
 export interface ComputerResources {
 	cpus?: number;
@@ -415,6 +417,9 @@ export interface ComputerInfo {
 	owner?: ComputerOwner;
 	/** An agent's computer that is detached now: when it was detached, the janitor's idle clock. Absent otherwise. */
 	detachedAt?: Date;
+	/** When the vendor made it, where its listing says (a browser vendor's session list does): what a host that releases
+	 *  one no claim held (releaseUnheld) books its time from. Absent where the listing does not say. */
+	createdAt?: Date;
 }
 
 export interface CallContext {

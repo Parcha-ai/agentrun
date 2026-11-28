@@ -4,10 +4,10 @@
 // the run's folder or one that mounts none; an agent given it has the op decided by the tool's setting, as before. What
 // the model is offered agrees: computer_op's op list and a script's `computer` declarations leave out every op held to a
 // tool that the gate would refuse whatever its arguments (its tool not given, the tool it is held to set to deny, or set
-// to ask where no one can approve), and both say that input ops can drive a terminal app or a file manager and apps.open
-// a URL or a path, so
-// leaving bash, read or write out is no boundary on a computer that has them. shell.run and processes.start need no
-// grant: bash's setting alone holds them.
+// to ask where no one can approve), and both say that input ops can drive a terminal app or a file manager, that
+// apps.open can open a URL or a path, and that where write is granted apps.open with neither reaches a shell too (an app
+// reads its config from the user's home), so leaving bash, read or write out is no boundary on a computer that has them.
+// shell.run and processes.start need no grant: bash's setting alone holds them.
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,8 +26,9 @@ const op = (name, args) => ({ callId: `c-${name}`, tool: COMPUTER_OP_TOOL, args:
 const READS = ["files.read", "files.list", "files.stat"];
 const PATH = { path: "/workspace/notes.txt" };
 /** The words every offer of a computer's ops carries: a terminal app, a file manager and an app opened on a URL or a
- *  path reach what the shell and the file ops do, whatever their settings. */
-const GUI_REACH = "Input ops on a computer with a terminal app or a GUI file manager, and apps.open with a URL or a path, can do what a shell or the file ops do, whatever bash's, read's or write's setting.";
+ *  path reach what the shell and the file ops do, whatever their settings, and where write is granted so does an app
+ *  opened on neither, as it reads its config from the user's home. */
+const GUI_REACH = "Input ops on a computer with a terminal app or a GUI file manager, and apps.open with a URL or a path, can do what a shell or the file ops do, whatever bash's, read's or write's setting; where write is granted, apps.open can do what a shell does even with no URL or path, since an app reads its config from the user's home.";
 
 /** The run's gate for an agent on a desktop; `tools` null: the agent names no tools list at all; `approvers` false: no
  *  one can approve an ask on this server. */

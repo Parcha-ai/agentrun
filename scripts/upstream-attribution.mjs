@@ -59,11 +59,19 @@ export const ALLOWED_MARKS = {
     ['dist/vendor/stagehand-facade/contract.js', 'Vercel AI SDK', 2, "upstream Stagehand's comments"],
     ['dist/vendor/stagehand-facade/contract.d.ts', 'Vercel AI SDK', 1, "upstream Stagehand's comment"],
   ],
+  // The Vercel Sandbox provider names the vendor it drives (nominative use): its own module, its descriptor and
+  // conformance module, the label in the descriptors' type, and its README section.
+  computer: [
+    [/^dist\/(?:conformance\/|descriptors\/)?vercel\.(?:js|d\.ts)$/, 'Vercel', 41, "the Vercel Sandbox provider's own modules: the vendor, its API and its docs"],
+    ['dist/descriptors/index.d.ts', 'Vercel Sandbox', 1, "the Vercel Sandbox provider's label"],
+    ['README.md', 'Vercel', 12, "the Vercel Sandbox provider's section and its keys"],
+  ],
   serve: [
     // The console names an existing eve runtime, not the origin of AgentRun's forked harness.
     // Only the content hash varies; this does not exempt the asset, its other strings or its SVGs.
     [/^dist\/console\/assets\/index-[A-Za-z0-9_-]+\.js$/, '"Vercel eve"', 1, 'the connected-agent runtime display label'],
     [/^dist\/console\/assets\/index-[A-Za-z0-9_-]+\.js$/, 'using Vercel eve. Read', 2, 'run and edit handoffs to the existing eve application'],
+    ['dist/workspace/run-end-computers.js', 'Vercel Sandbox', 1, "the Vercel Sandbox provider's label in a run's end line (nominative use)"],
   ],
 };
 

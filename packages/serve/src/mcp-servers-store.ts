@@ -7,6 +7,7 @@
 // (runner/mcp-claim.ts), including the OAuth token refresh. So this server-side registry has NO headers()/headersForRun()
 // and does NO token refresh: it is the owner's create/preview/save/refresh(tools)/remove and the OAuth sign-in, and nothing
 // a run's launch calls.
+import { outsideWorkspace, workspaceNow } from "./workspace-scope.js";
 import { heldApiOnlyMcpOrigins, offApiOnlyMcpOrigins } from "./mcp-api-only-origins.js";
 import { ApiError, invalid, type InputIssue } from "./errors.js";
 import {
@@ -21,7 +22,7 @@ import { ownersComposioUsers, ownersUser } from "./composio-owners.js";
 import type { ComposioCredentialOf } from "./composio-triggers.js";
 import { type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 import { type ClientKind, dialAt, issuerOf, LOOPBACK, MAX_PENDING, MCP_SETTINGS_PAGE, mcpServerAt, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
-import { type Cleanup, cleanupOf, COMPOSIO_KEY_ENV, COMPOSIO_ORIGIN, composioAccountKey, composioEnvKey, composioKeyFromEnv, composioMadeKey, type ComposioMade, composioPerRun, droppedOf, madeToWrite, recordedMade, releasedOf, storedMade } from "./composio-made.js";
+import { type Cleanup, cleanupOf, type ComposioKeyEnv, COMPOSIO_ORIGIN, composioAccountKey, composioEnvKey, composioKeyFromEnv, composioMadeKey, type ComposioMade, composioPerRun, droppedOf, madeToWrite, recordedMade, releasedOf, storedMade } from "./composio-made.js";
 import { asking, COMPOSIO_PER_RUN, COMPOSIO_OWNERS_USER_WORDS, COMPOSIO_USER, COMPOSIO_USER_ID, composioAccount, composioAccountBoundWords, type ComposioAccount, type ComposioControl, composioListingAddress, composioListsAccount, composioServerId } from "./composio-preset.js";
 import { mcpSourceKey, type RecordedRow, recordedForAnother, savedByToken, sourceOf, type SourceRecord, sourceToWrite, standInGiven, storedSource, toolkitGiven } from "./mcp-sources.js";
 import { SEAL_KEY_ENV, sealKeyIn } from "./tool-keys.js";
@@ -65,7 +66,7 @@ function changedMeanwhile(name: string, saved: McpServerRow | undefined): McpSer
  *  a row read before it, so a server saved again under the name meanwhile is not the one deleted on Composio. */
 //  `cleanup`: what else is to go there, and what stays (composio-made.ts), when the server's save recorded what it stands on.
 export type ComposioHandle = ({ id: string; key: string } | { unusable: true }) & { cleanup?: Cleanup };
-function composioHandleOf(removed: RemovedMcpServer | undefined, cleanup: Cleanup | undefined, keyEnv: typeof COMPOSIO_KEY_ENV | undefined): ComposioHandle {
+function composioHandleOf(removed: RemovedMcpServer | undefined, cleanup: Cleanup | undefined, keyEnv: ComposioKeyEnv | undefined): ComposioHandle {
   const id = removed ? composioServerId(removed.url) : undefined;
   // A server saved with api_key_env seals no key: its variable's value, as this process was started with it.
   const key = composioKeyOf(removed?.opened) ?? (keyEnv && composioKeyFromEnv(keyEnv));
@@ -124,7 +125,7 @@ function pendingOverStore(store: McpServersStore, sealKey: Buffer): PendingStore
 /** The saved credential opened for a run of this server's own reads (preview by name, refresh, save keeping it): its
  *  headers to send, or the refusal that asks for it again. `env`: the headers are a Composio key read from this variable
  *  (a server saved with api_key_env), nothing sealed. */
-type Opened = { headers: HeaderMap; credential: McpCredential & { origin: string }; env?: typeof COMPOSIO_KEY_ENV };
+type Opened = { headers: HeaderMap; credential: McpCredential & { origin: string }; env?: ComposioKeyEnv };
 
 export class McpServersOverStore {
   /** The connected GitHub App's installation token for listing a `github_app` server's tools as it is previewed, saved
@@ -140,6 +141,10 @@ export class McpServersOverStore {
   /** Where Composio is for a refresh's account check (checkAccount): the real one, or a test's fake through the server's
    *  seam. */
   composioControl: ComposioControl = {};
+  /** The whole registry, every workspace's rows and their records by row key (the server's own store, set by the server
+   *  beside the request's view it serves from): what a Composio cleanup reads before it removes a thing at Composio, so a
+   *  server another workspace saved keeps what it stands on. Unset, the registry this one is made over. */
+  registry?: Pick<McpServersStore, "mcp" | "settings">;
   private readonly sealKey: Buffer;
   private readonly signIns: McpSignIns;
   /** The callbacks under way, which close() waits out before the server lets its data go. */
@@ -375,7 +380,8 @@ export class McpServersOverStore {
     }
     // The token keeps no sealed credential: the secret-write gate lets its save over no sealed row (mcp-secret-writes.ts
     // tokenWriteOverRefused), so one read here is an owner's, saved since. Refused as changed meanwhile, nothing written.
-    if (byToken && keeping) changedMeanwhile(name, undefined);
+    // A workspace's token keeps its own server's (workspaceWriteRefused): no owner's row is in its reach.
+    if (byToken && keeping && workspaceNow() === undefined) changedMeanwhile(name, undefined);
     // The API-only token's ordinary save (no `made`, on a store that holds the API-only list): its gate let it over no row
     // but one the token saved (mcp-secret-writes.ts tokenWriteOverRefused), so a row read here that the token did not save
     // is one written since. Checked in the write below, on the row this save read.
@@ -447,7 +453,7 @@ export class McpServersOverStore {
         // have made it is let go first, so neither this record nor theirs, nor what they hand on, ever removes it. One the
         // token names it only uses: its naming lets go no other server's claim (an owner's server that made it still
         // removes it at its delete, or hands it on as any shared one), and its own record says it made none.
-        const listed = (await this.composioRecords()).filter(([other]) => other !== name);
+        const listed = (await this.composioRecords()).filter(([other]) => other !== this.rowKeyOf(name));
         const released = stands.auth_config?.named && !byToken ? releasedOf(stands.auth_config.id, listed) : [];
         await this.handOver(listed, released);
         const others = listed.map(([other, record, at]): [string, ComposioMade, number] => [other, released.find(([one]) => one === other)?.[1] ?? record, at]);
@@ -459,7 +465,7 @@ export class McpServersOverStore {
         if (was && before) {
           const done = droppedOf(before, record, others.map(([other, mine]): [string, ComposioMade] => [other, mine]));
           await this.handOver(others, done.handover);
-          left = done.cleanup;
+          left = await this.shownCleanup(done.cleanup);
         }
       } else if (moved) {
         // Moved off Composio: what its save made there goes as a delete's does (cleanupOf), the MCP server first, unless the
@@ -468,10 +474,10 @@ export class McpServersOverStore {
         await this.store.settings.remove(composioMadeKey(name));
         // Only for a caller in the Composio turn (`dropped`, with its `guard`), so no preset save still at Composio is counted out.
         if (before && leftMcp && dropped) {
-          const others = (await this.composioRecords()).filter(([other]) => other !== name);
+          const others = (await this.composioRecords()).filter(([other]) => other !== this.rowKeyOf(name));
           const done = cleanupOf(before, others.map(([other, record]): [string, ComposioMade] => [other, record]));
           await this.handOver(others, done.handover);
-          left = done.cleanup;
+          left = await this.shownCleanup(done.cleanup);
         }
       }
       if (was && (leftMcp || left?.remove.length || left?.kept.length)) {
@@ -627,10 +633,10 @@ export class McpServersOverStore {
     let cleanup: Cleanup | undefined;
     if (stands) {
       await drop(composioMadeKey(name));
-      const others = (await this.composioRecords()).filter(([other]) => other !== name);
+      const others = (await this.composioRecords()).filter(([other]) => other !== this.rowKeyOf(name));
       const done = cleanupOf(stands, others.map(([other, record]): [string, ComposioMade] => [other, record]));
       await this.handOver(others, done.handover);
-      cleanup = done.cleanup;
+      cleanup = await this.shownCleanup(done.cleanup);
     }
     await this.store.flush();
     const open = removed?.opened;
@@ -646,19 +652,36 @@ export class McpServersOverStore {
     return row !== undefined && row.auth === "headers" && (await this.sourceOf(row)).source === "composio";
   }
 
-  /** Writes each record a cleanup passes a thing to (composio-made.ts `handover`), for its own row of `others`. */
+  /** Writes each record a cleanup passes a thing to (composio-made.ts `handover`), for its own row of `others`, by row key:
+   *  another workspace's server's too. */
   private async handOver(others: readonly [string, ComposioMade, number][], handover: readonly [string, ComposioMade][]): Promise<void> {
+    const registry = this.registry ?? this.store;
     for (const [other, record] of handover) {
       const of = others.find(([n]) => n === other)?.[2];
-      if (of !== undefined) await this.store.settings.put(composioMadeKey(other), storedMade(record, { createdAt: of }));
+      if (of !== undefined) await registry.settings.put(composioMadeKey(other), storedMade(record, { createdAt: of }));
     }
   }
 
-  /** The saved servers' records of what they stand on at Composio (composio-made.ts), each read for its own row: name,
-   *  record and the row's created_at. */
+  /** The row key the request's `name` is kept under (mcp-workspace.ts McpView.rowKey): the name itself outside a view. */
+  private rowKeyOf(name: string): string {
+    return (this.store.mcp as { rowKey?(name: string): string }).rowKey?.(name) ?? name;
+  }
+
+  /** A cleanup as the request is told it: a thing another server keeps is named by that server's name when the request
+   *  reaches the server, else as another saved server's, never by another workspace's row. */
+  private async shownCleanup(cleanup: Cleanup): Promise<Cleanup> {
+    if (!cleanup.kept.some((thing) => thing.by !== undefined)) return cleanup;
+    const reached = new Map((await listMcpServers(this.store)).map((row) => [row.sealedAs ?? row.name, row.name]));
+    return { ...cleanup, kept: cleanup.kept.map((thing) => (thing.by === undefined ? thing : { ...thing, by: reached.get(thing.by) ?? "another saved server" })) };
+  }
+
+  /** Every saved server's record of what it stands on at Composio (composio-made.ts), each read for its own row, across
+   *  every workspace (`registry`): row key, record and the row's created_at. A request's view alone would let one
+   *  workspace's delete remove what another's server stands on. */
   private async composioRecords(): Promise<[string, ComposioMade, number][]> {
-    const rows = await listMcpServers(this.store);
-    const read = await Promise.all(rows.map(async (row) => [row.name, recordedMade(await this.store.settings.get(composioMadeKey(row.name)), row.createdAt), row.createdAt] as const));
+    const registry = this.registry ?? this.store;
+    const rows = await listMcpServers(registry);
+    const read = await Promise.all(rows.map(async (row) => [row.name, recordedMade(await registry.settings.get(composioMadeKey(row.name)), row.createdAt), row.createdAt] as const));
     return read.filter((entry): entry is readonly [string, ComposioMade, number] => entry[1] !== undefined).map(([name, record, at]) => [name, record, at]);
   }
 
@@ -812,7 +835,7 @@ export class McpServersOverStore {
 
   /** The variable a Composio server saved with api_key_env reads its key from (composio-made.ts key_env): a headers row
    *  that seals no credential, whose record for this row names it. None for every other row. */
-  async keyEnvOf(row: McpServerRow): Promise<typeof COMPOSIO_KEY_ENV | undefined> {
+  async keyEnvOf(row: McpServerRow): Promise<ComposioKeyEnv | undefined> {
     if (row.auth !== "headers" || row.sealed !== null) return undefined;
     return recordedMade(await this.store.settings.get(composioMadeKey(row.name)), row.createdAt)?.key_env;
   }
@@ -869,7 +892,8 @@ export class McpServersOverStore {
    *  mcp-secret-writes.ts), named (before anything is sent) or found as the toolkit's own (before anything is made):
    *  composio-preset.ts composioSave `standsOn`. 403, naming the owner's server, nothing saved. */
   async tokenStandsOn(authConfig: string): Promise<void> {
-    const owners = await ownersAuthConfig(this.store, authConfig);
+    // The owner's servers are shared ones (a save in a workspace is always the token's): read outside any workspace.
+    const owners = await outsideWorkspace(() => ownersAuthConfig(this.store, authConfig));
     if (owners) throw new ApiError("forbidden", `The Composio auth config ${authConfig} is the one the owner's MCP server ${owners} stands on: an API token's server never uses it, so it never acts as the owner's connected account or removes what the owner's server made. Name an auth config of the token's own (auth_config_id). A server the token saved on it before its Composio users were namespaced (0.1.0-beta.56 and earlier) can't be saved again: delete it (DELETE /settings/mcp-servers/{name}), then save a new one. Nothing was saved.`);
   }
 
@@ -880,7 +904,7 @@ export class McpServersOverStore {
    *  bound is refused: a binding is never taken unchecked. Each refusal says which check refused it, and never quotes
    *  what was sent. */
   async tokenBinding(name: string, row: McpServerRow, binding: { user_id: string; connected_account_id?: string }, field: string, control: ComposioControl, signal?: AbortSignal): Promise<InputIssue | undefined> {
-    if (ownersUser(await ownersComposioUsers(this.store), binding.user_id)) return { field: `${field}.composio_user_id`, reason: "not_allowed", message: `That composio_user_id can't be used: ${COMPOSIO_OWNERS_USER_WORDS}. Nothing was started.` };
+    if (ownersUser(await outsideWorkspace(() => ownersComposioUsers(this.store)), binding.user_id)) return { field: `${field}.composio_user_id`, reason: "not_allowed", message: `That composio_user_id can't be used: ${COMPOSIO_OWNERS_USER_WORDS}. Nothing was started.` };
     const account = binding.connected_account_id;
     if (account === undefined) return undefined;
     const { toolkit } = await this.sourceOf(row);
@@ -1033,7 +1057,7 @@ export function mcpServersOverStore(store: McpServersStore, env: NodeJS.ProcessE
 /** The server's credential as every secret is read (SECRETS-PLAN.md): set or not, how it came ("console": pasted, a
  *  bearer token or headers; "sign-in": an OAuth sign-in; "env": a Composio key read from the variable `keyEnv`, set when
  *  the variable is set now, with no time; null: none), and the credential's own last change. Never a value. */
-function secretOf(row: McpServerRow, keyEnv?: typeof COMPOSIO_KEY_ENV): SecretMeta {
+function secretOf(row: McpServerRow, keyEnv?: ComposioKeyEnv): SecretMeta {
   if (keyEnv) return secretMeta(secretName("mcp", row.name), { set: composioKeyFromEnv(keyEnv) !== undefined, source: "env", changedAt: null });
   const set = row.sealed !== null && row.auth !== "none";
   return secretMeta(secretName("mcp", row.name), { set, source: row.auth === "oauth" ? "sign-in" : "console", changedAt: row.credentialChangedAt === null ? null : new Date(row.credentialChangedAt) });

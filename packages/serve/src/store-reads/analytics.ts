@@ -32,6 +32,10 @@ export type StoreAnalytics = {
    *  prompt (the hit rate's parts), breaks by cause, extra cost by cause (USD) and unpriced breaks. A run imported
    *  before the import analyzed it, or of a source with no chain, is in no figure here. */
   cache: StoredCache & { runs: number };
+  /** The keys and tokens the import cut from the runs in scope (import.ts, a run's `secrets`): how many runs carry a
+   *  count, how many of them held a key, and the keys summed (a key met in two runs counts in each). A run imported
+   *  before the import counted them is in no figure here. */
+  secrets: { runs: number; holding: number; removed: number };
 };
 
 /** A run's cache as the import keeps it in the run's metrics (import.ts RunCache). */
@@ -40,7 +44,7 @@ type StoredCache = { read: number; prompt: number; breaks: Record<string, number
 /** A run's metrics as the end commit wrote them (the row's JSON): what analytics sums. */
 type StoredMetrics = {
   input?: number | null; cacheRead?: number | null; cacheWrite?: number | null; output?: number | null; requests?: number | null; unmetered?: number | null;
-  activeMs?: number; effort?: string; tools?: Record<string, { calls?: number; errors?: number }>; cache?: Partial<StoredCache>;
+  activeMs?: number; effort?: string; tools?: Record<string, { calls?: number; errors?: number }>; cache?: Partial<StoredCache>; secrets?: number;
 };
 
 const num = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) ? value : 0);
@@ -218,6 +222,18 @@ export async function analytics(store: Store, filter: AnalyticsFilter = {}): Pro
     for (const [cause, usd] of Object.entries(kept.extraCost ?? {})) cache.extraCost[cause] = Math.round(((cache.extraCost[cause] ?? 0) + num(usd)) * 1e6) / 1e6;
   }
 
+  // The keys the import cut over the imported runs in scope that keep a count, ended (an import writes its run ended).
+  // A live run is none of them whatever its metrics hold, and a count is a whole number of zero or more.
+  const secrets: StoreAnalytics["secrets"] = { runs: 0, holding: 0, removed: 0 };
+  for (const f of notPending) {
+    if (f.source === "live") continue;
+    const kept = f.metered ? f.metrics?.secrets : undefined;
+    if (typeof kept !== "number" || !Number.isSafeInteger(kept) || kept < 0) continue;
+    secrets.runs += 1;
+    if (kept > 0) secrets.holding += 1;
+    secrets.removed += kept;
+  }
+
   const totalsGroup = counted(facts);
   return {
     totals: { ...totalsGroup, input:unknownTokens.has('input')?null:input, cacheRead:unknownTokens.has('cacheRead')?null:cacheRead, cacheWrite:unknownTokens.has('cacheWrite')?null:cacheWrite, output:unknownTokens.has('output')?null:output, requests: unknownRequests ? null : requests, unmetered: unknownRequests ? null : unmetered },
@@ -227,5 +243,6 @@ export async function analytics(store: Store, filter: AnalyticsFilter = {}): Pro
     bySource,
     tools,
     cache,
+    secrets,
   };
 }

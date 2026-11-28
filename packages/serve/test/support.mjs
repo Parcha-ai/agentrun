@@ -598,7 +598,14 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, co
     crashed.push(closeRunner);
     closeRunner = await startInProcessRunner(data, runnerOptions);
   };
-  return { ...server, data, store, stop, crashRunner, api: client(server.baseUrl, server.token), ...(closeRunner ? { runnerBeats: () => closeRunner.beats() } : {}) };
+  // The runner beside the server closes gracefully (runner.ts close), the server and its store still up for the test to
+  // read what the close left: once, the whole start's stop then closing the rest.
+  const closeRunnerOnly = async () => {
+    const closing = closeRunner;
+    closeRunner = undefined;
+    await closing?.();
+  };
+  return { ...server, data, store, stop, crashRunner, closeRunner: closeRunnerOnly, api: client(server.baseUrl, server.token), ...(closeRunner ? { runnerBeats: () => closeRunner.beats() } : {}) };
 }
 
 /** `server`'s client with every request sent from the owner's session (ownerSessionOf), as the console sends it: the
@@ -878,6 +885,20 @@ export async function whenFree(send) {
  *  make an agent or start a run, so the store's contention with another write (a runner's commit, a CLI's install) is
  *  never its red. A test that means to read home_busy itself calls `api`, never this. */
 export const retried = (api) => (...args) => whenFree(() => api(...args));
+
+/** What run `runId`'s claims did with its command row `rowId`, written once the run had `before` claims: waits until the
+ *  row is answered and the run let go, or the run was claimed 3 times since (a claim loop), then for `polls` more of the
+ *  runner's polls (`beats`, its poll and renewal count) with the same stop. Counted in claims and polls, never by the
+ *  clock: the claims since, the row, and the run as it then reads. */
+export async function claimsAfterRow(store, runId, rowId, before, beats, polls = 10) {
+  const since = async () => (await store.runAttempts.forRun(runId)).length - before;
+  const rowNow = async () => (await store.commands(runId, rowId - 1)).find((row) => row.id === rowId);
+  const answered = async () => (await rowNow())?.takenAt != null && (await store.runs.get(runId))?.runner === null;
+  while (!(await answered()) && (await since()) < 3) await new Promise((resolve) => setTimeout(resolve, 50));
+  const from = beats();
+  while (beats() < from + polls && (await since()) < 3) await new Promise((resolve) => setTimeout(resolve, 50));
+  return { claims: await since(), row: await rowNow(), run: await store.runs.get(runId) };
+}
 
 /** Apply timeline pages from `after` the way a client must (drop, then upsert), until the run's status is in `until`: an end
  *  once its page is final, any other status on the first page that leaves no change behind it. `done(rows, page)`: and

@@ -102,7 +102,7 @@ test("a fetch is one tools/call of firecrawl_scrape with {url, formats: [markdow
   const page = await fetchFor(env, PUBLIC, net);
   assert.equal(page.via, "firecrawl-keyless");
   assert.deepEqual([page.ok, page.url, page.status, page.title, page.text], [true, PUBLIC, 200, "Read by Firecrawl", PAGE.markdown]);
-  assert.deepEqual(page.links, ["https://registry.example/1"]);
+  assert.deepEqual(page.links, [], "the link its markdown writes is not listed again");
   assert.deepEqual(fc.toolCalls().map((one) => one.body.params), [{ name: "firecrawl_scrape", arguments: { url: PUBLIC, formats: ["markdown"] } }]);
   assert.deepEqual(net.dialled, [], "the guard checked the URL without dialling it");
   for (const { headers } of fc.got) assert.equal(headers.authorization, undefined);

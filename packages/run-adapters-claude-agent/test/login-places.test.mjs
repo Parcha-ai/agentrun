@@ -24,14 +24,24 @@ const scratch = () => mkdtempSync(join(ROOT, `t${n++}-`));
 const FOLDER_VARS = ['CLAUDE_CONFIG_DIR', 'CLAUDE_SECURESTORAGE_CONFIG_DIR', 'ANTHROPIC_CONFIG_DIR'];
 
 /** A stand-in CLI that writes its arguments and environment to seen.json beside itself and answers a signed-out status.
- *  `sub`: a folder of that name it is kept in. */
+ *  `sub`: a folder of that name it is kept in. It writes seen.json.tmp and renames it, so seen.json exists only whole:
+ *  the test polls it every 25 ms, and a plain write creates the file before its bytes land (an empty read failed a
+ *  merge queue run). The reader takes a file not there yet, whatever the timing, as nothing seen. */
 function fakeCli(sub) {
   const dir = sub ? join(scratch(), sub) : scratch();
   mkdirSync(dir, { recursive: true });
   const cli = join(dir, 'claude');
   const seen = join(dir, 'seen.json');
-  writeFileSync(cli, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(seen)}, JSON.stringify({ argv: process.argv.slice(2), env: process.env }));\nprocess.stdout.write(${JSON.stringify(JSON.stringify({ loggedIn: false, authMethod: 'none' }))});\nprocess.exit(1);\n`, { mode: 0o755 });
-  return { cli, seen: () => (existsSync(seen) ? JSON.parse(readFileSync(seen, 'utf8')) : undefined) };
+  writeFileSync(cli, `#!${process.execPath}\nconst fs = require('node:fs'); fs.writeFileSync(${JSON.stringify(`${seen}.tmp`)}, JSON.stringify({ argv: process.argv.slice(2), env: process.env })); fs.renameSync(${JSON.stringify(`${seen}.tmp`)}, ${JSON.stringify(seen)});\nprocess.stdout.write(${JSON.stringify(JSON.stringify({ loggedIn: false, authMethod: 'none' }))});\nprocess.exit(1);\n`, { mode: 0o755 });
+  const read = () => {
+    try {
+      return readFileSync(seen, 'utf8');
+    } catch (error) {
+      if (error?.code === 'ENOENT') return undefined;
+      throw error;
+    }
+  };
+  return { cli, seen: () => { const text = read(); return text === undefined ? undefined : JSON.parse(text); } };
 }
 
 /** Waits until `done()` holds, 10 s at most. */

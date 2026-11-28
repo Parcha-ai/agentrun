@@ -20,6 +20,12 @@
     "place": {
       "mode": "runner"
     },
+    "learning_work": {
+      "state": "none",
+      "runs": [],
+      "ended_at": null,
+      "deadline_at": null
+    },
     "created_at": "2026-11-05T22:36:38.244Z",
     "updated_at": "2026-11-05T22:36:41.386Z",
     "ended_at": "2026-11-05T22:36:41.234Z",

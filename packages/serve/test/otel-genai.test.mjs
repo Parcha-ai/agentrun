@@ -762,21 +762,24 @@ test("an OTLP header value's credential pair is read anywhere in the value, a UR
   assert.deepEqual(missed, [], "each row's credentials are on both held lists and each is cut alone to [redacted] by the [otel] cut and the runner's redactor; its unheld values (a hostname, a key with the raw comma after it) are on neither list, and the ordinary words are left");
 });
 
-// A credential with a raw ; in it, as an OTLP endpoint's query parameter or inside a header value. A query or a pair list
-// read split at & alone keeps the whole value, a %2C in it too, and read split at an & or a space written %26 or %20 too,
-// it keeps that value as written before one, and read split at a %26 alone, one with a %20 in it; a value in quotes
-// written %22 or %27 is kept out of them as written too; read split at & and %2C, it keeps the value of a pair in
-// a list joined by %2C; read split at ; too, it keeps each pair after a ;. Every reading is held. A value whose part
-// before its first ; is empty is held after it; a value of only ; is not held.
+// A credential with a raw ; in it, as an OTLP endpoint's query parameter or inside a header value, or with separators
+// in it between pairs joined by others. A query read split at & alone keeps the whole value. Inside a header value, a
+// credential pair's value is held at every boundary: up to each &, ;, comma or space after its =, raw or written %26,
+// %3B, %2C or %20, and whole to the end, so whichever separators a key holds and whichever join the pairs around it,
+// one of those is the key alone; each as written and decoded, out of a matching pair of quotes, and without a lone
+// opening or closing quote at 8 characters or more (a quoted key cut at its %2C). A value whose part before its first ;
+// is empty is held after it, whole and as its first piece of 8 characters or more, unless that is a pair named like no
+// credential; a value of only ;, =, &, quotes, commas or spaces, as written or decoded, is not held and not cut.
 // Each row: [what, the env, the credentials held and cut alone, what is on no held list, a line quoting the variable and
 // its cut].
 const SEMI_PREFIX = `prefix-${"dummy"}`;
 const SEMI_WHOLE = `${SEMI_PREFIX};suffix-${"dummy"}`;
 const SEMI_COMMA = `${SEMI_PREFIX}%2Cmid-${"dummy"};suffix-${"dummy"}`;
 const SEMI_SPACED = `${SEMI_PREFIX}%2Cmid-${"dummy"}%20tail-${"dummy"};suffix-${"dummy"}`;
-// A double and a single quote, percent-encoded.
+// A double and a single quote, percent-encoded, and a raw double quote.
 const QUOTE_22 = "%22";
 const QUOTE_27 = "%27";
+const QUOTE_RAW = '"';
 const SEMI_ROWS = [
   [
     "an endpoint's credential parameter with a ; in its value",
@@ -925,6 +928,132 @@ const SEMI_ROWS = [
     ["'", "%27", "dark"],
     ["parse error at ' near theme", "parse error at ' near theme"],
   ],
+  [
+    "a header value's credential pair with a %20 in its value, in a list joined by a ; written %3B",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: "X-Relay=api_key=kaX8248%20kbY9720%3Bregion=us-east-1" },
+    ["kaX8248%20kbY9720", "kaX8248 kbY9720"],
+    ["us-east-1"],
+    ["401 from relay: key kaX8248 kbY9720 refused", "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair in raw quotes with a %20 in its value, between pairs joined by a ; written %3B",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=region=us-east-1%3Bapi_key=${QUOTE_RAW}kaX7808%20kbY5160${QUOTE_RAW}%3Btheme=dark` },
+    ["kaX7808%20kbY5160", "kaX7808 kbY5160"],
+    ["us-east-1", "dark"],
+    ["401 from relay: key kaX7808 kbY5160 refused", "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair in quotes written %27 with a %26 in its value, before a ; written %3B",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${QUOTE_27}AbCdEf12%26GhIj34${QUOTE_27}%3Bregion=us` },
+    ["AbCdEf12%26GhIj34", "AbCdEf12&GhIj34"],
+    [],
+    ["401 from relay: key AbCdEf12&GhIj34 refused", "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair in quotes written %22 with a %2C in its value, before an & pair",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${QUOTE_22}${SEMI_PREFIX}%2Cmid-${"dummy"}${QUOTE_22}&region=us-east-1` },
+    [SEMI_PREFIX, `${SEMI_PREFIX}%2Cmid-${"dummy"}`, `${SEMI_PREFIX},mid-${"dummy"}`],
+    ["us-east-1"],
+    [`401 from relay: key ${SEMI_PREFIX} refused`, "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair in raw quotes with a %2C in its value, before an & pair",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${QUOTE_RAW}${SEMI_PREFIX}%2Cmid-${"dummy"}${QUOTE_RAW}&region=us-east-1` },
+    [SEMI_PREFIX, `${SEMI_PREFIX}%2Cmid-${"dummy"}`, `${SEMI_PREFIX},mid-${"dummy"}`],
+    ["us-east-1"],
+    [`401 from relay: key ${SEMI_PREFIX} refused`, "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair with a %20 and a ; in its value, before a space written %20",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${SEMI_PREFIX}%20tail-${"dummy"};suffix-${"dummy"}%20region=us-east-1` },
+    [`${SEMI_PREFIX}%20tail-${"dummy"};suffix-${"dummy"}`, `${SEMI_PREFIX} tail-${"dummy"};suffix-${"dummy"}`, SEMI_PREFIX],
+    ["us-east-1", "region=us-east-1", "region=us-east-1%20", " region=us-east-1"],
+    [`401 from relay: key ${SEMI_PREFIX} tail-${"dummy"};suffix-${"dummy"} refused`, "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair holding only a comma written %2C",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: "X-Relay=api_key=%2C&region=us" },
+    [],
+    [",", "%2C"],
+    ["parse error at , near region, see %2C", "parse error at , near region, see %2C"],
+  ],
+  [
+    "a header value's credential pair holding a lone quote written %27, quoted as written",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: "X-Relay=token=%27 theme=dark" },
+    [],
+    ["'", "%27", "dark"],
+    ["parse error at %27 near theme", "parse error at %27 near theme"],
+  ],
+  [
+    "a header value's credential pair holding an opening quote written %27 and one letter",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: "X-Relay=token=%27a theme=dark" },
+    [],
+    ["a", "dark"],
+    ["parse error: a bad value at a", "parse error: a bad value at a"],
+  ],
+  [
+    "a header value's credential pair whose value starts with a ;, then a piece under 8 characters",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=token=;a;key-${"dummy"}-value&x=1` },
+    [`key-${"dummy"}-value`],
+    ["a"],
+    [`a bad value at a: key-${"dummy"}-value`, "a bad value at a: [redacted]"],
+  ],
+  [
+    "a header value's credential pair whose value starts with a ;, then a pair named like no credential",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: "X-Relay=token=;theme=dark-mode" },
+    [],
+    ["theme=dark-mode", "dark-mode"],
+    ["theme=dark-mode is on", "theme=dark-mode is on"],
+  ],
+  [
+    "a header value's credential pair with a %20 in its value, after a ; written %3B and before an & written %26",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=region=us%3Bapi_key=${SEMI_PREFIX}%20tail-${"dummy"}%26theme=dark` },
+    [`${SEMI_PREFIX}%20tail-${"dummy"}`, `${SEMI_PREFIX} tail-${"dummy"}`],
+    ["dark"],
+    [`401 from relay: key ${SEMI_PREFIX} tail-${"dummy"} refused`, "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair in quotes written %22 with a %20 and a ; in its value, before a space written %20",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${QUOTE_22}${SEMI_PREFIX}%20tail-${"dummy"};suffix-${"dummy"}${QUOTE_22}%20region=us-east-1` },
+    [`${SEMI_PREFIX}%20tail-${"dummy"};suffix-${"dummy"}`, `${SEMI_PREFIX} tail-${"dummy"};suffix-${"dummy"}`],
+    ["us-east-1"],
+    [`401 from relay: key ${SEMI_PREFIX} tail-${"dummy"};suffix-${"dummy"} refused`, "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair quoted whole in raw quotes, with a %20 in its value, before an & pair",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=${QUOTE_RAW}api_key=${SEMI_PREFIX}%20tail-${"dummy"}${QUOTE_RAW}&region=us-east-1` },
+    [`${SEMI_PREFIX}%20tail-${"dummy"}`, `${SEMI_PREFIX} tail-${"dummy"}`],
+    ["us-east-1"],
+    [`401 from relay: key ${SEMI_PREFIX} tail-${"dummy"} refused`, "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair quoted whole in quotes written %22, with a %20 in its value, after an & pair",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=region=us-east-1&${QUOTE_22}api_key=${SEMI_PREFIX}%20tail-${"dummy"}${QUOTE_22}` },
+    [`${SEMI_PREFIX}%20tail-${"dummy"}`, `${SEMI_PREFIX} tail-${"dummy"}`],
+    ["us-east-1"],
+    [`401 from relay: key ${SEMI_PREFIX} tail-${"dummy"} refused`, "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair holding only an &",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: "X-Relay=region=us&api_key=&" },
+    [],
+    ["&"],
+    ["parse error at & near region", "parse error at & near region"],
+  ],
+  [
+    "a header value's credential pair holding only an & written %26",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: "X-Relay=region=us&api_key=%26" },
+    [],
+    ["&", "%26"],
+    ["parse error at & near region", "parse error at & near region"],
+  ],
+  [
+    "a header value's credential pair whose value opens with a space, then one character",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: "X-Relay=sentry_key= @" },
+    [],
+    ["@", " @"],
+    ["contact ops @ team", "contact ops @ team"],
+  ],
 ];
 
 test("an OTLP endpoint's or header value's credential with a raw ; in it is held whole and as each pair after a ;, and a line quoting it is cut to [redacted] with no piece after the ; left", () => {
@@ -987,6 +1116,133 @@ test("OTLP values that overlap or touch in a line are cut as one by every redact
     }
   }
   assert.deepEqual(missed, [], "every overlapping or touching held value is cut as one [redacted]");
+});
+
+test("a 16 KB OTLP header value of 900 pairs joined by %20, a 30 KB one of 1,000 credential pairs with their own keys, or a 16 KB one rotating every separator kind holds a credential pair's value up to each separator within 4,096 characters in all, never a prefix before every pair", () => {
+  // A credential pair's value runs to the header value's end: held up to each of its 1,800 %20, it would hold 1,800
+  // values of up to 16 KB; and 1,000 credential pairs, each held up to each separator after it, 1,000 times that.
+  // Each of the 1,000 pairs has its own key, so a budget of 4,096 characters per pair, not per value, shows as the
+  // 501st pair held past its first two separators (one of each kind, the second the kind before its name, are held
+  // past the budget too), and as a held list of megabytes. The value whole and its first pair's
+  // value to the end, each written and decoded, are about four times the value, so each value has its own bound.
+  const key = `key-${"dummy"}-1`;
+  const many = (at) => `key-${"dummy"}-2-${at}`;
+  const pairs = Array.from({ length: 1000 }, (_, at) => `api_key=${many(at)}%20v%3B`).join("");
+  for (const [what, header, bound, first, later] of [
+    ["900 pairs", `X-Relay=api_key=${`${key}%20b=1%20`.repeat(900)}`, 128, key, undefined],
+    ["1,000 credential pairs", `X-Relay=${pairs}`, 192, many(0), `${many(500)}%20v%3Bapi_key=${many(501)}`],
+    // Each pair after a %3B, and one & at the end: up to the next & each would hold the rest of the value.
+    ["1,000 credential pairs after a pair, before one &", `X-Relay=region=us%3B${pairs}&x=1`, 192, many(0), `${many(500)}%20v%3Bapi_key=${many(501)}`],
+  ]) {
+    const env = { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: header };
+    for (const [list, values] of [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]]) {
+      const size = values.reduce((sum, value) => sum + value.length, 0);
+      assert.ok(size < bound * 1024, `${what}: ${list} holds ${size} characters, under ${bound} KB`);
+      assert.ok(values.includes(first), `${what}: ${list} holds the key before the first separator`);
+      if (later) assert.ok(!values.includes(later), `${what}: ${list} does not hold the 501st pair's value up to its third separator`);
+    }
+  }
+  // The first pair's value up to its second separator, 4,080 characters, leaves 16 of the 4,096; the last pair's value
+  // to the end, 31 characters, is held all the same, so its key, in quotes written %22 with a %20 in it, is held bare
+  // and a line quoting it is cut whole.
+  const tail = `prefix-${"dummy"}%20tail-${"dummy"}`;
+  const spent = { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${key}%20${"b".repeat(4066)}%20token=%22${tail}%22` };
+  for (const [list, values] of [["runnerSecrets", runnerSecrets(spent)], ["hostSecrets", hostSecrets(spent)]]) {
+    assert.ok(values.includes(tail) && values.includes(decodeURIComponent(tail)), `the last pair after a spent budget: ${list} holds its key bare, written and decoded`);
+  }
+  const line = `401 from relay: key prefix-${"dummy"} tail-${"dummy"} refused`;
+  assert.equal(otlpHeaderCut(spent)(line), "401 from relay: key [redacted] refused", "the last pair after a spent budget: the [otel] cut takes its key whole");
+  assert.equal(secretRedactor(runnerSecrets(spent))(line), "401 from relay: key [redacted] refused", "the last pair after a spent budget: the runner's redactor takes its key whole");
+  // Credential pairs whose separators rotate through every kind, so past the budget each pair's value is held up to one
+  // separator of each: the pair read's largest held list per character. A raw comma also splits the variable into
+  // headers, so the seven kinds without it hold more. Each has its own bound, about a third over what it holds.
+  const KINDS = ["&", ";", ",", " ", "%26", "%3B", "%2C", "%20"];
+  for (const [what, kinds, bound] of [["all eight kinds", KINDS, 512], ["the seven kinds but a raw comma", KINDS.filter((kind) => kind !== ","), 1024]]) {
+    let value = "";
+    for (let at = 0; value.length < 16 * 1024; at++) value += `api_key=k${String(at).padStart(4, "0")}xxxxxxxx${kinds[at % kinds.length]}`;
+    const env = { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=${value}` };
+    const started = performance.now();
+    const lists = [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]];
+    const cut = otlpHeaderCut(env)("401 from relay: key k0500xxxxxxxx refused");
+    const ms = performance.now() - started;
+    for (const [list, values] of lists) {
+      const size = values.reduce((sum, held) => sum + held.length, 0);
+      assert.ok(size < bound * 1024, `a 16 KB value rotating ${what}: ${list} holds ${size} characters, under ${bound} KB`);
+      assert.ok(values.includes("k0000xxxxxxxx") && values.includes("k0500xxxxxxxx"), `a 16 KB value rotating ${what}: ${list} holds the first and the 501st key alone`);
+    }
+    assert.equal(cut, "401 from relay: key [redacted] refused", `a 16 KB value rotating ${what}: the [otel] cut takes the 501st key`);
+    assert.ok(ms < 2000, `a 16 KB value rotating ${what}: both held lists and the [otel] cut took ${Math.round(ms)} ms, under 2 s`);
+  }
+});
+
+// Keys longer than the 4,096 characters the prefixes past a pair's first separator take in all, each holding one
+// separator and ended by another kind: each row [what, the X-Relay header value, the key as written].
+const LONG_KEY_HEAD = "a".repeat(4096);
+const LONG_KEY_ENDS = ["&", "%26", ";", "%3B", ",", "%2C", " ", "%20"];
+const LONG_KEY_ROWS = [
+  ["a key with a %3B in it, before an & pair", `api_key=${LONG_KEY_HEAD}%3Btail-${"dummy"}&region=us`, `${LONG_KEY_HEAD}%3Btail-${"dummy"}`],
+  ["a key with a %3B in it, before an & pair written %26", `api_key=${LONG_KEY_HEAD}%3Btail-${"dummy"}%26region=us`, `${LONG_KEY_HEAD}%3Btail-${"dummy"}`],
+  ...LONG_KEY_ENDS.flatMap((end) => {
+    const key = `${LONG_KEY_HEAD}${end === "%2C" ? "%3B" : "%2C"}tail-${"dummy"}`;
+    return [
+      [`a key ended by ${JSON.stringify(end)}, first`, `api_key=${key}${end}region=us-east-1`, key],
+      [`a key ended by ${JSON.stringify(end)}, after a pair joined by the same`, `region=us-east-1${end}api_key=${key}${end}theme=dark`, key],
+      [`a key ended by ${JSON.stringify(end)}, before a credential pair`, `api_key=${key}${end}token=other-${"dummy"}-value`, key],
+    ];
+  }),
+];
+
+test("an OTLP header value's credential key longer than the prefix budget is held whole, whichever separator ends it, and a line quoting it is cut with no piece left", () => {
+  const missed = [];
+  for (const [what, header, key] of LONG_KEY_ROWS) {
+    const env = { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=${header}` };
+    for (const [list, values] of [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]]) {
+      for (const value of [key, decodeURIComponent(key)]) if (!values.includes(value)) missed.push(`${what}: ${value.slice(4090)} not held (${list})`);
+    }
+    for (const [redactor, redact] of [["the [otel] cut", otlpHeaderCut(env)], ["the runner's redactor", secretRedactor(runnerSecrets(env))]]) {
+      for (const form of [key, decodeURIComponent(key)]) {
+        const shown = redact(`401 from relay: key ${form} refused`);
+        if (shown !== "401 from relay: key [redacted] refused") missed.push(`${what}: ${redactor} shows ${shown.replace(LONG_KEY_HEAD, "<4096 a>")}`);
+      }
+    }
+  }
+  assert.deepEqual(missed, [], "every key past the budget is held whole, written and decoded, and cut with nothing after its separator left");
+});
+
+// Past the budget, a credential pair whose name comes after separators of more than one kind since the last `=`: a
+// reader that splits at any one of those kinds finds the pair, and reads its key up to its own next separator, or to
+// the text's end when none of that kind comes again. The first pair, 101 pieces joined by %20, spends the 4,096
+// characters; each key's two halves are longer than what is left. Each row: [what, the X-Relay header value, the key as
+// written].
+const OPENING_SPENT = `api_key=${"x%20".repeat(100)}x`;
+const OPENING_ONE = `ka-${"dummy"}-${"0123456789".repeat(5)}`;
+const OPENING_TWO = `kb-${"dummy"}-${"9876543210".repeat(5)}`;
+const OPENING_ROWS = [
+  ["after a token with no = joined by & and then ;", `${OPENING_SPENT}&x=1&foo;api_key=${OPENING_ONE};${OPENING_TWO}&y=2&secret=z-${"dummy"}`, `${OPENING_ONE};${OPENING_TWO}`],
+  ["in a cookie joined by ;-space", `${OPENING_SPENT}; a=1; session=${OPENING_ONE} ${OPENING_TWO}; b=2; token=z-${"dummy"}`, `${OPENING_ONE} ${OPENING_TWO}`],
+  ["in a cookie joined by %3B%20", `${OPENING_SPENT}%3B%20a=1%3B%20session=${OPENING_ONE}%20${OPENING_TWO}%3B%20b=2%3B%20token=z-${"dummy"}`, `${OPENING_ONE}%20${OPENING_TWO}`],
+  ["after a token with no = joined by %26 and then %20", `${OPENING_SPENT}%26x=1%26flag%20api_key=${OPENING_ONE}%20${OPENING_TWO}%26y=2%26secret=z-${"dummy"}`, `${OPENING_ONE}%20${OPENING_TWO}`],
+  // The kind that opens the pair never comes again, so its reader reads the key over the later pairs to the end.
+  ["opened by & that never comes again, the rest joined by ;", `${OPENING_SPENT}&x=1&token=${OPENING_ONE};${OPENING_TWO};secret=z-${"dummy"}-key`, `${OPENING_ONE};${OPENING_TWO};secret=z-${"dummy"}-key`],
+  ["opened by %26 that never comes again, the rest joined by %3B", `${OPENING_SPENT}%26x=1%26token=${OPENING_ONE}%3B${OPENING_TWO}%3Bsecret=z-${"dummy"}-key`, `${OPENING_ONE}%3B${OPENING_TWO}%3Bsecret=z-${"dummy"}-key`],
+  ["opened by a space that never comes again, the rest joined by %2C", `${OPENING_SPENT} x=1 token=${OPENING_ONE}%2C${OPENING_TWO}%2Csecret=z-${"dummy"}-key`, `${OPENING_ONE}%2C${OPENING_TWO}%2Csecret=z-${"dummy"}-key`],
+];
+
+test("past the prefix budget, an OTLP credential key after separators of more than one kind, or after one that never comes again, is held whole as a reader of any of those kinds reads it, and a line quoting it is cut with no piece left", () => {
+  const missed = [];
+  for (const [what, header, key] of OPENING_ROWS) {
+    const env = { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=${header}` };
+    for (const [list, values] of [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]]) {
+      for (const value of [key, decodeURIComponent(key)]) if (!values.includes(value)) missed.push(`${what}: ${value} not held (${list})`);
+    }
+    for (const [redactor, redact] of [["the [otel] cut", otlpHeaderCut(env)], ["the runner's redactor", secretRedactor(runnerSecrets(env))]]) {
+      for (const form of [key, decodeURIComponent(key)]) {
+        const shown = redact(`401 from relay: key ${form} refused`);
+        if (shown !== "401 from relay: key [redacted] refused") missed.push(`${what}: ${redactor} shows ${shown}`);
+      }
+    }
+  }
+  assert.deepEqual(missed, [], "every key after a mixed opening past the budget is held whole, written and decoded, and cut with no tail");
 });
 
 test("after a header value's first URL query, a later URL's query is read while 4,096 characters of them in all fit: one that fits has its + read as a space, and a longer one's key is still held as written by the pair read", () => {

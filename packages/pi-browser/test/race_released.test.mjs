@@ -1,0 +1,651 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai/models";
+import * as faux from "@earendil-works/pi-ai/providers/faux";
+import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
+import { createBrowserExtension } from "@parcha/pi-browser/durable";
+import { FakeBackend, fakeDriver, fixturePage } from "@parcha/pi-browser/testing";
+
+// A release by a session's tag that ends sessions besides the session's own (a create race of the tag left one running,
+// which no record bills): the host hears their ids (`onRaceReleased`), once a status read confirms each stopped, and
+// never the session's own, which its record bills. A host whose hook throws never fails the release.
+
+const START = "https://example.test/start";
+
+async function run(t, onRaceReleased) {
+  const backend = new FakeBackend({ start: START, pages: { [START]: fixturePage(START, "The start page.") } });
+  // Each create of a tag also leaves a second session under it, which nobody's answer names.
+  const left = [];
+  const provider = {
+    ...backend.provider,
+    async create(spec, signal) {
+      const made = await backend.provider.create(spec, signal);
+      left.push((await backend.provider.create(spec, signal)).id);
+      return made;
+    },
+  };
+  const browser = createBrowserExtension({
+    provider: () => provider, driver: fakeDriver(backend), evidence: { file: async () => null }, onRaceReleased,
+    tools: { browser_read: async (_args, port) => { const s = await port.session(); await s.driver.page(); return { content: [{ type: "text", text: "read" }] }; } },
+  });
+  const model = faux.fauxProvider({ models: [{ id: "faux-1" }] });
+  model.setResponses(Array.from({ length: 4 }, () => (context) => {
+    if (context.messages.some((m) => m.role === "toolResult")) return faux.fauxAssistantMessage([faux.fauxText("done")], { stopReason: "stop" });
+    return faux.fauxAssistantMessage([faux.fauxToolCall("browser_read", {})], { stopReason: "toolUse" });
+  }));
+  const models = createModels();
+  models.setProvider(model.provider);
+  const registry = createRegistry();
+  registry.install(browser.extension);
+  const harness = await Harness.open(new MemoryStorage(), { models, registry, onReport: () => {} }, ctx);
+  t.after(async () => { await harness.close(ctx).catch(() => undefined); await browser.close(); });
+  const config = { label: "node-a", run: "run-race", policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 0, batchTimeoutMs: 60_000 } };
+  const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } }, init: async (tx, id) => { Object.assign(await tx.doc(browser.docs.Config, id), config); } });
+  await browser.reconcile(harness, () => true, ctx);
+  await (await root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);
+  await browser.release(root, "close", ctx);
+  await browser.drain(harness, ctx);
+  const [record] = (await harness.snapshot(browser.docs.Sessions, root.id, ctx)).sessions;
+  return { record, left, backend, rootId: root.id };
+}
+
+test("a release by the session's tag that ends a session a create race left: the host hears that one's id, once, and never the session's own", async (t) => {
+  const heard = [];
+  const { record, left, backend, rootId } = await run(t, (released) => { heard.push(released); });
+  assert.equal(record.state, "released");
+  assert.equal(left.length, 1);
+  assert.equal(backend.sessions.get(left[0]).state, "stopped", "the release by its tag ended it");
+  assert.deepEqual(heard, [{ conversationId: rootId, tag: record.tag, ids: [left[0]] }]);
+});
+
+test("a host whose onRaceReleased throws never fails the release: the session's record ends released and both sessions end", async (t) => {
+  let calls = 0;
+  const { record, left, backend } = await run(t, () => { calls += 1; throw new Error("the host could not book it"); });
+  assert.equal(calls, 1);
+  assert.equal(record.state, "released");
+  assert.equal(backend.sessions.get(record.resourceId).state, "stopped");
+  assert.equal(backend.sessions.get(left[0]).state, "stopped");
+});
+
+// A create whose answer was lost and whose tag lookup found nothing yet: the row has no id, and its release task looks
+// again by tag after the create deadline. By then the create left two sessions under the tag, A and B. The release's
+// first attempt finds [A, B], releases A (the row's own, the first found) and fails on B; the next look finds only B,
+// either the task's retry or (`abort`) the abort handler of a task aborted while it waits to retry.
+async function lostCreate(t, { abort = false } = {}) {
+  const backend = new FakeBackend({ start: START, pages: { [START]: fixturePage(START, "The start page.") } });
+  const made = [];
+  let lookups = 0;
+  let failB = true;
+  let failedB;
+  const bFailed = new Promise((resolve) => { failedB = resolve; });
+  const provider = {
+    ...backend.provider,
+    async create(spec, signal) {
+      made.push((await backend.provider.create(spec, signal)).id, (await backend.provider.create(spec, signal)).id);
+      throw new Error("the create's answer was lost");
+    },
+    async findByTag(tag, signal) {
+      return ++lookups === 1 ? [] : backend.provider.findByTag(tag, signal);
+    },
+    async release(ref, signal) {
+      if (ref.id === made[1] && failB) { failB = false; failedB(); throw new Error("the release of B failed"); }
+      return backend.provider.release(ref, signal);
+    },
+  };
+  const heard = [];
+  const browser = createBrowserExtension({
+    provider: () => provider, driver: fakeDriver(backend), evidence: { file: async () => null }, createDeadlineMs: 50,
+    onRaceReleased: (released) => { heard.push(released); },
+    tools: { browser_read: async (_args, port) => { const s = await port.session(); await s.driver.page(); return { content: [{ type: "text", text: "read" }] }; } },
+  });
+  const model = faux.fauxProvider({ models: [{ id: "faux-1" }] });
+  model.setResponses(Array.from({ length: 4 }, () => (context) => {
+    if (context.messages.some((m) => m.role === "toolResult")) return faux.fauxAssistantMessage([faux.fauxText("done")], { stopReason: "stop" });
+    return faux.fauxAssistantMessage([faux.fauxToolCall("browser_read", {})], { stopReason: "toolUse" });
+  }));
+  const models = createModels();
+  models.setProvider(model.provider);
+  const registry = createRegistry();
+  registry.install(browser.extension);
+  const harness = await Harness.open(new MemoryStorage(), { models, registry, onReport: () => {} }, ctx);
+  t.after(async () => { await harness.close(ctx).catch(() => undefined); await browser.close(); });
+  const config = { label: "node-a", run: "run-race", policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 0, batchTimeoutMs: 60_000 } };
+  const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } }, init: async (tx, id) => { Object.assign(await tx.doc(browser.docs.Config, id), config); } });
+  await browser.reconcile(harness, () => true, ctx);
+  await (await root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);
+  if (abort) {
+    // The retry waits backoffMs(0), 500 ms, after the failed attempt: the abort lands inside that wait.
+    await bFailed;
+    await root.abort(ctx, { background: true });
+  }
+  await browser.drain(harness, ctx);
+  const tasks = (await harness.commit((tx) => tx.scanTasks({}, 50), ctx)).items.filter((task) => task.kind === "browser.release");
+  const [a, b] = made;
+  assert.equal(made.length, 2, "one create, two sessions under its tag");
+  assert.equal(failB, false, "the first attempt's release of B failed");
+  const [record] = (await harness.snapshot(browser.docs.Sessions, root.id, ctx)).sessions;
+  return { a, b, record, heard, backend, rootId: root.id, outcomes: tasks.map((task) => task.state.outcome?.status) };
+}
+
+const raceRetryHolds = ({ a, b, record, heard, backend, rootId }) => {
+  assert.equal(record.state, "released");
+  assert.equal(record.resourceId, a, "the record bills the first session its tag found, A");
+  assert.equal(backend.sessions.get(a).state, "stopped");
+  assert.equal(backend.sessions.get(b).state, "stopped");
+  assert.deepEqual(heard, [{ conversationId: rootId, tag: record.tag, ids: [b] }], "B, released by the next look, is told as raced, once; A, the record's own, never");
+};
+
+test("a release that retries after its first attempt released the row's own session and failed on the other: the retry tells the other as raced, once, and the record bills the own one", async (t) => {
+  const seen = await lostCreate(t);
+  assert.deepEqual(seen.outcomes, ["completed"], "the task's own retry released B");
+  raceRetryHolds(seen);
+});
+
+test("a release aborted while it waits to retry, after its first attempt released the row's own session and failed on the other: the abort handler tells the other as raced, once, and the record bills the own one", async (t) => {
+  const seen = await lostCreate(t, { abort: true });
+  assert.deepEqual(seen.outcomes, ["aborted"], "the abort handler released B");
+  raceRetryHolds(seen);
+});
+
+// A row that owns A, whose tag also finds B, a session a create race left. B's release reaches the provider: it stops B
+// and then fails (its status read after the stop), so no later lookup by tag finds B. The release's checkpoint keeps
+// every id it found, and the step that confirms the release tells B, once its stop is confirmed. `lateStop`: B's release
+// answers with B still running, and B stops only after the first status read of it. `restart`: the process ends while
+// the task waits to retry, and the next process over the same storage resumes it.
+async function stoppedThenFailed(t, { lateStop = false, restart = false, abortUnread = false, madeAt = false } = {}) {
+  const backend = new FakeBackend({ start: START, pages: { [START]: fixturePage(START, "The start page.") } });
+  const left = [];
+  let failB = !lateStop;
+  let stopLate = lateStop;
+  // `abortUnread`: every status read of B fails until the task, aborted while it waits to retry, has ended; a run open's
+  // reconcile follows.
+  let readsFail = abortUnread;
+  const toldUnread = [];
+  let failedB;
+  const bFailed = new Promise((resolve) => { failedB = resolve; });
+  // `madeAt`: the vendor's tag lookup says when it made each session.
+  const times = new Map();
+  const provider = {
+    ...backend.provider,
+    async create(spec, signal) {
+      const made = await backend.provider.create(spec, signal);
+      left.push((await backend.provider.create(spec, signal)).id);
+      for (const id of [made.id, left.at(-1)]) times.set(id, new Date(Date.UTC(2026, 10, 5, 12, 0, times.size)).toISOString());
+      return made;
+    },
+    async findByTag(tag, signal) {
+      const refs = await backend.provider.findByTag(tag, signal);
+      return madeAt ? refs.map((ref) => ({ ...ref, madeAt: times.get(ref.id) })) : refs;
+    },
+    async release(ref, signal) {
+      if (ref.id === left[0] && stopLate) return undefined;
+      const out = await backend.provider.release(ref, signal);
+      if (ref.id === left[0] && failB) { failB = false; failedB(); throw new Error("the status read after B's stop failed"); }
+      return out;
+    },
+    async status(ref, signal) {
+      if (ref.id === left[0] && readsFail) throw new Error("the status read of B failed");
+      const read = await backend.provider.status(ref, signal);
+      if (ref.id === left[0] && stopLate) { stopLate = false; await backend.provider.release(ref, signal); }
+      return read;
+    },
+  };
+  const heard = [];
+  const storage = new MemoryStorage();
+  // One process's custody over the shared storage; a process that ends leaves the storage open, as a file would be.
+  const view = (lasts) => new Proxy(storage, { get: (target, prop) => (prop === "close" && !lasts ? async () => {} : typeof target[prop] === "function" ? target[prop].bind(target) : target[prop]) });
+  let processes = 0;
+  const open = async (lasts) => {
+    const by = (processes += 1);
+    const browser = createBrowserExtension({
+      provider: () => provider, driver: fakeDriver(backend), evidence: { file: async () => null },
+      onRaceReleased: (released) => {
+        heard.push({ ...released, by, stopped: released.ids.map((id) => backend.sessions.get(id).state) });
+        if (readsFail) toldUnread.push(...released.ids);
+      },
+      tools: { browser_read: async (_args, port) => { const s = await port.session(); await s.driver.page(); return { content: [{ type: "text", text: "read" }] }; } },
+    });
+    const model = faux.fauxProvider({ models: [{ id: "faux-1" }] });
+    model.setResponses(Array.from({ length: 4 }, () => (context) => {
+      if (context.messages.some((m) => m.role === "toolResult")) return faux.fauxAssistantMessage([faux.fauxText("done")], { stopReason: "stop" });
+      return faux.fauxAssistantMessage([faux.fauxToolCall("browser_read", {})], { stopReason: "toolUse" });
+    }));
+    const models = createModels();
+    models.setProvider(model.provider);
+    const registry = createRegistry();
+    registry.install(browser.extension);
+    const harness = await Harness.open(view(lasts), { models, registry, onReport: () => {} }, ctx);
+    const config = { label: "node-a", run: "run-race", policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 0, batchTimeoutMs: 60_000 } };
+    const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } }, init: async (tx, id) => { Object.assign(await tx.doc(browser.docs.Config, id), config); } });
+    await browser.reconcile(harness, () => true, ctx);
+    return { browser, harness, root };
+  };
+  const first = await open(!restart);
+  let last = first;
+  t.after(async () => { await last.harness.close(ctx).catch(() => undefined); await last.browser.close(); });
+  await (await first.root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);
+  await first.browser.release(first.root, "close", ctx);
+  if (restart) {
+    // The retry waits backoffMs(0), 500 ms, after the failed attempt: the process ends inside that wait.
+    await bFailed;
+    await first.browser.close();
+    await first.harness.close(ctx);
+    last = await open(true);
+  }
+  if (abortUnread) {
+    // The retry waits backoffMs(0), 500 ms, after the failed attempt: the abort lands inside that wait.
+    await bFailed;
+    await first.root.abort(ctx, { background: true });
+  }
+  await last.browser.drain(last.harness, ctx);
+  const atAbort = { heard: [...heard], owed: Object.values((await last.harness.snapshot(last.browser.docs.Inventory, ctx))?.rows ?? {}).map((row) => row.owed) };
+  if (abortUnread) {
+    readsFail = false;
+    await last.browser.reconcile(last.harness, () => false, ctx);
+  }
+  const tasks = (await last.harness.commit((tx) => tx.scanTasks({}, 50), ctx)).items.filter((task) => task.kind === "browser.release");
+  const [record] = (await last.harness.snapshot(last.browser.docs.Sessions, last.root.id, ctx)).sessions;
+  return { b: left[0], times, record, heard, backend, rootId: last.root.id, failB, stopLate, toldUnread, atAbort, outcomes: tasks.map((task) => task.state.outcome?.status) };
+}
+
+test("a release that stops the other session and then fails on it (its status read): the retry, which no longer finds it by its tag, confirms its stop and tells it as raced, once", async (t) => {
+  const { b, record, heard, backend, rootId, failB, outcomes } = await stoppedThenFailed(t);
+  assert.equal(failB, false, "B's release stopped it and then failed");
+  assert.deepEqual(outcomes, ["completed"]);
+  assert.equal(record.state, "released");
+  assert.equal(backend.sessions.get(b).state, "stopped");
+  assert.deepEqual(heard, [{ conversationId: rootId, tag: record.tag, ids: [b], by: 1, stopped: ["stopped"] }], "B is told once, and the record's own never");
+});
+
+test("the other session's release answers while it still runs: it is told as raced only once a status read confirms its stop, and once", async (t) => {
+  const { b, record, heard, rootId, stopLate, outcomes } = await stoppedThenFailed(t, { lateStop: true });
+  assert.equal(stopLate, false, "B ran past its release's answer, and stopped after the first status read");
+  assert.deepEqual(outcomes, ["completed"]);
+  assert.deepEqual(heard, [{ conversationId: rootId, tag: record.tag, ids: [b], by: 1, stopped: ["stopped"] }], "told once, after its stop");
+});
+
+test("a release that stops the other session and then fails on it, its process ending while it waits to retry: the next process resumes the task, confirms the stop and tells it as raced, once", async (t) => {
+  const { b, record, heard, backend, rootId, failB, outcomes } = await stoppedThenFailed(t, { restart: true });
+  assert.equal(failB, false, "B's release stopped it and then failed");
+  assert.deepEqual(outcomes, ["completed"], "the resumed task completed");
+  assert.equal(record.state, "released");
+  assert.equal(backend.sessions.get(b).state, "stopped");
+  assert.deepEqual(heard, [{ conversationId: rootId, tag: record.tag, ids: [b], by: 2, stopped: ["stopped"] }], "B is told once across both processes, by the one that resumed the task");
+});
+
+test("the vendor's listing says when it made each session, and the process ends after the release stopped the other one and failed on it: the next process, whose lookups no longer list it, hands its host that time with its id", async (t) => {
+  const { b, times, record, heard, rootId, outcomes } = await stoppedThenFailed(t, { restart: true, madeAt: true });
+  assert.deepEqual(outcomes, ["completed"], "the resumed task completed");
+  assert.deepEqual(heard, [{ conversationId: rootId, tag: record.tag, ids: [b], madeAt: { [b]: times.get(b) }, by: 2, stopped: ["stopped"] }], "B is told once, by the next process, with when it was made");
+});
+
+test("a release aborted after it stopped the other session and failed on it, every status read of that one failing: the abort handler keeps it owed, untold, and the next reconcile tells it once a read confirms its stop", async (t) => {
+  const { b, record, heard, rootId, failB, toldUnread, atAbort, outcomes } = await stoppedThenFailed(t, { abortUnread: true });
+  assert.equal(failB, false, "B's release stopped it and then failed");
+  assert.deepEqual(toldUnread, [], "nothing is told while no read confirms its stop");
+  assert.deepEqual(heard, [{ conversationId: rootId, tag: record.tag, ids: [b], by: 1, stopped: ["stopped"] }], "told once, by the reconcile");
+  assert.deepEqual([outcomes, atAbort.heard, atAbort.owed], [["aborted"], [], [[b]]], "the abort handler released the session's own and kept B owed on the row");
+});
+
+/** A clock the Harness reads and arms its timers on: `advance` moves it on and fires what fell due. */
+function fakeClock() {
+  let now = Date.now();
+  const due = new Set();
+  return {
+    now: () => now,
+    setTimer: (callback, delayMs) => {
+      const timer = { at: now + delayMs, callback };
+      due.add(timer);
+      return () => due.delete(timer);
+    },
+    advance(ms) {
+      now += ms;
+      for (const timer of [...due].sort((a, b) => a.at - b.at)) if (timer.at <= now) (due.delete(timer), timer.callback());
+    },
+  };
+}
+
+// A row that owns A, whose tag also finds B. A's release answers every time and A runs on, so each attempt's
+// confirmation finds it running and the task ends lost after its last attempt. `bStops`: B's release stops it; else B
+// runs on too. Then (`stuck` cleared) the next run open's reconcile releases what the lost row's tag still finds.
+async function lostRelease(t, { bStops }) {
+  const clock = fakeClock();
+  const backend = new FakeBackend({ start: START, pages: { [START]: fixturePage(START, "The start page.") } });
+  const made = [];
+  let stuck = true;
+  const provider = {
+    ...backend.provider,
+    async create(spec, signal) {
+      const own = await backend.provider.create(spec, signal);
+      made.push(own.id, (await backend.provider.create(spec, signal)).id);
+      return own;
+    },
+    async release(ref, signal) {
+      if (stuck && (ref.id === made[0] || (ref.id === made[1] && !bStops))) return undefined;
+      return backend.provider.release(ref, signal);
+    },
+  };
+  const heard = [];
+  const browser = createBrowserExtension({
+    provider: () => provider, driver: fakeDriver(backend), evidence: { file: async () => null },
+    onRaceReleased: (released) => { heard.push({ ids: released.ids, stopped: released.ids.map((id) => backend.sessions.get(id).state) }); },
+    tools: { browser_read: async (_args, port) => { const s = await port.session(); await s.driver.page(); return { content: [{ type: "text", text: "read" }] }; } },
+  });
+  const model = faux.fauxProvider({ models: [{ id: "faux-1" }] });
+  model.setResponses(Array.from({ length: 4 }, () => (context) => {
+    if (context.messages.some((m) => m.role === "toolResult")) return faux.fauxAssistantMessage([faux.fauxText("done")], { stopReason: "stop" });
+    return faux.fauxAssistantMessage([faux.fauxToolCall("browser_read", {})], { stopReason: "toolUse" });
+  }));
+  const models = createModels();
+  models.setProvider(model.provider);
+  const registry = createRegistry();
+  registry.install(browser.extension);
+  const harness = await Harness.open(new MemoryStorage(), { models, registry, onReport: () => {}, now: clock.now, setTimer: clock.setTimer }, ctx);
+  t.after(async () => { await harness.close(ctx).catch(() => undefined); await browser.close(); });
+  const config = { label: "node-a", run: "run-race", policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 0, batchTimeoutMs: 60_000 } };
+  const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } }, init: async (tx, id) => { Object.assign(await tx.doc(browser.docs.Config, id), config); } });
+  await browser.reconcile(harness, () => true, ctx);
+  await (await root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);
+  await browser.release(root, "close", ctx);
+  const outcome = async () => (await harness.commit((tx) => tx.scanTasks({}, 50), ctx)).items.find((task) => task.kind === "browser.release")?.state.outcome?.status;
+  for (let i = 0; i < 2_000 && (await outcome()) === undefined; i += 1) {
+    clock.advance(1_000);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+  const atLost = { outcome: await outcome(), heard: [...heard], state: (await harness.snapshot(browser.docs.Sessions, root.id, ctx)).sessions[0].state };
+  stuck = false;
+  await browser.reconcile(harness, () => false, ctx);
+  return { b: made[1], atLost, heard, backend };
+}
+
+test("a release that ends lost tells the other session it stopped as raced, once its status read says so, and the reconcile after it tells nothing more", async (t) => {
+  const { b, atLost, heard, backend } = await lostRelease(t, { bStops: true });
+  assert.deepEqual([atLost.outcome, atLost.state], ["failed", "lost"], "the row's own session ran on through every attempt");
+  assert.deepEqual(atLost.heard, [{ ids: [b], stopped: ["stopped"] }], "B, stopped, is told as the task ends lost");
+  assert.equal(backend.sessions.get(b).state, "stopped");
+  assert.deepEqual(heard, atLost.heard, "the reconcile, which no longer finds B, tells it no second time");
+});
+
+test("a release that ends lost with the other session still running tells it nothing; the next run open's reconcile releases it and tells it once its stop is confirmed", async (t) => {
+  const { b, atLost, heard, backend } = await lostRelease(t, { bStops: false });
+  assert.deepEqual([atLost.outcome, atLost.state], ["failed", "lost"]);
+  assert.deepEqual(atLost.heard, [], "B still runs: nothing is told");
+  assert.equal(backend.sessions.get(b).state, "stopped", "the reconcile released it");
+  assert.deepEqual(heard, [{ ids: [b], stopped: ["stopped"] }], "told once, by the reconcile, after its stop");
+});
+
+// A create whose answer was lost after it left two sessions under its tag, A and B: the tag lookup finds both, A is kept
+// and B released. `b` shapes B's release: "late" answers while B still runs, and B stops at its first status read, which
+// then fails; "lateRead" answers while B still runs, and B stops just after its first status read, which finds it
+// running; "stopThrows" stops B and then fails; "refused" fails without stopping B, once; "readsFail" stops B, and every
+// status read of B fails until the create's turn is over.
+async function lostAnswer(t, { b: mode }) {
+  const backend = new FakeBackend({ start: START, pages: { [START]: fixturePage(START, "The start page.") } });
+  const made = [];
+  let shaped = true;
+  const reads = [];
+  const provider = {
+    ...backend.provider,
+    async create(spec, signal) {
+      made.push((await backend.provider.create(spec, signal)).id, (await backend.provider.create(spec, signal)).id);
+      throw new Error("the create's answer was lost");
+    },
+    async release(ref, signal) {
+      if (ref.id !== made[1] || !shaped || mode === "readsFail") return backend.provider.release(ref, signal);
+      if (mode === "late" || mode === "lateRead") return undefined;
+      shaped = false;
+      if (mode === "stopThrows") await backend.provider.release(ref, signal);
+      throw new Error("the release of B failed");
+    },
+    async status(ref, signal) {
+      if (ref.id === made[1]) reads.push(backend.sessions.get(ref.id).state);
+      if (ref.id === made[1] && mode === "late" && shaped) {
+        shaped = false;
+        await backend.provider.release(ref, signal);
+        throw new Error("the status read of B failed");
+      }
+      if (ref.id === made[1] && mode === "readsFail" && shaped) throw new Error("the status read of B failed");
+      if (ref.id === made[1] && mode === "lateRead" && shaped) {
+        shaped = false;
+        const read = await backend.provider.status(ref, signal);
+        await backend.provider.release(ref, signal);
+        return read;
+      }
+      return backend.provider.status(ref, signal);
+    },
+  };
+  const heard = [];
+  const browser = createBrowserExtension({
+    provider: () => provider, driver: fakeDriver(backend), evidence: { file: async () => null },
+    onRaceReleased: (released) => { heard.push({ ...released, stopped: released.ids.map((id) => backend.sessions.get(id).state) }); },
+    tools: { browser_read: async (_args, port) => { const s = await port.session(); await s.driver.page(); return { content: [{ type: "text", text: "read" }] }; } },
+  });
+  const model = faux.fauxProvider({ models: [{ id: "faux-1" }] });
+  model.setResponses(Array.from({ length: 4 }, () => (context) => {
+    if (context.messages.some((m) => m.role === "toolResult")) return faux.fauxAssistantMessage([faux.fauxText("done")], { stopReason: "stop" });
+    return faux.fauxAssistantMessage([faux.fauxToolCall("browser_read", {})], { stopReason: "toolUse" });
+  }));
+  const models = createModels();
+  models.setProvider(model.provider);
+  const registry = createRegistry();
+  registry.install(browser.extension);
+  const harness = await Harness.open(new MemoryStorage(), { models, registry, onReport: () => {} }, ctx);
+  t.after(async () => { await harness.close(ctx).catch(() => undefined); await browser.close(); });
+  const config = { label: "node-a", run: "run-race", policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 0, batchTimeoutMs: 60_000 } };
+  const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } }, init: async (tx, id) => { Object.assign(await tx.doc(browser.docs.Config, id), config); } });
+  await browser.reconcile(harness, () => true, ctx);
+  await (await root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);
+  const atCreate = { heard: [...heard], reads: [...reads], b: backend.sessions.get(made[1]).state, owed: (await harness.snapshot(browser.docs.Inventory, ctx))?.rows?.[`ar-run-race-${root.id}-1`]?.owed };
+  if (mode === "readsFail") shaped = false;
+  await browser.release(root, "close", ctx);
+  await browser.drain(harness, ctx);
+  const [record] = (await harness.snapshot(browser.docs.Sessions, root.id, ctx)).sessions;
+  assert.equal(made.length, 2, "one create, two sessions under its tag");
+  assert.equal(shaped, false, "B's release or status read went as shaped");
+  assert.equal(record.state, "released");
+  assert.equal(record.resourceId, made[0], "the record bills A, the first its tag found");
+  assert.equal(backend.sessions.get(made[1]).state, "stopped");
+  return { b: made[1], record, heard, atCreate, rootId: root.id };
+}
+
+test("a lost create's extra whose release answers while it still runs, its first status read failing after the stop: it is told as raced once, after its stop", async (t) => {
+  const { b, record, heard, atCreate, rootId } = await lostAnswer(t, { b: "late" });
+  assert.deepEqual(heard, [{ conversationId: rootId, tag: record.tag, ids: [b], stopped: ["stopped"] }], "told once, after its stop");
+  assert.deepEqual(atCreate.heard, heard, "by the create that released it");
+  assert.deepEqual(atCreate.reads, ["running", "stopped"], "the failed read is read again");
+});
+
+test("a lost create's extra whose release answers while it still runs, its first status read finding it running: it is told as raced once, after its stop", async (t) => {
+  const { b, record, heard, atCreate, rootId } = await lostAnswer(t, { b: "lateRead" });
+  assert.deepEqual(heard, [{ conversationId: rootId, tag: record.tag, ids: [b], stopped: ["stopped"] }], "told once, after its stop");
+  assert.deepEqual(atCreate.heard, heard, "by the create that released it");
+  assert.deepEqual(atCreate.reads, ["running", "stopped"], "a stop still under way is read again");
+});
+
+test("a lost create's extra whose release stops it and then fails: it is not dropped; a status read confirms the stop and it is told as raced once", async (t) => {
+  const { b, record, heard, atCreate, rootId } = await lostAnswer(t, { b: "stopThrows" });
+  assert.deepEqual(heard, [{ conversationId: rootId, tag: record.tag, ids: [b], stopped: ["stopped"] }], "told once, after its stop");
+  assert.deepEqual(atCreate.heard, heard, "by the create that released it");
+  assert.deepEqual(atCreate.reads, ["stopped"]);
+});
+
+test("a lost create's extra whose release fails and leaves it running: it stays under the tag, untold, and the session's own release stops it and tells it once", async (t) => {
+  const { b, record, heard, atCreate, rootId } = await lostAnswer(t, { b: "refused" });
+  assert.deepEqual([atCreate.b, atCreate.reads, atCreate.heard], ["running", ["running"], []], "one read finds it running: the create leaves it to the release, which finds it by its tag");
+  assert.deepEqual(heard, [{ conversationId: rootId, tag: record.tag, ids: [b], stopped: ["stopped"] }], "told once, by the release, after its stop");
+});
+
+test("a lost create's extra whose release stops it while every status read of it fails: it stays owed on the session's row, and the session's own release confirms its stop and tells it once", { timeout: 30_000 }, async (t) => {
+  const { b, record, heard, atCreate, rootId } = await lostAnswer(t, { b: "readsFail" });
+  assert.deepEqual(heard, [{ conversationId: rootId, tag: record.tag, ids: [b], stopped: ["stopped"] }], "told once, after a read confirms its stop");
+  assert.deepEqual([atCreate.heard, atCreate.owed, atCreate.reads.length], [[], [b], 5], "no read confirmed it within the create's bound: nothing told, and B saved on the row");
+});
+
+// The same create, its process ending while every status read of B fails: nothing that process commits from then on
+// lands. The next process over the same storage opens with the session's record still creating and B saved on its row;
+// its reconcile binds the session, and its close releases it. A run open's reconcile after that finds nothing more. The
+// turn the first process left resumes in the next, and its create there answers.
+async function lostAnswerRestart(t, { madeAt = false } = {}) {
+  const backend = new FakeBackend({ start: START, pages: { [START]: fixturePage(START, "The start page.") } });
+  const made = [];
+  let readsFail = true;
+  let lose = true;
+  let failedRead;
+  const readFailed = new Promise((resolve) => { failedRead = resolve; });
+  const provider = {
+    ...backend.provider,
+    async create(spec, signal) {
+      if (!lose) return backend.provider.create(spec, signal);
+      made.push((await backend.provider.create(spec, signal)).id, (await backend.provider.create(spec, signal)).id);
+      throw new Error("the create's answer was lost");
+    },
+    async status(ref, signal) {
+      if (ref.id === made[1] && readsFail) { failedRead(); throw new Error("the status read of B failed"); }
+      return backend.provider.status(ref, signal);
+    },
+    // `madeAt`: the vendor's tag lookup says when it made each session.
+    async findByTag(tag, signal) {
+      const refs = await backend.provider.findByTag(tag, signal);
+      return madeAt ? refs.map((ref) => ({ ...ref, madeAt: `2026-11-05T12:00:0${made.indexOf(ref.id)}.000Z` })) : refs;
+    },
+  };
+  const heard = [];
+  const storage = new MemoryStorage();
+  const view = (process) => new Proxy(storage, { get: (target, prop) => {
+    if (prop === "close" && !process.lasts) return async () => {};
+    if (prop === "commit") return async (...args) => { if (process.ended) throw new Error("the process ended"); return target.commit(...args); };
+    return typeof target[prop] === "function" ? target[prop].bind(target) : target[prop];
+  } });
+  let count = 0;
+  const open = async (process) => {
+    const by = (count += 1);
+    const browser = createBrowserExtension({
+      provider: () => provider, driver: fakeDriver(backend), evidence: { file: async () => null }, createDeadlineMs: 50,
+      onRaceReleased: (released) => { heard.push({ ids: released.ids, by, stopped: released.ids.map((id) => backend.sessions.get(id).state), ...(released.madeAt ? { madeAt: released.madeAt } : {}) }); },
+      tools: { browser_read: async (_args, port) => { const s = await port.session(); await s.driver.page(); return { content: [{ type: "text", text: "read" }] }; } },
+    });
+    const model = faux.fauxProvider({ models: [{ id: "faux-1" }] });
+    model.setResponses(Array.from({ length: 4 }, () => (context) => {
+      if (context.messages.some((m) => m.role === "toolResult")) return faux.fauxAssistantMessage([faux.fauxText("done")], { stopReason: "stop" });
+      return faux.fauxAssistantMessage([faux.fauxToolCall("browser_read", {})], { stopReason: "toolUse" });
+    }));
+    const models = createModels();
+    models.setProvider(model.provider);
+    const registry = createRegistry();
+    registry.install(browser.extension);
+    const harness = await Harness.open(view(process), { models, registry, onReport: () => {} }, ctx);
+    const config = { label: "node-a", run: "run-race", policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 0, batchTimeoutMs: 60_000 } };
+    const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } }, init: async (tx, id) => { Object.assign(await tx.doc(browser.docs.Config, id), config); } });
+    await browser.reconcile(harness, () => true, ctx);
+    return { browser, harness, root };
+  };
+  const firstProcess = { lasts: false, ended: false };
+  const first = await open(firstProcess);
+  let last = first;
+  t.after(async () => { await last.harness.close(ctx).catch(() => undefined); await last.browser.close(); });
+  const turn = first.root.submit({ type: "input", content: "go" }, ctx).then((handle) => handle.wait(ctx)).catch(() => undefined);
+  await readFailed;
+  const inventory = async (harness) => (await harness.snapshot(first.browser.docs.Inventory, ctx))?.rows ?? {};
+  const atEnd = { heard: [...heard], owed: Object.values(await inventory(first.harness))[0]?.owed, ...(madeAt ? { made: Object.values(await inventory(first.harness))[0]?.made } : {}) };
+  firstProcess.ended = true;
+  await first.browser.close();
+  await first.harness.close(ctx).catch(() => undefined);
+  await turn;
+  const bStopped = backend.sessions.get(made[1]).state;
+  readsFail = false;
+  lose = false;
+  last = await open({ lasts: true, ended: false });
+  await last.browser.release(last.root, "close", ctx);
+  await last.browser.drain(last.harness, ctx);
+  await last.browser.reconcile(last.harness, () => false, ctx);
+  return { made, heard, atEnd, bStopped, rows: await inventory(last.harness) };
+}
+
+test("a lost create's extra whose status reads all fail, its process ending then: the next process finds it owed on the row and tells it once, after a read confirms its stop", { timeout: 30_000 }, async (t) => {
+  const { made, heard, atEnd, bStopped, rows } = await lostAnswerRestart(t);
+  assert.equal(made.length, 2, "one create, two sessions under its tag");
+  assert.equal(bStopped, "stopped", "B's release stopped it before its process ended");
+  assert.deepEqual(heard, [{ ids: [made[1]], by: 2, stopped: ["stopped"] }], "told once, by the next process, after a read confirms its stop");
+  assert.deepEqual(atEnd, { heard: [], owed: [made[1]] }, "the first process told nothing, and B was saved on the row before its stop was sent");
+  assert.deepEqual(Object.values(rows).filter((row) => row.owed), [], "nothing is owed once B is told");
+});
+
+test("a lost create's extra whose status reads all fail, its process ending then, the vendor's listing saying when it made each: B's time is saved on the row with its id, and the next process hands it to its host with B", { timeout: 30_000 }, async (t) => {
+  const { made, heard, atEnd, rows } = await lostAnswerRestart(t, { madeAt: true });
+  const b = made[1];
+  assert.deepEqual(atEnd, { heard: [], owed: [b], made: { [b]: "2026-11-05T12:00:01.000Z" } }, "saved on the row before its stop was sent");
+  assert.deepEqual(heard, [{ ids: [b], by: 2, stopped: ["stopped"], madeAt: { [b]: "2026-11-05T12:00:01.000Z" } }], "told once, by the next process, with when it was made");
+  assert.deepEqual(Object.values(rows).filter((row) => row.owed || row.made), [], "nothing is owed, nor kept, once B is told");
+});
+
+// A row that owns A, whose tag also finds B and C. While `stuck`, B's release stops it but every status read of B fails,
+// and no release stops A or C, so the release task ends lost. Then a run open's reconcile, whose tag lookup no longer
+// lists B, releases A and C: C's release fails once. The next run open's reconcile releases C.
+async function lostRowPartly(t) {
+  const clock = fakeClock();
+  const backend = new FakeBackend({ start: START, pages: { [START]: fixturePage(START, "The start page.") } });
+  const made = [];
+  let stuck = true;
+  let failC = true;
+  const provider = {
+    ...backend.provider,
+    async create(spec, signal) {
+      const own = await backend.provider.create(spec, signal);
+      made.push(own.id, (await backend.provider.create(spec, signal)).id, (await backend.provider.create(spec, signal)).id);
+      return own;
+    },
+    async release(ref, signal) {
+      if (stuck && ref.id !== made[1]) return undefined;
+      if (ref.id === made[2] && failC) { failC = false; throw new Error("the release of C failed"); }
+      return backend.provider.release(ref, signal);
+    },
+    async status(ref, signal) {
+      if (stuck && ref.id === made[1]) throw new Error("the status read of B failed");
+      return backend.provider.status(ref, signal);
+    },
+  };
+  const heard = [];
+  const browser = createBrowserExtension({
+    provider: () => provider, driver: fakeDriver(backend), evidence: { file: async () => null },
+    onRaceReleased: (released) => { heard.push({ ids: released.ids, stopped: released.ids.map((id) => backend.sessions.get(id).state) }); },
+    tools: { browser_read: async (_args, port) => { const s = await port.session(); await s.driver.page(); return { content: [{ type: "text", text: "read" }] }; } },
+  });
+  const model = faux.fauxProvider({ models: [{ id: "faux-1" }] });
+  model.setResponses(Array.from({ length: 4 }, () => (context) => {
+    if (context.messages.some((m) => m.role === "toolResult")) return faux.fauxAssistantMessage([faux.fauxText("done")], { stopReason: "stop" });
+    return faux.fauxAssistantMessage([faux.fauxToolCall("browser_read", {})], { stopReason: "toolUse" });
+  }));
+  const models = createModels();
+  models.setProvider(model.provider);
+  const registry = createRegistry();
+  registry.install(browser.extension);
+  const harness = await Harness.open(new MemoryStorage(), { models, registry, onReport: () => {}, now: clock.now, setTimer: clock.setTimer }, ctx);
+  t.after(async () => { await harness.close(ctx).catch(() => undefined); await browser.close(); });
+  const config = { label: "node-a", run: "run-race", policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 0, batchTimeoutMs: 60_000 } };
+  const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } }, init: async (tx, id) => { Object.assign(await tx.doc(browser.docs.Config, id), config); } });
+  await browser.reconcile(harness, () => true, ctx);
+  await (await root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);
+  await browser.release(root, "close", ctx);
+  const outcome = async () => (await harness.commit((tx) => tx.scanTasks({}, 50), ctx)).items.find((task) => task.kind === "browser.release")?.state.outcome?.status;
+  for (let i = 0; i < 2_000 && (await outcome()) === undefined; i += 1) {
+    clock.advance(1_000);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+  const rows = async () => (await harness.snapshot(browser.docs.Inventory, ctx))?.rows ?? {};
+  const atLost = { outcome: await outcome(), heard: [...heard], rows: Object.values(await rows()).map(({ state, owed }) => ({ state, owed })) };
+  stuck = false;
+  const first = await browser.reconcile(harness, () => false, ctx);
+  const afterFirst = { heard: [...heard], rows: Object.values(await rows()).map(({ state, owed }) => ({ state, owed })), unreachable: first.unreachable.length, c: backend.sessions.get(made[2]).state };
+  const second = await browser.reconcile(harness, () => false, ctx);
+  return { made, atLost, afterFirst, second: { released: second.released.length, rows: await rows() }, heard, backend };
+}
+
+test("a lost row owes B, stopped with no read confirming it, and C, running: a reconcile whose release fails on C tells B at once and keeps C owed; the next tells C once its stop is confirmed", async (t) => {
+  const { made: [, b, c], atLost, afterFirst, second, heard, backend } = await lostRowPartly(t);
+  assert.deepEqual(afterFirst.heard, [{ ids: [b], stopped: ["stopped"] }], "B, stopped, is told though C's release failed");
+  assert.deepEqual([atLost.outcome, atLost.heard, atLost.rows], ["failed", [], [{ state: "lost", owed: [b, c] }]], "B, stopped unconfirmed, and C, running, are owed on the lost row");
+  assert.deepEqual([afterFirst.rows, afterFirst.unreachable, afterFirst.c], [[{ state: "lost", owed: [c] }], 1, "running"], "C stays owed on the row");
+  assert.deepEqual(heard, [{ ids: [b], stopped: ["stopped"] }, { ids: [c], stopped: ["stopped"] }], "C is told once, after its stop");
+  assert.deepEqual([second.released, second.rows, backend.sessions.get(c).state], [1, {}, "stopped"]);
+});

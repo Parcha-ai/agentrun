@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import running from "../fixtures/run.working.working.1.json";
 import { createClient } from "./client";
-import { FACTORY_VIEW_KEY, factoryCards, readFactoryScope, reconcileFactoryRuns, savedFactoryView, saveFactoryView } from "./factory";
+import { FACTORY_VIEW_KEY, factoryCards, factoryHash, factoryPlace, readFactoryScope, reconcileFactoryRuns, savedFactoryView, saveFactoryView } from "./factory";
 import type { FactoryRunPage, Run } from "./v2";
 
 const FACTORY: NonNullable<Run["factory"]> = {
@@ -185,5 +185,44 @@ describe("the factory's view, kept in this browser", () => {
     expect(() => saveFactoryView("list", refusing)).not.toThrow();
     expect(savedFactoryView(null)).toBe("cards");
     expect(() => saveFactoryView("list", null)).not.toThrow();
+  });
+});
+
+describe("the next step on a session that waits on a person", () => {
+  const asked = "2026-11-21T10:00:00Z";
+  it("is Answer for a question and Review for what asks leave; a session nobody is asked about, an ended run and a child have none", () => {
+    const waiting = (id: string, pending: Run["pending"]) => run(id, { status: "input_required", state: "waiting", pending });
+    const cards = factoryCards([
+      waiting("ask", { kind: "question", question: "Which scope?", asked_at: asked }),
+      waiting("call", { kind: "approval", tool: "write", asked_at: asked } as unknown as Run["pending"]),
+      run("works", { factory: { ...FACTORY, children: [{ id: "works:conversation:2", conversation_id: 2, parent_call_id: "c1", status: "active", label: "Check it" }] } }),
+      run("stopped", { status: "input_required", state: "idle" }),
+    ], name);
+    expect(cards.map((card) => [card.id, card.action])).toEqual([["ask", "Answer"], ["call", "Review"], ["works", undefined], ["works:child:works:conversation:2", undefined], ["stopped", undefined]]);
+    // An ended run in review waits on nobody: its card opens it, with no step named.
+    const ended = factoryCards([run("ended", { status: "failed", ended_at: asked, error: { code: "run_failed", message: "It failed." } as unknown as Run["error"], pending: { kind: "question", question: "Left over?", asked_at: asked } })], name, true);
+    expect(ended.map((card) => card.action)).toEqual([undefined]);
+  });
+});
+
+describe("the board's address", () => {
+  it("says only what is not the default, and reads back what it wrote", () => {
+    expect(factoryHash()).toBe("#/factory");
+    expect(factoryHash({ repository: "all", control: "all" })).toBe("#/factory");
+    const place = { session: "run_abc/1 2", repository: "repo:acme/console.web", control: "control:Observed" };
+    const hash = factoryHash(place);
+    expect(hash).toBe("#/factory?session=run_abc%2F1+2&repo=acme%2Fconsole.web&control=observed");
+    expect(factoryPlace(hash.split("?")[1]!)).toEqual(place);
+    expect(factoryPlace(factoryHash({ repository: "unreported", control: "control:Managed" }).split("?")[1]!)).toEqual({ repository: "unreported", control: "control:Managed" });
+    expect(factoryPlace("")).toEqual({ repository: "all", control: "all" });
+  });
+
+  it("widens a filter it does not know to every session, never to an empty board no option explains", () => {
+    expect(factoryPlace("repo=not-a-repository&control=owned")).toEqual({ repository: "all", control: "all" });
+    expect(factoryPlace("repo=a/b/c&control=Managed")).toEqual({ repository: "all", control: "all" });
+    // A word every object answers to (constructor, toString, __proto__) is no control: it is not one of the two.
+    for (const word of ["constructor", "toString", "__proto__", "hasOwnProperty", "valueOf"]) expect(factoryPlace(`control=${word}`), word).toEqual({ repository: "all", control: "all" });
+    // A session id past any real one is not carried into a request.
+    expect(factoryPlace(`session=${"x".repeat(201)}`)).toEqual({ repository: "all", control: "all" });
   });
 });

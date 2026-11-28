@@ -59,6 +59,17 @@ test("every route the profile serves is a route of the server", () => {
   for (const name of API_ONLY_ROUTES) assert.ok(names.has(name), `${name} is in ROUTES`);
 });
 
+test("with the operator's MCP origins named, the profile also serves the generic MCP save and the preview (each body checked at its route), and no other MCP settings route", () => {
+  const served = (method, raw, mcpSave) => servedApiOnly(ROUTES, method, raw, mcpSave);
+  for (const [method, raw] of [["PUT", "/v2/settings/mcp-servers/x"], ["POST", "/v2/settings/mcp-servers/preview"]]) {
+    assert.deepEqual([served(method, raw, false), served(method, raw, true)], [false, true], `${method} ${raw}`);
+  }
+  for (const [method, raw] of [
+    ["GET", "/v2/settings/mcp-servers"], ["GET", "/v2/settings/mcp-servers/x"],
+    ["POST", "/v2/settings/mcp-servers/x/refresh"], ["POST", "/v2/settings/mcp-servers/x/oauth/start"], ["GET", "/v2/settings/mcp-servers/preview"],
+  ]) assert.equal(served(method, raw, true), false, `${method} ${raw}`);
+});
+
 test("the profile serves a run's routes by method and path, and nothing else", () => {
   const served = (method, raw) => servedApiOnly(ROUTES, method, raw);
   for (const [method, raw] of [
@@ -67,7 +78,7 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     ["GET", "/v2/runs/run_1/usage"], ["HEAD", "/v2/runs/run_1/usage"],
     ["PUT", "/v2/runs/run_1/grade"], ["POST", "/v2/runs/run_1/messages"], ["POST", "/v2/runs/run_1/stop"], ["POST", "/v2/runs/run_1/cancel"],
     ["GET", "/v2/runs/run_1/files"], ["GET", "/v2/runs/run_1/files/out/report.md"], ["POST", "/v2/files"], ["GET", "/v2/files/file_1"],
-    ["GET", "/v2/capabilities"], ["GET", "/v2/settings/mcp-server-names"], ["GET", "/v2/health"], ["GET", "/v2/usage"], ["GET", "/v2/capacity"], ["POST", "/v2/templates/import"],
+    ["GET", "/v2/capabilities"], ["GET", "/v2/settings/mcp-server-names"], ["GET", "/v2/settings/prices"], ["GET", "/v2/health"], ["GET", "/v2/usage"], ["GET", "/v2/capacity"], ["POST", "/v2/templates/import"],
     ["GET", "/v2/agents/a1/archil"], ["DELETE", "/v2/agents/a1/archil"], ["DELETE", "/v2/agents/a1"], ["DELETE", "/v2/agents/a1/learning"], ["DELETE", "/v2/runs/run_1"], ["GET", "/v2/computers/daemon"],
     ["GET", "/v2/computers"], ["HEAD", "/v2/computers"], ["GET", "/v2/workspace/archil"], ["HEAD", "/v2/workspace/archil"],
     ["GET", "/v2/runs/run_1/computer"], ["POST", "/v2/runs/run_1/computer/take-over"], ["POST", "/v2/runs/run_1/computer/hand-back"],
@@ -80,6 +91,8 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     // The MCP servers a deploy's agents need: a Composio server saved through the preset, and a server deleted. Their
     // names are listed by GET /settings/mcp-server-names, above.
     ["PUT", "/v2/settings/mcp-servers/x/composio"], ["DELETE", "/v2/settings/mcp-servers/x"],
+    // Composio's catalog for that save, its key named by api_key_env (a key sent is 403: mcp-secret-writes.ts).
+    ["POST", "/v2/settings/mcp-servers/composio/toolkits"], ["POST", "/v2/settings/mcp-servers/composio/tools"],
     // A trigger's reads and its turn on or off (PATCH takes `enabled` alone here), for one auto-paused to be seen and
     // turned on again: an API-only server has no console to do it in.
     ["GET", "/v2/triggers"], ["HEAD", "/v2/triggers"], ["GET", "/v2/triggers/trg_1"], ["GET", "/v2/triggers/trg_1/firings"], ["PATCH", "/v2/triggers/trg_1"],
@@ -92,7 +105,7 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     ["GET", "/"], ["GET", "/assets/index.js"], ["GET", "/llms.txt"],
     ["POST", "/v2/setup"], ["POST", "/v2/auth/sign-in"], ["GET", "/v2/auth/session"],
     ["PUT", "/v2/settings/tool-keys/monid"], ["PUT", "/v2/settings/tools"], ["PUT", "/v2/settings/webhook"], ["GET", "/v2/settings/tools"],
-    ["POST", "/v2/settings/mcp-servers/preview"], ["POST", "/v2/settings/mcp-servers/x/refresh"], ["POST", "/v2/settings/mcp-servers/composio/tools"], ["POST", "/v2/settings/mcp-servers/composio/toolkits"],
+    ["POST", "/v2/settings/mcp-servers/preview"], ["POST", "/v2/settings/mcp-servers/x/refresh"],
     ["POST", "/v2/settings/mcp-servers/x/oauth/start"], ["GET", "/v2/settings/mcp-servers/x/composio/events"], ["PUT", "/v2/settings/mcp-servers/oauth/private-hosts"],
     // No list or read of the MCP servers (their names route is the listing), and no save of a server at an address or
     // with headers of the caller's own.
@@ -114,6 +127,16 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     ["GET", "/v2/runs/run_1/graph"], ["GET", "/v2/runs/run_1/trace"],
     ...LEARNING_REFUSED.map(([method, path]) => [method, at(path, "a1", "run_1")]),
   ]) assert.equal(served(method, raw), false, `${method} ${raw}`);
+});
+
+test("with the launch hook the profile serves a POST to one trigger's hook as well, and no path under a hook", () => {
+  const hooked = (method, raw) => servedApiOnly(ROUTES, method, raw, false, true);
+  assert.equal(hooked("POST", "/v2/hooks/trg_1"), true);
+  assert.equal(servedApiOnly(ROUTES, "POST", "/v2/hooks/trg_1", false, false), false, "not without the hook");
+  for (const [method, raw] of [["GET", "/v2/hooks/trg_1"], ["POST", "/v2/hooks/composio/p1"], ["POST", "/v2/hooks/trg_1/x"], ["POST", "/v2/hooks"], ["POST", "/v2/triggers"], ["GET", "/v2/settings/tools"]]) {
+    assert.equal(hooked(method, raw), false, `${method} ${raw}`);
+  }
+  assert.equal(hooked("GET", "/v2/runs/run_1"), true, "the rest as before");
 });
 
 /** One request to `server` (its path from the root, the token unless `token` is false): its status and body. */
@@ -143,6 +166,8 @@ test("an API-only server serves a run's routes with the token", async (t) => {
   // Whether a per-run Composio server here takes each run's own account (composioperrun/1), read by the backend in
   // front from this answer: the API document stays refused here.
   assert.equal(capabilities.body.features.mcp_client.composio_per_run, true, "the per-run Composio binding is said");
+  // A message's said (messagesaid/1), which the backend in front reads here before it sends one.
+  assert.equal(capabilities.body.features.messages.said, true, "a message's said is offered");
   assert.equal((await send(server, "GET", "/v2/openapi.json")).status, 404, "the API document is not served here");
   const runs = await send(server, "GET", "/v2/runs");
   assert.equal(runs.status, 200, `the runs list: ${JSON.stringify(runs.body)}`);
@@ -177,6 +202,19 @@ test("an API-only server serves a run's usage lines with the token, and still re
 
   const settings = await send(server, "GET", "/v2/settings/tools");
   assert.deepEqual([settings.status, settings.body.error?.message], [404, "this server serves the run API only (AGENTRUN_API_ONLY=1): /v2/settings/tools is not served here"], "a settings route is the profile's 404");
+});
+
+test("an API-only server answers the prices in force with the token, as its meters read them; no token is 401", async (t) => {
+  withEnv(t, { AGENTRUN_COMPUTE_USD_PER_VCPU_SECOND_DAYTONA: "0.000014" }, ["AGENTRUN_COMPUTE_USD_PER_VCPU_SECOND_DAYTONA", "AGENTRUN_COMPUTE_USD_PER_GIB_SECOND_DAYTONA"]);
+  const server = await serve(t, { apiOnly: true, runner: false });
+  const prices = await send(server, "GET", "/v2/settings/prices");
+  assert.equal(prices.status, 200, JSON.stringify(prices.body));
+  const row = (resource) => prices.body.compute.find((one) => one.provider === "daytona" && one.resource === resource && one.gpu_type === null);
+  assert.deepEqual([row("vcpu")?.usd, row("vcpu")?.source], ["0.000014", "setting"], "a setting as written");
+  assert.deepEqual([row("memory")?.usd, row("memory")?.source], [null, "unpriced"], "an unset resource unpriced");
+  assert.ok(Array.isArray(prices.body.browser), "its browser rows");
+  const anonymous = await send(server, "GET", "/v2/settings/prices", { token: false });
+  assert.equal(anonymous.status, 401, `it takes the token: ${JSON.stringify(anonymous.body)}`);
 });
 
 test("an API-only server with the launch hook serves a firing's release with the token: an unknown trigger is the route's own 404, and with no launch hook the route's own 422 not_allowed", async (t) => {

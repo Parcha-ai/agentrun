@@ -240,11 +240,12 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     said.up ? undefined : said.absent ? noDockerWords(kind, kinds.PROVIDERS, mode === "disk" ? 2 : 1) : said.reason;
 
   /** Each kind, whether this server offers it and why not, the capability groups and tools it brings, and each provider
-   *  that serves it, with its keys (saved or not, never a value) and whether a run could have it now. */
-  async function view(): Promise<{ kinds: KindView[]; paired: PairedView[] }> {
+   *  that serves it, with its keys (saved or not, never a value) and whether a run could have it now. `scoped`: the view
+   *  of a request in a workspace, which never sees the operator's paired computers. */
+  async function view({ scoped = false }: { scoped?: boolean } = {}): Promise<{ kinds: KindView[]; paired: PairedView[] }> {
     const mode = await modeNow();
     // The paired computers, each one more provider of its kind; one not attached now is not ready, saying so.
-    const rows = options.paired ? await options.paired.rows() : [];
+    const rows = options.paired && !scoped ? await options.paired.rows() : [];
     const listed = withPaired(options.kinds, rows);
     const relays = await relaysNow();
     const paired = await Promise.all(rows.map((row) => options.paired!.viewOf(row, listed.PROVIDERS.find((provider) => provider.id === row.id)?.kinds ?? [], runsRefused({ id: row.id, label: row.name }, relays, true))));
@@ -409,9 +410,9 @@ const noProvider = (id: string | undefined): ApiError => new ApiError("not_found
 
 /** One of Settings → Computers' routes at its handler, as serve's dispatch calls it: its answer (sent 200), or its refusal
  *  as an ApiError (sent with its status): an unknown provider is not_found; a key save's body that is not an object of
- *  names, or a name the provider does not take, is input_invalid with its fields. */
-export async function settingsComputerRoute(routes: ComputerRoutes, name: string, request: { readonly provider?: string; readonly body?: unknown; readonly signal?: AbortSignal }): Promise<unknown> {
-  if (name === "listComputers") return routes.view();
+ *  names, or a name the provider does not take, is input_invalid with its fields. `scoped`: a request in a workspace. */
+export async function settingsComputerRoute(routes: ComputerRoutes, name: string, request: { readonly provider?: string; readonly body?: unknown; readonly signal?: AbortSignal; readonly scoped?: boolean }): Promise<unknown> {
+  if (name === "listComputers") return routes.view({ scoped: request.scoped === true });
   if (name === "saveComputerKeys") {
     const { body } = request;
     if (typeof body !== "object" || body === null || Array.isArray(body)) throw new ApiError("input_invalid", "the body is a JSON object of the provider's key names, each a string, or null to remove it");
@@ -438,7 +439,8 @@ export async function settingsComputerRoute(routes: ComputerRoutes, name: string
   throw new ApiError("not_found", `no computer route ${name}`);
 }
 
-/** capabilities.computers: the kinds this server offers now, in the registry's order. */
-export async function computerCapabilities(routes: ComputerRoutes): Promise<{ kinds: ComputerKind[] }> {
-  return { kinds: (await routes.view()).kinds.filter((kind) => kind.offered).map((kind) => kind.kind) };
+/** capabilities.computers: the kinds this server offers now, in the registry's order. `scoped`: a request in a workspace,
+ *  whose count leaves out the paired computers (view). */
+export async function computerCapabilities(routes: ComputerRoutes, { scoped = false }: { scoped?: boolean } = {}): Promise<{ kinds: ComputerKind[] }> {
+  return { kinds: (await routes.view({ scoped })).kinds.filter((kind) => kind.offered).map((kind) => kind.kind) };
 }

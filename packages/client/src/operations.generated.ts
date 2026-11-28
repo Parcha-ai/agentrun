@@ -182,7 +182,7 @@ export type DefinitionInput = {
     mode: "runner";
   } | {
     mode: "sandbox";
-    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
+    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel" | "sprites";
   };
   computer?: {
     kind: "none" | "sandbox" | "desktop" | "phone" | "browser";
@@ -218,10 +218,12 @@ export type DefinitionInput = {
     web_fetch?: {
       provider?: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
       permission?: "allow" | "ask" | "deny";
+      jev?: "off";
     };
     web_search?: {
       provider?: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
       permission?: "allow" | "ask" | "deny";
+      jev?: "off";
     };
     web_save?: {
       permission?: "allow" | "ask" | "deny";
@@ -515,6 +517,7 @@ export type RunSummary = {
     kind: "question";
     question: string;
     asked_at: string;
+    expires_at?: string;
   } | {
     kind: "approval";
     id: string;
@@ -554,7 +557,7 @@ export type RunSummary = {
     kind: "stopped";
   } | null;
   imported_from?: {
-    source: "claude-code" | "codex" | "pi" | "opencode" | "copilot";
+    source: "claude-code" | "codex" | "pi" | "opencode" | "copilot" | "cursor";
     session: string;
   } | null;
   trigger?: {
@@ -601,10 +604,12 @@ export type Cost = {
   };
   learning_usd?: number | null;
   tools_usd?: number | null;
+  billable_usd?: number | null;
   all_in_usd?: number | null;
   compile_usd?: number | null;
   followup_usd?: number | null;
   shadow_usd?: number | null;
+  check_usd?: number | null;
   share_usd?: number | null;
   plan?: {
     requests: number;
@@ -820,7 +825,7 @@ export type Run = {
     mode: "runner";
   } | {
     mode: "sandbox";
-    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
+    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel" | "sprites";
   };
   computer?: {
     kind: "sandbox" | "desktop" | "phone" | "browser";
@@ -855,6 +860,7 @@ export type Run = {
     kind: "question";
     question: string;
     asked_at: string;
+    expires_at?: string;
   } | {
     kind: "approval";
     id: string;
@@ -894,7 +900,7 @@ export type Run = {
     kind: "stopped";
   } | null;
   imported_from?: {
-    source: "claude-code" | "codex" | "pi" | "opencode" | "copilot";
+    source: "claude-code" | "codex" | "pi" | "opencode" | "copilot" | "cursor";
     session: string;
   } | null;
   trigger?: {
@@ -902,6 +908,12 @@ export type Run = {
     firing_key: string;
   } | null;
   audit_of?: string | null;
+  learning_work: {
+    state: "none" | "running" | "ended";
+    runs: Array<string>;
+    ended_at: string | null;
+    deadline_at: string | null;
+  };
   path?: "agent" | "handed_back" | "workflow" | "replay" | "audit" | null;
   workflow?: {
     name: string | null;
@@ -987,6 +999,7 @@ export type RunFile = {
 
 export type MessageCreate = {
   content: string;
+  said?: string;
   model_key?: string;
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
@@ -1182,7 +1195,7 @@ export type Capabilities = {
   places: {
     modes: Array<"runner" | "sandbox">;
     boxes: Array<{
-      id: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
+      id: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel" | "sprites";
       available: boolean;
       state: "ready" | "unavailable";
       reason?: string;
@@ -1194,7 +1207,7 @@ export type Capabilities = {
       mode: "runner";
     } | {
       mode: "sandbox";
-      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
+      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel" | "sprites";
     } | null;
     default_reason?: string;
     allow: Array<string>;
@@ -1329,6 +1342,7 @@ export type Features = {
     answer: boolean;
     follow_up: boolean;
     steer_workflow_runs: boolean;
+    said?: boolean;
   };
   timeline: {
     long_poll: boolean;
@@ -1383,6 +1397,7 @@ export type Features = {
     auth: Array<"none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run">;
     at_rest: "sealed";
     harnesses: Array<string>;
+    composio_key_envs?: Array<string>;
     composio_per_run: boolean;
   };
   tool_permissions?: boolean;
@@ -1391,6 +1406,12 @@ export type Features = {
     events: Array<"run.needs_input" | "run.ended" | "trigger.failed">;
     signing: "standard-webhooks/v1";
     at_rest: "sealed";
+  };
+  workspaces?: {
+    header: "AgentRun-Workspace";
+    enforced: boolean;
+    required_for_tokens: boolean;
+    routes: Array<string>;
   };
   api_keys?: {
     routes: boolean;
@@ -1879,6 +1900,7 @@ export type ListLearningPromotionsResponse = {
           };
         };
         unjudged?: number;
+        unread?: number;
       }>;
       of?: Array<string>;
       cost_usd?: number | null;
@@ -1905,10 +1927,12 @@ export type ListLearningPromotionsResponse = {
         fields?: Array<string>;
         expected?: Array<{
           field: string;
-          known: "grade" | "unknown" | "contradicts";
+          known: "grade" | "correction" | "unknown" | "contradicts";
           value?: string;
         }>;
       }>;
+      unread?: number;
+      undecided?: true;
       stopped?: true;
       released?: number;
       fresh_reads?: number;
@@ -1929,6 +1953,7 @@ export type ListLearningPromotionsResponse = {
             agent_right: number;
           };
           unjudged?: number;
+          unread?: number;
         }>;
         of: Array<string>;
         outcomes: {
@@ -1948,11 +1973,12 @@ export type ListLearningPromotionsResponse = {
           fields?: Array<string>;
           expected?: Array<{
             field: string;
-            known: "grade" | "unknown" | "contradicts";
+            known: "grade" | "correction" | "unknown" | "contradicts";
             value?: string;
           }>;
         }>;
         fresh_reads?: number;
+        unread?: number;
       };
     };
     runs?: Array<string>;
@@ -2040,6 +2066,7 @@ export type ListLearningPromotionsResponse = {
             };
           };
           unjudged?: number;
+          unread?: number;
         }>;
         of?: Array<string>;
         cost_usd?: number | null;
@@ -2066,10 +2093,12 @@ export type ListLearningPromotionsResponse = {
           fields?: Array<string>;
           expected?: Array<{
             field: string;
-            known: "grade" | "unknown" | "contradicts";
+            known: "grade" | "correction" | "unknown" | "contradicts";
             value?: string;
           }>;
         }>;
+        unread?: number;
+        undecided?: true;
         stopped?: true;
         released?: number;
         fresh_reads?: number;
@@ -2090,6 +2119,7 @@ export type ListLearningPromotionsResponse = {
               agent_right: number;
             };
             unjudged?: number;
+            unread?: number;
           }>;
           of: Array<string>;
           outcomes: {
@@ -2109,11 +2139,12 @@ export type ListLearningPromotionsResponse = {
             fields?: Array<string>;
             expected?: Array<{
               field: string;
-              known: "grade" | "unknown" | "contradicts";
+              known: "grade" | "correction" | "unknown" | "contradicts";
               value?: string;
             }>;
           }>;
           fresh_reads?: number;
+          unread?: number;
         };
       } | null;
     } | null;
@@ -2916,7 +2947,7 @@ export type WriteHomeFileResponse = {
 export type GetLearningCorrectionsResponse = {
   text: string;
   etag: string;
-  cap_bytes: 2048;
+  cap_bytes: 8192;
 };
 
 /** The agent's cost per run, run after run: its own cost, what learning added and the path it took (GET /agents/{agent_id}/learning/cost). */
@@ -2942,6 +2973,7 @@ export type GetLearningCostResponse = {
     compile_usd?: number | null;
     followup_usd?: number | null;
     shadow_usd?: number | null;
+    check_usd?: number | null;
     share_usd?: number | null;
     not_served?: "cost_stop" | "cut" | null;
   }>;
@@ -3192,7 +3224,7 @@ export interface PutLearningCorrectionsParams {
 export type PutLearningCorrectionsResponse = {
   text: string;
   etag: string;
-  cap_bytes: 2048;
+  cap_bytes: 8192;
 };
 
 /** Start Connect GitHub: the app-manifest form the console posts to GitHub (POST /integrations/github/connect). */
@@ -3455,6 +3487,7 @@ export type GetClaudeLoginResponse = {
   place: "agentrun" | "machine";
   command: string;
   can_start: boolean;
+  start_off?: string;
   refused?: string;
   account?: {
     method?: string;
@@ -3566,6 +3599,25 @@ export type GetModelGatewayResponse = {
     changed_at: string | null;
   };
   problem: string | null;
+};
+
+/** The prices this server meters computer time and browser time at, with where each comes from (GET /settings/prices). */
+export type GetPricesResponse = {
+  compute: Array<{
+    provider: string;
+    resource: "vcpu" | "memory" | "gpu" | "disk";
+    gpu_type: string | null;
+    unit: "vcpu_second" | "gib_second" | "gpu_second" | "gb_month";
+    usd: string | null;
+    source: "setting" | "list" | "unpriced";
+  }>;
+  browser: Array<{
+    provider: string;
+    unit: "hour";
+    usd: string | null;
+    minimum_s: number;
+    source: "setting" | "list" | "unpriced";
+  }>;
 };
 
 /** One suggested agent whole: its instructions, the files a create adds, and whether GitHub lets it (GET /suggestions/{suggestion_id}). */
@@ -3695,7 +3747,8 @@ export type ListComposioEventsResponse = {
 
 /** List the toolkits Composio offers, for the console's toolkit picker; stores nothing (POST /settings/mcp-servers/composio/toolkits). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
 export type ListComposioToolkitsBody = {
-  api_key: string;
+  api_key?: string;
+  api_key_env?: "COMPOSIO_API_KEY" | "AGENTRUN_COMPOSIO_API_KEY";
 };
 export type ListComposioToolkitsResponse = {
   toolkits: Array<{
@@ -3706,8 +3759,9 @@ export type ListComposioToolkitsResponse = {
 
 /** List the actions of a Composio toolkit, for the console's picker; stores nothing (POST /settings/mcp-servers/composio/tools). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
 export type ListComposioToolsBody = {
-  api_key: string;
   toolkit: string;
+  api_key?: string;
+  api_key_env?: "COMPOSIO_API_KEY" | "AGENTRUN_COMPOSIO_API_KEY";
 };
 export type ListComposioToolsResponse = {
   toolkit: string;
@@ -4195,7 +4249,7 @@ export type SaveComposioServerBody = {
   auth_config_id?: string;
   price_usd?: number;
   api_key?: string;
-  api_key_env?: "COMPOSIO_API_KEY";
+  api_key_env?: "COMPOSIO_API_KEY" | "AGENTRUN_COMPOSIO_API_KEY";
 };
 export type SaveComposioServerResponse = {
   server: {
@@ -4206,7 +4260,7 @@ export type SaveComposioServerResponse = {
     auth: {
       type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
       headers?: Array<string>;
-      api_key_env?: "COMPOSIO_API_KEY";
+      api_key_env?: "COMPOSIO_API_KEY" | "AGENTRUN_COMPOSIO_API_KEY";
     };
     credential: "sealed" | "unreadable" | "expired" | null;
     oauth?: {
@@ -4368,8 +4422,28 @@ export type SaveModelGatewayResponse = {
 /** Scan a repository for places its app needs an agent (POST /suggestions/scans). */
 export type ScanForSuggestionsBody = {
   repo: string;
+  start?: "host";
+  run_id?: string;
+  scan?: string;
 };
 export type ScanForSuggestionsResponse = {
+  repo: string;
+  run_id: string;
+  agent_id: string;
+  status: "running";
+  already_running: boolean;
+} | {
+  repo: string;
+  agent_id: string;
+  input: {
+    content: string;
+  };
+  scan: string;
+  status: "starting";
+} | {
+  repo: string;
+  status: "released";
+} | {
   repo: string;
   run_id: string;
   agent_id: string;
@@ -4392,6 +4466,7 @@ export type SignOutClaudeLoginResponse = {
     place: "agentrun" | "machine";
     command: string;
     can_start: boolean;
+    start_off?: string;
     refused?: string;
     account?: {
       method?: string;
@@ -4429,6 +4504,7 @@ export type StartClaudeLoginResponse = {
   place: "agentrun" | "machine";
   command: string;
   can_start: boolean;
+  start_off?: string;
   refused?: string;
   account?: {
     method?: string;
@@ -4538,6 +4614,7 @@ export type TurnOffClaudeLoginResponse = {
   place: "agentrun" | "machine";
   command: string;
   can_start: boolean;
+  start_off?: string;
   refused?: string;
   account?: {
     method?: string;
@@ -4572,6 +4649,7 @@ export type TurnOnClaudeLoginResponse = {
   place: "agentrun" | "machine";
   command: string;
   can_start: boolean;
+  start_off?: string;
   refused?: string;
   account?: {
     method?: string;
@@ -4614,7 +4692,7 @@ export type GetMcpServerResponse = {
   auth: {
     type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
     headers?: Array<string>;
-    api_key_env?: "COMPOSIO_API_KEY";
+    api_key_env?: "COMPOSIO_API_KEY" | "AGENTRUN_COMPOSIO_API_KEY";
   };
   credential: "sealed" | "unreadable" | "expired" | null;
   oauth?: {
@@ -4666,7 +4744,7 @@ export type ListMcpServersResponse = {
     auth: {
       type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
       headers?: Array<string>;
-      api_key_env?: "COMPOSIO_API_KEY";
+      api_key_env?: "COMPOSIO_API_KEY" | "AGENTRUN_COMPOSIO_API_KEY";
     };
     credential: "sealed" | "unreadable" | "expired" | null;
     oauth?: {
@@ -4766,7 +4844,7 @@ export type RefreshMcpServerResponse = {
     auth: {
       type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
       headers?: Array<string>;
-      api_key_env?: "COMPOSIO_API_KEY";
+      api_key_env?: "COMPOSIO_API_KEY" | "AGENTRUN_COMPOSIO_API_KEY";
     };
     credential: "sealed" | "unreadable" | "expired" | null;
     oauth?: {
@@ -4828,7 +4906,7 @@ export type SaveMcpServerResponse = {
   auth: {
     type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
     headers?: Array<string>;
-    api_key_env?: "COMPOSIO_API_KEY";
+    api_key_env?: "COMPOSIO_API_KEY" | "AGENTRUN_COMPOSIO_API_KEY";
   };
   credential: "sealed" | "unreadable" | "expired" | null;
   oauth?: {
@@ -5229,6 +5307,9 @@ export type GetRunLearningResponse = {
   detail: string | null;
   at: string;
   seed: string | null;
+  seed_failed: "unreadable" | "not_copied" | "other_disk" | null;
+  seed_waited: "ended" | "timed_out" | null;
+  learned_chars: number;
   merged: string | null;
   workflows: Array<{
     file: string;
@@ -5236,6 +5317,7 @@ export type GetRunLearningResponse = {
     pending?: true;
   }>;
   corrections: number;
+  dropped_lines: number;
   problems: Array<{
     rule: string;
     path?: string;
@@ -5434,6 +5516,7 @@ export type GetRunUsageResponse = {
     basis: "reported" | "estimate" | "unpriced";
     attempt: number | null;
     billable: boolean;
+    absorbed?: "create_race";
     usd: number | null;
     so_far_usd?: number;
     unpriced?: number;
@@ -5489,7 +5572,7 @@ export type GetRunUsageResponse = {
     billable: boolean;
   }> | null;
   infra_usd: number | null;
-  reason: "running" | "not_booked" | "reopened" | null;
+  reason: "running" | "not_booked" | null;
 };
 
 /** Complete a backend SDK task (POST /sdk-runs/{run_id}/complete). */
@@ -5851,7 +5934,7 @@ export type GetStatsResponse = {
       unknown_cost_runs: number;
     }>;
     by_source: Array<{
-      source: "live" | "claude-code" | "codex" | "pi" | "opencode" | "copilot";
+      source: "live" | "claude-code" | "codex" | "pi" | "opencode" | "copilot" | "cursor";
       runs: number;
       completed: number;
       needs_review: number;
@@ -6025,6 +6108,12 @@ export type GetTemplateResponse = {
       dropped: Array<string>;
       note: string | null;
     } | null;
+    model_tiers_here: {
+      harness: string;
+      fast: string | null;
+      strong: string | null;
+      note: string | null;
+    };
     category: "engineering" | "security" | "sales" | "marketing" | "research" | "finance" | "operations" | "compliance" | "personal" | null;
     tags: Array<string>;
     mcp: Array<{
@@ -6131,6 +6220,12 @@ export type ImportTemplateResponse = {
       dropped: Array<string>;
       note: string | null;
     } | null;
+    model_tiers_here: {
+      harness: string;
+      fast: string | null;
+      strong: string | null;
+      note: string | null;
+    };
     category: "engineering" | "security" | "sales" | "marketing" | "research" | "finance" | "operations" | "compliance" | "personal" | null;
     tags: Array<string>;
     mcp: Array<{
@@ -6230,6 +6325,12 @@ export type ListTemplatesResponse = {
       dropped: Array<string>;
       note: string | null;
     } | null;
+    model_tiers_here: {
+      harness: string;
+      fast: string | null;
+      strong: string | null;
+      note: string | null;
+    };
     category: "engineering" | "security" | "sales" | "marketing" | "research" | "finance" | "operations" | "compliance" | "personal" | null;
     tags: Array<string>;
     mcp: Array<{
@@ -7694,6 +7795,11 @@ export type GetWrappedResponse = {
     };
     unpriced_breaks: number;
   } | null;
+  secrets: {
+    runs: number;
+    runs_holding: number;
+    removed: number;
+  } | null;
 };
 
 /** Each operation as the runtime sends it, by operationId. */
@@ -7786,6 +7892,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   getGitHubConnection: {"method":"GET","path":"/integrations/github","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getLocalModel: {"method":"GET","path":"/settings/local-model","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getModelGateway: {"method":"GET","path":"/settings/model-gateway","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getPrices: {"method":"GET","path":"/settings/prices","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getSuggestion: {"method":"GET","path":"/suggestions/{suggestion_id}","pathParams":["suggestion_id"],"multiSegment":[],"query":["name"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getWorkspaceArchil: {"method":"GET","path":"/workspace/archil","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   gitHubCallback: {"method":"GET","path":"/integrations/github/callback","pathParams":[],"multiSegment":[],"query":["code","state"],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
@@ -8109,6 +8216,8 @@ export function resources(call: Call) {
       getLocalModel: (options?: RequestOptions): Promise<GetLocalModelResponse> => call("getLocalModel", [], undefined, undefined, options),
       /** The model gateway in force: the environment's, the one saved here, or none (GET /settings/model-gateway). */
       getModelGateway: (options?: RequestOptions): Promise<GetModelGatewayResponse> => call("getModelGateway", [], undefined, undefined, options),
+      /** The prices this server meters computer time and browser time at, with where each comes from (GET /settings/prices). */
+      getPrices: (options?: RequestOptions): Promise<GetPricesResponse> => call("getPrices", [], undefined, undefined, options),
       /** One suggested agent whole: its instructions, the files a create adds, and whether GitHub lets it (GET /suggestions/{suggestion_id}). */
       getSuggestion: (suggestionId: string, params?: GetSuggestionParams, options?: RequestOptions): Promise<GetSuggestionResponse> => call("getSuggestion", [suggestionId], undefined, params, options),
       /** Whether run folders are on Archil disks (Mode 2), the settings, and whether its keys are saved (GET /workspace/archil). */

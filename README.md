@@ -87,7 +87,7 @@ create an account or sign in. For help setting up your team's workflows,
 [talk to us](https://calendly.com/d/dtwn-dsp-nx5/agentrun).
 
 Prefer your own machine or infrastructure? Have your coding agent set it up below, or
-[self-host on Railway, Render, a VPS, Kubernetes, Coolify, Dokploy or Docker](#deploy-it) yourself. The
+[self-host on Railway, Render, Northflank, a VPS, Kubernetes, Coolify, Dokploy or Docker](#deploy-it) yourself. The
 [getting-started guide](docs/getting-started.md) explains the three options. Wherever it runs, AgentRun counts itself
 anonymously; `AGENTRUN_TELEMETRY=0` or `DO_NOT_TRACK=1` turns that off ([anonymous usage counts](docs/telemetry.md)).
 
@@ -340,6 +340,7 @@ until you tick each MCP tool yourself.
 | --- | --- |
 | `agent-scout` | Reads a GitHub repository on a read-only checkout and suggests up to five agents its app could call, each with the lines of code that show why. The **Suggested agents** page shows them: Create opens a pull request that adds the agent and a client to your repository; Discard hides it for good |
 | `code-review` | Reviews a pull request with eight independent reviewers on a read-only checkout (or a pasted diff), merges and verifies their findings, quotes the line behind each, and returns them as JSON. It sets up its own GitHub trigger |
+| `code-review-composio` | code-review for a server that reaches GitHub through Composio: the same eight reviewers and findings, no checkout or shell. It posts one COMMENT review with a comment on each finding's line, and sets up its own Composio trigger on each new pull request |
 | `kyb` | Due diligence on one company: registries, owners, sanctions lists, dated adverse media, and a verdict with every claim cited |
 | `market-monitor` | Every Monday, a digest of what changed at the companies you watch, each item dated and linked |
 | `inbound-lead` | Researches each lead a webhook sends and scores it 0 to 100 against your ideal customer profile |
@@ -597,6 +598,12 @@ One pod on a 10 GiB volume, from the release's image; agents get file tools and 
 **Self-host on Coolify or Dokploy.** One service from the release's image on a volume, with the token, the seal key and
 the domain made by the platform; agents get file tools and `web_fetch`, no shell. The templates and their steps:
 [deploy/README.md](deploy/README.md#on-coolify-or-dokploy).
+
+**Self-host on Northflank.** A template you paste into Northflank and run: one 1 vCPU / 2 GB service from the release's
+image on a 10 GB volume, with the token and seal key made by Northflank and its own HTTPS domain; agents get file tools
+and `web_fetch`, no shell. About $25 a month, on Pay as you go. Not walked on a real account yet: it is built from
+Northflank's docs and checked by tests. The template and its steps:
+[deploy/README.md](deploy/README.md#on-northflank).
 
 <details>
 <summary>Docker Compose: a server and two runners</summary>

@@ -17,6 +17,7 @@ import { type ApiToken, parseTokens } from "./api-token.js";
 import type { LearningMode } from "./learning.js";
 import type { Serve, ServeOptions } from "./server.js";
 import { API_ONLY_ENV, API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV, SHARE_HOST_ENV, switchFrom, WEB_JEV_OFF_ENV } from "./env-switch.js";
+import { WORKSPACE_TOKENS_ENV, workspaceTokenIds } from "./workspace-scope.js";
 import { harnessModulesOf, harnessRecipesOf } from "./harness-table.js";
 import { hookOrigin, LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV, type LaunchHook, launchHookFrom } from "./trigger-launch-hook.js";
 import { surviveClosedPipes } from "./closed-pipes.js";
@@ -41,7 +42,7 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
        agentrun-serve sign-in-harness --recipe FILE [--data DIR]
        agentrun-serve check-harness --recipe FILE [--model PROVIDER/MODEL] [--data DIR] [--report FILE] [--cap USD]
        agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL | --on-data DIR] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
-       agentrun-serve import [--data DIR] [--from claude-code,codex,pi,opencode,copilot] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
+       agentrun-serve import [--data DIR] [--from claude-code,codex,pi,opencode,copilot,cursor] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
        agentrun-serve learning connect|status|disconnect|retry --project PATH --runtime codex|claude-code [--url URL] [--data DIR] [--no-sync]
        agentrun-serve runner --data DIR [--loops N] [--drain-timeout D] [--name NAME]
        agentrun-serve runner --check --data DIR [--name NAME]
@@ -50,6 +51,7 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
        agentrun-serve store-schema [--data DIR]
        agentrun-serve store-schema --build
        agentrun-serve scrub RUN [--data DIR] [--json]
+       agentrun-serve workspace-backfill FILE [--data DIR] [--apply]
        agentrun-serve native discover|connect --project PATH [--runtime claude-code|codex] [--agent NAME|--profile NAME] [--url URL] [--data DIR] [--no-sync]
 
   --data DIR        the agent store and its runs (default ~/.local/share/agentrun/agents); the token is DIR/.token, mode 0600
@@ -133,7 +135,9 @@ is off unless set to an address.
 
 AGENTRUN_API_ONLY=1 serves the run API alone, for a server behind its caller's backend (the routes in api-only.ts; every
 other address is a 404, and there are no accounts). AGENTRUN_API_ONLY_MCP_ORIGINS: the MCP origins the token may save a
-per_run MCP server at (README, API only).
+per_run MCP server at (README, API only). AGENTRUN_WORKSPACE_TOKENS: the ids of the AGENTRUN_TOKENS tokens whose every
+request carries the AgentRun-Workspace header, which keeps each of the backend's workspaces to its own agents, runs,
+templates and files (README, API only).
 
 AGENTRUN_LAUNCH_HOOK_URL with AGENTRUN_LAUNCH_HOOK_SECRET (a whsec_ secret): each trigger firing that would start a run
 is POSTed to that URL, signed as Standard Webhooks, and the host starts the run through the API; this server starts
@@ -151,16 +155,17 @@ start: set it only on a machine you alone use, since loopback is this machine's 
 process reaches one only with the variable set in its own environment, on its own loopback (its own machine or
 container), never at a server's own port (${DEFAULT_PORT}, or where the server says it listens).
 
-\`agentrun-serve import\` reads the Claude Code, Codex, pi, OpenCode and Copilot CLI sessions in your own home
-(~/.claude/projects, ~/.codex/sessions, ~/.pi/agent/sessions, ~/.local/share/opencode, ~/.copilot/session-state) into
-the data directory, once: each project directory an agent, with its CLAUDE.md or AGENTS.md and its skill folders, and
-each session a run you can read but not continue. Nothing leaves this machine; the values of key-shaped environment
-variables are cut out of what is written. --dry-run lists what it would import; run again, it imports only what it has
-not. Sessions written in the last 10 minutes wait for the next import. What is left out is counted by why; --verbose
-lists each file. --include-deleted keeps projects whose directory is gone (a deleted worktree's); --all keeps those and
-temporary ones too. Each run keeps what its session used (tokens, requests, tools, time at work), priced at the
-catalog's list prices when its source did not price it. Both end with a summary of every session found, those imported
-before included, and the address to open the console at (--port as the server takes it).
+\`agentrun-serve import\` reads the Claude Code, Codex, pi, OpenCode, Copilot CLI and Cursor CLI sessions in your own
+home (~/.claude/projects, ~/.codex/sessions, ~/.pi/agent/sessions, ~/.local/share/opencode, ~/.copilot/session-state,
+~/.cursor/chats) into the data directory, once: each project directory an agent, with its CLAUDE.md or AGENTS.md and
+its skill folders, and each session a run you can read but not continue. Nothing leaves this machine; the values of
+key-shaped environment variables are cut out of what is written. --dry-run lists what it would import; run again, it
+imports only what it has not. Sessions written in the last 10 minutes wait for the next import. What is left out is
+counted by why; --verbose lists each file. --include-deleted keeps projects whose directory is gone (a deleted
+worktree's); --all keeps those and temporary ones too. Each run keeps what its session used (tokens, requests, tools,
+time at work), priced at the catalog's list prices when its source did not price it; Cursor keeps no tokens on the
+machine, so a Cursor run's are unknown. Both end with a summary of every session found, those imported before
+included, and the address to open the console at (--port as the server takes it).
 
 \`agentrun-serve store-schema\` prints, as one line of JSON, the store's schema version and runner floor (the oldest version
 a runner's build must know to run on it) beside the version this build knows, and what this build's server and runner do
@@ -176,6 +181,14 @@ and counts the scrubber's cuts in it by rule and by kind, then says how many cut
 you could restore. It prints counts only, never a value or any piece of one; --json prints the same as JSON. It writes
 nothing. Exit 0 once counted, 1 when the run is withheld (its held values can't be read here: nothing is counted), 2 for
 bad arguments or a run the store does not hold.
+
+\`agentrun-serve workspace-backfill FILE\` puts agents made before an API-only server's backend sent the AgentRun-Workspace
+header in a workspace: FILE is JSON, {"<agent id>": "<workspace>"}. An agent with none is set; one in another workspace is
+refused and kept as it is. It writes nothing without --apply, and prints what it would do. The store is the server's
+(AGENTRUN_STORE_URL's Postgres, else SQLite in --data), the server running or not; on SQLite it adds the workspace
+columns first when no server of this build has opened the store yet. Exit 0 when every agent is set or already there, 1
+when any is refused or missing, 2 for bad arguments, a file that is not that JSON, or a store behind this build (on
+Postgres, below migration 0036), which it never migrates: start a server of this build once.
 
 \`agentrun-serve eval-template DIR\` runs a template package's eval cases (all, or each --case) as real runs of its agent
 and grades each run with the case's graders (templates/README.md, "Running the evals"). By default on a server of its
@@ -479,6 +492,12 @@ if (process.argv[2] === "eval-template") {
     process.exit(await storeSchemaMain(process.argv.slice(3), defaultData(), USAGE));
   }
 
+  // Agents made before their backend named their workspace, put in one (workspace-backfill.ts); a dry run by default.
+  if (process.argv[2] === "workspace-backfill") {
+    const { workspaceBackfillMain } = await import("./workspace-backfill.js");
+    process.exit(await workspaceBackfillMain(process.argv.slice(3), defaultData(), USAGE));
+  }
+
   if (process.argv[2] === "scrub") {
     const { scrubMain } = await import("./scrub-command.js");
     process.exit(await scrubMain(process.argv.slice(3), commandUsage));
@@ -583,6 +602,8 @@ if (process.argv[2] === "eval-template") {
   // --share-host, or AGENTRUN_SHARE_HOST=1: shares under /r/ alone (share-host.ts), with no runner beside the server.
   let shareHost: boolean;
   let apiOnlyMcpOrigins: string[];
+  // AGENTRUN_WORKSPACE_TOKENS: the tokens whose every request names its workspace (workspace-scope.ts); the start checks them.
+  const workspaceTokens = workspaceTokenIds(process.env[WORKSPACE_TOKENS_ENV]);
   try {
     apiOnly = switchFrom(API_ONLY_ENV);
     runKeys = switchFrom(RUN_KEYS_ENV);
@@ -656,7 +677,7 @@ if (process.argv[2] === "eval-template") {
         process.exit(1);
       },
       onUsage: (event) => used?.(event),
-      data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(early ? { listener: early } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(givenList ? { tokens: givenList } : {}), ...(values.faux ? { faux: values.faux } : {}), ...(values["faux-browser"] ? { fauxBrowser: values["faux-browser"] } : {}), ...(values["faux-github"] ? { fauxGitHub: true } : {}), allowHosts: values["allow-host"],
+      data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(early ? { listener: early } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(givenList ? { tokens: givenList } : {}), ...(workspaceTokens.length ? { workspaceTokens } : {}), ...(values.faux ? { faux: values.faux } : {}), ...(values["faux-browser"] ? { fauxBrowser: values["faux-browser"] } : {}), ...(values["faux-github"] ? { fauxGitHub: true } : {}), allowHosts: values["allow-host"],
       ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
       // The owner's harness modules: --harness-module, else AGENTRUN_SERVE_HARNESS_MODULES (harness-table.ts).
       ...(harnessModulesOf(values["harness-module"], process.env).length ? { harnessModules: harnessModulesOf(values["harness-module"], process.env) } : {}),
@@ -666,7 +687,7 @@ if (process.argv[2] === "eval-template") {
       ...(values["harness-sign-in"] ? { harnessSignIn: true } : {}),
       ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), log: (line) => void process.stdout.write(`${line}\n`),
       // The public address is the server's with accounts on or off: the Host names it serves, the webhook URLs it gives.
-      ...(publicUrl ? { publicUrl } : {}),
+      ...(publicUrl && publicName ? { publicUrl, publicUrlFrom: publicName } : {}),
       ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true } : {}), ...(apiOnly ? { apiOnly } : {}), ...(shareHost ? { shareHost } : {}), ...(launchHook ? { launchHook } : {}), ...(runKeys ? { runKeys } : {}),
       ...(apiOnlyMcpOrigins.length ? { apiOnlyMcpOrigins } : {}),
       // The proxies whose X-Forwarded-For the sign-in limit reads (comma-separated); none unless set.

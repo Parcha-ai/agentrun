@@ -10,7 +10,7 @@ afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.in
 const settle = async () => { await act(async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); }); };
 
 const RUN: Run = {
-  sha: null, updated_at: "2026-11-11T10:00:09Z", poll_after_ms: 0, place: { mode: "runner" },
+  sha: null, updated_at: "2026-11-11T10:00:09Z", poll_after_ms: 0, place: { mode: "runner" }, learning_work: { state: "none", runs: [], ended_at: null, deadline_at: null },
   run_id: "run-usage", agent_id: "refunds", agent_version: 1, revision: "rv1", kind: "agentic", status: "completed", state: "idle", title: "Find the refund policy",
   created_at: "2026-11-11T10:00:00Z", ended_at: "2026-11-11T10:00:09Z", result: null, error: null,
   cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null,
@@ -21,8 +21,8 @@ const PAGE: TimelinePage = {
   unchanged: false, final: true, has_more: false, next_after: 0,
 };
 const LEARNING: NonNullable<RunLearningRead> = {
-  run: RUN.run_id, state: "dropped", reason: "empty", detail: "Nothing new to remember from this run.", at: "2026-11-11T10:00:09Z", seed: "a".repeat(40), merged: null,
-  workflows: [], corrections: 0, problems: [], compiled: null, draft_errors: [],
+  run: RUN.run_id, state: "dropped", reason: "empty", detail: "Nothing new to remember from this run.", at: "2026-11-11T10:00:09Z", seed: "a".repeat(40), seed_failed: null, seed_waited: null, learned_chars: 0, merged: null,
+  workflows: [], corrections: 0, dropped_lines: 0, problems: [], compiled: null, draft_errors: [],
   used: { workflows: [{ name: "check-refunds", calls: 3, failed: 1 }, { name: "find-policies", calls: 1, failed: 0 }] },
 };
 

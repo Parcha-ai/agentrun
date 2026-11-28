@@ -33,6 +33,7 @@ export interface E2BConnectionOptions {
 	domain: string;
 	apiUrl: string;
 	debug: false;
+	httpVersion: "1.1";
 	proxy?: string;
 	requestTimeoutMs?: number;
 	signal?: AbortSignal;
@@ -96,7 +97,9 @@ const DEFAULT_DOMAIN = "e2b.app";
 /** The connection options every SDK call is given. Exported for the test that hands them to the real SDK. */
 export function connectionOptions({ apiKey, domain }: { apiKey: string; domain: string }, env: ProxyEnv = installedProxy()): E2BConnectionOptions {
 	const proxy = proxyForDomain(domain, env);
-	return { apiKey, domain, apiUrl: `https://api.${domain}`, debug: false, ...(proxy ? { proxy: proxy.href } : {}) };
+	// HTTP/1.1 alone: when an idle HTTP/2 session times out, the SDK's undici client throws on a stream no one listens to,
+	// and that unhandled 'error' ends the whole process (index.mjs buildDispatchedFetch, allowH2 unless httpVersion "1.1").
+	return { apiKey, domain, apiUrl: `https://api.${domain}`, debug: false, httpVersion: "1.1", ...(proxy ? { proxy: proxy.href } : {}) };
 }
 
 /**

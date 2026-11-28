@@ -92,8 +92,11 @@
   --duration-slow: 400ms;
   --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
 
-  /* The one shadow: under what floats over the page (a menu, a tip, a toast, a dialog). */
+  /* Two shadows. Under what floats over the page (a menu, a tip, a toast, a dialog). */
   --shadow-float: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  /* At the left edge of a drawer, a panel that opens at a page's right: it reads as above the page beside it. Cast to
+     the left only: its spread takes back what its blur would add above and below. */
+  --shadow-drawer: -16px 0 32px -16px rgb(0 0 0 / 0.24);
 
   /* Layers, lowest first. Nothing uses a number of its own. A popover (a menu, a picker's list, a tip) is above a
      dialog because a dialog can open one. */
@@ -145,6 +148,7 @@
   --trace-model: 253 100% 81%;
   --trace-tool: 172 66% 50%;
   --shadow-float: 0 10px 15px -3px rgb(0 0 0 / 0.5), 0 4px 6px -4px rgb(0 0 0 / 0.5);
+  --shadow-drawer: -16px 0 32px -16px rgb(0 0 0 / 0.7);
 }
 
 /* Before the script puts the theme on <html>, a dark OS's page is dark already (.dark's background), never a white

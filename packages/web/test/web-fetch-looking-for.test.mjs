@@ -2,7 +2,8 @@
 // it is looking for, the decider scores the
 // chunks of the whole page (read once a run, from the run's pages after), and the answer holds the FOUND_CHUNKS chunks
 // most likely to hold it, in page order, each at its offset in the page with its relevance. The decider is asked its usual judge request,
-// with the agent's need as the task. Without an objective nothing changes; with no classifier the part says nothing of it.
+// with the agent's need as the task. Without an objective nothing changes; with no classifier the part's sift line says
+// the objective was not applied. Beside an offset or max_chars the objective still finds in the whole page, and says so.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as web from "../dist/index.js";
@@ -106,14 +107,30 @@ test("looking_for blank, or not a string, is no looking_for: the part as before"
   }
 });
 
-test("looking_for with no classifier gives the part asked for, word for word; with one that fails, the part in page order and that the objective was not applied", async () => {
+test("looking_for with no classifier gives the part asked for, its sift line saying the objective was not applied; with one that fails, the part in page order and why", async () => {
   const none = await lookingWeb(THIRTY, {}, { decider: undefined }).web.fetch(PUBLIC, { lookingFor: NEED, offset: 100, maxChars: 500 });
   const part = await lookingWeb(THIRTY, {}, { decider: undefined }).web.fetch(PUBLIC, { offset: 100, maxChars: 500 });
-  assert.deepEqual(none.answer, part.answer);
+  assert.deepEqual(none.answer, { ...part.answer, sift: "objective not applied (no classifier in this run); this part is in page order" });
+  assert.equal("sift" in part.answer, false, "no objective, no line");
   assert.equal(none.receipt.classifier, "off");
   const failed = await lookingWeb(THIRTY, {}, { decider: priced(broken) }).web.fetch(PUBLIC, { lookingFor: NEED, offset: 100, maxChars: 500 });
   assert.deepEqual(failed.answer, { ...part.answer, sift: "objective not applied (provider_error); this part is in page order" });
   assert.deepEqual([failed.receipt.classifier.ran, failed.receipt.classifier.error.code, failed.receipt.classifier.items], [false, "provider_error", { in: 30, kept: 30 }]);
+});
+
+test("an objective beside an offset or max_chars still finds in the whole page, and its sift line says which it ignored", async () => {
+  const whole = (await lookingWeb(TWELVE, scores(12)).web.fetch(PUBLIC, { lookingFor: NEED })).answer;
+  for (const [part, ignored] of [[{ offset: 5_000 }, "offset"], [{ maxChars: 500 }, "max_chars"], [{ offset: 5_000, maxChars: 500 }, "offset and max_chars"]]) {
+    const { answer } = await lookingWeb(TWELVE, scores(12)).web.fetch(PUBLIC, { lookingFor: NEED, ...part });
+    assert.deepEqual(answer, { ...whole, sift: `${SHOWN}; ${ignored} ignored: found chunks come from the whole page, each with its offset` }, JSON.stringify(part));
+  }
+  const start = await lookingWeb(TWELVE, scores(12)).web.fetch(PUBLIC, { lookingFor: NEED, offset: 0 });
+  assert.equal(start.answer.sift, SHOWN, "offset 0 is where the whole page starts: nothing ignored");
+});
+
+test("web_fetch's description says what an objective answers: found chunks, each with its offset and relevance, and a sift line", () => {
+  for (const word of ["objective", "found", "offset", "relevance", "sift"]) assert.match(web.WEB_FETCH_DESCRIPTION, new RegExp(`\\b${word}\\b`), word);
+  assert.match(web.WEB_FETCH_DESCRIPTION, /objective[^.]*\bfound\b/, "the found chunks are said to be the objective's answer");
 });
 
 test("looking_for on a page that was not read answers the failure, the step skipped", async () => {

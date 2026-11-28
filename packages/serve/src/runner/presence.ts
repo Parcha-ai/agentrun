@@ -57,7 +57,9 @@ export interface Presence {
 }
 
 /** Keeps `runner`'s row in `runners` (refused: its words, or null for a runner that claims), with this build's version
- *  (RUNNER_VERSION) and `slots`, the most runs it holds at once (none for a refusing runner), renewed every `renewMs`; put
+ *  (RUNNER_VERSION), the store's schema version this build knows (Runners.knows: what the runner's open checked the store
+ *  against, so the server tells a runner of an earlier build by it, run-patch.ts backfillLedger) and `slots`, the most
+ *  runs it holds at once (none for a refusing runner), renewed every `renewMs`; put
  *  again when it went (a row pruned, a store restored), never over a later process's of the same name while that one is
  *  live; its relay's place is written on its own row only. A write that
  *  fails is tried again at the next renewal: it never stops the runner, and `warn` hears it once. `incarnation` is the
@@ -71,7 +73,7 @@ export function keepPresence(runners: Runners, runner: string, refused: string |
   };
   let at: RelayAt | null = null;
   let said = refused;
-  const row = () => ({ runner, incarnation, refused: said, host: at?.host ?? null, port: at?.port ?? null, version: RUNNER_VERSION, slots });
+  const row = () => ({ runner, incarnation, refused: said, host: at?.host ?? null, port: at?.port ?? null, version: RUNNER_VERSION, slots, knows: runners.knows ?? null });
   // Its first put takes the name over from an earlier process's row. Every write after it (a renewal, the relay's place:
   // one Runners.renew, with the place it holds now) touches its own row only, or puts one where no other process of the
   // name is live (Runners.put unlessLiveMs): an older process overlapping a restart never takes the later one's row back,

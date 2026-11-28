@@ -1,7 +1,7 @@
 ---
 description: The repo's CODEREVIEW.md names a P0 class and a class never to flag; the diff has one of each, and the review reports only the P0.
 runs: 3
-max_cost_usd: 0.10
+max_cost_usd: 0.30
 ---
 Review this diff. Its head is 7a8b9c0d1e2f30415263748596a7b8c9d0e1f203; there is no checkout. The repo's `CODEREVIEW.md` at the base, with its line numbers:
 

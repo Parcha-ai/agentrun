@@ -17,7 +17,7 @@ export const SECRET_WRITE_REFUSAL = "Saving, replacing or removing a secret take
 
 /** The refusal's words with where to finish it: the one sentence, then "Finish it in the console: <link>" when the
  *  operation has a console page (registerSecretPage). The same link is the error's `details.console_url`. */
-export const secretWriteRefusal = (link?: string): string => (link ? `${SECRET_WRITE_REFUSAL} Finish it in the console: ${link}` : SECRET_WRITE_REFUSAL);
+export const secretWriteRefusal = (link?: string, words: string = SECRET_WRITE_REFUSAL): string => (link ? `${words} Finish it in the console: ${link}` : words);
 
 // ---- who may write a secret ------------------------------------------------------------------------------------------
 
@@ -90,8 +90,11 @@ export type SecretPredicate = (body: unknown) => boolean;
 /** What a request is besides its body, for a predicate that must read what is stored: the route's path parameters (in
  *  the order its pattern names them) and the server's one store. `seen`: what the predicate read to let the request
  *  through, which the dispatch hands its operation, so a write allowed against one stored state is refused when that
- *  state changed before the write lands. `apiOnly`: the server is API-only (api-only.ts), with no owner to write one. */
-export type SecretRequest = { readonly params: readonly string[]; readonly store: unknown; readonly apiOnly?: boolean; seen?: unknown };
+ *  state changed before the write lands. `apiOnly`: the server is API-only (api-only.ts), with no owner to write one.
+ *  `workspace`: the request's workspace (workspace-scope.ts), when it is in one. `words`: what a stored predicate that
+ *  refused the request for a reason of its own (not a secret in the body) says, in place of the operation's words
+ *  (secretRefusalWords). */
+export type SecretRequest = { readonly params: readonly string[]; readonly store: unknown; readonly apiOnly?: boolean; readonly workspace?: string; seen?: unknown; words?: string };
 /** Whether a request writes a secret by what it would do to what is stored (drop or replace a sealed credential), read
  *  from the store: beside the body's predicate, in the same one check. */
 export type StoredSecretPredicate = (body: unknown, request: SecretRequest) => Promise<boolean>;
@@ -99,12 +102,19 @@ export type StoredSecretPredicate = (body: unknown, request: SecretRequest) => P
 const registry = new Map<string, SecretPredicate>();
 const storedPredicates = new Map<string, StoredSecretPredicate>();
 const notSecretWrites = new Map<string, string>();
+const workspacePredicates = new Map<string, StoredSecretPredicate>();
 
 /** A plane's secret write: operation `operationId` (the API document's), and which bodies of it write a secret; with
  *  `stored`, also which requests of it would drop or replace a secret the store holds. */
 export function registerSecretWrite(operationId: string, predicate: SecretPredicate, stored?: StoredSecretPredicate): void {
   registry.set(operationId, predicate);
   if (stored) storedPredicates.set(operationId, stored);
+}
+
+/** How a request in a workspace is judged on `operationId`, in place of its body's and stored predicates: a plane whose
+ *  secrets a workspace keeps apart from every other (an MCP server's, mcp-secret-writes.ts) lets its token write its own. */
+export function registerWorkspaceSecretWrite(operationId: string, predicate: StoredSecretPredicate): void {
+  workspacePredicates.set(operationId, predicate);
 }
 
 /** An operation on a secret's route that writes no secret, said so on purpose, with why: never an oversight, and never
@@ -130,12 +140,32 @@ export const isSecretWriteOperation = (operationId: string): boolean => registry
 export const writesSecret = (operationId: string, body: unknown): boolean => registry.get(operationId)?.(body) === true;
 
 /** Whether this request of `operationId` writes a secret: by its body, or by what it would drop or replace in the store
- *  (its plane's stored predicate). The dispatch's one check asks this. */
+ *  (its plane's stored predicate); in a workspace, by its plane's workspace predicate where it has one. The dispatch's
+ *  one check asks this. */
 export async function writesSecretFor(operationId: string, body: unknown, request: SecretRequest): Promise<boolean> {
+  const scoped = request.workspace === undefined ? undefined : workspacePredicates.get(operationId);
+  if (scoped) return (await scoped(body, request)) === true;
   if (writesSecret(operationId, body)) return true;
   const stored = storedPredicates.get(operationId);
   return stored ? (await stored(body, request)) === true : false;
 }
+
+// ---- an operation's own refusal ------------------------------------------------------------------------------------
+//
+// An operation the gate reads that saves nothing (a listing that sends a key) is refused in its own words, which say what
+// the token may do instead: SECRET_WRITE_REFUSAL speaks of saving, replacing or removing, which it does not do.
+
+const refusals = new Map<string, (request: SecretRequest) => string>();
+
+/** `operationIds`' own refusal words, given the request (an API-only server's may differ): in place of
+ *  SECRET_WRITE_REFUSAL, for an operation that writes nothing it keeps. */
+export function registerSecretRefusal(operationIds: string | readonly string[], words: (request: SecretRequest) => string): void {
+  for (const operationId of typeof operationIds === "string" ? [operationIds] : operationIds) refusals.set(operationId, words);
+}
+
+/** The words `operationId`'s refused request gets: those its stored predicate gave (SecretRequest.words), else the
+ *  operation's own (registerSecretRefusal), else SECRET_WRITE_REFUSAL. */
+export const secretRefusalWords = (operationId: string, request: SecretRequest): string => request.words ?? refusals.get(operationId)?.(request) ?? SECRET_WRITE_REFUSAL;
 
 // ---- where a refused secret write is finished ------------------------------------------------------------------------
 //

@@ -150,3 +150,15 @@ export function portPath(given: string, names: readonly string[]): string | unde
   }
   return undefined;
 }
+
+/** The unicode spaces pi's file tools read as a plain space. */
+const UNICODE_SPACES = /[  -   　]/g;
+/**
+ * `given` as pi's read, write and edit take it before they resolve it: each unicode space a plain space, then one leading
+ * `@` dropped (pi-durable's tools/path-utils normalizeToolPath, which its package does not export). So `@stripe/a.json`
+ * opens `stripe/a.json`. A test holds this to pi's own, so a pi upgrade that changes it fails there.
+ */
+export function piToolPath(given: string): string {
+  const spaced = given.replace(UNICODE_SPACES, " ");
+  return spaced.startsWith("@") ? spaced.slice(1) : spaced;
+}

@@ -27,13 +27,14 @@ import { dockerPathsForRuns } from "../box-paths.js";
 import { COMPOSIO_KEY_ENV } from "../composio-made.js";
 import { hostCommandRefusals } from "../computers.js";
 import { hostAddressesOnce } from "../docker-host-addresses.js";
+import { closeStoreAfter, renewalDrainFor, stopRenewals } from "../chatgpt-plan.js";
 import { claimInstallsStopped } from "../harness-install.js";
 import { HARNESS_MODULES_ENV, HARNESS_MODULES_SETTING, HARNESS_RECIPES_ENV, HARNESS_RECIPES_SETTING, HARNESS_TABLE_ENV, harnessModulesEnv, harnessModulesOf, harnessRecipesEnv, harnessRecipesOf, harnessTable } from "../harness-table.js";
 import { DEFAULT_PORT, maxRunsOf } from "../host.js";
 import { FAUX_ENV, FAUX_PREFIX, withoutFaux } from "../model.js";
 import { durationMs, runLine } from "../print.js";
 import { bootSealKey } from "../seal-key.js";
-import { handedSecret, SECRET_NAMES, secret } from "../secrets.js";
+import { handedSecret, SECRET_NAMES, secret, withSecrets } from "../secrets.js";
 import { migrationsIn, openStore, RunnerBelowFloor, SchemaVersionUnknown, type Store, StoreAwaitsServer, storePlace, storeTarget } from "../store/index.js";
 import { SCHEMA_VERSION } from "../store/schema.js";
 import { SEAL_KEY_ENV, sealKeyIn } from "../tool-keys.js";
@@ -60,11 +61,13 @@ import { RUN_PROCESS_MIB, runnerMemory } from "./memory-claim.js";
 import { childLoops, isolationLoops, type RunIsolation, RunIsolationRefused, runIsolationOf } from "./run-child-host.js";
 import { sweepEndedScratch } from "./scratch-sweep.js";
 import { runCensus } from "../run-census.js";
+import type { ServerRunWorkspaceOptions } from "../workspace/server-run-workspace.js";
 import { RUNNER_LOOPS, RUNNER_RENEW_EVERY_MS, runnerName, startRunner, type Runner, type RunnerEvent, type RunnerMemory } from "./runner.js";
 import { keepPresence, type Presence } from "./presence.js";
 import { diskFreeGate } from "./disk-free.js";
 import { checkLines, checkRunnerEnv, type CheckRow } from "./runner-check.js";
 import { metricLine, startRunnerGauge } from "./runner-metrics.js";
+import { reseededLaunchOf, roundWaitMsOf, runnerShown } from "./learning-reseed.js";
 
 export { RUNNER_RENEW_EVERY_MS } from "./runner.js";
 
@@ -230,7 +233,7 @@ export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv
   };
   // `isolation`: each run a process of its own (run-child-host.ts), as the runner subcommand runs them; none, in this one
   // (a test's runner).
-  const createLoop = isolation ? childLoops({ deps, isolation, log: deps.log }) : createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: resolveRunnerLoop(deps) });
+  const createLoop = isolation ? childLoops({ deps, isolation, log: deps.log }) : createDispatchLoop({ launchOf: reseededLaunchOf({ store, data: deps.data, shown: runnerShown(deps), log: deps.log, waitMs: roundWaitMsOf(deps.env) }), resolve: resolveRunnerLoop(deps) });
   return { createLoop, computers: computers.computerDeps, env: runs };
 }
 
@@ -290,6 +293,14 @@ export function checkRunner(options: { dataDir: string; name: string; now?: () =
   return { ok: false, why: `${name}'s heartbeat is ${Math.round(age / 1000)} s old, past ${(2 * RUNNER_RENEW_EVERY_MS) / 1000} s: its loop has stopped` };
 }
 
+/** A runner's census of each run it ends (run-census.ts runCensus), reading the run's files as the server's file routes
+ *  read them: with the secrets this process was started with readable by name (secrets.ts withSecrets, "own"), as the
+ *  server reads its own. The launcher holds them off `env`, and the Archil account key is one: a Mode 2 run's disk opens
+ *  with it, so a census given `env` alone fails every Mode 2 end, and each writes "unscanned". `makeDisk`: a test's
+ *  Archil disk. */
+export const runnerCensus = (store: Store, dataDir: string, sealKey: Buffer, env: NodeJS.ProcessEnv, makeDisk?: ServerRunWorkspaceOptions["makeDisk"]): ReturnType<typeof runCensus> =>
+  runCensus(store, { data: dataDir, sealKey, env: withSecrets(env, "own"), ...(makeDisk ? { makeDisk } : {}) });
+
 /** Opens the store as a runner and starts claiming runs. */
 export async function startRunnerProcess(options: RunnerProcessOptions): Promise<RunnerProcess> {
   const warn = options.warn ?? ((message: string) => void process.stderr.write(`agentrun-serve runner: ${message}\n`));
@@ -342,7 +353,7 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
       name,
       presence,
       // Each end counts where in the run's files what its caller handed it sits, as the server reads them.
-      census: runCensus(store, { data: options.dataDir, sealKey: seal.key, env }),
+      census: runnerCensus(store, options.dataDir, seal.key, env),
       ...(options.loops ? { loops: options.loops } : {}),
       ...(options.drainMs ? { drainMs: options.drainMs } : {}),
       memory,
@@ -369,15 +380,23 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
   const close = () =>
     (closing ??= (async () => {
       floor.stop();
-      // The janitor's sweep is cut and waited for on its own bound, beside the runner's close, never before it.
-      await Promise.all([janitor?.close(), runner.close()]);
-      // Its relay after its runs: a run's release revokes its machine's token through it. Then its word that it is
-      // there: it claims no more.
-      await relayed?.close();
-      await kept.close();
-      // A first-use install its claims started, stopped as they let go: its npm ends before this process can.
-      await claimInstallsStopped();
-      await store.close();
+      // Its claims' readers start no ChatGPT renewal on its store once the close tells it (RUNNER_RENEWALS_SERVED_MS in,
+      // or the drain's end if sooner: a run the drain lets finish may need one); one OpenAI is answering saves its new
+      // pair before the store closes (awaited last, bounded by the window the close hands, at most RENEWAL_DRAIN_MS:
+      // renewalDrainFor, so it ends inside RUNNER_RENEWAL_BOUND_MS, which every shipped grace holds).
+      let renewalsStopped: Promise<void> | undefined;
+      const stopRenewing = (by?: number) => (renewalsStopped ??= stopRenewals(store, renewalDrainFor(by)));
+      // The renewals' drain and the store's close run whatever the steps before them throw (closeStoreAfter).
+      await closeStoreAfter(async () => {
+        // The janitor's sweep is cut and waited for on its own bound, beside the runner's close, never before it.
+        await Promise.all([janitor?.close(), runner.close(stopRenewing)]);
+        // Its relay after its runs: a run's release revokes its machine's token through it. Then its word that it is
+        // there: it claims no more.
+        await relayed?.close();
+        await kept.close();
+        // A first-use install its claims started, stopped as they let go: its npm ends before this process can.
+        await claimInstallsStopped();
+      }, () => stopRenewing(), store);
       held.release();
     })());
   // A floor above this runner closes it at once: it claims nothing from the read that saw the floor on, drains and hands
@@ -442,8 +461,9 @@ const isStoreFactory = (made: LoopFactory | StoreFactory): made is StoreFactory 
 /** How long a runner process lets each busy run finish its turn on SIGTERM, unless --drain-timeout or
  *  AGENTRUN_DRAIN_TIMEOUT says: the image's server drain (its CMD's --drain-timeout 6s), so a runner beside a --no-runner
  *  server drains as the server's own runner would.
- *  BOUND: this drain plus the stuck-loop stop after it (runner.ts runnerCloseBoundMs: the claim's lease less its margin,
- *  30 s - 5 s = 25 s) is 6 + 25 = 31 s, inside deploy/compose.yaml's 35 s stop_grace_period for its runners
+ *  BOUND: the close is this drain plus the stuck-loop stop after it (the claim's lease less its margin, 30 s - 5 s), or
+ *  a computer provider's cleanup bound from the close's start and its margins (30 s + 5 s + 5 s), whichever is longer
+ *  (runner.ts runnerCloseBoundMs): 40 s, inside deploy/compose.yaml's 45 s stop_grace_period for its runners
  *  (runner-beside-flags.test.mjs pins it). Raise this default only with that grace. */
 export const RUNNER_DRAIN_TIMEOUT = "6s";
 /** The environment's drain for a runner process when --drain-timeout gives none. */
@@ -538,21 +558,36 @@ export function runnerArgs(argv: readonly string[]): { dataDir: string; loops?: 
  *  then closes: nothing more claimed, the drain, its runs handed back. Answers the floor's words when that was the stop,
  *  else undefined. `ready` is called once the signals are handled, never before: a line that says the runner is ready (on
  *  a pipe, written at once) may bring a SIGTERM back before the next statement runs, and one that came before the
- *  handlers would end the process unclosed. `outdated`: told the floor's words before the close begins. */
-export async function runUntilSignalled(process: Pick<RunnerProcess, "close"> & Partial<Pick<RunnerProcess, "outdated">>, signals: readonly NodeJS.Signals[] = ["SIGTERM", "SIGINT"], ready: () => void = () => {}, outdated: (why: string) => void = () => {}): Promise<string | undefined> {
-  const why = await new Promise<string | undefined>((resolve) => {
-    const done = (value: string | undefined) => {
-      for (const signal of signals) globalThis.process.off(signal, onSignal);
-      resolve(value);
-    };
-    const onSignal = () => done(undefined);
-    for (const signal of signals) globalThis.process.on(signal, onSignal);
-    void process.outdated?.then(done);
-    ready();
-  });
-  if (why !== undefined) outdated(why);
-  await process.close();
-  return why;
+ *  handlers would end the process unclosed. `outdated`: told the floor's words before the close begins. The handlers stay
+ *  until the close is over: a signal again meanwhile (a second docker stop, a double Ctrl-C) is said once through
+ *  `again` and changes nothing, where Node's default would end the process mid-close, a ChatGPT renewal's save cut. */
+export async function runUntilSignalled(process: Pick<RunnerProcess, "close"> & Partial<Pick<RunnerProcess, "outdated">>, signals: readonly NodeJS.Signals[] = ["SIGTERM", "SIGINT"], ready: () => void = () => {}, outdated: (why: string) => void = () => {}, again: (line: string) => void = (line) => console.error(line)): Promise<string | undefined> {
+  let stopping = false;
+  let said = false;
+  let stop: (value: string | undefined) => void = () => {};
+  const onSignal = () => {
+    if (!stopping) return stop(undefined);
+    if (said) return;
+    said = true;
+    again("agentrun-serve runner: already stopping: it exits once its runs are handed back and its store is closed.");
+  };
+  for (const signal of signals) globalThis.process.on(signal, onSignal);
+  try {
+    const why = await new Promise<string | undefined>((resolve) => {
+      stop = (value) => {
+        if (stopping) return;
+        stopping = true;
+        resolve(value);
+      };
+      void process.outdated?.then(stop);
+      ready();
+    });
+    if (why !== undefined) outdated(why);
+    await process.close();
+    return why;
+  } finally {
+    for (const signal of signals) globalThis.process.off(signal, onSignal);
+  }
 }
 
 /** The runner process's last resort (runnerMain installs it for unhandledRejection and uncaughtException): says what
@@ -575,6 +610,7 @@ function said(name: string, event: RunnerEvent): string | undefined {
   if (event.type === "claimed") return `Runner ${name} claimed ${event.claim.runId} (epoch ${event.claim.epoch})`;
   if (event.type === "released") return `Runner ${name} released ${event.runId} (${event.end})`;
   if (event.type === "started" || event.type === "ended") return runLine(event);
+  if (event.type === "learning-deadline") return `Runner ${name} cancels ${event.runId}: a learning run at its deadline`;
   return troubleLine(name, event);
 }
 

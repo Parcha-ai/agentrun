@@ -1,7 +1,7 @@
 // The fetch step: a part judged in passages, or the chunks of a page its objective asks for, with the page guard beside.
 import type { Fee, Pay } from "../fees.js";
 import type { WebPage, WebRead, WebUnread } from "../fetch.js";
-import { clip, type Page } from "../page.js";
+import { clip, type Page, type Part, unwrittenLinks } from "../page.js";
 import { QUERY_MAX } from "../search.js";
 import type { Verdict, WebDecider } from "./decider.js";
 import type { PageGuard, Warned } from "./page-guard.js";
@@ -52,11 +52,11 @@ export type FoundChunk = { offset: number; relevance?: number; text: string };
 /** A page as an objective answers it: the chunks most likely to hold what the agent wants from it, in page order. */
 export type FoundPage = Pick<Page, "ok" | "url" | "status" | "title" | "original_chars" | "beyond_read"> & Pick<WebPage, "via" | "parallel"> & { found: FoundChunk[]; sift: string };
 
-/** The FOUND_CHUNKS chunks of the whole page `read` most likely to hold `need` (what the agent wants from it), in page
- *  order: its text cut into at most FIND_CHUNKS_MAX chunks, each judged by `decider` with `need` as the task (its
+/** The `found` chunks (its setup's, else FOUND_CHUNKS) of the whole page `read` most likely to hold `need` (what the
+ *  agent wants from it), in page order: its text cut into at most FIND_CHUNKS_MAX chunks, each judged by `decider` with `need` as the task (its
  *  judge request), ranked by score, a refused one after every scored one, ties in page order. A step that fails answers
  *  null, its record saying why. */
-export async function findInPage(decider: WebDecider, url: string, read: WebRead, need: string, options: StepOptions): Promise<Sifted<FoundPage | null>> {
+export async function findInPage(decider: WebDecider, url: string, read: WebRead, need: string, options: StepOptions, found: number = decider.setup?.fetch.found ?? FOUND_CHUNKS): Promise<Sifted<FoundPage | null>> {
   const spans = passagesOf(read.text, FIND_CHUNKS_MAX);
   const judged = await judgeSpans(decider, url, need, read.text, spans, 0, options);
   if ("failure" in judged) return { answer: null, classifier: judged.failure };
@@ -64,7 +64,7 @@ export async function findInPage(decider: WebDecider, url: string, read: WebRead
   const shown = spans
     .map((_, i) => i)
     .sort((a, b) => byScore(scored[a]!.score, scored[b]!.score) || a - b)
-    .slice(0, FOUND_CHUNKS)
+    .slice(0, found)
     .sort((a, b) => a - b);
   const answer: FoundPage = {
     ok: true,
@@ -83,14 +83,16 @@ export async function findInPage(decider: WebDecider, url: string, read: WebRead
 
 /** A fetch's answer: the part (judged or not), or what its objective found; with the guard's warning when it gave one. */
 export type FetchAnswer = (((WebPage | Page) & Sift) | FoundPage) & Warned;
-/** How a fetch is decided: the call's `task` and `objective`, the step's bounds, `pay` and the call's fee `lines`, and
- *  `guard`, the run's page guard for this read (absent when it is off). */
-export type FetchStep = Pick<StepOptions, "task" | "signal" | "ms"> & { objective?: unknown; pay: Pay; lines: Fee[]; guard?: ((options: StepOptions) => Promise<PageGuard>) | undefined };
+/** How a fetch is decided: the call's `task` and `objective`, the part it asked for (`offset`, `maxChars`, as given), the
+ *  step's bounds, `pay` and the call's fee `lines`, and `guard`, the run's page guard for this read (absent when it is
+ *  off). */
+export type FetchStep = Pick<StepOptions, "task" | "signal" | "ms"> & Part & { objective?: unknown; pay: Pay; lines: Fee[]; guard?: ((options: StepOptions) => Promise<PageGuard>) | undefined };
 
-/** A fetch decided: with an `objective` and a decider, what findInPage finds in the whole page (or the part, saying the
- *  objective was not applied, where the step fails); else the part judged against `task`; and the page guard asked
- *  beside either, its warning added and its fee lines put after the step's once both have settled. With no decider the
- *  part is the answer, an objective or none. */
+/** A fetch decided: with an `objective` and a decider, what findInPage finds in the whole page, its sift line naming an
+ *  offset past 0 or a max_chars the call gave as ignored (or the part, saying the objective was not applied, where the
+ *  step fails); else the part judged against `task`; and the page guard asked beside either, its warning added and its
+ *  fee lines put after the step's once both have settled. With no decider the part is the answer, its sift line saying
+ *  an objective given was not applied. */
 export async function decideFetch(decider: WebDecider | undefined, url: string, whole: WebRead | WebUnread, part: WebPage, options: FetchStep): Promise<{ answer: FetchAnswer; classifier: DecisionRecord | "off"; guard?: PageGuard }> {
   const step: StepOptions = { signal: options.signal, ms: options.ms, pay: decisionPay(options.pay, options.lines) };
   const guardLines: Fee[] = [];
@@ -101,9 +103,18 @@ export async function decideFetch(decider: WebDecider | undefined, url: string, 
   let classifier: DecisionRecord | "off" = "off";
   if (need && whole.ok && whole.text && decider) {
     const found = await findInPage(decider, url, whole, need, step);
-    answer = found.answer ?? notApplied(found.classifier.error!.code);
+    // What it found is the whole page's, whatever part the call named: the sift line says which of the call's bounds
+    // that leaves aside, so a call reading on with an objective is not handed the same chunks as if they were new.
+    const ignored = [...(options.offset ? ["offset"] : []), ...(options.maxChars === undefined ? [] : ["max_chars"])];
+    answer = !found.answer ? notApplied(found.classifier.error!.code) : ignored.length ? { ...found.answer, sift: `${found.answer.sift}; ${ignored.join(" and ")} ignored: found chunks come from the whole page, each with its offset` } : found.answer;
     classifier = found.classifier;
-  } else if (decider) ({ answer, classifier } = await judgePart(decider, url, part, { task: options.task, ...step }));
+  } else if (decider) {
+    ({ answer, classifier } = await judgePart(decider, url, part, { task: options.task, ...step }));
+    // A first part that left passages out lists again the links only they wrote: what it lists is checked against the
+    // text the model is given, never the part before judging.
+    if (whole.ok && whole.written && !(part.offset ?? 0) && "text" in answer && answer.text !== part.text) answer = { ...answer, ...unwrittenLinks(whole.written, answer.text) };
+  }
+  else if (need && whole.ok && whole.text) answer = notApplied("no classifier in this run");
   const guard = await guarding;
   options.lines.push(...guardLines);
   if (guard?.warning) answer = { ...answer, warning: guard.warning };

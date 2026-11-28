@@ -82,6 +82,25 @@ test("GET /wrapped sums the cache the import kept on the year's runs: hit rate, 
   assert.deepEqual(body.cache, { runs: 2, hit_rate: 0.5, breaks: causes({ idle: 3, model: 1 }), extra_cost_usd: causes({ idle: 0.000007, model: 0.25 }), unpriced_breaks: 1 }, "the year's two analyzed runs, of either source: one imported before the analysis, and one of 2025, are in no figure");
 });
 
+test("GET /wrapped sums the keys and tokens the import cut from the year's runs: runs counted, runs that held one, keys cut; null with none", { timeout: 120_000 }, async (t) => {
+  const home = await homeWith(t);
+  const { api, store } = await serve(t, { sessionsHome: { home } });
+  assert.equal((await api("POST", "/agents", agent("calc"))).status, 201);
+  const live = await api("POST", "/agents/calc/runs", { input: { content: "What is six times seven?" } });
+  await follow(api, live.body.run_id, ["completed"]);
+  const { agentId, revisionId } = await store.runs.get(live.body.run_id);
+  assert.equal((await api("GET", "/wrapped?year=2026")).body.secrets, null, "no run of the year keeps a count");
+  const imported = (id, startedAt, secrets, source = "claude-code") => store.importRun({ id, agentId, revisionId, importedFrom: { source, session: id }, launch: { body: { input: { content: "hi" }, title: id, place: { mode: "runner" } } }, state: "ended", metrics: { input: 1, cacheRead: 0, cacheWrite: 0, output: 1, requests: 1, unmetered: 0, ...(secrets === undefined ? {} : { secrets }) }, startedAt: Date.parse(startedAt), endedAt: Date.parse(startedAt), transcript: [] });
+  await imported("imp-1", "2026-03-02T10:00:00Z", 3);
+  await imported("imp-2", "2026-04-02T10:00:00Z", 0, "opencode");
+  await imported("imp-3", "2026-04-03T10:00:00Z", 1, "codex");
+  await imported("imp-none", "2026-05-02T10:00:00Z");
+  await imported("imp-old", "2025-03-02T10:00:00Z", 9);
+  const { status, body } = await api("GET", "/wrapped?year=2026");
+  assert.equal(status, 200, JSON.stringify(body));
+  assert.deepEqual(body.secrets, { runs: 3, runs_holding: 2, removed: 4 }, "the year's three counted runs, of any source: one imported before the count, and one of 2025, are in no figure");
+});
+
 test("a year that is not four digits, or is after this one, is 400; no year is the current one", { timeout: 120_000 }, async (t) => {
   const home = await homeWith(t);
   const { api } = await serve(t, { sessionsHome: { home } });

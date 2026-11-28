@@ -5,11 +5,11 @@
 // metered like every other. The four meta tools Composio adds (serve/src/mcp-meta.ts) stay refused; the helper actions
 // that connect an account are left off the server's address. The key goes only to Composio and into the sealed header: it
 // is never logged, echoed or put in an error. A save may name it instead by a variable of the server's environment
-// (`api_key_env`, COMPOSIO_API_KEY only, a secret the launcher hands the server and each runner over its pipe): the server
+// (`api_key_env`, an allowed project key only, a secret the launcher hands the server and each runner over its pipe): the server
 // then keeps the name, seals nothing, and reads the value at each use (composio-made.ts composioKeyFromEnv).
 import { randomBytes } from "node:crypto";
 import { textUpTo } from "./answer-text.js";
-import { COMPOSIO_KEY_ENV, COMPOSIO_ORIGIN, composioKeyFromEnv, type Cleanup, type ComposioMade, type Made, type Thing } from "./composio-made.js";
+import { COMPOSIO_KEY_ENV, COMPOSIO_KEY_ENVS, type ComposioKeyEnv, isComposioKeyEnv, COMPOSIO_ORIGIN, composioKeyFromEnv, type Cleanup, type ComposioMade, type Made, type Thing } from "./composio-made.js";
 import { ApiError, invalid, type InputIssue } from "./errors.js";
 import { priceValid } from "./mcp-probe.js";
 import { MCP_SERVER_NAME } from "./tool-names.js";
@@ -45,8 +45,10 @@ const accountOf = (user: string) => (one: unknown): one is Json => isObject(one)
 /** Whether Composio lists the connected account `account` as an ACTIVE one under `user` for `toolkit`: `listed`,
  *  `unlisted` (none, or one started, expired or turned off: only an ACTIVE account calls as its user), or `unbounded`
  *  when it lists more ACTIVE ones than the lookup's bound (MAX_PAGES of ACCOUNT_PAGE, as the save's), so it can't be
- *  checked. Any failure to read throws (asking): the caller refuses, never assumes. */
+ *  checked. Any failure to read throws (asking): the caller refuses, never assumes. `unlisted`, unasked, for a user that
+ *  is no Composio user id (COMPOSIO_USER_ID): a blank one Composio may read as every user. */
 export async function composioListsAccount(ask: Ask, user: string, toolkit: string, account: string): Promise<"listed" | "unlisted" | "unbounded"> {
+  if (!COMPOSIO_USER_ID.test(user)) return "unlisted";
   let cursor: string | undefined;
   for (let page = 0; page < MAX_PAGES; page++) {
     const listed = await ask("checking the run's connected account", "GET", `/api/v3/connected_accounts?user_ids=${encodeURIComponent(user)}&toolkit_slugs=${encodeURIComponent(toolkit)}&statuses=ACTIVE&limit=${ACCOUNT_PAGE}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
@@ -147,30 +149,34 @@ export function asking(control: ComposioControl, key: string, signal: AbortSigna
   };
 }
 
-/** The key and toolkit of a body, checked. The key is the body's `api_key`, or, where `keyEnv` is taken (a save), the value
- *  of the variable its `api_key_env` names: COMPOSIO_KEY_ENV only, so no other secret of the server's environment is sent
- *  to Composio. `keyEnv` in the answer: the key came from there. */
-function head(body: unknown, { keyEnv = false }: { keyEnv?: boolean } = {}): { key: string; toolkit: string; rest: Json; keyEnv?: typeof COMPOSIO_KEY_ENV } {
-  if (!isObject(body)) throw invalid([issue("body", "invalid", `The body is {${keyEnv ? "api_key or api_key_env" : "api_key"}, toolkit}.`)]);
+/** The Composio key `body` names, its problems pushed onto `issues`: its `api_key`, or the value of the variable its
+ *  `api_key_env` names: COMPOSIO_KEY_ENVS only, so no other secret of the server's environment is sent to Composio.
+ *  `keyEnv` in the answer: the key came from there. */
+function keyOf(body: Json, issues: InputIssue[]): { key: string; keyEnv?: ComposioKeyEnv } {
+  if (body.api_key_env === undefined) {
+    const key = typeof body.api_key === "string" ? body.api_key.trim() : "";
+    if (!key || key.length > 8192) issues.push(issue("api_key", "missing", `Send your Composio API key, or api_key_env: "${COMPOSIO_KEY_ENV}" to read it from the server's environment.`));
+    return { key };
+  }
+  if (body.api_key !== undefined) issues.push(issue("api_key_env", "not_allowed", "Send api_key or api_key_env, not both."));
+  else if (!isComposioKeyEnv(body.api_key_env)) issues.push(issue("api_key_env", "invalid", `api_key_env names the variable the key is read from, and only ${COMPOSIO_KEY_ENVS.join(" or ")} is taken.`));
+  else {
+    const key = composioKeyFromEnv(body.api_key_env) ?? "";
+    if (!key) issues.push(issue("api_key_env", "missing", `${body.api_key_env} is not set where AgentRun runs: set it to your Composio API key, then try again.`));
+    return { key, keyEnv: body.api_key_env };
+  }
+  return { key: "" };
+}
+
+/** The key (keyOf) and toolkit of a body, checked. */
+function head(body: unknown): { key: string; toolkit: string; rest: Json; keyEnv?: ComposioKeyEnv } {
+  if (!isObject(body)) throw invalid([issue("body", "invalid", "The body is {api_key or api_key_env, toolkit}.")]);
   const toolkit = typeof body.toolkit === "string" ? body.toolkit.trim().toLowerCase() : "";
   const issues: InputIssue[] = [];
-  let key = "";
-  let named: typeof COMPOSIO_KEY_ENV | undefined;
-  if (keyEnv && body.api_key_env !== undefined) {
-    if (body.api_key !== undefined) issues.push(issue("api_key_env", "not_allowed", "Send api_key or api_key_env, not both."));
-    else if (body.api_key_env !== COMPOSIO_KEY_ENV) issues.push(issue("api_key_env", "invalid", `api_key_env names the variable the key is read from, and only ${COMPOSIO_KEY_ENV} is taken.`));
-    else {
-      named = COMPOSIO_KEY_ENV;
-      key = composioKeyFromEnv(named) ?? "";
-      if (!key) issues.push(issue("api_key_env", "missing", `${COMPOSIO_KEY_ENV} is not set where AgentRun runs: set it to your Composio API key, then save again.`));
-    }
-  } else {
-    key = typeof body.api_key === "string" ? body.api_key.trim() : "";
-    if (!key || key.length > 8192) issues.push(issue("api_key", "missing", keyEnv ? `Send your Composio API key, or api_key_env: "${COMPOSIO_KEY_ENV}" to read it from the server's environment.` : "Send your Composio API key."));
-  }
+  const { key, keyEnv } = keyOf(body, issues);
   if (!TOOLKIT.test(toolkit)) issues.push(issue("toolkit", "invalid", "Send the toolkit's slug as Composio names it (github, slack, gmail...)."));
   if (issues.length) throw invalid(issues);
-  return { key, toolkit, rest: body, ...(named ? { keyEnv: named } : {}) };
+  return { key, toolkit, rest: body, ...(keyEnv ? { keyEnv } : {}) };
 }
 
 /** Whether a toolkit needs no sign-in. Composio's answer for one toolkit has no `no_auth` field (only its toolkit list
@@ -238,11 +244,10 @@ const MAX_TOOLKIT_PAGES = 20;
  *  within LIST_MS), by name: each one's slug, as a save takes it (a slug outside COMPOSIO_TOOLKIT is left out), and its
  *  name. Stores nothing. */
 export async function composioToolkits(body: unknown, control: ComposioControl, signal?: AbortSignal): Promise<{ toolkits: ComposioToolkit[] }> {
-  if (!isObject(body)) throw invalid([issue("body", "invalid", "The body is {api_key}.")]);
-  const extra = unknownFields(body, ["api_key"]);
-  if (extra.length) throw invalid(extra);
-  const key = typeof body.api_key === "string" ? body.api_key.trim() : "";
-  if (!key || key.length > 8192) throw invalid([issue("api_key", "missing", "Send your Composio API key.")]);
+  if (!isObject(body)) throw invalid([issue("body", "invalid", "The body is {api_key} or {api_key_env}.")]);
+  const issues = unknownFields(body, ["api_key", "api_key_env"]);
+  const { key } = keyOf(body, issues);
+  if (issues.length) throw invalid(issues);
   const within = control.listDeadline?.() ?? AbortSignal.timeout(LIST_MS);
   const ask = asking(control, key, signal ? AbortSignal.any([signal, within]) : within, "no toolkit was listed");
   const toolkitOf = (item: unknown): ComposioToolkit | undefined => {
@@ -349,7 +354,7 @@ export const composioRunQuery = (binding: { readonly user_id: string; readonly c
  *  the owner has, a custom OAuth app's say: read first, and refused unless it is this toolkit's and enabled), else the
  *  toolkit's Composio-managed one, found or made. `save` gets what the server stands on there too (`stands`,
  *  composio-made.ts): the auth config found or made and the account found or started, each marked whether this save made
- *  it, for its delete to remove what was made. The key is the body's `api_key`, or COMPOSIO_API_KEY's value when the body
+ *  it, for its delete to remove what was made. The key is the body's `api_key`, or the selected project variable's value when the body
  *  sends `api_key_env` (head): then `stands.key_env` names it, and the store seals no credential. `standsOn`: the caller's
  *  check of the auth config named (before anything is sent) or found (before anything is made against it): an API token's
  *  save never stands on one a server the owner saved stands on. `accountOn`: the caller's check of an ACTIVE account the
@@ -365,7 +370,7 @@ export async function composioSave<T extends { tools?: readonly { name: string }
     const extra = unknownFields(body, SAVE_FIELDS);
     if (extra.length) throw invalid(extra);
   }
-  const { key, toolkit, rest, keyEnv } = head(body, { keyEnv: true });
+  const { key, toolkit, rest, keyEnv } = head(body);
   const tools = Array.isArray(rest.tools) ? rest.tools : [];
   const given = rest.user_id === undefined ? COMPOSIO_USER : typeof rest.user_id === "string" ? rest.user_id : "";
   const price = rest.price_usd;

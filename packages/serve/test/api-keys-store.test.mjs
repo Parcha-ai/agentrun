@@ -202,7 +202,7 @@ test("the login's turn-on itself waits for a revocation under way, and is refuse
   const deps = {
     ...oneOwnerDeps({ apiOnly: false, tokens: 1 }, keys),
     settings: { ...store.settings, put: async (...args) => (went.push("the setting was written"), store.settings.put(...args)) },
-    data: "/nonexistent", env: {}, sameMachine: true,
+    data: "/nonexistent", env: {},
     signIns: { view: () => undefined, serial: (work) => work({ stop: async () => undefined, start: async () => undefined }) },
     saved: () => undefined,
     pinned: async () => undefined,

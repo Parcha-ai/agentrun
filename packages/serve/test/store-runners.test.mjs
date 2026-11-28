@@ -4,7 +4,7 @@
 // still queued fail in its words while a run a runner claimed is left to it.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { keepPresence, refusedEnd, refusedEndMessage, runnersRefused } from "../dist/runner/presence.js";
+import { keepPresence, liveRelays, refusedEnd, refusedEndMessage, runnersRefused } from "../dist/runner/presence.js";
 import { RUNNER_ROWS_KEPT_MS, RUNNER_STALE_MS } from "../dist/store/store.js";
 import { queued, storeOn, T0 } from "./store-helpers.mjs";
 
@@ -14,7 +14,7 @@ test("a runner's row is its incarnation's: renewed and removed only by it, put a
   const clock = { now: T0 };
   const { store } = await storeOn(t, { clock });
   assert.equal(await store.runners.put({ runner: "r1", incarnation: "a", refused: null }), true);
-  assert.deepEqual(await store.runners.list(), [{ runner: "r1", incarnation: "a", refused: null, host: null, port: null, seenAt: T0, version: null, slots: null }], "a runner with no relay answers nowhere");
+  assert.deepEqual(await store.runners.list(), [{ runner: "r1", incarnation: "a", refused: null, host: null, port: null, seenAt: T0, version: null, slots: null, knows: null }], "a runner with no relay answers nowhere");
   clock.now = T0 + 5_000;
   assert.equal(await store.runners.renew("r1", "a", null), true);
   assert.equal(await store.runners.renew("r1", "b", { host: "x", port: 2 }), false, "another incarnation's renewal is not this one's");
@@ -22,7 +22,7 @@ test("a runner's row is its incarnation's: renewed and removed only by it, put a
   // A new start of the same name takes the row over, with its relay; the earlier one's remove leaves it.
   await store.runners.put({ runner: "r1", incarnation: "b", refused: WORDS, host: "r1.example", port: 40_000 });
   await store.runners.remove("r1", "a");
-  assert.deepEqual(await store.runners.list(), [{ runner: "r1", incarnation: "b", refused: WORDS, host: "r1.example", port: 40_000, seenAt: T0 + 5_000, version: null, slots: null }]);
+  assert.deepEqual(await store.runners.list(), [{ runner: "r1", incarnation: "b", refused: WORDS, host: "r1.example", port: 40_000, seenAt: T0 + 5_000, version: null, slots: null, knows: null }]);
   // A put with no relay clears where it answered.
   await store.runners.put({ runner: "r1", incarnation: "b", refused: WORDS });
   assert.deepEqual((await store.runners.list()).map((row) => [row.host, row.port]), [[null, null]]);
@@ -165,6 +165,23 @@ test("an earlier process's relay close and its presence's close leave a later pr
   await earlier.relay(null);
   await earlier.close();
   assert.deepEqual((await store.runners.list()).map((row) => [row.incarnation, row.host, row.port]), [["inc-later", "127.0.0.1", 40_001]], "the later one's row and relay stand");
+});
+
+test("a rolling restart's process of a later build takes the name from a live row of an earlier build's (knows null or below) at once: its relay is the one dialed, and the earlier one's renewals never take it back", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const clock = { now: T0 };
+  const { store } = await storeOn(t, { clock });
+  for (const knows of [null, store.runners.knows - 1]) {
+    await store.runners.put({ runner: "same", incarnation: "inc-earlier", refused: null, host: "127.0.0.1", port: 40_000, knows });
+    const later = keepPresence(store.runners, "same", null, { renewMs: 60_000, incarnation: "inc-later" });
+    await later.relay({ host: "127.0.0.1", port: 40_001 });
+    const relays = (await liveRelays(store.runners)).map((row) => [row.incarnation, row.port, row.knows]);
+    assert.deepEqual(relays, [["inc-later", 40_001, store.runners.knows]], `knows ${knows}: the later process's relay is dialed at once`);
+    // The earlier process's renewal (it drains on) touches its own row only, and there is none of its incarnation now.
+    assert.equal(await store.runners.renew("same", "inc-earlier", { host: "127.0.0.1", port: 40_000 }), false);
+    assert.deepEqual((await liveRelays(store.runners)).map((row) => row.incarnation), ["inc-later"]);
+    await later.close();
+  }
 });
 
 test("put unlessLiveMs puts a row where none is, or over its own or a stale one, and leaves another incarnation's live row as it is; a put without it takes the row", async (t) => {

@@ -59,6 +59,8 @@ export interface AcpProxySession {
   readonly models: ModelPort;
   /** The host's tools, by the names the session has them under. */
   readonly tools: readonly string[];
+  /** Our MCP server's name at this start (mcpServerName): the agent names each tool `<server>__<tool>`. */
+  readonly server?: string;
   /** Ends the agent's drive: its turn ends failed in `reason`'s words. */
   halt(reason: unknown): void;
   /** The session's turn budget (ResultBudget.turn): a proxy opens it with each answer's facts (ModelProxyOptions.turn). */
@@ -128,7 +130,7 @@ export function acpAdapter(options: AcpAdapterOptions): AgentAdapter {
         ...(options.confine ? { confine: options.confine } : {}),
         ...(options.parentWatch ? { parentWatch: options.parentWatch } : {}),
         ...(options.env ? { env: options.env } : {}),
-        ...(options.proxy ? { proxy: (drive: { halt(reason: unknown): void }) => options.proxy!({ models: io.models, tools: spec.tools.map((tool) => tool.name), halt: drive.halt, ...(turn ? { turn } : {}) }) } : {}),
+        ...(options.proxy ? { proxy: (drive: { halt(reason: unknown): void; server: string }) => options.proxy!({ models: io.models, tools: spec.tools.map((tool) => tool.name), server: drive.server, halt: drive.halt, ...(turn ? { turn } : {}) }) } : {}),
         ...(options.beforeStart ? { beforeStart: options.beforeStart } : {}),
         ...(options.callIdWaitMs !== undefined ? { callIdWaitMs: options.callIdWaitMs } : {}),
         ...(options.startMs !== undefined ? { startMs: options.startMs } : {}),

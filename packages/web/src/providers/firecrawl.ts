@@ -140,19 +140,26 @@ export function firecrawlScrapeBody(url: string, settings: FirecrawlSettings = {
   return { url, formats: ["markdown"], onlyMainContent: settings.onlyMainContent ?? FIRECRAWL_DEFAULTS.onlyMainContent, ...(settings.maxAgeMs === undefined ? {} : { maxAge: settings.maxAgeMs }) };
 }
 
-/** The page at `url` scraped through `client` under `settings`: the page, or why there is none. Firecrawl names no cut,
- *  so the text is read as the whole page's; a page whose status is not 2xx is no read. */
-export async function firecrawlRead(url: string, client: Keyed | null, settings: FirecrawlSettings = {}, signal?: AbortSignal): Promise<Read | KeyedFailed> {
-  const got = await keyedCall(client, "Firecrawl", "FIRECRAWL_API_KEY", "fetch", "/v2/scrape", firecrawlScrapeBody(url, settings), signal);
-  if ("error" in got) return got;
-  const data = (typeof got.json.data === "object" && got.json.data !== null ? got.json.data : {}) as { markdown?: unknown; metadata?: unknown };
-  if (got.json.success === false || typeof data.markdown !== "string" || data.markdown.trim() === "") return failed("not_text", "NO_TEXT", "Firecrawl's fetch answered no page text");
-  const meta = (typeof data.metadata === "object" && data.metadata !== null ? data.metadata : {}) as { title?: unknown; sourceURL?: unknown; url?: unknown; statusCode?: unknown };
+/** A page Firecrawl scraped for `url` (`page`, its scrape's `{markdown, metadata}`, keyed or keyless alike) as a Read:
+ *  the url it ended at (metadata's url, else its sourceURL, else `url`), its title (a list's first string), its status.
+ *  Firecrawl names no cut, so the text is read as the whole page's; no markdown is no text, and a page whose status is
+ *  not 2xx is no read. */
+export function firecrawlPageOf(url: string, page: { markdown?: unknown; metadata?: unknown }): Read | Failed {
+  if (typeof page.markdown !== "string" || page.markdown.trim() === "") return failed("not_text", "NO_TEXT", "Firecrawl's fetch answered no page text");
+  const meta = (typeof page.metadata === "object" && page.metadata !== null ? page.metadata : {}) as { title?: unknown; sourceURL?: unknown; url?: unknown; statusCode?: unknown };
   const final = [meta.url, meta.sourceURL].find((one): one is string => typeof one === "string" && URL.canParse(one)) ?? url;
   const status = typeof meta.statusCode === "number" && Number.isInteger(meta.statusCode) ? meta.statusCode : 200;
   if (status < 200 || status > 299) return failed("error", `PAGE_${status}`, `Firecrawl's fetch: the page answered ${status}`);
   const title = typeof meta.title === "string" ? meta.title : Array.isArray(meta.title) && typeof meta.title[0] === "string" ? meta.title[0] : "";
-  return markdownRead(final, title, data.markdown, true, status);
+  return markdownRead(final, title, page.markdown, true, status);
+}
+
+/** The page at `url` scraped through `client` under `settings` (firecrawlPageOf), or why there is none. */
+export async function firecrawlRead(url: string, client: Keyed | null, settings: FirecrawlSettings = {}, signal?: AbortSignal): Promise<Read | KeyedFailed> {
+  const got = await keyedCall(client, "Firecrawl", "FIRECRAWL_API_KEY", "fetch", "/v2/scrape", firecrawlScrapeBody(url, settings), signal);
+  if ("error" in got) return got;
+  const data = (typeof got.json.data === "object" && got.json.data !== null ? got.json.data : {}) as { markdown?: unknown; metadata?: unknown };
+  return firecrawlPageOf(url, got.json.success === false ? {} : data);
 }
 
 /** Firecrawl on the run's key, both tools on one client, as keyed Exa is. */
@@ -164,7 +171,7 @@ export const firecrawl = defineProvider(
     return {
       search: (ask, _deadline, signal) => firecrawlSearched(ask, client, asked, signal),
       read: (url, { signal }) => firecrawlRead(url as string, client, asked, signal),
-      unready: () => (client && !client.live() ? failure("refused", "KEY_REFUSED", "not tried: refused earlier in this run") : undefined),
+      unready: () => (!client ? failure("refused", "NO_KEY", "not tried: this run holds no Firecrawl key") : client.live() ? undefined : failure("refused", "KEY_REFUSED", "not tried: refused earlier in this run")),
     };
   },
 );

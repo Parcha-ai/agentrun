@@ -128,3 +128,15 @@ test("unknown token metrics, absent metrics and known zero remain distinct", asy
   assert.equal(a.totals.tokens, 0);
   assert.equal(a.totals.runsWithTokenMetrics, 1, "reported zeros count as measured");
 });
+
+test("the keys cut are the import's: a live run's metrics holding a `secrets` number, and an imported count that is no whole number of zero or more, are in no figure", async (t) => {
+  const { store } = await storeOn(t);
+  await store.agents.create({ id: "agent-1", name: "A" }, { id: "rev-1", kind: "agentic", body: { instructions: "x" } });
+  await store.runs.create({ id: "live", agentId: "agent-1", revisionId: "rev-1" });
+  await end(store, "live", { state: "ended", outcome: "completed", metrics: metrics({ secrets: 5 }), endedAt: T0 + 1 });
+  const imported = (id, secrets) => store.importRun({ id, agentId: "agent-1", revisionId: "rev-1", importedFrom: { source: "claude-code", session: id }, launch: { body: { input: { content: "hi" }, title: id, place: { mode: "runner" } } }, state: "ended", metrics: metrics({ secrets }), startedAt: T0, endedAt: T0, transcript: [] });
+  await imported("counted", 2);
+  await imported("negative", -1);
+  await imported("fraction", 1.5);
+  assert.deepEqual((await analytics(store)).secrets, { runs: 1, holding: 1, removed: 2 });
+});

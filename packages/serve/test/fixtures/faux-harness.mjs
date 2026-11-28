@@ -111,6 +111,10 @@ export function script(spec, session = {}) {
   // answer. A CLI goes on to its next request after the call: that request is the one the run's loop cuts the turn at.
   const ask = /Ask the person: (.+\?)/.exec(text);
   if (ask) return [{ call: "ask_person", args: { question: ask[1] }, usd: 0.001 }, { say: "Going with your answer.", usd: 0.001 }];
+  // "Call the tool <name>, which you are not given." (or ", which asks a person first."): a call of that tool, with no
+  // arguments, then a closing answer.
+  const one = /Call the tool (\S+), which (?:you are not given|asks a person first)\./.exec(text);
+  if (one) return [{ call: one[1], args: {}, usd: 0.001 }, { say: "Went on without it.", usd: 0.001 }];
   // A research turn: the session's web_search when it has one as a tool (its harness's own search is not one), then the
   // page with web_fetch, then report.md citing it.
   const research = /Research (.+?) on the web, read (\S+) and write report\.md\./.exec(text);

@@ -32,6 +32,7 @@ import { triggerBodyIssues } from "./triggers.js";
 import { definitionBodyIssues, inputIssues, inputSchemaOf, isObject, type Json, MODEL_REF, MODEL_TIER_NAMES, unknownFields } from "./validate.js";
 import { schemaCheck } from "./answer-json.js";
 import { webFixtureOf } from "./web-fake.js";
+import { workspaceNow } from "./workspace-scope.js";
 import { APPROVALS, type Approvals } from "./approvals.js";
 import { agreeOnOf, type LearningSetting, learningSettingIssue, learningSettingOf, pathSegments } from "./learning-setting.js";
 
@@ -108,7 +109,8 @@ const WHOLE = /^\$\{parameters\.([^}]*)\}$/;
  *  `${parameters.<name>}`), which apply writes as the tool's pin in the agent's tool settings, so a send goes only to the
  *  destination the owner set. `file`, by tool: where each of its answers is filed whole in the run's files and the paths of it
  *  the tool's result shows (filed-tool.ts), which apply writes as the tool's file setting in the agent's tool settings, so
- *  the tool's result is a summary, never the answer (the model's own file tools can still open the folder). Absent when
+ *  the tool's result is a summary, never the answer (the gate refuses the agent's own read, write and edit in the folder;
+ *  bash is not gated by path). Absent when
  *  the package files none. */
 export type McpNeed = { source: McpSource; toolkit: string; tools: string[]; required: boolean; reason?: string; allow: string[]; pin: Record<string, Record<string, PinValue>>; file?: Record<string, FileSetting> };
 /** One of a package's model choices (manifest `model.choices`): a model and the harness it runs on, which an owner picks
@@ -1091,34 +1093,46 @@ function modelView(model: Package["model"]) {
 }
 
 /** A package whole, as an import and a read of one answer it: its listing with the computer it would get here
- *  (`computerHere`), and every text its agent would be given, the instructions and each skill file by path (a rule and
+ *  (`computerHere`) and its subagents' tiers (`tiersHere`), and every text its agent would be given, the instructions and each skill file by path (a rule and
  *  the answer's schema beside each SKILL.md among them), so a person reads what a package would tell their agent before
  *  it is applied. */
-export function packageDetail<Pick>(p: Package, computerHere: (p: Package) => Pick) {
-  return { template: { ...packageView(p), computer_here: computerHere(p) }, instructions: p.instructions, skill_files: { ...p.skills } };
+export function packageDetail<Pick, Tiers>(p: Package, computerHere: (p: Package) => Pick, tiersHere: (p: Package) => Tiers) {
+  return { template: { ...packageView(p), computer_here: computerHere(p), model_tiers_here: tiersHere(p) }, instructions: p.instructions, skill_files: { ...p.skills } };
 }
 
+/** The workspace the request being served reaches imported packages in (workspace-scope.ts): null for none. */
+const here = (): string | null => workspaceNow() ?? null;
+/** An imported package's key in the registry: its workspace and id, as the store keys it. */
+const importedKey = (workspace: string | null, id: string): string => JSON.stringify([workspace, id]);
+
 /** The packages this server serves: the ones it ships, read at its start, and the ones imported here (the store keeps
- *  them; the server loads them beside the bundled ones at its start). An id is one package; a bundled one is never
- *  replaced or removed, and an imported id (`github:…`) is never a bundled one's name. */
+ *  them; the server loads them beside the bundled ones at its start). A bundled package is every workspace's, never
+ *  replaced or removed, and an imported id (`github:…`, `upload:…`) is never a bundled one's name. An imported one is its
+ *  workspace's (none's for an unscoped import), so one id is a package in each workspace: each call reaches the
+ *  workspace it names, by default the request's. */
 export class TemplateRegistry {
-  private readonly imported = new Map<string, Package>();
+  private readonly imported = new Map<string, { workspace: string | null; pkg: Package }>();
   constructor(private readonly bundled: readonly Package[]) {}
-  /** The bundled packages by name, then the imported ones by id. */
-  list(): Package[] {
-    return [...this.bundled, ...[...this.imported.values()].sort((a, b) => a.id.localeCompare(b.id))];
+  /** The bundled packages by name, then the workspace's imported ones by id. */
+  list(workspace: string | null = here()): Package[] {
+    const own = [...this.imported.values()].filter((one) => one.workspace === workspace).map((one) => one.pkg);
+    return [...this.bundled, ...own.sort((a, b) => a.id.localeCompare(b.id))];
   }
-  get(id: string): Package | undefined {
-    return this.bundled.find((p) => p.id === id) ?? this.imported.get(id);
+  /** Every imported package of every workspace, with its workspace. */
+  everywhere(): { workspace: string | null; pkg: Package }[] {
+    return [...this.imported.values()];
   }
-  /** An imported package, in place of the one under its id. */
-  put(p: Package): void {
+  get(id: string, workspace: string | null = here()): Package | undefined {
+    return this.bundled.find((p) => p.id === id) ?? this.imported.get(importedKey(workspace, id))?.pkg;
+  }
+  /** An imported package, in place of the one under its id in the workspace. */
+  put(p: Package, workspace: string | null = here()): void {
     if (p.origin === null || this.bundled.some((one) => one.id === p.id)) throw new TypeError(`${p.id} is a bundled package's id`);
-    this.imported.set(p.id, p);
+    this.imported.set(importedKey(workspace, p.id), { workspace, pkg: p });
   }
-  /** Whether an imported package of that id was there to remove. */
-  remove(id: string): boolean {
-    return this.imported.delete(id);
+  /** Whether an imported package of that id was there in the workspace to remove. */
+  remove(id: string, workspace: string | null = here()): boolean {
+    return this.imported.delete(importedKey(workspace, id));
   }
 }
 
@@ -1394,6 +1408,11 @@ export function mcpSetUp(need: Pick<McpNeed, "source" | "toolkit" | "tools">): s
     : `Add the MCP server that serves ${tools} in Settings → MCP servers and set its toolkit to ${need.toolkit}, then apply the template again.`;
 }
 
+/** A need's source and toolkit in words, the toolkit left out where it is the source's own name (github/github). */
+export function mcpNeedName(need: Pick<McpNeed, "source" | "toolkit">): string {
+  return need.source === need.toolkit ? need.source : `${need.source} ${need.toolkit}`;
+}
+
 /** A saved MCP server as an apply matches it: its name and the source and toolkit it records (mcp-sources.ts). */
 export type SavedSource = { name: string; source: McpSource; toolkit: string | null };
 
@@ -1406,8 +1425,8 @@ export function serversFor(p: Package, saved: readonly SavedSource[], picks: Rea
   const mapped = p.mcp.map((need) => {
     const candidates = saved.filter((one) => one.source === need.source && one.toolkit === need.toolkit).map((one) => one.name).sort();
     const pick = Object.hasOwn(picks, need.toolkit) ? picks[need.toolkit] : undefined;
-    if (pick !== undefined && !candidates.includes(pick)) issues.push({ field: `servers.${need.toolkit}`, reason: "not_an_option", message: `${pick} is not a saved MCP server that is ${need.source} ${need.toolkit}: ${candidates.length ? `${candidates.join(", ")} ${candidates.length === 1 ? "is" : "are"}` : "none is saved here"}.` });
-    else if (pick === undefined && candidates.length > 1) issues.push({ field: `servers.${need.toolkit}`, reason: "missing", message: `Saved MCP servers ${new Intl.ListFormat("en", { type: "conjunction" }).format(candidates)} are each ${need.source} ${need.toolkit}: servers.${need.toolkit} says which one the agent uses.` });
+    if (pick !== undefined && !candidates.includes(pick)) issues.push({ field: `servers.${need.toolkit}`, reason: "not_an_option", message: `${pick} is not a saved MCP server that is ${mcpNeedName(need)}: ${candidates.length ? `${candidates.join(", ")} ${candidates.length === 1 ? "is" : "are"}` : "none is saved here"}.` });
+    else if (pick === undefined && candidates.length > 1) issues.push({ field: `servers.${need.toolkit}`, reason: "missing", message: `Saved MCP servers ${new Intl.ListFormat("en", { type: "conjunction" }).format(candidates)} are each ${mcpNeedName(need)}: servers.${need.toolkit} says which one the agent uses.` });
     const server = pick ?? (candidates.length === 1 ? candidates[0]! : null);
     return { need, server, candidates };
   });

@@ -140,7 +140,7 @@ export function SignIn({ mode, code = null, codeNeeded = false, onSubmit, onNewC
 
 const count = (n: number, one: string) => `${n.toLocaleString("en-US")} ${one}${n === 1 ? "" : "s"}`;
 // The tools an import reads, by their own names, in the order setup's summary names them; one not listed here by its id.
-const SOURCE_NAMES: Record<string, string> = { "claude-code": "Claude Code", codex: "Codex", pi: "pi", opencode: "OpenCode", copilot: "Copilot CLI" };
+const SOURCE_NAMES: Record<string, string> = { "claude-code": "Claude Code", codex: "Codex", pi: "pi", opencode: "OpenCode", copilot: "Copilot CLI", cursor: "Cursor CLI" };
 const sourceName = (source: string) => SOURCE_NAMES[source] ?? source;
 /** "a", "a and b", "a, b and c". */
 const inWords = (names: string[]) => (names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`);

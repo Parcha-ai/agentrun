@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-computer, @parcha/agentrun-serve
+kind: feature
+---
+A new computer provider, `vercel`: a Linux sandbox on Vercel Sandbox (a Firecracker microVM), over Vercel's REST API with no SDK. It takes `VERCEL_TOKEN`, `VERCEL_TEAM_ID` and `VERCEL_PROJECT_ID`, all required, and loads from `@parcha/agentrun-computer/vercel` or `providerFor("vercel", { token, teamId, projectId })`. A computer starts from the box image as the project's Vercel Container Registry holds it, `agentrun-box:<recipe hash>`, which the operator pushes once with `vercel vcr build docker . agentrun-box:<hash> --push` from `box/`. Serve offers it as a box once `AGENTRUN_BOXES` lists `vercel` and the three keys are set, and the launcher holds `VERCEL_TOKEN` with the other secrets. No live run has been made yet: whether root makes a network namespace in the microVM, whether the log stream keeps a split character whole and holds 75 s of silence, and the status of a create whose name is taken are unverified until then.
