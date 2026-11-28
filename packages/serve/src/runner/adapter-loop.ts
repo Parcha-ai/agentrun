@@ -4134,6 +4134,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   }
 
   /** The session and its Harness closed behind the journal's seal: nothing they write after reaches the store. */
+  /** The CLI's session closed, at most CLOSE_MS, before its run's end lets the claim go (writeEnd); closeSession then
+   *  finds none to close. A message taken after it waits for the next claim, as one taken while the run stops does. */
+  async function closeCliSession(): Promise<void> {
+    const open = session;
+    if (!open) return;
+    session = undefined;
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([open.close().catch(() => {}), new Promise<void>((resolve) => (timer = setTimeout(resolve, CLOSE_MS)))]);
+    clearTimeout(timer);
+  }
+
   async function closeSession(): Promise<void> {
     gate?.seal(new Interrupted("the Session is closing"));
     endWait();
@@ -4550,6 +4561,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     }
     // The pull request's checkout goes before the end is committed: a run that reads final never still holds its code.
     await specNow?.endCheckout?.();
+    // A CLI's own session goes before the end is committed, as its checkout does: the end lets the claim go (an ending
+    // patch clears its runner), and a message sent the moment the run reads ended reopens it onto a new session on the
+    // same thread, never beside this one still closing. Closed before the end's patch and its late stop are read, so a
+    // stop that comes while it closes is this end's; what its close writes (a turn it halts) lands above the end.
+    if (cliRecord) await closeCliSession();
     const patch = await endPatchOf(base);
     // A person's stop that came while the end waited (its host's release, its bookings, its patch's reads, up to
     // END_PATCH_MS on a busy store) is this end's, as a stop during any earlier await of the end path is: the run ends
