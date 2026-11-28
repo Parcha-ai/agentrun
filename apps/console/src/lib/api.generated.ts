@@ -168,7 +168,7 @@ export interface components {
     places: {
       modes: ("runner" | "sandbox")[];
       boxes: {
-        id: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel" | "sprites" | "instabox";
+        id: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel" | "sprites" | "instabox" | "freestyle";
         available: boolean;
         state: "ready" | "unavailable";
         reason?: string;
@@ -180,7 +180,7 @@ export interface components {
         mode: "runner";
       } | {
         mode: "sandbox";
-        box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel" | "sprites" | "instabox";
+        box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel" | "sprites" | "instabox" | "freestyle";
       } | null;
       default_reason?: string;
       allow: string[];
@@ -394,7 +394,7 @@ export interface components {
       mode: "runner";
     } | {
       mode: "sandbox";
-      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel" | "sprites" | "instabox";
+      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel" | "sprites" | "instabox" | "freestyle";
     };
     computer?: {
       kind: "none" | "sandbox" | "desktop" | "phone" | "browser";
@@ -1026,7 +1026,7 @@ export interface components {
       mode: "runner";
     } | {
       mode: "sandbox";
-      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel" | "sprites" | "instabox";
+      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel" | "sprites" | "instabox" | "freestyle";
     };
     computer?: {
       kind: "sandbox" | "desktop" | "phone" | "browser";

@@ -13,7 +13,8 @@
     "groundbox",
     "vercel",
     "sprites",
-    "instabox"
+    "instabox",
+    "freestyle"
   ],
   "type": "module",
   "license": "Apache-2.0",
@@ -95,6 +96,10 @@
     "./instabox": {
       "types": "./dist/instabox.d.ts",
       "default": "./dist/instabox.js"
+    },
+    "./freestyle": {
+      "types": "./dist/freestyle.d.ts",
+      "default": "./dist/freestyle.js"
     },
     "./orgo": {
       "types": "./dist/orgo.d.ts",

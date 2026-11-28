@@ -455,7 +455,7 @@ new HostedProvider(host, { daemonPath, dial: { url: process.env.AGENTRUN_PUBLIC_
   the tool user. Where the host's facts say `windowManager`, computerd starts xfwm4 itself (init `--window-manager`;
   see `daemon/internal/windowmanager`); hello's `windowManager` says how it went, and create waits on it. A machine
   minted a desktop may say `linux` (same os and arch) until its display answers; a `connect` while it says `linux`
-  fails as drift, as on exec. Every dial provider but Render (linux alone, for now) takes one, from the box image, whose
+  fails as drift, as on exec. Every dial provider but Render and Freestyle (linux alone, for now) takes one, from the box image, whose
   `desktop` step (`box/install.sh`) installs Xvfb, xfwm4, xfce4-terminal, mousepad, firefox-esr and thunar. A desktop gets the
   sandbox's size, 2 CPUs and 4 GiB by default, which holds Xvfb at 1280x800, xfwm4 and a browser:
   - **E2B**: its default on either connect, from the box template (the template's own size).
@@ -513,6 +513,28 @@ labels: a sandbox's name gives the computer's own two, and `get` and `list` read
 `dialExit` and `redial` read and rerun the same files. The image is the box image as a sandbox build of the workspace
 (`agentrun-box-<tag>`), which `prepareImage()` imports once.
 
+Freestyle ([`src/freestyle.ts`](src/freestyle.ts)) dials alone too. Its exec (`exec-await`) answers once the command
+ends, with its stdin given whole, and its SSH gateway takes a token in the username and publishes no host key to pin,
+so nothing reaches into a VM. Its API names no env and no command a VM runs at boot, so create posts the VM from the box
+image's snapshot, waits for it to read `running`, and starts `agentrun-dial` under `setsid` in one `exec-await` as
+root, with the boot env as that command's own env: the launch script on disk holds no token, and the env stays in the
+creating process for `redial`, which another process can't do. The labels are packed into the VM's metadata, and
+`list` filters by them. `dialLog`, `dialExit` and `redial` read and rerun the same files as Render's. Once the POST has
+made the VM, a later step's failure deletes it by its id, and is never a refusal, which would tell the adapter nothing
+was made. Output that echoes the token is shown as `<AGENTRUN_ATTACH_TOKEN>` in an error.
+
+The image is the box image's snapshot in the key's account, slug `agentrun-box-<recipe hash>`. `prepareImage()` finds
+it, or builds it once the way Morph's is built:
+- boot `freestyle/ubuntu`;
+- upload the recipe's files;
+- start `install.sh` detached as root, then read its exit file through `exec-await` until it's there (an install runs
+  past exec-await's 300 s);
+- snapshot the VM under that slug (`POST /v5/vms/{id}/snapshot`).
+
+The build VM is deleted on every path, and has a two-hour `ttlSeconds` besides. A slug another build took first is the
+snapshot every caller answers. `install.sh` builds on Freestyle's Ubuntu 24.04 base: Ubuntu has no `firefox-esr`, so
+the `desktop` step takes it from Mozilla's APT repository.
+
 #### Worked example: Fly Machines
 
 [`src/fly.ts`](src/fly.ts) is a dial host on the [Machines API](https://fly.io/docs/machines/api/machines-resource/).
@@ -543,7 +565,9 @@ COMPUTER_FLY_API_TOKEN=… COMPUTER_FLY_APP=agentrun-computers-<org slug> AGENTR
 
 Render's is `COMPUTER_RENDER_API_KEY=… COMPUTER_RENDER_WORKSPACE_ID=tea-… AGENTRUN_PUBLIC_URL=https://… PORT=8080 node
 packages/serve/scripts/dial-conformance.mjs --provider render`, with `COMPUTER_RENDER_IMAGE` naming a build of your own
-in place of the box build.
+in place of the box build. Freestyle's is `AGENTRUN_COMPUTER_LIVE_FREESTYLE=1 COMPUTER_FREESTYLE_API_KEY=… AGENTRUN_PUBLIC_URL=https://… PORT=8080 node
+packages/serve/scripts/dial-conformance.mjs --provider freestyle`. It finds or builds the box snapshot first, unless
+`COMPUTER_FREESTYLE_IMAGE` names a snapshot of your own.
 
 `COMPUTER_FLY_KIND=desktop` runs the desktop suite (unset, linux); Cloudflare, Modal and Daytona's modules read `COMPUTER_CLOUDFLARE_KIND`, `COMPUTER_MODAL_KIND` and `COMPUTER_DAYTONA_KIND` the same way.
 

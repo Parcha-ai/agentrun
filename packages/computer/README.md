@@ -16,7 +16,7 @@ import { checkMount, readBackOf, WORKSPACE, type MountSpec } from "@parcha/agent
 
 The package root holds the protocol, the registry and the descriptors, and loads no provider: a provider loads by its
 id (`providerFor(id, options)`, which imports that one provider's file), or from its subpath (`/docker`, `/daytona`,
-`/modal`, `/e2b`, `/orgo`, `/orgo-desktop`, `/phone-harness`, `/browserbase`, `/kernel`, `/local-chrome`, `/boxd`, `/smolcloud`, `/groundbox`, `/vercel`, `/sprites`, `/instabox`). A provider's
+`/modal`, `/e2b`, `/orgo`, `/orgo-desktop`, `/phone-harness`, `/browserbase`, `/kernel`, `/local-chrome`, `/boxd`, `/smolcloud`, `/groundbox`, `/vercel`, `/sprites`, `/instabox`, `/freestyle`). A provider's
 option types (`DockerProviderOptions`, `ModalProviderOptions` and the like) come from its subpath too, not the root.
 
 The package carries the daemon for Linux amd64 and arm64 in `dist/`, so a provider runs it with no Go on the host. A
@@ -691,6 +691,7 @@ live under:
   | `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` | Vercel Sandbox's `token`, `teamId` and `projectId`, all required |
   | `SPRITES_TOKEN` | Fly Sprites' `token`: the name Fly's own CLI reads |
   | `INSTABOX_API_KEY` | InstaBox's `apiKey`: the name InstaBox's own CLI and SDK read |
+  | `FREESTYLE_API_KEY` | Freestyle's `apiKey`: the name Freestyle's own SDK and CLI read |
 
 - **the conformance CLI and the live harness** (`src/conformance/`: the CLI, each provider's conformance module and the
   sweeps) read their own `COMPUTER_<ID>_*` names, the ones the live scripts set, through each module's
@@ -3459,6 +3460,58 @@ Unverified until the live run: the gateway taking the token as the username with
 ssh2 verifies, whose sha256 is `hostKeyFingerprint`; a taken name answering 409; a deleted machine reading 404 or a
 `deleted` record; sshd's port 22 being the one vendor listener; `minimal` being on every paid plan; the 8 KiB metadata
 bound counting compact JSON; a silent SSH channel holding 75 s; and root making a network namespace.
+
+## Freestyle
+
+```ts
+import { providerFor } from "@parcha/agentrun-computer";
+
+// The key is the caller's to pass (serve's FREESTYLE_API_KEY); the machines dial the server's public address.
+const freestyle = await providerFor("freestyle", { apiKey, dial: { url: publicUrl, tokens, hub } });
+const image = await freestyle.prepareImage(); // the sh- id of agentrun-box-<recipe hash>, found or built in the account
+```
+
+A Freestyle computer is a [Freestyle](https://www.freestyle.sh/docs/vms.md) VM with a kernel of its own. It starts from
+one of:
+- the box image's snapshot in the key's account, slug `agentrun-box-<recipe hash>`;
+- another snapshot, by its `sh-` id or its slug;
+- a public snapshot, as `{owner}/{slug}`.
+
+Freestyle's base snapshots (`freestyle/...`) have no `agentrun-dial`, so they're refused. `prepareImage()` finds the box
+snapshot, or builds it once on `freestyle/ubuntu`, as [PROVIDERS.md](PROVIDERS.md#machines-that-dial-in) says. It is a sandbox alone, and its machines dial the server (facts.connect `"dial"`): Freestyle's exec answers once
+the command ends, and its SSH gateway publishes no host key to pin. Freestyle runs on the shared machine-host adapter:
+`src/freestyle.ts` is its `MachineHost`, over the Freestyle API (`https://api.freestyle.sh/v5`, `Authorization: Bearer
+<key>`) with `fetch` and the shared REST client, no SDK.
+
+| MachineHost | Freestyle |
+| --- | --- |
+| `create` | `POST /v5/vms` with the request's name as `slug`, the snapshot as `snapshotId`, the packed labels as `metadata`, `ttlSeconds` at the backstop, `autoDeleteSeconds: 0`, `automaticRestart: false` and a firewall that allows public egress; a 409 is a taken slug where the slug reads a VM (`exists`), else no capacity (`limit`). Then `GET /v5/vms/{id}` until it reads `running`, and one `POST /v5/vms/{id}/exec-await` as root that writes the launch script and starts `agentrun-dial` under `setsid`, with the boot env as the command's env, never sent again once it may have run. A create that fails after the POST deletes the VM by its id, and its error is never a refusal |
+| `get` | `GET /v5/vms/{id}`: starting is starting, running is running, pausing, paused and stopped are stopped, another state stopped with a why; a 404 is none |
+| `list` | `GET /v5/vms?metadata=<name>:<value>,...`, every page by `offset`, then the asked labels kept here |
+| `delete` | `DELETE /v5/vms/{id}`, a 404 done |
+| `dialLog`, `dialExit`, `redial` | `exec-await` reads of `agentrun-dial`'s log and exit, and its start again with create's env, from the creating process alone |
+
+No `exec` or `upload` (the machine dials) and no `extend` (the janitor moves the deadline label). `check()` takes a
+snapshot by id or slug or a public `{owner}/{slug}` and no size (a VM has its snapshot's). `LIMIT_EXCEEDED` is a
+`limit`; `UNAUTHORIZED` and `FORBIDDEN` are `denied`. The daemon user can't be uid 1000, the VM user's. Every call,
+retries included, ends at its caller's bound or abort. Output that echoes the dial token never reaches an error: it's
+shown as `<AGENTRUN_ATTACH_TOKEN>`.
+
+`install.sh` builds on Freestyle's Ubuntu 24.04 base. Ubuntu has no `firefox-esr`, so its `desktop` step takes it from
+Mozilla's APT repository.
+
+Unverified until the live run:
+- exec-await's env reaches its command, run as root;
+- a process exec-await detached with `setsid` lives on after the call;
+- a call that asks for no background request is answered inline;
+- a taken slug answers 409, and a 409 with no VM under the slug means no capacity;
+- a deleted VM reads 404;
+- the metadata filter matches every pair, and metadata keys take the packed names;
+- the VM is amd64 with its own kernel, where root makes a network namespace;
+- the public-egress rule lets the VM resolve names;
+- a command of some 20 KB is taken whole;
+- a VM booted from a snapshot of a running VM starts `agentrun-dial` cleanly;
+- a snapshot found by its slug is ready to boot.
 
 ## Conformance
 

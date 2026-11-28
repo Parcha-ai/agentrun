@@ -25,8 +25,8 @@ documented calls, not from written code. The size column is an estimate, and siz
 
 Of 31 rows (27 vendors; Google, Fly.io, Beam and boxes.dev have two rows each): 0 clean, 5 fit if unverified facts hold,
 16 need a workaround, 10 are blocked. Render's row is built since (`src/render.ts`, a dial sandbox), and so are
-Vercel's (`src/vercel.ts`), Fly.io Sprites' (`src/sprites.ts`) and InstaBox's (`src/instabox.ts`), hosted sandboxes
-whose unverified facts wait on their live runs.
+Vercel's (`src/vercel.ts`), Fly.io Sprites' (`src/sprites.ts`), InstaBox's (`src/instabox.ts`) and Freestyle's
+(`src/freestyle.ts`, a dial sandbox), hosted sandboxes whose unverified facts wait on their live runs.
 
 | Vendor | Rents | Fit | Size (estimate) | Shared pieces it would use |
 | --- | --- | --- | --- | --- |
@@ -44,7 +44,7 @@ whose unverified facts wait on their live runs.
 | [DigitalOcean MicroVMs](https://docs.digitalocean.com/products/microvms) | a microVM running one OCI image | blocked (the idle pause can't be switched off; exec would also need a shim of ours over the pty console) | about 300 if the pause could be switched off | [packed labels][pl], [prepareImage][pi] |
 | [Fly Machines](https://docs.fly.io/machines/api/machines-resource) | KVM microVMs from an OCI image | blocked (`exec`: answers once the command ends) | n/a | none |
 | [Fly.io Sprites](https://docs.fly.io/sprites) | persistent Linux VMs that sleep when idle | built (`src/sprites.ts`, a sandbox alone: no image or snapshot a create can name, so no desktop or Archil; `extend` left out; unverified until the live run: amd64, a label string's 64 bytes, a taken name's 409, root and its network namespace, 75 s of exec silence, an exec keeping a sprite awake) | 304, built | [framedExec][fe], [packed labels][pl] |
-| [Freestyle VMs](https://www.freestyle.sh/docs/vms.md) | Linux VMs | needs a workaround (a per-VM SSH identity made and deleted outside create, delete and the sweep) | about 280 | [ssh-exec][se], [packed labels][pl], [prepareImage][pi] |
+| [Freestyle VMs](https://www.freestyle.sh/docs/vms.md) | Linux VMs | built (`src/freestyle.ts`, a dial sandbox: its SSH gateway publishes no host key to pin and its exec answers once the command ends, so one exec as root starts agentrun-dial, the boot env its env, and the VM dials AgentRun; prepareImage builds the box image's snapshot on freestyle/ubuntu once per account; unverified until the live run: exec's env and a setsid process outliving the call, a taken slug's 409, a deleted VM's 404, the metadata filter, amd64 and root's network namespace) | 576, built | [dial-out][dl], [packed labels][pl], [backstopAt][bs], [prepareImage][pi] |
 | [Google Agent Platform sandboxes](https://docs.cloud.google.com/gemini-enterprise-agent-platform/scale/sandbox?hl=en) | Google-managed gVisor containers | blocked (`exec`: one-shot, not root) | n/a | none |
 | [Google GKE Agent Sandbox](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/agent-sandbox) | gVisor pods on the user's cluster | needs a workaround (a Kubernetes client and GKE auth in the host; unverified: root makes a network namespace under GKE's gVisor, the exec stream has no idle cut) | 300-380 | [framedExec][fe], [packed labels][pl], [prepareImage][pi] |
 | [Hugging Face Sandboxes](https://huggingface.co/docs/huggingface_hub/main/concepts/sandbox) | a VM per Job | blocked (network fence: no nested namespaces, per the vendor's docs) | about 240 if the fence held | [ssh-exec][se], [packed labels][pl], [backstopAt][bs], [prepareImage][pi] |
@@ -266,16 +266,32 @@ provider spec.
 ### Freestyle VMs
 
 - **Rents:** full Linux VMs with a guest kernel ([VMs](https://www.freestyle.sh/docs/vms.md)).
-- **Exec:** SSH through Freestyle's proxy ([SSH](https://www.freestyle.sh/docs/vms/ssh.md)), with
-  [`SshExec`](PROVIDERS.md#exec-shapes-that-work). The login is a per-VM identity and token, which the host makes at
-  create and deletes at delete, outside the adapter's sweep.
-- **Labels and lifetime:** metadata, packed (`labels: { packed }`); a TTL set at create and moved by update
-  ([lifecycle](https://www.freestyle.sh/docs/vms/lifecycle.md)).
-- **Image:** the box image built on Freestyle's base and kept as a snapshot in [prepareImage](PROVIDERS.md#wire-it-up)
-  ([base snapshots](https://www.freestyle.sh/docs/vms/base-snapshots.md)).
-- **Open:** ours, a pattern for a per-machine credential, and a word for isolation when a vendor names no hypervisor.
-  Unverified: an exec channel without a pty that holds 75 s of silence through the proxy, root's network namespace,
-  `install.sh` on the base, the status of a taken name.
+- **Exec:** none; the VM [dials AgentRun](PROVIDERS.md#machines-that-dial-in). Freestyle's SSH gateway takes a token
+  in the username and publishes no host key to pin ([SSH](https://www.freestyle.sh/docs/vms/ssh.md)), and its REST exec
+  (`POST /v5/vms/{id}/exec-await`) answers once the command ends, its stdin given whole. Create waits for the VM to run,
+  then one exec-await as root starts agentrun-dial detached (`setsid`), with the boot env as the command's env, so the
+  token is never written in the VM.
+- **Labels and lifetime:** metadata (64 entries, keys and values at most 63 characters), packed (`labels: { packed }`);
+  the listing filters by metadata pairs. `ttlSeconds` is set at create to the backstop, the VM is ephemeral
+  (`autoDeleteSeconds: 0`) and never restarted, and the janitor ends it at its deadline
+  ([lifecycle](https://www.freestyle.sh/docs/vms/lifecycle.md)). A 409 create is a taken slug or no capacity: the
+  slug's read tells them apart.
+- **Image:** the box image's snapshot in the key's account, slug `agentrun-box-<recipe hash>`.
+  [prepareImage](PROVIDERS.md#wire-it-up) finds it, or builds it once the way Morph's is built: boot Freestyle's Ubuntu
+  base ([base snapshots](https://www.freestyle.sh/docs/vms/base-snapshots.md)), run `install.sh` detached, poll its exit
+  file, and snapshot the VM. There is no OCI import, and no create field makes a snapshot public.
+- **Built:** `src/freestyle.ts`, key `FREESTYLE_API_KEY`. Its tests run on a fake of the REST API, through the dial to
+  the daemon's hello, the provider's Core cases and the snapshot build. No `exec`, `upload` or `extend`.
+- **Unverified until the live run:**
+  - exec-await's env reaching its command as root;
+  - a process exec-await detached living on after the call;
+  - a call that asks for no background request being answered inline;
+  - a taken slug's 409;
+  - a deleted VM's 404;
+  - the metadata filter matching every pair;
+  - amd64 and root's `unshare -n`;
+  - the public-egress rule resolving names;
+  - a VM booted from a snapshot of a running VM.
 
 ### Google
 
@@ -539,7 +555,7 @@ The open gaps on our side, by how many rows they hold back:
 | No two-way exec stream: a computer that dials out to AgentRun instead | 9: Alibaba, AWS, Azure, Beam Sandbox, Cloudflare, DigitalOcean (if its caps cut the bridge), Fly Machines, Google Agent Platform, Kasm | planned |
 | Exec shapes `framedExec` doesn't take: a one-socket PTY, stdout and stderr on two feeds | 3: DigitalOcean, OpenSandbox (PTY); Runloop (two SSE feeds) | adapter helper |
 | An image that isn't one of [prepareImage](PROVIDERS.md#wire-it-up)'s paths: a deploy-time digest, or the vendor's agent as entrypoint | 4: Cloudflare, Blaxel, Baseten, Fly Sprites | docs and box |
-| One each: a per-machine credential (Freestyle); `e2b.ts` taking an API URL (Cube); an SDK that keeps keys process-wide (microsandbox) | 3 | adapter or docs |
+| One each: `e2b.ts` taking an API URL (Cube); an SDK that keeps keys process-wide (microsandbox) | 2 | adapter or docs |
 
 Two blocks are the vendor's to lift: DigitalOcean's auto-pause, which can't be switched off, and Hyperbrowser's sandbox
 record, which carries no name or label.
