@@ -203,40 +203,48 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
   // mode alone is held to publicMcpServerAt for every request of this claim. Nothing that changes in the store later (its
   // row removed so a shared one of the name shows through, the mode turned off) relaxes it; a change may only make a
   // request stricter.
-  const workspace = await options.store.runs.workspace(options.claim.runId);
-  const strictNow = async (url: string, server: string) => (await onPublicHttpsAlone(options.store, url)) && (await workspaceServer(options.store, workspace, server));
-  const strictAtClaim = new Set<string>();
-  for (const [server, pinned] of Object.entries(pin)) if (await strictNow(pinned.url, server)) strictAtClaim.add(server);
-  const gateway = mcpGateway({
-    pin,
-    credentials: step.credentials,
-    // Each request's address checked as the server checks it at a save (mcp-oauth.ts mcpServerAt), with the owner's
-    // private-network hosts read now, and dialled at the address checked: a name that resolves somewhere private since the
-    // save, or a host the owner no longer allows, is refused unsent. A URL on loopback is reached only by a runner told
-    // so by the local-install server beside it, in its own process (options.loopback): never by what a store says, so
-    // one host's local install never opens loopback for another host's runner on a shared store; and never at that
-    // server's own ports (options.own).
-    // A workspace's server that stands on the workspace public-https mode alone (mcp-api-only-origins.ts
-    // onPublicHttpsAlone), at the claim (strictAtClaim) or now, is held to publicMcpServerAt at each request instead,
-    // whatever its save checked: no private host the owner allows, no loopback, no cloud metadata name.
-    reach: async (url, signal, server) => {
-      const strict = strictAtClaim.has(server) || (await strictNow(url, server));
-      const at = strict ? await publicMcpServerAt(new URL(url), signal, network, options.own ?? []) : await mcpServerAt(new URL(url), signal, network, { allowed: await privateOAuthHosts(options.store), loopback: options.loopback === true, own: options.own ?? [] });
-      return "refused" in at ? { refused: at.refused } : { send: dialAt(network, at.address, options.fetch ?? fetch) as typeof fetch };
-    },
-    beforeCall: step.beforeCall,
-    work: options.work,
-    // fal's submission keys are scoped to the run (fal-price.ts falKeys): the same on every claim of it, so a retry after
-    // a resume still dedupes.
-    run: options.claim.runId,
-    commit: () => <T>(change: (tx: unknown) => Promise<T>) => options.harness.commit(change as never, BACKGROUND_CONTEXT) as Promise<T>,
-    ...(options.fetch ? { fetch: options.fetch } : {}),
-    ...(options.callBounds ? { bounds: options.callBounds } : {}),
-    capped: options.capped !== false,
-    ...(options.toolSettings !== undefined ? { filed: filedBy(options.toolSettings) } : {}),
-    redact,
-    ...(media ? { media: publicMedia(async () => (media.web ? fakeSaveOptions(media.web) : fetchOptions(media.env, FAUX_ENV)), media.slots) } : {}),
-  });
+  // The claim is open from here: a read or the gateway's construction that throws lets it go before the throw, since a
+  // caller handed no release could never let it go itself.
+  let gateway: ReturnType<typeof mcpGateway>;
+  try {
+    const workspace = await options.store.runs.workspace(options.claim.runId);
+    const strictNow = async (url: string, server: string) => (await onPublicHttpsAlone(options.store, url)) && (await workspaceServer(options.store, workspace, server));
+    const strictAtClaim = new Set<string>();
+    for (const [server, pinned] of Object.entries(pin)) if (await strictNow(pinned.url, server)) strictAtClaim.add(server);
+    gateway = mcpGateway({
+      pin,
+      credentials: step.credentials,
+      // Each request's address checked as the server checks it at a save (mcp-oauth.ts mcpServerAt), with the owner's
+      // private-network hosts read now, and dialled at the address checked: a name that resolves somewhere private since the
+      // save, or a host the owner no longer allows, is refused unsent. A URL on loopback is reached only by a runner told
+      // so by the local-install server beside it, in its own process (options.loopback): never by what a store says, so
+      // one host's local install never opens loopback for another host's runner on a shared store; and never at that
+      // server's own ports (options.own).
+      // A workspace's server that stands on the workspace public-https mode alone (mcp-api-only-origins.ts
+      // onPublicHttpsAlone), at the claim (strictAtClaim) or now, is held to publicMcpServerAt at each request instead,
+      // whatever its save checked: no private host the owner allows, no loopback, no cloud metadata name.
+      reach: async (url, signal, server) => {
+        const strict = strictAtClaim.has(server) || (await strictNow(url, server));
+        const at = strict ? await publicMcpServerAt(new URL(url), signal, network, options.own ?? []) : await mcpServerAt(new URL(url), signal, network, { allowed: await privateOAuthHosts(options.store), loopback: options.loopback === true, own: options.own ?? [] });
+        return "refused" in at ? { refused: at.refused } : { send: dialAt(network, at.address, options.fetch ?? fetch) as typeof fetch };
+      },
+      beforeCall: step.beforeCall,
+      work: options.work,
+      // fal's submission keys are scoped to the run (fal-price.ts falKeys): the same on every claim of it, so a retry after
+      // a resume still dedupes.
+      run: options.claim.runId,
+      commit: () => <T>(change: (tx: unknown) => Promise<T>) => options.harness.commit(change as never, BACKGROUND_CONTEXT) as Promise<T>,
+      ...(options.fetch ? { fetch: options.fetch } : {}),
+      ...(options.callBounds ? { bounds: options.callBounds } : {}),
+      capped: options.capped !== false,
+      ...(options.toolSettings !== undefined ? { filed: filedBy(options.toolSettings) } : {}),
+      redact,
+      ...(media ? { media: publicMedia(async () => (media.web ? fakeSaveOptions(media.web) : fetchOptions(media.env, FAUX_ENV)), media.slots) } : {}),
+    });
+  } catch (error) {
+    held.abort();
+    throw error;
+  }
   const catalog = new Map<string, string>();
   const declared = new Map<string, ReadonlySet<string>>();
   const tools: HostTool[] = [];
