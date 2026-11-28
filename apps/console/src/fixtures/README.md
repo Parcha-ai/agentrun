@@ -8,7 +8,7 @@ They are kept in step with the contract by editing, not by recording again: when
 required, it is added to every fixture that answers that shape, with the value today's server sends on the faux model.
 That is how a run's `place` (`{"mode": "runner"}`) and capabilities' `places` (with `default_place`) and `learning` came
 in on 2026-11-11; `default_place` is null since 2026-11-25, as such a server (no box, and no shell on its runner) sends it,
-with `default_reason` (lib/place.test.ts reads it). No other test checks the fixtures against the document, so an edit to the contract that changes a shape
+with `default_reason` (lib/place.test.ts reads it). A run's `learning_work` came in on 2026-11-26 as `{"state": "none"}` with no runs, deadline or end: no run here started learning work. No other test checks the fixtures against the document, so an edit to the contract that changes a shape
 these files hold edits them in the same change. Keep the rest as recorded.
 
 Names: `run.<status>.<state>.<n>` is a run in that status and state, with `.timeline` and `.files` for the same run.

@@ -5,6 +5,7 @@
 // first ones watch the process's unhandled rejections or set its clock, so they run alone.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, test } from "node:test";
@@ -356,9 +357,15 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     t.after(() => stopped || first.close());
     let api = client(first.baseUrl, first.token);
     assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
-    const run = await startRun(api, "soon", "Answer soon.");
+    // The run answers only once the case makes `gate`, so it is working whenever the first read comes. Before, it answered
+    // 1.5 s in on its own, and a starved runner's first read (CI under load) found it already completed, never working.
+    const gate = join(await scratch(t), "answer");
+    const run = await startRun(api, "soon", `Answer once ${gate} exists.`);
+    // The first read comes late, as on a starved runner: the run is still working then.
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
     await follow(api, run.run_id, ["working"]);
     // The stop drains the run's turn: it answers, and is carried back, while the server closes.
+    writeFileSync(gate, "");
     await first.close();
     stopped = true;
     const next = await startWithRunner(t, { data, port: 0, faux: FAUX, drainTimeout: "5s" });

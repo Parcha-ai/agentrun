@@ -40,6 +40,7 @@ import { type Handed, handToHost, HookFailed, type HookFiring, LAUNCH_HOOK_LATE_
 import { MAX_EVERY_S } from "./trigger-schedule.js";
 import type { GivenSecret } from "./trigger-signatures.js";
 import { ID, IDEMPOTENCY_TTL_S, isObject, type Json, unknownFields } from "./validate.js";
+import { outsideWorkspace } from "./workspace-scope.js";
 
 export { MAX_EVERY_S, MIN_EVERY_S } from "./trigger-schedule.js";
 
@@ -418,7 +419,10 @@ export class Triggers {
 
   constructor(private readonly deps: TriggerDeps) {
     this.store = deps.store;
-    this.clock = deps.clock ?? REAL_CLOCK;
+    // The engine's one timer is the server's, whatever request armed it (a trigger made in a workspace): each tick it
+    // fires runs as no request's (workspace-scope.ts), as does each firing it drives (inTurn).
+    const clock = deps.clock ?? REAL_CLOCK;
+    this.clock = { now: () => clock.now(), arm: (fire, ms) => clock.arm(() => outsideWorkspace(fire), ms) };
     this.adapters = deps.adapters ?? TRIGGER_ADAPTERS;
     // A pushed source's own hook path is its id, beside the trigger ids a hook path also names: none looks like one.
     const shaped = this.adapters.find((a) => a.id.startsWith("trg_"));
@@ -915,7 +919,7 @@ export class Triggers {
   private inTurn(triggerId: string, key: string): Promise<void> {
     const known = this.driving.get(key);
     if (known) return known;
-    const turn = (this.turns.get(triggerId) ?? Promise.resolve()).then(() => this.drive(triggerId, key));
+    const turn = (this.turns.get(triggerId) ?? Promise.resolve()).then(() => outsideWorkspace(() => this.drive(triggerId, key)));
     this.turns.set(triggerId, turn);
     this.driving.set(key, turn);
     void turn.finally(() => {

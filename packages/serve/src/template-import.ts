@@ -7,8 +7,9 @@
 import { packageSha256 } from "./agent-package.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { type Store, UPLOAD_PREFIX } from "./store/index.js";
-import { fetchPackageFiles, type GithubReach, type GithubSource, ImportRefused, IMPORT_LIMITS, parseSource, resolveSha } from "./template-source.js";
+import { fetchPackageFiles, type GithubReach, type GithubSource, hiddenPath, ImportRefused, IMPORT_LIMITS, parseSource, resolveSha } from "./template-source.js";
 import { manifestOf } from "./manifest.js";
+import { outOfScope, workspaceNow } from "./workspace-scope.js";
 import { checkWorkflowPackage, MANIFEST, memoryFiles, type Package, PackageError, readPackage, type TemplateRegistry } from "./templates.js";
 import { isObject, type Json, unknownFields } from "./validate.js";
 
@@ -60,8 +61,8 @@ function uploadFiles(raw: unknown): Map<string, Buffer> {
   for (const [path, data] of read) {
     if (NOT_PLAIN(path)) throw new ImportRefused("package", `The package holds ${JSON.stringify(path)}, a path that is not plain: refused.`);
     // A hidden file or folder (.env, .DS_Store, .cache/) is no part of a package (templates.ts reads none): left out here,
-    // before anything is counted, stored or hashed, so a client's .env is never kept.
-    if (path.split("/").some((part) => part.startsWith("."))) continue;
+    // before anything is counted, stored or hashed, so a client's .env is never kept. An import from GitHub skips it too.
+    if (hiddenPath(path)) continue;
     if (files.has(path)) throw new ImportRefused("package", `The package holds ${JSON.stringify(path)} twice: refused.`);
     kept += data.length;
     if (kept > IMPORT_LIMITS.packageBytes) throw new ImportRefused("package", `The package's files are over the ${IMPORT_LIMITS.packageBytes} bytes an import keeps.`);
@@ -173,9 +174,9 @@ async function uploadTemplate(deps: TemplateImportDeps, raw: unknown, dryRun: bo
   } catch (error) {
     refusalOf(error);
   }
-  const replaced = deps.registry.get(pkg.id)?.origin?.sha ?? null;
+  const replaced = await replacedOf(deps, pkg.id);
   if (dryRun) return { status: 200, pkg, trusted: true, replaced };
-  await deps.store.importedTemplates.put({ id: pkg.id, source: pkg.origin!.source, sha: pkg.origin!.sha, publisher: "", files: Object.fromEntries([...files].map(([path, data]) => [path, data.toString("base64")])) });
+  await keep(deps, { id: pkg.id, source: pkg.origin!.source, sha: pkg.origin!.sha, publisher: "", files: Object.fromEntries([...files].map(([path, data]) => [path, data.toString("base64")])) });
   deps.registry.put(pkg);
   return { status: 201, pkg, trusted: true, replaced };
 }
@@ -199,16 +200,40 @@ export async function importTemplate(deps: TemplateImportDeps, raw: unknown, sig
   } catch (error) {
     refusalOf(error);
   }
-  const replaced = deps.registry.get(source.id)?.origin?.sha ?? null;
+  const replaced = await replacedOf(deps, source.id);
   const isTrusted = await trusted(deps, source.owner);
   if (dryRun) return { status: 200, pkg, trusted: isTrusted, replaced };
   if (!isTrusted && !trustPublisher) {
     throw invalid([{ field: "trust_publisher", reason: "missing", message: `${source.owner} has published no package this server has imported yet: read the package (a dry run shows it whole), then import it again with trust_publisher: true to say you trust ${source.owner}.`, fix: "Send trust_publisher: true." }]);
   }
   if (!isTrusted) await trust(deps, source.owner);
-  await deps.store.importedTemplates.put({ id: pkg.id, source: pkg.origin!.source, sha: pkg.origin!.sha, publisher: pkg.origin!.publisher, files: Object.fromEntries([...files].map(([path, data]) => [path, data.toString("base64")])) });
+  await keep(deps, { id: pkg.id, source: pkg.origin!.source, sha: pkg.origin!.sha, publisher: pkg.origin!.publisher, files: Object.fromEntries([...files].map(([path, data]) => [path, data.toString("base64")])) });
   deps.registry.put(pkg);
   return { status: 201, pkg, trusted: true, replaced };
+}
+
+/** An import's refusal of a package name held outside its workspace: a scoped import's, of a name another workspace or
+ *  the operator holds; an unscoped one's, of a name a workspace holds, which the operator deletes first to replace. */
+const nameTaken = (id: string) =>
+  new ApiError("name_taken", workspaceNow() !== undefined
+    ? `A template package named ${id} is already on this server, outside this workspace: give the package another name in its manifest.`
+    : `A template package named ${id} is already on this server, imported in a workspace: an import with no workspace never replaces it. Delete it first (DELETE /v2/templates/${id}), or give the package another name in its manifest.`);
+
+/** The sha of the package an import of `id` replaces, or null. In a workspace (workspace-scope.ts), a package of that id
+ *  another workspace imported, or an unscoped request did, or one bundled here, is never replaced: the import is 409.
+ *  Unscoped, one a workspace imported is never replaced either. */
+async function replacedOf(deps: Pick<TemplateImportDeps, "registry" | "store">, id: string): Promise<string | null> {
+  const held = deps.registry.get(id);
+  if (!held) return null;
+  const workspace = (await deps.store.importedTemplates.workspaces()).get(id);
+  if (workspaceNow() !== undefined ? outOfScope(workspace) : typeof workspace === "string") throw nameTaken(id);
+  return held.origin?.sha ?? null;
+}
+
+/** The import's row written in the request's workspace. The write keeps a row of another workspace (or, scoped, of none)
+ *  (ImportedTemplates.put), so a name another import took between replacedOf's check and here is 409, as replacedOf's. */
+async function keep(deps: { store: { importedTemplates: Pick<Store["importedTemplates"], "put"> } }, row: Parameters<Store["importedTemplates"]["put"]>[0]): Promise<void> {
+  if (!(await deps.store.importedTemplates.put(row, workspaceNow()))) throw nameTaken(row.id);
 }
 
 /** A package made into an agent here as an imported template, from files this server wrote itself (a suggested agent's,
@@ -227,7 +252,7 @@ export async function applyImported<T>(
   const templates = deps.store.importedTemplates;
   const row = async () => (await templates.list()).find((one) => one.id === pkg.id);
   const before = await row();
-  await templates.put({ id: pkg.id, source: origin.source, sha: origin.sha, publisher: origin.publisher, files: Object.fromEntries([...files].map(([path, data]) => [path, data.toString("base64")])) });
+  await keep({ store: { importedTemplates: templates } }, { id: pkg.id, source: origin.source, sha: origin.sha, publisher: origin.publisher, files: Object.fromEntries([...files].map(([path, data]) => [path, data.toString("base64")])) });
   // The row as this call kept it, stamped by the store: the undo below touches it only while it is still this one.
   const kept = await row();
   let made: T;
@@ -249,11 +274,20 @@ export async function applyImported<T>(
 }
 
 /** DELETE /v2/templates/{id}: an imported package removed from the store and the registry. A bundled one is 403; none of
- *  that id, 404. Agents applied from it stay. */
+ *  that id, 404. Agents applied from it stay. In a workspace the store's delete is of that workspace's row alone, so a
+ *  delete whose ownership read went stale (another workspace imported the freed name since) is 404 and removes nothing;
+ *  the registry's copy goes only while it is still the package read here. The store's delete is of the row read here
+ *  alone: one an import of the id replaced since stands, kept and served, and a workspace's delete that lost to it is
+ *  404. */
 export async function deleteTemplate(deps: Pick<TemplateImportDeps, "registry" | "store">, id: string): Promise<void> {
   const pkg = deps.registry.get(id);
   if (!pkg) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
   if (pkg.origin === null) throw new ApiError("forbidden", `${id} ships with this server, so it can't be removed.`);
-  await deps.store.importedTemplates.remove(id);
-  deps.registry.remove(id);
+  const workspace = workspaceNow();
+  // The row as read here: the store's delete takes it only while it is still this one, so an import of the id that
+  // replaced it since (and puts its package in the registry after) is kept in both.
+  const row = await deps.store.importedTemplates.stamp(id);
+  const removed = row !== undefined && (await deps.store.importedTemplates.remove(id, workspace, row));
+  if (workspace !== undefined && !removed) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
+  if (deps.registry.get(id) === pkg) deps.registry.remove(id);
 }

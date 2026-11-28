@@ -10,6 +10,7 @@ import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { servedGraphView } from "../dist/graph-served.js";
 import { redacted, redactedCall, withheldWhole } from "../dist/key-refusal.js";
 import { withLiveTicker } from "../dist/runner/live-ticker.js";
+import { heldRedactor } from "../dist/runner/redact.js";
 import { prepareLaunch } from "../dist/runs-over-store.js";
 import { SdkRuns, sdkInbox } from "../dist/sdk/runs.js";
 import { viewOverStore } from "../dist/store-view.js";
@@ -157,6 +158,23 @@ test("a held value split by U+FFFF in a call's argument (as it stands, or JSON's
   assert.deepEqual(shows(JSON.stringify(read)), [], "the result");
   // Control: U+FFFF after the value's head with no rest after it keeps the call's arguments as they came.
   assert.deepEqual(rowOf(rowsOf("bash", { command: `echo ${HEAD}\uffff done` }, "ok"), "tool_use").tool_input, { command: `echo ${HEAD}\uffff done` });
+});
+
+test("a held value split by a terminal sequence or a backspace overstrike in a call's argument or its result: tool_input is withheld, its preview \"[redacted]\", the result \"[redacted]\", and the grader's prompt shows no half", () => {
+  for (const between of ["\u001b[0m", "\u001b[1;31m", "\u001b]0;t\u0007", "Z\b"]) {
+    const rows = rowsOf("bash", { command: `printf ${HEAD}${between}${REST}` }, "ok");
+    const use = rowOf(rows, "tool_use");
+    assert.equal(use.tool_input, undefined, JSON.stringify(between));
+    assert.equal(use.tool_input_preview, "[redacted]", JSON.stringify(between));
+    assert.deepEqual(shows(JSON.stringify(rows)), [], JSON.stringify(between));
+    assert.deepEqual(shows(promptOf(rows)), [], JSON.stringify(between));
+    const read = rowsOf("read", { path: "build.log" }, `see ${HEAD}${between}${REST} more`);
+    assert.equal(rowOf(read, "tool_result").tool_result_text, "[redacted]", JSON.stringify(between));
+    assert.deepEqual(shows(JSON.stringify(read)), [], JSON.stringify(between));
+  }
+  // Control: a coloured word after the value's head with no rest after it keeps the call's arguments as they came.
+  const plain = { command: `printf ${HEAD}\u001b[0m done` };
+  assert.deepEqual(rowOf(rowsOf("bash", plain, "ok"), "tool_use").tool_input, plain);
 });
 
 test("a held value whole in one argument is cut in place: tool_input keeps the call's shape (control)", () => {
@@ -350,7 +368,7 @@ async function liveArgsOf(args) {
   }), { tickMs: 3_600_000 });
   let release = () => {};
   const held = new Promise((resolve) => (release = resolve));
-  const loop = ticker.createLoop({ signal: new AbortController().signal, redact: { heldValues: () => SECRETS } });
+  const loop = ticker.createLoop({ signal: new AbortController().signal, redact: heldRedactor(Object.assign((text) => text, { heldValues: () => SECRETS })) });
   const started = loop.start({ runId: "run-1" });
   await ticker.close();
   release();

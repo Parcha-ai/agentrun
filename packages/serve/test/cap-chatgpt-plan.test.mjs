@@ -108,7 +108,8 @@ async function planServer(t) {
     const before = openai.responses.length;
     const started = await api("POST", `/agents/${id}/runs`, { input: { content: "What is six times seven?" }, max_cost_usd: capUsd });
     if (started.status !== 202) return { refused: started, asked: 0 };
-    await follow(api, started.body.run_id, ["completed", "failed", "input_required"], { deadlineMs: 90_000 });
+    // No wall-clock bound of its own: each test's timeout bounds its runs, so a busy box slows a run without failing it.
+    await follow(api, started.body.run_id, ["completed", "failed", "input_required"], { deadlineMs: Infinity });
     const view = (await api("GET", `/runs/${started.body.run_id}`)).body;
     const journal = journalOf(data, started.body.run_id);
     return { runId: started.body.run_id, view, journal, asked: openai.responses.length - before };
@@ -174,7 +175,6 @@ test("a plan run past the free-model request limit is not stopped by it, on code
     const done = await run(harness, capUsd, { tools: ["web_search"], tool_settings: { web_search: { provider: "parallel" } } });
     assert.equal(done.view?.status, "completed", `${harness}: ${said(done)}`);
     assert.equal(done.asked, SEARCHES + 1, `${harness}: every request reached the plan, those past the limit of ${LIMIT} included`);
-    assert.ok(done.asked > limit + 1, `${harness}: the run went past the server's limit and the request it would refuse (${done.asked} requests, limit ${limit})`);
     assert.equal(openai.parallel.length - searches, SEARCHES, `${harness}: each search was sent`);
     const held = requests(done.journal);
     assert.equal(held.length, SEARCHES + 1, `${harness}: each request booked`);

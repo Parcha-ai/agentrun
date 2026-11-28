@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ProblemCard } from "@/components/Problem";
 import { ListSkeleton } from "@/components/Skeleton";
-import { Button } from "@/components/ui";
+import { Button, Checkbox } from "@/components/ui";
 import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 import { wrappedCards } from "@/components/WrappedCards";
 import { harnessLabel } from "@/lib/agentForm";
@@ -70,11 +70,14 @@ export function WrappedPage({ v2, year, go, cards = wrappedCards }: { v2: Client
   const [data, setData] = useState<Wrapped | null>(null);
   const [error, setError] = useState<Problem | null>(null);
   const [tries, setTries] = useState(0);
+  const [leakShown, setLeakShown] = useState(false);
   useEffect(() => {
     const abort = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     setData(null);
     setError(null);
+    // The leak receipt is asked for again in each year: turned on for one, it is off in the next.
+    setLeakShown(false);
     const ask = () => v2.wrapped(shown, abort.signal).then(setData, (e: unknown) => {
       if (abort.signal.aborted) return;
       // A long home: the server goes on reading and says when to ask again. The skeleton stays until the year comes.
@@ -92,10 +95,17 @@ export function WrappedPage({ v2, year, go, cards = wrappedCards }: { v2: Client
   const modelTokens = data ? data.models.reduce((n, m) => n + m.tokens, 0) : 0;
   const harnessTokens = data ? data.harnesses.reduce((n, h) => n + h.tokens, 0) : 0;
 
-  const drawn = data ? WRAPPED_CARDS.map((card) => ({ card, node: cards(card, data) })).filter((c) => c.node !== null && c.node !== undefined && c.node !== false) : [];
-  const shownCards = drawn.length > 0 && (
+  const drawn = data ? WRAPPED_CARDS.map((card) => ({ card, node: cards(card, data, leakShown) })).filter((c) => c.node !== null && c.node !== undefined && c.node !== false) : [];
+  // The leak receipt is off until the person turns it on, and offered only for a year whose keys the import counted.
+  const offersLeak = Boolean(data?.secrets) && (data?.sessions ?? 0) > 0 && (data?.requests ?? 0) > 0;
+  const shownCards = (drawn.length > 0 || offersLeak) && (
     <section className={card} aria-labelledby="w-cards" data-cards>
       <h2 id="w-cards" className={heading}>Cards</h2>
+      {offersLeak && (
+        <div className="mt-2" data-leak-opt-in>
+          <Checkbox checked={leakShown} onChange={(e) => setLeakShown(e.target.checked)} label="Show the leak receipt" note="How many keys and tokens the import cut: counts only." />
+        </div>
+      )}
       <div className="mt-3 grid gap-4 md:grid-cols-2">{drawn.map(({ card: c, node }) => <div key={c.id}>{node}</div>)}</div>
     </section>
   );

@@ -359,6 +359,7 @@ __all__ = [
     "FeaturesTriggersWebhook",
     "FeaturesUsage",
     "FeaturesWebhooks",
+    "FeaturesWorkspaces",
     "File",
     "FileCreate",
     "FilePathString",
@@ -486,6 +487,9 @@ __all__ = [
     "GetObservationsResponseUsageDailyItem",
     "GetObservationsResponseUsageModelsItem",
     "GetOpenapiResponse",
+    "GetPricesResponse",
+    "GetPricesResponseBrowserItem",
+    "GetPricesResponseComputeItem",
     "GetRevisionSkillsResponse",
     "GetRunExportResponse",
     "GetRunExportResponseAgent",
@@ -582,6 +586,7 @@ __all__ = [
     "GetTemplateResponseTemplateMcpItemToolsItemPinValue",
     "GetTemplateResponseTemplateModel",
     "GetTemplateResponseTemplateModelChoicesItem",
+    "GetTemplateResponseTemplateModelTiersHere",
     "GetTemplateResponseTemplateOutput",
     "GetTemplateResponseTemplateToolPolicy",
     "GetTimelineResponse",
@@ -637,10 +642,14 @@ __all__ = [
     "GetWorkspaceArchilResponse",
     "GetWorkspaceArchilResponseSecret",
     "GetWrappedResponse",
+    "GetWrappedResponseCache",
+    "GetWrappedResponseCacheBreaks",
+    "GetWrappedResponseCacheExtraCostUsd",
     "GetWrappedResponseDaysItem",
     "GetWrappedResponseHarnessesItem",
     "GetWrappedResponseImportedItem",
     "GetWrappedResponseModelsItem",
+    "GetWrappedResponseSecrets",
     "GetWrappedResponseSourcesItem",
     "GetWrappedResponseTokens",
     "GradeRunBody",
@@ -682,6 +691,7 @@ __all__ = [
     "ImportTemplateResponseTemplateMcpItemToolsItemPinValue",
     "ImportTemplateResponseTemplateModel",
     "ImportTemplateResponseTemplateModelChoicesItem",
+    "ImportTemplateResponseTemplateModelTiersHere",
     "ImportTemplateResponseTemplateOutput",
     "ImportTemplateResponseTemplateToolPolicy",
     "InputIssue",
@@ -834,6 +844,7 @@ __all__ = [
     "ListTemplatesResponseTemplatesItemMcpItemToolsItemPinValue",
     "ListTemplatesResponseTemplatesItemModel",
     "ListTemplatesResponseTemplatesItemModelChoicesItem",
+    "ListTemplatesResponseTemplatesItemModelTiersHere",
     "ListTemplatesResponseTemplatesItemOutput",
     "ListTemplatesResponseTemplatesItemToolPolicy",
     "ListToolKeysResponse",
@@ -1065,6 +1076,7 @@ __all__ = [
     "RunFileList",
     "RunImportedFrom",
     "RunLearning",
+    "RunLearningWork",
     "RunLearningWorkflowsItem",
     "RunList",
     "RunNative",
@@ -1631,7 +1643,7 @@ class DefinitionPlace1(TypedDict):
 
 class DefinitionPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
 
 
 class _DefinitionComputerRequired(TypedDict):
@@ -1704,11 +1716,13 @@ class DefinitionToolSettingsAskPerson(TypedDict, total=False):
 class DefinitionToolSettingsWebFetch(TypedDict, total=False):
     provider: Literal["auto", "firecrawl-keyless", "kernel", "parallel"]
     permission: Literal["allow", "ask", "deny"]
+    jev: Literal["off"]
 
 
 class DefinitionToolSettingsWebSearch(TypedDict, total=False):
     provider: Literal["auto", "native", "firecrawl-keyless", "exa-keyless", "parallel", "off"]
     permission: Literal["allow", "ask", "deny"]
+    jev: Literal["off"]
 
 
 class DefinitionToolSettingsWebSave(TypedDict, total=False):
@@ -1908,6 +1922,7 @@ class AgentToolsItem(_AgentToolsItemRequired, total=False):
     provider_from: Literal["agent", "server", "default"]
     default_provider: str
     resolved: str
+    ceiling: str
 
 
 class AgentLearning(TypedDict):
@@ -2137,7 +2152,7 @@ class DefinitionInputPlace1(TypedDict):
 
 class DefinitionInputPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
 
 
 class _DefinitionInputComputerRequired(TypedDict):
@@ -2210,11 +2225,13 @@ class DefinitionInputToolSettingsAskPerson(TypedDict, total=False):
 class DefinitionInputToolSettingsWebFetch(TypedDict, total=False):
     provider: Literal["auto", "firecrawl-keyless", "kernel", "parallel"]
     permission: Literal["allow", "ask", "deny"]
+    jev: Literal["off"]
 
 
 class DefinitionInputToolSettingsWebSearch(TypedDict, total=False):
     provider: Literal["auto", "native", "firecrawl-keyless", "exa-keyless", "parallel", "off"]
     permission: Literal["allow", "ask", "deny"]
+    jev: Literal["off"]
 
 
 class DefinitionInputToolSettingsWebSave(TypedDict, total=False):
@@ -2545,6 +2562,7 @@ class GetAgentResponseToolsItem(_GetAgentResponseToolsItemRequired, total=False)
     provider_from: Literal["agent", "server", "default"]
     default_provider: str
     resolved: str
+    ceiling: str
 
 
 class GetAgentResponseLearning(TypedDict):
@@ -2888,7 +2906,7 @@ class ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem(_ListLe
 
 class _ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemExpectedItemRequired(TypedDict):
     field: str
-    known: Literal["grade", "unknown", "contradicts"]
+    known: Literal["grade", "correction", "unknown", "contradicts"]
 
 
 class ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemExpectedItem(_ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemExpectedItemRequired, total=False):
@@ -2952,7 +2970,7 @@ class ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItem(_L
 
 class _ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItemExpectedItemRequired(TypedDict):
     field: str
-    known: Literal["grade", "unknown", "contradicts"]
+    known: Literal["grade", "correction", "unknown", "contradicts"]
 
 
 class ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItemExpectedItem(_ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItemExpectedItemRequired, total=False):
@@ -3112,7 +3130,7 @@ class ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItem(_L
 
 class _ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemExpectedItemRequired(TypedDict):
     field: str
-    known: Literal["grade", "unknown", "contradicts"]
+    known: Literal["grade", "correction", "unknown", "contradicts"]
 
 
 class ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemExpectedItem(_ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemExpectedItemRequired, total=False):
@@ -3176,7 +3194,7 @@ class ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsIt
 
 class _ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItemExpectedItemRequired(TypedDict):
     field: str
-    known: Literal["grade", "unknown", "contradicts"]
+    known: Literal["grade", "correction", "unknown", "contradicts"]
 
 
 class ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItemExpectedItem(_ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItemExpectedItemRequired, total=False):
@@ -3527,10 +3545,12 @@ class Cost(_CostRequired, total=False):
     tokens: CostTokens
     learning_usd: float | None
     tools_usd: float | None
+    billable_usd: float | None
     all_in_usd: float | None
     compile_usd: float | None
     followup_usd: float | None
     shadow_usd: float | None
+    check_usd: float | None
     share_usd: float | None
     plan: CostPlan
 
@@ -4670,7 +4690,7 @@ class WriteHomeFileResponse(_WriteHomeFileResponseRequired, total=False):
 class GetLearningCorrectionsResponse(TypedDict):
     text: str
     etag: str
-    cap_bytes: Literal[2048]
+    cap_bytes: Literal[8192]
 
 
 class GetLearningCostResponse(TypedDict):
@@ -4703,6 +4723,7 @@ class GetLearningCostResponseRunsItem(_GetLearningCostResponseRunsItemRequired, 
     compile_usd: float | None
     followup_usd: float | None
     shadow_usd: float | None
+    check_usd: float | None
     share_usd: float | None
     not_served: Literal["cost_stop", "cut"] | None
 
@@ -5011,7 +5032,7 @@ class PutLearningCorrectionsBody(TypedDict):
 class PutLearningCorrectionsResponse(TypedDict):
     text: str
     etag: str
-    cap_bytes: Literal[2048]
+    cap_bytes: Literal[8192]
 
 
 class ConnectGitHubBody(TypedDict, total=False):
@@ -5325,6 +5346,7 @@ class _GetClaudeLoginResponseRequired(TypedDict):
 
 
 class GetClaudeLoginResponse(_GetClaudeLoginResponseRequired, total=False):
+    start_off: str
     refused: str
     account: GetClaudeLoginResponseAccount
     sign_in: GetClaudeLoginResponseSignIn
@@ -5476,6 +5498,28 @@ class GetModelGatewayResponseSecret(TypedDict):
     changed_at: str | None
 
 
+class GetPricesResponse(TypedDict):
+    compute: list[GetPricesResponseComputeItem]
+    browser: list[GetPricesResponseBrowserItem]
+
+
+class GetPricesResponseComputeItem(TypedDict):
+    provider: str
+    resource: Literal["vcpu", "memory", "gpu", "disk"]
+    gpu_type: str | None
+    unit: Literal["vcpu_second", "gib_second", "gpu_second", "gb_month"]
+    usd: str | None
+    source: Literal["setting", "list", "unpriced"]
+
+
+class GetPricesResponseBrowserItem(TypedDict):
+    provider: str
+    unit: Literal["hour"]
+    usd: str | None
+    minimum_s: int
+    source: Literal["setting", "list", "unpriced"]
+
+
 class GetSuggestionResponse(TypedDict):
     id: str
     repo: str
@@ -5620,8 +5664,9 @@ class ListComposioEventsResponseEventsItem(_ListComposioEventsResponseEventsItem
     instructions: str
 
 
-class ListComposioToolkitsBody(TypedDict):
+class ListComposioToolkitsBody(TypedDict, total=False):
     api_key: str
+    api_key_env: Literal["COMPOSIO_API_KEY"]
 
 
 class ListComposioToolkitsResponse(TypedDict):
@@ -5633,9 +5678,13 @@ class ListComposioToolkitsResponseToolkitsItem(TypedDict):
     name: str
 
 
-class ListComposioToolsBody(TypedDict):
-    api_key: str
+class _ListComposioToolsBodyRequired(TypedDict):
     toolkit: str
+
+
+class ListComposioToolsBody(_ListComposioToolsBodyRequired, total=False):
+    api_key: str
+    api_key_env: Literal["COMPOSIO_API_KEY"]
 
 
 class ListComposioToolsResponse(TypedDict):
@@ -5901,6 +5950,7 @@ class _RunRequired(TypedDict):
     kind: Literal["agentic", "workflow"]
     archived_at: str | None
     place: RunPlace1 | RunPlace2
+    learning_work: RunLearningWork
 
 
 class Run(_RunRequired, total=False):
@@ -6096,7 +6146,7 @@ class RunPlace1(TypedDict):
 
 class RunPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
 
 
 class _RunComputerRequired(TypedDict):
@@ -6214,6 +6264,13 @@ class RunImportedFrom(TypedDict):
 class RunTrigger(TypedDict):
     id: str
     firing_key: str
+
+
+class RunLearningWork(TypedDict):
+    state: Literal["none", "running", "ended"]
+    runs: list[str]
+    ended_at: str | None
+    deadline_at: str | None
 
 
 class RunWorkflow(TypedDict):
@@ -6909,6 +6966,7 @@ class _SignOutClaudeLoginResponseLoginRequired(TypedDict):
 
 
 class SignOutClaudeLoginResponseLogin(_SignOutClaudeLoginResponseLoginRequired, total=False):
+    start_off: str
     refused: str
     account: SignOutClaudeLoginResponseLoginAccount
     sign_in: SignOutClaudeLoginResponseLoginSignIn
@@ -6958,6 +7016,7 @@ class _StartClaudeLoginResponseRequired(TypedDict):
 
 
 class StartClaudeLoginResponse(_StartClaudeLoginResponseRequired, total=False):
+    start_off: str
     refused: str
     account: StartClaudeLoginResponseAccount
     sign_in: StartClaudeLoginResponseSignIn
@@ -7105,6 +7164,7 @@ class _TurnOffClaudeLoginResponseRequired(TypedDict):
 
 
 class TurnOffClaudeLoginResponse(_TurnOffClaudeLoginResponseRequired, total=False):
+    start_off: str
     refused: str
     account: TurnOffClaudeLoginResponseAccount
     sign_in: TurnOffClaudeLoginResponseSignIn
@@ -7157,6 +7217,7 @@ class _TurnOnClaudeLoginResponseRequired(TypedDict):
 
 
 class TurnOnClaudeLoginResponse(_TurnOnClaudeLoginResponseRequired, total=False):
+    start_off: str
     refused: str
     account: TurnOnClaudeLoginResponseAccount
     sign_in: TurnOnClaudeLoginResponseSignIn
@@ -8106,9 +8167,13 @@ class _GetRunLearningResponseObjectRequired(TypedDict):
     detail: str | None
     at: str
     seed: str | None
+    seed_failed: Literal["unreadable", "not_copied", "other_disk"] | None
+    seed_waited: Literal["ended", "timed_out"] | None
+    learned_chars: int
     merged: str | None
     workflows: list[GetRunLearningResponseObjectWorkflowsItem]
     corrections: int
+    dropped_lines: int
     problems: list[GetRunLearningResponseObjectProblemsItem]
     compiled: GetRunLearningResponseObjectCompiled | None
     draft_errors: list[str]
@@ -8198,6 +8263,7 @@ class _MessageCreateRequired(TypedDict):
 
 
 class MessageCreate(_MessageCreateRequired, total=False):
+    said: str
     model_key: str
     mcp_auth: dict[str, MessageCreateMcpAuthValue | ComposioRunBinding]
     keys: dict[str, str]
@@ -8521,7 +8587,7 @@ class GetRunUsageResponse(TypedDict):
     browser_sessions: list[GetRunUsageResponseBrowserSessionsItem] | None
     computer_intervals: list[GetRunUsageResponseComputerIntervalsItem] | None
     infra_usd: float | None
-    reason: Literal["running", "not_booked", "reopened"] | None
+    reason: Literal["running", "not_booked"] | None
 
 
 class _GetRunUsageResponseTotalRequired(TypedDict):
@@ -8548,6 +8614,7 @@ class _GetRunUsageResponseLinesItemRequired(TypedDict):
 
 
 class GetRunUsageResponseLinesItem(_GetRunUsageResponseLinesItemRequired, total=False):
+    absorbed: Literal["create_race"]
     so_far_usd: float
     unpriced: int
     upper_bound: Literal[True]
@@ -8859,6 +8926,7 @@ class Features(_FeaturesRequired, total=False):
     mcp_client: FeaturesMcpClient
     tool_permissions: bool
     webhooks: FeaturesWebhooks
+    workspaces: FeaturesWorkspaces
     api_keys: FeaturesApiKeys
     slack: FeaturesSlack
     triggers: FeaturesTriggers
@@ -8884,11 +8952,15 @@ class FeaturesRuns(_FeaturesRunsRequired, _FeaturesRunsOptional):
     pass
 
 
-class FeaturesMessages(TypedDict):
+class _FeaturesMessagesRequired(TypedDict):
     steer: bool
     answer: bool
     follow_up: bool
     steer_workflow_runs: bool
+
+
+class FeaturesMessages(_FeaturesMessagesRequired, total=False):
+    said: bool
 
 
 class _FeaturesTimelineRequired(TypedDict):
@@ -8957,6 +9029,13 @@ class FeaturesWebhooks(TypedDict):
     events: list[Literal["run.needs_input", "run.ended", "trigger.failed"]]
     signing: Literal["standard-webhooks/v1"]
     at_rest: Literal["sealed"]
+
+
+class FeaturesWorkspaces(TypedDict):
+    header: Literal["AgentRun-Workspace"]
+    enforced: bool
+    required_for_tokens: bool
+    routes: list[str]
 
 
 class FeaturesApiKeys(TypedDict):
@@ -9068,7 +9147,7 @@ class CapabilitiesPlaces(_CapabilitiesPlacesRequired, total=False):
 
 
 class _CapabilitiesPlacesBoxesItemRequired(TypedDict):
-    id: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
+    id: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
     available: bool
     state: Literal["ready", "unavailable"]
 
@@ -9086,7 +9165,7 @@ class CapabilitiesPlacesDefaultPlace1(TypedDict):
 
 class CapabilitiesPlacesDefaultPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
 
 
 class _CapabilitiesHarnessesItemRequired(TypedDict):
@@ -9662,6 +9741,7 @@ class GetTemplateResponseTemplate(TypedDict):
     computer: list[Literal["shell", "none"]] | None
     needs: list[str] | None
     computer_here: GetTemplateResponseTemplateComputerHere | None
+    model_tiers_here: GetTemplateResponseTemplateModelTiersHere
     category: Literal["engineering", "security", "sales", "marketing", "research", "finance", "operations", "compliance", "personal"] | None
     tags: list[str]
     mcp: list[GetTemplateResponseTemplateMcpItem]
@@ -9730,6 +9810,13 @@ class _GetTemplateResponseTemplateComputerHereComputerRequired(TypedDict):
 class GetTemplateResponseTemplateComputerHereComputer(_GetTemplateResponseTemplateComputerHereComputerRequired, total=False):
     provider: str
     needs: list[str]
+
+
+class GetTemplateResponseTemplateModelTiersHere(TypedDict):
+    harness: str
+    fast: str | None
+    strong: str | None
+    note: str | None
 
 
 class GetTemplateResponseTemplateMcpItem(TypedDict):
@@ -9816,6 +9903,7 @@ class ImportTemplateResponseTemplate(TypedDict):
     computer: list[Literal["shell", "none"]] | None
     needs: list[str] | None
     computer_here: ImportTemplateResponseTemplateComputerHere | None
+    model_tiers_here: ImportTemplateResponseTemplateModelTiersHere
     category: Literal["engineering", "security", "sales", "marketing", "research", "finance", "operations", "compliance", "personal"] | None
     tags: list[str]
     mcp: list[ImportTemplateResponseTemplateMcpItem]
@@ -9886,6 +9974,13 @@ class ImportTemplateResponseTemplateComputerHereComputer(_ImportTemplateResponse
     needs: list[str]
 
 
+class ImportTemplateResponseTemplateModelTiersHere(TypedDict):
+    harness: str
+    fast: str | None
+    strong: str | None
+    note: str | None
+
+
 class ImportTemplateResponseTemplateMcpItem(TypedDict):
     source: Literal["composio", "github", "url"]
     toolkit: str
@@ -9950,6 +10045,7 @@ class ListTemplatesResponseTemplatesItem(TypedDict):
     computer: list[Literal["shell", "none"]] | None
     needs: list[str] | None
     computer_here: ListTemplatesResponseTemplatesItemComputerHere | None
+    model_tiers_here: ListTemplatesResponseTemplatesItemModelTiersHere
     category: Literal["engineering", "security", "sales", "marketing", "research", "finance", "operations", "compliance", "personal"] | None
     tags: list[str]
     mcp: list[ListTemplatesResponseTemplatesItemMcpItem]
@@ -10018,6 +10114,13 @@ class _ListTemplatesResponseTemplatesItemComputerHereComputerRequired(TypedDict)
 class ListTemplatesResponseTemplatesItemComputerHereComputer(_ListTemplatesResponseTemplatesItemComputerHereComputerRequired, total=False):
     provider: str
     needs: list[str]
+
+
+class ListTemplatesResponseTemplatesItemModelTiersHere(TypedDict):
+    harness: str
+    fast: str | None
+    strong: str | None
+    note: str | None
 
 
 class ListTemplatesResponseTemplatesItemMcpItem(TypedDict):
@@ -12180,6 +12283,8 @@ class GetWrappedResponse(TypedDict):
     sources: list[GetWrappedResponseSourcesItem]
     imported: list[GetWrappedResponseImportedItem]
     unread_files: int
+    cache: GetWrappedResponseCache | None
+    secrets: GetWrappedResponseSecrets | None
 
 
 class GetWrappedResponseTokens(TypedDict):
@@ -12220,6 +12325,38 @@ class GetWrappedResponseSourcesItem(TypedDict):
 class GetWrappedResponseImportedItem(TypedDict):
     source: str
     runs: int
+
+
+class GetWrappedResponseCache(TypedDict):
+    runs: int
+    hit_rate: float | None
+    breaks: GetWrappedResponseCacheBreaks
+    extra_cost_usd: GetWrappedResponseCacheExtraCostUsd
+    unpriced_breaks: int
+
+
+class GetWrappedResponseCacheBreaks(TypedDict):
+    model: int
+    idle: int
+    compaction: int
+    edited: int
+    sidechain: int
+    unknown: int
+
+
+class GetWrappedResponseCacheExtraCostUsd(TypedDict):
+    model: float
+    idle: float
+    compaction: float
+    edited: float
+    sidechain: float
+    unknown: float
+
+
+class GetWrappedResponseSecrets(TypedDict):
+    runs: int
+    runs_holding: int
+    removed: int
 
 
 # Each operation as the runtime sends it, by operationId.
@@ -12312,6 +12449,7 @@ OPERATIONS: dict[str, Operation] = {
     "getGitHubConnection": Operation(method="GET", path="/integrations/github", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getLocalModel": Operation(method="GET", path="/settings/local-model", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getModelGateway": Operation(method="GET", path="/settings/model-gateway", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getPrices": Operation(method="GET", path="/settings/prices", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getSuggestion": Operation(method="GET", path="/suggestions/{suggestion_id}", path_params=("suggestion_id",), multi_segment=(), query=("name",), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getWorkspaceArchil": Operation(method="GET", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "gitHubCallback": Operation(method="GET", path="/integrations/github/callback", path_params=(), multi_segment=(), query=("code", "state"), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
@@ -12831,6 +12969,10 @@ class LocalResource(Group):
     def get_model_gateway(self, *, timeout: float | None = None) -> GetModelGatewayResponse:
         """The model gateway in force: the environment's, the one saved here, or none (GET /settings/model-gateway)."""
         return self._call("getModelGateway", (), None, None, timeout=timeout)
+
+    def get_prices(self, *, timeout: float | None = None) -> GetPricesResponse:
+        """The prices this server meters computer time and browser time at, with where each comes from (GET /settings/prices)."""
+        return self._call("getPrices", (), None, None, timeout=timeout)
 
     def get_suggestion(self, suggestion_id: str, *, name: str | None = None, timeout: float | None = None) -> GetSuggestionResponse:
         """One suggested agent whole: its instructions, the files a create adds, and whether GitHub lets it (GET /suggestions/{suggestion_id})."""

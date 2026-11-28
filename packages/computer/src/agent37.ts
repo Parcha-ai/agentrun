@@ -24,7 +24,7 @@ import { pemOf, type Ssh2Module, SshExec, SshTunnelError, type SshTunnel } from 
 import { ed25519PublicOf, newEd25519, type SshPublicKey } from "./hosted/ssh-key.js";
 import type { ProviderNote } from "./mount-archil.js";
 import { dateOf, DOMAIN, isWhole } from "./hosted/values.js";
-import type { CallContext, ComputerSpec, Refusal } from "./provider.js";
+import type { CallContext, ComputerResources, ComputerSpec, Refusal } from "./provider.js";
 import { type ComputerErrorCode, failFor, ok, type Result } from "./result.js";
 import { vendorSdk } from "./vendor-sdk.js";
 
@@ -50,6 +50,7 @@ export interface Agent37Instance {
 	image_digest?: string | null;
 	type?: string;
 	region?: string;
+	/** The shape: cpu in vCPUs, memory and disk in GB (docs: instances/object). */
 	resources?: { cpu?: number; memory?: number; disk?: number };
 	public_ports?: unknown[];
 	name?: string | null;
@@ -270,7 +271,22 @@ function stateOf(status: string): Machine["state"] | undefined {
 	return undefined;
 }
 
-/** An instance as the adapter reads a machine: its state (a status it does not know is gone, in words), labels, start. */
+/** A positive finite figure of Agent37's answer, else undefined (absent, zero or not a number: never guessed). */
+const figure = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined);
+
+/** What Agent37 says an instance was given (Machine.resources), the shape it bills by: its vCPUs, its memory (GB, as MB)
+ *  and its disk (GB), each where its answer says it (docs: instances/object, resources); none where it says nothing. */
+function resourcesOf(given: Agent37Instance["resources"]): { resources?: ComputerResources } {
+	const [cpus, memory, disk] = [figure(given?.cpu), figure(given?.memory), figure(given?.disk)];
+	const resources: ComputerResources = {
+		...(cpus === undefined ? {} : { cpus }),
+		...(memory === undefined ? {} : { memoryMb: memory * 1024 }),
+		...(disk === undefined ? {} : { diskGb: disk }),
+	};
+	return Object.keys(resources).length > 0 ? { resources } : {};
+}
+
+/** An instance as the adapter reads a machine: its state (a status it does not know is gone, in words), labels, start, size. */
 function machineOf(instance: Agent37Instance): Machine {
 	const state = stateOf(instance.status);
 	// A failed instance always carries a why, Agent37's or ours, so create stops on it as vendor, never as gone.
@@ -284,6 +300,7 @@ function machineOf(instance: Agent37Instance): Machine {
 		state: state ?? "gone",
 		...(created ? { createdAt: created } : {}),
 		...(why === undefined || (state !== undefined && state !== "gone") ? {} : { why }),
+		...resourcesOf(instance.resources),
 	};
 }
 

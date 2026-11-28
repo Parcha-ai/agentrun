@@ -12,6 +12,7 @@ import { ApiError } from "./errors.js";
 import { GRAPH_CACHE_BYTES, PartCache, servedGraphView } from "./graph-served.js";
 import { runGraph } from "./graph-view.js";
 import { checkedPath, decodedPath } from "./home-path.js";
+import { CUT_MS, cutInWorker, CutUnserved } from "./cut-pool.js";
 import { censusCut, censusDigest } from "./run-census.js";
 import { cutFileText } from "./run-file-cut.js";
 import { type RunCut, underCut } from "./run-cut.js";
@@ -62,6 +63,12 @@ export interface RunReadsDeps {
   readonly context: Context;
   /** The server's seal key: a run's census names each file by a MAC under it (run-census.ts fileMac). */
   readonly sealKey: Buffer | undefined;
+  /** How long a cut read waits for its file's cut, made in the cut worker (cut-pool.ts), before it is refused 503: CUT_MS
+   *  unless a test names less. */
+  readonly cutMs?: number;
+  /** What makes a cut read's cut: the server's cut worker (cutInWorker) unless a test names another, to see that the read
+   *  answers the worker's text and refuses what the worker refuses. */
+  readonly cut?: typeof cutInWorker;
 }
 
 /** A run's files, through its Workspace (listRunFiles): every file, path-sorted, cut at the cap. A run with no folder lists
@@ -115,7 +122,10 @@ export const WITHHELD_UNCOUNTED = "This run was handed secrets of its own, and i
 /** File `rel` of the run's `workspace` as UTF-8 text cut of everything the run's own cut holds (deps.cutValues, the set its
  *  timeline's calls are cut of: the server's keys, the keys a person saved, its secret stores' values, the sign-in refs
  *  the run was handed, and while its launch holds them what its caller handed it: its own model key, tool keys and MCP
- *  credentials), through redactSecrets over the whole text, each value and secret shape replaced by "[redacted]" in
+ *  credentials), through cutFileText (run-file-cut.ts: redactSecrets over the whole text) in the cut worker
+ *  (cut-pool.ts), off this server's event loop and under one deadline for the read (deps.cutMs, CUT_MS): past it, or
+ *  when the worker fails, the read is 503
+ *  (`unavailable`), never the text uncut. Each value and secret shape is replaced by "[redacted]" in
  *  place, and the text "[redacted]" whole when a value still shows in another form. A long run with no whitespace
  *  (compact JSON) is never blanked for its length. Once an end erased what its caller handed it, the run's census says
  *  where those sat (run-census.ts censusCut): a file still as counted is cut there too, and any other is withheld (403,
@@ -143,9 +153,29 @@ async function cutRunFile(store: RunReadsStore, runId: string, workspace: Worksp
     throw new ApiError("unsupported_media_type", "a cut read answers UTF-8 text, and this file's bytes are not");
   }
   if (text.includes("\u0000")) throw new ApiError("unsupported_media_type", "a cut read answers text, and this file holds a NUL byte");
-  const shown = await underCut(() => deps.cutValues(store, runId), async (cut): Promise<{ withheld: string } | { text: string }> => {
+  // The cut is made in the cut worker, off this server's event loop, under one deadline for the whole read: every cut
+  // underCut asks for, and every read of the run's cut and census around them. Past it, or when the worker fails, the read
+  // is refused 503, never answered uncut, and never answered late.
+  const timeMs = deps.cutMs ?? CUT_MS;
+  const until = Date.now() + timeMs;
+  const unmade = (why: string) => new ApiError("unavailable", `this file's cut was not made (${why}), and it is never served uncut: read it again`);
+  const lateRead = `the read did not finish within ${timeMs} ms`;
+  const cutText = (values: readonly string[], held: readonly (readonly [number, number])[] = []): Promise<string> => {
+    // Asked for past the deadline (the read has already been refused): no worker is started for it.
+    const left = until - Date.now();
+    if (left <= 0) return Promise.reject(unmade(lateRead));
+    return (deps.cut ?? cutInWorker)(text, values, Buffer.byteLength(text), held, left).catch((error: unknown) => {
+      if (error instanceof CutUnserved) throw unmade(error.message);
+      throw error;
+    });
+  };
+  let deadline: NodeJS.Timeout | undefined;
+  const late = new Promise<never>((_, reject) => {
+    deadline = setTimeout(() => reject(unmade(lateRead)), timeMs);
+  });
+  const made = underCut(() => deps.cutValues(store, runId), async (cut): Promise<{ withheld: string } | { text: string }> => {
     if (cut === "unreadable") return { withheld: WITHHELD_SIGN_IN };
-    if (cut.censusDigest === undefined) return { text: cutFileText(text, cut.values) };
+    if (cut.censusDigest === undefined) return { text: await cutText(cut.values) };
     // The run's end erased what its caller handed it: where those sat in this file is its census's to say. Read here, the
     // one read that cuts by it; the cut names it by digest, so a census written since withholds this answer and the cut
     // read again after it (underCut) builds it anew.
@@ -153,8 +183,10 @@ async function cutRunFile(store: RunReadsStore, runId: string, workspace: Worksp
     if (census === null || censusDigest(census) !== cut.censusDigest) return { withheld: WITHHELD_UNCOUNTED };
     const held = censusCut(census, rel, bytes, text, deps.sealKey);
     if (held === "unreadable") return { withheld: WITHHELD_UNCOUNTED };
-    return { text: cutFileText(text, cut.values, held) };
+    return { text: held === "whole" ? "[redacted]" : await cutText(cut.values, held) };
   });
+  // Whichever settles first. A read refused at its deadline leaves underCut to finish on its own, its answer dropped.
+  const shown = await Promise.race([made, late]).finally(() => clearTimeout(deadline));
   if ("withheld" in shown) throw new ApiError("forbidden", shown.withheld);
   const body = Buffer.from(shown.text);
   res.writeHead(200, {

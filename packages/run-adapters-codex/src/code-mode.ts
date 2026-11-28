@@ -11,8 +11,8 @@
 //  - gives the model the harness's note about an interrupted turn as a developer message, once per interrupted turn.
 import type { OwnCalls } from "@parcha/agentrun-kernel";
 import type { DriveContext, SessionState } from "./host/kernel.js";
-import type { SessionMachine } from "./host/process.js";
-import { boundResult, failureText, openTurn, recoveryNote, recoverySystemNote, recoveryUserTurn, toolKey, transcriptOf } from "./host/process.js";
+import type { ResultBudget, SessionMachine } from "./host/process.js";
+import { boundKey, boundResult, failureText, openTurn, recoveryNote, recoverySystemNote, recoveryUserTurn, toolKey, transcriptOf } from "./host/process.js";
 // cycle with harness.ts: read repairOutput only inside functions, never at module top level (pinned by "code mode and the harness
 // load in either order and the repair reads repairOutput"). A host loads harness.js first, so at that point none of its const bindings is set.
 import { repairOutput } from "./harness.js";
@@ -69,6 +69,9 @@ export interface CodeModeDeps {
   /** The host's record of each `exec` (SessionIO.ownCalls): its row from its rollout lines, and each nested call it makes
    *  named under it before the call reaches the gate. */
   ownCalls?: OwnCalls;
+  /** The bridge's budget (CodexHarnessOptions.resultBudget): a result handed Codex from the log is held to it as the
+   *  bridge holds one it runs. */
+  budget?: ResultBudget;
 }
 
 interface Dangling {
@@ -120,10 +123,14 @@ const failedText = (error: Parameters<typeof failureText>[0] | undefined): strin
 function factOf(state: SessionState, rolled: ReturnType<typeof completedNested>, tie: { callId: string; tool?: string }, told: ReadonlyMap<string, NestedFact["told"]> = new Map()): NestedFact {
   const e = state.effects.get(toolKey(tie.callId));
   const status = told.get(tie.callId);
+  // The bridge's record of the cut it handed Codex, if it cut the result: what settle compares the two records on.
+  const cut = state.effects.get(boundKey(tie.callId));
+  const bound = cut?.status === "completed" ? (cut.output as { kept?: unknown; whole?: unknown } | null) : undefined;
+  const lengths = bound && typeof bound.kept === "number" && typeof bound.whole === "number" ? { bound: { kept: bound.kept, whole: bound.whole } } : {};
   return {
     callId: tie.callId,
     tool: e ? e.name.replace(/^tool\./, "") : (rolled.get(tie.callId)?.tool ?? tie.tool ?? "a tool"),
-    ...(e ? { store: { status: e.status === "completed" ? "completed" : e.status === "failed" ? "failed" : "started", text: e.status === "failed" ? failedText(e.error) : outputTextOf(e.output), ...(e.status === "completed" ? sentOf(e.output) : {}), ...(e.error?.interrupted ? { interrupted: true } : {}) } as NonNullable<NestedFact["store"]> } : {}),
+    ...(e ? { store: { status: e.status === "completed" ? "completed" : e.status === "failed" ? "failed" : "started", text: e.status === "failed" ? failedText(e.error) : outputTextOf(e.output), ...(e.status === "completed" ? sentOf(e.output) : {}), ...(e.error?.interrupted ? { interrupted: true } : {}), ...lengths } as NonNullable<NestedFact["store"]> } : {}),
     ...(rolled.has(tie.callId) ? { rollout: rolled.get(tie.callId)! } : {}),
     ...(status ? { told: status } : {}),
     ...(state.effects.get(parkedKey(tie.callId))?.status === "completed" ? { parked: true as const } : {}),
@@ -286,7 +293,7 @@ export function codeMode(deps: CodeModeDeps) {
     // A script's call of a tool with a value gets that value's JSON again, as the first call did (scriptAnswer): the script
     // parses it, so no words go before it.
     if (callId !== undefined && NESTED_CALL.test(callId) && again.sent !== undefined) return again.sent;
-    return boundResult(`Recorded earlier in this turn, not run again: ${again.text}`).text;
+    return boundResult(`Recorded earlier in this turn, not run again: ${again.text}`, deps.budget).text;
   }
 
   /** The cell a dangling call waited on, when it is code mode's `wait` (a function call named `wait` with a `cell_id`, and no host tool of
@@ -355,7 +362,7 @@ export function codeMode(deps: CodeModeDeps) {
      *  held to the host's bound as the tool bridge holds a call's result (`boundResult`): these come from the log, not through the bridge, and
      *  both repairs (with a recovery note and without) inject what this leaves. A recovered script's output (a cut-off exec's, a resumed
      *  `wait`'s) quotes each finished call's result as the script was handed it and holds its whole to its own bound
-     *  (scripts.ts EXEC_RECOVERY_MAX_CHARS); on a resume, the calls it tells the outcome of are recorded for the note (SHOWN_STREAM). `resume`: the open turn a recovery note resumes, whose
+     *  (scripts.ts recoveryMaxChars, at the session's window); on a resume, the calls it tells the outcome of are recorded for the note (SHOWN_STREAM). `resume`: the open turn a recovery note resumes, whose
      *  parked nested calls run now; the repair of an ended turn (repairUnnoted) only tells, and runs nothing. */
     async recoverItems(items: Record<string, unknown>[], dangling: readonly Dangling[], lines: readonly string[], since: number, resume = false): Promise<void> {
       const ties = (await journal.read<Tie>(NESTED_STREAM)).map((r) => r.data);
@@ -403,10 +410,15 @@ export function codeMode(deps: CodeModeDeps) {
       // The exec each dangling `wait`'s cell belongs to, as the rollout has it.
       const yielders = new Scripts();
       for (const line of lines) yielders.note(line);
-      // The outputs built here hold their quoted results to their own bound (scripts.ts EXEC_RECOVERY_MAX_CHARS): every other is
+      // The outputs built here hold their quoted results to their own bound (scripts.ts recoveryMaxChars, at the session's window): every other is
       // held to the host's below. The calls whose outcome they tell, for the turn's recovery note.
       const built = new Set<number>();
       const shown: string[] = [];
+      // Each output is one result the model reads in this turn: it claims its room in the turn's budget (the answer's facts,
+      // taken back from the journal by a new process), as a call through the bridge does, and is held to that claim.
+      const turn = deps.budget?.turn;
+      await turn?.ready();
+      const budgets = dangling.map((c) => (deps.budget && turn ? { ...deps.budget, maxChars: turn.claim(c.callId, deps.budget.contextWindow) } : deps.budget));
       dangling.forEach((c, i) => {
         if (!isExec(c)) {
           // Code mode's `wait` on a cell had started: the generic answer, that the call never started, would be false.
@@ -417,7 +429,7 @@ export function codeMode(deps: CodeModeDeps) {
           const done = state.effects.get(toolKey(c.callId));
           const pictured = cell === undefined && done?.status === "completed" ? imagesNoted(done.output) : undefined;
           const answered = cell !== undefined && i === carrier && yieldedTies.length > 0 ? yieldedTies.map((tie) => ({ ...factOf(state, rolled, tie, told), resumed: resumed.get(tie.callId)! })) : undefined;
-          const recovered = answered && cell !== undefined ? waitResumed(cell, answered) : undefined;
+          const recovered = answered && cell !== undefined ? waitResumed(cell, answered, budgets[i]) : undefined;
           const waited = cell === undefined ? undefined : recovered ? recovered.output : waitStoppedText(cell);
           if (recovered) {
             built.add(i);
@@ -431,14 +443,15 @@ export function codeMode(deps: CodeModeDeps) {
         }
         const { own, loose } = listed.get(c.callId)!;
         // Only the calls the output still tells after its bound: a call cut from it is not said to be above.
-        const recovered = execRecovery(own, loose);
+        const recovered = execRecovery(own, loose, budgets[i]);
         items[i] = { type: "custom_tool_call_output", call_id: c.callId, output: recovered.output };
         journal.append(RECOVERED_END_STREAM, { exec: c.callId, failed: recoveredFailed(own) });
         built.add(i);
         shown.push(...recovered.shown);
       });
       items.forEach((item, i) => {
-        if (!built.has(i) && typeof item.output === "string") item.output = boundResult(item.output).text;
+        if (!built.has(i) && typeof item.output === "string") item.output = boundResult(item.output, budgets[i]).text;
+        if (typeof item.output === "string") turn?.settle(dangling[i]!.callId, item.output.length);
       });
       if (resume && shown.length > 0) journal.append(SHOWN_STREAM, { since, callIds: shown });
       // Every record above is in the log before the outputs are injected.

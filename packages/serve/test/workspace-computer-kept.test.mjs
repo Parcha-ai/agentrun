@@ -834,6 +834,7 @@ test("a sandbox parked and resumed within 10 minutes is the same sandbox: no cre
   const said = [];
   const first = await one.claim(3);
   assert.equal(first.keeps, "sandbox", "the claim's sandbox is one a park keeps");
+  assert.equal(first.fresh, true, "one this claim started (pr-checkout.ts may hand it a token)");
   // What the run left in the sandbox outside its folder before the park (/tmp/outside-1), as the vendor's machine holds it.
   one.account.computers.get("c1").outside = "/tmp/outside-1";
   assert.equal(await first.park("approval"), true, "kept");
@@ -846,6 +847,7 @@ test("a sandbox parked and resumed within 10 minutes is the same sandbox: no cre
   assert.deepEqual(creates(one.account), ["c1"], "no create");
   assert.equal(resumed.computer.kind, "sandbox");
   assert.deepEqual([resumed.replaced, resumed.keeps], [undefined, "sandbox"], "not replaced (no replaced line, no note); kept again at a later park");
+  assert.equal(resumed.fresh, undefined, "not one this claim started: what an earlier claim left in it may still run, so no checkout is made in it");
   assert.equal(one.account.computers.get("c1").outside, "/tmp/outside-1", "the file outside the run folder is still there");
   assert.equal(said.length, 1);
   assert.equal(computerReadyWords(said[0]), "The sandbox is ready: Linux (amd64), from Docker. It's the same sandbox, as the wait left it.");
@@ -862,6 +864,7 @@ test("a sandbox resumed after 10 minutes is a new one: the kept one let go, said
   assert.deepEqual(creates(one.account), ["c1", "c2"], "a new sandbox");
   assert.deepEqual(deletes(one.account), ["c1"], "the kept one let go before it");
   assert.deepEqual(resumed.replaced, { kind: "sandbox", folderKept: false, lapsed: true });
+  assert.equal(resumed.fresh, true, "a new one, this claim's own start");
   assert.equal(said.length, 1, "said once");
   assert.equal(computerReadyWords(said[0]), "The sandbox is ready: Linux (amd64), from Docker. The sandbox wasn't kept: 10 minutes passed. It's a new sandbox: the one before is gone, with what was on it.");
   assert.equal(computerReplacedNote(resumed.replaced), "AgentRun server note: your computer was replaced. The earlier one is gone, with its files and processes. Check its files again before relying on them.");
@@ -1617,27 +1620,92 @@ test("a keep row written for a park that never followed is taken off at the clai
   assert.equal(JSON.stringify(await two.store.settings.get(key)), JSON.stringify(changed), "a row changed since is left");
 });
 
-test("a kept Docker sandbox its provider refuses to attach again (its proxy made before the egress bridge) is replaced: the run goes on, and its timeline says why in the provider's words", async () => {
-  const one = await server(SANDBOX);
-  await (await one.claim(3, {}, { holder: RUNNER_A })).park("approval");
-  const words =
-    "the computer c1 does not match this provider, so attach refuses it and it is left as it is: network: network allow, but its egress proxy c1-egress is on Docker's default bridge: an earlier release of this provider made it there, before the egress bridge agentrun-egress; delete the computer and create it again";
+/** The kept `c1` refused by its provider's attach in `words`, as Docker refuses one that no longer matches it; every
+ *  other machine attached as before. */
+function refuseAttach(one, words) {
   const attach = one.account.provider.attach;
   one.account.provider.attach = async (ref, context) => {
     if (ref.id !== "c1") return attach(ref, context);
     one.account.calls.push(["attach", ref.id]);
     return { ok: false, error: { code: "refused", message: words } };
   };
+}
+
+/** The provider's words never reach the person: no host path, no JSON, nothing of the refusal's own. */
+function plainOf(said) {
+  for (const part of ["/", "{", "[", "HostConfig", "does not match", "attach refuses", "left as it is", "egress", "r2-home"]) assert.ok(!said.includes(part), `no ${JSON.stringify(part)} in ${JSON.stringify(said)}`);
+}
+
+/** The Docker provider's refusal of a container kept by a runner whose home its computerd is bound from. */
+const DOCKER_MOUNTS_REFUSAL =
+  'the computer c1 does not match this provider, so attach refuses it and it is left as it is: HostConfig.Mounts: declared [{"Type":"bind","Source":"/tmp/wsb/a/r2-home/.cache/agentrun-computer/computerd-0123abcd","Target":"/opt/agentrun/computerd","ReadOnly":true}]';
+
+test("a kept Docker sandbox its provider refuses to attach again (its proxy made before the egress bridge) is replaced: the run goes on, its timeline says so in serve's own words, and the provider's go to the log alone", async () => {
+  const one = await server(SANDBOX);
+  await (await one.claim(3, {}, { holder: RUNNER_A })).park("approval");
+  const words =
+    "the computer c1 does not match this provider, so attach refuses it and it is left as it is: network: network allow, but its egress proxy c1-egress is on Docker's default bridge: an earlier release of this provider made it there, before the egress bridge agentrun-egress; delete the computer and create it again";
+  refuseAttach(one, words);
   one.clock.now = T0 + 60_000;
   const said = [];
-  const resumed = await one.claim(5, { hadComputer: async () => true, onConnected: (phase) => void said.push(phase) }, { holder: RUNNER_A });
+  const logged = [];
+  const resumed = await one.claim(5, { hadComputer: async () => true, onConnected: (phase) => void said.push(phase), log: (line) => void logged.push(line) }, { holder: RUNNER_A });
   assert.ok(one.account.calls.some(([verb, id]) => verb === "attach" && id === "c1"), "the kept one was tried");
   assert.deepEqual(creates(one.account), ["c1", "c2"], "a new sandbox");
   assert.deepEqual(deletes(one.account), ["c1"], "the refused one deleted as an older claim's");
   assert.equal(resumed.computer?.kind, "sandbox", "the claim gave the run a computer, never failed");
-  assert.deepEqual(resumed.replaced, { kind: "sandbox", folderKept: false, refused: words });
   assert.equal(said.length, 1, "said once");
-  assert.equal(computerReadyWords(said[0]), `The sandbox is ready: Linux (amd64), from Docker. The sandbox kept before could not be taken back: ${words}. It's a new sandbox: the one before is gone, with what was on it.`);
+  const ready = computerReadyWords(said[0]);
+  plainOf(ready);
+  assert.equal(ready, "The sandbox is ready: Linux (amd64), from Docker. The sandbox wasn't kept: it couldn't be taken back. It's a new sandbox: the one before is gone, with what was on it.");
+  assert.deepEqual(resumed.replaced, { kind: "sandbox", folderKept: false, refused: true });
+  assert.deepEqual(logged, [`run run-1's kept sandbox c1 could not be taken back, so the claim goes on on a new one: ${words}`], "the provider's words on the log alone");
+  assert.equal((await readKept(one.store.settings, "run-1"))?.ended, true, "its delete at the launch marked its row ended");
+  await resumed.release();
+});
+
+// The keeper gone (a runner's stop), and its Docker container on the engine the claiming runner shares: the claim tries
+// it all the same, and the provider refuses it (its computerd bound from the other runner's home). The person reads why
+// the kept one wasn't kept (its runner is gone), never the provider's refusal; the launch deletes it as an older
+// claim's, which ends its row; the run's end then removes the row, as a lapsed run's end does.
+test("a kept Docker sandbox whose runner is gone and whose take-back its provider refuses says the runner that kept it is gone, in no word of the provider's; its row reads ended once the launch deleted it, and the run's end removes it", async () => {
+  const { runEndComputers } = await import("../dist/workspace/run-end-computers.js");
+  const key = keptKeyOf("run-1");
+  const one = await server(SANDBOX);
+  await (await one.claim(3, {}, { holder: RUNNER_A })).park("approval");
+  refuseAttach(one, DOCKER_MOUNTS_REFUSAL);
+  one.clock.now = T0 + 60_000;
+  const said = [];
+  const logged = [];
+  const resumed = await one.claim(5, { hadComputer: async () => true, onConnected: (phase) => void said.push(phase), log: (line) => void logged.push(line) }, { holder: RUNNER_B }, { live: async () => [] });
+  assert.deepEqual(creates(one.account), ["c1", "c2"], "a new sandbox");
+  assert.deepEqual(deletes(one.account), ["c1"], "the refused one deleted at the launch, an older claim's");
+  const ready = computerReadyWords(said[0]);
+  plainOf(ready);
+  assert.equal(ready, "The sandbox is ready: Linux (amd64), from Docker. The sandbox wasn't kept: the runner that kept it is gone. It's a new sandbox: the one before is gone, with what was on it.");
+  assert.deepEqual(resumed.replaced, { kind: "sandbox", folderKept: false, lost: true, refused: true });
+  assert.deepEqual(logged, [`run run-1's kept sandbox c1 could not be taken back, so the claim goes on on a new one: ${DOCKER_MOUNTS_REFUSAL}`]);
+  assert.equal((await readKept(one.store.settings, "run-1"))?.ended, true, "the launch's delete marked its row ended: nothing is left for a janitor");
+  await resumed.release();
+  // The run ends with the claim at epoch 5: its end removes the row.
+  one.store.runs.set("run-1", "completed");
+  one.store.runs.end("run-1");
+  const runs = { ...one.store.runs, launch: async () => ({ body: null }) };
+  await runEndComputers({ store: { ...one.store, runs }, computers: { kinds: KINDS, providers: {} }, log: () => {}, retryMs: 50 })({ runId: "run-1", epoch: 5 });
+  assert.equal(await one.store.settings.get(key), undefined, "the run's end removed its row");
+});
+
+test("a kept Docker sandbox whose runner is still there and whose take-back its provider refuses says that runner ends it, in no word of the provider's", async () => {
+  const one = await server(SANDBOX);
+  await (await one.claim(3, {}, { holder: RUNNER_A })).park("approval");
+  refuseAttach(one, DOCKER_MOUNTS_REFUSAL);
+  one.clock.now = T0 + 60_000;
+  const said = [];
+  const resumed = await one.claim(5, { hadComputer: async () => true, onConnected: (phase) => void said.push(phase), log: () => {} }, { holder: RUNNER_B }, { live: async () => [{ ...RUNNER_A, refused: "draining" }] });
+  const ready = computerReadyWords(said[0]);
+  plainOf(ready);
+  assert.equal(ready, "The sandbox is ready: Linux (amd64), from Docker. The sandbox wasn't kept: another runner kept it and couldn't take the run, so that runner ends it. It's a new sandbox; nothing on the one before comes with it.");
+  assert.deepEqual(resumed.replaced, { kind: "sandbox", folderKept: false, elsewhere: true, refused: true });
   await resumed.release();
 });
 

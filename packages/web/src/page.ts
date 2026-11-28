@@ -36,7 +36,13 @@ export const HTML_READ_CHARS = 1_000_000;
  *  held equal by web-fetch-direct-cut.test), and keyless Firecrawl's scrape's too. */
 export const PAGE_MAX_BYTES = 5 * 1024 * 1024;
 
-export const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
+/** `text`'s first `max` UTF-16 units, one fewer where the cut would split a surrogate pair: the one pair-safe cut. */
+export function cutAt(text: string, max: number): string {
+  const split = (text.charCodeAt(max - 1) & 0xfc00) === 0xd800 && (text.charCodeAt(max) & 0xfc00) === 0xdc00;
+  return text.slice(0, split ? max - 1 : max);
+}
+/** `text` at most `max` units: whole when it fits, else cut (cutAt) with an ellipsis ending it. */
+export const clip = (text: string, max: number) => (text.length > max ? `${cutAt(text, max - 1)}…` : text);
 /** `text` with any URL in it stripped of its user name and password (`//user:pass@host` to `//host`). An error may quote
  *  a URL that holds them (undici's refusal of a redirect to one quotes it whole). Run it on the whole text, before any
  *  cut: a cut can end inside them, leaving no "@" for it to find. It reads on to the last "@" before the host, as a URL
@@ -102,12 +108,10 @@ export function partEnd(text: string, start: number, budget: number): number {
  *  past them (`beyond`), and its whole length where it is known (`length`). */
 export type Text = { text: string; beyond: boolean; length?: number };
 /** `text` as read: `whole` says whether it is all of the page's text, so its length is the page's (a provider that cut
- *  it, or readPage's cut of its HTML, gives none). The cut at PAGE_READ_MAX_CHARS never splits a surrogate pair: where
- *  it would, it is one unit short. */
+ *  it, or readPage's cut of its HTML, gives none). The cut at PAGE_READ_MAX_CHARS never splits a surrogate pair (cutAt). */
 export function textOf(text: string, whole: boolean): Text {
   const beyond = text.length > PAGE_READ_MAX_CHARS;
-  const split = (text.charCodeAt(PAGE_READ_MAX_CHARS - 1) & 0xfc00) === 0xd800 && (text.charCodeAt(PAGE_READ_MAX_CHARS) & 0xfc00) === 0xdc00;
-  return { text: beyond ? text.slice(0, PAGE_READ_MAX_CHARS - (split ? 1 : 0)) : text, beyond, ...(whole ? { length: text.length } : {}) };
+  return { text: beyond ? cutAt(text, PAGE_READ_MAX_CHARS) : text, beyond, ...(whole ? { length: text.length } : {}) };
 }
 
 /** The part of a page's text an answer holds, and what it says of the rest. */
@@ -149,17 +153,37 @@ export function linksWithin(links: Iterable<string>): Pick<Page, "links" | "link
 }
 
 /** A page read once, before any part of it is taken: its final url, status and title, its Text, the links its first part
- *  holds (linksWithin), and readPage's `html_chars` and `converted` where it gave them. */
-export type Read = { ok: true; url: string; status: number; title: string; links: string[]; links_omitted?: number; html_chars?: number; converted?: "text" } & Text;
+ *  holds (linksWithin), and readPage's `html_chars` and `converted` where it gave them. `written`, where its text writes
+ *  every link it holds (a reading service's markdown, writtenRead): each link the service's whole answer writes, before
+ *  any cap or cut, from which its first part lists only those its own text does not write (unwrittenLinks). */
+export type Read = { ok: true; url: string; status: number; title: string; links: string[]; links_omitted?: number; html_chars?: number; converted?: "text"; written?: readonly string[] } & Text;
 /** A Page that was not read, saying why. */
 export type Unread = Page & { ok: false };
 
-/** The part `part` names of a page read once, as a Page: the links with its first part only. */
-export function partOfRead({ text, beyond, length, links, links_omitted, html_chars, converted, ...page }: Read, part: Part = {}): Page {
-  const first = partOf(part).offset === 0;
-  return { ...page, ...pageText({ text, beyond, length }, part), ...(html_chars === undefined ? {} : { html_chars }), ...(converted ? { converted } : {}), links: first ? links : [], ...(first && links_omitted ? { links_omitted } : {}) };
+/** The links of `written` (a Read's) that `text`, the part the model is given, does not write, within the caps
+ *  (linksWithin), with the count the caps left out: a link the model reads in the text is never listed again beside it. */
+export function unwrittenLinks(written: readonly string[], text: string): Pick<Page, "links" | "links_omitted"> {
+  const inText = new Set(linksOf(text));
+  return linksWithin(written.filter((link) => !inText.has(link)));
 }
 
+/** The part `part` names of a page read once, as a Page: the links with its first part only, and of a read whose text
+ *  writes them (`written`) only those the part's own text does not write (unwrittenLinks). */
+export function partOfRead({ text, beyond, length, links, links_omitted, html_chars, converted, written, ...page }: Read, part: Part = {}): Page {
+  const first = partOf(part).offset === 0;
+  const held = pageText({ text, beyond, length }, part);
+  const listed = !first ? { links: [] } : written ? unwrittenLinks(written, held.text) : { links, ...(links_omitted ? { links_omitted } : {}) };
+  return { ...page, ...held, ...(html_chars === undefined ? {} : { html_chars }), ...(converted ? { converted } : {}), ...listed };
+}
+
+/** A page's text as a reading service gives it, as a Read's: textOf, the links its whole answer writes (linksWithin),
+ *  and every one of them (`written`), the text's cut aside. */
+export const writtenRead = (text: string, whole: boolean): Pick<Read, "links" | "links_omitted" | "written"> & Text => {
+  const written = [...linksOf(text)];
+  return { ...textOf(text, whole), ...linksWithin(written), written };
+};
+
 /** A page a provider read for us as markdown (Parallel's extract, keyless Firecrawl's scrape), as a Read: its url,
- *  title and status, the text (`whole`: all of the page's, so its length is the page's) and the links it holds. */
-export const markdownRead = (url: string, title: string, text: string, whole: boolean, status = 200): Read => ({ ok: true, url: clip(withoutCredentials(url), URL_MAX), status, title: clip(title, TITLE_CAP), ...textOf(text, whole), ...linksWithin(linksOf(text)) });
+ *  title and status, the text (`whole`: all of the page's, so its length is the page's) and the links it holds, each
+ *  written in its text (writtenRead). */
+export const markdownRead = (url: string, title: string, text: string, whole: boolean, status = 200): Read => ({ ok: true, url: clip(withoutCredentials(url), URL_MAX), status, title: clip(title, TITLE_CAP), ...writtenRead(text, whole) });

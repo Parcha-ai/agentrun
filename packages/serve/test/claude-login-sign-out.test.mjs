@@ -10,12 +10,13 @@
 // A fake CLI stands in for the pinned one: signed in while its credentials file is in the credentials dir it is given,
 // `auth login` writes that file and the account, `auth logout` removes both and exits as the test says.
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { test } from "node:test";
+import * as harness from "@parcha/agentrun-harness-claude";
 import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_SETTING, LOGIN_ANSWERS_DIR, settingFor, startLoginHere } from "../dist/claude-login.js";
 import * as login from "../dist/claude-login.js";
 import { ClaudeSignIns } from "../dist/claude-sign-in.js";
@@ -127,10 +128,14 @@ test("Sign out of AgentRun's own login drops it: no credentials, account, signed
   assert.equal(signIns(), 2);
 });
 
+/** The harness's sign-out answer (its claudeLogout): the CLI confirmed its own sign-out (`signedOut`), and no item a
+ *  sign-in left under the account "unknown" remains (`leftoverGone`). */
+const said = (signedOut, leftoverGone = true) => ({ signedOut, leftoverGone });
+
 /** The routes' deps over stand-ins, for test `t`: the setting in `rows` (turned on at `place`), the pinned CLI a file,
  *  the CLI's sign-out answering `logout` (and noting each call in `logouts`), each sign-in waiting until stopped, the
  *  CLI's status signed in where `signedIn`. */
-async function rig(t, { place = "agentrun", logout = async () => true, env: extra = {}, signedIn = false } = {}) {
+async function rig(t, { place = "agentrun", logout = async () => said(true), env: extra = {}, signedIn = false } = {}) {
   const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-sign-out-"));
   const signIns = new ClaudeSignIns();
   t.after(async () => {
@@ -158,8 +163,9 @@ async function rig(t, { place = "agentrun", logout = async () => true, env: extr
       logouts.push({ cli: cliPath, dir: at.dir, options });
       return logout();
     },
+    claudeKeychainService: (at) => harness.claudeKeychainService(at),
   };
-  const deps = { signIns, settings, data, env, pinned: async () => pinned, refused: () => undefined, turn: (work) => work(), sameMachine: true, claude: async () => cli, saved: () => {}, changed: async () => {} };
+  const deps = { signIns, settings, data, env, pinned: async () => pinned, refused: () => undefined, turn: (work) => work(), claude: async () => cli, saved: () => {}, changed: async () => {} };
   return { data, rows, deps, logouts, started, pinned };
 }
 
@@ -188,7 +194,7 @@ test("a sign-out on AgentRun's own login ends the sign-in that waits, runs the C
 
 test("a sign-out whose CLI does not confirm still removes the login and turns the mode off, and says the CLI didn't confirm", async (t) => {
   assert.equal(typeof login.signOutClaudeLogin, "function", "claude-login.ts has the sign-out");
-  const r = await rig(t, { logout: async () => false });
+  const r = await rig(t, { logout: async () => said(false) });
   const folder = signedInAt(r.data);
   const out = await login.signOutClaudeLogin(r.deps);
   assert.equal(out.confirmed, false);
@@ -198,6 +204,41 @@ test("a sign-out whose CLI does not confirm still removes the login and turns th
   assert.equal(existsSync(folder), false, "the folder is removed all the same");
   assert.equal(r.rows.has(CLAUDE_LOGIN_SETTING), false, "the mode is off all the same");
 });
+
+// On macOS a sign-in this host started before it named the CLI's user left a second Keychain item, under the account
+// "unknown", which holds a refresh token. The CLI's own sign-out leaves it; the harness deletes it after, and says
+// whether it went. Where it may remain (its delete failed or was killed), the answer is not confirmed, and its words say
+// how to remove it by hand. Where it went, nothing is added.
+for (const [cli, signedOut] of [["confirms", true], ["doesn't confirm", false]]) {
+  for (const gone of [true, false]) {
+    test(`a sign-out whose CLI ${cli} and whose drop of the Keychain item left under "unknown" ${gone ? "deleted it" : "failed"} ${gone ? "adds no words of that item" : "says so, and how to delete it in Keychain Access"}`, async (t) => {
+      const r = await rig(t, { logout: async () => said(signedOut, gone) });
+      const folder = signedInAt(r.data);
+      const out = await login.signOutClaudeLogin(r.deps);
+      assert.equal(out.confirmed, signedOut && gone, JSON.stringify(out));
+      if (gone) assert.equal(out.message, signedOut ? undefined : login.LOGIN_SIGN_OUT_UNCONFIRMED, "no words of the item under \"unknown\"");
+      else {
+        if (!signedOut) assert.ok(out.message?.startsWith(login.LOGIN_SIGN_OUT_UNCONFIRMED), `the CLI's words first: ${out.message}`);
+        assert.match(out.message ?? "", /refresh token/, `the words say what the item holds: ${out.message}`);
+        assert.match(out.message ?? "", /Keychain Access/, `the words say where to delete it: ${out.message}`);
+        assert.ok(out.message?.includes('account is "unknown"'), `the words name the item's account: ${out.message}`);
+        // The item's exact service, the one the CLI names from AgentRun's folder: the person's own CLI's item under
+        // "unknown" has the bare name, and words that name only that would point at it as well.
+        const service = `Claude Code-credentials-${createHash("sha256").update(r.logouts[0].dir).digest("hex").slice(0, 8)}`;
+        const leftover = signedOut ? (out.message ?? "") : (out.message ?? "").slice(login.LOGIN_SIGN_OUT_UNCONFIRMED.length);
+        assert.ok(leftover.includes(`search "${service}"`), `the words say to search the item's exact service: ${out.message}`);
+        assert.ok(leftover.includes(`security delete-generic-password -a unknown -s "${service}"`), `the words give the one command that deletes that item alone: ${out.message}`);
+        assert.doesNotMatch(leftover, /Claude Code-credentials(?!-[0-9a-f]{8})/, `the words never name the bare service: ${out.message}`);
+        assert.ok(!(out.message ?? "").includes(r.data), `the words name no path: ${out.message}`);
+        if (signedOut) assert.equal(out.message, login.signOutKeychainLeftover(service));
+      }
+      assert.equal(r.logouts.length, 1);
+      assert.equal(existsSync(folder), false, "the folder is removed all the same");
+      assert.equal(r.rows.has(CLAUDE_LOGIN_SETTING), false, "the mode is off all the same");
+      assert.equal(out.login.state, "off");
+    });
+  }
+}
 
 test("a sign-out of this machine's own login (the person's CLAUDE_CONFIG_DIR) is refused in words that say to run `claude auth logout` there: no CLI runs, nothing is removed, the mode stays on", async (t) => {
   assert.equal(typeof login.signOutClaudeLogin, "function", "claude-login.ts has the sign-out");
@@ -233,7 +274,7 @@ test("a sign-out with no login folder here (nothing signed in yet) still runs th
 // as it signs out goes too.
 for (const [retry, confirms] of [["fails again", false], ["confirms", true]]) {
   test(`a sign-out retried after one whose CLI didn't confirm runs the CLI's own sign-out again though the folder is gone, and answers confirmed only where that CLI's sign-out ${retry === "confirms" ? "confirms" : "does (here it fails again)"}`, async (t) => {
-    const said = [false, confirms];
+    const replies = [said(false), said(confirms)];
     const r = await rig(t, { signedIn: true });
     const folder = signedInAt(r.data);
     assert.equal((await login.claudeLoginView(r.deps)).state, "signed_in");
@@ -245,7 +286,7 @@ for (const [retry, confirms] of [["fails again", false], ["confirms", true]]) {
       claudeLogout: async (cliPath, at, options) => {
         r.logouts.push({ cli: cliPath, dir: at.dir, options });
         if (r.logouts.length === 2) mkdirSync(at.dir, { recursive: true });
-        return said[r.logouts.length - 1];
+        return replies[r.logouts.length - 1];
       },
     });
     const first = await login.signOutClaudeLogin(r.deps);
@@ -395,7 +436,7 @@ test("a sign-out where the login folder is swapped for a link while the CLI sign
     logout: async () => {
       rmSync(folder, { recursive: true, force: true });
       symlinkSync(elsewhere, folder);
-      return true;
+      return said(true);
     },
   });
   folder = signedInAt(r.data);

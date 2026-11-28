@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { BOUND_TOOLS, TOOLS, toolsView } from "../dist/tools.js";
-import { autoWeb, CAPABILITIES, claimPlane, DEFAULT_WEB_ORDER, DENIED, explainCapability, explainsView, FIRECRAWL_FETCH, planeFor, PROVIDERS, recheckPlane, relaunchPlane, SEARCH_OFF, settingsIssues, TOOL_SETTINGS_KEY } from "../dist/tool-plane.js";
+import { autoWeb, CAPABILITIES, claimPlane, DEFAULT_WEB_ORDER, DENIED, explainCapability, explainsView, fetchChainOf, FIRECRAWL_FETCH, handsJevWeb, NATIVE_ASKS, NO_PARALLEL_KEY, planeFor, PROVIDERS, recheckPlane, relaunchPlane, SEARCH_OFF, searchChainOf, settingsIssues, TOOL_SETTINGS_KEY } from "../dist/tool-plane.js";
 import { builtinFacts, resolveOnBuiltin } from "./gate-support.mjs";
 import { tableTools } from "../dist/tool-list.js";
 import { openSqliteStore, STORE_FILE } from "../dist/store/sqlite/store.js";
@@ -191,14 +191,29 @@ test("auto's order for both web tools is one table, DEFAULT_WEB_ORDER: Parallel 
   }
 });
 
-test("swapping DEFAULT_WEB_ORDER's ids changes what auto resolves to: keyless Firecrawl first is Firecrawl on a keyed server too, and Parallel listed alone with no key falls to keyless Firecrawl", () => {
-  const keyed = { ...base, parallelKey: true, harness: "pi", facts: builtinFacts("pi") };
-  const firecrawlFirst = { web_search: ["firecrawl-keyless", "parallel"], web_fetch: ["firecrawl-keyless", "parallel"] };
-  assert.deepEqual([autoWeb("web_search", keyed).resolves, autoWeb("web_fetch", keyed).resolves], ["parallel", "parallel"], "the shipped order: Parallel first");
-  assert.deepEqual(autoWeb("web_fetch", keyed, firecrawlFirst), { resolves: "firecrawl-keyless", why: FIRECRAWL_FETCH }, "swapped: keyless Firecrawl first for web_fetch");
-  assert.equal(autoWeb("web_search", keyed, firecrawlFirst).resolves, "firecrawl-keyless", "swapped: keyless Firecrawl first for web_search");
-  assert.deepEqual(autoWeb("web_fetch", keyed, { ...DEFAULT_WEB_ORDER, web_fetch: ["kernel", "parallel"] }), { resolves: "kernel", why: "the guarded direct fetch" }, "the direct fetch first: the direct fetch");
-  assert.equal(autoWeb("web_fetch", { ...keyed, parallelKey: false }, { ...DEFAULT_WEB_ORDER, web_fetch: ["parallel"] }).resolves, "firecrawl-keyless", "nothing usable: keyless Firecrawl");
+test("the web tools' chains are the one table of what each resolution runs: the resolutions with a chain are the ones TypeSafe's key and Jev's why go with, for every resolution and every pick", () => {
+  const resolutions = ["native", "kernel", "firecrawl-keyless", "exa-keyless", "parallel", "browserbase", NO_PARALLEL_KEY, SEARCH_OFF, DENIED, NATIVE_ASKS, "unavailable: no native search for codex"];
+  assert.deepEqual(resolutions.filter((resolved) => searchChainOf(resolved).length), ["native", "firecrawl-keyless", "exa-keyless", "parallel"], "web_search runs these, each with its chain");
+  const fetchRuns = ["kernel", "firecrawl-keyless", "parallel"];
+  for (const resolved of resolutions) {
+    assert.equal(handsJevWeb({ web_search: resolved }, {}, "pi"), searchChainOf(resolved).length > 0, `web_search ${resolved} on pi: TypeSafe's key goes where the search has a chain`);
+    assert.equal(handsJevWeb({ web_fetch: resolved }, {}, "pi"), fetchRuns.includes(resolved), `web_fetch ${resolved}: TypeSafe's key goes where the fetch runs`);
+    assert.equal(fetchChainOf(resolved).at(-1), "direct", `web_fetch ${resolved}: the guarded direct fetch is last in every chain`);
+  }
+  assert.deepEqual(fetchRuns.map((resolved) => fetchChainOf(resolved)), [["direct"], ["firecrawl-keyless", "direct"], ["parallel", "direct"]]);
+  assert.equal(handsJevWeb({ web_search: "native" }, {}, "codex"), false, "a harness's own search inside its CLI is not the run's Web, chain or not");
+  for (const harness of ["pi", "codex"]) for (const parallelKey of [true, false]) for (const permission of ["allow", "ask", "deny"]) {
+    const on = { ...base, harness, facts: builtinFacts(harness), parallelKey, permission, jevWhy: "J", jevFetchWhy: "F" };
+    for (const pick of PROVIDERS.web_search) {
+      const said = explainCapability("web_search", { ...on, pick });
+      const ours = searchChainOf(said.resolves).length > 0 && !(said.resolves === "native" && on.facts.webSearch);
+      assert.equal(said.why.endsWith("; J"), ours, `${harness} web_search ${pick} (${said.resolves}): Jev's why where the run's Web searches`);
+    }
+    for (const pick of PROVIDERS.web_fetch) {
+      const said = explainCapability("web_fetch", { ...on, pick });
+      assert.equal(said.why.endsWith("; F"), fetchRuns.includes(said.resolves), `${harness} web_fetch ${pick} (${said.resolves}): Jev's why where the run's Web fetches`);
+    }
+  }
 });
 
 test("capabilities say why each web tool resolves as it does on each harness, one plain sentence beside resolves, from the resolver's own reasons: a native search as an explicit pick, the gateway or cap that leaves none, the Parallel key and where it is from, keyless Firecrawl and what web_fetch sends it, a pick, off", async (t) => {
@@ -378,6 +393,21 @@ test("GET and PUT /v2/settings/tools: the defaults, a PUT that replaces them, ke
   const coded = await api("POST", "/agents", agent("coder", { harness: "codex", tools: ["web_search"] }));
   assert.equal(coded.status, 201, JSON.stringify(coded.body));
   assert.deepEqual((await api("GET", "/agents/coder")).body.tools, [{ name: "web_search", blurb: "Search the web", ...allowed(), provider: "exa-keyless", provider_from: "server", default_provider: "exa-keyless", resolved: "exa-keyless" }], "the server's pick where the agent has none, on its harness");
+  // Under a server ceiling the agent's own pick stays its pick (the editor reads `provider` as the agent's override),
+  // `resolved` is what runs, and `ceiling` names the server's setting that capped it; with no ceiling there is none.
+  const fetcher = await api("POST", "/agents", agent("fetcher", { tools: ["web_fetch"], tool_settings: { web_fetch: { provider: "firecrawl-keyless" } } }));
+  assert.equal(fetcher.status, 201, JSON.stringify(fetcher.body));
+  const fetchView = async () => (await api("GET", "/agents/fetcher")).body;
+  assert.deepEqual((await fetchView()).tools, [{ name: "web_fetch", blurb: "Read a public web page", ...allowed(), provider: "firecrawl-keyless", provider_from: "agent", default_provider: "auto", resolved: "firecrawl-keyless" }], "no ceiling: no ceiling field");
+  assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "exa-keyless" }, web_fetch: { provider: "kernel" } })).status, 200);
+  const capped = await fetchView();
+  meets("/agents/{agent_id}", "get", capped);
+  assert.deepEqual(capped.tools, [{ name: "web_fetch", blurb: "Read a public web page", ...allowed(), provider: "firecrawl-keyless", provider_from: "agent", default_provider: "kernel", resolved: "kernel", ceiling: "kernel" }], "the server's kernel caps the agent's Firecrawl: it runs kernel, and says why");
+  // The server denies web_fetch too: the deny is why nothing runs, so the view names no ceiling beside it.
+  assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "exa-keyless" }, web_fetch: { provider: "kernel", permission: "deny" } })).status, 200);
+  const denied = (await fetchView()).tools[0];
+  assert.deepEqual([denied.resolved, denied.ceiling, denied.provider], ["unavailable: denied", undefined, "firecrawl-keyless"], "denied: resolved says so, and no ceiling");
+  assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "exa-keyless" } })).status, 200);
   for (const [tool_settings, field, reason] of [[{ web_search: { permission: "maybe" } }, "definition.tool_settings.web_search.permission", "not_an_option"], [{ web_fetch: { provider: "exa-keyless" } }, "definition.tool_settings.web_fetch.provider", "not_an_option"], [{ ask_person: { provider: "native" } }, "definition.tool_settings.ask_person.provider", "not_allowed"]]) {
     const refused = await api("POST", "/agents", agent("refused", { tools: ["web_search"], tool_settings }));
     assert.deepEqual([refused.status, refused.body.error.fields.map((f) => [f.field, f.reason])], [422, [[field, reason]]], JSON.stringify(tool_settings));

@@ -578,6 +578,24 @@ export function whyNotOneOwner(facts: { apiOnly: boolean; tokens: number; keys?:
 /** Why a server with Claude Code's login on makes no API key for an app, in one line: the same rule from the other side. */
 export const LOGIN_REFUSES_API_KEYS = "Claude Code's login on this machine is on, and a Claude plan is one person's: an API key would let an app start runs on it. Turn the login off under Settings → Model keys first.";
 
+/** Why a server on `host` (`loopback`: whether that is a loopback address) with public address `publicUrl`, read from
+ *  the variable `from` (the CLI's: AGENTRUN_PUBLIC_URL, else Render's RENDER_EXTERNAL_URL), never starts the CLI's
+ *  sign-in itself, in words that name the setting and say what to do; undefined where it may. The sign-in opens
+ *  a browser on the server's machine, and a server with a public address or one listening past loopback may be opened
+ *  from another: a placeholder AGENTRUN_PUBLIC_URL turns it off too, so the console says so instead of falling back to the
+ *  command in silence. */
+export function signInHereOff(host: string, publicUrl: string | undefined, loopback: boolean, from: PublicUrlFrom = "AGENTRUN_PUBLIC_URL"): string | undefined {
+  const what = "run the command shown in a terminal on this machine";
+  // Render sets it on every web service, so there is nothing to unset: the command is the way.
+  if (publicUrl && from === "RENDER_EXTERNAL_URL") return `In-browser sign-in is off because this server's public address is ${publicUrl}, from Render's RENDER_EXTERNAL_URL, and a server with a public address never opens a browser itself: run the command shown in a terminal on the server's machine.`;
+  if (publicUrl) return `In-browser sign-in is off because AGENTRUN_PUBLIC_URL is set to ${publicUrl}, and a server with a public address never opens a browser itself: ${what}, or unset AGENTRUN_PUBLIC_URL and restart the server.`;
+  if (!loopback) return `In-browser sign-in is off because this server listens on ${host}, past loopback, and such a server never opens a browser itself: ${what}, or restart it on 127.0.0.1.`;
+  return undefined;
+}
+
+/** The variable a server's public address was read from. */
+export type PublicUrlFrom = "AGENTRUN_PUBLIC_URL" | "RENDER_EXTERNAL_URL";
+
 /** GET /settings/claude-login. `state`: `off` (not turned on), `other_machine` (turned on for another machine),
  *  `refused` (turned on for this machine and kept, but its folders are ones this server's user may not use: `refused`
  *  says why, nothing runs on it, and a turn-off removes it as it does any other), else what the CLI says: `signed_in`,
@@ -590,6 +608,8 @@ export type ClaudeLoginView = {
   command: string;
   /** Whether this server may start the CLI's own sign-in itself (a browser on this machine). */
   can_start: boolean;
+  /** Why this server never starts the CLI's sign-in itself, in words that say what to do (signInHereOff). */
+  start_off?: string;
   /** Why the mode can't be turned on here, in one line. */
   refused?: string;
   account?: { method?: string; email?: string; organization?: string; plan?: string };
@@ -637,8 +657,8 @@ export const claudeLoginServed = (off: string | undefined, apiOnly: boolean): bo
 export const claudeLoginRouteOff = (name: string, why: string): string => `${name}: Claude Code's login on this machine is off on this server: ${why}.`;
 
 /** What the routes need of the server. `pinned`: the pinned CLI's path when installed. `refused`: whyNotOneOwner of this
- *  server. `sameMachine`: the request comes from a browser on this machine to a server bound to loopback with no public
- *  address, so a sign-in the CLI opens in a browser here reaches the person. `status`/`start`: the harness's
+ *  server. `startOff`: why the CLI's sign-in, which opens a browser on this machine, is never started here (signInHereOff);
+ *  undefined on a server bound to loopback with no public address, whose console is on this machine. `status`/`start`: the harness's
  *  claudeLoginStatus and startClaudeLogin. `saved`: the login runs here go on after a turn on or off (none once off),
  *  handed over inside the turn that saved it, so two changes never leave the server's copy out of order. `changed`: env
  *  read again after that turn, outside the queue, so a sign-in pressed meanwhile never waits on it. `signIns`: the
@@ -655,7 +675,8 @@ export type ClaudeLoginDeps = {
   /** Runs `work` once nothing that changes `refused` is under way, and holds such changes off until it settles: the
    *  API keys' turn (api-keys.ts inTurn). The turn-on decides and writes inside it. */
   turn: <T>(work: () => Promise<T>) => Promise<T>;
-  sameMachine: boolean;
+  /** Why this server never starts the CLI's sign-in itself (signInHereOff), or undefined where it may. */
+  startOff?: string;
   claude: () => Promise<ClaudeLoginCli>;
   saved: (login: ClaudeAgentLogin | undefined) => void;
   changed: () => Promise<void>;
@@ -718,7 +739,7 @@ export async function claudeLoginView(deps: ClaudeLoginDeps): Promise<ClaudeLogi
   const cli = loginCli(await deps.pinned(), deps.env);
   const signIn = deps.signIns.view();
   const refused = deps.refused() ?? unusable;
-  const base = { place, command: login ? (await deps.claude()).claudeLoginCommand(login, cli ?? "claude") : "", can_start: deps.sameMachine && cli !== undefined && refused === undefined, ...(refused ? { refused } : {}), folder: login?.dir ?? givenFolder(place, deps.data, deps.env), machine: machineFolder(deps.env, deps.uid), ...(signIn ? { sign_in: signIn } : {}) };
+  const base = { place, command: login ? (await deps.claude()).claudeLoginCommand(login, cli ?? "claude") : "", can_start: deps.startOff === undefined && cli !== undefined && refused === undefined, ...(refused ? { refused } : {}), ...(deps.startOff ? { start_off: deps.startOff } : {}), folder: login?.dir ?? givenFolder(place, deps.data, deps.env), machine: machineFolder(deps.env, deps.uid), ...(signIn ? { sign_in: signIn } : {}) };
   if (!setting) return { state: "off", ...base };
   if (!thisMachine(setting, deps.data)) return { state: "other_machine", ...base, can_start: false };
   // Folders the server's user may not use: no login here (loginOf), and the CLI is not asked, since its check runs in
@@ -823,6 +844,19 @@ export const LOGIN_SIGN_OUT_UNCONFIRMED = `Signed out here: AgentRun's copy of t
  *  gone here all the same, and the CLI's own copy may remain. */
 export const signOutCliFailed = (failed: string): string => `Signed out here: AgentRun's copy of the login is removed. ${keychainWords(failed)}`;
 
+/** What may remain where the harness's sign-out could not delete the Keychain item a sign-in left under the account
+ *  "unknown" at AgentRun's own folder (its claudeLogout's `leftoverGone` false), and how to delete that item alone by
+ *  hand: by its exact service (`service`, the harness's claudeKeychainService for the folder, a hash of it with no path
+ *  in it), never the bare "Claude Code-credentials", which the person's own CLI's item has, under "unknown" too where it
+ *  ran with no USER. With no service (none for the folder, where the harness has nothing to drop) the words give no way
+ *  to delete it, rather than one that may point at another login's item. */
+const keychainLeftover = (service: string | undefined): string =>
+  `On macOS an older Keychain item of this login, which holds a refresh token, could not be removed${service === undefined ? "." : `: in Keychain Access, search "${service}" and delete the item whose account is "unknown", or run \`security delete-generic-password -a unknown -s "${service}"\` in a terminal.`}`;
+
+/** What a sign-out answers beside `confirmed: false` where the CLI confirmed its own sign-out and every removal landed,
+ *  but that older Keychain item, of the service `service`, may remain (keychainLeftover). */
+export const signOutKeychainLeftover = (service: string | undefined): string => `Signed out here: AgentRun's copy of the login is removed. ${keychainLeftover(service)}`;
+
 /** What a sign-out answers beside `confirmed: false` where some of the login is still there (`left`: each thing, its path
  *  and why), and the Keychain's words too where the CLI didn't confirm its own sign-out (`keychain`), naming the CLI
  *  step's failure where it threw (`failed`). */
@@ -833,9 +867,10 @@ export const signOutLeft = (left: readonly string[], keychain: boolean, failed?:
 export const machineSignOutRefused = (folder: string): string =>
   `This is your own Claude Code login on this machine (${folder}), which AgentRun only uses: it never signs it out. Run \`claude auth logout\` in a terminal there to sign it out, or turn the mode off here.`;
 
-/** POST /settings/claude-login/sign-out's answer: whether all of the login is gone (the CLI confirmed its own sign-out and
- *  every removal landed, whether or not a folder was there), else words saying what may remain
- *  (LOGIN_SIGN_OUT_UNCONFIRMED, signOutLeft), and the view after it (`off`). */
+/** POST /settings/claude-login/sign-out's answer: whether all of the login is gone (the CLI confirmed its own sign-out,
+ *  every removal landed, whether or not a folder was there, and the harness found no older Keychain item left under
+ *  "unknown"), else words saying what may remain (LOGIN_SIGN_OUT_UNCONFIRMED, signOutLeft, signOutKeychainLeftover),
+ *  and the view after it (`off`). */
 export type ClaudeLoginSignOut = { confirmed: boolean; message?: string; login: ClaudeLoginView };
 
 /** POST /settings/claude-login/sign-out: AgentRun's own login (`<data>/claude-login`) signed out and removed, so the next
@@ -850,7 +885,10 @@ export type ClaudeLoginSignOut = { confirmed: boolean; message?: string; login: 
  *  (claude-login-token.ts forgetLoginTokens). Each removal stands alone: one that fails is named in the answer
  *  (signOutLeft, `confirmed` false), and the others, the reader's drop and the server's reread of the keys still happen.
  *  So with the CLI's step: a throw finding the CLI or loading the harness is named in the answer (signOutCliFailed), and
- *  every removal still runs.
+ *  every removal still runs. On macOS the harness's sign-out also deletes the older Keychain item a sign-in left under
+ *  "unknown", which holds a refresh token, and says whether it went: where it may remain, the answer is not confirmed
+ *  and its words say how to delete that item alone, named by its exact service (the harness's claudeKeychainService),
+ *  in Keychain Access or with one `security` command (signOutKeychainLeftover, or after the other words).
  *  Where the folder is a link (put there after the turn-on, which refuses one), the link alone is removed, with the
  *  login's signed-in note: no CLI runs through it, nothing it leads to is touched, and the answer names it. Runs already going are left as a turn-off
  *  leaves them: each keeps the token its CLI holds, and fails in
@@ -863,6 +901,8 @@ export type ClaudeLoginSignOut = { confirmed: boolean; message?: string; login: 
 export async function signOutClaudeLogin(deps: ClaudeLoginDeps): Promise<ClaudeLoginSignOut> {
   let off = false;
   let signedOut = true;
+  let leftoverGone = true;
+  let leftoverService: string | undefined;
   let cliFailed: string | undefined;
   const left: string[] = [];
   const remove = (what: string, path: string, options: RmOptions) => {
@@ -897,7 +937,12 @@ export async function signOutClaudeLogin(deps: ClaudeLoginDeps): Promise<ClaudeL
         try {
           const { login } = loginAt("agentrun", deps.data, deps.env, deps.uid);
           const cli = loginCli(await deps.pinned(), deps.env);
-          signedOut = login && cli ? await (await deps.claude()).claudeLogout(cli, login, pathOf(deps.env)) : false;
+          if (login && cli) {
+            const claude = await deps.claude();
+            ({ signedOut, leftoverGone } = await claude.claudeLogout(cli, login, pathOf(deps.env)));
+            // The service the harness's drop deleted by, so the words name the item alone.
+            if (!leftoverGone) leftoverService = claude.claudeKeychainService(login);
+          } else signedOut = false;
         } catch (error) {
           signedOut = false;
           cliFailed = error instanceof Error ? error.message : String(error);
@@ -920,7 +965,9 @@ export async function signOutClaudeLogin(deps: ClaudeLoginDeps): Promise<ClaudeL
   } finally {
     if (off) await deps.changed();
   }
-  const message = left.length > 0 ? signOutLeft(left, !signedOut, cliFailed) : signedOut ? undefined : cliFailed !== undefined ? signOutCliFailed(cliFailed) : LOGIN_SIGN_OUT_UNCONFIRMED;
+  const words = left.length > 0 ? signOutLeft(left, !signedOut, cliFailed) : signedOut ? undefined : cliFailed !== undefined ? signOutCliFailed(cliFailed) : LOGIN_SIGN_OUT_UNCONFIRMED;
+  // The older Keychain item the harness could not delete is said after the rest, or alone where nothing else remains.
+  const message = leftoverGone ? words : words === undefined ? signOutKeychainLeftover(leftoverService) : `${words} ${keychainLeftover(leftoverService)}`;
   return { confirmed: message === undefined, ...(message ? { message } : {}), login: await claudeLoginView(deps) };
 }
 
@@ -938,7 +985,7 @@ export async function startLoginHere(deps: ClaudeLoginDeps): Promise<ClaudeLogin
     const at = loginAt(setting.place, deps.data, deps.env, deps.uid);
     if (at.refused !== undefined) throw new ClaudeLoginRefused("forbidden", at.refused);
     if (!thisMachine(setting, deps.data)) throw new ClaudeLoginRefused("agent_not_runnable", "It was turned on for another machine: sign in there.");
-    if (!deps.sameMachine) throw new ClaudeLoginRefused("forbidden", "The CLI's sign-in opens a browser on the server's machine: run the command shown in a terminal there.");
+    if (deps.startOff) throw new ClaudeLoginRefused("forbidden", deps.startOff);
     const cli = loginCli(await deps.pinned(), deps.env);
     if (!cli) throw new ClaudeLoginRefused("agent_not_runnable", "No Claude Code CLI here yet: claude-agent's first run installs it, or run the command shown.");
     // The person's home (the login's `userHome`) and desktop, so the CLI can open their browser.
@@ -971,7 +1018,7 @@ export async function dropRefusedLogin(signIns: Pick<ClaudeSignIns, "serial">, s
 }
 
 /** What the routes and a run's check use of the harness (its login.ts), loaded only when asked. */
-export type ClaudeLoginCli = Pick<typeof import("@parcha/agentrun-harness-claude"), "claudeLoginStatus" | "startClaudeLogin" | "claudeLoginCommand" | "claudeLogout">;
+export type ClaudeLoginCli = Pick<typeof import("@parcha/agentrun-harness-claude"), "claudeLoginStatus" | "startClaudeLogin" | "claudeLoginCommand" | "claudeLogout" | "claudeKeychainService">;
 const pathOf = (env: Readonly<Record<string, string | undefined>>): { path?: string } => (env.PATH ? { path: env.PATH } : {});
 
 /** How long a signed-in answer stands in for a check that gives none (loginBeforeRun). */

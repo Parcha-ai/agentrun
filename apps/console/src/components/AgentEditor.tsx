@@ -18,6 +18,7 @@ import { WorkflowEditor } from "@/components/WorkflowEditor";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { backendSdkOf } from "@/lib/backendSdk";
 import { buildAgentPrompt, DEFINITION_TEXT_NOTE, editAgentPrompt } from "@/lib/codingAgentPrompts";
+import { isDecisionWorkflow } from "@/lib/workflowDoc";
 import { type Agent, type AgentFields, type Definition, capOf, editBody, toolsOnSwitch, notOn, DECISION, DEFAULT_INSTRUCTIONS, defaultTools, harnessOptions, isStarter, reachesWeb, same, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
 import type { WorkflowCheck } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
@@ -234,6 +235,8 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
   const saveButton = useRef<HTMLButtonElement>(null);
   useEffect(() => { if (problem?.kind === "invalid" || problem?.kind === "other") saveButton.current?.focus(); }, [problem]);
   const workflow = agent?.kind === "workflow";
+  // A workflow agent whose saved workflow is a decision says so, as its page and card do (agentKindWords).
+  const decision = workflow && isDecisionWorkflow(d?.workflow);
   // A new agent made from a starter (Decision, Workflow): a workflow revision, so no instructions, tools, thinking or model.
   const starting = creating && isStarter(f.harness);
   // Where the server has no default place (default_place null), a new agentic one names its own: the server refuses a
@@ -429,13 +432,13 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
               </Field>
               </div>
               {starting ? (
-                <Field group label="Workflow">
+                <Field group label={f.harness === DECISION ? "Decision" : "Workflow"}>
                   <p className="border px-3 py-4 text-body text-muted-foreground">{f.harness === DECISION
                     ? "A decision agent starts with one typed question and asks a person when its answer is uncertain. Create it, then edit its nodes in the Workflow section."
                     : "A workflow agent starts with one agent node. Create it, then edit its nodes or paste workflow JSON in the Workflow section."}</p>
                 </Field>
               ) : workflow ? (
-                <Field group label="Workflow" note="This agent is a workflow. Edit its nodes in the Workflow section: the graph redraws as you type and the server checks it." warning={fieldWarning("workflow")}>
+                <Field group label={decision ? "Decision" : "Workflow"} note={`This agent is ${decision ? "a decision" : "a workflow"}. Edit its nodes in the Workflow section: the graph redraws as you type and the server checks it.`} warning={fieldWarning("workflow")}>
                   <Button size="sm" onClick={() => setStep("workflow")}><Workflow aria-hidden /> Open the workflow</Button>
                 </Field>
               ) : (

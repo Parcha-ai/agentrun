@@ -10,7 +10,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test as nodeTest } from 'node:test';
-import { fakeEvents, fakeRecipe, openSession, scratch, streamRecords, tool } from './helpers.mjs';
+import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
+import { fakeEvents, fakeRecipe, openSession, scratch, streamRecords, tool, until } from './helpers.mjs';
 
 const test = (name, fn) => nodeTest(name, { timeout: 60_000 }, fn);
 const texts = (events) => events.filter((e) => e.type === 'text').map((e) => e.delta).join('');
@@ -124,8 +125,8 @@ for (const [style, title, recipeOver] of [
   ['goose-1.59', 'agentrun: write', { allowFile: undefined }],
   ['goose-1.59', 'agentrun: write · proof.txt', { allowFile: undefined }],
   ['goose', 'agentrun__write', { allowFile: undefined }],
-  ['cursor', 'agentrun-write: write', { quirks: undefined }],
-  // agy is given our server under its start's own name (ar and 6 hex digits), which its title carries.
+  // Cursor and agy are given our server under its start's own name (ar and 6 hex digits), which their titles carry.
+  ['cursor', '<start>-write: write', { quirks: undefined }],
   ['antigravity', 'Run mcp_<start>_write', { quirks: undefined }],
 ]) {
   test(`a recipe without the title tie never answers allow_once on the title: ${JSON.stringify(title)} (${style}) asks the host's gate, journaled; a deny answers reject_once`, async (t) => {
@@ -152,12 +153,14 @@ for (const [style, title, recipeOver] of [
 }
 
 // agy names a call `mcp_<server>_<tool>`, one _ between them: a server named agentrun_look with a tool up would spell
-// our look_up under a server named agentrun. So under a recipe whose prefix joins by one character (agy's
-// `mcp_agentrun_`) our server goes by a name of its start's own, which no server set up before the start can spell:
-// `ar` and 6 hex digits, as long as `agentrun`, so a tool's name fits agy's cap as it did under `agentrun`.
-test("under agy's recipe the agent is given our MCP server under a name of its start's own, ar and 6 hex digits; under Goose's and Cursor's, agentrun", async (t) => {
+// our look_up under a server named agentrun. Cursor names the server in a field of its own (providerIdentifier), which
+// a second server named exactly `agentrun` (a workspace's or the owner's own MCP configuration) would say too. So
+// under either recipe our server goes by a name of its start's own, which no server set up before the start can spell:
+// `ar` and 6 hex digits, as long as `agentrun`, so a tool's name fits agy's cap as it did under `agentrun`. Goose's
+// stays `agentrun`: its configuration is all ours, written at each start, and its proxy offers its model our tools alone.
+test("under agy's and Cursor's recipes the agent is given our MCP server under a name of its start's own, ar and 6 hex digits; under Goose's, agentrun", async (t) => {
   const given = [];
-  for (const style of ['antigravity', 'antigravity', 'goose-1.59', 'cursor']) {
+  for (const style of ['antigravity', 'antigravity', 'goose-1.59', 'cursor', 'cursor']) {
     const recipe = fakeRecipe(scratch(), { script: [{ say: 'hi' }], style });
     const { session } = await openSession(t, recipe, { tools: [tool('look_up', () => 'found')] });
     await session.send('go');
@@ -168,7 +171,9 @@ test("under agy's recipe the agent is given our MCP server under a name of its s
   assert.match(given[1][0]?.[0] ?? '', /^ar[0-9a-f]{6}$/);
   assert.notEqual(given[0][0][0], given[1][0][0], 'a fresh name at each start');
   assert.deepEqual(given[2], [['agentrun']]);
-  assert.deepEqual(given[3], [['agentrun']]);
+  assert.match(given[3][0]?.[0] ?? '', /^ar[0-9a-f]{6}$/);
+  assert.match(given[4][0]?.[0] ?? '', /^ar[0-9a-f]{6}$/);
+  assert.notEqual(given[3][0][0], given[4][0][0], 'a fresh name at each start');
 });
 
 // agy caps a tool's name at 64 characters and names ours mcp_<server>_<tool>: 13 + the tool's own, so a tool of ours
@@ -239,6 +244,114 @@ test("another MCP server's tool that agy names as one of ours under agentrun (`m
   assert.equal(ran, 0);
 });
 
+// Cursor names an MCP call's server in rawInput.providerIdentifier. A second server named exactly `agentrun` (in a
+// workspace's .cursor/mcp.json, or the owner's own Cursor configuration) with a tool look_up says what our look_up said
+// under the name `agentrun`; under the name of the start's own, it is the agent's own call.
+test("on Cursor's tie, another MCP server named exactly agentrun, whose tool Cursor names as look_up (providerIdentifier agentrun), is the agent's own: the host's gate is asked, a deny answers reject_once", async (t) => {
+  // Before: providerIdentifier agentrun and toolName look_up named it our look_up, and its request, titled
+  // `agentrun-look_up: look_up`, was answered allow_once on the title tie without the host's gate.
+  const dir = scratch();
+  const nativeLog = join(dir, 'native.log');
+  const input = { providerIdentifier: 'agentrun', toolName: 'look_up', args: { q: 'x' } };
+  const recipe = fakeRecipe(dir, { script: [{ native: 'other', title: 'agentrun-look_up: look_up', input }, { sayLastResult: true }], style: 'cursor', askNative: ['other'], nativeLog });
+  const asked = [];
+  let ran = 0;
+  const { session } = await openSession(t, recipe, {
+    tools: [tool('look_up', () => ((ran += 1), 'found'))],
+    gate: async (call) => (asked.push(call), { deny: 'not ours' }),
+  });
+  await session.send('go');
+  assert.equal((await session.turnEnd()).status, 'completed');
+  assert.deepEqual(asked.map((c) => [c.tool, c.args.title]), [['acp_other', 'agentrun-look_up: look_up']]);
+  assert.deepEqual(fakeEvents(recipe).filter((e) => e.type === 'permission').map((e) => e.kind), ['reject_once']);
+  assert.throws(() => readFileSync(nativeLog, 'utf8'), /ENOENT/, 'the call never ran');
+  assert.equal(ran, 0);
+});
+
+// The host gate's question about a call the recipe's server field names as another server's (Cursor's
+// providerIdentifier) says that server's name, beside the title: `agentrun-look_up: look_up` reads as our look_up, so
+// without it the person could not tell the call is not this run's. Whether the field comes with the tool_call or with
+// the later update that names a call announced with no input (Cursor 2026.11.13's MCP calls).
+for (const [when, step] of [
+  ['with its tool_call', { native: 'other', title: 'agentrun-look_up: look_up', input: { providerIdentifier: 'agentrun', toolName: 'look_up', args: { q: 'x' } } }],
+  ['in a later update', { native: 'other', title: 'agentrun-look_up: look_up', input: {}, lateInput: { providerIdentifier: 'agentrun', toolName: 'look_up', args: { q: 'x' } } }],
+]) test(`on Cursor's tie, the host gate's question about a call another server named agentrun makes (providerIdentifier ${when}) names that server; one with no server named carries none`, async (t) => {
+  // Before: its args were the title, kind, input and toolCallId alone.
+  const dir = scratch();
+  const recipe = fakeRecipe(dir, { script: [step, { native: 'execute', title: 'ls', input: { command: 'ls' } }, { sayLastResult: true }], style: 'cursor', askNative: ['other', 'execute'], nativeLog: join(dir, 'native.log') });
+  const asked = [];
+  const { session } = await openSession(t, recipe, { tools: [tool('look_up', () => 'found')], gate: async (call) => (asked.push(call), { deny: 'not ours' }) });
+  await session.send('go');
+  assert.equal((await session.turnEnd()).status, 'completed');
+  assert.deepEqual(asked.map((c) => [c.tool, c.args.title, c.args.server]), [['acp_other', 'agentrun-look_up: look_up', 'agentrun'], ['acp_execute', 'ls', undefined]]);
+  assert.equal(Object.hasOwn(asked[1].args, 'server'), false, 'a call no server field named carries no server');
+});
+
+// A question about another server's call that parks is asked again by the next start before the agent runs
+// (settlePermissions), from the journal alone: no update has named the call's server in that process yet. The question
+// asked again names the server the first one did, journaled with the ask.
+test("on Cursor's tie, a parked question about a call another server named agentrun makes is asked again after the restart naming that same server", async (t) => {
+  const dir = scratch();
+  const step = { native: 'other', title: 'agentrun-look_up: look_up', input: {}, lateInput: { providerIdentifier: 'agentrun', toolName: 'look_up', args: { q: 'x' } } };
+  const recipe = fakeRecipe(dir, { script: [step, { sayLastResult: true }], style: 'cursor', askNative: ['other'], nativeLog: join(dir, 'native.log') });
+  const store = memorySessionStore();
+  const asked = [];
+  const first = await openSession(t, recipe, { store, tools: [tool('look_up', () => 'found')], gate: async (call) => (asked.push(call), { park: true }) });
+  await first.session.send('go');
+  await until(() => asked.length === 1, 'the gate to be asked');
+  first.stop(new Error('the run parked'));
+  await first.session.turnEnd().catch(() => undefined);
+  assert.deepEqual((await streamRecords(store, 'acp.permission')).filter((r) => r?.type === 'asked').map((r) => r.server), ['agentrun'], 'the ask is journaled with its server');
+  const second = await openSession(t, recipe, { store, tools: [tool('look_up', () => 'found')], gate: async (call) => (asked.push(call), { deny: 'not ours' }) });
+  await second.session.recover();
+  await second.session.turnEnd().catch(() => undefined);
+  assert.deepEqual(asked.map((c) => [c.callId, c.tool, c.args.title, c.args.server]), [0, 0].map(() => [asked[0].callId, 'acp_other', 'agentrun-look_up: look_up', 'agentrun']), 'the same question, naming the same server');
+});
+
+// A recipe of the owner's own may declare the title tie (quirks.permissionTie) with Goose's default prefix
+// (`agentrun__`). Under it a second server named exactly `agentrun` (the agent's own configuration) names its tool
+// look_up `agentrun__look_up`, as our look_up was named under `agentrun`. The tie is what answers a request without the
+// host's gate, so under any recipe that declares it our server goes by a name of its start's own, its prefix and its
+// permission file (allowFile) with it: the other server's call asks the host's gate, and our own is still tied.
+for (const [how, over] of [['no permission file', { allowFile: undefined }], ["Goose's permission file", {}]]) {
+  test(`a custom recipe with the title tie and the default agentrun__ prefix (${how}) gives our server a name of its start's own: another server named exactly agentrun, whose tool the agent names agentrun__look_up, asks the host's gate; a deny answers reject_once`, async (t) => {
+    // Before: the server stayed `agentrun`, the field named the call our look_up, and its request, titled
+    // agentrun__look_up, was answered allow_once on the tie (or, with the permission file naming agentrun__look_up,
+    // the agent ran it unasked).
+    const dir = scratch();
+    const nativeLog = join(dir, 'native.log');
+    const recipe = fakeRecipe(dir, { script: [{ native: 'other', toolName: 'agentrun__look_up', title: 'agentrun__look_up', input: { q: 'x' } }, { sayLastResult: true }], style: 'goose', nativeLog }, { quirks: { permissionTie: 'title' }, ...over });
+    assert.equal(recipe.announces.prefix, undefined, "Goose's default prefix, agentrun__");
+    const asked = [];
+    let ran = 0;
+    const { session } = await openSession(t, recipe, {
+      tools: [tool('look_up', () => ((ran += 1), 'found'))],
+      gate: async (call) => (asked.push(call), { deny: 'not ours' }),
+    });
+    await session.send('go');
+    assert.equal((await session.turnEnd()).status, 'completed');
+    assert.deepEqual(asked.map((c) => [c.tool, c.args.title]), [['acp_other', 'agentrun__look_up']]);
+    assert.deepEqual(fakeEvents(recipe).filter((e) => e.type === 'permission').map((e) => e.kind), ['reject_once']);
+    assert.throws(() => readFileSync(nativeLog, 'utf8'), /ENOENT/, 'the call never ran');
+    assert.match(fakeEvents(recipe).find((e) => e.type === 'new')?.names?.[0] ?? '', /^ar[0-9a-f]{6}$/, "our server under its start's own name");
+    assert.equal(ran, 0);
+  });
+
+  test(`a custom recipe with the title tie and the default agentrun__ prefix (${how}): our own look_up, named under the start's own server, is still ours, its gate asked at the MCP call alone`, async (t) => {
+    const recipe = fakeRecipe(scratch(), { script: [{ call: 'look_up', args: { q: 'x' } }, { sayLastResult: true }], style: 'goose', askMcp: true }, { quirks: { permissionTie: 'title' }, ...over });
+    const asked = [];
+    const { session, events } = await openSession(t, recipe, {
+      tools: [tool('look_up', () => 'found it')],
+      gate: async (call) => (asked.push(call), call.tool.startsWith('acp_') ? { deny: 'not through the tie' } : 'allow'),
+    });
+    await session.send('go');
+    assert.equal((await session.turnEnd()).status, 'completed');
+    assert.deepEqual(asked.map((c) => [c.tool, c.callId]), [['look_up', 'call_0']], 'the gate is asked once, by the bridge, under the agent\'s id');
+    assert.deepEqual(fakeEvents(recipe).filter((e) => e.type === 'permission').map((e) => e.kind), 'allowFile' in over ? ['allow_once'] : [], 'tied, or allowed by the permission file');
+    assert.equal(texts(events), 'found it');
+  });
+}
+
 test("a permission request titled as our tool with Goose's summary, of a kind with no effects, that no tool_call announced, asks the host's gate; a deny answers reject_once", async (t) => {
   const dir = scratch();
   const nativeLog = join(dir, 'native.log');
@@ -280,14 +393,15 @@ test("on Cursor's tie, a native read titled `agentrun__write` is never announced
   assert.equal(ran, 0);
 });
 
-test("on Cursor's tie, a native read whose later update echoes the model's arguments at the top of its rawInput (providerIdentifier, toolName) is never named ours: its request titled `agentrun__write` asks the host's gate", async (t) => {
-  // Before: a later update named any call with no effects of its own whose rawInput said providerIdentifier "agentrun"
-  // and a toolName, so this read was tied and answered allow_once. A later update names only a call whose tool_call
-  // reported no input: Cursor's untitled `MCP: tool`, rawInput {}.
+test("on Cursor's tie, a native read whose later update echoes the model's arguments at the top of its rawInput (providerIdentifier, toolName) is never named ours, even under the start's own server name: its request, titled as our write's, asks the host's gate", async (t) => {
+  // Before: a later update named any call with no effects of its own whose rawInput said our server and a toolName, so
+  // this read was tied and answered allow_once. A later update names only a call whose tool_call reported no input:
+  // Cursor's untitled `MCP: tool`, rawInput {}. Its server and title are the start's own (`<server>`), so only that
+  // guard keeps it out, never the name.
   const dir = scratch();
   const nativeLog = join(dir, 'native.log');
-  const lateInput = { providerIdentifier: 'agentrun', toolName: 'write', path: 'notes.md' };
-  const recipe = fakeRecipe(dir, { script: [{ native: 'read', title: 'agentrun__write', input: { path: 'notes.md' }, lateInput }, { sayLastResult: true }], style: 'cursor', askNative: ['read'], nativeLog });
+  const lateInput = { providerIdentifier: '<server>', toolName: 'write', path: 'notes.md' };
+  const recipe = fakeRecipe(dir, { script: [{ native: 'read', title: '<server>-write: write', input: { path: 'notes.md' }, lateInput }, { sayLastResult: true }], style: 'cursor', askNative: ['read'], nativeLog });
   assert.deepEqual(recipe.quirks, { permissionTie: 'title' });
   const asked = [];
   let ran = 0;
@@ -297,7 +411,9 @@ test("on Cursor's tie, a native read whose later update echoes the model's argum
   });
   await session.send('go');
   assert.equal((await session.turnEnd()).status, 'completed');
-  assert.deepEqual(asked.map((c) => [c.tool, c.args.title]), [['acp_read', 'agentrun__write']], 'the host gate was asked about the read');
+  assert.equal(asked.length, 1, 'the host gate was asked about the read');
+  assert.equal(asked[0].tool, 'acp_read');
+  assert.match(asked[0].args.title, /^ar[0-9a-f]{6}-write: write$/, 'titled as our write under the start\'s own server');
   assert.deepEqual(fakeEvents(recipe).filter((e) => e.type === 'permission').map((e) => e.kind), ['reject_once']);
   assert.throws(() => readFileSync(nativeLog, 'utf8'), /ENOENT/, 'the read never ran');
   assert.equal(ran, 0);

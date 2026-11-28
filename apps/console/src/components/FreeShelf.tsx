@@ -112,7 +112,7 @@ function FreeAgents({ v2, harnesses, routePrefix, go, localModel }: Pick<Props, 
         : (
           <ul className="grid gap-3 p-4 md:grid-cols-2">
             {free.map((t) => {
-              const model = pulled?.model && applyHarness(t, harnesses) === pulled.harness ? pulled.model : freeModelFor(t, harnesses);
+              const model = pulled?.model && applyHarness(t) === pulled.harness ? pulled.model : freeModelFor(t, harnesses);
               return (
                 <li key={t.id}>
                   <article aria-label={titleOf(t)} className="flex h-full flex-col border bg-background px-4 py-3">

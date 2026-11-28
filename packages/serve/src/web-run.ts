@@ -6,14 +6,14 @@ import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
 import { JEV_PUBLISHED_PRICING, jevProvider } from "@parcha/agentrun-jev";
-import { createWeb, destinationsWords, type FetchProvider, type Guard, jevWebDecider, type KeyedProvider, providerOf, type SearchProvider, type Web, type WebClient } from "@parcha/agentrun-web";
+import { createWeb, destinationsWords, type FetchProvider, type Guard, jevWebDecider, type KeyedProvider, providerOf, type Receipt, type SearchProvider, type Web, type WebClient } from "@parcha/agentrun-web";
 import { FAUX_JEV_ENV, FAUX_PARALLEL_ENV, fauxFetch, handedKeyOf, JEV_KEY_ENV } from "./decisions.js";
 import { webJevOff } from "./env-switch.js";
 import { hostedSearched, type SearchModels } from "./hosted-search.js";
 import { FAUX_ENV } from "./model.js";
 import { paidRequest } from "./paid-calls.js";
 import { logLine } from "./print.js";
-import { planeOf } from "./tool-plane.js";
+import { fetchChainOf, planeOf, searchChainOf } from "./tool-plane.js";
 import { activeHolds, type HeldView, heldViewOf, holdsFromEnv, reportHold } from "./web-holds.js";
 
 /** pi-browser's guard and reader, loaded at the first fetch, so a run that never fetches never loads pi-browser. */
@@ -57,17 +57,39 @@ export const searchingOn = new AsyncLocalStorage<SearchOn | undefined>();
 
 const serverLog = (line: string): void => void process.stderr.write(`agentrun-serve: ${line}\n`);
 
-/** What each resolution of web_search asks, in turn: keyless Firecrawl has keyless Exa behind it. */
-const SEARCH_CHAINS: Readonly<Record<string, readonly SearchProvider[]>> = { parallel: ["parallel"], native: ["native"], "firecrawl-keyless": ["firecrawl-keyless", "exa-keyless"], "exa-keyless": ["exa-keyless"] };
-/** What each resolution of web_fetch asks, in turn: the guarded direct fetch behind any provider, and alone otherwise. */
-const FETCH_CHAINS: Readonly<Record<string, readonly FetchProvider[]>> = { parallel: ["parallel", "direct"], "firecrawl-keyless": ["firecrawl-keyless", "direct"] };
+/** A code as a log line may carry it: a short identifier (HTTP_429, CONNECT), else nothing. */
+const codeWord = (code: unknown): string | undefined => (typeof code === "string" && /^[A-Za-z0-9_.-]{1,40}$/.test(code) ? code : undefined);
+
+/** A web call's receipt as one log line, `web_receipt`: its `op`, the `provider` that answered (none where none did),
+ *  `tries` (each provider asked, in turn, as provider:outcome, a failure's code after a "/"), the `classifier` (off,
+ *  or ran or not_run with the items it was given and kept, its model, and its error's code or why it skipped), the
+ *  call's `cost_usd`, and `cache=hit` for a page the run had read. Ids, counts and figures only: never the URL asked,
+ *  the objective or queries, a page's or result's text, an error's message or a key. */
+export function receiptLine(receipt: Receipt): string {
+  const tries = receipt.tries.map((one) => {
+    const code = codeWord(one.failure?.code);
+    return `${one.provider}:${one.outcome}${code ? `/${code}` : ""}`;
+  });
+  const record = receipt.classifier === "off" ? undefined : receipt.classifier;
+  const error = codeWord(record?.error?.code);
+  const classifier: Record<string, string | number> = record
+    ? {
+        classifier: record.ran ? "ran" : "not_run",
+        classifier_in: record.items.in,
+        classifier_kept: record.items.kept,
+        ...(record.model ? { classifier_model: record.model } : {}),
+        ...(error ? { classifier_error: error } : {}),
+        ...(record.skipped ? { classifier_skipped: record.skipped } : {}),
+      }
+    : { classifier: "off" };
+  return logLine("web_receipt", { op: receipt.op, provider: receipt.provider ?? "none", tries: tries.length ? tries.join(",") : "none", ...classifier, cost_usd: Number(receipt.cost.usd.toFixed(6)), ...(receipt.cache ? { cache: receipt.cache } : {}) });
+}
+
+/** `receipt`'s line (receiptLine) on the server's log: one per web_search or web_fetch call a run's Web answers. */
+export const logReceipt = (receipt: Receipt): void => serverLog(receiptLine(receipt));
+
 /** Under --faux, the variable naming each keyless provider's fake: one with none named is left out. */
 const FAUX_FAKES: Readonly<Partial<Record<string, string>>> = { "firecrawl-keyless": FAUX_FIRECRAWL_ENV, "exa-keyless": FAUX_EXA_ENV };
-
-/** The search order a resolution of web_search names, under no --faux; none for one that runs no search. */
-export const searchChainOf = (resolved: string | undefined): readonly SearchProvider[] => (resolved !== undefined && Object.hasOwn(SEARCH_CHAINS, resolved) ? SEARCH_CHAINS[resolved]! : []);
-/** The fetch order a resolution of web_fetch names, under no --faux: the guarded direct fetch alone for any other. */
-export const fetchChainOf = (resolved: string | undefined): readonly FetchProvider[] => (resolved !== undefined && Object.hasOwn(FETCH_CHAINS, resolved) ? FETCH_CHAINS[resolved]! : ["direct"]);
 
 /** `tools`, GET /capabilities' (cached), each web tool with `held`, read live: the server's holds at `now` on any provider
  *  it asks where it resolves on some harness, or on that provider's key (web-holds.ts). None held, no field. */
@@ -90,7 +112,7 @@ export function ordersOf(env: NodeJS.ProcessEnv): { search: SearchProvider[]; fe
 }
 
 /** Jev for the run's web tools (web's jevWebDecider: jev-1.14.0, rerank+label): on the TypeSafe key the claim handed
- *  it (handedKeyOf: in `env`, the claim's own environment, never process.env; decisions.ts' pipe path is dead), unless
+ *  it (handedKeyOf: in `env`, the claim's own environment, never process.env), unless
  *  Jev is off, in the run's plane (the server's switch at launch, tool-plane.ts planeFor) or by AGENTRUN_WEB_JEV_OFF in
  *  `env`. None on an OpenRouter key: the web decider runs on TypeSafe's route alone. Its requests go through `env`'s
  *  faux Jev under --faux, priced at Jev's published price for the run's cap. */

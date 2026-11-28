@@ -97,7 +97,8 @@ export interface Held {
   githubAppAccess(): Promise<GithubAppAccessAt | undefined>;
   /** The saved model keys of the models of the claim's subagent tiers (claim-secrets.ts subagentTierKeys asks): an agentic
    *  run granted the subagent tool gets its routed tiers' keys; a replay's or an audit's grader, its fast tier's key alone
-   *  (none when its revision names agree_on or routes no fast tier). None to any other run, to one that holds a model key
+   *  (none when its revision names agree_on or routes no fast tier: its grader is then the run's own model, on the key
+   *  the run already holds). None to any other run, to one that holds a model key
    *  of its own, or to a held run its model kept from running. */
   subagentTierKeys(): Promise<Record<string, string>>;
   /** The model keys the host's models of `tiers` need (claim-secrets.ts tierModelKeys), the plan's reader with them: of
@@ -126,9 +127,12 @@ export interface Held {
   /** A change of the claim's computer's hold, committed to the run's journal here: signalled on the runner, whose live
    *  view of the computer tells its open viewer (computer-journal.ts heardComputerHold). */
   computerHold(change: ComputerHoldChange): Promise<void>;
-  /** The MCP credentials run `from` was handed, sealed again for run `id`, a run this one starts (promotion.ts,
-   *  audit.ts): none unless `from` is the claim's own run. */
-  handOn(from: string, id: string): Promise<Uint8Array | undefined>;
+  /** The MCP credentials run `from` was handed, and its own model key when `keyed` (store/seal.ts sealHandedLaunch),
+   *  sealed again for run `id`, a run this one starts (promotion.ts, audit.ts): none unless `from` is the claim's own run. */
+  handOn(from: string, id: string, keyed: boolean): Promise<Uint8Array | undefined>;
+  /** What the replays the claim's own run started on its own key took beside it (learning-work.ts keyedBesideOf), read by
+   *  the runner: its learning_work row and those replays' rows and launches, none of which the run's process reads. */
+  keyedBeside(): Promise<number | null>;
   /** The run's agent's live sign-in pointer for `resolution`, and its forgotten ones (sign-ins-store.ts signInReads): what
    *  its learning end holds to refuse a pointer in what the run learned. */
   signInPeek(resolution: string): Promise<unknown>;

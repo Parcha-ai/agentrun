@@ -22,7 +22,7 @@ test("the breaker read against a fake clock: a rate limit's wait passes at its e
   const words = (held) => held?.error;
   const breaker = webSearch.searchBreaker(() => now);
   assert.equal(breaker.held(), undefined, "it starts closed");
-  assert.deepEqual(breaker.read({ answer: fail, limit: { kind: "rate" } }), fail, "the call's own answer passes");
+  assert.deepEqual(breaker.read({ answer: fail, limit: { kind: "rate" } }), { error: "search is busy; try again in 60 s, or answer from what you have" }, "the call that met it answers the breaker's words, never the provider's");
   assert.equal(words(breaker.held()), "search is busy; try again in 60 s, or answer from what you have");
   now += 59_500;
   assert.equal(words(breaker.held()), "search is busy; try again in 1 s, or answer from what you have", "rounded up, at least 1");
@@ -72,10 +72,14 @@ test("a wait past 15 minutes is a spent count with its reset (keyless Exa's 429 
     assert.equal(one.held(), undefined, String(retryAfter));
     now = start;
   }
-  // A quota that names its reset keeps the call's own answer, and is off until the reset.
+  // A quota that names its reset answers the breaker's words, and is off until the reset; one the provider worded for the
+  // model (a keyless search's) keeps its own words. A rate limit's own words ("try again") never stand once it is off.
   const quota = webSearch.searchBreaker(() => now);
   const refused = { error: "the provider's free daily limit is spent" };
-  assert.deepEqual(quota.read({ answer: refused, limit: { kind: "quota", retryAfter: 3_600 } }), refused);
+  assert.deepEqual(quota.read({ answer: refused, limit: { kind: "quota", retryAfter: 3_600 } }), { error: UNAVAILABLE });
+  assert.deepEqual(webSearch.searchBreaker(() => now).read({ answer: refused, limit: { kind: "quota", retryAfter: 3_600 }, worded: true }), refused, "worded: its own words");
+  assert.deepEqual(webSearch.searchBreaker(() => now).read({ answer: limited, limit: daily, worded: true }), { error: UNAVAILABLE }, "worded, but off for a rate limit: never its try-again words");
+  assert.deepEqual(webSearch.searchBreaker(() => now).read({ answer: limited, limit: { kind: "rate", retryAfter: 30 }, worded: true }), limited, "worded, within a wait: its own words");
   now += 3_599_999;
   assert.equal(quota.held()?.error, UNAVAILABLE);
   now += 1;
@@ -162,7 +166,7 @@ test("keyless Exa: two RATE_LIMITED answers within one open wait (in flight toge
   assert.equal(failed.held()?.error, UNAVAILABLE, "a failed search between is no success");
 });
 
-test("a quota answer keeps the call's own answer: its words name no retry, and a hosted search's results found before it stay", () => {
+test("a quota answer keeps a hosted search's results found before it", () => {
   const breaker = webSearch.searchBreaker(() => Date.parse("2026-11-15T19:00:00Z"));
   const found = { provider: "native", query: "q", results: [{ url: "https://example.com/", title: "t", snippet: "s" }] };
   assert.deepEqual(breaker.read({ answer: found, limit: { kind: "quota" } }), found);

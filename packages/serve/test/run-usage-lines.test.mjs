@@ -243,11 +243,11 @@ function snapshotStore(run, { entries = [], submissions = [], launch, rounds = 0
 const ENDED = Date.UTC(2026, 10, 19, 10, 0, 0);
 const ended = (extra = {}) => ({ id: "run_1", state: "ended", endedAt: ENDED, importedFrom: null, ...extra });
 
-test("an ended run's usage is read in one snapshot of the store, every read of it: its state, launch, rounds and journal", async () => {
+test("an ended run's usage is read in one snapshot of the store, every read of it: its state, launch and journal (its rounds no longer decide whether it has lines)", async () => {
   const { runUsageOverStore } = await import("../dist/run-usage.js");
   const { store, reads } = snapshotStore(ended(), { entries: [...keys(), ...reported(7, 1, "m", 0.01, usage(10, 1))] });
   const read = await runUsageOverStore(store, "run_1");
-  assert.deepEqual(reads, ["run", "launch", "rounds", "journal", "intervals"], "each read inside the snapshot, none outside (an outside read throws)");
+  assert.deepEqual(reads, ["run", "launch", "journal", "intervals"], "each read inside the snapshot, none outside (an outside read throws)");
   assert.equal(read.ended_at, "2026-11-19T10:00:00.000Z", "the moment the lines cover");
   assert.deepEqual(read.total, { usd: 0.01 });
   assert.equal(read.lines.length, 1);
@@ -272,12 +272,32 @@ test("not_booked: an imported run and an SDK run, whose figure is their harness'
   }
 });
 
-test("reopened: a learning run a follow-up opened again has no lines, since its booking can't be split by round", async () => {
+test("reopened: a learning run a follow-up opened again has every round's job and follow-up lines, each round's learning turn left out", async () => {
   const { runUsageOverStore } = await import("../dist/run-usage.js");
-  const { store, reads } = snapshotStore(ended(), { rounds: 2, entries: [...keys(), ...reported(7, 1, "m", 0.01, usage(10, 1))] });
+  const job = [...keys(), ...reported(7, 1, "m", 0.01, usage(10, 1)), ...paid(1, "monid:faux/person/enrich", "monid", 0.003)];
+  // Round 1's learning turn, closed by the run's first end.
+  const look1 = [e(7, "agentrun.end-of-run.turn", { role: "person", requestId: "learn-reflect-1" }), ...reported(7, 2, "m", 0.5, usage(5000, 500)), e(1, "agentrun.end", { status: "completed" })];
+  // The follow-up's turn: a model request and a second paid call, the job's.
+  const follow = [...reported(7, 3, "m", 0.02, usage(20, 2)), ...paid(2, "monid:faux/person/enrich", "monid", 0.003)];
+  // Round 2's learning turn, closed by the run's second end.
+  const look2 = [e(7, "agentrun.end-of-run.turn", { role: "person", requestId: "learn-reflect-1:round-2" }), ...reported(7, 4, "m", 0.4, usage(4000, 400)), e(1, "agentrun.end", { status: "completed" })];
+  const { store } = snapshotStore(ended(), { rounds: 2, entries: [...job, ...look1, ...follow, ...look2] });
   const read = await runUsageOverStore(store, "run_1");
-  assert.deepEqual([read.lines, read.reason], [null, "reopened"]);
-  assert.ok(!reads.includes("journal"), "its journal is not read");
+  assert.equal(read.reason, null);
+  assert.deepEqual(read.lines.map((one) => [one.meter, nameOf(one), one.quantity, micro(one.usd)]), [["tokens", "m", 33, 30000], ["tools", "monid", 2, 6000]], "both rounds' job and follow-up, no learning turn");
+  assert.deepEqual(read.total, { usd: 0.036 });
+});
+
+test("reopened: a browser charge recorded in a round's learning turn and booked by the follow-up keeps its seconds on the store's read", async () => {
+  const { runUsageOverStore } = await import("../dist/run-usage.js");
+  const job = [...keys(), ...reported(7, 1, "m", 0.01, usage(10, 1))];
+  // Round 1's learning turn holds the raced browser's charge; its booking failed there.
+  const look1 = [e(7, "agentrun.end-of-run.turn", { role: "person", requestId: "learn-reflect-1" }), e(1, "agentrun.browser_charged", { tool: "browser", charged_by: "browserbase", seconds: 600, tag: "unheld:bb-raced", final: true }), e(1, "agentrun.end", { status: "completed" })];
+  // The follow-up's reopen books it.
+  const follow = [...paid(2, "browser", "browserbase", 0.02, { tool: "browser", tag: "unheld:bb-raced", ref: "browser:unheld:bb-raced/final" })];
+  const { store } = snapshotStore(ended(), { rounds: 1, entries: [...job, ...look1, ...follow] });
+  const read = await runUsageOverStore(store, "run_1");
+  assert.deepEqual(read.lines.filter((one) => one.meter === "browser_time").map((one) => [one.quantity, one.usd, one.absorbed]), [[600, 0.02, "create_race"]]);
 });
 
 test("the end-of-run learning turn is not on the lines: it is the server's work for the agent, which cost.usd leaves out too", async () => {
@@ -482,6 +502,37 @@ test("a browser charge whose booking the next claim recovered (its ref) stays on
   assert.equal(infraUsdOf(lines), 0, "nothing was sent again");
 });
 
+test("a session's last browser charge whose booking the next claim recovered (its ref names it final) stays one line, the attempt's that wrote the charge, its total known", async () => {
+  const { usageLinesOf } = await import("../dist/run-usage.js");
+  const attempts = [claimRow(1, 1, 1, 1, ENDED - 900_000, { cut: "drain" }), claimRow(3, 1, 2, 100, ENDED - 600_000)];
+  const charge = { tool: "browser", charged_by: "browserbase", seconds: 60, tag: "s1", at: "2026-11-19T09:50:00.000Z", final: true };
+  const entries = [
+    ...ids(1, [...keys(), e(1, "agentrun.browser_charged", charge)]),
+    ...ids(100, [...paid(1, "browser", "browserbase", 0.002, { tool: "browser", tag: "s1", ref: "browser:s1@2026-11-19T09:50:00.000Z/final" }), ...reported(7, 1, "m", 0.01, usage(10, 1))]),
+  ];
+  const { lines, total } = usageLinesOf(entries, undefined, new Map(), { rows: [], at: 0 }, attempts);
+  const browser = lines.filter((one) => one.meter === "browser_time");
+  assert.deepEqual(browser.map((one) => [one.quantity, one.usd, one.attempt, one.billable]), [[60, 0.002, 1, true]], "its seconds and its money on one line, the cut attempt's");
+  assert.equal(micro(total.usd), micro(0.012), "the total is known");
+});
+
+test("a create-race browser's charge committed by one claim and booked by the next (its ref, browserChargeRef) is one absorbed line with its seconds and its money, the totals known", async () => {
+  const { usageLinesOf, infraUsdOf } = await import("../dist/run-usage.js");
+  // Attempt 1 (cut by a drain) released the raced browser and committed its charge on the root, then lost its process
+  // before the booking; attempt 2's reopen booked it by its ref (bookRootCharges), the ref every unheld charge takes.
+  const attempts = [claimRow(1, 1, 1, 1, ENDED - 900_000, { cut: "drain" }), claimRow(3, 1, 2, 100, ENDED - 600_000)];
+  const charge = { tool: "browser", charged_by: "browserbase", seconds: 600, tag: "unheld:bb-raced", at: "2026-11-19T09:50:00.000Z", final: true };
+  const entries = [
+    ...ids(1, [...keys(), e(1, "agentrun.browser_charged", charge)]),
+    ...ids(100, [...paid(1, "browser", "browserbase", 0.02, { tool: "browser", tag: "unheld:bb-raced", ref: "browser:unheld:bb-raced/final" }), ...reported(7, 1, "m", 0.01, usage(10, 1))]),
+  ];
+  const { lines, total } = usageLinesOf(entries, undefined, new Map(), { rows: [], at: 0 }, attempts);
+  const browser = lines.filter((one) => one.meter === "browser_time");
+  assert.deepEqual(browser.map((one) => [one.quantity, one.usd, one.attempt, one.billable, one.absorbed]), [[600, 0.02, 1, false, "create_race"]], "its seconds and its money on one absorbed line, the attempt's that wrote the charge");
+  assert.equal(micro(total.usd), micro(0.03), "the total is known");
+  assert.equal(micro(infraUsdOf(lines)), micro(0.02), "infra_usd is known: the absorbed time");
+});
+
 test("a computer kept across a park is billed by the claims that held it: each claim's window of its time sits with that claim's bookings, never a line of unknown quantity (#3351 review)", async () => {
   const { usageLinesOf } = await import("../dist/run-usage.js");
   // Made under claim 1 (turn 1, parked), kept; claim 2 (turn 2) resumed it and was cut; claim 3 (turn 2, attempt 2)
@@ -510,4 +561,58 @@ test("a run that took its first attempt row after its earlier work (an older run
   assert.deepEqual(lines.map((one) => [one.attempt, one.billable, one.usd === null ? null : micro(one.usd)]), [[null, true, micro(0.01)], [1, false, null], [1, true, micro(0.02)], [2, true, micro(0.04)]]);
   assert.equal(infraUsdOf(lines), null, "only the cut follow-up's unfinished request, of no known cost");
   assert.deepEqual(attemptTags(attempts).atTime(ENDED - 700_000), { attempt: null, billable: true }, "a computer made before it too");
+});
+
+test("browser time a create race left (charged under unheld:<id>) is booked and absorbed: a browser_time line of its own, not billable, in total and in infra_usd; the provider's other browser time stays billable", async () => {
+  const { usageLinesOf, infraUsdOf } = await import("../dist/run-usage.js");
+  const entries = [
+    ...keys(),
+    ...reported(7, 1, "m", 0.01, usage(100, 10)),
+    ...paid(1, "browser", "browserbase", 0.002, { tool: "browser", tag: "s1" }),
+    e(1, "agentrun.browser_charged", { tool: "browser", charged_by: "browserbase", seconds: 60, tag: "s1" }),
+    ...paid(2, "browser", "browserbase", 0.02, { tool: "browser", tag: "unheld:bb-raced" }),
+    e(1, "agentrun.browser_charged", { tool: "browser", charged_by: "browserbase", seconds: 600, tag: "unheld:bb-raced" }),
+  ];
+  const { lines, total } = usageLinesOf(entries);
+  const browser = lines.filter((one) => one.meter === "browser_time");
+  assert.deepEqual(browser, [
+    { meter: "browser_time", model: null, provider: "browserbase", charged_by: null, quantity: 600, unit: "second", basis: "estimate", attempt: null, billable: false, absorbed: "create_race", usd: 0.02 },
+    { meter: "browser_time", model: null, provider: "browserbase", charged_by: null, quantity: 60, unit: "second", basis: "estimate", attempt: null, billable: true, usd: 0.002 },
+  ].sort((a, b) => Number(a.billable) - Number(b.billable)), "the raced browser's time on a line of its own; the run's own session's billable");
+  assert.equal(micro(total.usd), micro(0.032), "the ledger's record is whole: total holds the absorbed time");
+  assert.equal(micro(infraUsdOf(lines)), micro(0.02), "infra_usd is the absorbed time");
+  const billed = lines.filter((one) => one.billable).reduce((sum, one) => sum + one.usd, 0);
+  assert.equal(micro(billed), micro(0.012), "a bill of the billable lines leaves the raced browser's time out");
+  assert.ok(lines.every((one) => one.absorbed === undefined || one.absorbed === "create_race"));
+  assert.equal(lines.filter((one) => "absorbed" in one).length, 1, "absent on every other line");
+});
+
+test("a browser charge whose record sits in an end-of-run range the read leaves out, booked by a later claim: its line keeps the charge's seconds and its claim, read from the whole journal; a charge whose booking is left out with it adds none", () => {
+  const ENDED = Date.UTC(2026, 10, 19, 10, 0, 0);
+  const claimRow = (epoch, turn, journalFrom, claimedAt) => ({ runId: "run_1", epoch, turn, attempt: 1, cause: null, cut: null, runner: "r", from: epoch === 1 ? "queued" : "running", journalFrom, claimedAt });
+  const attempts = [claimRow(1, 1, 1, ENDED - 900_000), claimRow(2, 2, 100, ENDED - 600_000)];
+  const at = (from, entries) => entries.map((one, i) => ({ ...one, id: String(from + i) }));
+  const charge = { tool: "browser", charged_by: "browserbase", seconds: 600, tag: "unheld:bb-raced", at: "2026-11-19T09:55:00.000Z", final: true };
+  const learned = { tool: "browser", charged_by: "browserbase", seconds: 30, tag: "ar-learn", at: "2026-11-19T09:56:00.000Z", final: true };
+  const round1 = at(1, [...keys(), ...reported(7, 1, "m", 0.01, usage(10, 1))]);
+  // Round 1's end-of-run range: the raced browser's charge (its booking failed there), and a session the learning turn
+  // opened, charged and booked inside it.
+  const reflect = at(50, [e(1, "agentrun.browser_charged", charge), e(1, "agentrun.browser_charged", learned), ...paid(4, "browser", "browserbase", 0.001, { tool: "browser", tag: learned.tag, ref: "browser:ar-learn@2026-11-19T09:56:00.000Z/final" })]);
+  // The follow-up claim's reopen books the raced charge.
+  const followUp = at(100, [...paid(2, "browser", "browserbase", 0.02, { tool: "browser", tag: charge.tag, ref: "browser:unheld:bb-raced/final" }), ...reported(7, 2, "m", 0.01, usage(10, 1))]);
+  const job = [...round1, ...followUp];
+  const { lines } = usageLinesOf(job, undefined, new Map(), { rows: [], at: 0 }, attempts, [...round1, ...reflect, ...followUp]);
+  const browser = lines.filter((one) => one.meter === "browser_time");
+  assert.equal(browser.length, 1, JSON.stringify(browser));
+  assert.equal(browser[0].quantity, 600, "the raced charge's seconds, from its record in the left-out range");
+  assert.equal(browser[0].usd, 0.02);
+  assert.equal(browser[0].absorbed, "create_race");
+  assert.equal(browser[0].attempt, 1);
+  // A booking a later attempt of the same turn wrote (a claim that took the run over) stays on the attempt whose claim
+  // wrote the charge.
+  const retried = [claimRow(1, 1, 1, ENDED - 900_000), { ...claimRow(1, 1, 100, ENDED - 600_000), attempt: 2 }];
+  const again = usageLinesOf(job, undefined, new Map(), { rows: [], at: 0 }, retried, [...round1, ...reflect, ...followUp]).lines.filter((one) => one.meter === "browser_time" && one.absorbed === "create_race");
+  assert.deepEqual(again.map((one) => [one.attempt, one.quantity]), [[1, 600]], JSON.stringify(again));
+  // Read over the job alone, as before: the dollars stay, the seconds are unknown.
+  assert.equal(usageLinesOf(job, undefined, new Map(), { rows: [], at: 0 }, attempts).lines.find((one) => one.meter === "browser_time").quantity, null);
 });

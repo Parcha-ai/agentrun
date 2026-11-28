@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { kybWorkflow } from "@/demo/dwf/workflows";
-import { lineCol, lintWorkflow, nodeAtOffset, nodeMeta, parseWithSpans, spanOf } from "./workflowDoc";
+import { DECISION_STARTER } from "./decisionStarter";
+import { WORKFLOW_STARTER } from "./workflowStarter";
+import { isDecisionWorkflow, lineCol, lintWorkflow, nodeAtOffset, nodeMeta, parseWithSpans, spanOf } from "./workflowDoc";
 
 describe("parseWithSpans", () => {
   it("parses as JSON.parse does, with each value's span by its pointer", () => {
@@ -73,5 +75,20 @@ describe("lintWorkflow", () => {
       expect.stringMatching(/^\/root\/steps\/2: an openrouter decision names its model/),
       expect.stringMatching(/^\/root\/steps\/1\/branches\/1\/images\/<cert>: the image token/),
     ]));
+  });
+});
+
+describe("isDecisionWorkflow", () => {
+  it("is a decision where the workflow decides and runs no agent or code: the starter decision, not the starter workflow", () => {
+    expect(isDecisionWorkflow(DECISION_STARTER)).toBe(true);
+    expect(isDecisionWorkflow(WORKFLOW_STARTER)).toBe(false);
+  });
+  it("is no decision once an agent or code node runs beside the question, or where nothing decides", () => {
+    const withAgent = { ...DECISION_STARTER, root: { node: "chain", steps: [...DECISION_STARTER.root.steps, { node: "agent", label: "write", instructions: "Write it up." }] } };
+    expect(isDecisionWorkflow(withAgent)).toBe(false);
+    const withCode = { ...DECISION_STARTER, root: { node: "chain", steps: [...DECISION_STARTER.root.steps, { node: "code", label: "sum", source: "return 1" }] } };
+    expect(isDecisionWorkflow(withCode)).toBe(false);
+    expect(isDecisionWorkflow({ v: 2, name: "x", root: { node: "escalate", label: "stop", summary: "Stop." } })).toBe(false);
+    expect(isDecisionWorkflow(undefined)).toBe(false);
   });
 });

@@ -2,10 +2,9 @@
 // (fees.ts exaFeeOf) through the run's Pay, on the x-api-key header. Its settings are typed, each with a default
 // (EXA_DEFAULTS); a setting it does not take is refused when the Web is made. A 401 or 403 refuses the key for the run.
 import { EXA_SEARCH_TYPE_USD, type ExaSearchType, exaFeeOf, type Pay } from "../fees.js";
-import { clip, linksWithin, MAX_CHARS_MIN, PAGE_READ_MAX_CHARS, type Read, TITLE_CAP, textOf, URL_MAX, withoutCredentials } from "../page.js";
+import { clip, MAX_CHARS_MIN, PAGE_READ_MAX_CHARS, type Read, TITLE_CAP, URL_MAX, withoutCredentials, writtenRead } from "../page.js";
 import { failed, failure, type Hit, type Searched, SNIPPET_MAX, searchArgs, searchFailed, snippetOf } from "../search.js";
 import { defineProvider, type ProviderRun, settingsOf } from "../provider.js";
-import { linksOf } from "../text-urls.js";
 import { type Check, codeOf, domains, type Keyed, keyedCall, keyedClient, type KeyedFailed, oneOf, settingsProblems, wholeIn, yesNo } from "./keyed.js";
 
 export const EXA_API_URL = "https://api.exa.ai";
@@ -16,8 +15,9 @@ export const EXA_CATEGORIES = ["company", "publication", "news", "personal site"
 /** How Exa searches and reads, each setting optional (EXA_DEFAULTS):
  *  - `type`: the search's depth and price (fees.ts EXA_SEARCH_TYPE_USD), default "auto";
  *  - `snippet`: each result's text for its snippet, its query-relevant `highlights` or the page's `text` from its start,
- *    default "highlights"; `snippetChars`, how many characters of it Exa gives, MAX_CHARS_MIN to SNIPPET_MAX, default
- *    SNIPPET_MAX (a snippet keeps at most SNIPPET_MAX);
+ *    default "highlights"; `snippetChars`, how many characters of it Exa gives, MAX_CHARS_MIN to SNIPPET_MAX. Unset,
+ *    highlights go bare, as Exa's guidance asks (Exa sizes them to the query), and text goes at SNIPPET_MAX; a snippet
+ *    keeps at most SNIPPET_MAX either way;
  *  - `maxAgeHours`: the oldest cached page Exa may answer from, for a search's contents and a fetch, -1 (cache only) to
  *    720, 0 a live crawl; unset, Exa's own (its cache, a live crawl for a page it has none of);
  *  - `includeDomains`, `excludeDomains`: the domains a search keeps to or leaves out; `category`: Exa's index to search;
@@ -34,7 +34,7 @@ export type ExaSettings = {
   pageVerbosity?: "compact" | "standard" | "full";
   pageLinks?: boolean;
 };
-export const EXA_DEFAULTS = Object.freeze({ type: "auto", snippet: "highlights", snippetChars: SNIPPET_MAX, pageVerbosity: "compact", pageLinks: true } as const);
+export const EXA_DEFAULTS = Object.freeze({ type: "auto", snippet: "highlights", pageVerbosity: "compact", pageLinks: true } as const);
 
 const EXA_CHECKS: Readonly<Record<keyof ExaSettings, Check>> = {
   type: oneOf(Object.keys(EXA_SEARCH_TYPE_USD)),
@@ -54,11 +54,11 @@ export const exaClient = (apiKey: string, send: typeof fetch = fetch, pay?: Pay,
 
 /** The /search request for `query`, `n` results, under `settings`. */
 export function exaSearchBody(query: string, n: number, settings: ExaSettings = {}): Record<string, unknown> {
-  const { type, snippet, snippetChars } = { ...EXA_DEFAULTS, ...settings };
-  const content = snippet === "text" ? { text: { maxCharacters: snippetChars } } : { highlights: { maxCharacters: snippetChars } };
+  const { snippetChars } = settings;
+  const content = (settings.snippet ?? EXA_DEFAULTS.snippet) === "text" ? { text: { maxCharacters: snippetChars ?? SNIPPET_MAX } } : { highlights: snippetChars === undefined ? true : { maxCharacters: snippetChars } };
   return {
     query,
-    type,
+    type: settings.type ?? EXA_DEFAULTS.type,
     numResults: n,
     ...(settings.includeDomains ? { includeDomains: settings.includeDomains } : {}),
     ...(settings.excludeDomains ? { excludeDomains: settings.excludeDomains } : {}),
@@ -94,7 +94,8 @@ export async function exaSearched(args: Record<string, unknown>, client: Keyed |
 /** The /contents request for `url` under `settings`: its text to the most of a page web_fetch reads and one character
  *  more (so a page Exa cut there shows as going on), at the verbosity asked, its links kept or not. */
 export function exaContentsBody(url: string, settings: ExaSettings = {}): Record<string, unknown> {
-  const { pageVerbosity, pageLinks } = { ...EXA_DEFAULTS, ...settings };
+  const pageVerbosity = settings.pageVerbosity ?? EXA_DEFAULTS.pageVerbosity;
+  const pageLinks = settings.pageLinks ?? EXA_DEFAULTS.pageLinks;
   return {
     urls: [url],
     text: { maxCharacters: PAGE_READ_MAX_CHARS + 1, verbosity: pageVerbosity, ...(pageLinks ? { linkStyle: "full" } : {}) },
@@ -119,7 +120,7 @@ export async function exaRead(url: string, client: Keyed | null, settings: ExaSe
   if (!row) return failed("not_text", "NO_TEXT", "Exa's fetch answered no page text");
   const asked = PAGE_READ_MAX_CHARS + 1;
   // The page's url names no user name or password: cleared first, then cut, as every client's page url is.
-  return { ok: true, url: clip(withoutCredentials(typeof row.url === "string" && URL.canParse(row.url) ? row.url : url), URL_MAX), status: 200, title: clip(typeof row.title === "string" ? row.title : "", TITLE_CAP), ...textOf(row.text, row.text.length < asked), ...linksWithin(linksOf(row.text)) };
+  return { ok: true, url: clip(withoutCredentials(typeof row.url === "string" && URL.canParse(row.url) ? row.url : url), URL_MAX), status: 200, title: clip(typeof row.title === "string" ? row.title : "", TITLE_CAP), ...writtenRead(row.text, row.text.length < asked) };
 }
 
 /** Exa on the run's key, both tools on one client. Its search keeps the caller's signal and its own bound (a paid request
@@ -133,7 +134,7 @@ export const exa = defineProvider(
     return {
       search: (ask, _deadline, signal) => exaSearched(ask, client, asked, signal),
       read: (url, { signal }) => exaRead(url as string, client, asked, signal),
-      unready: () => (client && !client.live() ? failure("refused", "KEY_REFUSED", "not tried: refused earlier in this run") : undefined),
+      unready: () => (!client ? failure("refused", "NO_KEY", "not tried: this run holds no Exa key") : client.live() ? undefined : failure("refused", "KEY_REFUSED", "not tried: refused earlier in this run")),
     };
   },
 );
