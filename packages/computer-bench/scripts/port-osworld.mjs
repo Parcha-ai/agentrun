@@ -16,8 +16,9 @@
 // is), holding task.json and osworld.json (and rubric.md for an infeasible task), and the suite's PORT.md, which gives
 // each refused task its reasons. A task is portable when the bench desktop can run it as OSWorld wrote it: its apps are
 // the desktop's, its check reads no GNOME-only state and no accessibility tree, it opens no live page and signs in to
-// nothing, every getter and metric it names is OSWorld's, and every file it downloads or compares with is pinned. The
-// rule reads each task's JSON alone; OVERRIDES holds the facts it can't see, each with its reason.
+// nothing, no step of it runs sudo (osw runs as the computer's own user, with no root), every getter and metric it
+// names is OSWorld's, and every file it downloads or compares with is pinned. The rule reads each task's JSON alone;
+// OVERRIDES holds the facts it can't see, each with its reason.
 //
 // osworld.json is the task's own JSON with each file-cache URL pinned: a URL at `main` moves to DATASET_REVISION and a
 // URL at another revision stays at it; each download step's files and each cloud_file gold get the sha256 osw checks.
@@ -77,6 +78,8 @@ const GNOME_GETTERS = new Set(["vm_wallpaper"]);
 const GNOME_METRICS = new Set(["check_gnome_favorite_apps"]);
 const GNOME_WORDS = /\b(gsettings|dconf|gnome-[a-z-]+|update-desktop-database|org\.gnome)\b/;
 const GOOGLE = /google account|accounts\.google|colab\.research|drive\.google|docs\.google|sign in to google/i;
+// OSWorld's steps get root as `echo {CLIENT_PASSWORD} | sudo -S ...`; the bench desktop gives none.
+const ROOT_WORDS = /\bsudo\b|\{CLIENT_PASSWORD\}/;
 /** Metrics whose dependencies the image leaves out, with why. */
 const HEAVY_METRICS = { compare_image_text: "the metric compare_image_text needs easyocr and torch (about 2 GB), which the image leaves out" };
 const LOCAL_HOSTS = new Set(["huggingface.co", "localhost", "127.0.0.1", "0.0.0.0"]);
@@ -164,6 +167,7 @@ export function classify(task, names) {
 	if (gnomeWord) gnome.push(gnomeWord);
 	if (gnome.length > 0) reasons.push(`the check reads GNOME-only state (${gnome.join(", ")})`);
 	if (GOOGLE.test(commandText + checkText + instruction)) reasons.push("it signs in to Google");
+	if (ROOT_WORDS.test(commandText + checkText)) reasons.push("a setup or check step runs sudo, and the bench desktop gives no root: osw runs as the computer's own user");
 	if (override.refuse) reasons.push(override.refuse);
 	const missing = [...apps].filter((app) => !(app in DESKTOP_APPS)).sort();
 	if (missing.length > 0) reasons.push(`needs ${missing.join(", ")}, not on the bench desktop`);
@@ -255,8 +259,28 @@ export function titleOf(instruction) {
 
 const dashed = (domain) => domain.replace(/_/g, "-").toLowerCase();
 const FIND_DISPLAY = "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); eval $(xdotool getdisplaygeometry --shell 2>/dev/null)";
-/** osw as root, on the task's OSWorld JSON (the shell's $1) through stdin, with the desktop's display and size. */
-const osw = (command) => `${FIND_DISPLAY}; printf '%s' "$1" | sudo -n env DISPLAY="$DISPLAY" SCREEN_WIDTH="\${WIDTH:-1920}" SCREEN_HEIGHT="\${HEIGHT:-1080}" osw ${command} /dev/stdin`;
+/** The sha256 of the bench's osw.py, which every check pins: the check runs osw only when it is that file. */
+export const OSW_SHA256 = createHash("sha256").update(readFileSync(new URL("../image/osw/osw.py", import.meta.url))).digest("hex");
+/** osw's environment: the desktop's display and size, and the run's own cache, which osw eval removes and makes again. */
+const OSW_ENV = `env DISPLAY="$DISPLAY" SCREEN_WIDTH="\${WIDTH:-1920}" SCREEN_HEIGHT="\${HEIGHT:-1080}" OSW_CACHE=/tmp/computer-bench-{{nonce}}-osw-cache`;
+/** osw setup as the desktop's own user, on the task's OSWorld JSON (the shell's $1) through stdin. */
+const OSW_SETUP = `${FIND_DISPLAY}; printf '%s' "$1" | ${OSW_ENV} osw setup /dev/stdin`;
+/**
+ * osw eval the same way, but from a copy in a new folder, run by an isolated python3 (-I), and only when the copy's
+ * sha256 is OSW_SHA256. The agent's turn ran as the same user and could have changed osw: then the check refuses in
+ * words with 75, infra, never a score.
+ */
+const OSW_EVAL = [
+	FIND_DISPLAY,
+	`o=$(command -v osw) || { echo 'osw is not on PATH' >&2; exit 75; }`,
+	"d=$(mktemp -d) || exit 75",
+	`cp "$o" "$d/osw.py" || { rm -rf "$d"; exit 75; }`,
+	`s=$(sha256sum "$d/osw.py" | cut -c1-64)`,
+	`if [ "$s" != ${OSW_SHA256} ]; then rm -rf "$d"; echo "osw ($o) is not the bench's osw.py: its sha256 is $s, the bench's is ${OSW_SHA256}; the check refuses to run it, and the task is not scored" >&2; exit 75; fi`,
+	`printf '%s' "$1" | ${OSW_ENV} python3 -I "$d/osw.py" eval /dev/stdin; c=$?`,
+	`rm -rf "$d"`,
+	"exit $c",
+].join("; ");
 const SETUP_FILES = "/tmp/computer-bench-{{nonce}}-osw-setup";
 const SETUP_WAIT_S = 600;
 
@@ -300,15 +324,15 @@ export function taskSpec(domain, task, { apps, infeasible, probes }) {
 	const hasSetup = (task.config ?? []).length > 0;
 	const usesOsw = hasSetup || !infeasible;
 	const capabilities = [
-		...(usesOsw ? [{ id: "osw", kind: "exec", why: "osw, which runs OSWorld's setup and evaluator, on PATH, and sudo with no password, which runs it: the bench image has both, and a desktop without them skips the task, never fails it.", argv: ["sh", "-c", "command -v osw && sudo -n true"] }] : []),
+		...(usesOsw ? [{ id: "osw", kind: "exec", why: "osw, which runs OSWorld's setup and evaluator, on PATH: the bench image has it, and a desktop without it skips the task, never fails it.", argv: ["sh", "-c", "command -v osw"] }] : []),
 		...probes.map((probe) => ({ id: probe.command, kind: "exec", why: `The task ${probe.why}.`, argv: ["sh", "-c", `command -v ${probe.command}`] })),
 	];
 	const setup = hasSetup
 		? [
 				{
 					method: "process.start",
-					why: "osw setup: OSWorld's own SetupController runs the task's config (downloads checked against their pinned sha256, files opened, apps launched) against OSWorld's server on loopback. A process, not exec.run, so the apps it launches outlive it (orphans: keep); its exit code goes beside its log.",
-					params: { argv: ["sh", "-c", `${osw("setup")} > ${SETUP_FILES}.log 2>&1; echo $? > ${SETUP_FILES}.exit`, "sh", "{{file:osworld.json}}"], orphans: "keep" },
+					why: "osw setup, as the desktop's own user: OSWorld's own SetupController runs the task's config (downloads checked against their pinned sha256, files opened, apps launched) against OSWorld's server on loopback. A process, not exec.run, so the apps it launches outlive it (orphans: keep); its exit code goes beside its log.",
+					params: { argv: ["sh", "-c", `${OSW_SETUP} > ${SETUP_FILES}.log 2>&1; echo $? > ${SETUP_FILES}.exit`, "sh", "{{file:osworld.json}}"], orphans: "keep" },
 				},
 				{
 					method: "exec.run",
@@ -326,15 +350,15 @@ export function taskSpec(domain, task, { apps, infeasible, probes }) {
 				{
 					id: "osworld",
 					kind: "exec",
-					why: "OSWorld's own evaluator for the task, run by osw eval after the agent ended: postconfig, then each getter and metric with its options, golds fetched only now and checked against their pinned sha256. Exit 0 is a score of 1 and 1 a lower score; 75 is a check that could not run (the server, a getter, a metric or a download failed), infra, run again.",
-					argv: ["sh", "-c", osw("eval"), "sh", "{{file:osworld.json}}"],
+					why: "OSWorld's own evaluator for the task, run by osw eval after the agent ended, as the desktop's own user, and only when osw is the bench's osw.py (its sha256 pinned here). osw removes its cache and makes it again, then runs postconfig, then each getter and metric with its options, golds fetched only now and checked against their pinned sha256. Exit 0 is a score of 1 and 1 a lower score; 75 is a check that could not run (osw changed, or the server, a getter, a metric or a download failed), infra, run again.",
+					argv: ["sh", "-c", OSW_EVAL, "sh", "{{file:osworld.json}}"],
 					timeoutMs: 120000,
 					infra: [75],
 				},
 			];
 	const changes = infeasible
 		? "OSWorld marks this task infeasible and passes an agent whose last action is FAIL. computer-bench has no FAIL action, so the agent says so in its final answer: an answer check proves there is one (not its words), and the agentic grader reads it and decides with rubric.md, which every infeasible task of the suite shares."
-		: "Setup runs the task's config, and the check its evaluator, through osw in the bench image: OSWorld's own SetupController, getters and metrics, on a Debian Xfce desktop instead of OSWorld's Ubuntu GNOME VM.";
+		: "Setup runs the task's config, and the check its evaluator, through osw in the bench image, as the desktop's own user: OSWorld's own SetupController, getters and metrics, on a Debian Xfce desktop instead of OSWorld's Ubuntu GNOME VM.";
 	return {
 		$schema: "../../../schema/task.schema.json",
 		id: `osworld-verified.${dashed(domain)}.${uuid.slice(0, 8)}`,
@@ -413,7 +437,10 @@ export function portMd(results, written) {
 
 Written by \`scripts/port-osworld.mjs\`: run it again rather than edit this file. Each task folder holds \`task.json\` and
 \`osworld.json\`, the task's own OSWorld JSON with its file-cache URLs pinned, and an infeasible task's folder the shared
-\`rubric.md\`. Setup and the check run OSWorld's own code through osw (\`image/osw/osw.py\`) in the bench desktop image.
+\`rubric.md\`. Setup and the check run OSWorld's own code through osw (\`image/osw/osw.py\`) in the bench desktop image,
+as the computer's own user, the agent's too: no root. The check runs osw only when its sha256 is the bench's osw.py
+(\`${OSW_SHA256}\`, which each task pins), and osw eval removes its cache and makes it again before it fetches the golds,
+each checked against its pinned sha256.
 A pass rate on this suite is a number for the tasks written here under OSWorld's checks on our desktop, not an OSWorld
 score.
 

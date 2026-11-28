@@ -9,7 +9,7 @@
     "id": "gimp/dbbf4b99-2253-4b10-9274-45f246af2466",
     "revision": "0ad41bee56565efe7bb3c3a5ebc67590a1b8276f",
     "licence": "Apache-2.0 (Copyright 2024 XLANG NLP Lab); the instruction is copied word for word, and osworld.json is the task's own JSON with the changes named here",
-    "changes": "osworld.json is the task's OSWorld JSON with each file-cache URL pinned to a dataset revision (main is e28460ae734cb1b33901d232cef8747c20ccd677) and each download and gold given its sha256. Setup runs the task's config, and the check its evaluator, through osw in the bench image: OSWorld's own SetupController, getters and metrics, on a Debian Xfce desktop instead of OSWorld's Ubuntu GNOME VM."
+    "changes": "osworld.json is the task's OSWorld JSON with each file-cache URL pinned to a dataset revision (main is e28460ae734cb1b33901d232cef8747c20ccd677) and each download and gold given its sha256. Setup runs the task's config, and the check its evaluator, through osw in the bench image, as the desktop's own user: OSWorld's own SetupController, getters and metrics, on a Debian Xfce desktop instead of OSWorld's Ubuntu GNOME VM."
   },
   "tags": [
     "osworld",
@@ -29,11 +29,11 @@
       {
         "id": "osw",
         "kind": "exec",
-        "why": "osw, which runs OSWorld's setup and evaluator, on PATH, and sudo with no password, which runs it: the bench image has both, and a desktop without them skips the task, never fails it.",
+        "why": "osw, which runs OSWorld's setup and evaluator, on PATH: the bench image has it, and a desktop without it skips the task, never fails it.",
         "argv": [
           "sh",
           "-c",
-          "command -v osw && sudo -n true"
+          "command -v osw"
         ]
       }
     ]
@@ -41,12 +41,12 @@
   "setup": [
     {
       "method": "process.start",
-      "why": "osw setup: OSWorld's own SetupController runs the task's config (downloads checked against their pinned sha256, files opened, apps launched) against OSWorld's server on loopback. A process, not exec.run, so the apps it launches outlive it (orphans: keep); its exit code goes beside its log.",
+      "why": "osw setup, as the desktop's own user: OSWorld's own SetupController runs the task's config (downloads checked against their pinned sha256, files opened, apps launched) against OSWorld's server on loopback. A process, not exec.run, so the apps it launches outlive it (orphans: keep); its exit code goes beside its log.",
       "params": {
         "argv": [
           "sh",
           "-c",
-          "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); eval $(xdotool getdisplaygeometry --shell 2>/dev/null); printf '%s' \"$1\" | sudo -n env DISPLAY=\"$DISPLAY\" SCREEN_WIDTH=\"${WIDTH:-1920}\" SCREEN_HEIGHT=\"${HEIGHT:-1080}\" osw setup /dev/stdin > /tmp/computer-bench-{{nonce}}-osw-setup.log 2>&1; echo $? > /tmp/computer-bench-{{nonce}}-osw-setup.exit",
+          "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); eval $(xdotool getdisplaygeometry --shell 2>/dev/null); printf '%s' \"$1\" | env DISPLAY=\"$DISPLAY\" SCREEN_WIDTH=\"${WIDTH:-1920}\" SCREEN_HEIGHT=\"${HEIGHT:-1080}\" OSW_CACHE=/tmp/computer-bench-{{nonce}}-osw-cache osw setup /dev/stdin > /tmp/computer-bench-{{nonce}}-osw-setup.log 2>&1; echo $? > /tmp/computer-bench-{{nonce}}-osw-setup.exit",
           "sh",
           "{{file:osworld.json}}"
         ],
@@ -77,11 +77,11 @@
     {
       "id": "osworld",
       "kind": "exec",
-      "why": "OSWorld's own evaluator for the task, run by osw eval after the agent ended: postconfig, then each getter and metric with its options, golds fetched only now and checked against their pinned sha256. Exit 0 is a score of 1 and 1 a lower score; 75 is a check that could not run (the server, a getter, a metric or a download failed), infra, run again.",
+      "why": "OSWorld's own evaluator for the task, run by osw eval after the agent ended, as the desktop's own user, and only when osw is the bench's osw.py (its sha256 pinned here). osw removes its cache and makes it again, then runs postconfig, then each getter and metric with its options, golds fetched only now and checked against their pinned sha256. Exit 0 is a score of 1 and 1 a lower score; 75 is a check that could not run (osw changed, or the server, a getter, a metric or a download failed), infra, run again.",
       "argv": [
         "sh",
         "-c",
-        "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); eval $(xdotool getdisplaygeometry --shell 2>/dev/null); printf '%s' \"$1\" | sudo -n env DISPLAY=\"$DISPLAY\" SCREEN_WIDTH=\"${WIDTH:-1920}\" SCREEN_HEIGHT=\"${HEIGHT:-1080}\" osw eval /dev/stdin",
+        "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); eval $(xdotool getdisplaygeometry --shell 2>/dev/null); o=$(command -v osw) || { echo 'osw is not on PATH' >&2; exit 75; }; d=$(mktemp -d) || exit 75; cp \"$o\" \"$d/osw.py\" || { rm -rf \"$d\"; exit 75; }; s=$(sha256sum \"$d/osw.py\" | cut -c1-64); if [ \"$s\" != a6a1884ba588b6e72db943b3439a14b5de8579176d8526e2b5c900ae02db1494 ]; then rm -rf \"$d\"; echo \"osw ($o) is not the bench's osw.py: its sha256 is $s, the bench's is a6a1884ba588b6e72db943b3439a14b5de8579176d8526e2b5c900ae02db1494; the check refuses to run it, and the task is not scored\" >&2; exit 75; fi; printf '%s' \"$1\" | env DISPLAY=\"$DISPLAY\" SCREEN_WIDTH=\"${WIDTH:-1920}\" SCREEN_HEIGHT=\"${HEIGHT:-1080}\" OSW_CACHE=/tmp/computer-bench-{{nonce}}-osw-cache python3 -I \"$d/osw.py\" eval /dev/stdin; c=$?; rm -rf \"$d\"; exit $c",
         "sh",
         "{{file:osworld.json}}"
       ],

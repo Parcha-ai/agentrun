@@ -7,9 +7,11 @@
 #                             and `conj`, as OSWorld's DesktopEnv.evaluate() does, and stops the server.
 #
 # Every download (a config or postconfig `download` step) and every gold (a `cloud_file` getter) is fetched by its URL
-# and checked against the sha256 the task pins, into the task's cache, a folder only osw's user reads (root, in the
-# image). Golds are fetched by `osw eval` alone, so they are never on the box while the agent runs. SetupController and
-# get_cloud_file find the files there and fetch nothing themselves.
+# and checked against the sha256 the task pins, into the task's cache, a folder only osw's user reads. SetupController
+# and get_cloud_file find the files there and fetch nothing themselves. osw runs as the computer's own user, the agent's
+# too, so `osw eval` first removes the whole cache (--cache) and makes it again: nothing the agent's turn left there is
+# read, and the golds, fetched by `osw eval` alone, are never on the box while the agent runs. The server's Python runs
+# isolated (-I), so a module planted in the user's own site-packages never loads in it.
 #
 # Exit codes, as the bench reads an exec check:
 #   0   setup done; or a score of 1
@@ -25,8 +27,7 @@
 # of DesktopEnv.evaluate() with no action history (the bench keeps none; an infeasible task is checked by its answer).
 #
 # Options default to OSW_* variables: --osworld OSW_OSWORLD (OSWorld's checkout), --port OSW_PORT (5000), --cache
-# OSW_CACHE (/var/cache/osw), --user OSW_USER (agentrun-tool: the server's user when osw runs as root), --home OSW_HOME
-# (/home/user). The server gets osw's environment (DISPLAY included) with HOME, and USER and LOGNAME when it switches.
+# OSW_CACHE (~/.cache/osw), --home OSW_HOME (/home/user). The server gets osw's environment (DISPLAY included) with HOME.
 import argparse
 import contextlib
 import ctypes
@@ -34,8 +35,8 @@ import hashlib
 import json
 import logging
 import os
-import pwd
 import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -137,6 +138,18 @@ def cache_dir(base, task_id):
     return path
 
 
+def fresh_cache(base, task_id, home):
+    """cache_dir, once the whole of base is removed: a link or a file unlinked (never followed), a folder removed with
+    what is in it. Never / or the desktop user's HOME."""
+    if os.path.abspath(base) in ("/", home):
+        raise RuntimeError(f"the cache {base} is / or the desktop user's HOME, which osw eval never removes")
+    if os.path.islink(base) or os.path.isfile(base):
+        os.unlink(base)
+    elif os.path.isdir(base):
+        shutil.rmtree(base)
+    return cache_dir(base, task_id)
+
+
 def reachable(port):
     with socket.socket() as probe:
         probe.settimeout(1)
@@ -150,20 +163,15 @@ def die_with_parent():
 
 @contextlib.contextmanager
 def server(args, cache):
-    """OSWorld's server on 127.0.0.1, as the desktop user, for the block's length. Stopping it ends the server alone,
-    never its process group, so the apps it launched stay up."""
+    """OSWorld's server on 127.0.0.1, as osw's own user (the desktop's), for the block's length. Stopping it ends the
+    server alone, never its process group, so the apps it launched stay up."""
     if reachable(args.port):
         raise RuntimeError(f"something already listens on {HOST}:{args.port}")
     env = dict(os.environ, HOME=args.home)
-    switch = {}
-    if os.geteuid() == 0:
-        user = pwd.getpwnam(args.user)
-        env.update(USER=user.pw_name, LOGNAME=user.pw_name)
-        switch = {"user": user.pw_uid, "group": user.pw_gid, "extra_groups": os.getgrouplist(user.pw_name, user.pw_gid)}
     log_path = os.path.join(cache, "server.log")
     with open(log_path, "ab") as log:
-        argv = [sys.executable, "-c", SERVE, os.path.join(args.osworld, "desktop_env", "server"), HOST, str(args.port)]
-        proc = subprocess.Popen(argv, cwd=args.home, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, preexec_fn=die_with_parent, **switch)
+        argv = [sys.executable, "-I", "-c", SERVE, os.path.join(args.osworld, "desktop_env", "server"), HOST, str(args.port)]
+        proc = subprocess.Popen(argv, cwd=args.home, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, preexec_fn=die_with_parent)
     try:
         deadline = time.monotonic() + START_S
         while not reachable(args.port):
@@ -189,7 +197,7 @@ def setup_controller(port, cache):
     from desktop_env.controllers.setup import SetupController
 
     # The screen from SCREEN_WIDTH and SCREEN_HEIGHT, as DesktopEnv reads it. No client password: DesktopEnv's is its
-    # VM user's, and the image's sudo asks for none, so {CLIENT_PASSWORD} (only ever `echo ... | sudo -S`) is left empty.
+    # VM user's, for `echo {CLIENT_PASSWORD} | sudo -S`, and osw has no root (the loader refuses a task that runs sudo).
     width, height = int(os.environ.get("SCREEN_WIDTH", 1920)), int(os.environ.get("SCREEN_HEIGHT", 1080))
     return SetupController(vm_ip=HOST, server_port=port, chromium_port=CHROMIUM_PORT, vlc_port=VLC_PORT, cache_dir=cache, screen_width=width, screen_height=height)
 
@@ -354,8 +362,7 @@ def main(argv=None):
     parser.add_argument("task", help="the task's OSWorld JSON")
     parser.add_argument("--osworld", default=os.environ.get("OSW_OSWORLD"), help="OSWorld's checkout (OSW_OSWORLD)")
     parser.add_argument("--port", type=int, default=int(os.environ.get("OSW_PORT", 5000)), help="the server's port (OSW_PORT, 5000)")
-    parser.add_argument("--cache", default=os.environ.get("OSW_CACHE", "/var/cache/osw"), help="the tasks' caches (OSW_CACHE)")
-    parser.add_argument("--user", default=os.environ.get("OSW_USER", "agentrun-tool"), help="the server's user when osw runs as root (OSW_USER)")
+    parser.add_argument("--cache", default=os.environ.get("OSW_CACHE", os.path.expanduser("~/.cache/osw")), help="the tasks' caches, which osw eval removes whole and makes again (OSW_CACHE)")
     parser.add_argument("--home", default=os.environ.get("OSW_HOME", "/home/user"), help="the server's HOME and working directory (OSW_HOME)")
     args = parser.parse_args(argv)
     if not args.osworld:
@@ -373,7 +380,7 @@ def main(argv=None):
         except (OSError, ValueError) as error:
             raise BadTask(f"{args.task}: {error}") from error
         check_task(task)
-        cache = cache_dir(args.cache, task["id"])
+        cache = cache_dir(args.cache, task["id"]) if args.command == "setup" else fresh_cache(args.cache, task["id"], args.home)
         return (run_setup if args.command == "setup" else run_eval)(args, task, cache)
     except BadTask as error:
         print(f"osw {args.command}: bad task: {error}", file=sys.stderr)
