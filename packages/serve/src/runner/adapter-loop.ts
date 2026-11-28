@@ -66,7 +66,7 @@ import { answerOnce, HAND_BACK, handBackOf } from "./hand-back.js";
 import { isComputerCommand, type JournalHold, journalHold } from "./computer-journal.js";
 import { type HeldSpec, isHeldCommand, type JournalHeld, journalHeld } from "./held-run.js";
 import { HELD_KIND, heldWords } from "../computer-held.js";
-import { CALL_KIND, CALL_MS, COMPUTER_CALL } from "../computer-channel.js";
+import { CALL_KIND, COMPUTER_CALL, callBudgetMs } from "../computer-channel.js";
 import { COMPUTER_CALLS, type ComputerCallRecord, recordingCalls } from "../computer-calls.js";
 import { channelCallOf, type LoopComputer, runChannelCall } from "./computer-channel.js";
 import type { ParkCause } from "../workspace/computer-kept.js";
@@ -1521,7 +1521,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       theHeld?.callStarted();
       let done: Awaited<ReturnType<typeof runChannelCall>>;
       try {
-        done = await projectCall(() => runChannelCall(pass.computer, call, AbortSignal.any([deps.signal, AbortSignal.timeout(CALL_MS)]), now));
+        done = await projectCall(() => runChannelCall(pass.computer, call, AbortSignal.any([deps.signal, AbortSignal.timeout(callBudgetMs(call))]), now));
       } finally {
         theHeld?.callEnded(now());
       }

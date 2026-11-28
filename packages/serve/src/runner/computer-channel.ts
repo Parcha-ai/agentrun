@@ -60,7 +60,7 @@ const words = (error: unknown): string => (error instanceof Error ? error.messag
 /**
  * Runs `call` on `computer` and answers what came of it; never throws. While a person holds the computer the call waits,
  * as the agent's calls do, and counts as in flight once it runs, so a take asked meanwhile waits for it. `signal` bounds
- * the whole of it (the loop's: CALL_MS, and the claim's): a wait or a call it cuts answers `timeout`, a call whose client
+ * the whole of it (the loop's: callBudgetMs, and the claim's): a wait or a call it cuts answers `timeout`, a call whose client
  * failed answers `gone`. The call is no tool call's, so it is recorded on none.
  */
 export async function runChannelCall(computer: LoopComputer, call: ComputerCall, signal: AbortSignal, now: () => number = Date.now): Promise<ChannelAnswer> {
