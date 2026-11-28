@@ -111,6 +111,7 @@ test("a workspace sees GitHub as not connected, its repository list is 409, and 
   const repos = await inW1(server, "GET", "/integrations/github/repositories");
   assert.equal(repos.status, 409, repos.text);
   assert.equal(repos.body.error.code, "github_not_connected");
+  assert.equal(repos.body.error.message, "a workspace doesn't use this server's GitHub App, so only public repositories are read");
   const listed = await inW1(server, "GET", "/suggestions");
   assert.equal(listed.status, 200, listed.text);
   assert.deepEqual(listed.body, { github: { connected: false, app: null, installations: [], install_url: null }, repositories: [], suggestions: [] });
