@@ -163,6 +163,16 @@ test("an ACP agent's own call reads as its command, newlines kept, or its title:
   for (const row of [waiting, asked]) assert.doesNotMatch(`${row?.summary}\n${row?.text}`, /toolCallId|toolu_|WaitMsBeforeAsync|toolSummary|CommandLine|\\n|[{}"]/, "no JSON and none of the agent's own fields");
 });
 
+test("an ACP agent's call that names no command and no title reads as the agent's own input, never the gate's wrapper", async (t) => {
+  const edit = { id: "c1", tool: "acp_edit", args: { kind: "edit", input: { path: "notes.txt", content: `token ${HELD}` }, toolCallId: "toolu_03abcdef" } };
+  const store = await runWith(t, [edit], { ended: false });
+  const rows = await timelineOverStore(store, "run-1", deps);
+  const waiting = readFor(rows, "c1").after[0];
+  assert.equal(waiting?.summary, 'Waiting for your approval: acp_edit {"path":"notes.txt","content":"token [redacted]"}');
+  assert.equal(waiting?.tool_input_preview, '{"path":"notes.txt","content":"token [redacted]"}');
+  assert.doesNotMatch(`${waiting?.summary}\n${waiting?.text}\n${waiting?.tool_input_preview}`, /toolCallId|toolu_|"kind"|"input"/);
+});
+
 test("two approvals in one run each read in order, and reading the rows twice gives the same rows", async (t) => {
   const store = await runWith(t, [fetchCall("c1", { approved: true }, { text: "one", isError: false }), fetchCall("c2", { approved: false, note: "not that page twice" }, { text: "refused", isError: true })]);
   const rows = await timelineOverStore(store, "run-1", deps);
