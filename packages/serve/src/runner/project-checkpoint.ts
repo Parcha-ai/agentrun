@@ -9,6 +9,7 @@ import { commitSourceSnapshot, readSourceSnapshot } from "../source-sync/snapsho
 import { captureManagedProject, sourceSnapshotReader, sourceWorkspace, type SourceWorkspaceOptions } from "../source-sync/workspace.js";
 import { withSourceIO } from "../source-sync/io.js";
 import { held } from "./held.js";
+import type { SpecHolds } from "./spec-holds.js";
 import { ProjectCaptureRefusal } from "../source-sync/capture-refusal.js";
 
 export function runProjectCheckpoint(input: {
@@ -98,8 +99,12 @@ export function runProjectCheckpoint(input: {
   };
 }
 
-/** The isolated child asks only for its host-bound checkpoint; it receives no store/cache/credential capability. */
-export function projectCheckpointForRun(input: Parameters<typeof runProjectCheckpoint>[0], dispatched: () => void) {
+/** The isolated child asks only for its host-bound checkpoint; it receives no store/cache/credential capability. In
+ *  process, the settle asks the spec's own holds at its sweep (SpecHolds.stillHolds, the runner's fence): the spec hands
+ *  its SpecHolds, never a predicate of its own, so no builder can answer for the fence. */
+export function projectCheckpointForRun(given: Omit<Parameters<typeof runProjectCheckpoint>[0], "stillHolds"> & { readonly holds: SpecHolds }, dispatched: () => void) {
+  const { holds, ...rest } = given;
+  const input = { ...rest, stillHolds: () => holds.stillHolds() };
   const host = input.workspace.sealKey === undefined ? held() : undefined;
   if (!host) return runProjectCheckpoint(input);
   return {
