@@ -10,10 +10,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { HOST_RESULT_MAX_CHARS } from "@parcha/agentrun-kernel";
 import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
 import { queue, release, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 
 const { CODEMODE, metaTools } = await import("../dist/runner/meta-tools.js");
+const { runPython } = await import("../dist/runner/codemode-python.js");
 /** The most tool calls one Python script may make (codemode-python.ts CODEMODE_PY_CALLS). */
 const CODEMODE_PY_CALLS = 1_000;
 const { startRunner } = await import("../dist/runner/runner.js");
@@ -88,6 +90,51 @@ test("a Python script whose call is aborted mid-loop ends at once: its worker is
   const began = Date.now();
   await assert.rejects(codemodeOf().call({ script: "n = 0\nwhile True:\n    n += 1", language: "python" }, { signal: stop.signal, nested }), /the session stopped/);
   assert.ok(Date.now() - began < 10_000, `ended ${Date.now() - began} ms in`);
+});
+
+test("a Python script whose call is stopped while it starts runs no step of the script, and its worker is killed at once", async () => {
+  const stop = new AbortController();
+  const calls = [];
+  // The stop lands while the script starts: its start read, before its worker is checked out.
+  const nested = { call: async (name) => (calls.push(name), { text: "ran", fresh: true }), memo: async (_key, value) => (stop.abort(new Error("the session stopped")), value) };
+  const killed = [];
+  const kill = process.kill;
+  process.kill = (pid, signal) => (signal === "SIGKILL" && killed.push(pid), kill.call(process, pid, signal));
+  try {
+    await assert.rejects(runPython('await tools.read_file({})\nprint("ran")', TOOLS, nested, stop.signal), /the session stopped/);
+  } finally {
+    process.kill = kill;
+  }
+  assert.deepEqual(calls, [], "no tool call: the script never ran");
+  assert.equal(killed.length, 1, "its worker was killed");
+  assert.throws(() => kill.call(process, killed[0], 0), { code: "ESRCH" }, "the worker is gone");
+});
+
+test("a Python script past its deadline ends there, and the tool call it waits on is cut with it", async () => {
+  let seen = "not called";
+  const nested = {
+    call: (_name, _args, _key, signal) => new Promise((resolve, reject) => {
+      seen = "waiting";
+      const late = setTimeout(() => ((seen = "never cut"), resolve({ text: "slow done", fresh: true })), 5_000);
+      signal?.addEventListener("abort", () => (clearTimeout(late), (seen = "cut"), reject(signal.reason)), { once: true });
+    }),
+    memo: async (_key, value) => value,
+  };
+  const began = Date.now();
+  const answer = await runPython('await tools.read_file({})\nreturn "done"', TOOLS, nested, new AbortController().signal, 500);
+  assert.equal(seen, "cut", "the tool saw the deadline's abort");
+  assert.equal(answer.isError, true, answer.text);
+  assert.equal(answer.text, "The script failed: the script ran past 500 ms.");
+  assert.ok(Date.now() - began < 4_000, `ended ${Date.now() - began} ms in`);
+});
+
+test(`a Python script that prints more than ${HOST_RESULT_MAX_CHARS} characters ends there in the limit's words, its kept output within the bound`, async () => {
+  const { calls, nested } = nestedCalls();
+  const answer = await python(codemodeOf(), 'for i in range(30000):\n    print("x" * 99)\nawait tools.read_file({})\nreturn "all"', nested);
+  assert.equal(answer.isError, true, answer.text.slice(-300));
+  assert.match(answer.text, new RegExp(`The script failed: it printed more than ${HOST_RESULT_MAX_CHARS} characters`), answer.text.slice(-300));
+  assert.ok(answer.text.length <= HOST_RESULT_MAX_CHARS + 500, `the answer is ${answer.text.length} characters`);
+  assert.deepEqual(calls, [], "nothing after the bound ran");
 });
 
 test("a Python script run again after a park answers its recorded calls from their records, runs the parked call once, and ends there: nothing after it runs", async () => {
