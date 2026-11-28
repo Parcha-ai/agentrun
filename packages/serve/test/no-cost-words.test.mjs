@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { decisionRows, withDecisions } from "../dist/decision-rows.js";
 import { switchFrom, NO_COST_WORDS_ENV } from "../dist/env-switch.js";
 import { withOverCap } from "../dist/run-view.js";
-import { REQUEST_STARTED, timelineOf, TOOL_COST } from "../dist/timeline/index.js";
+import { CAP_WRAPUP, REQUEST_STARTED, timelineOf, TOOL_COST } from "../dist/timeline/index.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { agent, follow, serve } from "./support.mjs";
 import { assistant, custom, user } from "./timeline-lib-support.mjs";
@@ -75,6 +75,21 @@ test("a workflow's usage row with costWords false counts its model requests and 
   assert.deepEqual(on.usage, off.usage);
   assert.equal(withDecisions([usageRow], null, undefined, { costWords: false }).at(-1).summary, "1 model request; its decisions could not be read");
   assert.doesNotMatch(decisionRows([receipt])[0].summary, COST_WORDS, "a decision row's own words name no cost");
+});
+
+test("a dollar cap's wrap-up note with costWords false says the run neared its cap, no amount; off, its words as told; a free-limit note unchanged either way", () => {
+  const told = "About $0.10 left of this run's budget: finish now with your answer.";
+  const dollar = custom(CAP_WRAPUP, { words: told, leftUsd: 0.1, capUsd: 1 });
+  const free = "3 requests left of this run's 60 on free models: finish now with your answer.";
+  const freeNote = custom(CAP_WRAPUP, { words: free, freeLimit: 60 });
+  const noteRows = (entry, options) => timelineOf([user("go"), entry], { settled: true, ...options }).filter((row) => row.origin === "server").map((row) => [row.summary, row.text]);
+  assert.deepEqual(noteRows(dollar, {}), [[`AgentRun: ${told}`, told]]);
+  const [[summary, text]] = noteRows(dollar, { costWords: false });
+  assert.doesNotMatch(summary, /\$/);
+  assert.doesNotMatch(text, /\$/);
+  assert.equal(summary, `AgentRun: ${text}`);
+  assert.deepEqual(noteRows(freeNote, { costWords: false }), [[`AgentRun: ${free}`, free]]);
+  assert.deepEqual(noteRows(freeNote, {}), [[`AgentRun: ${free}`, free]]);
 });
 
 test("the over-cap row with costWords false says the run went over, or may have, with no figure; off, as before", () => {
