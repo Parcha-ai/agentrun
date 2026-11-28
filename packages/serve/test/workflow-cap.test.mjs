@@ -15,7 +15,7 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { journalRecords } from "../dist/runner/journal-reader.js";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
-import { client, flowAgent, follow, letGo, runDir, scratch, serve, startServe, storeRun, withEnv } from "./support.mjs";
+import { client, FAST_BEATS, flowAgent, follow, letGo, runDir, scratch, serve, startServe, storeRun, withEnv } from "./support.mjs";
 import { raw } from "./store-target.mjs";
 
 /** The faux model at $100 a million output tokens, each answer 400 of them: a request costs $0.04, and is admitted only
@@ -444,7 +444,7 @@ async function polls(server, n) {
 async function parkedAtCap(t) {
   withEnv(t, {}, KEYS);
   const events = runnerEvents();
-  const server = await serve(t, { faux: PRICED, onEvent: events.onEvent });
+  const server = await serve(t, { faux: PRICED, onEvent: events.onEvent, runnerTiming: FAST_BEATS });
   const { api } = server;
   assert.equal((await api("POST", "/agents", flowAgent("twice", twoNodes()))).status, 201);
   const started = await api("POST", "/agents/twice/runs", { input: { question: "What is six times seven?" }, max_cost_usd: 0.12 });

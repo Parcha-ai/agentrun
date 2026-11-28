@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { agent, claimsAfterRow, client, follow, serve, webhookLookup, whenFree, withEnv } from "./support.mjs";
+import { agent, claimsAfterRow, client, FAST_BEATS, follow, serve, webhookLookup, whenFree, withEnv } from "./support.mjs";
 
 const { serveWithRunner } = await import("../dist/runner/beside.js");
 const { settingFor } = await import("../dist/claude-login.js");
@@ -322,7 +322,7 @@ test("a run in a process of its own takes its runner's release margin: a cut who
 test("a run's process: a raise its loop refuses (not above the cap) on a run parked at its cap is written refused, and the run stays parked, claimed once for it and never again on each poll", { timeout: 180_000 }, async (t) => {
   const { sendCommand } = await import("../dist/runner/commands.js");
   const lines = [];
-  const server = await serve(t, { faux: new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname, childRuns: { log: (line) => void lines.push(line) } });
+  const server = await serve(t, { faux: new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname, childRuns: { log: (line) => void lines.push(line) }, runnerTiming: FAST_BEATS });
   const { api, store } = server;
   // Its first request (least $0.1024) is refused under a $0.05 cap: the run parks.
   const runId = await started(api, "capped", {}, { input: { content: "Write one.md" }, max_cost_usd: 0.05 });
