@@ -12,7 +12,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { modelPortFor, type Refusal, type Wire } from "@parcha/agentrun-kernel";
 import { runCap } from "@parcha/agentrun-kernel/kernel/cap";
-import { startModelProxy } from "@parcha/agentrun-kernel/host";
+import { LOCAL_MODEL_STALL_MS, startModelProxy } from "@parcha/agentrun-kernel/host";
 import type { Journal } from "./loop-contract.js";
 import { FAUX_ENV } from "../model.js";
 import { sessionProvider } from "../port-models.js";
@@ -43,6 +43,8 @@ export interface AskRoute {
   readonly cost?: RouteCost;
   readonly unpriced?: boolean;
   readonly outputCeiling?: number | null;
+  /** A model on the host's own machine (the route's `local`): its proxy waits LOCAL_MODEL_STALL_MS on a silent model. */
+  readonly local?: boolean;
 }
 
 /** The run's cap the ask is held to: its figure now (a raise's, else its launch's; undefined: none, and only the run's
@@ -124,10 +126,12 @@ export function bookedAsk(route: AskRoute, cap: AskCap): (request: { prompt: str
         ...(route.price ? { price: route.price as never } : {}),
         ...(route.provider.headers ? { headers: route.provider.headers } : {}),
         ...(route.fetch ? { fetch: route.fetch } : {}),
+        // A model on the host's own machine says nothing while it loads: its bound is the session's on one.
+        ...(route.local ? { stallMs: LOCAL_MODEL_STALL_MS } : {}),
       }, randomBytes(32).toString("base64url"));
       try {
         const models = createModels();
-        models.setProvider(sessionProvider(route.provider.api, proxy, model, { provider: PROVIDER, keyName: "AGENTRUN_SDK_ASK_KEY", like: { ...route.like, maxTokens: request.maxTokens }, reasoning: false }));
+        models.setProvider(sessionProvider(route.provider.api, proxy, model, { provider: PROVIDER, keyName: "AGENTRUN_SDK_ASK_KEY", like: { ...route.like, maxTokens: request.maxTokens }, reasoning: false, ...(route.local ? { wait: LOCAL_MODEL_STALL_MS } : {}) }));
         const target = models.getModel(PROVIDER, model);
         // Refused by the cap before it left, however its client came back: nothing of it was sent or spent.
         const overCap = () => (refused ? new AskOverCap(refused.refuse, { usd: booking.spentUsd(), turns: booking.turns() }) : undefined);

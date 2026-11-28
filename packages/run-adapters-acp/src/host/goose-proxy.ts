@@ -352,6 +352,8 @@ export function gooseProxy(options: GooseProxyOptions): AcpProxy {
       ...(options.log ? { log: options.log } : {}),
       ...(options.fetch ? { fetch: options.fetch } : {}),
       onFiltered: (message) => session.halt(new Error(message)),
+      // The proxy stopped a request the provider sent nothing on for its stall bound: the turn ends in its words.
+      onFinal: (message) => session.halt(new Error(message)),
     }, randomBytes(32).toString("base64url"));
     return { env: { ANTHROPIC_HOST: proxy.url, ANTHROPIC_API_KEY: proxy.key }, close: () => proxy.close() };
   };

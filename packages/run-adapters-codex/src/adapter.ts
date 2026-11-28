@@ -272,6 +272,8 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
               ...(options.provider.plan ? { plan: true } : {}),
               ...(options.provider.refused ? { credentialRefused: options.provider.refused } : {}),
               ...(options.fetch ? { fetch: options.fetch } : {}),
+              // The proxy waits on a silent model as long as Codex does on one (a model on the host's own machine).
+              ...(options.streamIdleMs !== undefined ? { stallMs: options.streamIdleMs } : {}),
             },
           }),
         },
