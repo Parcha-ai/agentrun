@@ -188,9 +188,10 @@ def server(args, cache):
 def setup_controller(port, cache):
     from desktop_env.controllers.setup import SetupController
 
-    # DesktopEnv's own values: the screen from SCREEN_WIDTH and SCREEN_HEIGHT, and "password" for {CLIENT_PASSWORD}.
+    # The screen from SCREEN_WIDTH and SCREEN_HEIGHT, as DesktopEnv reads it. No client password: DesktopEnv's is its
+    # VM user's, and the image's sudo asks for none, so {CLIENT_PASSWORD} (only ever `echo ... | sudo -S`) is left empty.
     width, height = int(os.environ.get("SCREEN_WIDTH", 1920)), int(os.environ.get("SCREEN_HEIGHT", 1080))
-    return SetupController(vm_ip=HOST, server_port=port, chromium_port=CHROMIUM_PORT, vlc_port=VLC_PORT, cache_dir=cache, client_password="password", screen_width=width, screen_height=height)
+    return SetupController(vm_ip=HOST, server_port=port, chromium_port=CHROMIUM_PORT, vlc_port=VLC_PORT, cache_dir=cache, screen_width=width, screen_height=height)
 
 
 class Env:
