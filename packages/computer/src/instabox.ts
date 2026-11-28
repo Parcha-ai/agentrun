@@ -25,7 +25,7 @@ import { INSTABOX } from "./descriptors/instabox.js";
 import { show } from "./drift.js";
 import { proxyFor, tunnelThrough } from "./env-proxy.js";
 import { BACKSTOP_MARGIN_MS, type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
-import { orThrow, pause } from "./hosted/process.js";
+import { boundOf, orThrow, pause } from "./hosted/process.js";
 import { HostedProvider, type HostedOptions } from "./hosted/provider.js";
 import { allPages, httpsBase, jsonOf, type Rest, type RestInit, rest } from "./hosted/rest.js";
 import { HOST_KEY_PIN, type Ssh2Module, SshExec, SshTunnelError, type SshTunnel } from "./hosted/ssh-exec.js";
@@ -320,27 +320,34 @@ class InstaboxHost implements MachineHost {
 	 * argv over SSH through the gateway (hosted/ssh-exec.ts), as the machine's user with sudo. The machine's token is
 	 * minted first when this host has none for it. A held token the gateway refuses (revoked, or run out) is let go and
 	 * another minted, once; a fresh one refused is denied. Execs refused on the same token share the one minted in its place.
+	 * Each step (the wait on the mint, the SSH start, and again on a refusal) has what is left of ctx's time, and its signal.
 	 */
 	async exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {
 		machineId(id);
+		const end = Date.now() + ctx.timeoutMs;
+		const left = (): HostCall => ({ ...ctx, timeoutMs: Math.max(1, end - Date.now()) });
 		const held = this.#logins.has(id);
-		const login = await this.#login(id, ctx);
+		const login = await this.#login(id, left());
 		try {
-			return await this.#ssh.exec(id, argv, ctx);
+			return await this.#ssh.exec(id, argv, left());
 		} catch (error) {
 			if (codeOf(error) !== "denied") throw error;
 			this.#forget(id, login);
 			if (!held) throw error;
-			await this.#login(id, ctx);
-			return this.#ssh.exec(id, argv, ctx);
+			await this.#login(id, left());
+			return this.#ssh.exec(id, argv, left());
 		}
 	}
 
-	/** The machine's login, minted once for all the execs that ask at once. */
+	/**
+	 * The machine's login, minted once for all the execs that ask at once. The mint is no one exec's: it runs within its
+	 * own CALL_MS and no exec's signal, and each exec waits on it within its own time and signal, so one's cancel or bound
+	 * ends that exec's wait alone.
+	 */
 	async #login(id: string, ctx: HostCall): Promise<Login> {
 		let minting = this.#logins.get(id);
 		if (minting === undefined) {
-			const mint = this.#mint(id, ctx);
+			const mint = this.#mint(id);
 			minting = mint;
 			this.#logins.set(id, mint);
 			mint.then(
@@ -348,7 +355,12 @@ class InstaboxHost implements MachineHost {
 				() => this.#logins.get(id) === mint && this.#logins.delete(id),
 			);
 		}
-		return minting;
+		const bound = boundOf(ctx.timeoutMs, ctx.signal, `the SSH token mint for ${id}`);
+		try {
+			return await Promise.race([minting, bound.promise]);
+		} finally {
+			bound.clear();
+		}
 	}
 
 	/**
@@ -365,9 +377,9 @@ class InstaboxHost implements MachineHost {
 	 * POST /v1/machines/{id}/ssh-tokens (D ssh-tokens): a token for a day, and the gateway and host key it names, each
 	 * held to its form before ssh2 or a socket sees it. Not sent again on no answer: another call is another token.
 	 */
-	async #mint(id: string, ctx: HostCall): Promise<Login> {
+	async #mint(id: string): Promise<Login> {
 		const where = `POST /v1/machines/${id}/ssh-tokens`;
-		const { body } = await this.#call("POST", `/v1/machines/${id}/ssh-tokens`, ctx, { json: { name: "agentrun", ttlSeconds: TOKEN_TTL_S }, retry: (status) => status === 429 || status === 503 });
+		const { body } = await this.#call("POST", `/v1/machines/${id}/ssh-tokens`, { timeoutMs: CALL_MS }, { json: { name: "agentrun", ttlSeconds: TOKEN_TTL_S }, retry: (status) => status === 429 || status === 503 });
 		const { token, host, port, hostKeyFingerprint: fingerprint } = (body ?? {}) as { token?: unknown; host?: unknown; port?: unknown; hostKeyFingerprint?: unknown };
 		if (typeof token !== "string" || !TOKEN.test(token)) throw new HostError("vendor", `${where} answered no SSH token of InstaBox's form (ibssh_...)`);
 		if (typeof host !== "string" || !(DOMAIN.test(host) || isIP(host) !== 0)) throw new HostError("vendor", `${where} answered a gateway that is no host name: ${show(host)}`);
