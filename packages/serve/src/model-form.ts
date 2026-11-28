@@ -81,8 +81,19 @@ export async function freeCandidates(env: NodeJS.ProcessEnv, harness: string): P
 /** A model id with its spelling taken out (case, spaces, dots, dashes), and the provider's segments off. */
 const spelled = (given: string): string => (given.split("/").pop() ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 
+/** Whether `a` becomes `b` by one edit: a letter added, dropped or changed, or two side by side swapped. */
+function oneEditApart(a: string, b: string): boolean {
+  if (a === b || Math.abs(a.length - b.length) > 1) return false;
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  const rest = (skipA: number, skipB: number): boolean => a.slice(i + skipA) === b.slice(i + skipB);
+  if (a.length !== b.length) return a.length > b.length ? rest(1, 0) : rest(0, 1);
+  return rest(1, 1) || (a[i] === b[i + 1] && a[i + 1] === b[i] && rest(2, 2));
+}
+
 /** The model `given` most likely means, in the form this harness takes, or undefined when none is obvious: the same id
- *  with a dot for a dash or the other way, a missing provider, or a name without its `claude-` ("Sonnet 5.5"). */
+ *  with a dot for a dash or the other way, a missing provider, or a name without its `claude-` ("Sonnet 5.5"); failing
+ *  those, the one id a single typo away ("gpt-6.1-sool", "claude-opsu-5-5"), named only when no other id is as near. */
 export function likelyModel(env: NodeJS.ProcessEnv, harness: string, given: string): string | undefined {
   const wanted = spelled(given);
   if (!wanted) return undefined;
@@ -92,7 +103,9 @@ export function likelyModel(env: NodeJS.ProcessEnv, harness: string, given: stri
     const id = ids.find((each) => spelled(each) === wanted || spelled(each).endsWith(`-${wanted}`));
     if (id) return formOf(env, vendor, id);
   }
-  return undefined;
+  const near = PICKABLE.filter(({ vendor }) => vendors.includes(vendor)).flatMap(({ vendor, ids }) =>
+    ids.filter((each) => [spelled(each), spelled(each).replace(/^claude-/, "")].some((form) => oneEditApart(form, wanted))).map((id) => formOf(env, vendor, id)));
+  return near.length === 1 ? near[0] : undefined;
 }
 
 /** What a refusal says of a model named in a form `harness` does not take: the form it takes, with examples this server
