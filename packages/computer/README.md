@@ -16,7 +16,7 @@ import { checkMount, readBackOf, WORKSPACE, type MountSpec } from "@parcha/agent
 
 The package root holds the protocol, the registry and the descriptors, and loads no provider: a provider loads by its
 id (`providerFor(id, options)`, which imports that one provider's file), or from its subpath (`/docker`, `/daytona`,
-`/modal`, `/e2b`, `/orgo`, `/orgo-desktop`, `/phone-harness`, `/browserbase`, `/kernel`, `/local-chrome`, `/boxd`, `/smolcloud`, `/groundbox`). A provider's
+`/modal`, `/e2b`, `/orgo`, `/orgo-desktop`, `/phone-harness`, `/browserbase`, `/kernel`, `/local-chrome`, `/boxd`, `/smolcloud`, `/groundbox`, `/sprites`). A provider's
 option types (`DockerProviderOptions`, `ModalProviderOptions` and the like) come from its subpath too, not the root.
 
 The package carries the daemon for Linux amd64 and arm64 in `dist/`, so a provider runs it with no Go on the host. A
@@ -685,6 +685,7 @@ live under:
   | `BOXD_API_KEY`, `BOXD_ORG`, `BOXD_REGION` | boxd's `apiKey`, `org` and `region` (unset: the key's own org, the API's home region) |
   | `SMOLCLOUD_API_KEY` | smol cloud's `apiKey` |
   | `GROUNDBOX_API_KEY` | Groundbox's `apiKey` |
+  | `SPRITES_TOKEN` | Fly Sprites' `token`: the name Fly's own CLI reads |
 
 - **the conformance CLI and the live harness** (`src/conformance/`: the CLI, each provider's conformance module and the
   sweeps) read their own `COMPUTER_<ID>_*` names, the ones the live scripts set, through each module's
@@ -3277,6 +3278,40 @@ times on folders under `/opt` deeper than the probe's 8 levels (above). On the s
 minutes, past the hour any one connection may last: Groundbox closed its socket four times meanwhile (code 1013), the
 host attached again each time, the command's 1950 lines came back once each and in order, and a write made after the
 hour reached it. A command read across sockets dropped mid-output (close code 4000) also came back whole.
+
+## Fly Sprites
+
+```ts
+import { providerFor } from "@parcha/agentrun-computer";
+
+// The token is the caller's to pass (serve's SPRITES_TOKEN).
+const sprites = await providerFor("sprites", { token });
+const made = await sprites.create({ image: "default", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
+```
+
+A Fly Sprites computer is a [sprite](https://docs.sprites.dev): a Firecracker microVM Fly keeps by name until it is
+deleted, from Fly's own Ubuntu image, the one image a sprite has (`"default"`). It is a sandbox alone: with no image to
+name, there is no desktop and no Archil mount. Sprites runs on the shared machine-host adapter
+([PROVIDERS.md](PROVIDERS.md)): `src/sprites.ts` is its `MachineHost`, over the Sprites API
+(`https://api.sprites.dev`, `Authorization: Bearer <token>`) with `fetch`, the shared REST client and Node's
+`WebSocket` (no SDK).
+
+| MachineHost | Fly Sprites |
+| --- | --- |
+| `create` | `POST /v1/sprites` with the request's name and the packed labels as `name=value` strings; the name is the id |
+| `get` | `GET /v1/sprites/{name}`: `running`, `warm` and `cold` are running (an exec wakes one asleep), any other status stopped; a 404 is none |
+| `list` | `GET /v1/sprites?prefix=computer-`, every page, then the asked labels kept here (Fly filters by none) |
+| `delete` | `DELETE /v1/sprites/{name}`, a 404 done |
+| `exec` | the exec WebSocket (`/v1/sprites/{name}/exec`, argv as its `cmd` words, `stdin=true`, `max_run_after_disconnect=10s`) through `framedExec`: stdin as `0x00` frames and its end as `0x04`, stdout `0x01`, stderr `0x02`, the exit `0x03`; `kill` is `POST .../exec/{session}/kill?signal=SIGKILL`, by the id the socket's `session_info` names |
+
+No `upload` (the adapter sends the daemon through exec's stdin) and no `extend` (the janitor moves the deadline label).
+The size and the image are Fly's: `check()` refuses `cpus`, `memoryMb` and any image but `"default"`. A sprite lives
+until deleted, so its lifetime is the janitor's, 30 days at most. A create rate cap (`sprite_creation_rate_limited`) or
+a concurrency cap (`concurrent_sprite_limit_exceeded`) is a `limit`.
+
+Unverified until the live run: the arch (amd64); a label string's room (64 bytes); a taken name answering 409; the exec
+user being root or having passwordless sudo, and root making a network namespace; no vendor agent on TCP; the exec
+socket holding 75 s of silence with no ping; and a sprite with an exec running never going to sleep.
 
 ## Conformance
 

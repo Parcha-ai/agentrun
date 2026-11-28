@@ -624,7 +624,7 @@ one off.
 A sandbox agent's `bash` runs in a box, a machine apart from this server. Docker is the default box and the only one offered
 with no setup: a Docker container made for each run, which binds the run's `work/` and nothing else. Every other provider
 whose sandbox can hold the run's folder is a box too: `daytona`, `modal`, `e2b`, `agent37`, `morph`, `cloudflare`, `fly`,
-`boxd` and `groundbox`. Such a box runs on a sandbox computer from that provider, offered once `AGENTRUN_BOXES` lists it
+`boxd`, `groundbox` and `sprites`. Such a box runs on a sandbox computer from that provider, offered once `AGENTRUN_BOXES` lists it
 and the keys its computer provider needs are set (the environment, or Settings → Computers): `AGENTRUN_BOXES=docker,e2b`
 with `E2B_API_KEY` set offers both. A box is a provider that serves a sandbox, takes the run's folder (a bind, an Archil
 mount or a synced folder), starts with no image named and keeps to the allow-list or has no network; Orgo (desktops), the
@@ -1036,7 +1036,7 @@ Settings → Computers. The kind says what the agent is given, and the provider 
 | Kind | What the agent gets | Providers |
 |---|---|---|
 | `none` | The run's folder alone: no computer, and no provider (`{"kind": "none"}`) | |
-| `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b`, `boxd`, `smolcloud`, `groundbox`, `cloudflare` (through a relay Worker you deploy) |
+| `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b`, `boxd`, `smolcloud`, `groundbox`, `sprites`, `cloudflare` (through a relay Worker you deploy) |
 | `desktop` | The computer's tools (`computer_observe`, `computer_act`, `computer_screenshot`), the computer as `codemode`'s `computer`, and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo`, `boxd`, `groundbox`, or [a paired computer](#a-persons-own-computer) by its id |
 | `phone` | A rented Android, through the same computer tools | `phone-harness` |
 | `browser` | A hosted browser (the browser tools) | `browserbase`, `kernel` |
@@ -1112,7 +1112,7 @@ seals it in its store as every saved key under `AGENTRUN_SEAL_KEY`, and register
 key each restart, the old one left on the workspace), `MORPH_API_KEY`, `ORGO_API_KEY`, `PHONE_HARNESS_API_KEY`,
 `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, `KERNEL_API_KEY`, `BOXD_API_KEY` (with `BOXD_ORG` and
 `BOXD_REGION` optional), `SMOLCLOUD_API_KEY`, `GROUNDBOX_API_KEY`, `CLOUDFLARE_RELAY_URL` and `CLOUDFLARE_RELAY_TOKEN` (the relay Worker's,
-`packages/computer/relays/cloudflare`), `FLY_API_TOKEN` and `FLY_APP`, and `RENDER_API_KEY` and `RENDER_WORKSPACE_ID`; Docker takes none.
+`packages/computer/relays/cloudflare`), `FLY_API_TOKEN` and `FLY_APP`, `RENDER_API_KEY` and `RENDER_WORKSPACE_ID`, and `SPRITES_TOKEN`; Docker takes none.
 `GET /v2/computers/running` lists every run still going (queued, working, paused or waiting on its person) whose agent
 has a computer, newest first, each as `GET /v2/runs/{run_id}` answers it: its `computer` says the kind and provider,
 `starting`, `ready` or `taken_over` while its owner drives it, and a held run's hold. The runs list carries no
