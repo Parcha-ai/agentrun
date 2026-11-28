@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +22,7 @@ import (
 	"time"
 
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/daemon"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/egress"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/nocgo"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/windowmanager"
 )
@@ -307,8 +310,9 @@ func TestInitRefusesOwnNetworkWithoutUserOrWithEgressOrTwice(t *testing.T) {
 }
 
 // --network names the form of the proxy init starts: open, or allow: and a list the Docker computer's would take; once,
-// and only with --own-network, whose programs reach the proxy through init's relay. That the proxy serves it is
-// internal/egress's tests and the hosted live checks'.
+// and only with --own-network, whose programs reach the proxy through init's relay. --public-egress, the operator's
+// <IPv4>:<port> that proxy sends a tunnel to 443 through, is taken once, well formed, and only with --network. That the
+// proxy serves them is internal/egress's tests and the hosted live checks'.
 func TestInitRefusesANetworkThatIsNotAFormOrWithoutOwnNetworkOrTwice(t *testing.T) {
 	deadline := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	for _, test := range []struct {
@@ -324,6 +328,11 @@ func TestInitRefusesANetworkThatIsNotAFormOrWithoutOwnNetworkOrTwice(t *testing.
 		{[]string{"init", "--deadline", deadline, "--user", "2510:2510", "--own-network", "--network"}, "--network takes open"},
 		{[]string{"init", "--deadline", deadline, "--user", "65534:2510", "--own-network", "--network", "open"}, "--user may be neither"},
 		{[]string{"init", "--deadline", deadline, "--user", "2510:65534", "--own-network", "--network", "open"}, "--user may be neither"},
+		{[]string{"init", "--deadline", deadline, "--user", "2510:2510", "--own-network", "--public-egress", "192.0.2.40:8443"}, "--public-egress is the operator's public egress"},
+		{[]string{"init", "--deadline", deadline, "--user", "2510:2510", "--own-network", "--network", "open", "--public-egress", "gate.example:8443"}, "--public-egress is the operator's public egress"},
+		{[]string{"init", "--deadline", deadline, "--user", "2510:2510", "--own-network", "--network", "open", "--public-egress", "192.0.2.40:0"}, "--public-egress is the operator's public egress"},
+		{[]string{"init", "--deadline", deadline, "--user", "2510:2510", "--own-network", "--network", "open", "--public-egress", "192.0.2.40:8443", "--public-egress", "192.0.2.40:8443"}, "--public-egress is the operator's public egress"},
+		{[]string{"init", "--deadline", deadline, "--user", "2510:2510", "--own-network", "--network", "open", "--public-egress"}, "--public-egress is the operator's public egress"},
 	} {
 		code, stderr := computerd(t, 30*time.Second, test.args...)
 		if code != 2 {
@@ -785,4 +794,47 @@ func TestPairAttachAndUnpairKeepTheTokenInItsFileAlone(t *testing.T) {
 	if code, _, stderr := computerdIn(t, "", "unpair"); code != 1 || !strings.Contains(stderr, "no token file at "+path) {
 		t.Fatalf("unpair again: exit %d, %s", code, stderr)
 	}
+}
+
+// The public egress init is given reaches the proxy it starts: init's options make the proxy's config, whose arguments
+// egress-proxy reads back into the options it serves, the gate among them; with none given, none at any step.
+func TestInitGivesItsPublicEgressToTheProxyItStarts(t *testing.T) {
+	deadline := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	gate := netip.MustParseAddrPort("192.0.2.40:8443")
+	quiet := log.New(io.Discard, "", 0)
+	for _, test := range []struct {
+		args []string
+		want netip.AddrPort
+	}{
+		{[]string{"--deadline", deadline, "--user", "2510:2510", "--own-network", "--network", "open", "--public-egress", "192.0.2.40:8443"}, gate},
+		{[]string{"--deadline", deadline, "--user", "2510:2510", "--own-network", "--public-egress", "192.0.2.40:8443", "--network", "allow:example.com"}, gate},
+		{[]string{"--deadline", deadline, "--user", "2510:2510", "--own-network", "--network", "open"}, netip.AddrPort{}},
+	} {
+		opts, ok := initOptionsOf(quiet, test.args)
+		if !ok {
+			t.Fatalf("initOptionsOf(%q) refused", test.args)
+		}
+		config := opts.proxyConfig()
+		if config.PublicEgress != test.want || config.Network.String() != *argAfter(test.args, "--network") {
+			t.Fatalf("%q: the proxy's config %+v; want the network as given and public egress %v", test.args, config, test.want)
+		}
+		config.Parent = 7
+		read, err := egress.ProxyConfigOf(config.Args())
+		if err != nil {
+			t.Fatalf("%q: egress-proxy refuses %q: %v", test.args, config.Args(), err)
+		}
+		if served := read.Options(func(string) {}); served.PublicEgress != test.want || read.Network.String() != config.Network.String() {
+			t.Fatalf("%q: egress-proxy serves public egress %v, network %s; want %v and %s", test.args, served.PublicEgress, read.Network, test.want, config.Network)
+		}
+	}
+}
+
+// argAfter is the value after flag in args.
+func argAfter(args []string, flag string) *string {
+	for i := range args[:len(args)-1] {
+		if args[i] == flag {
+			return &args[i+1]
+		}
+	}
+	return nil
 }

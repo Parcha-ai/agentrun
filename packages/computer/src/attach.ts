@@ -18,7 +18,8 @@ export const ATTACH_PATH = "/v2/computers/attach";
 export const DAEMON_PATH = "/v2/computers/daemon";
 /** The boot env name of a dial machine's attach egress (HostedOptions.attachEgress), which agentrun-dial and computerd attach read. */
 export const ATTACH_EGRESS_ENV = "AGENTRUN_ATTACH_EGRESS";
-const ATTACH_EGRESS = /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d):(?:[1-9]\d{0,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5])$/;
+/** `<IPv4>:<port>`, a port from 1 to 65535, no leading zero in either: an operator's relay as the attach and public egress name it. */
+export const IPV4_PORT = /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d):(?:[1-9]\d{0,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5])$/;
 
 /**
  * Reads an attach egress, `<IPv4 relay>:<port>` such as 192.0.2.40:18443: the operator's relay a dial machine opens TCP
@@ -27,7 +28,7 @@ const ATTACH_EGRESS = /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2
  * it to the same shape. Anything else throws, in words.
  */
 export function attachEgressOf(text: string): string {
-	if (!ATTACH_EGRESS.test(text)) throw new Error(`the attach egress is <IPv4 relay>:<port>, such as 192.0.2.40:18443, a port from 1 to 65535; not ${JSON.stringify(text)}`);
+	if (!IPV4_PORT.test(text)) throw new Error(`the attach egress is <IPv4 relay>:<port>, such as 192.0.2.40:18443, a port from 1 to 65535; not ${JSON.stringify(text)}`);
 	return text;
 }
 const SUBPROTOCOL_PREFIX = "agentrun.computer.";

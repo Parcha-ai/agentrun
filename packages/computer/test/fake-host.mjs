@@ -426,14 +426,14 @@ export function fakeHost({
 	}
 
 	/** init, once the daemon is in place: what start (child) or the entrypoint (pid1) runs. */
-	function startInit(m, { deadline, user, display: shown = "", max = "", network = "", windowManager = false }) {
+	function startInit(m, { deadline, user, display: shown = "", max = "", network = "", windowManager = false, publicEgress = "" }) {
 		if (initFails !== undefined || m.daemon === undefined) {
 			m.initLog = `${initFails ?? `sh: ${DAEMON}: not found`}\n`;
 			return;
 		}
 		const [uid, gid] = user.split(":").map(Number);
 		Object.assign(m.box, { uid, gid });
-		m.init = { deadline, user, display: shown, max, network, windowManager };
+		m.init = { deadline, user, display: shown, max, network, windowManager, publicEgress };
 	}
 
 	/**
@@ -524,10 +524,10 @@ export function fakeHost({
 			return proc;
 		}
 		if (kind === "start") {
-			// start: [log, "sh", "-c", INIT, "sh", d, t, w, h, r, v?, m?, n?, g?]
-			const [, , , , , , deadline, user, , , shown = "", max = "", network = "", manager = ""] = script.args;
+			// start: [log, "sh", "-c", INIT, "sh", d, t, w, h, r, v?, m?, n?, g?, e?]
+			const [, , , , , , deadline, user, , , shown = "", max = "", network = "", manager = "", publicEgress = ""] = script.args;
 			queueMicrotask(() => {
-				startInit(m, { deadline, user, display: shown, max, network, windowManager: manager !== "" });
+				startInit(m, { deadline, user, display: shown, max, network, windowManager: manager !== "", publicEgress });
 				proc.exit(0);
 			});
 			return proc;
@@ -644,6 +644,7 @@ export function fakeHost({
 			max: args.includes("--max-deadline") ? flag("--max-deadline") : "",
 			network: args.includes("--network") ? flag("--network") : "",
 			windowManager: args.includes("--window-manager"),
+			publicEgress: args.includes("--public-egress") ? flag("--public-egress") : "",
 		});
 	}
 	const chunks = (proc) => (proc.chunks.length === 0 ? undefined : Buffer.concat(proc.chunks).toString("utf8"));
@@ -685,7 +686,7 @@ export function fakeHost({
 					const args = m.boot.AGENTRUN_INIT_ARGS.split(" ");
 					const flag = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : "");
 					m.daemon = { path: DAEMON, sha256: m.boot.AGENTRUN_DAEMON_SHA256 };
-					startInit(m, { deadline: flag("--deadline"), user: flag("--user"), display: m.boot.DISPLAY ?? "", max: flag("--max-deadline"), network: flag("--network"), windowManager: args.includes("--window-manager") });
+					startInit(m, { deadline: flag("--deadline"), user: flag("--user"), display: m.boot.DISPLAY ?? "", max: flag("--max-deadline"), network: flag("--network"), windowManager: args.includes("--window-manager"), publicEgress: args.includes("--public-egress") ? flag("--public-egress") : "" });
 					queueMicrotask(() => onBoot(m));
 				}
 				if (req.command) {

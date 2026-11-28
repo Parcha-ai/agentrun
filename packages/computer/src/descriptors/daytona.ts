@@ -13,6 +13,13 @@ export const DAYTONA_ARCHIL_EGRESS = "DAYTONA_ARCHIL_EGRESS";
  */
 export const DAYTONA_ATTACH_EGRESS = "DAYTONA_ATTACH_EGRESS";
 
+/**
+ * The key that sends a Daytona computer's HTTPS tunnels through the operator's public egress, `<IPv4>:<port>`
+ * (publicEgress): for a self-hosted target whose sandboxes reach only the addresses its runners allow, with a gate there
+ * that admits by the TLS server name.
+ */
+export const DAYTONA_PUBLIC_EGRESS = "DAYTONA_PUBLIC_EGRESS";
+
 /** Why a Daytona computer made with no Archil egress takes no Archil mount: check() refuses one in these words. */
 export const DAYTONA_NO_ARCHIL = `Archil mounts don't work on Daytona's hosted cloud, where Archil's client hangs on its sandboxes; a self-hosted Daytona target takes one once its operator sets ${DAYTONA_ARCHIL_EGRESS}`;
 
@@ -99,6 +106,7 @@ export const DAYTONA = defineProvider({
 		{ name: "DAYTONA_TARGET", option: "target", required: false },
 		{ name: DAYTONA_ARCHIL_EGRESS, option: "archilEgress", required: false },
 		{ name: DAYTONA_ATTACH_EGRESS, option: "attachEgress", required: false },
+		{ name: DAYTONA_PUBLIC_EGRESS, option: "publicEgress", required: false },
 		// How long create waits for the label listing, in ms (DaytonaProviderOptions.listedMs): no secret, a tuning.
 		{ name: "DAYTONA_LISTED_MS", option: "listedMs", required: false },
 	],

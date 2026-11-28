@@ -1,6 +1,6 @@
 // computerd is the open platform's computer daemon: one static program in every computer.
 //
-//	computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] [--own-network [--network open|allow:<list>]] [--egress <socket>] [--window-manager]
+//	computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] [--own-network [--network open|allow:<list> [--public-egress <IPv4>:<port>]]] [--egress <socket>] [--window-manager]
 //	                    run as the computer's first process: hold every process and serve the protocol on a unix socket
 //	                    (AGENTRUN_COMPUTERD_SOCKET, default /run/agentrun/computerd.sock) until SIGTERM or the deadline;
 //	                    deadline.extend moves the deadline up to --max-deadline, and not at all without it. With DISPLAY
@@ -29,6 +29,9 @@
 //	                    to /opt/agentrun/egress/policy and serves as `computerd egress-proxy`, nobody, in a session of
 //	                    its own, to the public internet only (and with a list, its hosts alone), until the latest
 //	                    deadline or init is gone. Init then relays as --egress does, to that socket
+//	                    With --public-egress (the operator's <IPv4>:<port>, for a vendor whose machines reach only the
+//	                    addresses the operator allows), that proxy opens each tunnel to port 443 whose checks pass to
+//	                    that address instead of the checked one, the program's TLS carried unchanged
 //	                    With --egress, for a computer whose network is an allowlist, init relays its loopback port 3128
 //	                    to the egress proxy's unix socket and tells every program it starts that port is its proxy
 //	computerd stdio     bridge stdin and stdout to init's socket (stdout carries protocol lines only; stderr is the log)
@@ -99,6 +102,7 @@ import (
 	"io/fs"
 	"log"
 	"net"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -241,7 +245,7 @@ func runInit(opts initOptions, isolation daemon.Isolation, args []string, logger
 		if isolation.StartedIn == "" && os.Geteuid() == 0 {
 			self, err := os.Executable()
 			if err == nil {
-				relay.Proxy, err = egress.StartProxy(self, *opts.network, opts.latest, opts.user.gid)
+				relay.Proxy, err = egress.StartProxy(self, opts.proxyConfig(), opts.user.gid)
 			}
 			if err != nil {
 				logger.Printf("init refuses to start: its egress proxy (the network %s): %v", opts.network, err)
@@ -282,6 +286,12 @@ func runInit(opts initOptions, isolation daemon.Isolation, args []string, logger
 		return 1
 	}
 	return daemon.Init(version, daemon.SocketPath(), opts.deadline, relay, fenceOf(isolation), isolation.WindowManager, logger)
+}
+
+// proxyConfig is the egress proxy init starts for opts, with a network: its form, its public egress, and the latest end.
+// StartProxy names init its parent.
+func (opts initOptions) proxyConfig() egress.ProxyConfig {
+	return egress.ProxyConfig{Network: *opts.network, Until: opts.latest, PublicEgress: opts.publicEgress}
 }
 
 // fenceOf is how init fences its programs off the computer's network, as hello says it: "netns", a network namespace of
@@ -537,7 +547,7 @@ func unpair(logger *log.Logger) int {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] [--own-network [--network open|allow:<list>]] [--egress <socket>] [--window-manager] | stdio | pair <server URL> [--name <name>] | unpair | attach | probe [--sockets] [--connect <host:port>[/udp]]... | probe --diagnose | sync-serve --socket <path> --mountpoint <path> --mounts <path> --archil <path> --gid <gid> | archil-relay --gateway <IPv4 address> --mount-lane <port> --data-lane <port> | version")
+	fmt.Fprintln(os.Stderr, "usage: computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] [--own-network [--network open|allow:<list> [--public-egress <IPv4>:<port>]]] [--egress <socket>] [--window-manager] | stdio | pair <server URL> [--name <name>] | unpair | attach | probe [--sockets] [--connect <host:port>[/udp]]... | probe --diagnose | sync-serve --socket <path> --mountpoint <path> --mounts <path> --archil <path> --gid <gid> | archil-relay --gateway <IPv4 address> --mount-lane <port> --data-lane <port> | version")
 	os.Exit(2)
 }
 
@@ -556,11 +566,13 @@ type initOptions struct {
 	ownNetwork bool
 	// network is the form the egress proxy init starts serves (with ownNetwork); nil is none: no proxy, no way out.
 	network *egress.Network
+	// publicEgress is where that proxy sends a tunnel to port 443 once its checks pass (with network); invalid is none.
+	publicEgress netip.AddrPort
 	// windowManager: init starts the desktop's window manager on DISPLAY once it answers (internal/windowmanager).
 	windowManager bool
 }
 
-const deadlineWords = "--deadline <time> is required, in RFC 3339 such as 2026-01-02T15:04:05Z: the computer ends then; --max-deadline <time> (the most deadline.extend may move it to), --user <uid:gid>, --egress <socket> and --network <form> may follow, each once"
+const deadlineWords = "--deadline <time> is required, in RFC 3339 such as 2026-01-02T15:04:05Z: the computer ends then; --max-deadline <time> (the most deadline.extend may move it to), --user <uid:gid>, --egress <socket>, --network <form> and --public-egress <IPv4>:<port> may follow, each once"
 const userWords = "--user takes uid:gid in numbers, such as 1000:1000"
 const egressWords = "--egress takes the egress proxy's socket, one absolute path, given once"
 const ownNetworkWords = "--own-network takes no value, given once, with --user (init starts as root to give itself and its programs a network of their own, their loopback alone) and with no --egress (their way out, if any, is the proxy --network has init start)"
@@ -603,6 +615,8 @@ func initOptionsOf(logger *log.Logger, args []string) (initOptions, bool) {
 				logger.Printf("init: %s", egressWords)
 			case "--network":
 				logger.Printf("init: %s", egress.NetworkWords)
+			case "--public-egress":
+				logger.Printf("init: %s", egress.PublicEgressWords)
 			default:
 				logger.Printf("init: %s", deadlineWords)
 			}
@@ -657,6 +671,16 @@ func initOptionsOf(logger *log.Logger, args []string) (initOptions, bool) {
 		case flag == "--network":
 			logger.Printf("init: %s", networkWords)
 			return opts, false
+		case flag == "--public-egress" && !opts.publicEgress.IsValid():
+			address, err := egress.PublicEgressOf(value)
+			if err != nil {
+				logger.Printf("init: %s, not %q", egress.PublicEgressWords, value)
+				return opts, false
+			}
+			opts.publicEgress = address
+		case flag == "--public-egress":
+			logger.Printf("init: %s", egress.PublicEgressWords)
+			return opts, false
 		default:
 			logger.Printf("init: %s; %q is none of them", deadlineWords, flag)
 			return opts, false
@@ -672,6 +696,10 @@ func initOptionsOf(logger *log.Logger, args []string) (initOptions, bool) {
 	}
 	if opts.network != nil && !opts.ownNetwork {
 		logger.Printf("init: %s", networkWords)
+		return opts, false
+	}
+	if opts.publicEgress.IsValid() && opts.network == nil {
+		logger.Printf("init: %s", egress.PublicEgressWords)
 		return opts, false
 	}
 	// The proxy runs as ProxyUser so its programs' user can't signal it: a user who is that uid, or in that group, could.

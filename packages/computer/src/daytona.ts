@@ -61,6 +61,15 @@ export interface DaytonaProviderOptions extends Omit<HostedOptions, "desktop" | 
 	 */
 	attachEgress?: string;
 	/**
+	 * The operator's public egress, `<IPv4>:<port>` (HostedOptions.publicEgress, publicEgressOf): for a self-hosted
+	 * Daytona target whose runners drop every sandbox connection outside an allow list, with a gate on it that admits by
+	 * the TLS server name. A computer with a network (open, or a list) has its egress proxy send every tunnel to port 443
+	 * that passed its checks there, the program's bytes unchanged, when its ClientHello names the host the checks passed
+	 * (else the tunnel is closed); plain HTTP and other ports dial the checked address.
+	 * Unset, every connection dials the address it was checked at.
+	 */
+	publicEgress?: string;
+	/**
 	 * How long create waits for Daytona's label listing to show a new sandbox, in ms (timeouts.listedMs; serve's
 	 * DAYTONA_LISTED_MS): a whole number above 0, as a number or its digits. Daytona's `GET /sandbox` is eventually
 	 * consistent (an index, not the database), so a sandbox still unlisted then is read by its id and kept when it reads

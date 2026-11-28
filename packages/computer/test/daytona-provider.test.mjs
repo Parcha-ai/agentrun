@@ -198,6 +198,11 @@ test("the constructor refuses what it cannot run with, in words", () => {
 	}
 	assert.doesNotThrow(make({ attachEgress: "192.0.2.40:18443" }), "a well-formed attach egress is taken");
 	assert.doesNotThrow(make({ attachEgress: "" }), "an empty one is none");
+	for (const publicEgress of ["gate.example:8443", "192.0.2.40", "192.0.2.40:0", "192.0.2.40:65536", "192.0.2.40:08443", "192.0.2.040:8443", "[2001:db8::1]:8443", "192.0.2.40:8443:1", " 192.0.2.40:8443"]) {
+		assert.throws(make({ publicEgress }), /the public egress is <IPv4>:<port>, such as 192\.0\.2\.40:8443, a port from 1 to 65535; not "/, publicEgress);
+	}
+	assert.doesNotThrow(make({ publicEgress: "192.0.2.40:8443" }), "a well-formed public egress is taken");
+	assert.doesNotThrow(make({ publicEgress: "" }), "an empty one is none");
 	assert.throws(make({ timeouts: { retryMs: 0 } }), /retryMs/);
 });
 
@@ -871,6 +876,26 @@ test("connect dial with DAYTONA_ATTACH_EGRESS's attachEgress: the boot env carri
 	const rec = refusedCreate();
 	await new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: rec.fetch, timeouts: TIMEOUTS, attachEgress: "192.0.2.40:18443" }).create(SPEC, { requestId: "r-exec-egress" });
 	assert.deepEqual(posted(rec).env, {}, "a machine on exec dials nothing, so it is given nothing");
+});
+
+test("DAYTONA_PUBLIC_EGRESS's publicEgress: a dial machine's AGENTRUN_INIT_ARGS give init --public-egress after --network under open and a list, and never under none; the boot env's names unchanged", async () => {
+	assert.deepEqual(DAYTONA.keys.find((key) => key.name === "DAYTONA_PUBLIC_EGRESS"), { name: "DAYTONA_PUBLIC_EGRESS", option: "publicEgress", required: false });
+	for (const [network, form] of [
+		["open", "open"],
+		[{ allow: ["Example.com"] }, "allow:example.com"],
+		["none", undefined],
+	]) {
+		const rec = refusedCreate();
+		const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: rec.fetch, timeouts: TIMEOUTS, connect: "dial", dial: dialOf(), publicEgress: "192.0.2.40:8443" });
+		await provider.create({ ...SPEC, image: "agentrun-box-0123456789ab", network }, { requestId: `r-dial-public-${JSON.stringify(network)}` });
+		const { env } = posted(rec);
+		assert.deepEqual(Object.keys(env).sort(), BOOT_NAMES, JSON.stringify(network));
+		if (form === undefined) assert.match(env.AGENTRUN_INIT_ARGS, /^--deadline \S+ --user 2510:2510 --own-network --max-deadline \S+$/, "none: no proxy, no public egress");
+		else assert.match(env.AGENTRUN_INIT_ARGS, new RegExp(`^--deadline \\S+ --user 2510:2510 --own-network --max-deadline \\S+ --network ${form} --public-egress 192\\.0\\.2\\.40:8443$`), form);
+	}
+	const rec = refusedCreate();
+	await new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: rec.fetch, timeouts: TIMEOUTS, connect: "dial", dial: dialOf() }).create({ ...SPEC, image: "agentrun-box-0123456789ab", network: "open" }, { requestId: "r-dial-public-unset" });
+	assert.match(posted(rec).env.AGENTRUN_INIT_ARGS, /--network open$/, "unset: init's flags as before");
 });
 
 /** A dial machine's token and attach URL in the host tests: a URL with words a shell would split or expand, quoted. */

@@ -42,6 +42,8 @@ export const DAYTONA_ENV = {
 	archilEgress: "COMPUTER_DAYTONA_ARCHIL_EGRESS",
 	/** attachEgress: a self-hosted Daytona target's attach relay, <IPv4 relay>:<port>, which its machines that dial go through. */
 	attachEgress: "COMPUTER_DAYTONA_ATTACH_EGRESS",
+	/** publicEgress: a self-hosted Daytona target's public egress, <IPv4>:<port>, which its computers' HTTPS tunnels go through. */
+	publicEgress: "COMPUTER_DAYTONA_PUBLIC_EGRESS",
 	/** connect: exec (default) or dial, which needs the public server's process (dialKit). */
 	connect: "COMPUTER_DAYTONA_CONNECT",
 	/** kind: linux (default) or desktop, which create() takes on dial alone. */
@@ -63,6 +65,7 @@ export function settingsFromEnv(env: Env = process.env): DaytonaProviderOptions 
 		gpuSnapshot: DAYTONA_ENV.gpuSnapshot,
 		archilEgress: DAYTONA_ENV.archilEgress,
 		attachEgress: DAYTONA_ENV.attachEgress,
+		publicEgress: DAYTONA_ENV.publicEgress,
 		connect: DAYTONA_ENV.connect,
 	});
 	return { apiKey, ...(set as Pick<DaytonaProviderOptions, keyof typeof set>) };

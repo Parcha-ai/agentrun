@@ -127,7 +127,14 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
   Unix socket root's and the tool user's group's alone (`/opt/agentrun/egress/egress.sock`), to the public internet
   only (Docker's egress table, plus the machine's own addresses), and with a list to its hosts alone, refused before
   any lookup. Init relays its loopback port 3128 to that socket and gives its programs the proxy env; their namespace
-  stays their loopback alone. The code is `daemon/internal/isolate`; `test/docker/loopback-block.docker.test.mjs` runs each
+  stays their loopback alone. With `--network` it also takes `--public-egress <IPv4>:<port>` (the adapter's
+  `publicEgress`): the proxy then opens each tunnel to port 443 (HTTP CONNECT or SOCKS5 CONNECT) that passed every
+  check to that address instead of the checked one, carrying the program's bytes unchanged, so a gate there admits by
+  the TLS ClientHello's server name. The proxy reads that ClientHello first and carries the tunnel only when its server
+  name is the host the checks passed (so a listed host's tunnel never carries an off-list name to the gate); a tunnel
+  to an IP literal, or whose first bytes name no host or another, is closed with nothing sent. Plain HTTP and every
+  other port dial the checked address. Unset, nothing changes;
+  a malformed value, or one without `--network`, and init refuses to start. The code is `daemon/internal/isolate`; `test/docker/loopback-block.docker.test.mjs` runs each
   provider's start in a root container beside a stand-in agent on 2280 and 49983.
 - **Where root may not make the network namespace, init makes it inside a user namespace.** Root holds no
   CAP_SYS_ADMIN on gVisor (Modal's GPU runtime), so `unshare(CLONE_NEWNET)` is EPERM. It may make a user namespace with
@@ -454,7 +461,7 @@ in the kernel's tool registry, keyed by these groups.
   | id | label | kinds | keys (required unless marked) | mounts | metered |
   | --- | --- | --- | --- | --- | --- |
   | docker | Docker | sandbox, desktop | none | bind | no |
-  | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET`, `DAYTONA_ARCHIL_EGRESS`, `DAYTONA_ATTACH_EGRESS`, `DAYTONA_LISTED_MS` (optional) | none (`unmounted`: archil); archil with `DAYTONA_ARCHIL_EGRESS` (`mountsWith`) | yes |
+  | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET`, `DAYTONA_ARCHIL_EGRESS`, `DAYTONA_ATTACH_EGRESS`, `DAYTONA_PUBLIC_EGRESS`, `DAYTONA_LISTED_MS` (optional) | none (`unmounted`: archil); archil with `DAYTONA_ARCHIL_EGRESS` (`mountsWith`) | yes |
   | modal | Modal | sandbox | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | archil | yes |
   | e2b | E2B | sandbox, desktop | `E2B_API_KEY`; `AGENTRUN_E2B_DOMAIN`, `AGENTRUN_E2B_API_URL`, `AGENTRUN_E2B_TEMPLATE` (optional) | archil | yes |
   | orgo | Orgo | desktop (Linux; Windows and macOS with `os`) | `ORGO_API_KEY` | none | yes |
@@ -1847,6 +1854,16 @@ What each part of a dial sandbox rests on:
   certificate checked and `Host` stay the public host's and TLS is end to end. Unset, nothing changes. A relay that
   closes a connection during TLS (curl exit 35) or resets it (56) costs a retry: the fetch is tried again after 1, 2, 4
   then 8 s, for at most 45 s, on any failed connection or HTTP 5xx, and never on a 4xx (exit 7).
+- **A computer's HTTPS through the operator's gate: `publicEgress`.** On such a target a computer whose network is
+  `open` or a list reaches the internet only through an address on the allow list. Give the operator's gate there as
+  `publicEgress` (`DAYTONA_PUBLIC_EGRESS` in Settings), `<IPv4>:<port>`, checked at construction: init is given
+  `--public-egress`, and the computer's egress proxy opens each tunnel to port 443 (HTTP CONNECT or SOCKS5 CONNECT)
+  that passed its checks (the list, the resolve, the egress table) to the gate in place of the checked address, with
+  the program's bytes unchanged, so the gate admits by the ClientHello's server name and TLS stays end to end. That
+  name must be the host the checks passed, or the tunnel is closed with nothing sent to the gate, so a tunnel to a
+  listed host can't carry another; an IP literal on port 443 has no such name and is closed too. Plain
+  HTTP and every other port dial the checked address, as before. Unset, nothing changes; a computer with network
+  `none` has no proxy and is given none. It rides exec and dial alike (a dial machine's `AGENTRUN_INIT_ARGS`).
 - **No GPU on dial**, refused in words: `daytona-gpu` holds no `agentrun-dial`, and Daytona runs a GPU sandbox
   unprivileged (`Privileged: gpuIndex == nil`,
   [runner container_configs.go:205](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/runner/pkg/docker/container_configs.go#L205)),

@@ -7,6 +7,7 @@
 // alone, refused before any lookup. Init relays the programs' loopback port 3128 to it and tells them it is their proxy.
 // The machine itself gets the vendor's egress for it. The form is recorded in a label, written to the policy file init
 // leaves beside the socket, and both are read back.
+import { IPV4_PORT } from "../attach.js";
 import { allowOf, MAX_ALLOW } from "../docker/egress.js";
 import { LISTED_PORTS } from "../docker/egress-proxy.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER } from "../drift.js";
@@ -76,3 +77,16 @@ export function networkRefusal(label: string, forms: readonly NetworkForm[], net
 
 /** Whether a spec's network goes out through the proxy: open, or a list. */
 export const throughProxy = (network: unknown): boolean => network === "open" || (typeof network === "object" && network !== null && "allow" in network);
+
+/**
+ * Reads a public egress, `<IPv4>:<port>` such as 192.0.2.40:8443: the operator's address that a computer's egress proxy
+ * opens a tunnel to port 443 to (an HTTP or SOCKS5 CONNECT) once every check has passed, in place of the checked public
+ * address, carrying the program's bytes unchanged, so the TLS ClientHello names the host for the operator's gate to
+ * admit; the proxy carries the tunnel only when that server name is the host its checks passed. Plain HTTP and every
+ * other port dial the checked address. For a vendor whose machines reach only addresses
+ * the operator allows. computerd's --public-egress holds it to the same shape. Anything else throws, in words.
+ */
+export function publicEgressOf(text: string): string {
+	if (!IPV4_PORT.test(text)) throw new Error(`the public egress is <IPv4>:<port>, such as 192.0.2.40:8443, a port from 1 to 65535; not ${JSON.stringify(text)}`);
+	return text;
+}

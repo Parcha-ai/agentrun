@@ -12,8 +12,10 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -68,11 +70,27 @@ func NetworkOf(text string) (Network, error) {
 	return Network{Allow: &allow}, nil
 }
 
+// PublicEgressWords is how init's --public-egress is written.
+const PublicEgressWords = "--public-egress is the operator's public egress, <IPv4>:<port> such as 192.0.2.40:8443, a port from 1 to 65535 and no leading zero in either, given once, with --network"
+
+// publicEgressPattern is a public egress as the provider checks it (publicEgressOf) and as attach checks its relay: an
+// IPv4 address and a port from 1 to 65535, with no leading zero in either.
+var publicEgressPattern = regexp.MustCompile(`^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d):(?:[1-9]\d{0,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5])$`)
+
+// PublicEgressOf reads `<IPv4>:<port>`, the address a tunnel to port 443 opens TCP to (Options.PublicEgress).
+func PublicEgressOf(text string) (netip.AddrPort, error) {
+	if !publicEgressPattern.MatchString(text) {
+		return netip.AddrPort{}, errors.New(PublicEgressWords)
+	}
+	return netip.ParseAddrPort(text)
+}
+
 // StartProxy listens on ProxySocket (its folder root's and gid's, 0750; the socket 0660), writes PolicyPath (0640, root's
 // and gid's), and starts self as the proxy, nobody, in a session of its own, with the listener as fd 3 and its log at
-// ProxyLogPath: the proxy's pid. As root only. The folder above the socket's must be root's and writable by no one else
-// (install makes it so); a socket that answers is refused (another proxy holds it), a stale one replaced.
-func StartProxy(self string, network Network, until time.Time, gid int) (int, error) {
+// ProxyLogPath, given config's arguments (ProxyConfig.Args) with this process its parent: the proxy's pid. As root only.
+// The folder above the socket's must be root's and writable by no one else (install makes it so); a socket that answers
+// is refused (another proxy holds it), a stale one replaced.
+func StartProxy(self string, config ProxyConfig, gid int) (int, error) {
 	dir := filepath.Dir(ProxySocket)
 	if err := rootsAlone(filepath.Dir(dir)); err != nil {
 		return 0, err
@@ -106,7 +124,7 @@ func StartProxy(self string, network Network, until time.Time, gid int) (int, er
 			return 0, fmt.Errorf("removing the stale socket %s: %w", ProxySocket, err)
 		}
 	}
-	if err := writeOwned(PolicyPath, network.String()+"\n", gid); err != nil {
+	if err := writeOwned(PolicyPath, config.Network.String()+"\n", gid); err != nil {
 		return 0, err
 	}
 	l, err := net.ListenUnix("unix", &net.UnixAddr{Name: ProxySocket, Net: "unix"})
@@ -136,7 +154,8 @@ func StartProxy(self string, network Network, until time.Time, gid int) (int, er
 		return 0, fmt.Errorf("the egress proxy's log %s: %w", ProxyLogPath, err)
 	}
 	defer log.Close()
-	process, err := os.StartProcess(self, []string{"computerd", ProxyRun, "--network", network.String(), "--until", until.UTC().Format(time.RFC3339Nano), "--parent", fmt.Sprint(os.Getpid())}, &os.ProcAttr{
+	config.Parent = os.Getpid()
+	process, err := os.StartProcess(self, append([]string{"computerd", ProxyRun}, config.Args()...), &os.ProcAttr{
 		Env:   []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin"},
 		Dir:   "/",
 		Files: []*os.File{null, null, log, file},
@@ -194,14 +213,30 @@ func writeOwned(path, text string, gid int) error {
 	return nil
 }
 
-// ProxyConfig is what `computerd egress-proxy` takes: the form, the latest end, and init's pid.
+// ProxyConfig is what `computerd egress-proxy` takes: the form, the latest end, init's pid, and the public egress, if any.
 type ProxyConfig struct {
-	Network Network
-	Until   time.Time
-	Parent  int
+	Network      Network
+	Until        time.Time
+	Parent       int
+	PublicEgress netip.AddrPort
 }
 
-const proxyWords = "egress-proxy takes --network <form> --until <RFC 3339 time> --parent <pid>, each once; init starts it, nothing else"
+const proxyWords = "egress-proxy takes --network <form> --until <RFC 3339 time> --parent <pid> and, optionally, --public-egress <IPv4>:<port>, each once; init starts it, nothing else"
+
+// Args are egress-proxy's arguments for config, which ProxyConfigOf reads back: the network, the end, the parent, and the
+// public egress when there is one.
+func (c ProxyConfig) Args() []string {
+	args := []string{"--network", c.Network.String(), "--until", c.Until.UTC().Format(time.RFC3339Nano), "--parent", fmt.Sprint(c.Parent)}
+	if c.PublicEgress.IsValid() {
+		args = append(args, "--public-egress", c.PublicEgress.String())
+	}
+	return args
+}
+
+// Options are what the proxy config's egress-proxy serves: its network's list, and its public egress.
+func (c ProxyConfig) Options(logf func(string)) Options {
+	return Options{Allow: c.Network.Allow, Log: logf, PublicEgress: c.PublicEgress}
+}
 
 // ProxyConfigOf reads egress-proxy's arguments.
 func ProxyConfigOf(args []string) (ProxyConfig, error) {
@@ -221,6 +256,8 @@ func ProxyConfigOf(args []string) (ProxyConfig, error) {
 			config.Until, err = time.Parse(time.RFC3339Nano, value)
 		case "--parent":
 			_, err = fmt.Sscanf(value, "%d", &config.Parent)
+		case "--public-egress":
+			config.PublicEgress, err = PublicEgressOf(value)
 		default:
 			err = errors.New(proxyWords)
 		}
@@ -246,5 +283,5 @@ func RunProxy(l net.Listener, config ProxyConfig, logf func(string)) error {
 			}
 		}
 	}()
-	return Serve(l, Options{Allow: config.Network.Allow, Log: logf})
+	return Serve(l, config.Options(logf))
 }
