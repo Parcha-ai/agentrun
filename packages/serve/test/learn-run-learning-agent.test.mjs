@@ -1,11 +1,13 @@
 // An agent's learning as its agent-level reads take it once a run asked to learn (POST /agents/{agent_id}/runs
-// `learning: {settings}`): the settings of its newest run that asked, else its revision's definition's. Proven here,
-// through the API:
+// `learning: {settings}`): the newer of its newest run that asked (its start) and its current revision (its save).
+// Proven here, through the API:
 //   - an agent whose revision has no learning, after a keyed, capped run of it asked with compile_after 1: its view says
 //     its learning (`learning.pending`), and the loop read counts its completed runs toward that run's compile_after
 //     (1), not the default (20), never reading empty while its runs learn;
 //   - an agent whose revision learns and no run of which asked reads as its revision says, its views the same bytes
 //     before and after another agent's run asked;
+//   - the newer wins: a revision saved after an asking run that says learning false reads as not learning (its view
+//     off, its hold on that revision's numbers); a run that asks after that save is on again with its settings;
 //   - on a server whose learning is off, a run that asks is 400 learning_off in words, nothing stored, and capabilities
 //     say the server takes no learning object (`features.run_learning` false).
 // The audit's hold on the asking run's numbers is learn-audit-ledger.test.mjs's.
@@ -14,6 +16,9 @@ import { test } from "node:test";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { learner, made } from "./learn-support.mjs";
 import { agent, follow, serve, withEnv } from "./support.mjs";
+
+const { auditLoopOfAgent } = await import("../dist/runner/audit.js");
+const { auditLoopOf } = await import("../dist/learning-setting.js");
 
 const KEY = `not-a-secret-${"agent-learning"}-41d7a0`;
 /** Every variable these tests set or clear: the server holds no model key of its own. */
@@ -85,6 +90,33 @@ test("an agent whose revision learns, and no run of which asked, reads as its re
   await ran(api, "other", { learning: { settings: { compile_after: 5, audit_every: 1 } } });
   const again = await reads(api, "own");
   for (const path of Object.keys(first)) assert.equal(JSON.stringify(again[path]), JSON.stringify(first[path]), `${path} reads the same bytes`);
+});
+
+test("the newer wins: a revision saved after an asking run that says learning false makes the agent read as not learning, its hold on that revision's numbers; a run that asks after that save wins again with its settings", { timeout: 60_000 }, async (t) => {
+  const { api, store } = await keyless(t, { runner: false });
+  await made(api, agent("plain"));
+  const asks = async (settings) => {
+    const res = await api("POST", "/agents/plain/runs", { input: { content: "Go." }, model_key: KEY, max_cost_usd: 1, learning: { settings } });
+    assert.equal(res.status, 202, JSON.stringify(res.body));
+    await sleep(5);
+  };
+  const hold = async () => auditLoopOfAgent(store, "plain", (await store.agents.get("plain")).currentRevision);
+  await asks({ compile_after: 2, audit_every: 2 });
+  assert.equal(typeof (await api("GET", "/agents/plain")).body.learning?.pending, "number", "the asking run: on");
+  assert.equal((await hold()).audit_every, 2, "the hold reads the asking run's numbers");
+  // (i) A revision saved after it, saying learning false: off, the hold on that revision's numbers (the defaults).
+  const got = await api("GET", "/agents/plain");
+  const saved = await api("PUT", "/agents/plain/definition", { definition: { name: "plain", instructions: "Answer again.", skills: [], tools: [], learning: false } }, { "if-match": got.headers.get("etag") });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  await sleep(5);
+  const off = (await api("GET", "/agents/plain")).body;
+  assert.equal(off.learning, undefined, `a revision saved after the asking run says learning false: not learning (${JSON.stringify(off.learning)})`);
+  assert.deepEqual(await hold(), auditLoopOf(undefined), "the hold falls back to that revision's numbers");
+  assert.equal((await api("GET", "/agents/plain/learning/loop")).status, 200);
+  // (ii) Another asking run after that save: on again, with its settings.
+  await asks({ compile_after: 3, audit_every: 3 });
+  assert.equal(typeof (await api("GET", "/agents/plain")).body.learning?.pending, "number", "a run that asks after that save: on again");
+  assert.equal((await hold()).audit_every, 3, "the hold reads the newer asking run's numbers");
 });
 
 test("on a server whose learning is off a run that asks to learn is 400 learning_off in words, nothing stored, and capabilities say the server takes no learning object", { timeout: 60_000 }, async (t) => {
