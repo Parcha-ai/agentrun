@@ -46,6 +46,8 @@ export const ORGO = defineProvider({
 		{ name: "ORGO_WORKSPACE_ID", option: "workspaceId", required: false, picked: true },
 	],
 	metered: true,
+	// Its create answers the size the vendor runs the computer at (resources), which its time is priced by.
+	sized: true,
 	// None yet: an Archil mount needs an Orgo template that bakes the helper, and a synced folder a /workspace its create
 	// makes, which the shared hosted adapter's does and Orgo's own does not.
 	mounts: [],

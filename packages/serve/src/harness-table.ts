@@ -231,7 +231,9 @@ function adapterEntry(facts: AdapterFacts, make: (env: NodeJS.ProcessEnv, needs:
     // proxy forwards with the route's fetch (its forwardsRoute fact), except behind a gateway.
     runs: (env, model) => (gateway && Boolean(env.AGENT_MODEL_BASE_URL)) || model.slice(0, Math.max(0, model.indexOf("/"))) === vendor || onOpenRouter(model, vendor) || (onPlan && model.startsWith(`${PLAN_PROVIDER}/`)) || (facts.forwardsRoute === true && routedId(wire, model) && !env.AGENT_MODEL_BASE_URL),
     onWire: (env) => facts.ownModel || openRouterOnly(wire, env),
-    model: async (env, ref, available) => (facts.ownModel && !available ? undefined : modelOn(wire, env, ref, id)),
+    // Where it does not run here and its model is its own, or the run names none, no model: the harness's reason says what
+    // it needs. Its wire's generic "No model yet" would name keys it never runs on (an Anthropic key for codex).
+    model: async (env, ref, available) => (!available && (facts.ownModel || ref === undefined) ? undefined : modelOn(wire, env, ref, id)),
     priceModel: (env, model) => priceModelFor(wire, env, model, id),
     adapter: make,
     route: async (env, needs) => {

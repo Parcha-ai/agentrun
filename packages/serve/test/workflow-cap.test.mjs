@@ -15,7 +15,7 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { journalRecords } from "../dist/runner/journal-reader.js";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
-import { client, flowAgent, follow, letGo, runDir, scratch, serve, startServe, storeRun, withEnv } from "./support.mjs";
+import { client, FAST_BEATS, flowAgent, follow, letGo, runDir, scratch, serve, startServe, storeRun, withEnv } from "./support.mjs";
 import { raw } from "./store-target.mjs";
 
 /** The faux model at $100 a million output tokens, each answer 400 of them: a request costs $0.04, and is admitted only
@@ -335,8 +335,8 @@ test("a capped workflow's polled call held at its cap past its poll window is se
       },
       input: { schemaId: "In" },
       output: { schemaId: "Search", path: "found" },
-      // A poll window of 8 s, which the hold below outlasts (wide enough that a loaded box's own delays are not the window).
-      root: { node: "chain", steps: [{ node: "call", label: "search", via: "tool", tool: "web_search", args: { query: "{question}", n: 2 }, out: "Search", as: "found", deadline_s: 8, poll: { until: { predicate: "field_type", path: "objective", type: "string" }, interval_s: 1, deadline_s: 8 } }] },
+      // A poll window of 5 s, which the hold below outlasts (wide enough that a loaded box's own delays are not the window).
+      root: { node: "chain", steps: [{ node: "call", label: "search", via: "tool", tool: "web_search", args: { query: "{question}", n: 2 }, out: "Search", as: "found", deadline_s: 5, poll: { until: { predicate: "field_type", path: "objective", type: "string" }, interval_s: 1, deadline_s: 5 } }] },
     };
     const id = `polled-${letGoFirst}`;
     const made = await api("POST", "/agents", flowAgent(id, flow, { tools: ["web_search"], tool_settings: { web_search: { provider: "parallel" } } }));
@@ -345,8 +345,8 @@ test("a capped workflow's polled call held at its cap past its poll window is se
     await follow(api, runId, SETTLED, { deadlineMs: 60_000 });
     assert.equal((await view(api, runId)).pending?.node, "search");
     if (letGoFirst) await releasedOnStore(store, runId);
-    // Held 10 s, past the 8 s window.
-    await new Promise((resolve) => setTimeout(resolve, 10_000));
+    // Held 6.5 s, past the 5 s window.
+    await new Promise((resolve) => setTimeout(resolve, 6_500));
     assert.equal((await api("PATCH", `/runs/${runId}`, { max_cost_usd: 1 })).status, 200);
     await follow(api, runId, ENDED, { deadlineMs: 60_000 });
     const run = await view(api, runId);
@@ -355,17 +355,27 @@ test("a capped workflow's polled call held at its cap past its poll window is se
   }
 });
 
-test("a polled call held at its cap and resumed by a raise while its window still has time runs under the window the hold moved, not the old one, and still under its own deadline_s", { timeout: 300_000 }, async (t) => {
-  // A 36 s poll window, held from its start (the pause, about when it opened); the search answers after 18 s. Let go,
-  // and raised 24 s after the pause: the next process resumes with at most 12 s of the old window left, 6 s or more short
-  // of the search, and above 0 unless it takes 12 s to come up. The hold moves the window by the time held, so it ends
-  // 36 s after the resume, 18 s past the search's end. The call's own deadline_s is 36 s (twice the search: room), then
-  // 9 s (half: none), which still ends it. That one runs first, so a run that fails the other has passed it.
-  const cases = [{ deadline: 9, want: "failed" }, { deadline: 36, want: "completed" }];
-  for (const { deadline, want } of cases) {
-    const calls = join(await scratch(t), `parallel-calls-${deadline}.jsonl`);
-    withEnv(t, { PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: calls, AGENTRUN_TEST_FAUX_PARALLEL_SEARCH: "slow:18000" }, KEYS);
-    const { api, store } = await serve(t, { fauxParallel: FAUX_PARALLEL });
+test("a polled call held at its cap and resumed by a raise while its window still has time runs under the window the hold moved, not the old one, and still under its own deadline_s", { timeout: 300_000, concurrency: 2 }, async (t) => {
+  // An 18 s poll window, held from its start (the pause, about when it opened); the search answers after 9 s. Let go,
+  // and raised 12 s after the pause: the next process resumes with at most 6 s of the old window left, 3 s or more short
+  // of the search, and above 0 unless it takes 6 s to come up. The hold moves the window by the time held, so it ends
+  // 18 s after the resume, 9 s past the search's end. The call's own deadline_s is 18 s (twice the search: room) in one
+  // case and 4.5 s (half: none) in the other, which still ends it. The two cases run side by side, each on a server of its
+  // own whose Parallel fake is a module of the case's, filing that case's calls in a file of its own: the file the
+  // environment names (AGENTRUN_TEST_FAUX_PARALLEL_CALLS) is one for the whole test process, and each case would count
+  // the other's search.
+  withEnv(t, { PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_PARALLEL_SEARCH: "slow:9000" }, KEYS);
+  const cases = [{ deadline: 4.5, want: "failed" }, { deadline: 18, want: "completed" }];
+  await Promise.all(cases.map(({ deadline, want }) => t.test(`deadline_s ${deadline}: ${want}`, async (t) => {
+    const dir = await scratch(t);
+    const calls = join(dir, "parallel-calls.jsonl");
+    const fauxParallel = join(dir, "faux-parallel.mjs");
+    await writeFile(fauxParallel, [
+      `import { appendFileSync } from "node:fs";`,
+      `import faux from ${JSON.stringify(new URL("./fixtures/faux-parallel.mjs", import.meta.url).href)};`,
+      `export default async (url, init = {}) => (appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ path: new URL(String(url)).pathname }) + "\\n"), faux(url, init));`,
+    ].join("\n"));
+    const { api, store } = await serve(t, { fauxParallel });
     const flow = {
       v: 2, name: "polled-resumed",
       schemas: {
@@ -374,7 +384,7 @@ test("a polled call held at its cap and resumed by a raise while its window stil
       },
       input: { schemaId: "In" },
       output: { schemaId: "Search", path: "found" },
-      root: { node: "chain", steps: [{ node: "call", label: "search", via: "tool", tool: "web_search", args: { query: "{question}", n: 2 }, out: "Search", as: "found", deadline_s: deadline, poll: { until: { predicate: "field_type", path: "objective", type: "string" }, interval_s: 1, deadline_s: 36 } }] },
+      root: { node: "chain", steps: [{ node: "call", label: "search", via: "tool", tool: "web_search", args: { query: "{question}", n: 2 }, out: "Search", as: "found", deadline_s: deadline, poll: { until: { predicate: "field_type", path: "objective", type: "string" }, interval_s: 1, deadline_s: 18 } }] },
     };
     const id = `polled-resumed-${deadline}`;
     assert.equal((await api("POST", "/agents", flowAgent(id, flow, { tools: ["web_search"], tool_settings: { web_search: { provider: "parallel" } } }))).status, 201);
@@ -385,7 +395,7 @@ test("a polled call held at its cap and resumed by a raise while its window stil
     assert.equal((await view(api, runId)).pending?.node, "search");
     await releasedOnStore(store, runId);
     const goneAt = Date.now() - started;
-    await new Promise((resolve) => setTimeout(resolve, Math.max(0, pausedAt + 24_000 - Date.now())));
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, pausedAt + 12_000 - Date.now())));
     assert.equal((await api("PATCH", `/runs/${runId}`, { max_cost_usd: 1 })).status, 200);
     const raisedAt = Date.now() - started;
     await follow(api, runId, ENDED, { deadlineMs: 90_000 });
@@ -393,7 +403,7 @@ test("a polled call held at its cap and resumed by a raise while its window stil
     const run = await view(api, runId);
     assert.deepEqual([deadline, run.status], [deadline, want], JSON.stringify(run.error));
     assert.equal((await lines(calls)).filter((call) => call.path === "/v1/search").length, 1, "sent once, after the raise");
-  }
+  })));
 });
 
 // A decision's booking lost by a crash while its receipt names its charge does not happen on the runner: its settle commits
@@ -444,7 +454,7 @@ async function polls(server, n) {
 async function parkedAtCap(t) {
   withEnv(t, {}, KEYS);
   const events = runnerEvents();
-  const server = await serve(t, { faux: PRICED, onEvent: events.onEvent });
+  const server = await serve(t, { faux: PRICED, onEvent: events.onEvent, runnerTiming: FAST_BEATS });
   const { api } = server;
   assert.equal((await api("POST", "/agents", flowAgent("twice", twoNodes()))).status, 201);
   const started = await api("POST", "/agents/twice/runs", { input: { question: "What is six times seven?" }, max_cost_usd: 0.12 });

@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { kindOf, serves, sweep } from "../dist/index.js";
-import { API, fakeOrgoApi, fakeOrgoChannel, KEY, LABELS_PATH, VNC, WORKSPACE } from "./fake-orgo.mjs";
+import { API, fakeOrgoApi, fakeOrgoChannel, KEY, LABELS_PATH, ORGO_AUTOCUTSELS, selectionsOf, VNC, WORKSPACE } from "./fake-orgo.mjs";
 import { refusesHttp } from "./https-refusal.mjs";
 
 /** A create's context with a request id of its own: each create here is a new request. */
@@ -164,8 +164,9 @@ test("Orgo create: the computer in the workspace, computerd uploaded and install
 	assert.equal(created.value.name, record.name);
 	assert.match(record.name, /^computer-[0-9a-f]{12}-r[a-z2-7]{16}-e3-d[0-9a-z]+$/);
 	assert.deepEqual(record.asked, { workspace_id: WORKSPACE, name: record.name, os: "linux", ram: 4, cpu: 1, ends_in_hours: 1 });
+	assert.deepEqual(created.value.resources, { cpus: 1, memoryMb: 4096 }, "the size Orgo's answer says it ran: its computer's time is priced by it");
 	const ops = channel.calls.map(({ op, kind }) => (kind ? `${op} ${kind}` : op));
-	assert.deepEqual(ops.slice(0, 8), ["upload", "run install", "run orgo-x11", "run orgo-labels", "run orgo-ports", "run orgo-lockdown", "start init", "stdio stdio"]);
+	assert.deepEqual(ops.slice(0, 9), ["upload", "run install", "run orgo-x11", "run orgo-labels", "run orgo-ports", "run orgo-lockdown", "run orgo-primary-sync", "start init", "stdio stdio"]);
 	// Every path socket of Orgo's desktop is made root's alone before any tool runs, but the display's own: the tools reach
 	// the X server through it, and nothing else (live run 4 found root's D-Bus buses connectable by the tool user).
 	assert.deepEqual(channel.calls.find((call) => call.kind === "orgo-lockdown").argv.slice(4), ["/tmp/.X11-unix/X99"]);
@@ -197,6 +198,39 @@ test("Orgo create: the computer in the workspace, computerd uploaded and install
 	assert.deepEqual(api.routes(), [`GET /workspaces/${WORKSPACE}`, "POST /computers", `GET /workspaces/${WORKSPACE}`, `GET /workspaces/${WORKSPACE}`], "Orgo's REST is the lookup of the request's computer, the create, and the workspace read again after Orgo's answer and once the computer is up; the rest is the channel");
 	for (const request of api.requests) keyless({ ...request, headers: { ...request.headers, authorization: undefined } }, `${request.method} ${request.path}`);
 	secretless(created, "create's result");
+});
+
+test("Orgo create: the computer's size is the one Orgo's answer says it ran (ram in GB, cpu in vCPUs), over the size asked; the size asked where the answer leaves one out", async () => {
+	// Orgo ran it at another size than the one asked: its answer is the size billed.
+	const other = setup({}, { api: { gives: () => ({ ram: 8, cpu: 2 }) } });
+	const bigger = await other.provider.create(SPEC, newRequest());
+	assert.equal(bigger.ok, true, JSON.stringify(bigger));
+	assert.deepEqual(only(other.api).asked.ram, 4);
+	assert.deepEqual(bigger.value.resources, { cpus: 2, memoryMb: 8192 });
+	// An answer with no size: the size asked, which Orgo runs or refuses (400), never another.
+	const silent = setup({}, { api: { gives: () => ({ ram: undefined, cpu: undefined }) } });
+	const asked = await silent.provider.create({ ...SPEC, cpus: 2, memoryMb: 16_384 }, newRequest());
+	assert.equal(asked.ok, true, JSON.stringify(asked));
+	assert.deepEqual(asked.value.resources, { cpus: 2, memoryMb: 16_384 });
+	// A retry of the same request finds its computer by name and answers the size the listing says it runs.
+	const api = fakeOrgoApi({ gives: () => ({ ram: 16, cpu: 4 }) });
+	const channel = fakeOrgoChannel();
+	const options = { apiKey: KEY, workspaceId: WORKSPACE, apiUrl: API, fetch: api.fetch, channel, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS };
+	const request = newRequest();
+	const first = await create(options).create(SPEC, request);
+	assert.equal(first.ok, true, JSON.stringify(first));
+	const again = await create(options).create(SPEC, request);
+	assert.equal(again.ok, true, JSON.stringify(again));
+	assert.equal(again.value.id, first.value.id);
+	assert.deepEqual(again.value.resources, { cpus: 4, memoryMb: 16_384 });
+	// A retry whose read of the computer fails answers that failure, never the size it asked for in the read's place.
+	const refusing = async (url, init) => {
+		const { pathname } = new URL(String(url));
+		if ((init?.method ?? "GET") === "GET" && pathname.endsWith(`/computers/${first.value.id}`)) return new Response(JSON.stringify({ error: "forbidden" }), { status: 403, headers: { "content-type": "application/json" } });
+		return api.fetch(url, init);
+	};
+	const unread = await create({ ...options, fetch: refusing }).create(SPEC, request);
+	assert.equal(unread.ok, false, JSON.stringify(unread));
 });
 
 test("Orgo create: a computer Orgo answers creating is waited for until it runs; the start goes through a named session when asked", async () => {
@@ -512,4 +546,90 @@ test("Orgo create: a lockdown that leaves a socket open refuses the create in wo
 	assert.match(made.error.message, /was deleted/);
 	assert.equal(only(fakes.api).deleted, true, "the computer is deleted");
 	assert.equal(fakes.channel.calls.some((call) => call.kind === "init"), false, "init never started");
+});
+
+// linux.files.move's oracle (Ctrl+A, Ctrl+X, Ctrl+L, the path, Enter, Ctrl+V in Thunar) moved nothing on Orgo in sandbox
+// bench rounds 2 and 4, every seed, and moved both files on E2B, Agent37 and boxd. The live diagnostic
+// (orgo-move-diag-1, 2026-11-28) read why, a capture after each step: after Ctrl+X Thunar owned CLIPBOARD with the cut
+// (diag/captures/s02-after-ctrl+x.tool.txt); after Ctrl+L Thunar owned PRIMARY and autocutsel CLIPBOARD, as plain text
+// (s03-after-ctrl+l.tool.txt); after Ctrl+V an "Error" window had focus and both files were where they were
+// (s06-after-ctrl+v.tool.txt). Root's ps (facts.root.txt) holds both autocutsels, one per selection (ORGO_AUTOCUTSELS).
+test("Orgo create: a cut survives a selection in a text field: Orgo's PRIMARY autocutsel is ended before any tool runs, its CLIPBOARD one kept", async () => {
+	const { provider, api, channel } = setup();
+	const created = await provider.create(SPEC, newRequest());
+	assert.equal(created.ok, true, JSON.stringify(created));
+	const box = channel.boxOf(only(api).id);
+	const files = ["file:///tmp/computer-bench-4e788a/downloads-4e788a/beach-4e788a.txt", "file:///tmp/computer-bench-4e788a/downloads-4e788a/sunset-4e788a.txt"];
+	const selections = selectionsOf(box);
+	selections.cut(files);
+	selections.select("/tmp/computer-bench-4e788a/downloads-4e788a");
+	selections.select("/tmp/computer-bench-4e788a/photos-4e788a/");
+	assert.deepEqual(box.clipboard, { owner: "thunar", targets: ["text/uri-list", "x-special/gnome-copied-files", "UTF8_STRING"], uris: files }, "Ctrl+V pastes the cut");
+	const ops = channel.calls.map(({ op, kind }) => (kind ? `${op} ${kind}` : op));
+	assert.ok(ops.indexOf("run orgo-primary-sync") >= 0 && ops.indexOf("run orgo-primary-sync") < ops.indexOf("start init"), `ended before init starts: ${ops.join(", ")}`);
+	assert.deepEqual(box.processes, [ORGO_AUTOCUTSELS[0]], "the CLIPBOARD autocutsel runs on, so the clipboard still reaches Orgo's VNC viewer");
+	assert.ok(created.value.notes.some((note) => /PRIMARY autocutsel ended \(pid 514\)/.test(note)), JSON.stringify(created.value.notes));
+	// A desktop with no PRIMARY autocutsel (another Orgo image) ends nothing and says so.
+	const plain = setup({}, { channel: { processes: [ORGO_AUTOCUTSELS[0]] } });
+	const made = await plain.provider.create(SPEC, newRequest());
+	assert.equal(made.ok, true, JSON.stringify(made));
+	assert.deepEqual(plain.channel.boxOf(only(plain.api).id).processes, [ORGO_AUTOCUTSELS[0]]);
+	assert.ok(made.value.notes.some((note) => /no PRIMARY autocutsel ran/.test(note)), JSON.stringify(made.value.notes));
+});
+
+// A PRIMARY autocutsel left running costs a cut its paste, not the desktop: the create goes on and its notes say so.
+const STILL_RUNNING = (pid) => `Orgo's PRIMARY autocutsel is still running (${pid}): selecting text after a cut replaces the clipboard, so linux.files.move may paste text`;
+for (const [how, primarySync, pid] of [
+	["one that outlives its signal", { exitCode: 1, output: "autocutsel 514 outlived SIGTERM\n" }, "pid 514"],
+	["two that outlive it", { exitCode: 1, output: "autocutsel 514 515 outlived SIGTERM\n" }, "pid 514, 515"],
+	["a pgrep that fails", { exitCode: 1, output: "pgrep failed\n" }, "pid could not be read: pgrep failed"],
+	["a channel that can't run the script", { error: { code: "vendor", vendor: "orgo", message: "Orgo's bash answered 502" } }, "pid could not be read: Orgo's bash answered 502"],
+]) {
+	test(`Orgo create: a PRIMARY autocutsel left running (${how}) is a warning in the create's notes, and the create goes on`, async () => {
+		const fakes = setup({}, { channel: { primarySync } });
+		const made = await fakes.provider.create(SPEC, newRequest());
+		assert.equal(made.ok, true, JSON.stringify(made));
+		assert.ok(made.value.notes.includes(STILL_RUNNING(pid)), JSON.stringify(made.value.notes));
+		assert.notEqual(only(fakes.api).deleted, true, "the computer is kept");
+		assert.equal(fakes.channel.calls.some((call) => call.kind === "init"), true, "init started");
+	});
+}
+
+/** A PID namespace with a /proc of its own, in a user namespace: the primary sync case runs in one. */
+const pidns = spawnSync("unshare", ["-Urpf", "--mount-proc", "true"]).status === 0;
+const pidnsSkip = pidns ? false : "needs a PID namespace with its own /proc in a user namespace (unshare -Urpf --mount-proc), which this host refuses";
+
+test("Orgo primary sync: the script ends a process whose whole command line is Orgo's PRIMARY autocutsel and no other", { skip: pidnsSkip }, () => {
+	// Real processes with the command lines Orgo's ps showed (perl sets its own), and a lookalike of each kind, with the
+	// script, all in a PID namespace of their own (and its own /proc): the script sees and signals these alone, never a
+	// PRIMARY autocutsel of the host's or of another run of this test. The namespace's first process is the shell below;
+	// when it ends, the kernel ends every process left in it.
+	const inside = [
+		"alive() { [ -e \"/proc/$1\" ] && [ \"$(sed -n 's/.*) \\([A-Z]\\).*/\\1/p' \"/proc/$1/stat\" 2>/dev/null)\" != Z ]; }",
+		"perl -e '$0 = shift; sleep 600' 'autocutsel -fork -selection PRIMARY' & primary=$!",
+		"perl -e '$0 = shift; sleep 600' 'autocutsel -fork -selection CLIPBOARD' & a=$!",
+		"perl -e '$0 = shift; sleep 600' 'autocutsel -fork -selection PRIMARY -debug' & b=$!",
+		"perl -e '$0 = shift; sleep 600' 'xautocutsel -fork -selection PRIMARY' & c=$!",
+		"sleep 0.3",
+		'for p in $primary $a $b $c; do alive $p && echo "started $p"; done',
+		'echo "primary $primary"',
+		'echo "others $a $b $c"',
+		'out=$(sh -c "$1" sh 2>&1); echo "first $? $out"',
+		'alive $primary && echo "primary alive"',
+		'for p in $a $b $c; do alive $p && echo "runs on $p"; done',
+		'out=$(sh -c "$1" sh 2>&1); echo "again $? $out"',
+	].join("\n");
+	const ran = spawnSync("unshare", ["-Urpf", "--mount-proc", "sh", "-c", inside, "sh", orgo.PRIMARY_SYNC_SCRIPT], { encoding: "utf8", timeout: 30_000 });
+	assert.equal(ran.status, 0, `unshare -Urpf --mount-proc: ${ran.stdout}${ran.stderr}`);
+	const lines = ran.stdout.trim().split("\n");
+	const words = (head) => lines.find((line) => line.startsWith(`${head} `))?.slice(head.length + 1).split(" ") ?? [];
+	const [primary] = words("primary");
+	const others = words("others");
+	assert.ok(primary, ran.stdout);
+	assert.equal(others.length, 3, ran.stdout);
+	for (const pid of [primary, ...others]) assert.ok(lines.includes(`started ${pid}`), `${pid} started: ${ran.stdout}`);
+	assert.deepEqual(words("first"), ["0", "ended", primary], ran.stdout);
+	assert.equal(lines.includes("primary alive"), false, `Orgo's PRIMARY autocutsel is gone: ${ran.stdout}`);
+	for (const pid of others) assert.ok(lines.includes(`runs on ${pid}`), `${pid} is not Orgo's PRIMARY autocutsel and runs on: ${ran.stdout}`);
+	assert.deepEqual(words("again"), ["0", "none"], ran.stdout);
 });

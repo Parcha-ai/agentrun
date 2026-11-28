@@ -169,6 +169,8 @@ export interface CodexHarnessOptions {
   name?: string;
   /** The model's context window (Gateway ids are unknown to Codex). Default 272,000. */
   contextWindow?: number;
+  /** How long Codex waits on a streamed answer that sends nothing (CodexConfigOptions.streamIdleMs). Default Codex's own. */
+  streamIdleMs?: number;
   /** What the session's model can take of one tool result (its context window): the tool bridge holds every result to
    *  it (boundResult's budget), and so does each result code mode hands Codex from the log. Absent: the host's bound
    *  alone (HOST_RESULT_MAX_CHARS). */
@@ -483,6 +485,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
         baseUrl: `${machine.modelUrl}/v1`,
         envKey: KEY_ENV,
         contextWindow: options.contextWindow ?? 272_000,
+        ...(options.streamIdleMs !== undefined ? { streamIdleMs: options.streamIdleMs } : {}),
         cwd,
         ...(spec.env ? { commandEnv: spec.env } : {}),
         extra: {

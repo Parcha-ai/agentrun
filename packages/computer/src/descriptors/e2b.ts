@@ -24,6 +24,8 @@ export const E2B = defineProvider({
 	settings: [{ name: "e2bConnect", option: "connect" }],
 	connect: "either",
 	metered: true,
+	// Its create answers the size the vendor runs the computer at (resources), which its time is priced by.
+	sized: true,
 	mounts: ["archil"],
 	// None: its programs run in a network of their own, their loopback alone (isolation.ts), and the sandbox is made with
 	// no internet access. Open and a list: the sandbox gets internet access, and its programs' one way out is init's egress

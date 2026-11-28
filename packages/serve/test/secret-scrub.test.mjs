@@ -1959,6 +1959,22 @@ test("LVI (11-26): a glob or brace `.env` read, a member access across a line br
   }
 });
 
+test("LVI (11-26): a `.env` name longer than env-file's names is no file it cuts, so its env token stays", async () => {
+  const seed = "Tallow4quarry62";
+  const region = "basin-orchard-41";
+  const text = `APP_REGION=${region}\nAPP_SEED ${seed}`;
+  // env-file's .env.<name> takes up to 64 characters after `.env.`; a longer name is no .env file it cuts, so the
+  // env token in it is read, and a token after it (`.printenv`) is read too.
+  const long = `${"a".repeat(60)}.${"b".repeat(30)}`;
+  for (const command of [`cat .env.${long}`, `cat .env.${long}.printenv`, `cat src/.env.${long}`]) {
+    const out = await gone(text, [seed, region], { command });
+    assert.equal(out.text, "[redacted:env-dump 2 lines]", command.slice(0, 40));
+  }
+  // At env-file's longest name it is a file, cut whole by env-file.
+  const out = await gone(text, [seed, region], { command: `cat .env.${"a".repeat(64)}` });
+  assert.equal(out.text, "[redacted:env-file 2 lines]");
+});
+
 test("LVI (11-26): a full PS1 prompt (`user@host:~$`, `root@c:/#`, `[user@host dir]$`) opens and ends a transcript's cut", async () => {
   const seed = "Tallow4quarry62";
   const user = await gone(`user@host:~$ env\nA=1\nB=l1\nl2\nC=${seed}\nuser@host:~$ ls\nREADME.md`, [seed]);
@@ -1986,7 +2002,7 @@ test("LVI (11-26): a transcript flattened onto one line (a run's title) is cut a
   assert.equal(clipped.text, "Say: $ env [redacted:env-dump 1 lines]");
   // Through a pipe, after a full PS1 prompt, and env's own value a label rule cut already: one dump cut holds it all.
   const piped = await gone(`user@host:~$ env | sort SYNTH_A=1 SYNTH_SEED=${seed} user@host:~$ ls`, [seed], { flattened: true });
-  assert.equal(piped.text, "user@host:~$ env | sort [redacted:env-dump 1 lines] user@host:~$ ls");
+  assert.equal(piped.text, "user@host:~$ env [redacted:env-dump 1 lines] user@host:~$ ls");
   const labelled = await gone(`Say: $ env AWS_SECRET_ACCESS_KEY=${seed}Zx81 $ ls README`, [seed], { flattened: true });
   assert.equal(labelled.text, "Say: $ env [redacted:env-dump 1 lines] $ ls README");
   // Flattened, a command that prints nothing of the environment, or a dollar that is no prompt, keeps its words.
@@ -1995,6 +2011,39 @@ test("LVI (11-26): a transcript flattened onto one line (a run's title) is cut a
   }
   // Not flattened (a row, a file): `env NAME=value command` on its line is a command, and its output is the next lines'.
   assert.deepEqual((await scrub(`Run $ env SYNTH_MODE=dev node app.js`, { mode: "count" })).cuts, []);
+});
+
+test("LVI (11-26 r2): a flattened title cuts any env command's output, not only one that opens with NAME=value: printenv NAME, echo $NAME, cat .env, docker inspect, heroku config", async () => {
+  const seed = "Basalt7meadow19";
+  // No NAME=value word marks where the command ends: the fewest words that print the environment, or that read a
+  // .env file, are the command, and the rest up to the next prompt is cut (an argument with it: an over-cut, title-only).
+  const shapes = [
+    [`Say: $ printenv SYNTH_ROOM ${seed} $ ls`, "Say: $ printenv [redacted:env-dump 1 lines] $ ls"],
+    [`Say: $ echo $SYNTH_ROOM ${seed} $ ls`, "Say: $ echo $SYNTH_ROOM [redacted:env-dump 1 lines] $ ls"],
+    [`Say: $ cat .env.local SYNTH_ROOM=${seed} $ ls`, "Say: $ cat .env.local [redacted:env-dump 1 lines] $ ls"],
+    [`Say: $ cat .env ${seed}…`, "Say: $ cat .env [redacted:env-dump 1 lines]"],
+    [`user@host:~$ docker inspect app [{"Config": {"Env": ["SYNTH_ROOM=${seed}"]}}]`, "user@host:~$ docker inspect [redacted:env-dump 1 lines]"],
+    [`Say: $ heroku config === app Config Vars SYNTH_ROOM: ${seed} $ ls`, "Say: $ heroku config [redacted:env-dump 1 lines] $ ls"],
+  ];
+  for (const [text, cut] of shapes) {
+    const out = await gone(text, [seed], { flattened: true });
+    assert.equal(out.text, cut, text);
+    assert.deepEqual(out.cuts.map((c) => [c.rule, c.kind]), [["env-dump", "dump"]], text);
+    // Read again as the share host reads an uploaded title: what the export cut is no new hit.
+    assert.deepEqual((await scrub(out.text, { mode: "count", flattened: true })).cuts, [], out.text);
+  }
+  // A NAME=value word later in the output moves no cut past a value before it: the cut starts after the fewest words.
+  const later = await gone(`Say: $ echo $SYNTH_ROOM ${seed} SYNTH_REGION=north $ ls`, [seed], { flattened: true });
+  assert.equal(later.text, "Say: $ echo $SYNTH_ROOM [redacted:env-dump 1 lines] $ ls");
+  // Only a segment whose words after the command are one marker is the export's own cut. Words before a marker are
+  // output, read again: a value pasted ahead of a cut, or an older export's `env | sort` ahead of its cut, is a hit.
+  for (const text of [`Say: $ echo $SYNTH_ROOM ${seed} [redacted:env-dump 1 lines]`, "user@host:~$ env | sort [redacted:env-dump 1 lines] user@host:~$ ls"]) {
+    assert.deepEqual((await scrub(text, { mode: "count", flattened: true })).cuts.map((c) => c.rule), ["env-dump"], text);
+  }
+  // A command that prints nothing of the environment, a .env template, or one with no output after it: kept.
+  for (const text of ["Fix it: $ echo hello world $ ls", "Say: $ cat README.md then fix it", "Say: $ cat .env.example SYNTH_ROOM=placeholder", "Say: $ printenv", "Say: $ ls src/env.ts"]) {
+    assert.deepEqual((await scrub(text, { mode: "count", flattened: true })).cuts, [], text);
+  }
 });
 
 test("LIX: a dotted name is no code evidence alone; a self./this./cls. root, a trailing `;` or an environment root is", async () => {

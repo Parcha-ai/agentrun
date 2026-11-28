@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { agent, claimsAfterRow, client, follow, serve, webhookLookup, whenFree, withEnv } from "./support.mjs";
+import { agent, claimsAfterRow, client, FAST_BEATS, follow, serve, webhookLookup, whenFree, withEnv } from "./support.mjs";
 
 const { serveWithRunner } = await import("../dist/runner/beside.js");
 const { settingFor } = await import("../dist/claude-login.js");
@@ -252,7 +252,9 @@ test("a person's stop of a run in a process of its own, its browser's release ne
   withEnv(t, { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project", FAUX_BROWSER_RELEASE_HOLD: hold }, ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAUX_BROWSER_RELEASE_HOLD", "FAUX_BROWSER_PROVIDER"]);
   const gate = join(dir, "gate");
   const lines = [];
-  const { api, store } = await serve(t, { faux: new URL("./fixtures/faux-browse-gated.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname, childRuns: { log: (line) => void lines.push(line) } });
+  // A 1.5 s cleanup bound (the release cut at it and its margin, 6.5 s), not the providers' default 30 s: the same cut,
+  // before the same end of the process (the runner gives a stopped process the release's whole bound and more).
+  const { api, store } = await serve(t, { faux: new URL("./fixtures/faux-browse-gated.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname, childRuns: { log: (line) => void lines.push(line) }, runnerTiming: { cleanupMs: 1_500 } });
   const records = async (runId) => (await journalRecords(store.readJournal(runId), BACKGROUND_CONTEXT)).entries;
   const charges = async (runId) => (await records(runId)).filter((entry) => entry.kind === "agentrun.browser_charged").map((entry) => entry.data);
   // The run browses once and then waits, its session open, on a gate that never opens: only the person's stop ends it.
@@ -278,10 +280,49 @@ test("a person's stop of a run in a process of its own, its browser's release ne
   assert.equal(cut.length, 1, `the cut charged the session's time through the cut: ${JSON.stringify({ charges: await charges(runId), asked: new Date(asked).toISOString() })}`);
 });
 
+test("a run in a process of its own takes its runner's release margin: a cut whose booking hangs is written that margin after the booking began, not the default margin after", { timeout: 60_000 }, async (t) => {
+  const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
+  const { journalRecords } = await import("../dist/runner/journal-reader.js");
+  const { RELEASE_MARGIN_MS } = await import("../dist/runner/loop-contract.js");
+  const dir = scratchDir(t, "child-margin-");
+  // The vendor's release never answers, so the release is cut; the cut's booking then hangs on the vendor's list (its
+  // let-go of the run's unheld sessions), so the cut is written only once the release's margin is over (faux-browser.mjs).
+  const hold = join(dir, "let-go");
+  const listHold = join(dir, "list-go");
+  t.after(() => existsSync(dir) && (writeFileSync(hold, ""), writeFileSync(listHold, "")));
+  withEnv(t, { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project", FAUX_BROWSER_RELEASE_HOLD: hold, FAUX_BROWSER_LIST_HOLD: listHold }, ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAUX_BROWSER_RELEASE_HOLD", "FAUX_BROWSER_LIST_HOLD", "FAUX_BROWSER_PROVIDER"]);
+  // A margin well under the default: a process that never got it would wait RELEASE_MARGIN_MS for the booking.
+  const timing = { cleanupMs: 500, releaseMarginMs: 700, commandPollMs: 50 };
+  assert.ok(timing.releaseMarginMs + 2_000 < RELEASE_MARGIN_MS);
+  const gate = join(dir, "gate");
+  const lines = [];
+  const { api, store } = await serve(t, { faux: new URL("./fixtures/faux-browse-gated.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname, childRuns: { log: (line) => void lines.push(line) }, runnerTiming: timing });
+  const records = async (runId) => (await journalRecords(store.readJournal(runId), BACKGROUND_CONTEXT)).entries;
+  const cutsOf = async (runId) => (await records(runId)).filter((entry) => entry.kind === "agentrun.release.cut").map((entry) => entry.data);
+  // The run browses once and then waits, its session open, on a gate that never opens: only the person's stop ends it.
+  const runId = await started(api, "browse-margin", { tools: ["browser"] }, { input: { content: `Browse the example page 1 times, then answer once ${gate} exists.` } });
+  for (let waited = 0; !(await records(runId)).some((entry) => entry.kind === "agentrun.browser_charged"); waited += 50) {
+    assert.ok(waited < 30_000, `the snapshot's call was charged; ${lines.join("\n")}`);
+    await sleep(50);
+  }
+  assert.equal((await api("POST", `/runs/${runId}/stop`)).body.stopped, true);
+  let cuts = [];
+  for (let waited = 0; (cuts = await cutsOf(runId)).length === 0; waited += 25) {
+    assert.ok(waited < 20_000, `the run says its release was cut; ${lines.join("\n")}`);
+    await sleep(25);
+  }
+  const seen = Date.now();
+  assert.ok(existsSync(`${listHold}.asked`), "the cut's booking was under way, held on the vendor's list");
+  const booking = seen - statSync(`${listHold}.asked`).mtimeMs;
+  assert.equal(cuts.length, 1, JSON.stringify(cuts));
+  assert.equal(cuts[0].bound_ms, timing.cleanupMs + timing.releaseMarginMs, `the release was bound at the cleanup bound and the runner's margin: ${JSON.stringify(cuts[0])}`);
+  assert.ok(booking >= timing.releaseMarginMs - 100 && booking < timing.releaseMarginMs + 2_000, `the cut was written the runner's margin (${timing.releaseMarginMs} ms) after its booking began, not RELEASE_MARGIN_MS (${RELEASE_MARGIN_MS} ms): ${booking} ms`);
+});
+
 test("a run's process: a raise its loop refuses (not above the cap) on a run parked at its cap is written refused, and the run stays parked, claimed once for it and never again on each poll", { timeout: 180_000 }, async (t) => {
   const { sendCommand } = await import("../dist/runner/commands.js");
   const lines = [];
-  const server = await serve(t, { faux: new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname, childRuns: { log: (line) => void lines.push(line) } });
+  const server = await serve(t, { faux: new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname, childRuns: { log: (line) => void lines.push(line) }, runnerTiming: FAST_BEATS });
   const { api, store } = server;
   // Its first request (least $0.1024) is refused under a $0.05 cap: the run parks.
   const runId = await started(api, "capped", {}, { input: { content: "Write one.md" }, max_cost_usd: 0.05 });
@@ -301,25 +342,36 @@ test("where runs have users of their own, a run reopened by a message while its 
   const dir = scratchDir(t, "runas-reopen-");
   const helper = join(dir, "agentrun-runas");
   // The image's helper, stood in for: every call logged, `run` becomes the run's process, and a slot's reap after a run of
-  // it is slow (its processes killed one by one), so the run's end commit lands well before its claim lets go.
+  // it is slow (its processes killed one by one), so the run's end commit lands well before its claim lets go. Its 3 s is
+  // a window, not a wait for something: a runner that started the reopened run's next process under the reap would do so
+  // inside it, and no event the right runner makes says it did not.
   writeFileSync(helper, `#!/bin/sh\nd=$(dirname "$0")\nran=no; grep -q "^run $2 " "$d/log" 2>/dev/null && ran=yes\necho "$*" >> "$d/log"\ncase "$1" in\nreap) [ "$ran" = yes ] && { sleep 3; echo "reaped $2" >> "$d/events"; }; exit 0 ;;\nrun) echo "run $2" >> "$d/events"; shift 2; while [ "$1" != -- ]; do shift; done; shift; exec "$@" ;;\nesac\nexit 0\n`);
   chmodSync(helper, 0o755);
-  // Its first turn answers at once; its second (the message's) waits past the first claim's cleanup, then says whether its
-  // TMPDIR is still there and takes a file.
+  // Its first turn answers at once; its second (the message's) waits until the first claim's cleanup is over (released,
+  // written by the test at the runner's release of that claim, after its reap and sweep), then says whether its TMPDIR is
+  // still there and takes a file.
+  const released = join(dir, "released");
   const faux = join(dir, "faux-tmpdir.mjs");
   writeFileSync(faux, `import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 export default async function reply(context, faux) {
   if (context.messages.filter((m) => m.role === "user").length < 2) return faux.message("First.");
-  await new Promise((resolve) => setTimeout(resolve, 6000));
+  while (existsSync(${JSON.stringify(dir)}) && !existsSync(${JSON.stringify(released)})) await new Promise((resolve) => setTimeout(resolve, 50));
   const tmp = process.env.TMPDIR;
   let wrote = "no";
   try { writeFileSync(join(tmp, "after.txt"), "x"); wrote = "yes"; } catch (error) { wrote = error.code; }
   return faux.message(\`tmp \${existsSync(tmp) ? "kept" : "gone"}, write \${wrote}\`);
 }
 `);
+  // The run's first claim (its epoch, the server's one run's first): its release, the runner's once the claim's cleanup
+  // is over, lets the second turn look.
+  let firstEpoch;
+  const onEvent = (event) => {
+    if (event.type === "claimed") firstEpoch ??= event.claim.epoch;
+    else if (event.type === "released" && event.epoch === firstEpoch) writeFileSync(released, "");
+  };
   const lines = [];
-  const server = await serve(t, { faux, childRuns: { isolation: { kind: "uid", helper, first: 0, slots: 2 }, log: (line) => void lines.push(line) } });
+  const server = await serve(t, { faux, onEvent, childRuns: { isolation: { kind: "uid", helper, first: 0, slots: 2 }, log: (line) => void lines.push(line) } });
   const runId = await started(server.api, "reopened", {}, { input: { content: "Hello." } });
   await follow(server.api, runId, ["completed"], { deadlineMs: 60_000 });
   assert.equal(await answerOf(server.api, runId), "First.");
@@ -350,13 +402,14 @@ test("a person's stop of a run in a process of its own, sent in its runner's dra
   const hold = join(dir, "let-go");
   t.after(() => existsSync(dir) && writeFileSync(hold, ""));
   withEnv(t, { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project", FAUX_BROWSER_RELEASE_HOLD: hold }, ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAUX_BROWSER_RELEASE_HOLD", "FAUX_BROWSER_PROVIDER"]);
-  // A 4 s lease less its 1 s margin is a 3 s stop, after a 4 s drain: the close's window ends 7.5 s from its start, its
-  // release cut at 6.5 s (the 1.5 s cleanup bound and its margin). The stop comes 2.5 s into the drain, so a release bound
+  // A 4 s lease less its 1 s margin is a 3 s stop, after a 4 s drain: the close's window ends 11.5 s from its start, its
+  // release cut at 6.5 s (the 1.5 s cleanup bound and its margin), the margin kept after it for the cut's booking. The stop comes 2.5 s into the drain, so a release bound
   // from its own start would be cut past the window; a stopping run is sent no shutdown stop at the drain's end.
   const cleanupMs = 1_500;
   const timing = { leaseMs: 4_000, renewEveryMs: 500, stopMarginMs: 1_000, drainMs: 4_000, cleanupMs, commandPollMs: 50 };
   const releaseBy = cleanupMs + RELEASE_MARGIN_MS;
-  assert.equal(runnerStopBy(0, timing.drainMs, timing.leaseMs, timing.stopMarginMs, cleanupMs), releaseBy + timing.stopMarginMs);
+  const windowMs = releaseBy + Math.max(timing.stopMarginMs, RELEASE_MARGIN_MS);
+  assert.equal(runnerStopBy(0, timing.drainMs, timing.leaseMs, timing.stopMarginMs, cleanupMs), windowMs);
   const gate = join(dir, "gate");
   const lines = [];
   const { api, store, closeRunner } = await serve(t, { faux: new URL("./fixtures/faux-browse-gated.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname, childRuns: { log: (line) => void lines.push(line) }, runnerTiming: timing });
@@ -380,7 +433,7 @@ test("a person's stop of a run in a process of its own, sent in its runner's dra
   assert.ok(asked - began < timing.drainMs, `the release began in the drain: ${asked - began} ms`);
   await closing;
   const took = Date.now() - began;
-  assert.ok(took < releaseBy + timing.stopMarginMs + 1_500, `the close ended inside its window (${releaseBy + timing.stopMarginMs} ms): ${took} ms`);
+  assert.ok(took < windowMs + 1_500, `the close ended inside its window (${windowMs} ms): ${took} ms`);
   assert.equal((await store.runs.get(runId)).state, "stopped", "the person's stop is the run's end");
   const cuts = (await records(runId)).filter((entry) => entry.kind === "agentrun.release.cut").map((entry) => entry.data);
   assert.equal(cuts.length, 1, `the run says its release was cut, inside the close's window: ${JSON.stringify(cuts)}; ${lines.join("\n")}`);

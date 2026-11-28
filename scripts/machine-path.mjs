@@ -5,9 +5,11 @@
 // rule lives here once. No user name holds a colon (passwd's separator), so a passwd line's `home/<user>:` is no
 // folder of one.
 //
-// Two such paths are not a person's machine:
+// Three such paths are not a person's machine:
 // - one right after a route parameter (`{name}`, not `${...}`) is an API route template, as an agent's home files'
 //   route is;
 // - `Shared` under `Users` is macOS's folder shared by every user, no one's home: an Orgo Mac keeps its labels file
-//   there (machine-path.test.mjs builds the path).
-export const MACHINE_PATH = /(?:(?<!(?<!\$)\{[A-Za-z0-9_]+\})\/(?:home\/|Users\/(?!Shared\/))[^/\s:]+\/|[A-Za-z]:\\Users\\(?!Shared\\)[^\\/\s:]+\\)/;
+//   there (machine-path.test.mjs builds the path);
+// - `user` under `home` is the account inside OSWorld's VM and many VM images, whose tasks name its files. The cost: a
+//   real login named `user` goes unflagged. Only that exact name: `userx` or `users` is a name like any other.
+export const MACHINE_PATH = /(?:(?<!(?<!\$)\{[A-Za-z0-9_]+\})\/(?:home\/(?!user\/)|Users\/(?!Shared\/))[^/\s:]+\/|[A-Za-z]:\\Users\\(?!Shared\\)[^\\/\s:]+\\)/;

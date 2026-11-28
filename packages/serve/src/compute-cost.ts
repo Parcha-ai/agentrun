@@ -11,7 +11,9 @@
 // <PROVIDER> and <GPU_TYPE> in capitals, every other character an underscore (daytona, H100 → DAYTONA_H100). No price is
 // built in: a provider whose descriptor bills nothing (metered false) is $0, as is a resource set at 0 (booked at $0, its
 // usage line $0, never `unpriced`), and any other resource with no price set, or
-// with a figure its provider never said, is unpriced: its time is never $0 and never refused. An unpriced resource runs
+// with a figure its provider never said, is unpriced: its time is never $0 and never refused. A metered provider whose
+// create never answers the size it runs a computer at (its descriptor not `sized`) is unpriced for every resource, whatever
+// its settings say: a size only the spec asked for is not one the vendor said it billed. An unpriced resource runs
 // outside the cap, as a tool call with no price does (TOOL_UNMETERED): nothing of it is held or booked, and its usage line
 // says `unpriced`.
 //
@@ -23,7 +25,9 @@
 // then booked (owed: its provider is owed it, so the cap never refuses it) and the next stretch held, a refusal of which
 // pauses the run as a browser call's does. Before the run's end or park is written (the spec's beforeRelease: settle),
 // what it ran since is booked and its hold let go, so the end's cost holds it; the moments between that and its delete
-// are no claim's. Time no claim holds (a computer kept
+// are no claim's. A computer let go while the run's spec is still built has its time booked once the cap can judge,
+// never waited for there (the build may be what lets it go); a spec that never gets built books none, said on the log.
+// Time no claim holds (a computer kept
 // past its claim for a follow-up, one deleted after its run ended, one whose delete failed) is booked by none: it is on the
 // usage read (`unheld_quantity`) and in no cap.
 import { PROVIDERS } from "@parcha/agentrun-computer";
@@ -84,10 +88,16 @@ export function resourcesOf(figures: ComputeFigures): ResourceOf[] {
 /** Whether `provider`'s descriptor says it bills nothing (Local's Docker): its time is $0, never by its id alone. */
 export const unmetered = (provider: string): boolean => PROVIDERS.some((entry) => entry.id === provider && !entry.metered);
 
+/** Whether `provider` bills its time but its create never answers the size it runs a computer at (its descriptor not
+ *  `sized`): its time has no figure the vendor said, so it is unpriced whatever its price settings say. */
+export const unsized = (provider: string): boolean => PROVIDERS.some((entry) => entry.id === provider && entry.metered && entry.sized !== true);
+
 /** The operator's price of `resource` of `provider`, in USD per its unit: a non-negative decimal, $0 for a provider
- *  that bills nothing; null when none is set or the setting can't be read (unpriced, never $0). */
+ *  that bills nothing; null when none is set, the setting can't be read, or the provider never says a computer's size
+ *  (unpriced, never $0). */
 export function computeRate(provider: string, resource: ComputeResource, gpuType: string | null, env: NodeJS.ProcessEnv): number | null {
   if (unmetered(provider)) return 0;
+  if (unsized(provider)) return null;
   if (resource === "gpu" && gpuType === null) return null;
   const text = env[computePriceEnvOf(resource, provider, gpuType)]?.trim();
   if (!text || !/^(\d+(\.\d*)?|\.\d+)$/.test(text)) return null;
@@ -116,8 +126,10 @@ export const computeTag = (one: Pick<ResourceOf, "resource" | "gpuType">): strin
 const microUsd = (usd: number) => Math.ceil(Math.round(usd * 1e12) / 1e6) / 1e6;
 
 /** The run's ledger as the meter books on it, the run's pause for a refusal of the next stretch, and whether its cap can
- *  judge a step now (`judges`, RunLedger.judges: false while the run's spec, whose cap it is, is still built). */
-export type ComputeLedger = { readonly paid?: PaidBooking; readonly pause?: (refusal: Refusal) => Promise<void>; readonly judges?: () => boolean };
+ *  judge a step now (`judges`, RunLedger.judges: false while the run's spec, whose cap it is, is still built). `judged`
+ *  (RunLedger.judged) settles once `judges` is true: the meter never reads it; a run's own process hands it to its
+ *  runner, whose meter can't ask `judges` across the channel at once (run-child-host.ts heldComputeLedger). */
+export type ComputeLedger = { readonly paid?: PaidBooking; readonly pause?: (refusal: Refusal) => Promise<void>; readonly judges?: () => boolean; readonly judged?: () => Promise<void> };
 
 /** A hold-only step on the ledger, given back by `drop` (answered once the ledger has it back). */
 type Hold = { drop(): Promise<void> };
@@ -197,23 +209,25 @@ export function computeMeter(options: ComputeMeterOptions): ComputeMeter {
   const key = (provider: string, providerId: string) => `${provider}\u0000${providerId}`;
 
   /** The time `one` ran since its last booking, up to `to`, booked on the ledger: one owed step per priced resource, each
-   *  named by its computer, resource and time (ref), so it is booked once; then its interval's booked time. */
+   *  named by its computer, resource and time (ref), so it is booked once; then its interval's booked time, once every
+   *  step of it landed. A step the ledger refused (a run's spec never built, a ledger that can't be written) is said on
+   *  the log, and its time stays the run's unheld time. */
   const book = async (one: Held, to: number): Promise<void> => {
-    // A cap that can't judge yet would keep this booking waiting on the run's spec, which may be what is let go now (a
-    // computer deleted because its spec's build failed): nothing is booked, and its time is the run's unheld time.
-    if (!judging()) return;
     const from = one.from;
     const ms = Math.max(0, Math.floor(to - from));
     one.from = from + ms;
     if (ms === 0 || one.priced.length === 0) return;
     const paid = ledger.paid;
     if (paid) {
-      await Promise.all(one.priced.map(async (resource) => {
+      const landed = await Promise.all(one.priced.map(async (resource) => {
         const usd = resource.usdPerSecond * (ms / 1000);
         const tag = computeTag(resource);
         const stepped = await paidStep(paid, undefined, { name: `${one.provider}'s computer time (${tag})`, holdUsd: usd, basis: `${ms / 1000} s of ${resource.perSecond} ${COMPUTE_UNITS[resource.resource]} at $${resource.rate}`, by: one.provider, tool: COMPUTE_TOOL, tag, ...OWED.bookedTime, ref: `compute:${one.provider}:${one.providerId}:${tag}@${from}-${from + ms}` }, async () => undefined, () => usd).catch((error: unknown) => ({ refused: String((error as Error)?.message ?? error) }));
-        if ("refused" in stepped) log(logLine("compute_spend_unbooked", { said: `${ms / 1000} s of ${one.provider} ${one.providerId}'s ${tag} time was not booked on the run's ledger (${stepped.refused.slice(0, 200)})` }));
+        if (!("refused" in stepped)) return true;
+        log(logLine("compute_spend_unbooked", { said: `${ms / 1000} s of ${one.provider} ${one.providerId}'s ${tag} time was not booked on the run's ledger (${stepped.refused.slice(0, 200)})` }));
+        return false;
       }));
+      if (landed.includes(false)) return;
     }
     await options.booked?.(one.provider, one.providerId, ms).catch(() => undefined);
   };
@@ -250,7 +264,11 @@ export function computeMeter(options: ComputeMeterOptions): ComputeMeter {
     return (one.stopped ??= (async () => {
       one.cancel();
       await one.ticking;
-      await book(one, now());
+      // Let go while the run's spec is built (its cap can't judge yet): its time is booked once the cap can, the ledger's
+      // steps waiting for it, and never waited for here, where the build may be what lets it go (a computer deleted
+      // because the build failed). A spec never built books none: book says so on the log.
+      if (judging()) await book(one, now());
+      else void book(one, now());
       const last = one.hold;
       one.hold = undefined;
       await last?.drop();

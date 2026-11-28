@@ -47,6 +47,7 @@ import { type CapabilityKind, COMPUTER_OP_TOOL, COMPUTER_TOOLS, createRegistry, 
 import type { ComputerClient, HelloResult } from "@parcha/agentrun-computer";
 import { type Card, createSurface } from "@parcha/agentrun-computer/surface";
 import type { AttachableComputer, MountCheck } from "./attach.js";
+import { claimCutClient } from "../computer-calls.js";
 import { portOf, type ShellPolicy } from "./computer-ports.js";
 import { answerText, type PiAnswer, piExecutor, type PiExecutor } from "./executors.js";
 import { ARCHIL_MAX_EXEC_S, type Hands, handsOf, MAX_EXEC_S, shellEnv } from "./hands.js";
@@ -112,6 +113,17 @@ function scriptsOnly(name: string, surface: AgentComputer["surface"]): boolean {
  *  the agent's ask for the person (`handoff`, computer_request_handoff's port), through the same hold. */
 export type RunHold = (ports: Pick<Hands, "computer">) => Pick<Hands, "computer" | "handoff">;
 
+/** `claimed` with its computer's calls cut by the claim's `signal` until `release()` (computer-calls.ts claimCutClient):
+ *  a run stopped for the runner's shutdown, or whose claim was lost, ends a call to a daemon that never answers (its
+ *  start's attach and scratch folder, a tool's file call) instead of holding the runner's close for its whole window,
+ *  while its end (RunTools.end) runs uncut, in the close's window. As it is with no signal, and for a browser, whose tool
+ *  holds no computer client. */
+function claimCut(claimed: RunComputer | undefined, signal: AbortSignal | undefined): { readonly computer: RunComputer | undefined; release(): void } {
+  if (signal === undefined || claimed === undefined || claimed.kind === "browser") return { computer: claimed, release: () => {} };
+  const cut = claimCutClient(claimed.computer.client, signal);
+  return { computer: { ...claimed, computer: { ...claimed.computer, client: cut.client } } as RunComputer, release: cut.release };
+}
+
 /** The computer the run's folder is attached to, with its check: a sandbox, or a desktop with files and exec whose
  *  provider mounts the folder; none for any other. */
 function mountedIn(computer: RunComputer | undefined): { readonly computer: AttachableComputer; readonly check: MountCheck } | undefined {
@@ -168,6 +180,9 @@ export type RunHands = {
   /** The run's end, after its background processes are ended and before the computer is let go: bash's full outputs
    *  and its TMPDIR swept, through the computer when it mounts the folder. */
   sweep(): Promise<void>;
+  /** The run's end begins: from here no call of its computer is cut by the claim's signal (claimCut), one in flight
+   *  included, so ending its background processes and the sweep run in the close's window, as before. */
+  ending(): void;
 };
 
 /** The run's hands and host executors on `workspace`, attached to `computer` when its kind and provider mount the folder,
@@ -176,14 +191,17 @@ export type RunHands = {
  *  phone's ports and answering them wrapped, so a call made while the person holds it waits, and an action then is
  *  refused; never the shell's, the files' or a browser's (its take-over is pi-browser's own). `replaced`: the computer
  *  replaced an earlier claim's (ClaimComputer.replaced), so a desktop's or a phone's act is held to what it showed. */
-export async function runHands(workspace: Workspace, claimed: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly noExec: string | undefined; readonly context: Context; readonly aliases?: readonly string[]; readonly hold?: RunHold; readonly bashPolicy?: string; readonly replaced?: boolean }): Promise<RunHands> {
+export async function runHands(workspace: Workspace, claimed: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly noExec: string | undefined; readonly context: Context; readonly aliases?: readonly string[]; readonly hold?: RunHold; readonly bashPolicy?: string; readonly replaced?: boolean; readonly signal?: AbortSignal }): Promise<RunHands> {
   // The folder's own path on this machine, Mode 1's bind. A Mode 2 folder (Archil) has none, and asking its mount would
   // mint the run's mount credential: only a computer that mounts the folder asks it (attach, below).
   const spec = options.mode === 1 ? await workspace.mountSpec() : undefined;
   const here = spec?.kind === "bind" ? spec.path : undefined;
   // The computer as its agent may use it: one with exec off has no group that runs a program, so nothing mounts the
   // folder in it, and the run has no shell at all (no bash family, not even Archil's exec).
-  const computer = agentsOwn(claimed);
+  // Its calls (the attach, the scratch folder made below, every tool's) are cut by the claim's signal until its end
+  // (claimCut).
+  const cut = claimCut(claimed, options.signal);
+  const computer = agentsOwn(cut.computer);
   const mounted = mountedIn(computer);
   const shell = noPrograms(computer) ? "none" : shellPlaceOf(mounted !== undefined, options.mode, options.noExec);
   const attached = mounted === undefined ? workspace : await workspace.attach(mounted.computer, mounted.check);
@@ -221,6 +239,7 @@ export async function runHands(workspace: Workspace, claimed: RunComputer | unde
     ...((computer?.kind === "desktop" || computer?.kind === "phone") && computer.surface ? { surface: computer.surface } : {}),
     ...(script ? { computer: script } : {}),
     ...((computer?.kind === "desktop" || computer?.kind === "phone") && mounted === undefined ? { apart: computer.kind } : {}),
+    ending: cut.release,
     async sweep() {
       // Through the Workspace the run wrote them through: the computer's when it mounts the folder, since on Archil the
       // run's own Workspace is the disk's file API, which the mount's write delegation refuses until the computer's
@@ -346,7 +365,7 @@ export type RunTools = {
  * their executors to the run. A browser computer brings none of the registry's: the run's browser tool (tools.ts,
  * pi-browser's durable extension) drives it.
  */
-export async function runTools(workspace: Workspace, computer: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly noExec: string | undefined; readonly context: Context; readonly aliases?: readonly string[]; readonly hold?: RunHold; readonly bashPolicy?: string; /** The computer replaced an earlier claim's (runHands). */ readonly replaced?: boolean }): Promise<RunTools> {
+export async function runTools(workspace: Workspace, computer: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly noExec: string | undefined; readonly context: Context; readonly aliases?: readonly string[]; readonly hold?: RunHold; readonly bashPolicy?: string; /** The computer replaced an earlier claim's (runHands). */ readonly replaced?: boolean; /** The claim's signal: the computer's calls are cut by it (runHands, claimCut). */ readonly signal?: AbortSignal }): Promise<RunTools> {
   const run = await runHands(workspace, computer, options);
   const registry = createRegistry({ maxExecS: run.maxExecS, shell: run.shell, kinds: run.kinds, groups: run.groups, executors: run.executors });
   const brought: ReadonlySet<string> = new Set(COMPUTER_TOOLS);
@@ -370,6 +389,7 @@ export async function runTools(workspace: Workspace, computer: RunComputer | und
       return before.filter(process => process.argv[3] === "agentrun-background" && /^[1-9][0-9]*$/.test(process.argv[4] ?? "")).map(process => `background/${process.argv[4]}/output.log`);
     },
     async end() {
+      run.ending();
       await endBackground(run.hands);
       await run.sweep();
     },

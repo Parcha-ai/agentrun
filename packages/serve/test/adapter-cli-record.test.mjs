@@ -371,7 +371,10 @@ function twoCallCli(tool, closes = { count: 0 }) {
         async settleOpenTurn() { state = "idle"; },
         turnEnd: () => turn,
         async interrupt() {},
-        async close() { closes.count += 1; },
+        async close() {
+          closes.count += 1;
+          await closes.atClose?.();
+        },
       };
     },
   };
@@ -385,7 +388,9 @@ test("a CLI run whose one answer asks for two calls at once: the run completes, 
   await queue(opened.server, "run-1");
   const ran = [];
   const lookup = { name: "lookup", description: "Look it up.", inputSchema: { type: "object" }, replay: "never", call: async (args) => { ran.push(args.q); return { text: `found ${args.q}` }; } };
-  const closes = { count: 0 };
+  // The run's row as the CLI session's close reads it: the claim still held then, never the run ended and let go first.
+  const atClose = [];
+  const closes = { count: 0, atClose: async () => void atClose.push(await opened.server.runs.get("run-1")) };
   const createLoop = createAdapterLoop(() => ({
     adapter: twoCallCli("lookup", closes),
     session: { key: "root", label: "root", system: [], tools: [lookup], context: "fresh" },
@@ -418,9 +423,60 @@ test("a CLI run whose one answer asks for two calls at once: the run completes, 
     assert.notEqual(result.tool_status, "interrupted", `call ${call.tool_use_id} not interrupted`);
   }
   assert.deepEqual(messagesOf(records).map((message) => [message.role, message.text]), [["person", "Find both."], ["model", "Looking twice."], ["model", "Both found."]]);
-  // Ported from harness-close.test.mjs: the harness's session is closed once its run is let go, so none of the CLI's own
-  // processes outlives the claim.
+  // Ported from harness-close.test.mjs: the harness's session is closed once, before its run is let go, so none of the
+  // CLI's own processes outlives the claim. The end lets the claim go in its own commit (an ending patch clears the
+  // runner), and a message sent the moment the run reads ended reopens it for a new session on the same thread: the old
+  // one is closed by then, never still closing beside it.
   assert.equal(closes.count, 1, "the CLI session closed once at the run's release");
+  assert.deepEqual(atClose.map((at) => [at.state, at.runner]), [["running", "runner-a"]], "the CLI session closed while its run still held the claim");
+});
+
+// A person's stop that reaches the runner while the CLI's session closes, before the run's end: the claim is still held
+// then, so the stop is the end's, as one during any earlier await of the end path. The run ends stopped, never completed
+// with the stop left over and refused.
+test("a stop that comes while a CLI run's session closes, before its end, is that end's: the run ends stopped", async (t) => {
+  const opened = await stores({ runners: 1 });
+  await queue(opened.server, "run-1");
+  const lookup = { name: "lookup", description: "Look it up.", inputSchema: { type: "object" }, replay: "never", call: async (args) => ({ text: `found ${args.q}` }) };
+  let delivered;
+  const stopDelivered = new Promise((resolve) => (delivered = resolve));
+  // The close is held until the runner hands the loop the stop (or CLOSE_MS cuts it, as it would a close that hangs).
+  const closes = {
+    count: 0,
+    atClose: async () => {
+      await sendCommand(opened.server, "run-1", { kind: "stop" });
+      await Promise.race([stopDelivered, new Promise((resolve) => setTimeout(resolve, 1_500))]);
+    },
+  };
+  const make = createAdapterLoop(() => ({
+    adapter: twoCallCli("lookup", closes),
+    session: { key: "root", label: "root", system: [], tools: [lookup], context: "fresh" },
+    input: "Find both.",
+    runCap: { capUsd: () => undefined, modelOf: () => undefined },
+    record: "loop",
+    hooks: quiet,
+    gate: () => "allow",
+  }));
+  const createLoop = (...args) => {
+    const loop = make(...args);
+    const stop = loop.stop;
+    loop.stop = (reason) => {
+      const stopping = stop(reason);
+      delivered();
+      return stopping;
+    };
+    return loop;
+  };
+  const runner = startRunner({ store: observed(opened.runners[0], recorder()), createLoop, name: "runner-a", ...STEADY });
+  t.after(async () => {
+    try { await runner.close(); } finally { await release(opened); }
+  });
+  const row = await until(async () => {
+    const now = await opened.server.runs.get("run-1");
+    return now.state !== "running" && now.state !== "queued" && now.runner === null && now;
+  }, "the run ended and released", 5_000);
+  assert.equal(closes.count, 1, "the CLI session closed once");
+  assert.equal(row.state, "stopped", `the stop that came during the close is the end's: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
 });
 
 // The output contract's retry on a CLI harness: the loop writes it on the run's record, then sends it. A runner lost between

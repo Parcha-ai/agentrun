@@ -2,9 +2,9 @@
 // drives them, against a stand-in for OSWorld's code (fixtures/osworld-stub: its in-VM server, controllers, getters and
 // metrics, stdlib only) and a loopback file host for the pinned downloads and golds.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { connect, createServer as createTcpServer } from "node:net";
 import { join } from "node:path";
@@ -176,6 +176,56 @@ test("the gold is fetched by osw eval alone, checked against its pinned sha256, 
 
 	const unpinned = await osw(b, "eval", { id: "gold-3", evaluator: { ...task("gold-3", "x").evaluator, expected: { type: "cloud_file", path: host.url("/gold.txt"), dest: "gold.txt" } } });
 	assert.equal(unpinned.code, 2, "a cloud file without a pinned sha256 is a bad task");
+});
+
+test("osw eval removes the cache and makes it again before it fetches: what the agent's turn left there is gone, and the gold it compares with is the one it fetched and checked", async (t) => {
+	const b = await box(t);
+	const result = join(b.home, "out.txt");
+	writeFileSync(result, "done\n");
+	const gold = Buffer.from("done\n");
+	const host = await files(t, { "/gold.txt": gold });
+	const task = { id: "plant-1", evaluator: { func: "compare_bytes", result: { type: "vm_file", path: result, dest: "out.txt" }, expected: { type: "cloud_file", path: host.url("/gold.txt"), dest: "gold.txt", sha256: sha256(gold) } } };
+	const cache = join(b.dir, "cache");
+
+	// Planted in the agent's turn, as the computer's own user: the gold as a link to a file with the right bytes (which
+	// the agent could rewrite once the sha256 is read), and a stray file.
+	const decoy = join(b.dir, "decoy.txt");
+	writeFileSync(decoy, gold);
+	mkdirSync(b.cache("plant-1"), { recursive: true });
+	symlinkSync(decoy, join(b.cache("plant-1"), "gold.txt"));
+	writeFileSync(join(cache, "planted.txt"), "the agent's\n");
+	const checked = await osw(b, "eval", task);
+	assert.equal(checked.code, 0, checked.stderr);
+	assert.equal(host.hits("/gold.txt"), 1, "the gold is fetched, not taken from what was planted");
+	assert.equal(lstatSync(join(b.cache("plant-1"), "gold.txt")).isFile(), true, "the gold is the fetched file, not the planted link");
+	assert.equal(existsSync(join(cache, "planted.txt")), false, "the planted file is gone");
+	assert.equal(readFileSync(decoy, "utf8"), "done\n", "what the link named is left alone");
+	for (const dir of [cache, b.cache("plant-1")]) assert.equal(statSync(dir).mode & 0o777, 0o700, `${dir} is its owner's alone`);
+
+	// The cache itself planted as a link: a new folder takes its place, and the folder it named is left alone.
+	const elsewhere = join(b.dir, "elsewhere");
+	mkdirSync(elsewhere);
+	writeFileSync(join(elsewhere, "kept.txt"), "not the cache's\n");
+	rmSync(cache, { recursive: true });
+	symlinkSync(elsewhere, cache);
+	const again = await osw(b, "eval", task);
+	assert.equal(again.code, 0, again.stderr);
+	assert.equal(host.hits("/gold.txt"), 2);
+	assert.equal(lstatSync(cache).isDirectory(), true, "the cache is a folder again, not the link");
+	assert.deepEqual(readdirSync(elsewhere), ["kept.txt"]);
+});
+
+test("OSWorld's server runs isolated from the desktop user's own Python: a usercustomize planted in its HOME never runs", async (t) => {
+	const b = await box(t);
+	// The user site the server's Python would read, with HOME the desktop user's.
+	const site = spawnSync("python3", ["-c", "import site; print(site.getusersitepackages())"], { env: { PATH: process.env.PATH, HOME: b.home }, encoding: "utf8" }).stdout.trim();
+	assert.ok(site.startsWith(b.home), site);
+	mkdirSync(site, { recursive: true });
+	const ran = join(b.dir, "planted-ran");
+	writeFileSync(join(site, "usercustomize.py"), `open(${JSON.stringify(ran)}, "w").write("ran")\n`);
+	const setup = await osw(b, "setup", { id: "site-1", evaluator: { func: "score", result: rule({ score: 1 }) } });
+	assert.equal(setup.code, 0, setup.stderr);
+	assert.equal(existsSync(ran), false, "the planted module did not run in the server");
 });
 
 test("osw setup fetches the config's downloads checked against their pinned sha256 before SetupController uploads them", async (t) => {
