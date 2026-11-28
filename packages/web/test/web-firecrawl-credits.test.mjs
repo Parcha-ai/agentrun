@@ -204,6 +204,31 @@ test("a 5xx that reports creditsUsed above the hold is charged at the hold", asy
   assert.match(receipt.cost.lines[0].basis, /the hold, 100 credits; Firecrawl reported 250 credits/);
 });
 
+/** An answer of `status` whose body breaks after its first chunk. */
+const breaking = (status) => new Response(new ReadableStream({
+  start(controller) {
+    controller.enqueue(new TextEncoder().encode('{"success":false,'));
+  },
+  pull(controller) {
+    controller.error(new TypeError("terminated"));
+  },
+}), { status, headers: { "content-type": "application/json" } });
+
+test("a 5xx whose body breaks while it is read is charged 0 credits, as one with no count, and the fetch fails as a 5xx", async () => {
+  const { w, booked } = firecrawlWeb(() => breaking(503));
+  const { answer, receipt } = await w.fetch(PUBLIC);
+  assert.equal(answer.ok, false);
+  assert.deepEqual(booked[0], { name: "Firecrawl's scrape", hold: credits(10_000), usd: 0 });
+  assert.match(receipt.cost.lines[0].basis, /Firecrawl answered 503 and reported no credit count: 0 credits/);
+});
+
+test("a 2xx whose body breaks while it is read stays charged at the hold: Firecrawl answered with a document", async () => {
+  const { w, booked } = firecrawlWeb(() => breaking(200), { pdfMaxPages: 100 });
+  const { answer } = await w.fetch(PUBLIC);
+  assert.equal(answer.ok, false);
+  assert.deepEqual(booked[0], { name: "Firecrawl's scrape", hold: credits(100), usd: credits(100) });
+});
+
 test("a send that fails after the request may have left (a reset socket) stays charged at the hold: what Firecrawl billed is not known", async () => {
   const reset = () => Promise.reject(Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" }) }));
   const { w, booked } = firecrawlWeb(reset, { pdfMaxPages: 100 });
