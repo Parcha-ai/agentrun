@@ -27,13 +27,16 @@ const refuse = (status, code, message, details) => json(status, { ok: false, typ
 /**
  * The fake. pageSize is the listing's; readyAfter is how many reads of a new sandbox answer provisioning before it
  * reads ready; ignoresLabels makes a listing answer every sandbox whatever labels it asks (a host must filter);
- * rateLimited makes every create a 429 rate_limited; hostKey "other" answers a host key that is not the sshd's.
- * snapshots names the account's saved snapshots, which `from` may name. calls lists each REST call, its method,
+ * rateLimited makes every create a 429 rate_limited; hostKey "other" answers a host key that is not the sshd's,
+ * "none" leaves hostKey out, "second" gives each sshd an ed25519 and an ECDSA host key and answers the ECDSA one's
+ * line, and a function answers what it returns for the sandbox's sshd as hostKey (undefined leaves it out);
+ * setHostKey(hostKey) changes it for the answers after. snapshots names the account's saved snapshots, which `from` may name. calls lists each REST call, its method,
  * path, query (label as a list), headers and body. sshUser false leaves sshUser out of the sshkey answer, as the
  * schema allows. clock is the time boat's auto-stop reads (default the wall clock): a sandbox past its archiveAfter
  * reads archived, as boat stops it then whatever ran in it (docs: auto-stop); a create with no ttlSeconds gets 3600.
  */
 export function fakeBoat({ backend, pageSize = 2, readyAfter = 1, ignoresLabels = false, rateLimited = false, hostKey = "own", snapshots = [], sshUser = true, clock = { now: () => Date.now() } } = {}) {
+	let answering = hostKey;
 	const sandboxes = new Map();
 	const idempotent = new Map();
 	const calls = [];
@@ -183,9 +186,9 @@ export function fakeBoat({ backend, pageSize = 2, readyAfter = 1, ignoresLabels 
 			const parsed = typeof body?.key === "string" ? ssh2.utils.parseKey(body.key) : undefined;
 			if (parsed === undefined || parsed instanceof Error || parsed.isPrivateKey()) return refuse(400, "invalid_request", "key: a public SSH key in OpenSSH format");
 			if (!one.keys.includes(body.key)) one.keys.push(body.key);
-			one.sshd ??= await fakeSshd({ authorized: () => one.keys, username: "user", sudo: true, ...(backend ? { run: runOn(one) } : {}) });
-			const shown = hostKey === "other" ? (await otherHostKey()) : one.sshd.hostKey;
-			return json(200, { ok: true, type: "ssh_key.configured", success: true, machineIp: "127.0.0.1", ...(sshUser ? { sshUser: "user" } : {}), sshEndpoint: `127.0.0.1:${one.sshd.port}`, ...(hostKey === "none" ? {} : { hostKey: shown }) });
+			one.sshd ??= await fakeSshd({ authorized: () => one.keys, username: "user", sudo: true, ...(hostKey === "second" ? { hostKeyTypes: ["ed25519", "ecdsa"] } : {}), ...(backend ? { run: runOn(one) } : {}) });
+			const shown = typeof answering === "function" ? answering(one.sshd) : answering === "other" ? await otherHostKey() : answering === "second" ? one.sshd.hostKeys[1] : answering === "none" ? undefined : one.sshd.hostKey;
+			return json(200, { ok: true, type: "ssh_key.configured", success: true, machineIp: "127.0.0.1", ...(sshUser ? { sshUser: "user" } : {}), sshEndpoint: `127.0.0.1:${one.sshd.port}`, ...(shown === undefined ? {} : { hostKey: shown }) });
 		}
 
 		return refuse(404, "not_found", `no route ${method} ${path}`);
@@ -199,6 +202,7 @@ export function fakeBoat({ backend, pageSize = 2, readyAfter = 1, ignoresLabels 
 		/** The command lines sandbox id's sshd ran, sudo and all. */
 		commands: (id) => sandboxes.get(id)?.sshd?.commands ?? [],
 		sshd: (id) => sandboxes.get(id)?.sshd,
+		setHostKey: (value) => (answering = value),
 		/** Every sandbox's sshd closed: a test's cleanup. */
 		close: async () => {
 			for (const one of sandboxes.values()) await one.sshd?.close();

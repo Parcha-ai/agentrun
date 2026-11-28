@@ -164,16 +164,19 @@ export function fakeRest({ key = KEY, settleMs = 0 } = {}) {
  * username is the one user a key logs in as (root by default; boat's is user). sudo: the user has passwordless sudo and
  * is not root, so a command must start `sudo -n -- `, which this sshd takes off and runs the rest as above (run is given
  * the rest), since the test machine's sudo is not called; a command without it fails 126. hostKey is the server's host
- * key, its OpenSSH public line, which a client pins by its sha256 (fingerprintOf).
+ * key, its OpenSSH public line, which a client pins by its sha256 (fingerprintOf). hostKeyTypes gives the server one
+ * host key of each type named ("ed25519", "ecdsa"), as an OpenSSH sshd holds several; hostKeys lists their public
+ * lines in that order, and the handshake shows the first type the client offers. state.attempts counts the
+ * authentication requests the server read: each carries a username.
  */
-export async function fakeSshd({ publicKey, accept, run, authorized, routes, username = "root", sudo = false }) {
-	const host = keyPair();
+export async function fakeSshd({ publicKey, accept, run, authorized, routes, username = "root", sudo = false, hostKeyTypes = ["ed25519"] }) {
+	const hosts = hostKeyTypes.map((type) => (type === "ecdsa" ? utils.generateKeyPairSync("ecdsa", { bits: 256 }) : keyPair()));
 	const allowed = publicKey === undefined ? undefined : utils.parseKey(publicKey);
 	const commands = [];
 	const children = new Set();
 	const clients = new Set();
-	const state = { connections: 0, logins: 0, live: 0, sessions: 0, refusing: 0, denied: 0 };
-	const server = new Server({ hostKeys: [host.private] }, (client, info) => {
+	const state = { connections: 0, attempts: 0, logins: 0, live: 0, sessions: 0, refusing: 0, denied: 0 };
+	const server = new Server({ hostKeys: hosts.map((one) => one.private) }, (client, info) => {
 		state.connections++;
 		clients.add(client);
 		state.live++;
@@ -184,6 +187,7 @@ export async function fakeSshd({ publicKey, accept, run, authorized, routes, use
 		});
 		client.on("error", () => {});
 		client.on("authentication", (ctx) => {
+			state.attempts++;
 			loggedIn = ctx.username;
 			if (accept !== undefined) return accept(ctx) ? ctx.accept() : ctx.reject(["publickey"]);
 			const key = ctx.method === "publickey" ? ctx.key : undefined;
@@ -261,7 +265,8 @@ export async function fakeSshd({ publicKey, accept, run, authorized, routes, use
 	};
 	return {
 		port: server.address().port,
-		hostKey: host.public,
+		hostKey: hosts[0].public,
+		hostKeys: hosts.map((one) => one.public),
 		commands,
 		state,
 		refuseSessions: (count) => (state.refusing = count),

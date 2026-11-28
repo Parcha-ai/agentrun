@@ -89,6 +89,28 @@ test("a login's hostKey pins the sshd by its sha256: the right one runs; another
 	assert.equal(sshd.state.logins, logins, "no login reached the impostor");
 });
 
+test("an sshd holding an ed25519 and an ECDSA host key, pinned by the ECDSA one: with its hostKeyType the handshake shows that key and runs; without, ssh2 asks for ed25519 first and the pin refuses it", async (t) => {
+	const sshd = await fakeSshd({ accept: () => true, hostKeyTypes: ["ed25519", "ecdsa"] });
+	t.after(() => sshd.close());
+	const loopback = () => {
+		const socket = connect(sshd.port, "127.0.0.1");
+		socket.on("error", () => {});
+		return { duplex: socket, opened: new Promise((resolve, reject) => socket.once("connect", resolve).once("error", reject)), host: `127.0.0.1:${sshd.port}` };
+	};
+	const [ecdsaType] = sshd.hostKeys[1].split(" ");
+	assert.equal(ecdsaType, "ecdsa-sha2-nistp256");
+	const pin = fingerprintOf(sshd.hostKeys[1]);
+	const typed = new SshExec({ ssh2, pinned: true, loginOf: () => ({ username: "u", hostKey: pin, hostKeyType: ecdsaType }), tunnelOf: loopback });
+	const proc = await typed.exec("m1", ["echo", "pinned"], { timeoutMs: 5_000 });
+	assert.equal(Buffer.concat(await proc.stdout.toArray()).toString("utf8"), "pinned\n");
+	assert.equal(await proc.wait(), 0);
+	typed.closeAll("m1");
+	const attempts = sshd.state.attempts;
+	const untyped = new SshExec({ ssh2, pinned: true, loginOf: () => ({ username: "u", hostKey: pin }), tunnelOf: loopback });
+	await assert.rejects(untyped.exec("m2", ["true"], { timeoutMs: 5_000 }), (error) => /verification failed/.test(error.message));
+	assert.deepEqual([sshd.state.connections, sshd.state.logins, sshd.state.attempts], [2, 1, attempts], "the untyped handshake reached the sshd and ended before any authentication request");
+});
+
 test("a pinned SshExec refuses a login with no hostKey, or one not SHA256: and 43 characters of unpadded base64, before its tunnel opens: the sshd sees no connection", async (t) => {
 	const sshd = await fakeSshd({ accept: () => true });
 	t.after(() => sshd.close());

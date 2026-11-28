@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import ssh2 from "ssh2";
+import { fingerprintOf } from "./fake-agent37.mjs";
 import { API_URL, fakeBoat, KEY } from "./fake-boat.mjs";
 import { fakeHost } from "./fake-host.mjs";
 import { wordsOf } from "./fake-shell.mjs";
@@ -318,16 +319,56 @@ test("kill runs the pid kill as root through sudo -n on a channel of its own: th
 	assert.throws(() => process.kill(Number(kill[7]), 0), { code: "ESRCH" }, "the sleep is gone");
 });
 
-test("the host key boat answers is pinned: an sshd with another is refused in words, and the next exec asks boat again; an answer with no host key is refused", async (t) => {
+test("an sshd whose host key is not the one boat answered is reached once and refused in the handshake, before the login: it reads no username; the next exec asks boat again", async (t) => {
 	const { vendor, host } = boatOf(t, { hostKey: "other" });
 	const id = await running(host);
 	await assert.rejects(host.exec(id, ["true"], CTX), (error) => error.code === "denied" && /host key/.test(error.message));
-	assert.equal(vendor.sshd(id).state.logins, 0, "no login on an sshd whose key is not the pinned one");
+	const sshd = vendor.sshd(id);
+	assert.equal(sshd.state.connections, 1, "the sshd was reached once, and the handshake not tried again");
+	assert.equal(sshd.state.attempts, 0, "the handshake ended before any authentication request, so no username reached the sshd");
+	assert.equal(sshd.state.logins, 0);
 	await assert.rejects(host.exec(id, ["true"], CTX), (error) => error.code === "denied");
 	assert.equal(vendor.calls.filter((call) => call.path === `/sandboxes/${id}/sshkey`).length, 2, "a refused host key is asked for again");
-	const bare = boatOf(t, { hostKey: "none" });
-	const other = await running(bare.host);
-	await assert.rejects(bare.host.exec(other, ["true"], CTX), (error) => error.code === "vendor" && /no host key/.test(error.message));
+	assert.deepEqual([sshd.state.connections, sshd.state.attempts], [2, 0]);
+});
+
+test("an sshkey answer with no host key, or one that is no OpenSSH host key line, is refused before any TCP connection to the sshd: it reads no username; the sshd's own line after them works", async (t) => {
+	const { vendor, host } = boatOf(t);
+	const id = await running(host);
+	// The sshd is made by the first sshkey call; each answer after names its port and one of these in place of its line.
+	vendor.setHostKey(() => undefined);
+	await assert.rejects(host.exec(id, ["true"], CTX), (error) => error.code === "vendor" && /no host key/.test(error.message));
+	const sshd = vendor.sshd(id);
+	const [type, body] = sshd.hostKey.split(" ");
+	const ecdsaWord = "ecdsa-sha2-nistp256";
+	const bad = [null, "", 42, fingerprintOf(sshd.hostKey), body, `${type}`, `${type} AAAA`,`${ecdsaWord} ${body}`, `ssh-dss ${body}`, `${type}:${body}`];
+	for (const value of bad) {
+		vendor.setHostKey(() => value);
+		await assert.rejects(host.exec(id, ["true"], CTX), (error) => error.code === "vendor" && /no host key/.test(error.message) && !error.message.includes(KEY), JSON.stringify(value));
+	}
+	assert.equal(sshd.state.connections, 0, "no TCP connection reached the sshd");
+	assert.equal(sshd.state.attempts, 0, "no username reached the sshd");
+	vendor.setHostKey("own");
+	const proc = await host.exec(id, ["echo", "ok"], CTX);
+	assert.deepEqual([await textOf(proc.stdout), await proc.wait()], ["ok\n", 0], "the sshd's own line after them works");
+	assert.equal(sshd.state.connections, 1);
+});
+
+test("the key boat names is the one the handshake checks: an sshd holding an ed25519 and an ECDSA host key shows the ECDSA one when boat answers its line, and logs in; another ECDSA key in the answer is refused", async (t) => {
+	const { vendor, host } = boatOf(t, { hostKey: "second" });
+	const id = await running(host);
+	const proc = await host.exec(id, ["echo", "ok"], CTX);
+	assert.deepEqual([await textOf(proc.stdout), await proc.wait()], ["ok\n", 0]);
+	const sshd = vendor.sshd(id);
+	assert.match(sshd.hostKeys[1], /^ecdsa-sha2-nistp256 /, "boat answered the sshd's ECDSA line");
+	assert.match(sshd.hostKeys[0], /^ssh-ed25519 /, "which ssh2 ranks after the sshd's ed25519 key");
+	assert.deepEqual([sshd.state.logins, sshd.state.denied], [1, 0]);
+	const twin = boatOf(t, { hostKey: "second" });
+	const impostor = ssh2.utils.generateKeyPairSync("ecdsa", { bits: 256 }).public;
+	twin.vendor.setHostKey(() => impostor);
+	const other = await running(twin.host);
+	await assert.rejects(twin.host.exec(other, ["true"], CTX), (error) => error.code === "denied" && /host key/.test(error.message));
+	assert.deepEqual([twin.vendor.sshd(other).state.connections, twin.vendor.sshd(other).state.attempts], [1, 0]);
 });
 
 test("an sshkey answer with no sshUser, as boat's schema allows, logs in as the docs' user `user`", async (t) => {
