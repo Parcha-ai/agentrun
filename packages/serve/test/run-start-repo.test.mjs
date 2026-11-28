@@ -11,7 +11,7 @@ import { githubAppAccess } from "../dist/runner/github-app.js";
 import { GITHUB_UNUSABLE } from "../dist/runner/mcp-github.js";
 import { bindingOf, repoOf } from "../dist/run-repo.js";
 import { agent, serve } from "./support.mjs";
-import { storeOn } from "./store-helpers.mjs";
+import { queued, storeOn } from "./store-helpers.mjs";
 
 const trigger = (agentId, repos) => ({ name: `prs-${agentId}`, source: { kind: "github", accept: [{ event: "pull_request", ...(repos ? { where: [{ pointer: "/repository/full_name", in: repos }] } : {}) }] }, target: { kind: "start_run", agent_id: agentId, input: { content: "Review it." }, max_cost_usd: 0.5 } });
 const start = (server, agentId, body) => server.api("POST", `/agents/${agentId}/runs`, { input: { content: "Write the notes for the latest release." }, ...body });
@@ -71,8 +71,9 @@ test("the runner's access takes the launch's repository, and a run with none say
   const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs1", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
   for (const [field, value] of [["app_id", "4242"], ["private_key", privateKey]]) await store.triggerSettings.put({ adapter: "github", scope: "server", field, sealed: seal(key, Buffer.from(value, "utf8"), `trigger_settings|github|server|${field}`).toString("base64") });
   const input = { content: "Write the notes." };
-  assert.deepEqual((await githubAppAccess(store, key, input, { repo: "acme/widgets" })).target, { repo: "acme/widgets" });
-  assert.equal((await githubAppAccess(store, key, input)).target, undefined);
+  await queued(store);
+  assert.deepEqual((await githubAppAccess(store, key, input, { run: "run-1", repo: "acme/widgets" })).target, { repo: "acme/widgets" });
+  assert.equal((await githubAppAccess(store, key, input, { run: "run-1" })).target, undefined);
   assert.match(GITHUB_UNUSABLE.noRepo, /start the run with a repository/);
   assert.match(GITHUB_UNUSABLE.noRepo, /bind the agent to one repository/);
   assert.doesNotMatch(GITHUB_UNUSABLE.noRepo, /reconnect/i);

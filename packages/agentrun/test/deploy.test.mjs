@@ -625,18 +625,18 @@ test("agentrun deploy DIR to an API-only install with its token: the upload, pla
   const made = await hosted.api("GET", `/agents/${done.agent_id}`);
   assert.equal(made.status, 200, JSON.stringify(made.body));
   assert.deepEqual([made.body.revision, made.body.template.id], [done.revision_id, "upload:pr-alert"]);
-  // Neither trigger is made there, and the plan says each, with the server's reason.
+  // Neither trigger is made there, and the plan says each, with the server's reason: this install makes a schedule and
+  // a webhook once it has the launch hook.
   assert.match(first.err, /! trigger\s+daily\s+schedule skipped: The pr-alert template's trigger daily \(schedule\) was not made: this server serves the run API only \(AGENTRUN_API_ONLY=1\) and has no launch hook/);
-  assert.match(first.err, /! trigger\s+inbound\s+webhook skipped: The pr-alert template's trigger inbound \(webhook\) was not made: this server serves the run API only \(AGENTRUN_API_ONLY=1\), which serves no route or setting a webhook trigger needs/);
+  assert.match(first.err, /! trigger\s+inbound\s+webhook skipped: The pr-alert template's trigger inbound \(webhook\) was not made: this server serves the run API only \(AGENTRUN_API_ONLY=1\) and has no launch hook/);
   assert.deepEqual(await hosted.store.triggers.list(done.agent_id), [], "no trigger made there");
   // And stdout's answer says the same: each skipped trigger is a warning with its reason.
   const skipped = done.warnings.filter((one) => one.field.startsWith("triggers.")).map((one) => [one.field, one.reason, one.message.match(/trigger (\w+) \((\w+)\) was not made/)?.slice(1)]);
-  assert.deepEqual(skipped, [["triggers.0", "not_set_up_here", ["daily", "schedule"]], ["triggers.1", "not_an_option", ["inbound", "webhook"]]]);
-  // The plan names each skip's code: not_set_up_here for one this install makes once it is set up (a launch hook),
-  // not_an_option for one it never makes.
+  assert.deepEqual(skipped, [["triggers.0", "not_set_up_here", ["daily", "schedule"]], ["triggers.1", "not_set_up_here", ["inbound", "webhook"]]]);
+  // The plan names each skip's code: not_set_up_here for one this install makes once it is set up (a launch hook).
   const planned = await hosted.api("POST", "/templates/upload%3Apr-alert/apply", { dry_run: true });
   assert.equal(planned.status, 200, JSON.stringify(planned.body));
-  assert.deepEqual(planned.body.plan.triggers.map((one) => [one.name, one.action, one.code]), [["daily", "skip", "not_set_up_here"], ["inbound", "skip", "not_an_option"]]);
+  assert.deepEqual(planned.body.plan.triggers.map((one) => [one.name, one.action, one.code]), [["daily", "skip", "not_set_up_here"], ["inbound", "skip", "not_set_up_here"]]);
 
   // A changed skill is the agent's next revision there, and rollback makes the first current again.
   writeFileSync(join(pkg, "skills", "check", "SKILL.md"), SKILL("Say what changed, and who changed it."));
@@ -655,23 +655,27 @@ test("agentrun deploy DIR to an API-only install with its token: the upload, pla
   assert.equal(existsSync(lockFile), false);
 });
 
-/** pr-alert whose one trigger is a webhook, which an API-only install never makes. */
-const WEBHOOK_ONLY = HOOKED.replace(`  - name: daily
+/** pr-alert whose one trigger is an email one, which an API-only install never makes, launch hook or not. */
+const MAIL_ONLY = AGENT({}).replace(`  - name: daily
     source: { kind: schedule, cron: "0 8 * * *" }
     target: { kind: start_run, input: { content: "Run the daily check." } }
-`, "");
+`, `  - name: new-mail
+    source: { kind: email, every_s: 60 }
+    target: { kind: start_run, input: { content: "Sort the new mail." } }
+`);
 
-test("agentrun deploy DIR to an API-only install of a package whose one trigger is a webhook: the trigger is said skipped, never \"not made yet\", and the next deploy of the same package is up to date and sends nothing that writes", { timeout: 180_000 }, async (t) => {
+test("agentrun deploy DIR to an API-only install of a package whose one trigger is one it never makes (email): the trigger is said skipped, never \"not made yet\", and the next deploy of the same package is up to date and sends nothing that writes", { timeout: 180_000 }, async (t) => {
   const { dir, env } = scratch();
   const hosted = await apiOnly(t);
   const proxy = await recorder(t, hosted.baseUrl);
   const pkg = folder(dir);
-  writeFileSync(join(pkg, "agent.md"), WEBHOOK_ONLY);
+  writeFileSync(join(pkg, "agent.md"), MAIL_ONLY);
   const key = { AGENTRUN_API_KEY: hosted.token };
 
   const first = await cli(env, ["deploy", pkg, "--to", proxy.base, "--yes"], key);
   assert.equal(first.code, 0, first.err);
-  assert.match(first.err, /! trigger\s+inbound\s+webhook skipped: .*serves no route or setting a webhook trigger needs/);
+  assert.match(first.err, /! trigger\s+new-mail\s+email skipped: .*serves no route or setting an? email trigger needs/);
+  assert.deepEqual(first.json().warnings.filter((one) => one.field.startsWith("triggers.")).map((one) => one.reason), ["not_an_option"]);
   assert.doesNotMatch(first.err, /Not made on/, "a trigger this install never makes is not one it makes later");
   assert.match(first.json().package_sha256 ?? "", /^[0-9a-f]{64}$/, "the lock names the package");
 

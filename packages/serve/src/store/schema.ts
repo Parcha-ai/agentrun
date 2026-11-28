@@ -23,7 +23,8 @@
 // version and slots (runners.version, .slots: RUNNERS_ADDED), each hand-back (hand_backs, HAND_BACKS) and each claim of a
 // run with the turn it works and its attempt at it (run_attempts, RUN_ATTEMPTS) are added the same way, and so is the
 // learning ledger (learning_ledger, learning_spend: LEARNING_LEDGER, LEARNING_SPEND), and each agent's, run's and imported
-// package's workspace (WORKSPACE_ADDED).
+// package's workspace (WORKSPACE_ADDED), and what the launch hook told a firing's host (trigger_firings.hooked,
+// TRIGGER_FIRINGS_HOOKED).
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
 // in the clear. Foreign keys are on (the connection's pragma).
@@ -112,6 +113,10 @@ export function splitUpgrade(runnerColumns: ReadonlySet<string>): readonly strin
  *  for one a person made. In STORE_DDL, and added at a server open to a store an earlier build of this version made, as
  *  RUNS_LABELS is (a trigger made before reads as no package's). */
 export const TRIGGERS_TEMPLATE_ID = "ALTER TABLE triggers ADD COLUMN template_id TEXT";
+/** What the launch hook told the host of a firing's run (FiringRow.hooked). In STORE_DDL, and added at a server open to a
+ *  store an earlier build of this version made, as TRIGGERS_TEMPLATE_ID is (a firing handed before reads as told nothing).
+ *  No runner reads firings, so none waits for it. */
+export const TRIGGER_FIRINGS_HOOKED = `ALTER TABLE trigger_firings ADD COLUMN ${json("hooked", true)}`;
 /** A run's census (RunLaunchRow.census, run-census.ts): in STORE_DDL, and added at a server open to a store an earlier
  *  build of this version made, as RUNS_LABELS is (a run ended before reads as never handed a secret). */
 export const RUN_LAUNCH_CENSUS = `ALTER TABLE run_launch ADD COLUMN ${json("census", true)}`;
@@ -788,6 +793,10 @@ export const STORE_DDL: readonly string[] = [
     ${json("attrs", true)},
     shown INTEGER,
     waits_on TEXT,
+    -- What the launch hook told the host of the firing's run (FiringRow.hooked), written at its first hand and kept, so a
+    -- retry names the same cap and the host's start runs under it. Added at a server open to a store an earlier build of
+    -- this version made (TRIGGER_FIRINGS_HOOKED).
+    ${json("hooked", true)},
     PRIMARY KEY (trigger_id, key)
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS trigger_firings_retry ON trigger_firings (status, retry_at)`,

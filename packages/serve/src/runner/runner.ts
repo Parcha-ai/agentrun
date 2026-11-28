@@ -243,6 +243,11 @@ export type RunnerEvent =
   | { type: "refusing"; reason: string | null }
   /** A learning child (a check's replay run, an audit's shadow run) held at its deadline: its cancel is written. */
   | { type: "learning-deadline"; runId: string }
+  /** A run's end made no census (RunnerOptions.census failed, or none came within censusMs): its end writes "unscanned",
+   *  and the run's files are withheld from a cut read after it. `cause`: the error's code or name, or "timeout". Said
+   *  beside the error event (step "census"), as its metric line (runner-metrics.ts): a runner whose every end fails it
+   *  withholds every run's files. */
+  | { type: "census-failed"; runId: string; cause: string }
   | { type: "error"; runId?: string; step: string; message: string };
 
 /** Why a runner handed a run back, still running, for another claim: `drain`, its close stopped the run's loop after the
@@ -445,11 +450,13 @@ export function startRunner(options: RunnerOptions): Runner {
 
   /** Run `runId`'s census for its end (RunnerOptions.census), as a patch's part: none past censusMs, or when it fails.
    *  Either is said as an error event (step "census") with the run's id and why, so a 403 on the run's files after its
-   *  end can be traced: an error's code or name only, never its message, which may name a file of the run's. */
+   *  end can be traced, and as a census-failed event, which a log-based alert counts: an error's code or name only,
+   *  never its message, which may name a file of the run's. */
   const censusFor = async (runId: string): Promise<Pick<RunPatch, "census">> => {
     if (!census) return {};
     let stop = () => {};
     let why: string | undefined;
+    let cause = "timeout";
     const late = new Promise<undefined>((resolve) => {
       const timer = setTimeout(() => {
         why = `none within ${censusMs} ms`;
@@ -459,11 +466,15 @@ export function startRunner(options: RunnerOptions): Runner {
     });
     const failed = (error: unknown): undefined => {
       const code = (error as { code?: unknown } | null)?.code;
-      why = `it failed (${typeof code === "string" ? code : error instanceof Error ? error.name : "unknown"})`;
+      cause = typeof code === "string" ? code : error instanceof Error ? error.name : "unknown";
+      why = `it failed (${cause})`;
       return undefined;
     };
     const made = await Promise.race([census(runId).catch(failed), late]).finally(() => stop());
-    if (!made && why !== undefined) emit({ type: "error", runId, step: "census", message: `${why}: the end writes "unscanned", and the run's files are withheld from a cut read after it` });
+    if (!made && why !== undefined) {
+      emit({ type: "error", runId, step: "census", message: `${why}: the end writes "unscanned", and the run's files are withheld from a cut read after it` });
+      emit({ type: "census-failed", runId, cause });
+    }
     return made ? { census: made } : {};
   };
 

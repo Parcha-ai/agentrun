@@ -1979,6 +1979,11 @@ send every call into a sandbox, the upload and the bridge with it, there. So the
 set in `process.env`: a read, and the library's one touch of E2B's environment. A unit test hands the provider's options
 to the real SDK's `ConnectionConfig` with all four ambient variables set, and reads back the provider's own.
 
+Every call is also given `httpVersion: "1.1"`, which wins over `E2B_HTTP_VERSION`: the SDK's undici client opens
+HTTP/2 otherwise, and when an idle HTTP/2 session times out it throws on a stream with no `error` listener, which ends
+the whole process. A unit test points the real SDK, given the provider's options, at a local server that prefers HTTP/2
+and reads HTTP/1.1 arriving.
+
 ### How the daemon gets in, and how it is reached
 
 E2B's envd is the sandbox's first process, a systemd service with `Restart=always` (e2b-dev/infra

@@ -21,6 +21,9 @@ export class SignInError extends Error {
 const NOTHING = "nothing was written";
 const refuse = (code, message) => new SignInError(code, message);
 const bad = (what) => refuse(1, `The server's device sign-in ${what}; ${NOTHING}.`);
+/** access_denied, from the authorization endpoint or the poll. A team workspace's key is its team admins' to approve, so
+ *  a member is pointed at them; the server's own description of the refusal is never printed. */
+const denied = () => refuse(4, `The sign-in was denied; ${NOTHING}. A team workspace takes a key only from a team admin: ask one to deploy for you, or sign in again and choose another workspace.`);
 
 /** The most read of a capabilities answer, and of each answer of the device flow. */
 const CAPABILITIES_BYTES = 4 * 1024 * 1024;
@@ -193,7 +196,7 @@ export async function deviceSignIn(base, offer, io, { wait = sleep, now = Date.n
   if (granted.status === 200 && !g) throw bad("authorization endpoint answered something other than a JSON object, or one too large");
   if (granted.status !== 200 || g.error !== undefined) {
     const code = errorOf(g);
-    if (code === "access_denied") throw refuse(4, `The sign-in was denied; ${NOTHING}.`);
+    if (code === "access_denied") throw denied();
     throw refuse(1, `The server refused the device sign-in request: ${granted.status}${code ? ` ${code}` : ""}; ${NOTHING}.`);
   }
   const interval = g.interval === undefined ? INTERVAL_S : g.interval;
@@ -248,7 +251,7 @@ export async function deviceSignIn(base, offer, io, { wait = sleep, now = Date.n
       delay = Math.max(every, Math.min(BACKOFF_MS, delay * 2), answer.retryAfter);
       continue;
     }
-    if (code === "access_denied") throw refuse(4, `The sign-in was denied; ${NOTHING}.`);
+    if (code === "access_denied") throw denied();
     if (code === "expired_token") throw expired();
     throw refuse(1, `The server refused the sign-in: ${answer.status}${code ? ` ${code}` : ""}; ${NOTHING}.`);
   }

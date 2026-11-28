@@ -582,7 +582,7 @@ async function deploy(ctx) {
   const { value: applied } = await to.call("POST", `/templates/${enc(template.id)}/apply`, body);
   // A trigger the apply could not make yet (a connection or a feed the target lacks; a warning says which) is not in its
   // answer. The lock then names no package, so the next deploy of the same files applies again and makes it once it can.
-  // One the target never makes (its plan's skip code not_an_option: a webhook on an API-only install) is no reason to:
+  // One the target never makes (its plan's skip code not_an_option: an email trigger on an API-only install) is no reason to:
   // the plan above said it is skipped, and the same files stay up to date. Where the target says what it set up itself
   // (setUpBy), its word is the one taken: a trigger it made is made, one it did not make is not made yet unless its reason
   // is not_an_option.
