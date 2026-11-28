@@ -433,6 +433,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24.22.3'
+      # Docker's classic image store, so the image built next is loaded as built, its layers not compressed and unpacked
+      # again (about 54 s on the containerd store). The step prints the store and fails unless the switch took.
+      - name: Docker on its classic image store
+        run: sh scripts/ci-docker-classic-store.sh
       - name: The image built, and the stack's smoke
         run: sh deploy/walk/smoke.sh
       # The same image as the Railway template's service (deploy/railway/template.json) runs: as root on a fresh volume
@@ -493,6 +497,11 @@ jobs:
         if: steps.paths.outputs.run == 'true'
         working-directory: packages/serve/runas
         run: sudo env "PATH=$PATH" CGO_ENABLED=0 GOCACHE="$RUNNER_TEMP/go-root-cache" GOFLAGS=-buildvcs=false go test -count=1 -v -run Privileged ./...
+      # Docker's classic image store, so the image built next is loaded as built, its layers not compressed and unpacked
+      # again (about 54 s on the containerd store). The step prints the store and fails unless the switch took.
+      - name: Docker on its classic image store
+        if: steps.paths.outputs.run == 'true'
+        run: sh scripts/ci-docker-classic-store.sh
       - name: The image, built once
         id: image
         if: steps.paths.outputs.run == 'true'
