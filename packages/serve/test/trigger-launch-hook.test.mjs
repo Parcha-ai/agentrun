@@ -639,6 +639,55 @@ test("a target lowered after the hand lowers the firing: its retry and the host'
   assert.equal(await capOf("open-over", retried["open-over"]), 5, "a told null: the agent's $5 default, never the target's $50 set since");
 });
 
+test("a firing's host start never runs past the lowest cap any hand of it named: a retry at a target lowered since, then the target raised back, starts at the lowered cap when the host sends none of its own, and a told null's later cap holds the same way", { timeout: 120_000 }, async (t) => {
+  const clock = fakeClock("2026-06-01T00:00:00Z");
+  const ids = {};
+  // [name, the target's cap at the first hand, at the retry, at the host's start]
+  const cases = [["back-up", 0.5, 0.2, 0.5], ["open-back", null, 2, null], ["open-over-back", null, 50, null]];
+  const nameOf = (id) => Object.keys(ids).find((name) => ids[name] === id);
+  // Each trigger's first hand is answered 500, its retry 202, with no run started.
+  const hook = await hookServer(t, (res, sent) => answerJson(res, nameOf(sent.trigger_id) && hook.got.filter((got) => got.sent.trigger_id === sent.trigger_id).length === 1 ? 500 : 202, {}));
+  const { api } = await serve(t, { triggerClock: clock, runner: false, launchHook: { url: hook.url, secret: mintSecret() } });
+  await made(api, "nightly", { max_cost_usd: 5 });
+  const targetOf = (cap) => ({ kind: "start_run", agent_id: "nightly", input: { content: "Say hello." }, ...(cap === null ? {} : { max_cost_usd: cap }) });
+  const setCap = async (name, cap) => {
+    const patched = await api("PATCH", `/triggers/${ids[name]}`, { target: targetOf(cap) });
+    assert.equal(patched.status, 200, JSON.stringify(patched.body));
+  };
+  for (const [name, cap] of cases) {
+    const created = await api("POST", "/triggers", { ...schedule("nightly", { every_s: 3600, start_at: "2026-06-01T00:10:00Z" }), name, target: targetOf(cap) });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    ids[name] = created.body.id;
+  }
+  clock.to("2026-06-01T00:10:00Z");
+  const firsts = [];
+  for (const [name] of cases) {
+    const first = await tried(api, ids[name], 1);
+    assert.deepEqual([first.status, first.attempts], ["due", 1], `${name}: ${JSON.stringify(first)}`);
+    firsts.push(first);
+  }
+  for (const [name, , cap] of cases) await setCap(name, cap);
+  clock.to(firsts.map((first) => first.retry_at).sort().at(-1));
+  const retried = {};
+  for (const [name] of cases) {
+    const [firing] = await firings(api, ids[name], 1);
+    assert.deepEqual([firing.status, firing.run_id], ["sent", null], JSON.stringify(firing));
+    retried[name] = firing;
+  }
+  const toldOf = (name) => hook.got.filter((got) => got.sent.trigger_id === ids[name]).map((got) => got.sent.max_cost_usd);
+  assert.deepEqual(Object.fromEntries(cases.map(([name]) => [name, toldOf(name)])), { "back-up": [0.5, 0.2], "open-back": [null, 2], "open-over-back": [null, 50] });
+  for (const [name, , , cap] of cases) await setCap(name, cap);
+  // The host sends no max_cost_usd of its own: the run's cap is the firing's alone.
+  const capOf = async (name) => {
+    const started = await api("POST", "/agents/nightly/runs", { input: { content: "Say hello." }, trigger_firing: { trigger_id: ids[name], firing_id: retried[name].key } });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    return (await api("GET", `/runs/${started.body.run_id}`)).body.cost.cap_usd;
+  };
+  assert.equal(await capOf("back-up"), 0.2, "the $0.2 its retry named, never the target's $0.5 set back after it");
+  assert.equal(await capOf("open-back"), 2, "the $2 its retry named, never the agent's $5 default once the target dropped its cap");
+  assert.equal(await capOf("open-over-back"), 5, "the agent's $5 default its first hand's null stood for, below the $50 its retry named");
+});
+
 /** Every model setting a keyless server's tests set or clear: it holds no model key of its own. */
 const MODEL_NAMES = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "AGENT_MODEL_PRICE", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_GATEWAY_IDS", "AGENTRUN_SERVE_GRADE_MODEL", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENROUTER_API_KEY"];
 
