@@ -134,6 +134,14 @@ const { answer, receipt } = await web.search({ objective: "Where Widgets, Inc. i
   offset"` (`max_chars`, or `offset and max_chars`, as given). With no decider the answer is the part asked for, its
   `sift` `"objective not applied (no classifier in this run); this part is in page order"`; with one that fails, the
   part asked for with `sift: "objective not applied (<why>); this part is in page order"`. The page is read once a run either way; a blank objective is none.
+- A decider may carry a Jev setup (`setup`, one of `JEV_SETUPS`), which says what the steps do with its scores; one
+  with none runs as `"shipped"`. `jevWebDecider(jev, name?)` builds Jev's under the setup `name` names, `DEFAULT_JEV_SETUP`
+  (`"shipped"`) when none is given; an unknown name throws. `"shipped"` is every step as described here.
+  `"top2-best300-found5"`, under rerank+label, keeps the 2 most relevant results whole and shows each later one only the
+  passage of its snippet (at most 300 characters, "…" where it is cut) the decider scores most likely to hold what the
+  search needs, one judge request per such result; where that ask fails, the snippet's first 300 characters. Its url,
+  title and relevance stay, and the `sift` adds `"; past the first 2, a result shows only its passage most relevant to
+  the search: web_fetch its url to read it"`. A fetch's objective then holds 5 found chunks in place of 8.
 - A fetched part is judged in passages (`passagesOf`: whole paragraphs packed to about 1,000 characters, at most 50).
   The kept ones stay in order, `LEFT_OUT` stands for each run left out, and the part's `chars`, `offset` and
   `next_offset` are unchanged. A fetch with no `task` is not judged.
