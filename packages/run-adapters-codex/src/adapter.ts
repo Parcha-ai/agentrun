@@ -47,6 +47,11 @@ export const codexToolName = (name: string): string => (name.startsWith("mcp__")
  */
 export const CODEX_TOOL_OUTPUT_TOKENS = Math.ceil((HOST_RESULT_MAX_CHARS * 3) / 4);
 
+/** How long Codex waits on a silent stream from a model on the host's own machine (an Ollama model the route
+ *  translates), which says nothing while it loads or reads a long prompt: 30 minutes, as claude-agent's CLI waits
+ *  (its LOCAL_STREAM_IDLE_MS). Any other route keeps Codex's own five minutes. */
+export const LOCAL_STREAM_IDLE_MS = 30 * 60_000;
+
 export interface CodexProvider {
   /** The provider's origin (`https://api.openai.com`): the proxy forwards to its `/v1/responses` only. */
   origin: string;
@@ -80,6 +85,9 @@ export interface CodexAdapterOptions {
    *  result is its share of it (the kernel's resultMaxChars). A session's own (SessionSpec.contextWindow) wins. With
    *  neither, Codex is told 272 000 and the host's bound alone holds a result. */
   contextWindow?: number;
+  /** How long Codex waits on a streamed answer that sends nothing. A host sets LOCAL_STREAM_IDLE_MS for a model on its
+   *  own machine; absent, Codex's own limit (five minutes), so a hung paid stream holds the run's slot and cap no longer. */
+  streamIdleMs?: number;
   /** Where sessions keep their private directories when the host lends none (`io.dir`): one per session key. */
   sessionsDir?: string;
   /** The host's skills, which Codex lists to the model by name and description and the model reads with
@@ -238,6 +246,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         // The window the host knows (the session's, from its catalog; else this adapter's). Only with neither is Codex told
         // 272,000, a guess at a large OpenAI model's, and then no tool result is held to it: the host's bound alone.
         contextWindow: window ?? 272_000,
+        ...(options.streamIdleMs !== undefined ? { streamIdleMs: options.streamIdleMs } : {}),
         ...budget,
         ...(options.log ? { log: options.log } : {}),
         ...(options.standIn ? { test: { command: options.standIn.command, args: options.standIn.args ?? [] } } : {}),

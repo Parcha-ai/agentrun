@@ -118,6 +118,18 @@ test("a codex run refused for want of an OpenAI key says what codex needs, and n
   assert.doesNotMatch(run.body.error.message, /ANTHROPIC_API_KEY|PARTICLE_API_KEY|No model yet/, run.body.error.message);
 });
 
+test("a model its harness never runs is refused as that, never by asking for that model's key, which would not run it there", async (t) => {
+  // codex with only an OpenAI key, on an Anthropic model: an Anthropic key would not make codex run it, so the words are
+  // codex's own. The same for claude-agent on an OpenAI model with only an Anthropic key.
+  withEnv(t, {}, ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "PARTICLE_API_KEY", "AGENTRUN_HARNESS_TABLE"]);
+  const words = async (env, harness, model) => (await blockersOf({ ...process.env, ...env }, { kind: "agentic", instructions: "Answer.", harness, model })).map((b) => [b.field, b.message]);
+  assert.deepEqual(await words({ OPENAI_API_KEY: "fake-test-key" }, "codex", "anthropic/claude-sonnet-5-5"), [["definition.model", "codex runs OpenAI models; the run's model is anthropic/claude-sonnet-5-5."]]);
+  assert.deepEqual(await words({ ANTHROPIC_API_KEY: "fake-test-key" }, "claude-agent", "openai/gpt-6.1-sol"), [["definition.model", "claude-agent runs Anthropic models; the run's model is openai/gpt-6.1-sol."]]);
+  // One it runs still says the key it lacks: OpenAI's model through OpenRouter, on codex with no OpenRouter key.
+  const routed = await words({ OPENAI_API_KEY: "fake-test-key" }, "codex", "openrouter/openai/gpt-6.1-sol");
+  assert.match(routed[0]?.[1] ?? "", /^No OpenRouter key here for openrouter\/openai\/gpt-6\.1-sol/, JSON.stringify(routed));
+});
+
 test("a harness is checked on the revision's own model, never refused for the server's default: claude-agent runs an Anthropic model on a server whose default is OpenAI", { timeout: 60_000 }, async (t) => {
   // Both providers configured (no real keys), the server's default model OpenAI's.
   withEnv(t, { AGENT_MODEL: "openai/gpt-6-luna", OPENAI_API_KEY: `not-a-secret-${"openai"}`, ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}` }, ["AGENT_MODEL_BASE_URL", "ANTHROPIC_BASE_URL", "AGENTRUN_HARNESS_TABLE"]);

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { raw } from "./store-target.mjs";
-import { agent, follow, scratch, serve, startRun, storeRun } from "./support.mjs";
+import { agent, FAST_BEATS, follow, scratch, serve, startRun, storeRun } from "./support.mjs";
 
 test("a failed run takes no follow-up, and archiving closes a completed one: an archived run, or a run of an archived agent, is 409 not_continuable", async (t) => {
   const { api, data } = await serve(t);
@@ -46,7 +46,7 @@ function claimed(data) {
 // The run cap queues, as it does a new start (admission.test.mjs): nothing is refused for a place, a run past the cap waits.
 test("a completed run's follow-up takes a place under the run cap: with every place taken it is taken (202) and waits unclaimed, the run goes on when a place is free; a message to the run holding the place takes none", { timeout: 60_000 }, async (t) => {
   const dir = await scratch(t);
-  const { api, data, runnerBeats } = await serve(t, { maxRuns: 1 });
+  const { api, data, runnerBeats } = await serve(t, { maxRuns: 1, runnerTiming: FAST_BEATS });
   const done = await startRun(api, "calc", "What is six times seven?");
   await follow(api, done.run_id, ["completed"]);
   const busy = await startRun(api, "slow", `Answer once ${join(dir, "go")} exists.`);
@@ -70,7 +70,7 @@ test("a completed run's follow-up takes a place under the run cap: with every pl
 
 test("a follow-up to a completed run and new starts sent together under one place: all are taken, exactly one holds the place at a time, never two, and each runs in its turn", { timeout: 90_000 }, async (t) => {
   const dir = await scratch(t);
-  const { api, data, runnerBeats } = await serve(t, { maxRuns: 1 });
+  const { api, data, runnerBeats } = await serve(t, { maxRuns: 1, runnerTiming: FAST_BEATS });
   // The first turn answers at once; the follow-up's turn holds on the gate, as each new start does.
   const done = await startRun(api, "calc", `Hold the follow-up until ${join(dir, "go")}.`);
   await follow(api, done.run_id, ["completed"]);

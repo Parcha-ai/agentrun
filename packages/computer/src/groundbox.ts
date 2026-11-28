@@ -22,7 +22,7 @@ import { HostedProvider, type HostedOptions } from "./hosted/provider.js";
 import { allPages, httpsBase, jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { PID_ECHO, PID_KILL, ROOT } from "./hosted/scripts.js";
 import { dateOf, isWhole } from "./hosted/values.js";
-import type { ComputerSpec, Refusal } from "./provider.js";
+import type { ComputerResources, ComputerSpec, Refusal } from "./provider.js";
 import { type ComputerErrorCode, ok, type Result } from "./result.js";
 
 /** The parts of a WebSocket the host uses: Node's global WebSocket, or a stand-in in tests. */
@@ -230,6 +230,11 @@ export interface StreamBounds {
 interface Sandbox {
 	id: string;
 	status: string;
+	/** The size it runs at, which Groundbox bills by the second until it stops: required in every Sandbox the API answers. */
+	cpus?: unknown;
+	/** Its memory, in whole GB (GiB, as the adapter's memoryMb counts it, as create sends memory_gb). */
+	memory_gb?: unknown;
+	disk_gb?: unknown;
 	metadata?: Record<string, string>;
 	created_at?: string;
 	stop_reason?: string | null;
@@ -289,7 +294,22 @@ interface Command {
 /** The bytes a chunk of base64 holds. */
 const bytesOf = (base64: string): number => Math.floor((base64.length * 3) / 4);
 
-/** A sandbox as the adapter reads a machine; none for a record Groundbox keeps of one that has ended. */
+/** A figure of the answer's size: a whole number above 0, else none (never a guess). */
+const sized = (value: unknown): number | undefined => (isWhole(value) && value > 0 ? value : undefined);
+
+/**
+ * The size Groundbox says a sandbox runs at (its cpus, memory_gb and disk_gb), read from its answer over anything the
+ * create asked: a spec that names no size gets Groundbox's own, which only the answer says. None where it says none.
+ */
+function resourcesOf(sandbox: Sandbox): { resources?: ComputerResources } {
+	const cpus = sized(sandbox.cpus);
+	const memoryGb = sized(sandbox.memory_gb);
+	const diskGb = sized(sandbox.disk_gb);
+	const resources: ComputerResources = { ...(cpus === undefined ? {} : { cpus }), ...(memoryGb === undefined ? {} : { memoryMb: memoryGb * 1024 }), ...(diskGb === undefined ? {} : { diskGb }) };
+	return Object.keys(resources).length > 0 ? { resources } : {};
+}
+
+/** A sandbox as the adapter reads a machine, with the size it runs at; none for a record Groundbox keeps of one that has ended. */
 function machineOf(sandbox: Sandbox): Machine | undefined {
 	const labels = { ...(sandbox.metadata ?? {}) };
 	// A status this host does not know is a machine that is there and not running: the janitor still finds and ends it.
@@ -297,7 +317,7 @@ function machineOf(sandbox: Sandbox): Machine | undefined {
 	const state = STATES[sandbox.status];
 	if (state === undefined) return undefined;
 	const created = dateOf(sandbox.created_at);
-	return { id: sandbox.id, labels, state, ...(created ? { createdAt: created } : {}) };
+	return { id: sandbox.id, labels, state, ...(created ? { createdAt: created } : {}), ...resourcesOf(sandbox) };
 }
 
 /** Why Groundbox's metadata can't hold these labels, in words; undefined when it can. */

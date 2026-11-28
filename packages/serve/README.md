@@ -2948,7 +2948,9 @@ What can go wrong, told apart:
   not), which only the owner's console changes or deletes. The link opens Settings → MCP servers with the form filled in
   (name, URL, kind of credential, toolkit; for a saved server, its Change form), never the credential. A URL that could
   hold one is left out. An [API-only](#api-only) server has no owner's session and serves no console: its `403` has no
-  `details.console_url`, and a save over or delete of a server the token did not save says to use another name.
+  `details.console_url`, and a save over or delete of a server the token did not save says to use another name. A
+  credential's value from the token there says what it can send instead: a `per_run` server whose runs hand it in
+  `mcp_auth`, or a Composio key named by `api_key_env` (a Composio listing's `403` names `api_key_env` alone).
 - `412 precondition_failed`: the server changed while the save or delete ran (another save, a sign-in, a removal), so
   nothing was written over it: read it again and try again. An owner's save that lands while the token's save or delete
   of a server it saved is under way makes the server the owner's, and the token's is this `412`.

@@ -244,12 +244,14 @@ test("a descriptor is checked when it is defined: its id, keys, settings and con
 	assert.equal(defineProvider(good), good);
 	assert.deepEqual(descriptorProblems(good), []);
 	assert.deepEqual(descriptorProblems({ ...good, unmounted: { archil: "Archil's client hangs here" } }), [], "a kind it doesn't take, with why");
+	assert.deepEqual(descriptorProblems({ ...good, sized: true }), [], "a create that answers the size it runs at");
 	const relay = { ...good, keys: [...good.keys, { name: "ACME_RELAY", option: "relay", required: false }], unmounted: { archil: "Archil's client hangs here" }, mountsWith: { archil: "ACME_RELAY" } };
 	assert.deepEqual(descriptorProblems(relay), [], "a kind it takes once the operator sets one of its keys");
 	assert.deepEqual(descriptorProblems({ ...good, unserved: { desktop: "its window manager can't start there" } }), [], "a setting kind it doesn't serve, with why");
 	for (const [change, words] of [
 		[{ id: "Acme Cloud" }, /id "Acme Cloud" is not lowercase letters, digits and hyphens/],
 		[{ label: " " }, /label is not a name in words/],
+		[{ sized: "yes" }, /sized is not true or false/],
 		[{ keys: [{ name: "ACME_KEY", option: "apiKey", required: true }, { name: "ACME_KEY", option: "other", required: false }] }, /keys names ACME_KEY or fills other twice/],
 		[{ keys: [{ name: "ACME_KEY", option: "", required: true }] }, /each of keys has a name and the option it fills/],
 		[{ keys: [{ name: "ACME_KEY", option: "apiKey" }] }, /each key says whether it is required/],

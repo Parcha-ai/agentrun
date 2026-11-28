@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { InMemorySpanExporter } from "@opentelemetry/sdk-trace";
 import { until } from "./runner-support.mjs";
-import { agent, follow, serve, whenFree, withEnv } from "./support.mjs";
+import { agent, FAST_BEATS, follow, serve, whenFree, withEnv } from "./support.mjs";
 
 const { flushTraces, genAiTracing, tracePosts } = await import("../dist/otel/tracer.js");
 const { secretRedactor } = await import("../dist/runner/redact.js");
@@ -288,6 +288,7 @@ test("where runs have users of their own and tracing is on, a run whose agent th
   // The runner's store fails every read of the one agent's row (support.mjs failAgentsGet); the server's reads it.
   const server = await serve(t, {
     failAgentsGet: (id) => id === unread && ++faults > 0,
+    runnerTiming: FAST_BEATS,
     childRuns: { isolation: { kind: "uid", helper, first: 0, slots: 1 }, log: (line) => void lines.push(line), tracing: genAiTracing({ OTEL_EXPORTER_OTLP_ENDPOINT: "http://otlp.invalid:4318" }, { exporter, log: () => {} }) },
   });
   // After hooks run in the order they were added: `go`, then the server's stop (its runner's reaps), then the folder, so
