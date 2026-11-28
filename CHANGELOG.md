@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+## 0.1.0-beta.68 (2026-11-28)
+
+This release lets a server keep Composio connections for two projects under separate saved server names. Each name stays bound to its selected key, and the server advertises the supported key names in its capabilities. It also improves runner shutdown and file-read handling, and keeps workspace runs separate from the server's global GitHub App.
+
+- The Composio listings (`POST /v2/settings/mcp-servers/composio/toolkits` and `.../composio/tools`) take `"api_key_env": "COMPOSIO_API_KEY"` in place of `api_key`, as the Composio save does: the key is read from the server's environment and never sent by the caller. On an API-only server (`AGENTRUN_API_ONLY=1`) the token, scoped to a workspace or not, now lists Composio's toolkits and a toolkit's actions this way, so a backend in front of it can show its own picker. A key the token sends as `api_key` is still `403`, and on any other server the token's listing stays `403`. <!-- changes/composio-listings-key-env.md -->
+- `agentrun login`'s device sign-in, when the server denies it (`access_denied`, from the authorization endpoint or the poll), now also says that a team workspace takes a key only from a team admin: ask one to deploy for you, or sign in again and choose another workspace. The words are the CLI's own; the server's `error_description` is still never printed. <!-- changes/device-denied-team-admin.md -->
+- The shipped stop graces now outlast the close of the runner beside the server, which takes up to 40 s with the image's 6 s drain when a browser's release hangs to its provider's 30 s cleanup bound, and up to 55 s with the CLI's 30 s drain. The quickstart `compose.yaml` and the compose file `install.sh --vps` writes give 45 s of stop grace (35 s before), as the runners, the Helm chart and the Coolify and Dokploy templates already did. The macOS service waits 60 s before launchd kills it (`ExitTimeOut`, 35 s before), and `agentrun stop` and the installer's stop of a background AgentRun wait 60 s before a SIGKILL (45 s before). Render's fixed 30 s stays under that close: `render.yaml` and the README say what a stop there can cut. A runner's close now counts its drain from the close's start, and waits for a claim still in flight (one re-reading the store after an unanswered commit) inside the drain and the stop's window, so that close stays inside the bound the graces are set from: before, that wait could add up to 25 s ahead of the drain. <!-- changes/stop-graces-cover-runner-close.md -->
+
+**Upgrading and going back:**
+
+- Postgres applies migration `0035`, adding a nullable `trigger_firings.hooked` column for the launch hook's accepted spending cap. The runner floor stays 34, so beta.67 runners remain compatible during the upgrade. SQLite stays at version 18 and adds the same nullable column when the server opens the store.
+- Back up the Postgres store before the server upgrade. A beta.67 server refuses schema 35 even though its runners can use it; going back needs the corresponding pre-upgrade store or a forward repair, not only an image change. Do not point an older server at the upgraded store.
+- Upgrade the server and every runner before saving a Composio server with `api_key_env: "AGENTRUN_COMPOSIO_API_KEY"`. Provision that key in each process that uses it, and check that `features.mcp_client.composio_key_envs` advertises it. Existing servers using `COMPOSIO_API_KEY` keep their selection; a missing selected key fails without falling back to the other project.
+- A saved Composio server name cannot be rebound to the other key. Use a distinct name for each project. After saving a server with the new key name, beta.67 cannot use that selection: drain affected work and keep a capable runtime, or fix forward. An unchanged store schema does not make that downgrade safe for those saved servers.
+- The launcher is `@parcha/agentrun` 0.4.36 and the Python client is `parcha-agentrun` 0.3.35; the shared package version is 0.1.0-beta.68.
+
+**Breaking:**
+
+- Workspace runs no longer receive the server's global GitHub App token. Their repository checkout is anonymous, so public repositories can be read and private repositories cannot. Calls through the `github_app` MCP server are refused for those runs. Runs with no workspace retain the server App behavior.
+
+**Known issues:**
+
+- Render's fixed 30-second shutdown window can cut runner cleanup short; it remains below the runner's longest close window. The other deployment templates provide longer stop graces.
+- Immediately after publication, npm can expose release packages at different times. If an exact-version installation cannot yet resolve every package, retry after registry propagation.
+
+Each server change is listed in `packages/serve/CHANGELOG.md`.
+
 ## 0.1.0-beta.67 (2026-11-27)
 
 This release makes three fixes. A run's release that is cut at its bound, because a browser session's own release never answers, now also releases every browser the run left that nothing it holds names, and books that browser's time once (#4097). Before, such a browser ran on to the vendor's own lifetime with no record on the run. `GET /v2/runs/{run_id}/usage` keeps a browser charge's seconds when the charge was recorded in a learning round's end-of-run turn and booked later under a follow-up's claim. Before, the `browser_time` line kept its dollars but read its `quantity` as null (#4095). Redaction now reads text as a terminal shows it. A held value split by a colour code, a title or hyperlink sequence, or a backspace overstrike is withheld, in any of the escapings a tool's output uses. Characters that show as a box or a blank are dropped the way a zero-width character is (#3963).
