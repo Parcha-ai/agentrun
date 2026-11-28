@@ -20,7 +20,7 @@ const chromeOf = (profileRoot) => {
 };
 
 function child(env, { killWhen } = {}) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const proc = spawn(process.execPath, [CHILD], { env: { ...process.env, CHROME, ...env }, stdio: ["ignore", "pipe", "pipe"] });
     let out = "", err = "";
     // When each of the child's lines arrived, in order.
@@ -34,9 +34,12 @@ function child(env, { killWhen } = {}) {
       for (const text of parts) if (text) lines.push({ at, text });
     });
     proc.stderr.on("data", (chunk) => { err += chunk; });
-    killWhen?.then(() => proc.kill("SIGKILL"));
+    // A watch that fails (its wait timed out, its DevTools socket refused) still kills the child; the test then fails with
+    // the watch's error once the child is gone, never leaving it running.
+    let failed;
+    killWhen?.then(() => proc.kill("SIGKILL"), (error) => { failed = error; proc.kill("SIGKILL"); });
     const began = Date.now();
-    proc.on("close", (code, signal) => resolve({ code, signal, out, err, lines, ms: Date.now() - began }));
+    proc.on("close", (code, signal) => (failed ? reject(failed) : resolve({ code, signal, out, err, lines, ms: Date.now() - began })));
   });
 }
 
