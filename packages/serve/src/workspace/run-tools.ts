@@ -113,12 +113,13 @@ function scriptsOnly(name: string, surface: AgentComputer["surface"]): boolean {
  *  the agent's ask for the person (`handoff`, computer_request_handoff's port), through the same hold. */
 export type RunHold = (ports: Pick<Hands, "computer">) => Pick<Hands, "computer" | "handoff">;
 
-/** `claimed` with its computer's calls cut by the claim's `signal` until `release()` (computer-calls.ts claimCutClient):
- *  a run stopped for the runner's shutdown, or whose claim was lost, ends a call to a daemon that never answers (its
- *  start's attach and scratch folder, a tool's file call) instead of holding the runner's close for its whole window,
- *  while its end (RunTools.end) runs uncut, in the close's window. As it is with no signal, and for a browser, whose tool
- *  holds no computer client. */
-function claimCut(claimed: RunComputer | undefined, signal: AbortSignal | undefined): { readonly computer: RunComputer | undefined; release(): void } {
+/** `claimed` with its computer's calls cut by the claim's `signal` until `release(then)` (computer-calls.ts
+ *  claimCutClient): a run stopped for the runner's shutdown, or whose claim was lost, ends a call to a daemon that never
+ *  answers (its start's attach and scratch folder, a tool's file call) instead of holding the runner's close for its
+ *  whole window, while its end (RunTools.end) runs past the claim's signal, cut by the end's own (`then`: at the close's
+ *  releaseBy), so the claim's release after it lands in the close's window. As it is with no signal, and for a browser,
+ *  whose tool holds no computer client. */
+function claimCut(claimed: RunComputer | undefined, signal: AbortSignal | undefined): { readonly computer: RunComputer | undefined; release(then?: AbortSignal): void } {
   if (signal === undefined || claimed === undefined || claimed.kind === "browser") return { computer: claimed, release: () => {} };
   const cut = claimCutClient(claimed.computer.client, signal);
   return { computer: { ...claimed, computer: { ...claimed.computer, client: cut.client } } as RunComputer, release: cut.release };
@@ -181,8 +182,10 @@ export type RunHands = {
    *  and its TMPDIR swept, through the computer when it mounts the folder. */
   sweep(): Promise<void>;
   /** The run's end begins: from here no call of its computer is cut by the claim's signal (claimCut), one in flight
-   *  included, so ending its background processes and the sweep run in the close's window, as before. */
-  ending(): void;
+   *  included; each is cut by `cut` instead (the end's own, RunTools' endCut), so ending its background processes and
+   *  the sweep on a daemon that never answers end then, and the claim's release after them lands in the close's window.
+   *  With no `cut`, none is cut. */
+  ending(cut?: AbortSignal): void;
 };
 
 /** The run's hands and host executors on `workspace`, attached to `computer` when its kind and provider mount the folder,
@@ -350,7 +353,7 @@ export type RunTools = {
    *  computer_screenshot offers save_as; `opsRefused`, the ops computer_op leaves out (bindTools). */
   hostTools(names: readonly string[], options?: { readonly results?: ToolResults; readonly writes?: boolean; readonly opsRefused?: readonly string[] }): HostTool[];
   /** The run's end, before the computer is let go: its background processes ended (TERM, then KILL 3 s later; none with
-   *  no computer), then bash's full outputs and TMPDIR swept. */
+   *  no computer), then bash's full outputs and TMPDIR swept, its computer calls cut by the end's cut (endCut). */
   end(): Promise<void>;
   /** Strict checkpoint stop: cleanup errors or any still-running tracked process refuse publication. */
   settleProject(): Promise<readonly string[]>;
@@ -365,7 +368,7 @@ export type RunTools = {
  * their executors to the run. A browser computer brings none of the registry's: the run's browser tool (tools.ts,
  * pi-browser's durable extension) drives it.
  */
-export async function runTools(workspace: Workspace, computer: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly noExec: string | undefined; readonly context: Context; readonly aliases?: readonly string[]; readonly hold?: RunHold; readonly bashPolicy?: string; /** The computer replaced an earlier claim's (runHands). */ readonly replaced?: boolean; /** The claim's signal: the computer's calls are cut by it (runHands, claimCut). */ readonly signal?: AbortSignal }): Promise<RunTools> {
+export async function runTools(workspace: Workspace, computer: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly noExec: string | undefined; readonly context: Context; readonly aliases?: readonly string[]; readonly hold?: RunHold; readonly bashPolicy?: string; /** The computer replaced an earlier claim's (runHands). */ readonly replaced?: boolean; /** The claim's signal: the computer's calls are cut by it (runHands, claimCut). */ readonly signal?: AbortSignal; /** The end's cut, made as the end begins: its computer calls are cut by it (RunHands.ending; AdapterRun.endCut). */ readonly endCut?: () => AbortSignal }): Promise<RunTools> {
   const run = await runHands(workspace, computer, options);
   const registry = createRegistry({ maxExecS: run.maxExecS, shell: run.shell, kinds: run.kinds, groups: run.groups, executors: run.executors });
   const brought: ReadonlySet<string> = new Set(COMPUTER_TOOLS);
@@ -389,7 +392,7 @@ export async function runTools(workspace: Workspace, computer: RunComputer | und
       return before.filter(process => process.argv[3] === "agentrun-background" && /^[1-9][0-9]*$/.test(process.argv[4] ?? "")).map(process => `background/${process.argv[4]}/output.log`);
     },
     async end() {
-      run.ending();
+      run.ending(options.endCut?.());
       await endBackground(run.hands);
       await run.sweep();
     },
