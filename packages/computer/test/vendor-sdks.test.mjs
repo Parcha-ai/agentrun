@@ -111,7 +111,7 @@ test("each SDK a provider loads is one of the packed package's optionalDependenc
 });
 
 test("the built provider modules import no vendor SDK at load, and the published types name none", () => {
-	for (const file of ["../dist/e2b.js", "../dist/modal.js", "../dist/boxd.js", "../dist/agent37.js", "../dist/morph.js", "../dist/conformance/archil.js"]) {
+	for (const file of ["../dist/e2b.js", "../dist/modal.js", "../dist/boxd.js", "../dist/agent37.js", "../dist/morph.js", "../dist/boat.js", "../dist/conformance/archil.js"]) {
 		const code = readFileSync(here(file), "utf8");
 		assert.doesNotMatch(code, /^import .* from ["'](e2b|modal|@boxd-sh\/sdk|ssh2|disk)["']/m, `${file} has no static import of an SDK`);
 		assert.doesNotMatch(code, /require\(/, `${file} has no require`);
@@ -158,6 +158,7 @@ test("with no SDK installed, each provider's create refuses naming its SDK and t
 		["boxd", "@boxd-sh/sdk", async () => (await load("boxd.js")).create({ apiKey: KEY })],
 		["Agent37", "ssh2", async () => (await load("agent37.js")).create({ apiKey: KEY, sshKey: KEY })],
 		["Morph", "ssh2", async () => (await load("morph.js")).create({ apiKey: KEY })],
+		["boat", "ssh2", async () => (await load("boat.js")).create({ apiKey: KEY })],
 		["Archil", "disk", async () => (await load("conformance/archil.js")).archilRunFolder({ disk: "dsk-00000000000baf76", region: "aws-us-east-1", token: KEY, apiKey: KEY, s3BaseUrl: "https://s3.green.us-east-1.aws.prod.archil.com" })],
 	];
 	for (const [vendor, name, make] of cases) {

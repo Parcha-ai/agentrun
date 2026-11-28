@@ -13,6 +13,9 @@ export const PROXY = "agent37.test";
 
 const { Server, utils } = ssh2;
 
+/** What a command run as root by a user with passwordless sudo starts with (fakeSshd's sudo). */
+const SUDO = "sudo -n -- ";
+
 /** OpenSSH's MaxSessions default: the sessions one connection takes at once (sshd_config(5)). */
 export const MAX_SESSIONS = 10;
 
@@ -157,9 +160,12 @@ export function fakeRest({ key = KEY, settleMs = 0 } = {}) {
  * key as root (Morph's gateway: its own username, any key); run(command, stream), when given, may answer a command
  * itself (true), in place of bash. authorized(id), when given, is the public lines instance id's sshd takes as root now
  * (fakeRest's authorizedFor: the workspace's registered keys), the instance named by the client's port in routes, which
- * fakeWebSocket fills; state.denied counts the logins refused.
+ * fakeWebSocket fills; state.denied counts the logins refused. username is the one user a key logs in as (root by
+ * default; boat's is user). sudo: the user has passwordless sudo and is not root, so a command must start `sudo -n -- `,
+ * which this sshd takes off and runs the rest as above (run is given the rest), since the test machine's sudo is not
+ * called; a command without it fails 126. hostKey is the server's public host key, an OpenSSH line, for a client that pins it.
  */
-export async function fakeSshd({ publicKey, accept, run, authorized, routes }) {
+export async function fakeSshd({ publicKey, accept, run, authorized, routes, username = "root", sudo = false }) {
 	const host = keyPair();
 	const allowed = publicKey === undefined ? undefined : utils.parseKey(publicKey);
 	const commands = [];
@@ -178,7 +184,7 @@ export async function fakeSshd({ publicKey, accept, run, authorized, routes }) {
 			if (accept !== undefined) return accept(ctx) ? ctx.accept() : ctx.reject(["publickey"]);
 			const key = ctx.method === "publickey" ? ctx.key : undefined;
 			const takes = authorized === undefined ? [allowed] : authorized(routes?.get(info.port)).map((line) => utils.parseKey(line));
-			const match = key && ctx.username === "root" ? takes.find((one) => key.algo === one.type && key.data.length === one.getPublicSSH().length && timingSafeEqual(key.data, one.getPublicSSH())) : undefined;
+			const match = key && ctx.username === username ? takes.find((one) => key.algo === one.type && key.data.length === one.getPublicSSH().length && timingSafeEqual(key.data, one.getPublicSSH())) : undefined;
 			if (!match || (ctx.signature && match.verify(ctx.blob, ctx.signature, ctx.hashAlgo) !== true)) {
 				if (ctx.method === "publickey") state.denied++;
 				return ctx.reject(["publickey"]);
@@ -203,8 +209,17 @@ export async function fakeSshd({ publicKey, accept, run, authorized, routes }) {
 				session.on("exec", (acceptExec, _reject, { command }) => {
 					commands.push(command);
 					const stream = acceptExec();
-					if (run?.(command, stream)) return;
-					const child = spawn("bash", ["-c", command], { detached: true, stdio: ["pipe", "pipe", "pipe"] });
+					let line = command;
+					if (sudo) {
+						if (!line.startsWith(SUDO)) {
+							stream.stderr.write(`${username} is not root: the command does not start ${SUDO.trim()}\n`);
+							stream.exit(126);
+							return stream.end();
+						}
+						line = line.slice(SUDO.length);
+					}
+					if (run?.(line, stream)) return;
+					const child = spawn("bash", ["-c", line], { detached: true, stdio: ["pipe", "pipe", "pipe"] });
 					children.add(child);
 					child.stdout.pipe(stream, { end: false });
 					child.stderr.pipe(stream.stderr, { end: false });
@@ -242,6 +257,7 @@ export async function fakeSshd({ publicKey, accept, run, authorized, routes }) {
 	};
 	return {
 		port: server.address().port,
+		hostKey: host.public,
 		commands,
 		state,
 		refuseSessions: (count) => (state.refusing = count),

@@ -46,6 +46,22 @@ test("an SshExec logs in as the host gives (a username carrying a key, Morph's),
 	await assert.rejects(password.exec("m2", ["true"], { timeoutMs: 2_000 }), { message: "authentication as root with [redacted] failed" });
 });
 
+test("a login's host key is pinned: ssh2 offers that key's algorithm alone, and its verifier takes that blob and no other; with none, ssh2 is given no verifier", async () => {
+	const blob = Buffer.concat([Buffer.from([0, 0, 0, 11]), Buffer.from("ssh-ed25519"), Buffer.from([0, 0, 0, 32]), Buffer.alloc(32, 7)]);
+	const logins = [];
+	const pinned = new SshExec({ ssh2: echoingSsh2(logins), loginOf: () => ({ username: "user", privateKey: KEY, hostKey: { type: "ssh-ed25519", blob } }), tunnelOf });
+	await assert.rejects(pinned.exec("m1", ["true"], { timeoutMs: 2_000 }));
+	assert.deepEqual(logins[0].algorithms, { serverHostKey: ["ssh-ed25519"] });
+	assert.equal(logins[0].hostVerifier(Buffer.from(blob)), true);
+	assert.equal(logins[0].hostVerifier(Buffer.concat([blob.subarray(0, -1), Buffer.from([8])])), false);
+	const rsa = new SshExec({ ssh2: echoingSsh2(logins), loginOf: () => ({ username: "user", privateKey: KEY, hostKey: { type: "ssh-rsa", blob } }), tunnelOf });
+	await assert.rejects(rsa.exec("m1", ["true"], { timeoutMs: 2_000 }));
+	assert.deepEqual(logins[1].algorithms, { serverHostKey: ["rsa-sha2-512", "rsa-sha2-256", "ssh-rsa"] }, "an RSA host key signs under any of its three names");
+	const open = new SshExec({ ssh2: echoingSsh2(logins), loginOf: () => ({ username: "root", privateKey: KEY }), tunnelOf });
+	await assert.rejects(open.exec("m1", ["true"], { timeoutMs: 2_000 }));
+	assert.deepEqual(["hostVerifier" in logins[2], "algorithms" in logins[2]], [false, false]);
+});
+
 test("redact takes every secret out of words, the longest first, and skips an empty or missing one", () => {
 	assert.equal(redact(`key ${SECRET} and ${SECRET}-2`, [SECRET, `${SECRET}-2`, "", undefined]), "key [redacted] and [redacted]");
 	assert.equal(redact("nothing secret", []), "nothing secret");
