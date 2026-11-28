@@ -1,17 +1,13 @@
 // The migration lint: the server migrates first, under runners of the earlier release that keep running, so a Postgres
 // migration is additive unless it says otherwise. Each shipped migration past LAST_UNMARKED that drops, renames, changes
 // a column's type, makes a column NOT NULL or adds one NOT NULL with no default carries the `-- runners: breaking` header
-// (migrate.ts RUNNERS_BREAKING), which raises the runner floor when it is applied; one that does not fails here, unless
-// each such statement alters or drops a table its header names `-- runners: unaffected (...)`, which no runner names. The
+// (migrate.ts RUNNERS_BREAKING), which raises the runner floor when it is applied; one that does not fails here. The
 // SQLite store has no migration files: its schema is built in code (schema.ts) and a SQLite runner opens only its own
 // version (its floor is its version), so there is nothing of it to lint.
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
 import { LAST_UNMARKED, marksBreaking, migrationsIn, RUNNERS_BREAKING } from "../dist/store/index.js";
-import { breakingForRunners, breakingStatements, unaffectedTables } from "../dist/store/postgres/migration-lint.js";
+import { breakingStatements } from "../dist/store/postgres/migration-lint.js";
 import { buildSchema } from "../dist/store/store-schema.js";
 import { SCHEMA_VERSION } from "../dist/store/schema.js";
 
@@ -20,7 +16,7 @@ const name = (m) => `${String(m.version).padStart(4, "0")}_${m.name}.sql`;
 test("every shipped migration past LAST_UNMARKED that an earlier runner cannot run beside says so in its header", () => {
   const unmarked = migrationsIn()
     .filter((m) => m.version > LAST_UNMARKED && !m.breaking)
-    .map((m) => ({ file: name(m), breaking: breakingForRunners(m.sql) }))
+    .map((m) => ({ file: name(m), breaking: breakingStatements(m.sql) }))
     .filter((m) => m.breaking.length > 0);
   assert.deepEqual(
     unmarked,
@@ -29,43 +25,6 @@ test("every shipped migration past LAST_UNMARKED that an earlier runner cannot r
       .map((m) => `${m.file}: ${m.breaking.map((b) => `${b.why} (${b.statement})`).join("; ")}. Make it additive (the cleanup lands one release later), or put "${RUNNERS_BREAKING}" in its leading comment, which raises the runner floor to its version: every runner of an earlier build stops, hands its runs back and exits when it is applied.`)
       .join("\n"),
   );
-});
-
-/** Every source file of the runner (src/runner), by its path. */
-function runnerSources(dir = fileURLToPath(new URL("../src/runner", import.meta.url))) {
-  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) return runnerSources(path);
-    return entry.name.endsWith(".ts") ? [[path, readFileSync(path, "utf8")]] : [];
-  });
-}
-
-// A migration may alter or drop a table it names `-- runners: unaffected (...)` unmarked: that holds only while no runner
-// code names the table, in SQL or as its store accessor (imported_templates, store.importedTemplates).
-test("every table a migration names unaffected is one no runner code names", () => {
-  const tables = [...new Set(migrationsIn().flatMap((m) => unaffectedTables(m.sql)))];
-  assert.ok(tables.includes("imported_templates"), "0036 names imported_templates");
-  const sources = runnerSources();
-  assert.ok(sources.some(([path]) => path.endsWith("main.ts")), "the runner's sources are read");
-  const named = tables.flatMap((table) => {
-    const accessor = table.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
-    return sources.filter(([, text]) => text.includes(table) || text.includes(accessor)).map(([path]) => `${table}: ${path}`);
-  });
-  assert.deepEqual(named, [], "a runner names a table a migration altered unmarked: mark that migration breaking instead");
-});
-
-test("the unaffected header spares an ALTER or DROP of each table it names alone", () => {
-  const sql = (header) => `${header}\n-- A step.\nALTER TABLE quiet DROP CONSTRAINT IF EXISTS quiet_pkey;\nALTER TABLE quiet ALTER COLUMN id SET NOT NULL;\nDROP INDEX IF EXISTS quiet_by_id;\nALTER TABLE runs DROP COLUMN labels;\nDROP TABLE quiet, runs;\n`;
-  assert.deepEqual(unaffectedTables(sql("-- runners: unaffected (quiet, other_one)")), ["quiet", "other_one"]);
-  assert.deepEqual(unaffectedTables(`-- A step.\nSELECT 1;\n-- runners: unaffected (quiet)\n`), [], "after a statement it names nothing");
-  assert.deepEqual(unaffectedTables("-- runners: unaffected quiet\nSELECT 1;"), [], "the tables in parentheses, nothing else");
-  assert.equal(breakingStatements(sql("-- runners: unaffected (quiet)")).length, 5);
-  assert.deepEqual(
-    breakingForRunners(sql("-- runners: unaffected (quiet)")).map((b) => b.statement),
-    ["DROP INDEX IF EXISTS quiet_by_id", "ALTER TABLE runs DROP COLUMN labels", "DROP TABLE quiet, runs"],
-    "an index drop (an earlier runner's ON CONFLICT may name it), another table, and a drop of more than one stay breaking",
-  );
-  assert.equal(breakingForRunners(sql("-- A step with no header.")).length, 5);
 });
 
 test("0023, the first migration past LAST_UNMARKED, is additive: a nullable column, and a NOT NULL one with a default and a CHECK", () => {

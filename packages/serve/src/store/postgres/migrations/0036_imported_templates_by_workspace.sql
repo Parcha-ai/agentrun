@@ -1,14 +1,12 @@
--- runners: unaffected (imported_templates)
+-- runners: breaking
 -- The store's schema on Postgres, version 36: each imported template package keyed by its workspace and id, as
 -- store/schema.ts keeps them on SQLite (IMPORTED_TEMPLATES_KEYS), so each workspace's package name is its own. Applied
 -- once, after 0035, inside the transaction migrate.ts opens. Never edit this file once applied: a change is a new file.
--- No runner reads or writes imported_templates, so a runner of an earlier build keeps running on the schema this leaves,
--- and the runner floor stays. A server of an earlier build, whose import names the key on the id alone, refuses the
--- schema (past its version).
 --
 -- Every row keeps the workspace 0033 gave it: one imported in a workspace is keyed in it, and one of none stays among
--- those of none, still one package an id there. Made only where missing, so a store whose record of this file was lost
--- applies it again unharmed.
+-- those of none, still one package an id there. The key on the id alone goes, which an earlier build's writes name
+-- (its import's ON CONFLICT (id)), so the floor rises to 36. Made only where missing, so a store whose record of this
+-- file was lost applies it again unharmed.
 
 CREATE UNIQUE INDEX IF NOT EXISTS imported_templates_in_workspace ON imported_templates (workspace, id) WHERE workspace IS NOT NULL;
 

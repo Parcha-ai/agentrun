@@ -4171,6 +4171,9 @@ Known limits:
   apart itself; one that maps each tenant's disk at launch, and takes no disk from the caller, needs nothing more.
 - On Postgres, migration 0033 builds its two indexes (`agents_by_workspace`, `runs_by_workspace`) inside the migrate
   transaction, which holds writes to `runs` and `agents` for the build: on a large `runs` table runners wait that long.
+- On Postgres, migration 0036 (each imported package keyed by its workspace) is breaking for runners and raises the
+  floor to 36: drain and stop the runners of earlier builds before this build's server starts, then start this build's
+  runners. On SQLite the server's open re-keys the table in place at version 18, and runners are unaffected.
 
 ### Share host
 
