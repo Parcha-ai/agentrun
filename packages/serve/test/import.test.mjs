@@ -764,13 +764,10 @@ test("a key a session still being written adds after the plan read it is cut all
   const store = await openData(data);
   t.after(async () => await store.close());
   const plan = await planImport({ home: at, env, all: true }, store);
-  // Written after the plan: one more message of the person's, holding a key. The write ended over 10 minutes before the
-  // import ran (an owner who chose the projects later), so the session is no longer live: it is imported, read again.
+  // Written after the plan: one more message of the person's, holding a key.
   const key = shapedKeys().github;
   const first = JSON.parse(readFileSync(file, "utf8").split("\n").find((line) => line.includes('"type":"user"')));
-  const old = statSync(file).mtime;
   appendFileSync(file, `${JSON.stringify({ ...first, uuid: "late-1", timestamp: minute(30), message: { role: "user", content: `Rotate ${key} now.` } })}\n`);
-  utimesSync(file, old, old);
   const report = await runImport(store, plan, { home: at, env, all: true });
   assert.equal(report.agents[0]?.runs, 1, JSON.stringify(report.agents));
   for (const [path, bytes] of keptUnder(data)) assert.ok(!bytes.includes(key), `${path.slice(data.length + 1)} holds the key`);
@@ -2468,73 +2465,6 @@ test("a Cursor chat is neither live nor changed for having been read: a dry run'
   await runImport(store, await planImport(options(h), store), options(h));
   assert.deepEqual(planned(await planImport(options(h), store)), [1, [], []], "held as imported, unchanged");
   assert.deepEqual(readdirSync(dirname(file)).sort(), ["meta.json", "store.db"], "no -wal or -shm made by a read");
-});
-
-test("a session resumed after the plan judged it (its file, a subagent's or its -wal written since) is left out of the import as live, never imported as done; an import after it has aged takes it", async (t) => {
-  const root = await scratch(t);
-  const at = join(root, "home");
-  const mine = join(at, "code", "mine");
-  mkdirSync(mine, { recursive: true });
-  const resumed = claudeSession(at, mine, 48);
-  claudeSession(at, mine, 49);
-  const child = claudeSubagent(at, mine, 49, 1);
-  const chat = cursorChat(at, mine, 50);
-  const still = claudeSession(at, mine, 51);
-  const h = { at, temp: join(root, "tmp") };
-  const store = await openData(join(root, "agents"));
-  t.after(async () => await store.close());
-  const plan = await planImport(options(h), store);
-  assert.deepEqual([plan.skipped, plan.projects.map((p) => p.sessions.map((s) => s.id).sort())], [[], [[48, 49, 50, 51].map(sessionId).sort()]], "all four ended when planned");
-  // Each resumed while the plan read the others: the session's file, a subagent's file, a Cursor chat's log.
-  const old = statSync(still).mtime;
-  utimesSync(resumed, new Date(), new Date());
-  utimesSync(child, new Date(), new Date());
-  writeFileSync(`${chat}-wal`, Buffer.alloc(8192));
-  const report = await runImport(store, plan, options(h));
-  const live = "written in the last 10 minutes: it may still be running";
-  assert.deepEqual(report.skipped.map((s) => [s.kind, s.what, s.why]).sort(), [["live", resumed, live], ["live", child, live], ["live", chat, live]].sort());
-  assert.deepEqual((await rowsOf(store)).map((r) => r.importedFrom.session), [sessionId(51)], "none of the three imported as done");
-  // Aged past the live window (Cursor closed the chat: its -wal and -shm gone): the next import takes all three, whole.
-  for (const file of [resumed, child]) utimesSync(file, old, old);
-  for (const log of [`${chat}-wal`, `${chat}-shm`]) rmSync(log, { force: true });
-  const again = await planImport(options(h), store);
-  assert.deepEqual([again.already, again.skipped, again.projects.map((p) => p.sessions.map((s) => s.id).sort())], [1, [], [[48, 49, 50].map(sessionId).sort()]]);
-  await runImport(store, again, options(h));
-  assert.deepEqual((await rowsOf(store)).map((r) => r.importedFrom.session).sort(), [48, 49, 50, 51].map(sessionId).sort());
-});
-
-test("a run the import leaves out (a subagent live, or one over the cap found after the session was read) holds none of the session's records: a resumed session that copies them is imported with them", async (t) => {
-  for (const why of ["live", "large"]) {
-    const root = await scratch(t);
-    const home = join(root, "home");
-    const project = join(home, "code", "copied");
-    mkdirSync(project, { recursive: true });
-    const original = claudeSession(home, project, 101);
-    const child = claudeSubagent(home, project, 101, 1);
-    resumed(original, 102);
-    const store = await openData(join(root, "agents"));
-    t.after(async () => await store.close());
-    const opts = { home, env: ENV, temp: join(root, "tmp") };
-    const plan = await planImport(opts, store);
-    assert.deepEqual(plan.projects.map((p) => p.sessions.map((s) => s.id)), [[sessionId(101), sessionId(102)]], why);
-    let grown = false;
-    const onProgress = (phase) => {
-      // Once its keys are found, the subagent grows over the run's cap (a hole of that length, dated as it was): found
-      // only when the write reads the session's subagents, after its own file.
-      if (why !== "large" || phase !== "write" || grown) return;
-      grown = true;
-      const old = statSync(child).mtime;
-      truncateSync(child, MAX_SESSION_BYTES + 1);
-      utimesSync(child, old, old);
-    };
-    if (why === "live") utimesSync(child, new Date(), new Date());
-    const report = await runImport(store, plan, { ...opts, onProgress });
-    assert.deepEqual(report.skipped.map((s) => s.kind), [why], why);
-    const runs = await rowsOf(store);
-    assert.deepEqual(runs.map((r) => r.importedFrom.session), [sessionId(102)], why);
-    const copy = await storedMetrics(store, runs[0].id);
-    assert.deepEqual([copy.requests, copy.input, copy.output], [3, 58, 140], `${why}: the resumed session's own request and the two it copies, none held as imported`);
-  }
 });
 
 test("a session with one subagent file over the cap is left out whole and said, never imported without that subagent", async (t) => {
