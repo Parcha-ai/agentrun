@@ -259,23 +259,39 @@ test("a request target no URL parses (//[/) is refused, a socket's and a plain r
 
 test("nothing runs until AGENTRUN_PUBLIC_URL reaches the script: an address still answered by another process (a host's previous instance) is waited out", { skip: BUILT, timeout: 120_000 }, async () => {
   const port = await freePort();
-  // The public address, as a host that picks an instance per connection moves it over: its first four connections stay
-  // with the previous instance, which answers every request on them with its own /v2/health (no run id) and keeps them
-  // open, so an ask that kept one alive would never reach the script; every later connection goes to the script as is
-  // (the machine's daemon fetch with its token, and its attach socket).
-  let asked = 0;
+  // The public address, as a host that picks an instance per connection moves it over: the first four connections that
+  // ask GET /v2/health stay with the previous instance, which answers every request on them with its own /v2/health (no
+  // run id) and keeps them open, so an ask that kept one alive would never reach the script; every other connection goes
+  // to the script as is (the machine's daemon fetch with its token, and its attach socket). A connection is routed by its
+  // first request, not by its order: the front listens on an ephemeral port, where a stray connection from another
+  // process on a busy machine (one that dials a port its own server left) could otherwise take one of the four, and
+  // the script would then count fewer answers from another than it was given.
+  let stale = 0;
+  // Every connection the front took, ended with it: one that never sends a request holds no close open.
+  const taken = new Set();
   const front = createServer((socket) => {
+    taken.add(socket);
+    socket.on("close", () => taken.delete(socket));
     socket.on("error", () => undefined);
-    if (++asked <= 4) {
-      let said = "";
-      return void socket.on("data", (chunk) => {
-        said += chunk;
-        for (; said.includes("\r\n\r\n"); said = said.slice(said.indexOf("\r\n\r\n") + 4)) socket.write('HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 15\r\nconnection: keep-alive\r\n\r\n{"status":"ok"}');
-      });
-    }
-    const behind = connect(port, "127.0.0.1");
-    behind.on("error", () => socket.destroy());
-    socket.pipe(behind).pipe(socket);
+    let said = "";
+    const first = (chunk) => {
+      said += chunk.toString("latin1");
+      if (!said.includes("\r\n\r\n")) return;
+      socket.off("data", first);
+      if (said.startsWith("GET /v2/health ") && ++stale <= 4) {
+        const old = (more) => {
+          said += more;
+          for (; said.includes("\r\n\r\n"); said = said.slice(said.indexOf("\r\n\r\n") + 4)) socket.write('HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 15\r\nconnection: keep-alive\r\n\r\n{"status":"ok"}');
+        };
+        old("");
+        return void socket.on("data", old);
+      }
+      const behind = connect(port, "127.0.0.1");
+      behind.on("error", () => socket.destroy());
+      behind.write(Buffer.from(said, "latin1"));
+      socket.pipe(behind).pipe(socket);
+    };
+    socket.on("data", first);
   });
   await new Promise((done) => front.listen(0, "127.0.0.1", done));
   try {
@@ -289,6 +305,7 @@ test("nothing runs until AGENTRUN_PUBLIC_URL reaches the script: an address stil
     assert.ok(at("skip health.declared") > at(`${health} reaches this process`), "the run's first case comes after");
     assert.deepEqual(reportOf(ran).results.map(({ id }) => id), ["health.declared"]);
   } finally {
+    for (const socket of taken) socket.destroy();
     await new Promise((done) => front.close(done));
   }
 });
