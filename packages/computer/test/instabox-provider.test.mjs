@@ -375,6 +375,69 @@ test("two execs refused on the same revoked token both run, on one token minted 
 	assert.equal(rest.tokens.size, 1);
 });
 
+/**
+ * A provider on the fake whose token mints wait at a gate until open(): held resolves once one reaches it, and a mint
+ * whose call is aborted while it waits rejects as fetch does.
+ */
+async function gatedMints(t) {
+	const fake = await fakeInstabox();
+	let open;
+	const gate = new Promise((resolve) => (open = resolve));
+	let reached;
+	const held = new Promise((resolve) => (reached = resolve));
+	t.after(() => {
+		open();
+		fake.sshd.close();
+	});
+	const fetch = async (url, init = {}) => {
+		if (init.method === "POST" && new URL(url).pathname.endsWith("/ssh-tokens")) {
+			reached();
+			await new Promise((resolve, reject) => {
+				const abort = () => reject(init.signal.reason ?? new DOMException("This operation was aborted", "AbortError"));
+				if (init.signal?.aborted) abort();
+				init.signal?.addEventListener("abort", abort, { once: true });
+				void gate.then(resolve);
+			});
+		}
+		return fake.rest.fetch(url, init);
+	};
+	const host = new InstaboxProvider({ ...fake.options, fetch, timeouts: { pollMs: 1 } }).host;
+	const id = await running(host);
+	const mints = () => fake.rest.calls.filter((call) => call.path.endsWith("/ssh-tokens")).length;
+	return { host, id, held, open, mints };
+}
+
+test("an exec cancelled while it waits on the machine's token mint stops alone: the mint goes on, and an exec waiting on it beside runs", async (t) => {
+	const { host, id, held, open, mints } = await gatedMints(t);
+	const cancel = new AbortController();
+	const a = host.exec(id, ["echo", "a"], { ...CTX, signal: cancel.signal });
+	await held;
+	const b = run(host, id, ["echo", "b"]);
+	b.catch(() => {}); // awaited below; a red run ends before it
+	cancel.abort();
+	await assert.rejects(a, (error) => error.name === "AbortError" || error.code === "aborted", "the cancelled exec ends at its cancel");
+	open();
+	assert.deepEqual(await b, { code: 0, stdout: "b\n", stderr: "" }, "the exec beside it runs on the same mint");
+	assert.equal(mints(), 1);
+});
+
+test("an exec waiting on a token mint another exec started is bounded by its own time: it times out alone, and the other runs once the mint answers", async (t) => {
+	const { host, id, held, open, mints } = await gatedMints(t);
+	const d = run(host, id, ["echo", "d"]);
+	d.catch(() => {}); // awaited below; a red run ends before it
+	await held;
+	const c = host.exec(id, ["echo", "c"], { timeoutMs: 200 });
+	// A bound on the test alone: the exec's own 200 ms ends it long before, and a wait with no bound of its own is red here.
+	let timer;
+	const guard = new Promise((resolve) => (timer = setTimeout(() => resolve("still waiting at 5 s"), 5_000)));
+	const outcome = await Promise.race([c.then(() => "ran", (error) => error), guard]);
+	clearTimeout(timer);
+	assert.ok(outcome instanceof Error && (outcome.name === "TimeoutError" || outcome.code === "timeout"), String(outcome));
+	open();
+	assert.deepEqual(await d, { code: 0, stdout: "d\n", stderr: "" });
+	assert.equal(mints(), 1);
+});
+
 test("an exec on a machine InstaBox no longer has is not_found: its token mint answers 404", async (t) => {
 	const { host } = await setup(t);
 	await assert.rejects(host.exec("m_ffffffffffffffffffffffffff", ["true"], CTX), (error) => error.code === "not_found");
