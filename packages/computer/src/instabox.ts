@@ -319,17 +319,17 @@ class InstaboxHost implements MachineHost {
 	/**
 	 * argv over SSH through the gateway (hosted/ssh-exec.ts), as the machine's user with sudo. The machine's token is
 	 * minted first when this host has none for it. A held token the gateway refuses (revoked, or run out) is let go and
-	 * another minted, once; a fresh one refused is denied.
+	 * another minted, once; a fresh one refused is denied. Execs refused on the same token share the one minted in its place.
 	 */
 	async exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {
 		machineId(id);
 		const held = this.#logins.has(id);
-		await this.#login(id, ctx);
+		const login = await this.#login(id, ctx);
 		try {
 			return await this.#ssh.exec(id, argv, ctx);
 		} catch (error) {
 			if (codeOf(error) !== "denied") throw error;
-			this.#forget(id);
+			this.#forget(id, login);
 			if (!held) throw error;
 			await this.#login(id, ctx);
 			return this.#ssh.exec(id, argv, ctx);
@@ -337,7 +337,7 @@ class InstaboxHost implements MachineHost {
 	}
 
 	/** The machine's login, minted once for all the execs that ask at once. */
-	async #login(id: string, ctx: HostCall): Promise<void> {
+	async #login(id: string, ctx: HostCall): Promise<Login> {
 		let minting = this.#logins.get(id);
 		if (minting === undefined) {
 			const mint = this.#mint(id, ctx);
@@ -348,10 +348,15 @@ class InstaboxHost implements MachineHost {
 				() => this.#logins.get(id) === mint && this.#logins.delete(id),
 			);
 		}
-		await minting;
+		return minting;
 	}
 
-	#forget(id: string): void {
+	/**
+	 * Lets the machine's login go: every one (delete), or the refused one alone, so a replacement another exec already
+	 * mints or holds stays.
+	 */
+	#forget(id: string, refused?: Login): void {
+		if (refused !== undefined && this.#held.get(id) !== refused) return;
 		this.#logins.delete(id);
 		this.#held.delete(id);
 	}
