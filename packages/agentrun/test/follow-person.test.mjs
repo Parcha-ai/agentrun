@@ -79,6 +79,14 @@ test("on a terminal each row prints once as a line, again only when it changes; 
   assert.ok(!client.out.join("").includes(ESC) && !client.out.join("").includes("‮"), "no escape or bidi override reaches the terminal");
 });
 
+test("an upper-bound cost reads as at most, on a usage row and on the final page", async () => {
+  assert.equal(rowLine(row({ id: "h", seq: 8, kind: "usage", summary: "model calls", usage: { usd: 0.25, requests: 1, upper_bound: true } })), "12:34:56  usage  at most $0.2500  model calls");
+  const stream = sse("rows", page({ status: "completed", final: true, cost: { usd: 0.25, basis: "charge", upper_bound: true } }), "1") + sse("end", { reason: "terminal" });
+  const client = clientOf([stream], true);
+  assert.equal(await followTimeline(client, "/runs/r1/timeline"), 0);
+  assert.equal(client.out.join(""), "          run completed, at most $0.2500 (charge)\n");
+});
+
 test("a line is cut at its limit with an ellipsis; a row with no time, summary or text still prints its kind", () => {
   const long = rowLine(row({ id: "e", seq: 5, kind: "final_answer", summary: "x".repeat(500) }));
   assert.equal(long.length, 200);

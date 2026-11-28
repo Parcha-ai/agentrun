@@ -210,11 +210,12 @@ const UNPRINTABLE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-
 /** A row's text made safe to print on one line: the run's text (a model's, a tool's, a person's) never moves the cursor
  *  or recolours the terminal. */
 const printable = (text) => String(text).replace(UNPRINTABLE, " ").replace(/ {2,}/g, " ").trim();
-const money = (usd) => `$${usd.toFixed(4)}`;
+/** Dollars to four places; `upper_bound` (a request counted at the most it could have cost) reads "at most". */
+const money = (usd, upperBound) => `${upperBound === true ? "at most " : ""}$${usd.toFixed(4)}`;
 
 /** A timeline row as one line for a person: its time (UTC, to the second), the subagent that wrote it when one did, its
  *  kind, and what it says. A tool call names its tool and input, a tool result its tool, `ok` or `failed`, and output, a
- *  usage row its dollars when priced; any other row its summary, else its text. */
+ *  usage row its dollars when priced ("at most" when that is an upper bound); any other row its summary, else its text. */
 export function rowLine(row) {
   const time = typeof row.timestamp === "string" && /T\d\d:\d\d:\d\d/.test(row.timestamp) ? row.timestamp.slice(11, 19) : "--:--:--";
   const what =
@@ -223,16 +224,17 @@ export function rowLine(row) {
       : row.kind === "tool_result"
         ? [row.tool_name, row.tool_status === "success" ? "ok" : row.tool_status, row.tool_result_preview]
         : row.kind === "usage" && typeof row.usage?.usd === "number"
-          ? [money(row.usage.usd), row.summary]
+          ? [money(row.usage.usd, row.usage.upper_bound), row.summary]
           : [row.summary ?? row.text];
   const parts = [row.agent_label && `[${row.agent_label}]`, row.kind, ...what].filter((part) => typeof part === "string" && part !== "").map(printable).filter(Boolean);
   const line = `${time}  ${parts.join("  ")}`;
   return line.length > LINE_MAX ? `${line.slice(0, LINE_MAX - 1)}\u2026` : line;
 }
 
-/** The run's status as a line for a person, and on the final page its cost when it has one. */
+/** The run's status as a line for a person, and on the final page its cost when it has one ("at most" when the cost
+ *  counts an interrupted request at the most it could have cost). */
 const statusLine = (page) => {
-  const cost = page.final && typeof page.cost?.usd === "number" ? `, ${money(page.cost.usd)} (${printable(page.cost.basis)})` : "";
+  const cost = page.final && typeof page.cost?.usd === "number" ? `, ${money(page.cost.usd, page.cost.upper_bound)} (${printable(page.cost.basis)})` : "";
   return `${" ".repeat(8)}  run ${printable(page.status ?? "unknown")}${cost}`;
 };
 
