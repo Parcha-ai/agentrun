@@ -8,8 +8,8 @@ This release serves a workspace more of its own: on a server behind a backend, a
 
 **Upgrading and going back:**
 
-- **DRAIN-FIRST on Postgres.** Postgres migration `0036` keys `imported_templates` by workspace and id. Each row keeps the workspace it already had, and a row with none stays in none. `0036` drops the key on the id alone, so it is breaking for runners and raises the runner floor to 36. The order is: drain and stop runners of earlier builds, start this build's server, then start this build's runners. A server of an earlier build refuses a Postgres schema at `0036`, as it does any later schema.
-- On SQLite the server's open re-keys the table in place and the schema version stays 18, so the runner is unaffected: a runner of the earlier build opens the store before and after the re-key. Rollback caveat: an earlier-build server started again on a store this build's server has opened opens it, but every upload it takes fails until this build's server is back.
+Upgrading: Postgres migration `0036` keys `imported_templates` by workspace and id, and on SQLite the server's open does the same in place, with the schema version staying 18. Each row keeps the workspace it already had, and a row with none stays in none, still one package a name there. On Postgres, runners must drain before the deploy: `0036` drops the key on the id alone and raises the runner floor to 36, so drain and stop runners of earlier builds, start this build's server, then start this build's runners. A server of an earlier build refuses a Postgres schema at `0036`, as it does any later schema. On SQLite the runner is unaffected: a runner of the earlier build opens the store before and after. On SQLite, a server of an earlier build started again on a store this build's server has opened (a rollback) opens it, but every upload it takes fails until this build's server is back.
+
 - Postgres migration `0035` (#4112) is additive and comes before `0036` in the same upgrade.
 
 **Known issues:**
