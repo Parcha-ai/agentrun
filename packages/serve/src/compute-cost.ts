@@ -11,7 +11,9 @@
 // <PROVIDER> and <GPU_TYPE> in capitals, every other character an underscore (daytona, H100 → DAYTONA_H100). No price is
 // built in: a provider whose descriptor bills nothing (metered false) is $0, as is a resource set at 0 (booked at $0, its
 // usage line $0, never `unpriced`), and any other resource with no price set, or
-// with a figure its provider never said, is unpriced: its time is never $0 and never refused. An unpriced resource runs
+// with a figure its provider never said, is unpriced: its time is never $0 and never refused. A metered provider whose
+// create never answers the size it runs a computer at (its descriptor not `sized`) is unpriced for every resource, whatever
+// its settings say: a size only the spec asked for is not one the vendor said it billed. An unpriced resource runs
 // outside the cap, as a tool call with no price does (TOOL_UNMETERED): nothing of it is held or booked, and its usage line
 // says `unpriced`.
 //
@@ -86,10 +88,16 @@ export function resourcesOf(figures: ComputeFigures): ResourceOf[] {
 /** Whether `provider`'s descriptor says it bills nothing (Local's Docker): its time is $0, never by its id alone. */
 export const unmetered = (provider: string): boolean => PROVIDERS.some((entry) => entry.id === provider && !entry.metered);
 
+/** Whether `provider` bills its time but its create never answers the size it runs a computer at (its descriptor not
+ *  `sized`): its time has no figure the vendor said, so it is unpriced whatever its price settings say. */
+export const unsized = (provider: string): boolean => PROVIDERS.some((entry) => entry.id === provider && entry.metered && entry.sized !== true);
+
 /** The operator's price of `resource` of `provider`, in USD per its unit: a non-negative decimal, $0 for a provider
- *  that bills nothing; null when none is set or the setting can't be read (unpriced, never $0). */
+ *  that bills nothing; null when none is set, the setting can't be read, or the provider never says a computer's size
+ *  (unpriced, never $0). */
 export function computeRate(provider: string, resource: ComputeResource, gpuType: string | null, env: NodeJS.ProcessEnv): number | null {
   if (unmetered(provider)) return 0;
+  if (unsized(provider)) return null;
   if (resource === "gpu" && gpuType === null) return null;
   const text = env[computePriceEnvOf(resource, provider, gpuType)]?.trim();
   if (!text || !/^(\d+(\.\d*)?|\.\d+)$/.test(text)) return null;

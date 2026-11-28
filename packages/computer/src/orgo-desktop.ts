@@ -64,6 +64,7 @@ import {
 	show,
 	renewEntry,
 	takeEntry,
+	orgoSize,
 	withDeadline,
 } from "./orgo-names.js";
 import { encodePng } from "./png.js";
@@ -635,7 +636,7 @@ export class OrgoDesktopProvider implements ComputerProvider {
 		const file: LabelsFile = { name, labels, deadline, maxDeadline, image: profile.image, ...(cpu === undefined ? {} : { cpus: cpu }), memoryMb: ram * 1024 };
 		const prepared = await this.#prepare(ref, made.value.status, file, signal);
 		if (signal?.aborted) return this.#abandon(ref, { code: "aborted", message: "create was aborted" });
-		if (prepared.ok) return ok(ref);
+		if (prepared.ok) return ok({ ...ref, ...orgoSize(made.value, { ...(cpu === undefined ? {} : { cpus: cpu }), memoryMb: ram * 1024 }) });
 		return this.#abandon(ref, prepared.error);
 	}
 
