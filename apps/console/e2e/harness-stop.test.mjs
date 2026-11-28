@@ -2,14 +2,14 @@
 // --drain-timeout and exits, inside the harness's own stop bound (STOP_MS), never SIGKILLed. The server's own default
 // drain (30 s, beside.ts DRAIN_TIMEOUT) is longer than that bound, so the harness passes a drain of its own; without it
 // every flow that ends with a run in its turn had its server killed (run.mjs's KILLED lines). Needs the repository built
-// (npm run build). `npm run test:e2e` runs it before the flows (CI's console-e2e job), or alone with
-// `node --test apps/console/e2e/harness-stop.test.mjs`.
+// (npm run build) at AGENTRUN_E2E_CHECKOUT, or this checkout without it. run.mjs runs it before the flows, on its checkout
+// target (`npm run test:e2e`, CI's console-e2e job), or run it alone with `node --test apps/console/e2e/harness-stop.test.mjs`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { apiOf, DRAIN_MS, startServer, STOP_MS } from "./harness.mjs";
 
 test("the harness stops a server whose run is still in its turn with a drain, not SIGKILL", { timeout: STOP_MS * 4 }, async (t) => {
-  const server = await startServer();
+  const server = await startServer(process.env.AGENTRUN_E2E_CHECKOUT ? { checkout: process.env.AGENTRUN_E2E_CHECKOUT } : {});
   let stopped;
   try {
     const api = apiOf(server);

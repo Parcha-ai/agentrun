@@ -14,7 +14,8 @@
 // context in the one browser, and must end within FLOW_MS. A flow marked pending names what it waits on and does not run.
 // Results print in the flows' order once all have ended. Exits 1 when a flow fails; a failure prints the server's output,
 // keys redacted.
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { promiseHooks } from "node:v8";
@@ -38,7 +39,10 @@ const lanes = values.url ? 1 : Number(values.lanes ?? LANES);
 const only = values.only ? new Set(values.only.split(",").map((s) => s.trim())) : null;
 const checkout = values.checkout ?? ROOT;
 const chosen = flows.filter((f) => !only || only.has(f.name));
-if (only) for (const name of only) if (!flows.some((f) => f.name === name)) { console.error(`no flow named ${name}`); process.exit(2); }
+/** The harness's own stop (harness-stop.test.mjs): a server drained inside STOP_MS, never killed. It starts its own
+ *  server from the checkout, so it runs with a checkout target and not with --url; with --only, only when named. */
+const STOP_CHECK = "harness-stop";
+if (only) for (const name of only) if (name !== STOP_CHECK && !flows.some((f) => f.name === name)) { console.error(`no flow named ${name}`); process.exit(2); }
 
 const within = (promise, ms, what) => {
   let timer;
@@ -150,11 +154,20 @@ const inLanes = async (list, n) => {
     while (next < list.length) { const i = list[next++]; ended[i] = await runFlow(chosen[i]); }
   }));
 };
+// The stop check first, alone, on the same checkout as the flows: its result is one more row.
+const stopCheck = values.url || (only && !only.has(STOP_CHECK)) ? [] : [await new Promise((resolve) => {
+  const began = Date.now();
+  let out = "";
+  const child = spawn(process.execPath, ["--test", fileURLToPath(new URL("./harness-stop.test.mjs", import.meta.url))], { env: { ...process.env, AGENTRUN_E2E_CHECKOUT: checkout }, stdio: ["ignore", "pipe", "pipe"] });
+  child.stdout.on("data", (chunk) => { out += chunk; });
+  child.stderr.on("data", (chunk) => { out += chunk; });
+  child.on("close", (code, signal) => resolve(code === 0 ? { name: STOP_CHECK, state: "PASS", ms: Date.now() - began } : { name: STOP_CHECK, state: "FAIL", ms: Date.now() - began, note: `node --test harness-stop.test.mjs exited ${code ?? signal}`, log: out }));
+})];
 await inLanes(queued.together, lanes);
 await inLanes(queued.alone, 1);
 await Promise.all(stopping);
 await browser.close();
-const results = ended.map((result) => result());
+const results = [...stopCheck, ...ended.map((result) => result())];
 
 for (const r of results) {
   console.log(`${r.state.padEnd(7)} ${r.name}${r.ms !== undefined ? ` (${(r.ms / 1000).toFixed(1)} s)` : ""}${r.state === "PENDING" || r.state === "SKIP" ? `: ${r.note}` : ""}`);

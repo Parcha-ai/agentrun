@@ -21,7 +21,7 @@
     "verify:packages": "node scripts/verify-packages.mjs",
     "check:direction": "node scripts/check-direction.mjs",
     "test:release": "node --test scripts/*.test.mjs",
-    "test:e2e": "node --test apps/console/e2e/harness-stop.test.mjs && node apps/console/e2e/run.mjs",
+    "test:e2e": "node apps/console/e2e/run.mjs",
     "test:examples": "node --test examples/*.test.mjs examples/harness-module/test/conformance.test.mjs",
     "test:harness-module-example": "tsc -p examples/harness-module/tsconfig.json && node --test --test-concurrency=4 examples/harness-module/test/conformance.test.mjs",
     "test:workflows": "node --test packages/serve/test/durable-*.test.mjs packages/serve/test/node-*.test.mjs packages/serve/test/record-*.test.mjs packages/serve/test/pi-runner*.test.mjs packages/serve/test/typed-submit-contract.test.mjs",
