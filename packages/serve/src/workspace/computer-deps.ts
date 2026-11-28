@@ -339,6 +339,13 @@ export const computerFilesNote = ({ kind, screenshot, writes, outlives }: { read
   return `${SERVER_NOTE_LABEL}this ${kind}'s own disk is not this run's files: nothing saved on the ${kind} reaches the user, and ${outlives ? `it stays on the ${kind} after the run ends` : "it is deleted when the run ends"}. ${keep}`;
 };
 
+/** What the run's model is told, once in its run, when its computer was made with network "none" (ClaimComputer.offline:
+ *  its provider makes no other, or the run allows none), labelled as the server's (SERVER_NOTE_LABEL): nothing on it
+ *  reaches the internet, so it never spends its steps retrying a page, a download or an install there. Tools that run
+ *  outside the computer (the server's own) are not held to it. */
+export const computerOfflineNote = ({ kind }: { readonly kind: "sandbox" | "desktop" | "phone" }): string =>
+  `${SERVER_NOTE_LABEL}this ${kind} has no internet access: nothing on it reaches a website or a server outside it, so a page, a download or a package install from the internet fails there. Don't retry one; say in your answer what needed the internet. Tools of yours that don't run on the ${kind} aren't affected.`;
+
 /** The claim's computer as the runner's specs call it: what the run's launch lets the computer reach (its box_allow),
  *  read from the launch row when the store has one and the claim does not say, then computerForClaim. */
 export const claimComputer = async (
