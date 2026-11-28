@@ -518,10 +518,12 @@ export class E2BProvider extends HostedProvider {
 		if (typeof domain !== "string" || !DOMAIN.test(domain)) throw new Error(`the E2B domain (${settingName("domain")}) must be a host name such as ${DEFAULT_DOMAIN}, not ${JSON.stringify(domain)}`);
 		// The key goes to the API URL: https alone, and words that give its origin alone (httpsBase).
 		const api = apiUrl === undefined ? undefined : httpsBase(String(apiUrl), `the E2B API URL (${settingName("apiUrl")})`);
-		if (template !== undefined && (typeof template !== "string" || !TEMPLATE.test(template))) {
+		// Trimmed, as serve reads the same setting to select it (resolve-computer.ts registryHere, computer-deps.ts computerSpecOf).
+		const named = typeof template === "string" ? template.trim() : template;
+		if (named !== undefined && (typeof named !== "string" || !TEMPLATE.test(named))) {
 			throw new Error(`the E2B template (${settingName("template")}) is the name or id of an E2B template, such as "${boxE2bTemplate()}" (the box template), not ${JSON.stringify(template)}`);
 		}
 		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain, ...(api === undefined ? {} : { apiUrl: api }) }), timeoutsOf(rest.timeouts).requestMs, via), { ...rest, kind, maxLifetimeMs });
-		this.#template = template;
+		this.#template = named;
 	}
 }
