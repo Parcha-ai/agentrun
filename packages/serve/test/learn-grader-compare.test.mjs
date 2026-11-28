@@ -57,6 +57,7 @@ const { askedForCompile } = await import("../dist/learn/compile.js");
 const { secretsShown } = await import("../dist/learning.js");
 const { readAudits } = await import("../dist/learn/audit.js");
 const { agentCostOverStore, servingReplayOf } = await import("../dist/store-reads/learning.js");
+const { servingLinesOf } = await import("../dist/learn/audit.js");
 
 const SEAL_KEY = Buffer.alloc(32, 7);
 const MODEL = "claude-sonnet-5-5";
@@ -701,6 +702,9 @@ test("an unread comparison is out of both sides' accuracy: the agent's count, th
   assert.deepEqual(servingReplayOf([promoted], [{ path: "workflow", workflow: "answer" }]), { n: 3, workflow_pct: 100, agent_pct: 100, cleared: true, agreed: 2, alone: 2, agree_min: 0.8 });
   // The replay's score: decided on the 2 it could compare, no accuracy lost on the unread one.
   assert.deepEqual(checkScoreOf(promoted.check), { n: 2, agree: 2, agent_acc: 1, wf_acc: 1, delta: 0, handed_back: 0 });
+  // The serving line's check numbers (the console's agreement share reads agreed of alone): 2 of the 2 compared.
+  const [line] = servingLinesOf([promoted], [], { hold_window: 20, hold_disagree: 3 }, () => false);
+  assert.deepEqual(line.check, { n: 3, agreed: 2, alone: 2, attempt: 1 });
 });
 
 test("graderAsk: a reply's text, a cap refusal as refused (nothing sent), any other failure as failed, with pi-ai's retries off", async () => {
