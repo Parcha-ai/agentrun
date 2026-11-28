@@ -5662,8 +5662,9 @@ class ListComposioEventsResponseEventsItem(_ListComposioEventsResponseEventsItem
     instructions: str
 
 
-class ListComposioToolkitsBody(TypedDict):
+class ListComposioToolkitsBody(TypedDict, total=False):
     api_key: str
+    api_key_env: Literal["COMPOSIO_API_KEY", "AGENTRUN_COMPOSIO_API_KEY"]
 
 
 class ListComposioToolkitsResponse(TypedDict):
@@ -5675,9 +5676,13 @@ class ListComposioToolkitsResponseToolkitsItem(TypedDict):
     name: str
 
 
-class ListComposioToolsBody(TypedDict):
-    api_key: str
+class _ListComposioToolsBodyRequired(TypedDict):
     toolkit: str
+
+
+class ListComposioToolsBody(_ListComposioToolsBodyRequired, total=False):
+    api_key: str
+    api_key_env: Literal["COMPOSIO_API_KEY", "AGENTRUN_COMPOSIO_API_KEY"]
 
 
 class ListComposioToolsResponse(TypedDict):
@@ -6685,7 +6690,7 @@ class SaveComposioServerBody(_SaveComposioServerBodyRequired, total=False):
     auth_config_id: str
     price_usd: float
     api_key: str
-    api_key_env: Literal["COMPOSIO_API_KEY"]
+    api_key_env: Literal["COMPOSIO_API_KEY", "AGENTRUN_COMPOSIO_API_KEY"]
 
 
 class _SaveComposioServerResponseRequired(TypedDict):
@@ -6727,7 +6732,7 @@ class _SaveComposioServerResponseServerAuthRequired(TypedDict):
 
 class SaveComposioServerResponseServerAuth(_SaveComposioServerResponseServerAuthRequired, total=False):
     headers: list[str]
-    api_key_env: Literal["COMPOSIO_API_KEY"]
+    api_key_env: Literal["COMPOSIO_API_KEY", "AGENTRUN_COMPOSIO_API_KEY"]
 
 
 class _SaveComposioServerResponseServerOauthRequired(TypedDict):
@@ -7284,7 +7289,7 @@ class _GetMcpServerResponseAuthRequired(TypedDict):
 
 class GetMcpServerResponseAuth(_GetMcpServerResponseAuthRequired, total=False):
     headers: list[str]
-    api_key_env: Literal["COMPOSIO_API_KEY"]
+    api_key_env: Literal["COMPOSIO_API_KEY", "AGENTRUN_COMPOSIO_API_KEY"]
 
 
 class _GetMcpServerResponseOauthRequired(TypedDict):
@@ -7361,7 +7366,7 @@ class _ListMcpServersResponseServersItemAuthRequired(TypedDict):
 
 class ListMcpServersResponseServersItemAuth(_ListMcpServersResponseServersItemAuthRequired, total=False):
     headers: list[str]
-    api_key_env: Literal["COMPOSIO_API_KEY"]
+    api_key_env: Literal["COMPOSIO_API_KEY", "AGENTRUN_COMPOSIO_API_KEY"]
 
 
 class _ListMcpServersResponseServersItemOauthRequired(TypedDict):
@@ -7505,7 +7510,7 @@ class _RefreshMcpServerResponseServerAuthRequired(TypedDict):
 
 class RefreshMcpServerResponseServerAuth(_RefreshMcpServerResponseServerAuthRequired, total=False):
     headers: list[str]
-    api_key_env: Literal["COMPOSIO_API_KEY"]
+    api_key_env: Literal["COMPOSIO_API_KEY", "AGENTRUN_COMPOSIO_API_KEY"]
 
 
 class _RefreshMcpServerResponseServerOauthRequired(TypedDict):
@@ -7598,7 +7603,7 @@ class _SaveMcpServerResponseAuthRequired(TypedDict):
 
 class SaveMcpServerResponseAuth(_SaveMcpServerResponseAuthRequired, total=False):
     headers: list[str]
-    api_key_env: Literal["COMPOSIO_API_KEY"]
+    api_key_env: Literal["COMPOSIO_API_KEY", "AGENTRUN_COMPOSIO_API_KEY"]
 
 
 class _SaveMcpServerResponseOauthRequired(TypedDict):
@@ -9009,12 +9014,16 @@ class FeaturesHarnessKeys(TypedDict):
     harnesses: list[str]
 
 
-class FeaturesMcpClient(TypedDict):
+class _FeaturesMcpClientRequired(TypedDict):
     transports: list[Literal["streamable-http"]]
     auth: list[Literal["none", "bearer", "headers", "oauth", "github_app", "per_run"]]
     at_rest: Literal["sealed"]
     harnesses: list[str]
     composio_per_run: bool
+
+
+class FeaturesMcpClient(_FeaturesMcpClientRequired, total=False):
+    composio_key_envs: list[str]
 
 
 class FeaturesWebhooks(TypedDict):

@@ -142,7 +142,8 @@ export interface PrCheckoutOptions {
   /** Whether a github trigger started the run (its launch's inputOrigin): only then is its payload tag the server's own,
    *  and read. Anyone may write the tag's text into a run of their own. */
   readonly fromGitHub?: boolean;
-  /** The server's GitHub App mint, when it has an App the runner can open: none, the fetch is anonymous. */
+  /** The server's GitHub App mint, when it has an App the runner can open (a run in a workspace's refuses, in the words
+   *  the run is told): none, the fetch is anonymous. */
   readonly mint?: GithubAppMint;
   /** The token revoked at GitHub once the fetch is done: best effort, a failure leaves it to its hour. */
   readonly revoke?: (token: string) => Promise<void>;
@@ -178,8 +179,8 @@ export async function prCheckout(options: PrCheckoutOptions): Promise<PrCheckout
   const web = (options.web ?? GITHUB_WEB).replace(/\/+$/, "");
   const name = `${pull.repo}#${pull.number}`;
 
-  // The token: the App's, for this repository alone, contents read alone. None (no App, not installed, GitHub said no):
-  // the fetch is anonymous, and the words say which, in case the repository turns out to be private.
+  // The token: the App's, for this repository alone, contents read alone. None (no App, a run in a workspace, not
+  // installed, GitHub said no): the fetch is anonymous, and the words say which, in case the repository is private.
   let token: string | undefined;
   let anonymous = "";
   if (options.mint) {
@@ -249,9 +250,11 @@ function checkoutNote(pull: GithubPull, mergeBase: string | undefined): string {
 /** The checkout a claim's spec makes (the pi and the CLI spec alike) for its launch: the server's GitHub App opened as the
  *  MCP step opens it (github-app.ts, its payload tag read only for a github trigger's run), its secrets held by the run's redactor `redact`, its removal by the spec's holds (`held`) from the
  *  moment the fetch starts, and `signal` (the claim's, a person's stop included) ending the fetch. `kind` is the revision's
- *  checkout: the pull request the run's event names, or the repository the run names (repoCheckout). */
+ *  checkout: the pull request the run's event names, or the repository the run names (repoCheckout). `run`: the claim's
+ *  run; one in a workspace fetches with no token (github-app.ts). */
 export async function prCheckoutForClaim(
   deps: Pick<AdapterSpecDeps, "store" | "sealKey" | "githubApi" | "githubWeb">,
+  run: string,
   workspace: Workspace,
   launch: { readonly input: unknown; readonly repo?: string | undefined; readonly inputOrigin?: { readonly kind: string; readonly source?: string } | undefined },
   redact: { hold(values: readonly string[]): void },
@@ -260,7 +263,7 @@ export async function prCheckoutForClaim(
   kind: Checkout = "pull_request",
 ): Promise<PrCheckout> {
   const fromGitHub = launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github";
-  const access = await githubAppAccess(deps.store, deps.sealKey, launch.input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub, hold: (values) => redact.hold(values), ...(launch.repo !== undefined ? { repo: launch.repo } : {}) });
+  const access = await githubAppAccess(deps.store, deps.sealKey, launch.input, { run, ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub, hold: (values) => redact.hold(values), ...(launch.repo !== undefined ? { repo: launch.repo } : {}) });
   const common = { workspace, input: launch.input, fromGitHub, ...(access ? { mint: access.mint } : {}), ...(access?.revoke ? { revoke: access.revoke } : {}), hold: (secrets: readonly string[]) => redact.hold(secrets), ...(deps.githubWeb ? { web: deps.githubWeb } : {}), ...(signal ? { signal } : {}), ...(held ? { held } : {}) };
   if (kind === "repository") return repoCheckout({ ...common, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) });
   return prCheckout(common);
@@ -277,16 +280,17 @@ export async function prCheckoutForClaim(
  *  computer). */
 export async function checkoutWhereNoExec(
   deps: Parameters<typeof prCheckoutForClaim>[0],
+  run: string,
   mounted: { readonly workspace: Workspace; readonly fresh: boolean } | undefined,
   region: string,
-  launch: Parameters<typeof prCheckoutForClaim>[2],
+  launch: Parameters<typeof prCheckoutForClaim>[3],
   redact: { hold(values: readonly string[]): void },
   signal: AbortSignal | undefined,
   held: (part: { end(): Promise<void> }) => void,
   kind: Checkout,
   say?: (words: string) => void,
 ): Promise<PrCheckout> {
-  if (mounted?.fresh) return prCheckoutForClaim(deps, mounted.workspace, launch, redact, signal, held, kind);
+  if (mounted?.fresh) return prCheckoutForClaim(deps, run, mounted.workspace, launch, redact, signal, held, kind);
   const instead = kind === "pull_request" ? "Read the change through the GitHub tools if you have them." : "Read it through the GitHub tools if you have them, else say that you could not read it.";
   const where = `${noExecWords(region)}, so the server checks a repository out only in a computer that mounts the run's folder`;
   if (mounted) {

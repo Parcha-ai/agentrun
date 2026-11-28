@@ -95,6 +95,7 @@ import { failedRecord, LEARNED_ALLOWED, LEARNED_NODES, learnedCallRan, refusedRe
 import { warnHoldShort } from "../print.js";
 import { type FeedbackData, feedbackOf, jobEndOpen, pendingFeedbackOf } from "./feedback-round.js";
 import { handbackText, servedAnswerOf, servedAnswerText, WORKFLOW_FIRST, WORKFLOW_FIRST_CALL, type WorkflowFirst, type WorkflowFirstData, type WorkflowRevise } from "./workflow-first.js";
+import { unsentWhile } from "./unsent-models.js";
 
 /** The end of a harness's own call (Claude Code's WebSearch) the gate held and then let run: the host ran nothing of it,
  *  and the harness's next call runs it. */
@@ -1048,6 +1049,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** The loop was stopped for its runner's shutdown (first, or after a person's stop): the runner still holds the claim
    *  until the loop ends, though its close seals the journal and aborts the claim's signal at once. */
   const shutDown = (): boolean => stopReason?.kind === "shutdown" || laterStop?.kind === "shutdown";
+  /** The loop was stopped where the run resumes (a shutdown or a lost claim, not a person's stop): what is left of the
+   *  run's turn is the next claim's. pi's requests are not sent from then on (unsentWhile): a task pi runs after the stop
+   *  (the turn's recovery, which a tool host's release drain sets running) would find the session's model proxy closing
+   *  under it, and its failure would be written as the turn's answer. */
+  const leftForNextClaim = (): boolean => stopReason !== undefined && stopReason.kind !== "command";
   /** The claim's signal as the run's ledger reads it (its sessions' context): aborted with the claim's, but for a
    *  shutdown's, so the ledger still books a tool host's release under the claim (releaseHost); the claim's fence refuses
    *  those writes once the claim is lost. */
@@ -1915,7 +1921,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         /** The root a phase is making, awaited before the owed writes are read. */
         let rootMaking: Promise<unknown> | undefined;
         harness = await Harness.open(gate.journal, {
-          models: () => models, registry, settings: () => ({ restartLimit, retry: { ...retry, ...specNow?.retry }, stream }), onReport: () => {},
+          models: () => unsentWhile(models, leftForNextClaim), registry, settings: () => ({ restartLimit, retry: { ...retry, ...specNow?.retry }, stream }), onReport: () => {},
           // A tool host's onConversation, in each agent conversation's creating commit (the spec's, once it is known: the
           // root is created when the session opens, after the spec).
           conversationCreated: async (tx, record) => {

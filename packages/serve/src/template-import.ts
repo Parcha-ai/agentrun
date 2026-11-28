@@ -28,6 +28,49 @@ export type TemplateImportDeps = {
   apiOnly?: boolean;
 };
 
+/** One package name's store write and registry change at a time, per registry (this process's): an import keeps its
+ *  row and serves its package, a delete reads, removes and drops, each whole. Without it a reimport could keep its row
+ *  before a delete read the row and serve its package after the delete dropped the registry's copy, so the registry
+ *  served a name the store no longer kept (every read 404, every import of it 409 `name_taken`, until a restart). */
+export class TemplateNames {
+  readonly #tails = new Map<string, Promise<void>>();
+  readonly #waiting = new Map<string, number>();
+
+  async hold<T>(id: string, work: () => Promise<T>): Promise<T> {
+    const before = this.#tails.get(id);
+    let release!: () => void;
+    const mine = new Promise<void>((resolve) => { release = resolve; });
+    const tail = before ? before.then(() => mine) : mine;
+    this.#tails.set(id, tail);
+    if (before) {
+      this.#waiting.set(id, this.waiting(id) + 1);
+      await before;
+      const left = this.waiting(id) - 1;
+      if (left) this.#waiting.set(id, left);
+      else this.#waiting.delete(id);
+    }
+    try {
+      return await work();
+    } finally {
+      release();
+      if (this.#tails.get(id) === tail) this.#tails.delete(id);
+    }
+  }
+
+  /** How many calls wait for `id` behind the one that holds it. */
+  waiting(id: string): number {
+    return this.#waiting.get(id) ?? 0;
+  }
+}
+
+const NAMES = new WeakMap<object, TemplateNames>();
+/** The registry's package names' lock (TemplateNames). */
+export function templateNames(registry: object): TemplateNames {
+  let names = NAMES.get(registry);
+  if (!names) NAMES.set(registry, (names = new TemplateNames()));
+  return names;
+}
+
 /** The folder name a package's id ends in: an upload's name, else its path's last part, else the repository's name
  *  (agent.md's `name` is it). */
 const nameOf = (id: string) => (id.startsWith(UPLOAD_PREFIX) ? id.slice(UPLOAD_PREFIX.length) : id.slice("github:".length).split("/").at(-1)!);
@@ -171,8 +214,7 @@ async function uploadTemplate(deps: TemplateImportDeps, raw: unknown, dryRun: bo
   }
   const replaced = await replacedOf(deps, pkg.id);
   if (dryRun) return { status: 200, pkg, trusted: true, replaced };
-  await keep(deps, { id: pkg.id, source: pkg.origin!.source, sha: pkg.origin!.sha, publisher: "", files: Object.fromEntries([...files].map(([path, data]) => [path, data.toString("base64")])) });
-  deps.registry.put(pkg);
+  await kept(deps, pkg, { id: pkg.id, source: pkg.origin!.source, sha: pkg.origin!.sha, publisher: "", files: Object.fromEntries([...files].map(([path, data]) => [path, data.toString("base64")])) });
   return { status: 201, pkg, trusted: true, replaced };
 }
 
@@ -202,8 +244,7 @@ export async function importTemplate(deps: TemplateImportDeps, raw: unknown, sig
     throw invalid([{ field: "trust_publisher", reason: "missing", message: `${source.owner} has published no package this server has imported yet: read the package (a dry run shows it whole), then import it again with trust_publisher: true to say you trust ${source.owner}.`, fix: "Send trust_publisher: true." }]);
   }
   if (!isTrusted) await trust(deps, source.owner);
-  await keep(deps, { id: pkg.id, source: pkg.origin!.source, sha: pkg.origin!.sha, publisher: pkg.origin!.publisher, files: Object.fromEntries([...files].map(([path, data]) => [path, data.toString("base64")])) });
-  deps.registry.put(pkg);
+  await kept(deps, pkg, { id: pkg.id, source: pkg.origin!.source, sha: pkg.origin!.sha, publisher: pkg.origin!.publisher, files: Object.fromEntries([...files].map(([path, data]) => [path, data.toString("base64")])) });
   return { status: 201, pkg, trusted: true, replaced };
 }
 
@@ -231,13 +272,30 @@ async function keep(deps: { store: { importedTemplates: Pick<Store["importedTemp
   if (!(await deps.store.importedTemplates.put(row, workspaceNow()))) throw nameTaken(row.id);
 }
 
+/** An import's row kept and its package served, holding its name (TemplateNames) across both. */
+async function kept(deps: Pick<TemplateImportDeps, "registry" | "store">, pkg: Package, row: Parameters<Store["importedTemplates"]["put"]>[0]): Promise<void> {
+  await templateNames(deps.registry).hold(pkg.id, async () => {
+    await keep(deps, row);
+    deps.registry.put(pkg);
+  });
+}
+
 /** A package made into an agent here as an imported template, from files this server wrote itself (a suggested agent's,
  *  suggestions.ts): checked, kept, then applied. Once `apply` has made the agent nothing after it can fail (the registry
  *  is in memory), so a thrown error always means no agent was made, which is what Suggestions.create reads it as. An
  *  apply refused (a missing model key, say) takes the kept package back as it was before (removed, or the earlier one),
  *  but only while the row is still the one this call kept: an import of the same id meanwhile (POST /v2/templates/import)
- *  stands. */
+ *  stands. It holds the package's name (TemplateNames) from the keep to the registry's change. */
 export async function applyImported<T>(
+  deps: { registry: Pick<TemplateRegistry, "put">; store: { importedTemplates: Pick<Store["importedTemplates"], "list" | "put" | "remove"> }; apply: (pkg: Package) => Promise<T> },
+  id: string,
+  origin: { source: string; sha: string; publisher: string },
+  files: ReadonlyMap<string, Buffer>,
+): Promise<T> {
+  return templateNames(deps.registry).hold(id, () => keptAndApplied(deps, id, origin, files));
+}
+
+async function keptAndApplied<T>(
   deps: { registry: Pick<TemplateRegistry, "put">; store: { importedTemplates: Pick<Store["importedTemplates"], "list" | "put" | "remove"> }; apply: (pkg: Package) => Promise<T> },
   id: string,
   origin: { source: string; sha: string; publisher: string },
@@ -269,11 +327,25 @@ export async function applyImported<T>(
 }
 
 /** DELETE /v2/templates/{id}: an imported package removed from the store and the registry. A bundled one is 403; none of
- *  that id, 404. Agents applied from it stay. */
+ *  that id, 404. Agents applied from it stay. In a workspace the store's delete is of that workspace's row alone, so a
+ *  delete whose ownership read went stale (another workspace imported the freed name since) is 404 and removes nothing;
+ *  the registry's copy goes only while it is still the package read here. The store's delete is of the row read here
+ *  alone: one an import of the id replaced since (another process's, on a shared store) stands, kept, and a workspace's
+ *  delete that lost to it is 404. In this process the delete holds the package's name (TemplateNames) from its first
+ *  read to the registry's change, so an import here keeps its row and serves its package wholly before or after it. */
 export async function deleteTemplate(deps: Pick<TemplateImportDeps, "registry" | "store">, id: string): Promise<void> {
+  await templateNames(deps.registry).hold(id, () => deleted(deps, id));
+}
+
+async function deleted(deps: Pick<TemplateImportDeps, "registry" | "store">, id: string): Promise<void> {
   const pkg = deps.registry.get(id);
   if (!pkg) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
   if (pkg.origin === null) throw new ApiError("forbidden", `${id} ships with this server, so it can't be removed.`);
-  await deps.store.importedTemplates.remove(id);
-  deps.registry.remove(id);
+  const workspace = workspaceNow();
+  // The row as read here: the store's delete takes it only while it is still this one, so an import of the id that
+  // replaced it since (and puts its package in the registry after) is kept in both.
+  const row = await deps.store.importedTemplates.stamp(id);
+  const removed = row !== undefined && (await deps.store.importedTemplates.remove(id, workspace, row));
+  if (workspace !== undefined && !removed) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
+  if (deps.registry.get(id) === pkg) deps.registry.remove(id);
 }

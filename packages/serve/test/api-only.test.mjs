@@ -80,6 +80,8 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     // The MCP servers a deploy's agents need: a Composio server saved through the preset, and a server deleted. Their
     // names are listed by GET /settings/mcp-server-names, above.
     ["PUT", "/v2/settings/mcp-servers/x/composio"], ["DELETE", "/v2/settings/mcp-servers/x"],
+    // Composio's catalog for that save, its key named by api_key_env (a key sent is 403: mcp-secret-writes.ts).
+    ["POST", "/v2/settings/mcp-servers/composio/toolkits"], ["POST", "/v2/settings/mcp-servers/composio/tools"],
     // A trigger's reads and its turn on or off (PATCH takes `enabled` alone here), for one auto-paused to be seen and
     // turned on again: an API-only server has no console to do it in.
     ["GET", "/v2/triggers"], ["HEAD", "/v2/triggers"], ["GET", "/v2/triggers/trg_1"], ["GET", "/v2/triggers/trg_1/firings"], ["PATCH", "/v2/triggers/trg_1"],
@@ -92,7 +94,7 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     ["GET", "/"], ["GET", "/assets/index.js"], ["GET", "/llms.txt"],
     ["POST", "/v2/setup"], ["POST", "/v2/auth/sign-in"], ["GET", "/v2/auth/session"],
     ["PUT", "/v2/settings/tool-keys/monid"], ["PUT", "/v2/settings/tools"], ["PUT", "/v2/settings/webhook"], ["GET", "/v2/settings/tools"],
-    ["POST", "/v2/settings/mcp-servers/preview"], ["POST", "/v2/settings/mcp-servers/x/refresh"], ["POST", "/v2/settings/mcp-servers/composio/tools"], ["POST", "/v2/settings/mcp-servers/composio/toolkits"],
+    ["POST", "/v2/settings/mcp-servers/preview"], ["POST", "/v2/settings/mcp-servers/x/refresh"],
     ["POST", "/v2/settings/mcp-servers/x/oauth/start"], ["GET", "/v2/settings/mcp-servers/x/composio/events"], ["PUT", "/v2/settings/mcp-servers/oauth/private-hosts"],
     // No list or read of the MCP servers (their names route is the listing), and no save of a server at an address or
     // with headers of the caller's own.

@@ -73,6 +73,20 @@ function warnings(t) {
   return said;
 }
 
+/** The lines the process writes to stderr while the test runs (the browser's count says a lost charge there). */
+function stderrLines(t) {
+  const said = [];
+  const write = process.stderr.write;
+  process.stderr.write = function (chunk, ...rest) {
+    said.push(...String(chunk).split("\n").filter(Boolean));
+    return write.call(this, chunk, ...rest);
+  };
+  t.after(() => (process.stderr.write = write));
+  return said;
+}
+/** The lines of `said` that call a browser charge uncounted. */
+const uncountedOf = (said) => said.filter((line) => line.includes("browser_spend_uncounted"));
+
 /** A new data directory with a server and a runner store on it, closed and removed after the test. */
 async function stores(t, prefix) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), prefix));
@@ -186,6 +200,7 @@ const browserHolds = (records) => {
 
 test("pi: a runner's graceful close releases the run's browser session once and books its release before close() resolves, with no beforeRelease refused", { timeout: 120_000 }, async (t) => {
   const said = warnings(t);
+  const stderr = stderrLines(t);
   const { server, runner, live, releases } = await piRun(t, "runner-close-browser-");
 
   await runner.close();
@@ -197,6 +212,7 @@ test("pi: a runner's graceful close releases the run's browser session once and 
   assert.equal(charged(closedAt.records).length, 1, `its release was charged on the run's ledger before close() resolved: ${JSON.stringify(chargesOf(closedAt.records))}`);
   assert.deepEqual(said.filter((line) => /beforeRelease failed/.test(line)), [], "no tool host's beforeRelease was refused");
   assert.deepEqual(cutsOf(closedAt.records), [], "the release finished: no cut on the run");
+  assert.deepEqual(uncountedOf(stderr), [], "every charge was counted: the close's seal is no lost count");
 
   // Nothing more is let go or written after close() resolved.
   await new Promise((resolve) => setTimeout(resolve, AFTER_CLOSE_MS));
@@ -373,7 +389,7 @@ const observedStops = (createLoop, stopped) => (deps) => {
   });
 };
 
-test("pi: a close whose shutdown seals the journal while a claim's open is still committing (its reopen's hold under way) still has the release cut, its charge booked and the cut recorded; the next claim resumes the turn, each request billed once", { timeout: 180_000 }, async (t) => {
+test("pi: a close whose shutdown seals the journal while a claim's open is still committing (its reopen's hold under way) still has the release cut, its charge booked and the cut recorded; the stopped claim's recovery sends no model request, and the next claim resumes the turn, each request billed once", { timeout: 180_000 }, async (t) => {
   // runner-a's close is cut, as above. runner-b's claim reopens the session: its owed hold is held at the store, past the
   // loop's gate, while runner-b's close stops its loop for the shutdown (the stop seals the journal at once). The claim's
   // open goes on once the hold lands, its next commit made after the seal; the release still runs, is cut, and books.
@@ -452,20 +468,19 @@ test("pi: a close whose shutdown seals the journal while a claim's open is still
   assert.equal(modelLedger(wholeRecords).total, PRICE * 2, `the uninterrupted run: two requests: ${JSON.stringify(modelLedger(wholeRecords))}`);
   assert.equal(ledger.total, modelLedger(wholeRecords).total, `the run's model spend reads as the uninterrupted run's: ${shown}`);
 
-  // What runner-b's stop cut: the request pi's recovery sent once the stop had closed the session's model proxy. It never
-  // reached the model: no request started for it, none booked, its message priced at $0.
+  // runner-b's stop leaves the turn to the next claim: once its loop is stopped, no recovery of its claim sends a model
+  // request (the release's drain runs pi's tasks, the turn's recovery among them), so nothing of the turn fails on the
+  // closed session: no answer of the model written in runner-b's claim, no error answer on the run, no failed request on
+  // its timeline. runner-c resumes the turn.
+  assert.deepEqual(seen.flat().filter((kind) => kind === "pi.assistant"), [], `runner-b's claim wrote no answer of the model: ${JSON.stringify(seen)}`);
   const failed = records.entries.filter((entry) => entry.kind === "pi.assistant" && entry.model?.[0]?.stopReason === "error");
-  assert.equal(failed.length, 1, shown);
-  assert.match(failed[0].model[0].errorMessage, /^Connection error\.: connect ECONNREFUSED /, JSON.stringify(failed[0].model[0]));
-  assert.equal(failed[0].model[0].usage.cost.total, 0, "its message priced at $0");
+  assert.deepEqual(failed.map((entry) => entry.model[0].errorMessage), [], `no request of the run failed: ${shown}`);
+  const errors = rows.filter((row) => row.kind === "error").map((row) => row.summary);
+  assert.deepEqual(errors, [], `the run's timeline shows no failed request: ${shown}`);
+  assert.deepEqual(wholeRows.filter((row) => row.kind === "error"), [], "nor does the uninterrupted run's");
   const started = records.entries.filter((entry) => entry.kind === "agentrun.request_started");
   assert.equal(started.length, requests.length, `a request started for each the model was sent, and no other: ${JSON.stringify({ started: started.length, sent: requests.length })}`);
   assert.equal(ledger.requests, requests.length, `a request booked for each the model was sent, and no other: ${shown}`);
-  // The run's timeline shows it as one failed request, at no cost; the uninterrupted run shows none.
-  const errors = rows.filter((row) => row.kind === "error").map((row) => row.summary);
-  assert.equal(errors.length, 1, shown);
-  assert.match(errors[0], /^Model request failed: Connection error\.: connect ECONNREFUSED 127\.0\.0\.1:\d+$/, shown);
-  assert.deepEqual(wholeRows.filter((row) => row.kind === "error"), [], "the uninterrupted run's timeline shows no failed request");
   const usage = (all) => all.findLast((row) => row.kind === "usage")?.summary;
   // Its usage row counts the requests the model was sent: three (the two answered and runner-a's cut), the uninterrupted
   // run's two.
@@ -505,6 +520,7 @@ for (const [label, hung] of [["its release answers: the release's charge", false
     const { server, runner } = await piRun(t, "runner-stop-books-", { runnerOptions: { cleanupMs: CLEANUP_MS }, launch: { max_cost_usd: 1 }, env: hung ? { FAUX_BROWSER_RELEASE_HOLD: hold } : {} });
     t.after(() => writeFileSync(hold, ""));
     const said = warnings(t);
+    const stderr = stderrLines(t);
     await sendCommand(server, RUN, { kind: "stop", body: {} });
     const state = await stoppedRun(server);
     const records = await recordsOf(server);
@@ -516,6 +532,7 @@ for (const [label, hung] of [["its release answers: the release's charge", false
     // A release the cut left running fails once the run's Harness closes under it: that is the cut, not a refusal.
     assert.deepEqual(said.filter((line) => /loop stopped \(command\)|releaseCut failed/.test(line) || (!hung && /beforeRelease failed/.test(line))), [], "no host's release or booking was refused by the stop");
     await runner.close();
+    assert.deepEqual(uncountedOf(stderr), [], "every charge was counted: the stop's seal is no lost count");
   });
 }
 
@@ -702,6 +719,7 @@ test("pi: a run that ends in the close's drain, its browser's release never answ
   const { RELEASE_MARGIN_MS } = await import("../dist/runner/loop-contract.js");
   const { runnerStopBy } = await import("../dist/runner/runner.js");
   const said = warnings(t);
+  const stderr = stderrLines(t);
   // A 4 s lease less its 1 s margin is a 3 s stop, after a 4 s drain: the close's window ends 7.5 s from its start, its
   // release cut at 6.5 s (CLEANUP_MS and its margin). The run ends 2.5 s into the drain, so a release bound from its own
   // start would be cut at 9 s, past the window; the drain's end at 4 s stops the run mid-release and seals its journal.
@@ -737,6 +755,7 @@ test("pi: a run that ends in the close's drain, its browser's release never answ
   assert.deepEqual(charges.filter((charge) => charge.final), [], "no release was confirmed, so nothing billed final");
   assert.equal(live().length, 1, "the vendor still holds the session");
   assert.deepEqual(said.filter((line) => /could not be written|releaseCut failed|beforeRelease failed: (?!Harness is closed)/.test(line)), [], "nothing of the release was refused");
+  assert.deepEqual(uncountedOf(stderr), [], "every charge was counted: the seal is no lost count");
 });
 
 test("pi: a person's stop in the close's drain, its browser's release never answering, has the cut's charge and record land inside the close's window, the run ending stopped: a stopping loop's release is cut by the window the drain's end sets", { timeout: 60_000 }, async (t) => {
@@ -744,6 +763,7 @@ test("pi: a person's stop in the close's drain, its browser's release never answ
   const { runnerStopBy } = await import("../dist/runner/runner.js");
   const { sendCommand } = await import("../dist/runner/commands.js");
   const said = warnings(t);
+  const stderr = stderrLines(t);
   // As above: the close's window ends 7.5 s from its start, its release cut at 6.5 s. The stop comes 2.5 s into the
   // drain, so a release bound from its own start would be cut at 9 s, past the window. A stopping loop is sent no
   // shutdown stop at the drain's end: only the window the drain's end sets moves its cut.
@@ -775,6 +795,7 @@ test("pi: a person's stop in the close's drain, its browser's release never answ
   assert.equal(charges.filter((charge) => !charge.final && Date.parse(charge.at) >= asked).length, 1, `the cut charged the session's time through the cut: ${JSON.stringify({ charges, asked: new Date(asked).toISOString() })}`);
   assert.equal(live().length, 1, "the vendor still holds the session");
   assert.deepEqual(said.filter((line) => /could not be written|releaseCut failed|beforeRelease failed: (?!Harness is closed)/.test(line)), [], "nothing of the release was refused");
+  assert.deepEqual(uncountedOf(stderr), [], "every charge was counted: the seal is no lost count");
 });
 
 test("the close's window runs from its start: a drain, then a release that never ends, is cut where the providers' cleanup bound from the close's start ends, and the claim is renewed to the close's end, so no other runner claims the run before close() resolves", { timeout: 60_000 }, async (t) => {

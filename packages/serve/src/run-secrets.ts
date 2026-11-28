@@ -3,7 +3,7 @@
 // The runner's claim reads them (runner/claim-secrets.ts).
 import type { Revision } from "./agent-rows.js";
 import { harnessModelKeys } from "./adapters.js";
-import { COMPOSIO_KEY_ENV } from "./composio-made.js";
+import { COMPOSIO_KEY_ENVS } from "./composio-made.js";
 import { COMPUTER_KEY_NAMES } from "./computer-keys.js";
 import { providersNamed } from "./decisions.js";
 import { harnessOfBody } from "./harness.js";
@@ -25,7 +25,7 @@ const COMPUTER_ACCOUNT_KEYS = COMPUTER_KEY_NAMES.filter((name) => !TOOL_FIELDS.i
  *  credential, the launch hook's signing secret (trigger-launch-hook.ts), and the Composio account key a Composio MCP
  *  server saved with api_key_env reads (composio-made.ts), which reaches a run only as the MCP header of a Composio
  *  server its revision is granted, sent by the runner. */
-const SERVER_ONLY: ReadonlySet<string> = new Set(["AGENTRUN_TOKEN", "AGENTRUN_TOKENS", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_STORE_URL", ...COMPUTER_ACCOUNT_KEYS, ARCHIL_API_KEY_ENV, LAUNCH_HOOK_SECRET_ENV, COMPOSIO_KEY_ENV]);
+const SERVER_ONLY: ReadonlySet<string> = new Set(["AGENTRUN_TOKEN", "AGENTRUN_TOKENS", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_STORE_URL", ...COMPUTER_ACCOUNT_KEYS, ARCHIL_API_KEY_ENV, LAUNCH_HOOK_SECRET_ENV, ...COMPOSIO_KEY_ENVS]);
 /** The secrets a run may be handed: every one but the server's own and the decision keys, which go apart. */
 export const RUN_SECRETS = SECRET_NAMES.filter((name) => !SERVER_ONLY.has(name) && !DECISION_KEYS.includes(name));
 type KeyRow = { kind: string; fields: readonly string[]; unlocks: readonly string[] };

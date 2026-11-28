@@ -94,6 +94,13 @@ type Match = (batches: readonly (readonly StorageWrite[])[]) => Matched | undefi
 /** What an expectation stages: the run patch and rows, and the commands it takes (by id; each keyed to the matched record). */
 type Expected = { readonly run?: Staged["run"]; readonly also?: Staged["also"]; readonly take?: readonly number[]; readonly answer?: { readonly command: number; readonly value: unknown } };
 
+/** The errors Gates refuse commits with once sealed. */
+const seals = new WeakSet<Error>();
+/** Whether `error` is a Gate's seal: the refusal of a commit that never reached the store, by a loop that writes nothing
+ *  more (a stop, a park, a kernel fault). A Session that fails on one has a sound store, and every commit it stored was
+ *  published before it failed. */
+export const isSeal = (error: unknown): boolean => error instanceof Error && seals.has(error);
+
 /**
  * The run's journal with the loop's staging matched to commits. stage() replaces what was staged, so the loop never
  * calls it directly: `expect(match, expected)` stages `expected` on the first commit whose batches `match`, merged with
@@ -154,6 +161,7 @@ export class Gate {
   /** Every later commit is refused with `error`; a pending expectation fails with it. */
   seal(error: Error): void {
     this.#sealed ??= error;
+    seals.add(this.#sealed);
     for (const pending of this.#pending.splice(0)) pending.failed(error);
   }
 

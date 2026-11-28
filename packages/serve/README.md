@@ -453,8 +453,9 @@ come. `GET /v2/computers` lists the runner the hold is on (`held_on`), and the s
 The token is in the log of the start that made it. A `docker stop` reaches both processes. The runner gives a busy run
 6 s (`--drain-timeout 6s`) to finish its turn, so a busy `docker stop` ends in about 7.5 s; a turn cut off resumes at
 the next start. Signed in with ChatGPT, a stop also waits up to 25 s for a renewal OpenAI is answering to save its new
-pair, so Compose's `stop_grace_period` is 35 s, and a plain `docker stop` needs `-t 35`: Docker's default 10 s can cut
-that wait short and lose the sign-in. A stop signal again while it closes (a second `docker stop`, a second Ctrl-C on a
+pair, and a browser's release to its provider may take up to its 30 s cleanup bound, so the runner's close takes up to
+40 s. Compose's `stop_grace_period` is 45 s, and a plain `docker stop` needs `-t 45`: Docker's default 10 s can cut
+that wait short, lose the sign-in, and kill a release before it is recorded. A stop signal again while it closes (a second `docker stop`, a second Ctrl-C on a
 runner started by hand) is said once and changes nothing, so that save is never cut; a close that never ends (a store
 that no longer answers) ends only with SIGKILL (`docker kill`, `kill -9`). Compose publishes the port
 on this machine's loopback only (port 7340, or `AGENTRUN_PORT`; set `AGENTRUN_PUBLIC_URL` with it, so the printed link names that port), and
@@ -469,8 +470,10 @@ copy: a service that loses it loses them). With no
 `AGENTRUN_PUBLIC_URL` the server takes Render's own `RENDER_EXTERNAL_URL` as its public address, so setup takes
 `AGENTRUN_TOKEN` from the Environment tab, or the code the start prints in the service's log (`Set up this server: ...`). On another host, set `AGENTRUN_PUBLIC_URL` to
 the address people open before the first start; without it, whoever opens the console first sets the password. Set
-`AGENT_MODEL` and the provider's key there too. Render waits 30 s after SIGTERM, above the image's 6 s drain; it does not
-let a service with a disk change that. It sets `AGENTRUN_RUN_USER=same` (every run as the server's own user, each still
+`AGENT_MODEL` and the provider's key there too. Render waits 30 s after SIGTERM, above the image's 6 s drain and a
+signed-in stop; it does not let a service with a disk change that. It is under the 40 s the runner's close takes when a
+browser's release hangs to its provider's cleanup bound, so on Render such a stop can be killed before that release is
+recorded; the run resumes at the next start. It sets `AGENTRUN_RUN_USER=same` (every run as the server's own user, each still
 a process of its own), as Railway's template does: neither platform has been shown to keep the image helper's file
 capabilities.
 
@@ -2809,8 +2812,8 @@ ordinary MCP server with the key sealed as an `x-api-key` header. `POST /v2/sett
 toolkits Composio offers (`{toolkits: [{slug, name}]}`, by name) for the console's toolkit picker;
 `PUT /v2/settings/mcp-servers/{name}/composio` `{api_key, toolkit, tools, user_id?, auth_config_id?, price_usd?}` makes
 and saves the server. In place of `api_key`, `"api_key_env":
-"COMPOSIO_API_KEY"` reads the key from that variable, as the server and each runner were started with it, at each use and keeps no copy: the
-way an [API-only](#api-only) server's token saves one. That key is only ever sent to Composio's own origin, fixed in
+"COMPOSIO_API_KEY"` or `"AGENTRUN_COMPOSIO_API_KEY"` (in the save and both listings) reads the key from that variable, as the server and each runner were started with it, at each use and keeps no copy: the
+way an [API-only](#api-only) server's token saves one and lists the toolkits and their actions, scoped to a workspace or not. That key is only ever sent to Composio's own origin, fixed in
 code, so a server saved so whose address is anywhere else is refused by name and sent nothing. The body names no
 address or headers (`422 not_allowed`): Composio answers the address. When the toolkit needs your account and `user_id`
 (default `agentrun`) has none active, the answer's `connect_url` is Composio's page to connect it; nothing here signs
@@ -4000,16 +4003,21 @@ serves these routes alone:
 - a Composio server's save (a new name, or a server the token saved) and the delete of a server the token saved, for a
   backend that grants its runs Composio tools. The token here never writes a secret, so the save keeps none:
   - a Composio server (`PUT /settings/mcp-servers/{name}/composio`) names its key with
-    `"api_key_env": "COMPOSIO_API_KEY"`, never `api_key` (still `403`). The server keeps the variable's name, never its
+    `"api_key_env": "COMPOSIO_API_KEY"` or `"AGENTRUN_COMPOSIO_API_KEY"`, never `api_key` (still `403`). The server keeps the variable's name, never its
     value, and reads the value it and each runner were started with at each use: the save's calls to Composio, each
-    run's connection and the delete's. A new value takes effect once they start again with it. `COMPOSIO_API_KEY` is
-    the one name taken (`422 invalid` for any other), and it must be set when the server is saved (`422 missing`). A
+    run's connection and the delete's. A new value takes effect once they start again with it. These are the only
+    names taken (`422 invalid` for any other), and the selected variable must be set when the server is saved (`422 missing`). A
     run of a server whose variable is unset is refused before it starts (`409 agent_not_runnable`), naming it; it never
     runs without the server's tools. `toolkit`, `tools`, `auth_config_id`, `price_usd` and `user_id: "per_run"` work as
     they do on the full server;
-  - `COMPOSIO_API_KEY` is a secret, so give it to the server and to each runner. The launcher hands it to each over a
+  - Both project keys are secrets: give each configured key to the server and to each runner. The launcher hands it to each over a
     pipe, so neither process's environment holds it, and no run is handed it: the runner sends it only as the MCP
     header of a Composio server the run is granted a tool of, and a run granted none gets nothing of it;
+  - `GET /capabilities` advertises the supported names in `features.mcp_client.composio_key_envs`. Read it before
+    saving a server for a second project; an older server that omits it does not support the second key. Each saved
+    server records its selected name; re-saving that name with a different project key is `422 not_allowed` before
+    Composio is called. Use separate server names for separate projects; a missing project key never
+    falls back to the other key. Upgrade both the server and every runner before saving servers with the new name.
   - the body names no address and no headers (`url` or `headers` is `422 not_allowed`): Composio answers the server's
     address, and the key read from the variable is only ever sent to Composio's own origin, fixed in code. A server
     whose saved address is anywhere else is refused by name wherever that key would be read (a refresh, a run's start),
@@ -4106,21 +4114,34 @@ as before.
 
 A request in a workspace is served only: the runs' reads and lists (`GET /runs`, `/runs/{id}`, its timeline, files and
 export), a run's message, stop and cancel; the agents' list, read, create, revisions, definition and current revision,
-and a run started on one; the templates' list, read, import and apply; the uploaded files' create, upload, list, read and
-delete (`/files`); and `/capabilities`, `/health` and `/openapi.json`. Every other route is `403 forbidden` with
+archive, unarchive and delete, and a run started on one; the templates' list, read, import, apply and delete (a bundled
+package stays `403`); the uploaded files' create, upload, list, read and delete (`/files`); the triggers' list, read,
+firings, create, edit, delete and run now (`/triggers`); and `/capabilities`, `/health` and `/openapi.json`. Every
+other route is `403 forbidden` with
 `details.reason: "not_scoped"`. In it, an agent, run, imported template package or file of another workspace (or of none)
 answers the same `404` as an id no row has, and every list holds the workspace's rows alone, paged within them; bundled
 template packages are every workspace's. What it makes is the workspace's: an agent (made or applied), an imported
 package (an import whose name another workspace holds is `409 name_taken`), a file. A run is its agent's workspace's,
 whoever started it, so a run a request with no header starts on that agent is the workspace's too. A run's `file_ids`
 take the workspace's files alone: one out of it reads as no file. An `Idempotency-Key` is the workspace's own: the same
-key in another workspace starts afresh. An import with no header of a name a workspace holds is `409 name_taken` too,
+key in another workspace starts afresh. A trigger is its agent's workspace's: another's answers the same `404` as an id
+no trigger has, and a new one naming another workspace's agent or run is refused in the words an unknown one gets. A
+request in a workspace makes what an apply here makes, a schedule or a feed that starts runs, with the launch hook set;
+any other source or target, or no hook, is `422` and nothing is made. Its edit is `enabled` alone, as above, and its run
+now (`POST /triggers/{id}/fire`) is served only for a trigger that may be on here, so the firing goes to the backend
+through the launch hook. An import with no header of a name a workspace holds is `409 name_taken` too,
 never replacing that workspace's package: the operator deletes it first.
 
 Launch disks (`archil_disk` on a run's start) are the backend's to map to its tenants: the server keeps no record of which
 tenant a disk it did not make is for, and a run in a workspace may name any of them. It names no agent's own disk
 (`GET /agents/{id}/archil`) outside its workspace: that reads as a disk Archil does not have (`422` at
 `archil_disk.disk_id`, in the same words).
+
+A computer paired with the server is the operator's own machine, never a workspace's. An agent create or definition edit
+in a workspace that names one as its computer's provider (or its place's box) is `422` at `definition.computer` (or
+`definition.place`), nothing written; a run of an agent in a workspace whose revision names one fails its claim with
+`computer_unavailable`, in the same words. `features.computers` in a workspace's `GET /capabilities` counts no kind a
+paired computer alone offers.
 
 `GET /capabilities` says what this server does in `features.workspaces`: the header's name, `enforced` (true on an
 API-only server alone), `required_for_tokens` (true when `AGENTRUN_WORKSPACE_TOKENS` names a token, so a request of that
@@ -5948,7 +5969,7 @@ carries no cost at all, as from a provider that does not price the model. The te
   run needs are read from the store at its claim, opened with the seal key, and are put on that run's environment alone.
   It gets none of the computer providers' account keys ([Sandbox](#sandbox)), not the Archil account key
   (`ARCHIL_API_KEY`), from which the claim mints the run's own mount credential, and not the Composio account key
-  (`COMPOSIO_API_KEY`), which the runner sends only as a granted Composio server's MCP header. A tool key reaches it only when its
+  (`COMPOSIO_API_KEY` and `AGENTRUN_COMPOSIO_API_KEY`), which the runner sends only as a granted Composio server's MCP header. A tool key reaches it only when its
   revision names a tool the key unlocks (`MONID_API_KEY` a monid tool, `BROWSERBASE_API_KEY` and `KERNEL_API_KEY` `browser`; a workflow's
   tools are those its model and call nodes name), and a model key only when its model needs it ([Models](#models)), read
   from the revision at each claim, a resume after a restart included.

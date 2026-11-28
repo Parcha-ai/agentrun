@@ -21,15 +21,17 @@ import { fakeClock, until } from "./trigger-support.mjs";
 
 const { WORKSPACE_ROUTES, servedScoped } = await import("../dist/api-only.js");
 const { ROUTES } = await import("../dist/server.js");
-const { migrate, openPostgresStore, openSqliteStore, migrationsIn, runnerOn } = await import("../dist/store/index.js");
+const { migrate, openPostgresStore, openSqliteStore, migrationsIn, runnerOn, StoreAwaitsServer } = await import("../dist/store/index.js");
 const { SCHEMA_VERSION } = await import("../dist/store/schema.js");
 const { workspaceTokensFrom } = await import("../dist/workspace-scope.js");
 const { backfillMapOf, backfillWorkspaces, workspaceBackfillMain } = await import("../dist/workspace-backfill.js");
-const { deleteTemplate, importTemplate } = await import("../dist/template-import.js");
+const { deleteTemplate, importTemplate, templateNames } = await import("../dist/template-import.js");
 const { TemplateRegistry } = await import("../dist/templates.js");
-const { inWorkspace, workspaceNow } = await import("../dist/workspace-scope.js");
+const { inWorkspace, outsideWorkspace, workspaceNow } = await import("../dist/workspace-scope.js");
 const { Triggers } = await import("../dist/triggers.js");
 const { saveArchilSettings, storeAgentDisk } = await import("../dist/archil-settings.js");
+const { scopedPairedWords } = await import("../dist/workspace/attached-computers.js");
+const { PROTOCOL_VERSION } = await import("@parcha/agentrun-computer");
 
 const SCOPED = randomBytes(24).toString("hex");
 const OPERATOR = randomBytes(24).toString("hex");
@@ -110,7 +112,8 @@ async function bytes(server, workspace, { path, id, body = "hello" }) {
 
 /** Every operation of WORKSPACE_ROUTES: how a scoped request reaches it, and what a row of another workspace reads as.
  *  `row`: the operation names W1's row by id (agent, run or template), and W2 gets the 404 a missing id gets. `list`: W2's
- *  list holds none of W1's rows. `made`: a write W2 makes lands in W2 alone. `served`: answered to any workspace. */
+ *  list holds none of W1's rows. `made`: a write W2 makes lands in W2 alone. `served`: answered to any workspace.
+ *  `catalog`: Composio's catalog, tested on its own. */
 const TABLE = {
   getRun: { method: "GET", path: "/v2/runs/{run}", row: "run" },
   getTimeline: { method: "GET", path: "/v2/runs/{run}/timeline", row: "run" },
@@ -126,8 +129,12 @@ const TABLE = {
   createRun: { method: "POST", path: "/v2/agents/{agent}/runs", row: "agent", body: { input: { content: "Hello." } } },
   updateDefinition: { method: "PUT", path: "/v2/agents/{agent}/definition", row: "agent", body: { definition: { version: 1, name: "W2 edit", instructions: "Answer.", skills: [], tools: [] } } },
   setCurrent: { method: "POST", path: "/v2/agents/{agent}/current", row: "agent", body: { revision_id: "rev_none" } },
+  archiveAgent: { method: "POST", path: "/v2/agents/{agent}/archive", row: "agent" },
+  unarchiveAgent: { method: "POST", path: "/v2/agents/{agent}/unarchive", row: "agent" },
+  deleteAgent: { method: "DELETE", path: "/v2/agents/{agent}", row: "agent" },
   getTemplate: { method: "GET", path: "/v2/templates/{template}", row: "template" },
   applyTemplate: { method: "POST", path: "/v2/templates/{template}/apply", row: "template", body: { parameters: {} } },
+  deleteTemplate: { method: "DELETE", path: "/v2/templates/{template}", row: "template" },
   getFile: { method: "GET", path: "/v2/files/{file}", row: "file" },
   uploadFile: { method: "PUT", path: "/v2/files/{file}", row: "file", body: "hello" },
   deleteFile: { method: "DELETE", path: "/v2/files/{file}", row: "file" },
@@ -138,9 +145,20 @@ const TABLE = {
   createAgent: { made: true },
   importTemplate: { made: true },
   createFile: { made: true },
+  // A trigger is its agent's: api-only-workspace-triggers.test.mjs (it needs the launch hook to make one).
+  listTriggers: { triggers: true },
+  getTrigger: { triggers: true },
+  listTriggerFirings: { triggers: true },
+  createTrigger: { triggers: true },
+  updateTrigger: { triggers: true },
+  deleteTrigger: { triggers: true },
+  fireTrigger: { triggers: true },
   getCapabilities: { method: "GET", path: "/v2/capabilities", served: true },
   getHealth: { method: "GET", path: "/v2/health", served: true },
   getOpenapi: { method: "GET", path: "/v2/openapi.json", served: true },
+  // Composio's catalog, no workspace's row: api-only-composio-listing.test.mjs.
+  listComposioToolkits: { catalog: true },
+  listComposioTools: { catalog: true },
 };
 
 test("every operation of WORKSPACE_ROUTES is a route of the server, and the table below covers each", () => {
@@ -149,7 +167,8 @@ test("every operation of WORKSPACE_ROUTES is a route of the server, and the tabl
   assert.deepEqual([...WORKSPACE_ROUTES].sort(), Object.keys(TABLE).sort());
   assert.equal(servedScoped(ROUTES, "GET", "/v2/runs/r1"), "served");
   assert.equal(servedScoped(ROUTES, "HEAD", "/v2/agents/a1"), "served");
-  assert.equal(servedScoped(ROUTES, "DELETE", "/v2/agents/a1"), "not_scoped");
+  assert.equal(servedScoped(ROUTES, "DELETE", "/v2/agents/a1"), "served");
+  assert.equal(servedScoped(ROUTES, "DELETE", "/v2/agents/a1/learning"), "not_scoped");
   assert.equal(servedScoped(ROUTES, "GET", "/v2/usage"), "not_scoped");
   assert.equal(servedScoped(ROUTES, "GET", "/v2/runs/r1/computer/live/v/x"), "not_scoped");
   assert.equal(servedScoped(ROUTES, "GET", "/v2/nothing-here"), "none");
@@ -202,6 +221,179 @@ test("a scoped request reads another workspace's row as a missing one, the same 
   assert.equal((await unscoped(server, "GET", `/v2/runs/${run.body.run_id}`)).status, 200);
 });
 
+test("a workspace archives, unarchives and deletes its own agent and deletes its own imported package; another workspace's calls change none of them", { timeout: 120_000 }, async (t) => {
+  const server = await scopedServer(t);
+  const { agent, template } = await seedW1(server);
+  const made = await inW1(server, "POST", "/v2/agents", { body: { definition: { version: 1, name: "W1 spare", instructions: "Answer.", skills: [], tools: [] } } });
+  assert.equal(made.status, 201, made.text);
+  const spare = made.body.agent_id;
+  for (const [method, path] of [["POST", `/v2/agents/${agent}/archive`], ["DELETE", `/v2/agents/${spare}`], ["DELETE", `/v2/templates/${encodeURIComponent(template)}`]]) {
+    assert.equal((await inW2(server, method, path)).status, 404, `${method} ${path}`);
+  }
+  assert.equal((await inW1(server, "GET", `/v2/agents/${agent}`)).body.archived_at, null, "W2's archive changed nothing");
+  assert.equal((await inW1(server, "GET", `/v2/templates/${encodeURIComponent(template)}`)).status, 200, "W2's delete changed nothing");
+
+  const archived = await inW1(server, "POST", `/v2/agents/${agent}/archive`);
+  assert.equal(archived.status, 200, archived.text);
+  assert.notEqual(archived.body.archived_at, null);
+  const unarchived = await inW1(server, "POST", `/v2/agents/${agent}/unarchive`);
+  assert.equal(unarchived.status, 200, unarchived.text);
+  assert.equal(unarchived.body.archived_at, null);
+  assert.deepEqual(unarchived.body.triggers_off, []);
+
+  assert.equal((await inW1(server, "POST", `/v2/agents/${spare}/archive`)).status, 200);
+  const deleted = await inW1(server, "DELETE", `/v2/agents/${spare}`);
+  assert.equal(deleted.status, 204, deleted.text);
+  assert.ok(!TABLE.listAgents.list((await inW1(server, "GET", "/v2/agents")).body).includes(spare), "the purged agent is not listed");
+
+  const gone = await inW1(server, "DELETE", `/v2/templates/${encodeURIComponent(template)}`);
+  assert.equal(gone.status, 204, gone.text);
+  assert.equal((await inW1(server, "GET", `/v2/templates/${encodeURIComponent(template)}`)).status, 404);
+  const bundled = await inW1(server, "DELETE", "/v2/templates/deployed");
+  assert.deepEqual([bundled.status, bundled.body.error?.code], [403, "forbidden"], bundled.text);
+});
+
+test("with no header, the operator archives, unarchives and deletes any agent as before, and a template's delete stays refused on an API-only server", { timeout: 120_000 }, async (t) => {
+  const server = await scopedServer(t);
+  const { agent, template } = await seedW1(server);
+  const archived = await unscoped(server, "POST", `/v2/agents/${agent}/archive`);
+  assert.equal(archived.status, 200, archived.text);
+  assert.equal((await unscoped(server, "POST", `/v2/agents/${agent}/unarchive`)).status, 200);
+  const made = await inW2(server, "POST", "/v2/agents", { body: { definition: { version: 1, name: "W2 spare", instructions: "Answer.", skills: [], tools: [] } } });
+  assert.equal((await unscoped(server, "POST", `/v2/agents/${made.body.agent_id}/archive`)).status, 200);
+  assert.equal((await unscoped(server, "DELETE", `/v2/agents/${made.body.agent_id}`)).status, 204, "another workspace's agent, with no header");
+  for (const id of [template, "deployed"]) {
+    const refused = await unscoped(server, "DELETE", `/v2/templates/${encodeURIComponent(id)}`);
+    assert.deepEqual([refused.status, refused.body.error?.code], [404, "not_found"], refused.text);
+    assert.match(refused.body.error.message, /serves the run API only/);
+  }
+  assert.equal((await inW1(server, "GET", `/v2/templates/${encodeURIComponent(template)}`)).status, 200, "W1's package stands");
+});
+
+test("a workspace's template delete whose ownership read went stale removes nothing of the package another workspace imported since", { timeout: 60_000 }, async (t) => {
+  const { store } = await storeOn(t);
+  const registry = new TemplateRegistry([]);
+  const deps = { registry, store: { importedTemplates: store.importedTemplates, settings: store.settings }, reach: async () => { throw new Error("no GitHub read here"); }, apiOnly: true };
+  const upload = (content) => ({ files: [{ path: "agent.md", encoding: "utf8", content }] });
+  const signal = AbortSignal.timeout(30_000);
+  assert.equal((await inWorkspace(W1, () => importTemplate(deps, upload(UPLOADED), signal))).status, 201);
+  await inWorkspace(W1, () => deleteTemplate(deps, "upload:notes"));
+  const theirs = await inWorkspace(W2, () => importTemplate(deps, upload(UPLOADED.replace("Answers a question.", "W2's.")), signal));
+  assert.equal(theirs.status, 201);
+  // W1's second delete read W1's ownership before the first one landed; it reaches the store only now.
+  await assert.rejects(inWorkspace(W1, () => deleteTemplate(deps, "upload:notes")), (error) => error.code === "not_found");
+  assert.equal((await store.importedTemplates.workspaces()).get("upload:notes"), W2, "W2's row stands");
+  assert.equal(registry.get("upload:notes").origin.sha, theirs.pkg.origin.sha, "and is the one served");
+});
+
+test("the operator's import of a name sent between a template delete's store delete and its registry's lands after the delete, kept and served", { timeout: 60_000 }, async (t) => {
+  const { store } = await storeOn(t);
+  const registry = new TemplateRegistry([]);
+  const deps = { registry, store: { importedTemplates: store.importedTemplates, settings: store.settings }, reach: async () => { throw new Error("no GitHub read here"); }, apiOnly: true };
+  const upload = (content) => ({ files: [{ path: "agent.md", encoding: "utf8", content }] });
+  const signal = AbortSignal.timeout(30_000);
+  assert.equal((await inWorkspace(W1, () => importTemplate(deps, upload(UPLOADED), signal))).status, 201);
+  let theirs;
+  const racing = { ...deps, store: { importedTemplates: { ...store.importedTemplates, remove: async (id, workspace, read) => {
+    const removed = await store.importedTemplates.remove(id, workspace, read);
+    // Another workspace's import of the name is refused here (the registry still serves W1's package); the operator's,
+    // with no header, is not: it waits for the name the delete holds.
+    theirs = outsideWorkspace(() => importTemplate(deps, upload(UPLOADED.replace("Answers a question.", "The operator's.")), signal));
+    await until(() => templateNames(registry).waiting(id) > 0, 10_000, "the operator's import never waited for the name");
+    return removed;
+  } }, settings: store.settings } };
+  await inWorkspace(W1, () => deleteTemplate(racing, "upload:notes"));
+  theirs = await theirs;
+  assert.equal(theirs.status, 201);
+  assert.equal((await store.importedTemplates.workspaces()).get("upload:notes"), null, "the operator's row");
+  assert.equal(registry.get("upload:notes")?.origin.sha, theirs.pkg.origin.sha, "the operator's package is still served");
+});
+
+test("a workspace's reimport of a package its delete is removing, sent while the store's delete runs, lands after the delete, kept and served", { timeout: 60_000 }, async (t) => {
+  const { store } = await storeOn(t);
+  const registry = new TemplateRegistry([]);
+  const deps = { registry, store: { importedTemplates: store.importedTemplates, settings: store.settings }, reach: async () => { throw new Error("no GitHub read here"); }, apiOnly: true };
+  const upload = (content) => ({ files: [{ path: "agent.md", encoding: "utf8", content }] });
+  const signal = AbortSignal.timeout(30_000);
+  assert.equal((await inWorkspace(W1, () => importTemplate(deps, upload(UPLOADED), signal))).status, 201);
+  let again;
+  const racing = { ...deps, store: { importedTemplates: { ...store.importedTemplates, remove: async (id, workspace, read) => {
+    // The reimport starts while the delete waits on its statement, and waits for the name the delete holds.
+    again = inWorkspace(W1, () => importTemplate(deps, upload(UPLOADED.replace("Answers a question.", "Its second version.")), signal));
+    await until(() => templateNames(registry).waiting(id) > 0, 10_000, "the reimport never waited for the name");
+    return store.importedTemplates.remove(id, workspace, read);
+  } }, settings: store.settings } };
+  await inWorkspace(W1, () => deleteTemplate(racing, "upload:notes"));
+  again = await again;
+  assert.equal(again.status, 201);
+  const row = (await store.importedTemplates.list()).find((one) => one.id === "upload:notes");
+  assert.equal(row?.sha, again.pkg.origin.sha, "the reimport's row is kept");
+  assert.equal(registry.get("upload:notes")?.origin.sha, again.pkg.origin.sha, "and its package served");
+  assert.equal((await store.importedTemplates.workspaces()).get("upload:notes"), W1);
+});
+
+test("a workspace's delete whose row another server on the store replaced after the delete read it is 404, and that row stands", { timeout: 60_000 }, async (t) => {
+  const { store } = await storeOn(t);
+  const registry = new TemplateRegistry([]);
+  const deps = { registry, store: { importedTemplates: store.importedTemplates, settings: store.settings }, reach: async () => { throw new Error("no GitHub read here"); }, apiOnly: true };
+  const upload = (content) => ({ files: [{ path: "agent.md", encoding: "utf8", content }] });
+  const signal = AbortSignal.timeout(30_000);
+  assert.equal((await inWorkspace(W1, () => importTemplate(deps, upload(UPLOADED), signal))).status, 201);
+  const theirs = { id: "upload:notes", source: "upload:notes", sha: "f".repeat(64), publisher: "", files: { "agent.md": Buffer.from(UPLOADED.replace("Answers a question.", "Another server's.")).toString("base64") } };
+  const racing = { ...deps, store: { importedTemplates: { ...store.importedTemplates, remove: async (id, workspace, read) => {
+    // Another server's reimport, on the same store, lands before this delete's statement runs: no lock here holds it.
+    assert.equal(await store.importedTemplates.put(theirs, W1), true);
+    return store.importedTemplates.remove(id, workspace, read);
+  } }, settings: store.settings } };
+  await assert.rejects(inWorkspace(W1, () => deleteTemplate(racing, "upload:notes")), (error) => error.code === "not_found");
+  const row = (await store.importedTemplates.list()).find((one) => one.id === "upload:notes");
+  assert.equal(row?.sha, theirs.sha, "the other server's row is kept");
+  assert.equal((await store.importedTemplates.workspaces()).get("upload:notes"), W1);
+});
+
+test("a reimport racing its package's delete leaves no ghost: the registry serves the name only while the store keeps its row, and the name stays the workspace's to import", { timeout: 60_000 }, async (t) => {
+  const { store } = await storeOn(t);
+  const registry = new TemplateRegistry([]);
+  const deps = { registry, store: { importedTemplates: store.importedTemplates, settings: store.settings }, reach: async () => { throw new Error("no GitHub read here"); }, apiOnly: true };
+  const upload = (content) => ({ files: [{ path: "agent.md", encoding: "utf8", content }] });
+  const signal = AbortSignal.timeout(30_000);
+  assert.equal((await inWorkspace(W1, () => importTemplate(deps, upload(UPLOADED), signal))).status, 201);
+  // The reimport's row is committed before the delete reads the row, and its write answers only once the delete is
+  // done, so its package would reach the registry after the delete dropped the registry's copy (a store whose answer
+  // lags its commit, as a pooled Postgres connection's can).
+  let kept = false;
+  let deleted;
+  const deleteDone = new Promise((resolve) => { deleted = resolve; });
+  const lagging = { ...store.importedTemplates, put: async (row, workspace) => { const done = await store.importedTemplates.put(row, workspace); kept = true; await deleteDone; return done; } };
+  let again;
+  const racing = { ...deps, store: { importedTemplates: { ...store.importedTemplates, stamp: async (id) => {
+    again = inWorkspace(W1, () => importTemplate({ ...deps, store: { importedTemplates: lagging, settings: store.settings } }, upload(UPLOADED.replace("Answers a question.", "Its second version.")), signal));
+    // On until the reimport kept its row, or waits for the name the delete holds.
+    await until(() => kept || (templateNames?.(registry).waiting(id) ?? 0) > 0, 10_000, "the reimport neither kept its row nor waited for the name");
+    return store.importedTemplates.stamp(id);
+  } }, settings: store.settings } };
+  const deleting = await inWorkspace(W1, () => deleteTemplate(racing, "upload:notes")).then(() => 204, (error) => error.code);
+  deleted();
+  again = await again;
+  const row = (await store.importedTemplates.list()).find((one) => one.id === "upload:notes");
+  assert.equal(registry.get("upload:notes")?.origin.sha ?? null, row?.sha ?? null, `the registry serves what the store keeps (delete ${deleting}, reimport ${again.status})`);
+  assert.equal((await inWorkspace(W1, () => importTemplate(deps, upload(UPLOADED.replace("Answers a question.", "Its third version.")), signal))).status, 201, "the name is still W1's to import");
+  await inWorkspace(W1, () => deleteTemplate(deps, "upload:notes"));
+  assert.equal(registry.get("upload:notes"), undefined);
+});
+
+test("a template delete reads the one package's sha and import time, never every package's files", { timeout: 60_000 }, async (t) => {
+  const { store } = await storeOn(t);
+  const registry = new TemplateRegistry([]);
+  const deps = { registry, store: { importedTemplates: store.importedTemplates, settings: store.settings }, reach: async () => { throw new Error("no GitHub read here"); }, apiOnly: true };
+  const signal = AbortSignal.timeout(30_000);
+  assert.equal((await inWorkspace(W1, () => importTemplate(deps, { files: [{ path: "agent.md", encoding: "utf8", content: UPLOADED }] }, signal))).status, 201);
+  const noList = { ...deps, store: { importedTemplates: { ...store.importedTemplates, list: async () => { throw new Error("a delete read every package"); } }, settings: store.settings } };
+  await inWorkspace(W1, () => deleteTemplate(noList, "upload:notes"));
+  assert.equal(await store.importedTemplates.stamp("upload:notes"), undefined, "the row is gone");
+  assert.equal(registry.get("upload:notes"), undefined, "and the package no longer served");
+});
+
 test("an Idempotency-Key used in one workspace starts afresh in another, and replays in its own", { timeout: 120_000 }, async (t) => {
   const server = await scopedServer(t);
   const key = { "idempotency-key": "apply-once" };
@@ -237,7 +429,7 @@ test("a listed token without the header is 403; the header off an API-only serve
     assert.deepEqual([answer.status, answer.body.error?.code], [400, "bad_request"], `${JSON.stringify(workspace)}: ${answer.text}`);
   }
   assert.equal((await send(server, "GET", "/v2/runs", { workspace: "x".repeat(128) })).status, 200, "128 characters is a name");
-  for (const [method, path] of [["DELETE", "/v2/agents/a1"], ["GET", "/v2/usage"], ["DELETE", "/v2/runs/r1"], ["GET", "/v2/triggers"], ["POST", "/v2/runs"]]) {
+  for (const [method, path] of [["DELETE", "/v2/agents/a1/learning"], ["GET", "/v2/usage"], ["DELETE", "/v2/runs/r1"], ["POST", "/v2/triggers/t1/secret"], ["POST", "/v2/runs"]]) {
     const answer = await inW1(server, method, path, method === "GET" || method === "DELETE" ? {} : { body: {} });
     assert.deepEqual([answer.status, answer.body.error?.code, answer.body.error?.details?.reason], [403, "forbidden", "not_scoped"], `${method} ${path}: ${answer.text}`);
   }
@@ -298,7 +490,7 @@ test("the workspace migration (0033) is additive: a runner of the build before i
   assert.equal(runnerOn({ version: 33, runnerFloor: floor }, 32), "opens");
 });
 
-test("on SQLite the server adds the workspace columns to a store an earlier build of its version made, every row unscoped, with no wait for its runner", async (t) => {
+test("on SQLite the server adds the workspace columns to a store an earlier build of its version made, every row unscoped; its runner waits for it", async (t) => {
   const dir = await scratch(t);
   const file = join(dir, "store.sqlite");
   const first = await openSqliteStore({ file });
@@ -309,11 +501,12 @@ test("on SQLite the server adds the workspace columns to a store an earlier buil
   const raw = new DatabaseSync(file);
   raw.exec("DROP INDEX agents_by_workspace; DROP INDEX runs_by_workspace; ALTER TABLE agents DROP COLUMN workspace; ALTER TABLE runs DROP COLUMN workspace; ALTER TABLE imported_templates DROP COLUMN workspace");
   raw.close();
-  const runner = await openSqliteStore({ file, role: "runner" });
-  await runner.close();
+  // A claim reads its run's workspace (runner/github-app.ts): a runner waits for the server that adds the columns.
+  await assert.rejects(openSqliteStore({ file, role: "runner" }), (error) => error instanceof StoreAwaitsServer && /agents\.workspace, runs\.workspace/.test(error.message));
   const server = await openSqliteStore({ file });
   t.after(() => server.close());
   assert.equal((await server.schemaState()).version, SCHEMA_VERSION, "no version step");
+  await (await openSqliteStore({ file, role: "runner" })).close();
   await workspaceRows(server);
 });
 
@@ -445,11 +638,12 @@ test("a scoped request's Agent Factory pages (scope=active, scope=review) hold i
   assert.deepEqual(await ids(unscoped, "/v2/runs?scope=review"), new Set([w1Review, w2Review]));
 });
 
-test("two workspaces importing one new package name at once: one takes it, the other is 409 name_taken, and the name stays the first's", { timeout: 60_000 }, async (t) => {
+test("two workspaces importing one new package name at once, on two servers of one store: one takes it, the other is 409 name_taken, and the name stays the first's", { timeout: 60_000 }, async (t) => {
   const { store } = await storeOn(t);
   const registry = new TemplateRegistry([]);
   const rows = store.importedTemplates;
-  // W1's import is held after its check (no package of the name yet), before its write, while W2's runs whole.
+  // W1's import is held after its check (no package of the name yet), before its write, while W2's runs whole on
+  // another server (its own registry, so no lock of this one's holds it).
   let reached, release;
   const atWrite = new Promise((resolve) => (reached = resolve));
   const held = new Promise((resolve) => (release = resolve));
@@ -458,21 +652,23 @@ test("two workspaces importing one new package name at once: one takes it, the o
     return rows.put(row, workspace);
   } };
   const deps = { registry, store: { importedTemplates, settings: store.settings }, reach: async () => { throw new Error("no GitHub read here"); }, apiOnly: true };
+  const theirs = { ...deps, registry: new TemplateRegistry([]) };
   const upload = (content) => ({ files: [{ path: "agent.md", encoding: "utf8", content }] });
   const signal = AbortSignal.timeout(30_000);
   const first = inWorkspace(W1, () => importTemplate(deps, upload(UPLOADED), signal));
   first.catch(() => undefined);
   await atWrite;
-  const second = await inWorkspace(W2, () => importTemplate(deps, upload(UPLOADED.replace("Answers a question.", "Answers W2's question.")), signal));
+  const second = await inWorkspace(W2, () => importTemplate(theirs, upload(UPLOADED.replace("Answers a question.", "Answers W2's question.")), signal));
   assert.equal(second.status, 201);
   release();
   await assert.rejects(first, (error) => error.code === "name_taken", "the import held between its check and its write is refused");
   assert.equal((await rows.workspaces()).get("upload:notes"), W2, "W2 keeps the name");
   const kept = (await rows.list()).find((row) => row.id === "upload:notes");
   assert.equal(kept.sha, second.pkg.origin.sha, "W2's package stands, its files as W2 sent them");
-  assert.equal(registry.get("upload:notes").origin.sha, second.pkg.origin.sha, "and is the one served");
+  assert.equal(theirs.registry.get("upload:notes").origin.sha, second.pkg.origin.sha, "and is the one served");
+  assert.equal(registry.get("upload:notes"), undefined, "the refused import serves nothing");
   // W2 imports its own package again: replaced in place, still W2's.
-  const again = await inWorkspace(W2, () => importTemplate(deps, upload(UPLOADED), signal));
+  const again = await inWorkspace(W2, () => importTemplate(theirs, upload(UPLOADED), signal));
   assert.deepEqual([again.status, again.replaced], [201, second.pkg.origin.sha]);
   assert.equal((await rows.workspaces()).get("upload:notes"), W2);
 });
@@ -747,4 +943,77 @@ test("a scoped run is its agent's workspace's through its agent alone: its row k
   assert.equal(await server.store.runs.workspace(run), W1, "it reads as its agent's");
   assert.equal((await inW1(server, "GET", `/v2/runs/${run}`)).status, 200);
   assert.equal(await server.store.agents.workspace(agent), W1);
+});
+
+/** A phone paired with `server` (not attached): the operator's own machine, one more provider of the phone kind. */
+async function pairPhone(server, id) {
+  const hello = { protocol: PROTOCOL_VERSION, version: "0", os: "android", kind: "android", arch: "arm64", groups: ["screen", "input.touch", "apps"] };
+  await server.store.pairedComputers.addCode(`pairing-${id}`, `code-${id}`, Date.now() + 60_000);
+  assert.equal(await server.store.pairedComputers.pair(`code-${id}`, { id, name: "Pixel", hello, labels: {}, tokenSha256: `token-${id}` }), true);
+}
+
+test("an agent in a workspace never names a paired computer: a scoped create or edit naming one is 422 at definition.computer, nothing written; on a server with no workspaces the owner's agent names it", { timeout: 120_000 }, async (t) => {
+  const server = await scopedServer(t);
+  await pairPhone(server, "cmp-pixel");
+  const definition = (name, computer) => ({ definition: { version: 1, name, instructions: "Answer.", skills: [], tools: [], ...(computer ? { computer } : {}) } });
+  const phone = { kind: "phone", provider: "cmp-pixel" };
+  const refused = await inW1(server, "POST", "/v2/agents", { body: definition("W1 phone", phone) });
+  assert.equal(refused.status, 422, refused.text);
+  assert.deepEqual(refused.body.error.fields.map(({ field, reason }) => ({ field, reason })), [{ field: "definition.computer", reason: "not_an_option" }]);
+  assert.ok(refused.body.error.fields[0].message.startsWith(scopedPairedWords("cmp-pixel")), refused.text);
+  assert.deepEqual(TABLE.listAgents.list((await inW1(server, "GET", "/v2/agents")).body), [], "nothing written");
+  const made = await inW1(server, "POST", "/v2/agents", { body: definition("W1 agent") });
+  assert.equal(made.status, 201, made.text);
+  const edit = await inW1(server, "PUT", `/v2/agents/${made.body.agent_id}/definition`, { body: definition("W1 agent", phone) });
+  assert.equal(edit.status, 422, edit.text);
+  assert.equal(edit.body.error.fields[0].field, "definition.computer");
+  assert.ok(edit.body.error.fields[0].message.startsWith(scopedPairedWords("cmp-pixel")), edit.text);
+  assert.equal((await inW1(server, "GET", `/v2/agents/${made.body.agent_id}`)).body.version, made.body.version, "no revision written");
+  // A server that is not API-only keeps no workspaces: its owner's agent names the phone paired with it.
+  const whole = await serve(t, { runner: false });
+  await pairPhone(whole, "cmp-pixel");
+  const owner = await whole.api("POST", "/agents", definition("Owner phone", phone));
+  assert.equal(owner.status, 201, JSON.stringify(owner.body));
+});
+
+test("a scoped request's capabilities count no paired computer's kind; the operator's count it", { timeout: 120_000 }, async (t) => {
+  const server = await scopedServer(t);
+  const kinds = async (request) => (await request(server, "GET", "/v2/capabilities")).body.features.computers.kinds;
+  const before = await kinds(unscoped);
+  assert.ok(!before.includes("phone"), `no provider here serves a phone: ${before}`);
+  await pairPhone(server, "cmp-pixel");
+  assert.deepEqual(await kinds(unscoped), [...before, "phone"], "the operator's paired phone");
+  assert.deepEqual(await kinds(inW1), before, "a workspace's");
+});
+
+test("a workspace never sees a paired computer in Settings → Computers: its list holds no paired one (refused, or served without them), its tests, choices and keys are 403 not_scoped, and the operator's list names it", { timeout: 120_000 }, async (t) => {
+  const server = await scopedServer(t);
+  await pairPhone(server, "cmp-pixel");
+  const list = await inW1(server, "GET", "/v2/computers");
+  if (list.status === 403) assert.equal(list.body.error.details.reason, "not_scoped", list.text);
+  else {
+    assert.equal(list.status, 200, list.text);
+    const ids = [...list.body.kinds.flatMap((kind) => (kind.providers ?? []).map((provider) => provider.id)), ...list.body.paired.map((one) => one.id)];
+    assert.deepEqual(ids.filter((id) => id.startsWith("cmp-")), [], "a workspace's list");
+  }
+  assert.ok(!list.text.includes("cmp-pixel") && !list.text.includes("Pixel"), `a workspace's answer names no paired computer: ${list.text}`);
+  for (const [method, path, options] of [["POST", "/v2/computers/cmp-pixel/test"], ["GET", "/v2/computers/cmp-pixel/choices"], ["PUT", "/v2/computers/cmp-pixel/keys", { body: {} }]]) {
+    const refused = await inW1(server, method, path, options);
+    assert.deepEqual([refused.status, refused.body.error.details.reason], [403, "not_scoped"], `${method} ${path}: ${refused.text}`);
+  }
+  const listed = await unscoped(server, "GET", "/v2/computers");
+  assert.equal(listed.status, 200, listed.text);
+  assert.deepEqual(listed.body.paired.map((one) => one.id), ["cmp-pixel"], "the operator's view");
+});
+
+test("a workspace's refusal of a paired computer points at what the workspace is served: the kinds its capabilities offer, and any provider of the kind but a paired one", { timeout: 120_000 }, async (t) => {
+  const server = await scopedServer(t);
+  await pairPhone(server, "cmp-pixel");
+  const refused = await inW1(server, "POST", "/v2/agents", { body: { definition: { version: 1, name: "W1 phone", instructions: "Answer.", skills: [], tools: [], computer: { kind: "phone", provider: "cmp-pixel" } } } });
+  assert.equal(refused.status, 422, refused.text);
+  const { message } = refused.body.error.fields[0];
+  assert.ok(message.startsWith(scopedPairedWords("cmp-pixel")), message);
+  assert.doesNotMatch(message, /pick one GET \/v2\/computers lists/, "never a list that holds the paired computer itself");
+  assert.match(message, /GET \/v2\/capabilities offers it \(features\.computers\.kinds\)/, "the kinds a workspace's capabilities count, which leave the paired computer out");
+  assert.match(message, /never one whose id begins with cmp-/, "and a paired computer is not a provider to name");
 });
