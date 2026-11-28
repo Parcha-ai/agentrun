@@ -1,7 +1,7 @@
 // Stage 2 with fake judges at $0: when the grader runs, what it is given, how its verdict combines with the checks,
 // what goes to the human queue, and the Messages call's shape with a fake fetch.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { FAKE_AGENTS, fakeBackend } from "../dist/fake-world.js";
@@ -35,7 +35,7 @@ test("combine: sufficient checks decide, and a grader that disagrees sends the r
 test("combine: checks that are not sufficient leave a pass to the grader", () => {
 	assert.deepEqual(combine("pass", false, undefined), { final: "pass", by: "checks", queue: "the checks are not sufficient and no grader ran" });
 	assert.deepEqual(combine("pass", false, verdict("pass")), { final: "pass", by: "grader" });
-	assert.deepEqual(combine("pass", false, verdict("fail")), { final: "fail", by: "grader", queue: "the grader says fail where the checks say pass" });
+	assert.deepEqual(combine("pass", false, verdict("fail")), { final: "fail", by: "grader" });
 	assert.deepEqual(combine("pass", false, verdict("unknown")), { final: "fail", by: "grader", queue: "the grader can't tell" });
 });
 
@@ -108,7 +108,7 @@ test("the grader prompt names every failure locus and the JSON it must answer; t
 	for (const section of ["Done means", "Also acceptable", "Not done", "What the checks cover", "Side effects"]) assert.ok(rubric.includes(section), section);
 });
 
-test("auto: a judged task's wrong answer passes the checks and fails the grader, which decides and queues the disagreement", async () => {
+test("auto: a judged task's wrong answer passes the checks and fails the grader, which decides it with no queue", async () => {
 	const s = store();
 	const judge = fakeJudge((input) => (input.tree.includes('"1"') ? verdict("fail", "planning") : verdict("pass")));
 	const results = await runBench({ tasks: fakeTasks("fake.settings.volume-judged"), arms: [arm("fake-right"), arm("fake-wrong")], seeds: [1], backend: fakeBackend({ agents: FAKE_AGENTS }), store: s, judge });
@@ -121,11 +121,8 @@ test("auto: a judged task's wrong answer passes the checks and fails the grader,
 	assert.equal(wrong.outcome, "fail");
 	assert.equal(wrong.by, "grader");
 	assert.deepEqual(wrong.grade, { verdict: "fail", locus: "planning", by: "grader", confidence: "high", judge: "fake-judge" });
-	const queue = jsonl(join(s.dir, "human-queue.jsonl"));
-	assert.equal(queue.length, 1);
-	assert.equal(queue[0].run, wrong.run);
-	assert.equal(queue[0].reason, "the grader says fail where the checks say pass");
-	assert.ok(queue[0].record.endsWith(`${wrong.run}.jsonl`));
+	assert.equal(wrong.queue, undefined);
+	assert.equal(existsSync(join(s.dir, "human-queue.jsonl")), false, "nothing for a person");
 	const grade = recordOf(s, wrong.run).find((entry) => entry.kind === ENTRY.grade);
 	assert.equal(grade.data.judge, "fake-judge");
 	assert.equal(grade.data.locus, "planning");
