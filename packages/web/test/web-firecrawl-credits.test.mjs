@@ -9,6 +9,7 @@ import { test } from "node:test";
 import { publicCheck, publicFetch, readPage } from "@parcha/pi-browser";
 import * as web from "../dist/index.js";
 import { firecrawlScrapeBody, firecrawlSearchBody, firecrawlSettingsProblems } from "../dist/providers/firecrawl.js";
+import { KEYED_MAX_BYTES } from "../dist/providers/keyed.js";
 import { network } from "./fixtures/fake-network.mjs";
 
 const CREDIT = 0.00099;
@@ -133,6 +134,24 @@ test("a search answer that is not JSON: charged at the hold, no crash", async ()
   const { answer } = await w.search({ objective: "Find the Fed's 2024 report", queries: ["fed report"] }, { n: 4 });
   assert.ok("error" in answer, JSON.stringify(answer));
   assert.deepEqual(booked, [{ name: "Firecrawl's search", hold: credits(10), usd: credits(10) }]);
+});
+
+test("a 2xx answer past KEYED_MAX_BYTES is read no further than the bound to find its credits: charged at the hold", async () => {
+  const MiB = 1024 * 1024;
+  let pulled = 0;
+  // A 12 MiB answer, streamed a MiB at a time, counting what is pulled from it.
+  const big = () => new Response(new ReadableStream({
+    pull(controller) {
+      if (pulled >= 12 * MiB) return controller.close();
+      pulled += MiB;
+      controller.enqueue(new Uint8Array(MiB).fill(32));
+    },
+  }), { status: 200, headers: { "content-type": "application/json" } });
+  const { w, booked } = firecrawlWeb(() => big());
+  const { receipt } = await w.fetch(PUBLIC);
+  assert.ok(pulled <= KEYED_MAX_BYTES + 2 * MiB, `${pulled / MiB} MiB of a 12 MiB answer were read`);
+  assert.deepEqual(booked, [{ name: "Firecrawl's scrape", hold: credits(100), usd: credits(100) }]);
+  assert.match(receipt.cost.lines[0].basis, /the hold, 100 credits; Firecrawl reported no credit count/);
 });
 
 test("a PDF cut at its page cap says so in the text the agent reads: pages 1-100 of N", async () => {
