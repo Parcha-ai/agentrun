@@ -576,7 +576,8 @@ export function fakeHost({
 				fake.treeStages.push({ machine: m.id, uid, gid, path, copy, blocks: Number(blocks) });
 				const tar = tarOfPath(m, path);
 				if (treeStage === "fail" || tar === undefined) return proc.exit(1, `find: '${path}': Permission denied\n`);
-				if (treeStage === "big") return proc.exit(1, "File size limit exceeded\n");
+				// Its file-size limit, as ulimit -f holds tar to it: a tar past `blocks` 512-byte blocks fails.
+				if (treeStage === "big" || tar.length > Number(blocks) * 512) return proc.exit(1, "File size limit exceeded\n");
 				m.files.set(copy, tar);
 				proc.exit(0);
 			});
@@ -843,9 +844,12 @@ export function fakeHost({
  * under) its entries named relative to it, each directory before what it holds; else undefined. Read-stage copies are
  * not the machine's files.
  */
+/** The mtime of every entry tarOfPath writes: one fixed second, so an archive made twice is the same bytes. */
+const FAKE_MTIME = 1_700_000_000;
+
 export function tarOfPath(m, path) {
 	const bytes = m.files.get(path);
-	if (bytes !== undefined) return tarOf([{ name: posix.basename(path), type: "file", mode: 0o644, body: bytes }]);
+	if (bytes !== undefined) return tarOf([{ name: posix.basename(path), type: "file", mode: 0o644, body: bytes, mtime: FAKE_MTIME }]);
 	const below = [...m.files.keys()].filter((each) => each.startsWith(`${path}/`)).sort();
 	if (below.length === 0) return undefined;
 	const entries = [];
@@ -857,10 +861,10 @@ export function tarOfPath(m, path) {
 			const dir = parts.slice(0, depth).join("/");
 			if (!dirs.has(dir)) {
 				dirs.add(dir);
-				entries.push({ name: `${dir}/`, type: "dir", mode: 0o755 });
+				entries.push({ name: `${dir}/`, type: "dir", mode: 0o755, mtime: FAKE_MTIME });
 			}
 		}
-		entries.push({ name: rel, type: "file", mode: 0o644, body: m.files.get(each) });
+		entries.push({ name: rel, type: "file", mode: 0o644, body: m.files.get(each), mtime: FAKE_MTIME });
 	}
 	return tarOf(entries);
 }

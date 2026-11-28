@@ -1335,6 +1335,33 @@ test("pulls in flight at once make their copies one at a time, each read from it
 	await connection.close();
 });
 
+test("the copies pulls hold at once stay within one copy's bound: a pull read once and paused keeps its bytes, the next copy is made with the room left, and an ended pull gives its room back", async () => {
+	const { provider, fake } = setup({}, { download: true });
+	const ref = made(await create(provider));
+	const m = only(fake);
+	treeIn(m);
+	m.files.set("/work/other/c.bin", Buffer.alloc(CHUNK + 3, 7));
+	const connection = made(await provider.connect(ref));
+	// One pull read once, then paused: its copy is held, and the daemon's pull is ended.
+	const paused = made(await connection.client.call("tar.pull.begin", { path: "/work/tree" }));
+	assert.equal(made(await connection.client.call("tar.pull.read", { id: paused.id })).eof, false);
+	const held = tarOfPath(m, "/work/tree").length;
+	// The next copy is made with what is left of the bound, so the two together never pass it.
+	const other = made(await pullTar(connection.client, "/work/other"));
+	assert.equal(Buffer.compare(Buffer.from(other), tarOfPath(m, "/work/other")), 0);
+	assert.equal(fake.treeStages[1].blocks, Math.floor((TREE_COPY_BYTES - held) / 512), "the next copy's limit is the room the paused one leaves");
+	// A pull read to its end lets its copy go: the paused one's is still held.
+	const again = made(await pullTar(connection.client, "/work/other"));
+	assert.equal(Buffer.compare(Buffer.from(again), tarOfPath(m, "/work/other")), 0);
+	assert.equal(fake.treeStages[2].blocks, Math.floor((TREE_COPY_BYTES - held) / 512), "a copy read to its end holds no room");
+	// The paused pull's end gives its room back.
+	made(await connection.client.call("tar.pull.end", { id: paused.id }));
+	made(await pullTar(connection.client, "/work/tree"));
+	assert.equal(fake.treeStages[3].blocks, TREE_COPY_BYTES / 512, "an ended pull holds no room");
+	assert.deepEqual(await copiesLeft(m), [], "no copy left in the machine");
+	await connection.close();
+});
+
 test("a tar.pull ended before its first read, or the connection closed while its copy downloads, leaves nothing open and no copy behind", async () => {
 	const held = deferred();
 	const { provider, fake } = setup({}, { download: true, onStep: (step) => (step === "download" ? held.promise : undefined) });
