@@ -1702,12 +1702,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (workspace !== null && workspace !== undefined) for (const [key, meta] of mcpMeta) if (mcpRowWorkspace(key) === workspace) seen.set(key.slice(workspace.length + 1), meta);
     return new Map([...seen].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
   };
-  /** A server's listing to pin, from the row `server` means to the request being served: its workspace's own when it
-   *  saved one, else the shared one (read as the server's own work, which reaches the shared rows). */
-  const pinListingOf = (server: string, signal: AbortSignal) => {
-    const workspace = workspaceNow();
-    const own = workspace !== undefined && mcpMeta.has(mcpRowKey(server, workspace));
-    return own ? mcpServers.pinListing(server, signal) : outsideWorkspace(() => mcpServers.pinListing(server, signal));
+  /** A server's listing to pin, from the row `server` means in `workspace` (the request's, unless an agent's is named):
+   *  its workspace's own when it saved one, read there, else the shared one (read as the server's own work, which reaches
+   *  the shared rows). */
+  const pinListingOf = (server: string, signal: AbortSignal, workspace: string | null | undefined = workspaceNow()) => {
+    const own = workspace !== null && workspace !== undefined && mcpMeta.has(mcpRowKey(server, workspace));
+    return own ? inWorkspace(workspace, () => mcpServers.pinListing(server, signal)) : outsideWorkspace(() => mcpServers.pinListing(server, signal));
   };
   // Each saved server's tools in the harnesses' shape (the registry keeps input_schema; a bound tool takes inputSchema),
   // with whether each can be granted: a known meta tool can't (mcp-meta.ts).
@@ -2627,7 +2627,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // (called at request time, after they are assigned) rather than reading them before their declaration.
     told: (error) => told(error),
     runnable,
-    pinFirst: (revision) => pinFirst(revision),
+    pinFirst: (revision, agent) => pinFirst(revision, agent),
     readyFiles: async (ids) => (await uploadsHere()).readyFiles(ids as string[]),
     files: { hold: (runId, ids) => uploads.hold(runId, ids), release: (runId) => uploads.release(runId), place: (runId, agentId, launch) => archilFiles.place(runId, agentId, launch) },
     fallbackPlace: (kind, tools) => fallbackPlace(kind, tools),
@@ -3847,10 +3847,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   /** The revision a run starts on, its MCP tools pinned: one saved with no pin that grants a tool of a server saved here is
    *  pinned at this, its first run (mcp-pin-first.ts pinFirst, the claim's path too). One that can't be (a server that
-   *  can't be listed, or no longer lists a granted tool) is left unpinned, and runnable refuses it (409) as before. */
-  async function pinFirst(revision: Revision): Promise<Revision> {
+   *  can't be listed, or no longer lists a granted tool) is left unpinned, and runnable refuses it (409) as before. Its
+   *  servers are its agent's (`agent`) workspace's, as runnable and the run's claim read them, whoever starts it. */
+  async function pinFirst(revision: Revision, agent?: string): Promise<Revision> {
     if (((revision as { mcpPin?: unknown }).mcpPin ?? null) !== null) return revision;
-    const pin = await pinFirstOf(revision, { saved: (server) => metaOf(server) !== undefined, pinListing: (server) => pinListingOf(server, stopping.signal), pinOnce: (id, made) => store.agents.pinOnce(id, made) });
+    const workspace = agent === undefined ? undefined : await store.agents.workspace(agent);
+    const pin = await pinFirstOf(revision, { saved: (server) => metaOf(server, workspace) !== undefined, pinListing: (server) => pinListingOf(server, stopping.signal, workspace), pinOnce: (id, made) => store.agents.pinOnce(id, made) });
     return pin ? ({ ...revision, mcpPin: pin } as unknown as Revision) : revision;
   }
 

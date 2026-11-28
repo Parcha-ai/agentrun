@@ -9,11 +9,13 @@
 // no network.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { join } from "node:path";
 import { test } from "node:test";
 import { startFakeComposio } from "./fixtures/fake-composio.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { follow, serve, serverLog, withEnv } from "./support.mjs";
 import { storeOn } from "./store-helpers.mjs";
+import { raw } from "./store-target.mjs";
 
 const { WORKSPACE_ROUTES } = await import("../dist/api-only.js");
 const { SECRET_WRITE_REFUSAL } = await import("../dist/secret-writes.js");
@@ -347,6 +349,26 @@ for (const shared of [false, true]) {
     await runAdd(s.ops, agent.body.agent_id);
     assert.equal(calls(s.one), 1, "the run called W1's own server");
     assert.ok(s.one.sent.includes(`Bearer ${RUN}`), "with the token the run was handed");
+    assert.equal(calls(s.two), 0, "never the shared one");
+  });
+}
+
+for (const shared of [false, true]) {
+  test(`an earlier revision of a workspace's agent, its first run started by the unscoped token, is pinned from that workspace's own server (${shared ? "beside a shared one of the name at another origin" : "saved there alone"}), and the run calls it`, async (t) => {
+    const s = await setup(t);
+    const calls = (gw) => gw.fake.log.filter((entry) => entry.method === "tools/call" && entry.tool === "add").length;
+    assert.equal((await s.w1("PUT", PATH, perRun(s.one.fake.url))).status, 200);
+    if (shared) assert.equal((await s.ops("PUT", PATH, perRun(s.two.fake.url))).status, 200);
+    const agent = await agentAdd(s.w1, `ws-first-${shared}`);
+    assert.equal(agent.status, 201, JSON.stringify(agent.body));
+    const revision = (await s.w1("GET", `/agents/${agent.body.agent_id}`)).body.revision;
+    // As a server open leaves a revision an earlier build saved: no pin, its first run's to make (mcp-pin-first.ts).
+    const db = await raw(join(s.server.data, "store.sqlite"), { timeout: 10_000 });
+    try { await db.run("UPDATE revisions SET mcp_pin = NULL WHERE id = ?", revision); } finally { await db.close(); }
+    assert.equal((await s.server.store.agents.revision(revision))?.mcpPin ?? null, null);
+    await runAdd(s.ops, agent.body.agent_id);
+    assert.equal((await s.server.store.agents.revision(revision))?.mcpPin?.contextforge?.url, s.one.fake.url, "pinned from W1's own row");
+    assert.equal(calls(s.one), 1, "the run called W1's own server");
     assert.equal(calls(s.two), 0, "never the shared one");
   });
 }

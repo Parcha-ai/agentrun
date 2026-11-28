@@ -445,8 +445,8 @@ export interface StartDeps {
   runnable(revision: Revision, place: Place, options: { capped: boolean; carried?: readonly string[]; held?: boolean; agent?: string }): Promise<HeldRefusal | undefined>;
   /** The revision a run starts on, its MCP tools pinned: one that grants an MCP tool and was saved with no pin (before
    *  pins were made at save, or an inline agent's version stored then) is pinned once, at its first run (server.ts
-   *  pinFirst); any other as it is. */
-  pinFirst?(revision: Revision): Promise<Revision>;
+   *  pinFirst), from the servers its agent's (`agent`) workspace reaches; any other as it is. */
+  pinFirst?(revision: Revision, agent: string): Promise<Revision>;
   /** The uploaded files named by file_ids, ready to copy; throws when one is not ready (server.ts uploads.readyFiles). The
    *  copy into the run's work/ is the runner's at its claim; this only checks they are ready before the run starts. */
   readyFiles(ids: readonly unknown[]): Promise<unknown>;
@@ -854,7 +854,7 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // Checked as pinned: an earlier revision with no pin is pinned now, once (StartDeps.pinFirst); one that could not be, as
   // its server could not be listed, is refused with the rest (runnable). A held run kept from running by its model alone
   // is not refused: those words ride its hold, for its start to answer (computer-held.ts).
-  const modelRefused = await deps.runnable(deps.pinFirst ? await deps.pinFirst(revision) : revision, place, { capped: cap !== undefined, carried, held: hold !== undefined, agent: entry.agent.id });
+  const modelRefused = await deps.runnable(deps.pinFirst ? await deps.pinFirst(revision, entry.agent.id) : revision, place, { capped: cap !== undefined, carried, held: hold !== undefined, agent: entry.agent.id });
   // The title shows on the run's page, the runs list and Mission Control: built from its input as shown, each held value
   // redacted before a long one is cut (a cut key could no longer be found). Read whole first (redactedOutputWhole): an input
   // a held value is split across two fields of is "[redacted]", so a workflow's title is made of none of it.
