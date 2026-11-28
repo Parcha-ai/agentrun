@@ -144,7 +144,7 @@ async function follow(cli, target, io, runId, deadline) {
 
 /** Every lane followed at once, then the lanes side by side on stdout (a table, or JSON with --json) and a line on stderr
  *  for each lane that did not complete; its exit code. `lanes`: each `{ lane, harness, model, run_id?, error?, unsure? }`. */
-async function waitLanes(cli, target, io, label, lanes, seconds, json) {
+async function waitLanes(cli, target, io, label, lanes, seconds, json, more = false) {
   const deadline = Date.now() + seconds * 1000;
   const followed = await Promise.all(lanes.map((lane) => (lane.run_id && !lane.error ? follow(cli, target, io, lane.run_id, deadline) : undefined)));
   const now = Date.now();
@@ -155,9 +155,11 @@ async function waitLanes(cli, target, io, label, lanes, seconds, json) {
     return { ...lane, status, cost_usd: run?.cost?.usd ?? null, cap_usd: run?.cost?.cap_usd ?? null, seconds: run ? secondsOf(run, now) : null, answer: lane.error ? lineOf(lane.error) : answerOf(run), got };
   });
   const printed = rows.map(({ got, ...row }) => row);
-  if (json) io.stdout.write(`${JSON.stringify({ label, filter: `${RACE_KEY}:${label}`, console: `#/races/${encodeURIComponent(label)}`, lanes: printed }, null, 2)}\n`);
+  if (json) io.stdout.write(`${JSON.stringify({ label, filter: `${RACE_KEY}:${label}`, console: `#/races/${encodeURIComponent(label)}`, lanes: printed, ...(more ? { more: true } : {}) }, null, 2)}\n`);
   else io.stdout.write(tableOf(printed));
-  let failed = false;
+  // A label with more runs than one read: lanes past it are neither shown nor followed, so the race is never done.
+  let failed = more;
+  if (more) io.stderr.write(`More than ${RACE_READ} runs carry the label ${RACE_KEY}:${label}: only the first ${RACE_READ} were followed, so the race is not reported done.\n`);
   let person = false;
   const again = `agentrun race show ${label} --wait`;
   for (const row of rows) {
@@ -175,8 +177,12 @@ async function waitLanes(cli, target, io, label, lanes, seconds, json) {
     } else if (got.run === undefined) {
       failed = true;
       io.stderr.write(`${name} could not be read: ${lineOf(got.said) || `exit ${got.code}`}; see ${again}.\n`);
-    } else if (row.status === "completed") {
+    } else if (row.status === "completed" && got.code === 0) {
       continue;
+    } else if (row.status === "completed") {
+      // Completed, its timeline not final yet (end-of-run work going on) when the wait ran out: not done.
+      failed = true;
+      io.stderr.write(`${name} is still finishing after ${seconds} s; it goes on: see ${again}.\n`);
     } else if (ENDED.has(row.status)) {
       failed = true;
       io.stderr.write(`${name} ${row.status === "cancelled" ? "was cancelled" : "failed"}.\n`);
@@ -324,7 +330,7 @@ export const RACE_SHOW = {
     const lane = (run) => Number(run.labels?.[LANE_KEY]);
     const lanes = [...runs].sort((a, b) => (lane(a) || Infinity) - (lane(b) || Infinity) || String(a.created_at).localeCompare(String(b.created_at)))
       .map((run) => ({ lane: run.labels?.[LANE_KEY] ?? null, harness: run.labels?.harness ?? null, model: run.labels?.model ?? null, run_id: run.run_id, status: run.status, cost_usd: run.cost?.usd ?? null, cap_usd: run.cost?.cap_usd ?? null, seconds: secondsOf(run, now) }));
-    if (seconds !== undefined) return waitLanes(cli, target, io, label, lanes.map(({ lane, harness, model, run_id }) => ({ lane, harness, model, run_id })), seconds, values.json);
+    if (seconds !== undefined) return waitLanes(cli, target, io, label, lanes.map(({ lane, harness, model, run_id }) => ({ lane, harness, model, run_id })), seconds, values.json, Boolean(read.answer?.next_cursor));
     io.stdout.write(`${JSON.stringify({ label, lanes, ...(read.answer?.next_cursor ? { more: true } : {}) }, null, 2)}\n`);
     return 0;
   },
