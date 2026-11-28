@@ -5,7 +5,9 @@
 // script as the JavaScript path's failures do. The model is a scripted origin and every tool local: nothing leaves
 // this process.
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -136,6 +138,36 @@ test("a Python script's worker process holds none of the server's environment", 
   assert.ok(seen.length >= 1, "its worker, found while the script ran");
   assert.ok(seen.every((names) => !names.includes(sentinel)), "the sentinel set in the server's environment is in no worker's");
   assert.deepEqual(seen, seen.map(() => []), `each worker starts with an empty environment (they held: ${JSON.stringify(seen)})`);
+});
+
+test("Python is opt-in: the server installs without @pydantic/monty, and where it is missing a Python script answers the npm line that adds it, while JavaScript runs", async () => {
+  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  const version = pkg.peerDependencies?.["@pydantic/monty"];
+  assert.equal(pkg.optionalDependencies?.["@pydantic/monty"], undefined, "not an optional dependency: npm would install it with the server");
+  assert.deepEqual([version, pkg.peerDependenciesMeta?.["@pydantic/monty"]?.optional], ["1.6.0", true], "an optional peer, pinned: npm leaves it out unless asked");
+  assert.equal(pkg.devDependencies?.["@pydantic/monty"], version, "this repository's tests have it");
+  // A server process where the package does not resolve, as an install without it.
+  const hook = `export async function resolve(specifier, context, next) { if (specifier === "@pydantic/monty") { const error = new Error("Cannot find package '@pydantic/monty'"); error.code = "ERR_MODULE_NOT_FOUND"; throw error; } return next(specifier, context); }`;
+  const register = `import { register } from "node:module"; register(${JSON.stringify(`data:text/javascript,${encodeURIComponent(hook)}`)});`;
+  const child = `
+    const { metaTools } = await import(${JSON.stringify(new URL("../dist/runner/meta-tools.js", import.meta.url).href)});
+    const tool = { name: "read_file", description: "Read.", inputSchema: { type: "object", properties: {} }, replay: "never", call: async () => ({ text: "read" }) };
+    const [codemode] = metaTools({ tools: () => [tool], granted: async () => true, codemode: true, discovery: { search: false, call: false } });
+    const nested = { call: async (name) => ({ text: name + " ran", fresh: true }), memo: async (_key, value) => value };
+    const signal = new AbortController().signal;
+    const python = await codemode.call({ script: "await tools.read_file({})", language: "python" }, { signal, nested });
+    const javascript = await codemode.call({ script: "return await tools.read_file({})" }, { signal, nested });
+    process.stdout.write(JSON.stringify({ python, javascript }));
+  `;
+  const dir = mkdtempSync(join(tmpdir(), "codemode-py-missing-"));
+  const server = join(dir, "server.mjs");
+  writeFileSync(server, child);
+  const { stdout } = await promisify(execFile)(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(register)}`, server], { env: { ...process.env, AGENTRUN_TELEMETRY: "0" } }).finally(() => rmSync(dir, { recursive: true, force: true }));
+  const { python: answer, javascript } = JSON.parse(stdout);
+  assert.equal(answer.isError, true, answer.text);
+  assert.ok(answer.text.includes(`\`npm i @pydantic/monty@${version}\``), answer.text);
+  assert.match(answer.text, /Nothing was run\.$/, answer.text);
+  assert.equal(javascript.isError, undefined, javascript.text);
 });
 
 /** The pids of process `pid`'s children (Linux). */
