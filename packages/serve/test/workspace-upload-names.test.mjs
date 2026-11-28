@@ -11,12 +11,12 @@ import { test } from "node:test";
 import { client, dropSchema, freshSchema, PG_URL, postgresOnly, sqliteOnly } from "./store-target.mjs";
 import { storeOn } from "./store-helpers.mjs";
 import { scratch, serve, withEnv } from "./support.mjs";
-import { fakeClock, hookServer } from "./trigger-support.mjs";
+import { fakeClock, hookServer, until } from "./trigger-support.mjs";
 
 const { migrate, migrationsIn, openPostgresStore, openSqliteStore } = await import("../dist/store/index.js");
 const { SCHEMA_VERSION } = await import("../dist/store/schema.js");
 const { mintSecret } = await import("../dist/standard-webhooks.js");
-const { deleteTemplate, dropRemovedUploads, importTemplate, loadImported } = await import("../dist/template-import.js");
+const { deleteTemplate, dropRemovedUploads, importTemplate, loadImported, templateNames } = await import("../dist/template-import.js");
 const { TemplateRegistry } = await import("../dist/templates.js");
 const { inWorkspace } = await import("../dist/workspace-scope.js");
 
@@ -176,6 +176,42 @@ test("two workspaces importing one new package name at once both keep their own"
   assert.deepEqual(inWorkspace(B, () => registry.get(ID))?.origin.sha, second.pkg.origin.sha);
   assert.equal((await rows.keys()).length, 2);
 });
+
+// A workspace's reimport of its own name, sent while its own delete of that name runs, at each point of the delete: after
+// it read the row, after the store's delete and before the registry's, and on another server of the store between those
+// two. The name is the workspace's own throughout, so the reimport is never told it is held outside the workspace: it
+// lands (201), or at most is told to retry.
+for (const [at, hook, elsewhere] of [["after the delete read the row", "stamp", false], ["between the store's delete and the registry's", "remove", false], ["on another server of the store, between the delete's store delete and its registry's", "remove", true]]) {
+  test(`a workspace's reimport of its own name racing its own delete, ${at}, lands or is retryable, never name_taken`, { timeout: 60_000 }, async (t) => {
+    const { store, registry, deps, signal } = await importsOn(t);
+    const first = await inWorkspace(A, () => importTemplate(deps, upload(notes("A")), signal));
+    assert.equal(first.status, 201);
+    const other = new TemplateRegistry([]);
+    await loadImported({ registry: other, store }, (id, why) => assert.fail(`${id}: ${why}`));
+    const reimporter = elsewhere ? { ...deps, registry: other } : deps;
+    const rows = store.importedTemplates;
+    let again;
+    let settled = false;
+    const racing = { ...deps, store: { ...deps.store, importedTemplates: { ...rows, [hook]: async (...args) => {
+      const answer = await rows[hook](...args);
+      again = inWorkspace(A, () => importTemplate(reimporter, upload(notes("A, again")), signal)).then((ok) => ok, (error) => error);
+      again.then(() => (settled = true));
+      // On once the reimport has answered, or waits for the name this delete holds on this server.
+      await until(() => settled || templateNames(registry).waiting(ID, A) > 0, 10_000, "the reimport neither answered nor waited for the name");
+      return answer;
+    } } } };
+    const deleting = await inWorkspace(A, () => deleteTemplate(racing, ID)).then(() => 204, (error) => error.code);
+    const reimport = await again;
+    assert.ok(reimport.status === 201 || reimport.retryable === true, `the reimport (delete ${deleting}): ${reimport.code ?? reimport.status} ${reimport.message ?? ""}`);
+    assert.notEqual(reimport.code, "name_taken");
+    if (reimport.status === 201) {
+      assert.equal((await rows.stamp(ID, A))?.sha, reimport.pkg.origin.sha, "the reimport's row is A's");
+      assert.equal(inWorkspace(A, () => reimporter.registry.get(ID))?.origin.sha, reimport.pkg.origin.sha, "and served to A where it landed");
+    }
+    const after = await inWorkspace(A, () => importTemplate(deps, upload(notes("A, third")), signal));
+    assert.equal(after.status, 201, "the name is still A's to import");
+  });
+}
 
 test("an agent's purge takes the upload it was applied from in its own workspace alone; another workspace's agent of that name keeps its own", { timeout: 60_000 }, async (t) => {
   const { store } = await storeOn(t);
