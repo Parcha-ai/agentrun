@@ -614,11 +614,11 @@ export async function startRun(store: Store, deps: StartDeps, entry: AgentEntry,
   const named = launch.learning?.settings ? await noteRunLearning(store.settings, entry.agent.id, runId, Date.now()) : undefined;
   try {
     const labels = labelsOf(body.labels);
-    const row = await withHeldFiles(store, deps, runId, entry.agent.id, revision, launch, (launch) => store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, expectedCurrent: entry.agent.currentRevision, ...(origin ? { origin } : {}), ...(labels ? { labels } : {}), ...(firing ? { firing } : {}) }, { body: launchBody(launch), ...(sealed ? { sealed: sealed(runId, launch, target) } : {}) }));
-    if (row.id !== runId) await named?.undo().catch(() => undefined);
-    return row;
+    return await withHeldFiles(store, deps, runId, entry.agent.id, revision, launch, (launch) => store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, expectedCurrent: entry.agent.currentRevision, ...(origin ? { origin } : {}), ...(labels ? { labels } : {}), ...(firing ? { firing } : {}) }, { body: launchBody(launch), ...(sealed ? { sealed: sealed(runId, launch, target) } : {}) }));
   } catch (error) {
-    // Put back only when no run of this id was made (an answer lost after its commit keeps its name).
+    // A used origin key never makes a second run: the store refuses it (StoreConstraint) and writes nothing, so an
+    // origin retry lands here too. Put back only when no run of this id was made (an answer lost after its commit keeps
+    // its name).
     if (named && (await store.runs.get(runId).then((row) => row === undefined, () => false))) await named.undo().catch(() => undefined);
     if (error instanceof RevisionMoved) throw new ApiError("precondition_failed", "The agent changed while this run was prepared. Start again using its current setup.");
     // Only another writer of the store got here first under the same origin key: its run is the one asked for.
