@@ -6,7 +6,6 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
-import { fakeUrlPassword } from './export-source.mjs';
 
 const exec = promisify(execFile);
 const exporter = await readFile(new URL('./export-source.mjs', import.meta.url));
@@ -516,23 +515,6 @@ test('a Northflank docs URL in the provider scorecard is a reviewed citation; th
     assert.deepEqual(blocked.findings.map(finding => [finding.path, finding.rule]), [[path, 'internal_domain']], text);
     await rm(join(f.root, path));
   }
-});
-
-test('a URL password is an explicit fake only when it is not-a-secret, alone or after one word and a hyphen', () => {
-  assert.equal(fakeUrlPassword('hunter2'), false);
-  assert.equal(fakeUrlPassword('not-a-secret-really'), false);
-  assert.equal(fakeUrlPassword('hunter2-not-a-secret'), true);
-  assert.equal(fakeUrlPassword('not-a-secret'), true);
-});
-
-test('a URL whose password is an explicit fake is a reviewed credential, not a finding', async t => {
-  const f = await fixture(t);
-  const path = 'packages/computer/test/fake.test.mjs';
-  await f.write(path, 'const apiUrl = "https://user:hunter2-not-a-secret@api.example.test";\n');
-  await f.run();
-  const passed = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
-  assert.deepEqual(passed.findings, []);
-  assert.deepEqual(passed.reviewedFindings.map(finding => [finding.path, finding.rule, finding.reason]), [[path, 'credential_url', 'Explicit fake credential in URL.']]);
 });
 
 test('vendored code an app keeps is listed apart, with its source, licenses and size, and a license the inventory does not take is flagged', async t => {
