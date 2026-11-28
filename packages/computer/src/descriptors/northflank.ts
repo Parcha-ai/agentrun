@@ -17,6 +17,10 @@ export const NORTHFLANK = defineProvider({
 		{ name: "NORTHFLANK_COMPUTER_TEAM_ID", option: "teamId", required: false },
 	],
 	metered: true,
+	// Its create answers the size the vendor runs the computer at (resources), which its time is priced by: Northflank's
+	// get-service (API docs, services/get-service) answers billing.deploymentPlan, required, and the plan maps to its
+	// vCPUs and MB.
+	sized: true,
 	mounts: [],
 	// All three are init's, through root in the microVM (unverified until the live run: root makes a network namespace).
 	network: ["none", "open", "allow"],
