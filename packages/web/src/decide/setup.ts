@@ -17,6 +17,9 @@ export const JEV_SETUPS: Readonly<Record<string, JevSetup>> = Object.freeze({
   /** Jev's top 2 results whole, each later one its passage of at most 300 characters Jev scores most relevant, a fetch's
    *  objective shown 5 chunks. */
   "top2-best300-found5": Object.freeze({ name: "top2-best300-found5", search: Object.freeze({ full: 2, cut: 300, pick: "best" as const }), fetch: Object.freeze({ found: 5 }) }),
+  /** Jev's top 3 results whole, each later one its passage of at most 300 characters Jev scores most relevant, a fetch's
+   *  objective shown 8 chunks, as shipped. */
+  "top3-best300-found8": Object.freeze({ name: "top3-best300-found8", search: Object.freeze({ full: 3, cut: 300, pick: "best" as const }), fetch: Object.freeze({ found: 8 }) }),
 });
 
 /** The setup a host's Jev runs under when it names none (jevWebDecider). */
