@@ -7,6 +7,7 @@ import { createServer } from "node:http";
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
+import { pathToFileURL } from "node:url";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import Ajv2020 from "ajv/dist/2020.js";
 import { CaseError, CLAIM_READ_TIMEOUT_MS, callsOf, evalTemplate, exitCodeOf, fakeAnswer, gradeDeterministic, graderInput, markdownReport, metricsOf, outputVerdict, PAGE_READ_TIMEOUT_MS, PATTERN_MS, readBound, readCases, searched, startFake, verdictOf, waitRun } from "../dist/template-eval.js";
@@ -334,6 +335,21 @@ test("a $pattern that backtracks without end stops at its limit: the tool_used g
   assert.equal(answered.isError, true);
   assert.match(answered.content[0].text, new RegExp(`The fake files's open: a when \\$pattern did not finish within ${PATTERN_MS} ms`));
   assert.deepEqual(fakeAnswer(fixture, "open", { path: "aab" }), { content: [{ type: "text", text: "opened" }] }, "the same pattern on a short value still answers");
+});
+
+test("a $pattern test waits for its own job's answer: a notify that comes late, after the next test started, never answers that test", async (t) => {
+  // dist/pattern-bound.js loads ./pattern-worker.js beside itself: a copy of it beside the late-notify stand-in runs the
+  // real caller against a worker that wakes it early on every job after its first.
+  const dir = await scratch(t);
+  writeFileSync(join(dir, "package.json"), '{"type": "module"}\n');
+  cpSync(new URL("../dist/pattern-bound.js", import.meta.url), join(dir, "pattern-bound.js"));
+  cpSync(new URL("./fixtures/pattern-worker-late-notify.mjs", import.meta.url), join(dir, "pattern-worker.js"));
+  const { testPattern } = await import(pathToFileURL(join(dir, "pattern-bound.js")).href);
+  for (const [source, text, matched] of [["a+", "aaa", true], ["b+", "aaa", false], ["inputs/.*", "inputs/message.md", true], ["src/.*", "inputs/message.md", false]]) {
+    const started = Date.now();
+    assert.equal(testPattern(source, text), matched, `${source} on ${text}: the job's own answer, after the early wake-up`);
+    assert.ok(Date.now() - started >= 250, `the answer came after the stand-in's 300 ms pause, not at the early wake-up (${Date.now() - started} ms)`);
+  }
 });
 
 test("code-review's off-by-one passes a read of the skill's folder or the run's message however its path is spelled, and fails any other read, a .. in it included", () => {
