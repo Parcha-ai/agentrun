@@ -5571,8 +5571,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if (await writesSecretFor(found.name, body, checked)) {
         authFailed(`/v2${path}`, "secret_without_session");
         // Where the person finishes it: the operation's console page, filled with what the request held that is no
-        // secret (secretPageFor), at the address people open the console at.
-        const page = await secretPageFor(found.name, body, { params, store: mcpStore });
+        // secret (secretPageFor), at the address people open the console at. An API-only server serves no console
+        // (api-only.ts), so its refusal names no page.
+        const page = options.apiOnly === true ? undefined : await secretPageFor(found.name, body, { params, store: mcpStore });
         const link = page === undefined ? undefined : `${linkOrigin(req)}${page}`;
         throw new ApiError("forbidden", secretWriteRefusal(link, secretRefusalWords(found.name, checked)), link === undefined ? {} : { details: { console_url: link } });
       }

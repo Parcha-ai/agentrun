@@ -48,6 +48,7 @@ test("a token's PUT of a bearer token is 403 in the one refusal and keeps nothin
   const prices = await put("fake", { url: fake.url, auth: { type: "bearer" }, prices: { add: 0.01 } });
   assert.equal(prices.status, 403, `a token's edit of the owner's server is refused: ${prices.text}`);
   assert.ok(String(prices.json?.error?.message).startsWith(tokenWriteOverWords("fake", true)));
+  assert.match(String(prices.json?.error?.message), /Use another name, or change it from the owner's signed-in session\. Finish it in the console: /, "a server with an owner's session sends the caller there");
   assert.match(String(prices.json?.error?.details?.console_url), /[#&?]change=fake\b/, "the link opens the server's Change form");
   assert.deepEqual((await call(server.port, { path: "/v2/settings/mcp-servers/fake", headers: bearer })).json, before, "the owner's row is as it was");
   const owners = await owner("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "bearer" }, prices: { add: 0.01 } });
