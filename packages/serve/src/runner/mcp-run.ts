@@ -223,8 +223,8 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
       // A workspace's server that stands on the workspace public-https mode alone (mcp-api-only-origins.ts
       // onPublicHttpsAlone), at the claim (strictAtClaim) or now, is held to publicMcpServerAt at each request instead,
       // whatever its save checked: no private host the owner allows, no loopback, no cloud metadata name.
-      // A request whose rule can't be read now (the stored mode, its workspace's row) is refused, that call alone: refused
-      // here, it is marked unsent, so nothing is booked for it.
+      // A request whose rule or allowed hosts can't be read now (the stored mode, its workspace's row, the owner's private
+      // hosts) is refused, that call alone: refused here, it is marked unsent, so nothing is booked for it.
       reach: async (url, signal, server) => {
         let strict: boolean;
         try {
@@ -232,7 +232,17 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
         } catch {
           return { refused: "the rule its requests are held to could not be read just now" };
         }
-        const at = strict ? await publicMcpServerAt(new URL(url), signal, network, options.own ?? []) : await mcpServerAt(new URL(url), signal, network, { allowed: await privateOAuthHosts(options.store), loopback: options.loopback === true, own: options.own ?? [] });
+        let at: Awaited<ReturnType<typeof mcpServerAt>>;
+        if (strict) at = await publicMcpServerAt(new URL(url), signal, network, options.own ?? []);
+        else {
+          let allowed: string[];
+          try {
+            allowed = await privateOAuthHosts(options.store);
+          } catch {
+            return { refused: "the private hosts its owner allows could not be read just now" };
+          }
+          at = await mcpServerAt(new URL(url), signal, network, { allowed, loopback: options.loopback === true, own: options.own ?? [] });
+        }
         return "refused" in at ? { refused: at.refused } : { send: dialAt(network, at.address, options.fetch ?? fetch) as typeof fetch };
       },
       beforeCall: step.beforeCall,
