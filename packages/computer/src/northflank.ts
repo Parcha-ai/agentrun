@@ -76,6 +76,8 @@ const CALL_MS = 30_000;
 const PAGE = 100;
 /** The gets a listing makes at once, for the labels its answer lacks. */
 const LIST_READS = 8;
+/** How long a listing's read of a computer answers the next get of it, once: the adapter reads each one listed again. */
+const LISTED_READ_MS = 2_000;
 /** A stdin message's bytes, and the socket's backlog a write waits under. */
 const STDIN_BYTES = 64 * 1024;
 const BACKLOG_BYTES = 1024 * 1024;
@@ -175,6 +177,13 @@ class NorthflankHost implements MachineHost {
 	readonly #scope: string;
 	readonly #wsUrl: string;
 	readonly #webSocket: NorthflankSocketFactory;
+	/**
+	 * The last listings' reads, by id, each answering the next get of its computer once within LISTED_READ_MS: the
+	 * adapter's list reads every computer the host's listing names (foundBy), which here would read each a second time,
+	 * against a token's 1000 requests an hour. A create or a delete during a listing leaves its reads out.
+	 */
+	readonly #read = new Map<string, { machine: Machine; at: number }>();
+	#writes = 0;
 
 	constructor(options: { token: string; projectId: string; teamId?: string; apiUrl: string; fetch?: typeof fetch; webSocket: NorthflankSocketFactory }) {
 		this.#token = options.token;
@@ -222,15 +231,40 @@ class NorthflankHost implements MachineHost {
 			},
 			createOptions: { expiryTime: Math.min(MAX_EXPIRY_S, Math.max(MIN_EXPIRY_S, seconds)) },
 		};
+		this.#wrote();
 		const { body: made } = await this.#call("POST", "/services/deployment", ctx, { json: body, named: true, retry: (status) => status === 429 });
 		const id = (made as { data?: { id?: unknown } } | null)?.data?.id;
 		const service = typeof id === "string" && SLUG.test(id) ? id : req.name;
-		await this.#call("POST", `/services/${service}/scale`, ctx, { json: { instances: 1 }, retry: true });
+		try {
+			await this.#call("POST", `/services/${service}/scale`, ctx, { json: { instances: 1 }, retry: true });
+		} catch (error) {
+			// The service is made and billed: deleted here, its own bound and no caller's signal, before create answers.
+			// Where that fails too it may be there, so the code is the vendor's, which the adapter sweeps the name on.
+			try {
+				await this.delete(service, { timeoutMs: CALL_MS });
+			} catch (left) {
+				throw new HostError("vendor", `${(error as Error).message}; the service ${service} it made may be left, its delete failed (${(left as Error).message})`);
+			}
+			throw error;
+		}
 		return { id: service };
 	}
 
-	/** GET .../services/{id}; a 404 is none. */
+	/** A create or a delete: the listings' reads answer no get after it. */
+	#wrote(): void {
+		this.#writes += 1;
+		this.#read.clear();
+	}
+
+	/** GET .../services/{id}; a 404 is none. A listing's read of it within LISTED_READ_MS answers once instead. */
 	async get(id: string, ctx: HostCall): Promise<Machine | undefined> {
+		const listed = this.#read.get(id);
+		this.#read.delete(id);
+		if (listed !== undefined && Date.now() - listed.at < LISTED_READ_MS) return listed.machine;
+		return this.#get(id, ctx);
+	}
+
+	async #get(id: string, ctx: HostCall): Promise<Machine | undefined> {
 		const read = await this.#call("GET", `/services/${serviceId(id)}`, ctx, { retry: true, accept: (status) => status === 404 || (status >= 200 && status < 300) });
 		if (read.status === 404) return undefined;
 		const service = (read.body as { data?: Service } | null)?.data;
@@ -241,7 +275,8 @@ class NorthflankHost implements MachineHost {
 	/**
 	 * GET .../services, every page: the project's computers by name prefix, and the one whose id is the packed name when
 	 * one is asked. A listing carries no annotations, so each computer it names is read by get for its labels, LIST_READS
-	 * at a time; one gone between the two is left out. The adapter filters by the labels it asked.
+	 * at a time; one gone between the two is left out, and the reads answer the adapter's own read of each that follows
+	 * (#read). The adapter filters by the labels it asked.
 	 */
 	async list(labels: Record<string, string>, ctx: HostCall): Promise<Machine[]> {
 		const name = labels[PACKED_NAME];
@@ -254,17 +289,24 @@ class NorthflankHost implements MachineHost {
 		const ids = orThrow(await allPages<Service>(page, 100, { vendor: NORTHFLANK.id, what: "GET .../services" }))
 			.filter((service) => typeof service?.id === "string" && SLUG.test(service.id) && service.id.startsWith(NAME_PREFIX) && (name === undefined || service.id === name || service.name === name))
 			.map((service) => service.id);
+		const writes = this.#writes;
 		const machines: Machine[] = [];
 		for (let at = 0; at < ids.length; at += LIST_READS) {
-			const reads = await Promise.all(ids.slice(at, at + LIST_READS).map((id) => this.get(id, ctx)));
+			const reads = await Promise.all(ids.slice(at, at + LIST_READS).map((id) => this.#get(id, ctx)));
 			for (const machine of reads) if (machine !== undefined) machines.push(machine);
 		}
+		if (this.#writes === writes) for (const machine of machines) this.#read.set(machine.id, { machine, at: Date.now() });
 		return machines;
 	}
 
 	/** DELETE .../services/{id}, which ends its billing (D configure-and-manage-sandboxes); one Northflank no longer has is done. */
 	async delete(id: string, ctx: HostCall): Promise<void> {
-		await this.#call("DELETE", `/services/${serviceId(id)}`, ctx, { retry: true, accept: (status) => status === 404 || (status >= 200 && status < 300) });
+		this.#wrote();
+		try {
+			await this.#call("DELETE", `/services/${serviceId(id)}`, ctx, { retry: true, accept: (status) => status === 404 || (status >= 200 && status < 300) });
+		} finally {
+			this.#wrote();
+		}
 	}
 
 	exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {

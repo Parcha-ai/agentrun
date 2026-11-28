@@ -160,7 +160,7 @@ test("a create whose service was made and whose scale then fails deletes the ser
 	assert.deepEqual([...limited.vendor.services.keys()], [], "the service made is deleted");
 	// Its delete failing too: the service may be there, so the code is one the adapter sweeps the name on.
 	const stuck = northflankOf({ fault: (call) => (scale(call) ? 429 : call.method === "DELETE" ? 500 : undefined) });
-	await assert.rejects(stuck.host.create(request(), { timeoutMs: 20_000 }), (error) => mayHaveMade(error.code) && new RegExp(`${NAME} may be left`).test(error.message) && /Rate limit exceeded/.test(error.message));
+	await assert.rejects(stuck.host.create(request(), { timeoutMs: 20_000 }), (error) => mayHaveMade(error.code) && new RegExp(`the service ${NAME} it made may be left`).test(error.message) && /Rate limit exceeded/.test(error.message));
 	assert.deepEqual([...stuck.vendor.services.keys()], [NAME]);
 	// Through the provider: the host's own delete fails its three tries, and the adapter's sweep by name deletes it.
 	let deletes = 0;

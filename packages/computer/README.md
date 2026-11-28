@@ -3482,9 +3482,9 @@ adapter ([PROVIDERS.md](PROVIDERS.md)): `src/northflank.ts` is its `MachineHost`
 
 | MachineHost | Northflank |
 | --- | --- |
-| `create` | `POST .../projects/{project}/services/deployment` with the request's name, the plan of its size, the image as `external.imagePath` under `/bin/sh -c 'exec sleep infinity'`, one instance, the packed labels as the workload's annotations and `createOptions.expiryTime` at the backstop (300 s to 7 days); then `POST .../services/{name}/scale` to one instance; the name is the id |
+| `create` | `POST .../projects/{project}/services/deployment` with the request's name, the plan of its size, the image as `external.imagePath` under `/bin/sh -c 'exec sleep infinity'`, one instance, the packed labels as the workload's annotations and `createOptions.expiryTime` at the backstop (300 s to 7 days); then `POST .../services/{name}/scale` to one instance; the name is the id. A scale that fails deletes the service before create answers, and where that delete fails too create answers `vendor`, so the adapter sweeps the name |
 | `get` | `GET .../services/{id}`: `PENDING` and `IN_PROGRESS` are starting, `COMPLETED` running, `FAILED` gone, one past its expiry (`expiredAt`) or in a status it doesn't know stopped; a 404 is none |
-| `list` | `GET .../services`, every page, the `computer-` services kept (and the asked name alone when one is asked), each read by `get` for its annotations, which the listing lacks |
+| `list` | `GET .../services`, every page, the `computer-` services kept (and the asked name alone when one is asked), each read by `get` for its annotations, which the listing lacks. That read answers the adapter's own read of each listed computer once, within 2 s, so a sweep reads each computer once; a create or delete drops it |
 | `delete` | `DELETE .../services/{id}`, a 404 done |
 | `exec` | the command-exec WebSocket (`wss://api.northflank.com/v1/command-exec/projects/{project}/services/{id}`) through `framedExec`: an `init` message with the token and argv (no shell, root, `latin1`, no tty), stdin as `payload` messages and its end as `stdInEnd`, `stdOut` and `stdErr` bytes as latin1 strings, the exit from `completion` once the socket closes or 30 s after the last output; `kill` is the shared pid wrapper's, Northflank having none |
 
