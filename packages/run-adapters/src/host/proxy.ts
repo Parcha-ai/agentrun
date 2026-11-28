@@ -699,6 +699,10 @@ export interface ModelProxyOptions {
  *  fetch waits for headers and between body pieces, so the proxy, not the transport, ends a stalled request and names
  *  it. A transport's cut reads as "terminated", which every client retries; a stall the proxy names ends the turn. */
 export const MODEL_STALL_MS = 240_000;
+/** The stall bound for a model on the host's own machine (an Ollama model), which says nothing while it loads or reads a
+ *  long prompt: 30 minutes, as long as the CLIs wait on one (their LOCAL_STREAM_IDLE_MS). Its route's own fetch must not
+ *  cut it sooner. */
+export const LOCAL_MODEL_STALL_MS = 30 * 60_000;
 /** The code of the proxy's answer to a request it stopped because the provider sent nothing for its stall bound. */
 export const MODEL_STALLED = "model_stalled";
 /** The words of that answer: none of the words a client takes as worth asking again (a status, "timeout", "terminated"),

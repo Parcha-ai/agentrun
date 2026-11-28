@@ -439,6 +439,8 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           ...(options.now ? { day: () => isoDay(options.now!(), options.zone) } : {}),
           ...(options.log ? { log: options.log } : {}),
           ...(options.fetch ? { fetch: options.fetch } : {}),
+          // The proxy waits on a silent model as long as the CLI does on one (a model on the host's own machine).
+          ...(options.streamIdleMs ? { stallMs: options.streamIdleMs } : {}),
         } } : {}),
       });
       // The SDK this session runs on (the host's, or the one installed beside this package, checked above), thinking at

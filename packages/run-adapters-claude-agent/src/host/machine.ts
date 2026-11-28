@@ -72,6 +72,8 @@ export interface LocalMachineOptions {
     headers?: ModelProxyOptions["headers"];
     log?: ModelProxyOptions["log"];
     fetch?: typeof fetch;
+    /** How long the provider may send nothing on a request before the proxy stops it (ModelProxyOptions.stallMs). */
+    stallMs?: number;
   };
   /** For tests: the process environment the allowlist reads. Default `process.env`. */
   env?: Readonly<Record<string, string | undefined>>;
@@ -209,6 +211,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       ...(po.price ? { price: withWebSearches(po.price) } : {}),
       ...(po.headers ? { headers: po.headers } : {}),
       ...(po.log ? { log: po.log } : {}),
+      ...(po.stallMs !== undefined ? { stallMs: po.stallMs } : {}),
       // The provider stopped the turn's answer on its content filter: no retry of it can pass, so the turn ends at once.
       onFiltered: (message) => ctx.halt?.(new Error(message)),
       // The proxy stopped a request the provider sent nothing on for its stall bound: the turn ends in its words.

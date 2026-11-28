@@ -4,6 +4,7 @@
 // are resume log only, so the loop keeps its record (record: "loop"). A CLI package is loaded when its harness is first
 // asked for, as serve loads it today (it may install on first use).
 import type { AgentAdapter, Wire } from "@parcha/agentrun-kernel";
+import { LOCAL_MODEL_STALL_MS } from "@parcha/agentrun-kernel/host";
 import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
 import { facts as codexFacts } from "@parcha/agentrun-harness-codex/facts";
 import type { AdapterRun } from "../adapter-loop.js";
@@ -28,7 +29,8 @@ export interface HarnessLaunch {
   readonly sessionsDir: string;
   /** The proxy's upstream fetch (a test's scripted origin). */
   readonly fetch?: typeof fetch;
-  /** The model runs on this machine (the route's `local`: an Ollama model): a CLI waits longer on its silent stream. */
+  /** The model runs on this machine (the route's `local`: an Ollama model): the harness and its session proxy wait longer
+   *  on its silent stream. */
   readonly local?: boolean;
   /** The runner's one redactor (LoopDeps.redact), holding the keys the claim opens: pi's session proxy cuts a provider's
    *  error with it before pi has it. */
@@ -49,21 +51,28 @@ const CLAUDE_PACKAGE = "@parcha/agentrun-harness-claude";
 type CodexPackage = { LOCAL_STREAM_IDLE_MS: number; codexAdapter(options: Record<string, unknown>): AgentAdapter; verifyCodexAsync(found?: { path: string; packageVersion?: string }): Promise<unknown> };
 const CODEX_PACKAGE = "@parcha/agentrun-harness-codex";
 
+/** pi's options for a launch: the launch's model, provider, price and fetch, then `extra` (pi's own, as the run's spec gives
+ *  them), its redactor the launch's. A local model says nothing while it loads or reads a long prompt: the session's
+ *  proxy waits it out (LOCAL_MODEL_STALL_MS), as the CLIs do (their LOCAL_STREAM_IDLE_MS). */
+export function piOptionsOf(launch: HarnessLaunch, extra: Readonly<Record<string, unknown>> = {}): PiAdapterOptions {
+  return {
+    run: launch.run,
+    model: launch.model,
+    provider: { api: launch.provider.api ?? "anthropic-messages", origin: launch.provider.origin, credential: launch.provider.credential, ...(launch.provider.headers ? { headers: launch.provider.headers } : {}), ...(launch.provider.auth ? { auth: launch.provider.auth } : {}) },
+    ...(launch.price ? { price: launch.price } : {}),
+    ...(launch.fetch ? { fetch: launch.fetch } : {}),
+    ...(launch.local ? { stallMs: LOCAL_MODEL_STALL_MS } : {}),
+    ...(extra as Partial<PiAdapterOptions>),
+    redact: launch.redact,
+  };
+}
+
 /** Every harness the runner runs, by name. */
 export const RUNNER_HARNESSES: Readonly<Record<string, RunnerHarness>> = {
   pi: {
     // `extra`: pi's own options (PiAdapterOptions), as the run's spec gives them (adapter-run-spec.ts): its extensions,
     // tools, tiers, and the route's whole provider over the launch's. Its redactor is the launch's, typed.
-    adapter: async (launch, extra = {}) =>
-      piAdapter({
-        run: launch.run,
-        model: launch.model,
-        provider: { api: launch.provider.api ?? "anthropic-messages", origin: launch.provider.origin, credential: launch.provider.credential, ...(launch.provider.headers ? { headers: launch.provider.headers } : {}), ...(launch.provider.auth ? { auth: launch.provider.auth } : {}) },
-        ...(launch.price ? { price: launch.price } : {}),
-        ...(launch.fetch ? { fetch: launch.fetch } : {}),
-        ...(extra as Partial<PiAdapterOptions>),
-        redact: launch.redact,
-      }),
+    adapter: async (launch, extra = {}) => piAdapter(piOptionsOf(launch, extra)),
   },
   [claudeFacts.id]: {
     record: "loop",

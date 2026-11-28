@@ -17,7 +17,8 @@ import { randomUUID } from "node:crypto";
 import { calculateCost } from "@earendil-works/pi-ai";
 import type { ThinkingLevelMap } from "../port-models.js";
 import type { Wire } from "@parcha/agentrun-kernel";
-import { onOpenRouter, openRouterAttribution, ROUTE_ORIGIN, streamErrorOf } from "@parcha/agentrun-kernel/host";
+import { LOCAL_MODEL_STALL_MS, onOpenRouter, openRouterAttribution, ROUTE_ORIGIN, streamErrorOf } from "@parcha/agentrun-kernel/host";
+import { EnvHttpProxyAgent, fetch as undiciFetch } from "undici";
 import type { ToolsAs } from "../local-models.js";
 import { chooseModel, FAUX_PROVIDER, MODEL_PROVIDER, type PinnedModel, runModels, type Tier } from "../model.js";
 import { OLLAMA_PROVIDER, type OllamaAsks } from "../ollama-provider.js";
@@ -184,6 +185,16 @@ function tapped(upstream: typeof fetch | undefined): { fetch: typeof fetch; kept
   return { fetch: fetcher, kept: () => kept };
 }
 
+/** The network for a model on the host's own machine, which says nothing while it loads or reads a long prompt: without
+ *  the transport's own bounds (Node's fetch gives up after 5 minutes with no headers or no piece, as "terminated", which
+ *  every client asks again on), so the session's model proxy's stall bound (LOCAL_MODEL_STALL_MS) ends a silent one, in
+ *  words. The environment's proxy settings hold, as for Node's own fetch. One connection pool for every such route. */
+let localPool: EnvHttpProxyAgent | undefined;
+const localNetwork = ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
+  undiciFetch(input as never, { ...(init as object), dispatcher: (localPool ??= new EnvHttpProxyAgent({ headersTimeout: 0, bodyTimeout: 0 })) } as never)) as unknown as typeof fetch;
+/** How long pi-ai's client waits for a local model's headers: past the proxy's stall bound, so the bound ends it. */
+const LOCAL_HEADERS_MS = LOCAL_MODEL_STALL_MS + 60_000;
+
 /** A fetch that answers Anthropic Messages requests on `target`, through pi-ai's `models`. A provider's error text, which
  *  pi records, goes through `redact` (the runner's one redactor): a provider that echoes its key leaves none there.
  *  `upstream`: the route's own fetch, for a model that does not speak Messages (absent: the network). A request pi-ai
@@ -210,13 +221,14 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
     const asText = target.toolsAs === "text" && (built.tools?.length ?? 0) > 0;
     const context = asText ? toolsAsText(built) : built;
     // Keep each OpenRouter or Particle answer's end for structured failures inside a successful HTTP stream.
-    const tap = piOnOpenRouter(target) || particle ? tapped(upstream) : undefined;
-    const sendWith = tap?.fetch ?? upstream;
+    const network = upstream ?? (ollama ? localNetwork : undefined);
+    const tap = piOnOpenRouter(target) || particle ? tapped(network) : undefined;
+    const sendWith = tap?.fetch ?? network;
     const level = levelOf(body);
     // Particle's cache affinity: the session's id (the Messages hop's metadata.user_id), else this route's own; an
     // empty id is a caller that asked for no cache hint.
     const affinity = !particle ? {} : body.metadata?.user_id === "" ? { cacheRetention: "none" } : { sessionId: body.metadata?.user_id || cacheSession };
-    const streamOptions = { ...affinity, ...(body.max_tokens ? { maxTokens: body.max_tokens } : {}), ...(level ? { reasoning: level } : {}), ...(ollama && init.edgeAsks ? ollamaAsks(init.edgeAsks) : {}), ...(init.signal ? { signal: init.signal } : {}), ...(sendWith ? { fetch: sendWith } : {}), ...(Object.keys(attribution).length ? { headers: attribution } : {}) };
+    const streamOptions = { ...affinity, ...(body.max_tokens ? { maxTokens: body.max_tokens } : {}), ...(level ? { reasoning: level } : {}), ...(ollama && init.edgeAsks ? ollamaAsks(init.edgeAsks) : {}), ...(ollama ? { timeoutMs: LOCAL_HEADERS_MS } : {}), ...(init.signal ? { signal: init.signal } : {}), ...(sendWith ? { fetch: sendWith } : {}), ...(Object.keys(attribution).length ? { headers: attribution } : {}) };
     const events = models.streamSimple(target as never, context as never, streamOptions as never);
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
