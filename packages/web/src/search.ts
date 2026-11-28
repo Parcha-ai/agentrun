@@ -108,6 +108,8 @@ export type Breaker = { held(): Search | undefined; read(searched: Searched): Se
 /** What holds a breaker now: the kind of the limit that last held it, and when it may be asked again (Infinity: not in
  *  the breaker's life). */
 export type Holding = { kind: Limit["kind"]; until: number };
+/** Of two holds, the one that ends last: a provider held by both may be asked again only when that one ends. */
+const later = (a: Holding | undefined, b: Holding | undefined): Holding | undefined => (!a ? b : !b ? a : b.until > a.until ? b : a);
 /** `ms` of a wait as searchBusy's seconds: rounded up, at least 1. */
 const busyFor = (ms: number): Search => ({ error: searchBusy(Math.max(1, Math.ceil(ms / 1_000))) });
 export function searchBreaker(now: () => number = Date.now): Breaker {
@@ -127,8 +129,7 @@ export function searchBreaker(now: () => number = Date.now): Breaker {
   };
   return {
     holding() {
-      if (off()) return { kind: offKind, until: offTill };
-      return until > now() ? { kind: waitKind, until } : undefined;
+      return later(off() ? { kind: offKind, until: offTill } : undefined, until > now() ? { kind: waitKind, until } : undefined);
     },
     held,
     off,
@@ -271,9 +272,10 @@ export async function searchInTurn(backends: readonly Backend[], breakerOf: (nam
     else last = answer;
   }
   const breakers = backends.map((backend) => breakerOf(backend.name));
-  // Each backend off now, in the model's words: who, why, and when it may be asked again.
+  // Each backend held now (off, or waiting out a short rate limit), in the model's words: who, why, and when it may be
+  // asked again.
   const offs = backends.flatMap((backend, i) => {
-    const holding = breakers[i]!.off() ? breakers[i]!.holding() : undefined;
+    const holding = breakers[i]!.holding();
     return holding ? [{ name: backend.name, holding }] : [];
   });
   // No results while a backend is held reads as "nothing exists": the answer says the search is short of it instead.
@@ -305,7 +307,7 @@ export function withKeyBreaker(own: Breaker, key: Breaker): Breaker {
     },
     off: () => own.off() || key.off(),
     left: () => Math.max(own.left(), key.left()),
-    holding: () => own.holding() ?? key.holding(),
+    holding: () => later(own.holding(), key.holding()),
   };
 }
 
