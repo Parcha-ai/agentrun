@@ -7,8 +7,12 @@ import { chmod, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from 'n
 import { dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MACHINE_PATH } from './machine-path.mjs';
-import { fakeUrlPassword } from './export-source-rules.mjs';
 
+// A URL's password is an explicit fake when it is not-a-secret, alone or after one word and a hyphen; nothing else is.
+export const fakeUrlPassword = password => /^(?:[a-z0-9]+-)?not-a-secret$/i.test(password);
+
+// The export runs only as the script; a test imports fakeUrlPassword without running it.
+if (import.meta.main) {
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const arguments_ = process.argv.slice(2);
 assert.ok(arguments_.length <= 1 && arguments_.every(argument => ['--inventory-only'].includes(argument)), 'Usage: node scripts/export-source.mjs [--inventory-only]');
@@ -261,4 +265,5 @@ try {
 } finally {
   await writeFile(join(release, 'source-export-receipt.json'), JSON.stringify(receipt, null, 2) + '\n');
   await rm(staging, { recursive: true, force: true });
+}
 }

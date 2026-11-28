@@ -6,12 +6,11 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
-import { fakeUrlPassword } from './export-source-rules.mjs';
+import { fakeUrlPassword } from './export-source.mjs';
 
 const exec = promisify(execFile);
 const exporter = await readFile(new URL('./export-source.mjs', import.meta.url));
 const machinePathRule = await readFile(new URL('./machine-path.mjs', import.meta.url));
-const exportRules = await readFile(new URL('./export-source-rules.mjs', import.meta.url));
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
 test('connector source and notices ship without local worker state or Python build output', async t => {
@@ -48,7 +47,6 @@ async function fixture(t) {
   };
   await write('scripts/export-source.mjs', exporter);
   await write('scripts/machine-path.mjs', machinePathRule);
-  await write('scripts/export-source-rules.mjs', exportRules);
   await write('package.json', JSON.stringify({ name: 'fixture', private: true }));
   await write('package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
     '': {}, 'packages/dsl': {}, 'packages/jev': {}, 'packages/pi-browser': {}, 'packages/import': {}, 'packages/web': {}, 'packages/serve': {}, 'packages/decisions': {}, 'packages/computer': {}, 'packages/client': {}, 'packages/run-adapters': {}, 'packages/run-adapters-claude-agent': {}, 'packages/run-adapters-codex': {}, 'packages/run-adapters-acp': {}, 'packages/agentrun': {},
