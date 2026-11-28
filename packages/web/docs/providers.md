@@ -134,6 +134,7 @@ Docs:
 - Scrape: https://docs.firecrawl.dev/api-reference/endpoint/scrape
 - Credit usage: https://docs.firecrawl.dev/api-reference/endpoint/credit-usage
 - Pricing: https://www.firecrawl.dev/pricing
+- Billing (the credit rule): https://docs.firecrawl.dev/billing
 
 Both endpoints authenticate with `Authorization: Bearer`.
 
@@ -151,19 +152,26 @@ Prices are in credits. The key is on the Standard plan: `planCredits` was 100,00
 | `includeDomains`, `excludeDomains` | hostnames; one or the other, not both | settings | unset | none |
 | `country` | ISO code (US) | setting `country` | unset | none |
 | `location`, `sources` (web, news, images), `categories` (developer, gov, research, pdf), `safe`, `timeout`, `ignoreInvalidURLs`, `enterprise`, `threatProtection`, `toolDetail`, `domainTools` | — | no | — | threatProtection +2 credits per URL; `zdr` and `anon` cost more |
-| `scrapeOptions` | scrape each result (formats, onlyMainContent, maxAge, …) | no: a snippet keeps 3,000 characters, so a scraped page would mostly be cut, at a credit a result | — | +1 credit per result (+4 for JSON) |
+| `scrapeOptions` | scrape each result (formats, onlyMainContent, maxAge, proxy, parsers, …) | no: each result's snippet is Firecrawl's description, its query-relevant highlight, as Exa's highlights and Parallel's excerpts are; `web_fetch` reads a page whole | — | each result that comes back scraped: 1 credit for a page, 1 a PDF page parsed (+4 for JSON); a result with no document 0 |
 
 The smoke's description snippets were 142 to 839 characters, with highlights on. `creditsUsed` was 2 for 3 results.
+
+A search's hold is 2 credits per 10 of its limit, rounded up: 2 credits for a limit of 4 or 10. It is charged the
+`creditsUsed` Firecrawl's answer reports, never above the hold. Measured on 2026-11-28: with each result scraped, a
+limit-4 search whose results were PDFs reported up to 162 credits, and one Seal-0 search 2,038 (a 1,024-page PDF among
+its results); the same searches without a scrape reported 2.
 
 ### Scrape, `POST /v2/scrape` (web_fetch)
 
 | Parameter | Values (provider's default) | Exposed | Library default | Price effect |
 |---|---|---|---|---|
-| `url` | — | call | — | 1 credit ($0.00099) |
+| `url` | — | call | — | 1 credit ($0.00099) for a page; a PDF 1 credit per page parsed |
 | `formats` | markdown, summary, html, rawHtml, links, images, screenshot, json, changeTracking, branding, … (markdown) | fixed: markdown | markdown | json +4 credits |
 | `onlyMainContent` | true or false (true) | setting `onlyMainContent` | true | none |
 | `maxAge` | ms (172,800,000, two days); 0 is a fresh scrape | setting `maxAgeMs` | unset | none |
-| `includeTags`, `excludeTags`, `waitFor`, `mobile`, `actions`, `location`, `headers`, `blockAds` (true), `removeBase64Images` (true), `proxy` (auto; enhanced costs the same as basic), `parsers` (pdf, image), `timeout` (60 s), `storeInCache`, `lockdown`, `checkPromptInjection`, `redactPII`, `zeroDataRetention` | — | no | — | PDF: 1 credit per PDF page; checkPromptInjection +4; lockdown 5 on a hit, 1 on a miss |
+| `parsers` | pdf (with `maxPages`, 1 to 10,000), image (pdf, all pages) | setting `pdfMaxPages`: `[{type: "pdf", maxPages}]` | unset: a PDF read whole | 1 credit per PDF page parsed; a cap bounds the fee and the hold |
+| `proxy` | basic, enhanced, auto (auto) | fixed: basic | basic | basic is the one priced here; a body asking another is refused before it is sent |
+| `includeTags`, `excludeTags`, `waitFor`, `mobile`, `actions`, `location`, `headers`, `blockAds` (true), `removeBase64Images` (true), `timeout` (60 s), `storeInCache`, `lockdown`, `checkPromptInjection`, `redactPII`, `zeroDataRetention` | — | no | — | PDF: 1 credit per PDF page; checkPromptInjection +4; lockdown 5 on a hit, 1 on a miss |
 
 How Firecrawl answers a refusal, and how the library reads it:
 
@@ -175,8 +183,17 @@ How Firecrawl answers a refusal, and how the library reads it:
 | 403 (`SCRAPE_PROMPT_INJECTION_DETECTED`, `THIRD_PARTY_DATA_TERMS_REQUIRED`) | one page's failure only; Firecrawl stays in |
 | a non-2xx `metadata.statusCode` | no page |
 
-The scrape's fee is 1 credit. A PDF costs a credit per page, which the library cannot know before it sends the request,
-so a PDF's fee is understated.
+A PDF costs a credit a page, and the library cannot know a URL's page count before it asks, so a scrape is held at
+the most Firecrawl parses of one PDF: 10,000 credits, **$9.90**, or `pdfMaxPages` credits when that setting caps it (4
+more for JSON). It is charged the `data.metadata.creditsUsed` Firecrawl's answer reports: 1 credit for an HTML page, a
+PDF's parsed pages for a PDF. Reported credits above the hold are charged at the hold, and the receipt line says
+Firecrawl reported more. An answer with no whole, non-negative `creditsUsed` (missing, fractional, negative, not a
+number, or not JSON) is charged the hold, never $0. The receipt line names the reported credits and the hold.
+
+**A run whose cap has less than $9.90 left cannot `web_fetch` through keyed Firecrawl** unless `pdfMaxPages` lowers
+the hold: the cap refuses the hold before the request is sent. Parallel, the default, is unaffected. With
+`pdfMaxPages` set, a PDF longer than the cap reaches the agent starting `[PDF: pages 1-100 of 128 were read; pages
+101-128 are not in this text]`.
 
 ## Best and cheapest configurations
 
@@ -189,5 +206,5 @@ is the same in both.
 | Parallel | fetch | no settings | no settings | $0.001 |
 | Exa | search | `{type: "deep", snippet: "highlights"}` | `{type: "lite", snippet: "highlights"}` | $0.012 vs $0.004 |
 | Exa | fetch | no settings (compact, links kept) | no settings | $0.001 |
-| Firecrawl | search | no settings (highlights on) | no settings | $0.00198 |
-| Firecrawl | fetch | no settings (`onlyMainContent: true`) | no settings | $0.00099 |
+| Firecrawl | search | no settings (highlights on) | no settings | $0.00198 (2 credits per 10 results) |
+| Firecrawl | fetch | no settings (`onlyMainContent: true`) | `pdfMaxPages` low | the credits reported: 1 ($0.00099) for a page, a PDF its pages; held at 10,000 ($9.90), or `pdfMaxPages` |

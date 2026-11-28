@@ -323,7 +323,7 @@ test("registryHere: Daytona mounts Archil only where DAYTONA_ARCHIL_EGRESS has a
   const daytona = (registry) => registry.PROVIDERS.find((one) => one.id === "daytona");
   const hosted = await here({});
   assert.deepEqual([daytona(hosted).mounts, daytona(hosted).imageNamed], [["sync"], undefined]);
-  assert.deepEqual([...new Set(read)].sort(), ["AGENTRUN_DAYTONA_SNAPSHOT", "DAYTONA_ARCHIL_EGRESS"], "only the names an entry's mountsWith or imageEnv names are read");
+  assert.deepEqual([...new Set(read)].sort(), ["AGENTRUN_DAYTONA_SNAPSHOT", "AGENTRUN_E2B_TEMPLATE", "DAYTONA_ARCHIL_EGRESS"], "only the names an entry's mountsWith or imageEnv names are read");
   assert.deepEqual(daytona(await here({ DAYTONA_ARCHIL_EGRESS: "  " })).mounts, ["sync"], "a value of whitespace alone is none");
   const relayed = await here({ DAYTONA_ARCHIL_EGRESS: "192.0.2.40:18100:42050", AGENTRUN_DAYTONA_SNAPSHOT: "agentrun-archil-0123456789ab" });
   assert.deepEqual([daytona(relayed).mounts, daytona(relayed).unmounted, daytona(relayed).imageNamed], [["sync", "archil"], {}, true]);
@@ -341,6 +341,28 @@ test("registryHere: Daytona mounts Archil only where DAYTONA_ARCHIL_EGRESS has a
     assert.equal(shellOf({ kind: "sandbox", provider: "daytona" }, 2, registry), "computer");
     assert.equal((await resolveHere({ kind: "sandbox", provider: "daytona" }, 2, registry, side)).folder, folder);
   }
+});
+
+test("registryHere: with AGENTRUN_E2B_TEMPLATE set, an E2B computer.image that names that template is taken, as one that names none; another is refused naming it; unset, E2B offers no image to name", async () => {
+  const { PROVIDERS: REAL, SETTING_KINDS, servingRefusals } = await import("@parcha/agentrun-computer");
+  const { registryHere, resolveComputer: resolveHere, runShellOf: shellOf } = await import("../dist/workspace/index.js");
+  const real = { SETTING_KINDS, PROVIDERS: REAL, servingRefusals };
+  const side = { keysOf: async () => ({ E2B_API_KEY: "fake-test-key" }), launch: async () => assert.fail("nothing starts") };
+  const named = await registryHere(real, async (name) => ({ AGENTRUN_E2B_TEMPLATE: " osworld-ubuntu " })[name]);
+  const e2b = named.PROVIDERS.find((one) => one.id === "e2b");
+  assert.deepEqual([e2b.imageNamed, e2b.namedImage], [true, "osworld-ubuntu"], "the value, trimmed");
+  for (const [kind, mode, folder] of [["sandbox", 2, "archil"], ["desktop", 2, "archil"], ["desktop", 1, undefined]]) {
+    const resolved = await resolveHere({ kind, provider: "e2b", image: "osworld-ubuntu" }, mode, named, side);
+    assert.equal(resolved.refused, undefined, `${kind}, Mode ${mode}: ${resolved.refused}`);
+    assert.equal(resolved.folder, folder, `${kind}, Mode ${mode}`);
+    assert.deepEqual(resolved.folder, (await resolveHere({ kind, provider: "e2b" }, mode, named, side)).folder, "as the setting that names none");
+  }
+  assert.equal(shellOf({ kind: "sandbox", provider: "e2b", image: "osworld-ubuntu" }, 2, named), "computer");
+  assert.deepEqual(await resolveHere({ kind: "sandbox", provider: "e2b", image: "windows" }, 2, named, side), { refused: 'E2B has no sandbox image "windows". It offers the sandbox image osworld-ubuntu: pick one for this agent\'s computer in Settings → Computers.' });
+  const unset = await registryHere(real, async () => undefined);
+  assert.equal(unset.PROVIDERS.find((one) => one.id === "e2b"), REAL.find((one) => one.id === "e2b"), "E2B as it is");
+  assert.deepEqual(await resolveHere({ kind: "sandbox", provider: "e2b", image: "osworld-ubuntu" }, 2, unset, side), { refused: 'E2B has no sandbox image "osworld-ubuntu". It offers no sandbox image to choose: remove the image for this agent\'s computer in Settings → Computers.' });
+  assert.equal(shellOf({ kind: "sandbox", provider: "e2b", image: "osworld-ubuntu" }, 2, unset), "none", "a refused setting runs nothing");
 });
 
 test("registryHere: a connect setting no provider knows leaves that provider on exec, for it to refuse when made, and every other provider as it is", async () => {
