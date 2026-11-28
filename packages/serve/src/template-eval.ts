@@ -65,14 +65,17 @@ End your reply with exactly one fenced json block and nothing after it:
 \`\`\``;
 /** Each grader run's cap, in dollars. */
 export const GRADER_CAP_USD = 0.5;
-/** The most characters an llm grader's prompt takes (about 30k tokens, under GRADER_CAP_USD at $15 per million input
- *  tokens): past it, the final files take room first, never so much that the calls' arguments get less than half of it,
+/** The most characters an llm grader's prompt takes (about 44k tokens: under GRADER_CAP_USD for a model up to about $11
+ *  per million input tokens; a live launch-video case's grader runs cost $0.103 to $0.110 each at 120k, so about $0.16
+ *  here). 176k is the least that showed a fetched page's middle to the graders of that case's two runs, each over 280k
+ *  characters of calls, once what they held twice was shown once (shownOnce). Past it, what the input would show twice
+ *  is shown once, then the final files take room first, never so much that the calls' arguments get less than half of it,
  *  the tool state's texts left out before a file of the run's own is cut (fitFiles); its calls and a fake MCP server's
  *  calls share what is left, each list cut in proportion to its size and the fake's given at least half, the middle of
  *  the longest results (or arguments) first, then the middle calls (fitCalls), and a <cuts> note counts it all. The rubric, the task
  *  and the answer are never cut: they are what the grader judges, so a prompt can pass the cap by what they hold alone,
  *  and then the calls are cut to a note that says so. */
-export const GRADER_PROMPT_MAX = 120_000;
+export const GRADER_PROMPT_MAX = 176_000;
 /** How long one run may take before the eval cancels it and fails it. */
 export const RUN_TIMEOUT_MS = 30 * 60_000;
 /** How long a run may stay queued, no runner holding it, before the eval stops waiting on it: it fails by that name,
@@ -907,6 +910,28 @@ export function outputVerdict(pkg: Package, result: unknown): GraderResult | und
  *  own run is on the real clock), the run's input, its answer (its target field marked when the grader names one), the
  *  files it left (fitFiles: whole ahead of its calls, which are cut first), its calls and, for a run that searched or fetched, the link check of its cited links (link-check.ts). Never another grader, the case's description or anything the case expects. */
 export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: string, run: RunRecord, max = GRADER_PROMPT_MAX): string {
+  const plain = inputOf(grader, input, run, max);
+  if (plain.fits) return plain.text();
+  // Past the cap, what the input would show twice is shown once before anything is cut (shownOnce), each kind counted. A
+  // pointer stands only where the input still shows whole what it points at: one whose file or arguments the cut takes
+  // is undone and the input built again. Each pass undoes at least one pointer, so this ends.
+  const skip = { files: new Set<string>(), echoes: new Set<number>() };
+  for (;;) {
+    const once = shownOnce(run, skip);
+    if (!once) return plain.text();
+    const text = inputOf(grader, input, once.run, max, once.counts, run).text();
+    const lostFiles = [...once.shows.files].filter(([, whole]) => !text.includes(whole));
+    const lostEchoes = [...once.shows.echoes].filter(([, args]) => args.some((arg) => !text.includes(arg)));
+    if (!lostFiles.length && !lostEchoes.length) return text;
+    for (const [name] of lostFiles) skip.files.add(name);
+    for (const [call] of lostEchoes) skip.echoes.add(call);
+  }
+}
+
+/** graderInput for `run` as given (`once` absent) or as shownOnce made it (`once` its counts, the agent's skill copies
+ *  listed by name): whether it fits whole, and its text. The link check reads `source`'s calls, the run as it was: a
+ *  link a call's answer held is matched there, whatever pointer shows that answer once. */
+function inputOf(grader: Extract<Grader, { type: "llm" }>, input: string, run: RunRecord, max: number, once?: ShownOnce, source: RunRecord = run): { fits: boolean; text: () => string } {
   const target = grader.target ? targetOf(run.answer, grader.target) : undefined;
   const at = run.now === undefined ? undefined : instantOf(run.now);
   const before = [
@@ -923,7 +948,8 @@ export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: str
   // where the timeline cuts it (its arguments' names and values at CALL_RESULT_CHARS in all, its output at as many), and
   // a cut call reads to a grader as a run that did less than its file holds.
   const files = run.finalFiles ?? [];
-  const texts = files.filter((file) => file.text !== undefined);
+  const byName = once ? skillCopy : undefined;
+  const texts = files.filter((file) => file.text !== undefined && !byName?.(file.name));
   // Each call with its arguments (else its input's preview), its status and its output's head; a call that names a file
   // says where it is. A string argument `held` names (a write's content that a file's text holds whole and whose head
   // and tail <files> shows: shows) is cut at FILE_ARG_CHARS there, so the grader's room never holds those bytes twice.
@@ -944,7 +970,7 @@ export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: str
   const wrap = (text: string) => `<tool-calls untrusted>\n${text}\n</tool-calls>`;
   const wrapMcp = (text: string) => `<mcp-calls untrusted>\nThe calls the MCP servers received, with their arguments, in order:\n${text}\n</mcp-calls>`;
   // A run that searched or fetched: each link its answer cites, matched against its web calls' urls in code (link-check.ts).
-  const links = linkCheck(run.answer, run.calls);
+  const links = linkCheck(run.answer, source.calls);
   const linked = links === undefined ? [] : [`<link-check untrusted>\n${links}\n</link-check>`];
   const wrapFiles = (text: string) => `<files untrusted>\nThe files in the run's work folder when it ended, each text file whole unless marked cut (a call below that shows one only in part shows a cut of it):\n${text}\n</files>`;
   const wholeOf = (list: readonly { head: string; result: string }[]) => list.reduce((sum, one) => sum + one.head.length + one.result.length + 3, 0);
@@ -953,8 +979,11 @@ export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: str
   const fixed = [...before, wrap(""), ...linked, ...(mcpLines.length ? [wrapMcp("")] : []), ...(files.length ? [wrapFiles("")] : [])].reduce((sum, part) => sum + part.length + 2, 0);
   // A prompt that is cut says what was (cutsNote), at the top of the evidence, in room it keeps for that note: built once
   // to count the cuts, then again with room for the note they make (a few characters more, for counts that grow).
-  const whole = fixed + (files.length ? fitFiles(files, Number.MAX_SAFE_INTEGER).length : 0) + wholeOf(linesOf(callsOf(() => false))) + mcpWhole;
-  if (whole <= max) return build(0).text;
+  const whole = fixed + (files.length ? fitFilesWith(files, Number.MAX_SAFE_INTEGER, byName).text.length : 0) + wholeOf(linesOf(callsOf(() => false))) + mcpWhole;
+  if (whole <= max && !once) return { fits: true, text: () => build(0).text };
+  return { fits: false, text: cut };
+
+  function cut(): string {
   const first = build(0);
   // Under a cap so tight the note would take more than a twentieth of it, the marks each cut leaves in place say it: the
   // room goes to the evidence (a web call's url list before a summary of what was cut).
@@ -962,6 +991,7 @@ export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: str
   if (first.note.length > max / 20) return build(0, false).text;
   const second = build(first.note.length + 2 + 24);
   return second.text.length <= max ? second.text : build(CUTS_NOTE_ROOM + 2).text;
+  }
 
   function build(reserve: number, noted = true): { text: string; note: string | undefined } {
   const room = max - fixed - reserve;
@@ -973,7 +1003,7 @@ export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: str
   const needLines = linesOf(callsOf(inText));
   const need = wholeOf(needLines);
   const argsFloor = Math.min(headsOf(needLines) + mcpWhole, Math.floor(room / 2));
-  const fittedFiles = files.length ? fitFilesWith(files, Math.max(0, room - Math.max(Math.min(need + mcpWhole, Math.floor(room / 4)), argsFloor))) : undefined;
+  const fittedFiles = files.length ? fitFilesWith(files, Math.max(0, room - Math.max(Math.min(need + mcpWhole, Math.floor(room / 4)), argsFloor)), byName) : undefined;
   const shownFiles = fittedFiles?.text;
   const showing = (name: string) => shownFiles !== undefined && shownFiles.includes(`<file path="${name}" `);
   // An argument is cut only when a file's text holds all of it and <files> as shown shows its head and tail. A write of a
@@ -1002,20 +1032,153 @@ export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: str
     files: fittedFiles,
     calls: callsFit && { args: kept === undefined ? 0 : kept.filter((shown, i) => shown !== calls[i]!.args).length, results: callsFit.cut, dropped: callsFit.dropped },
     mcp: mcpFit && { args: mcpFit.cut, dropped: mcpFit.dropped },
+    once,
   });
   return { text: [...before, ...(note && noted ? [note] : []), ...(shownFiles === undefined ? [] : [wrapFiles(shownFiles)]), wrap(callsFit ? callsFit.text : "(none)"), ...linked, ...(mcpFit ? [wrapMcp(mcpFit.text)] : [])].join("\n\n"), note };
   }
 }
 
-/** The most characters the note on what a grader's input cut takes (cutsNote). */
-const CUTS_NOTE_ROOM = 900;
+/** What a grader's input past its cap shows once that it would show twice (shownOnce), each kind counted for cutsNote:
+ *  the polls collapsed, the calls whose answers point at their own arguments, the files a call's answer points at, and the
+ *  agent's skill copies listed by name. */
+type ShownOnce = { polls: number; echoes: number; files: number; skills: number };
+
+/** The shortest value (a string, or an object or list as compact JSON) shownOnce replaces by a pointer: a shorter one is
+ *  about as long as its pointer. */
+const ONCE_MIN_CHARS = 200;
+
+/** Whether a final file is a copy of the agent's own skills, which serve copies under `.agents/skills/` when a run starts:
+ *  the package's text, not the run's work. */
+export function skillCopy(name: string | undefined): boolean {
+  return name !== undefined && name.startsWith(".agents/skills/");
+}
+
+/** `run` with what a grader's input would show twice shown once, each by exact equality, never by what a value means:
+ *  - a poll whose answer's every `status` (at any depth, at least one) is "pending", when the next call of the same tool
+ *    has the same arguments and answered the same way, keeps its number, tool and status, and its answer says it was
+ *    collapsed (the last such poll of each streak, and every other answer, stay whole);
+ *  - a value in a call's JSON answer that equals one of its own arguments (a string, or an object or list as canonical
+ *    JSON, of ONCE_MIN_CHARS or more) is a pointer to them;
+ *  - a value in a call's answer equal to a final file's whole content (its JSON, else its text), of ONCE_MIN_CHARS or
+ *    more, is a pointer to that file, which <files> shows: files come ahead of calls, so the bytes stay where a cut
+ *    reaches them last;
+ *  - the agent's skill copies (skillCopy) are listed by name (inputOf, once given).
+ *  `skip` names the files never pointed at and the calls (by index) whose answers never point at their arguments.
+ *  `shows` is what the pointers stand on: each pointed file's text, and each pointing call's echoed arguments as their
+ *  JSON in its arguments' JSON, which graderInput checks its input still shows whole. Undefined when there is nothing
+ *  to show once. */
+export function shownOnce(
+  run: RunRecord,
+  skip: { files?: ReadonlySet<string>; echoes?: ReadonlySet<number> } = {},
+): { run: RunRecord; counts: ShownOnce; shows: { files: Map<string, string>; echoes: Map<number, string[]> } } | undefined {
+  const counts: ShownOnce = { polls: 0, echoes: 0, files: 0, skills: 0 };
+  const shows = { files: new Map<string, string>(), echoes: new Map<number, string[]>() };
+  const parsed = run.calls.map((call) => jsonOf(call.result));
+  const pendingOnly = parsed.map((value) => {
+    const statuses: unknown[] = [];
+    walkJson(value, (key, item) => void (key === "status" && statuses.push(item)));
+    return statuses.length > 0 && statuses.every((status) => status === "pending");
+  });
+  const asked = run.calls.map((call) => keyOf(call.arguments ?? null));
+  const nextOf = (i: number) => run.calls.findIndex((call, j) => j > i && call.tool === run.calls[i]!.tool);
+  const shown = (run.finalFiles ?? []).filter((file) => file.text !== undefined && file.name !== undefined && !skillCopy(file.name) && !skip.files?.has(file.name) && file.text.length >= ONCE_MIN_CHARS);
+  const fileKeys = new Map<string, string>();
+  const textOf = new Map<string, string>();
+  for (const file of shown) {
+    const value = jsonOf(file.text);
+    const key = value === undefined ? JSON.stringify(file.text) : keyOf(value);
+    if (!fileKeys.has(key)) fileKeys.set(key, file.name!), textOf.set(file.name!, file.text!);
+  }
+  const pointed = new Set<string>();
+  const calls = run.calls.map((call, i) => {
+    const next = nextOf(i);
+    if (pendingOnly[i] && next >= 0 && pendingOnly[next] && asked[next] === asked[i]) {
+      counts.polls++;
+      return { tool: call.tool, ...(call.name !== undefined ? { name: call.name } : {}), ...(call.status != null ? { status: call.status } : {}), result: `[collapsed: every status in its answer was "pending", and call ${next + 1} asked the same again]` };
+    }
+    if (typeof call.result !== "string" || !call.result) return call;
+    // The whole answer a file holds (a read of the file, as text or JSON).
+    const fileOfAll = fileKeys.get(parsed[i] === undefined ? JSON.stringify(call.result) : keyOf(parsed[i]));
+    if (fileOfAll !== undefined && call.result.length >= ONCE_MIN_CHARS) {
+      pointed.add(fileOfAll);
+      return { ...call, result: `[the file ${fileOfAll} in <files>]` };
+    }
+    if (parsed[i] === undefined || typeof parsed[i] !== "object" || parsed[i] === null) return call;
+    const own = new Map<string, string>();
+    if (call.arguments !== undefined && !skip.echoes?.has(i)) walkJson(call.arguments, (_key, item) => void (sizeOf(item) >= ONCE_MIN_CHARS && !own.has(keyOf(item)) && own.set(keyOf(item), JSON.stringify(item))));
+    let echoed = false;
+    const args = new Set<string>();
+    const replace = (value: unknown, root: boolean): unknown => {
+      if (!root && sizeOf(value) >= ONCE_MIN_CHARS) {
+        const key = keyOf(value);
+        const file = fileKeys.get(key);
+        if (file !== undefined) return pointed.add(file), `[the file ${file} in <files>]`;
+        if (own.has(key)) return (echoed = true), args.add(own.get(key)!), "[the same as this call's arguments]";
+      }
+      if (Array.isArray(value)) return value.map((item) => replace(item, false));
+      if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, replace(item, false)]));
+      return value;
+    };
+    const before = pointed.size;
+    const value = replace(parsed[i], true);
+    const changed = echoed || pointed.size !== before || JSON.stringify(value) !== JSON.stringify(parsed[i]);
+    if (echoed) counts.echoes++, shows.echoes.set(i, [...args]);
+    if (!changed) return call;
+    return { ...call, result: JSON.stringify(value, null, indentOf(call.result)) };
+  });
+  counts.files = pointed.size;
+  for (const name of pointed) shows.files.set(name, textOf.get(name)!);
+  counts.skills = (run.finalFiles ?? []).filter((file) => file.text !== undefined && skillCopy(file.name)).length;
+  if (!counts.polls && !counts.echoes && !counts.files && !counts.skills) return undefined;
+  return { run: { ...run, calls }, counts, shows };
+}
+
+/** A JSON value as one text whatever its objects' key order: equal values, equal keys. */
+const keyOf = (value: unknown): string => JSON.stringify(canonical(value ?? null));
+
+/** A text's JSON value, undefined when it is not JSON (or not text). */
+function jsonOf(text: string | null | undefined): unknown {
+  if (typeof text !== "string" || !/^\s*[[{]/.test(text)) return undefined;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Each value of a JSON value at any depth, with its key (an index in a list, undefined at the root), parents first. */
+function walkJson(value: unknown, visit: (key: string | number | undefined, item: unknown) => void, key?: string | number): void {
+  visit(key, value);
+  if (Array.isArray(value)) value.forEach((item, i) => walkJson(item, visit, i));
+  else if (value && typeof value === "object") for (const [name, item] of Object.entries(value)) walkJson(item, visit, name);
+}
+
+/** A string's length, or an object's or list's as compact JSON; 0 for anything else. */
+function sizeOf(value: unknown): number {
+  return typeof value === "string" ? value.length : value && typeof value === "object" ? JSON.stringify(value).length : 0;
+}
+
+/** The indent a JSON text was written with (its second line's leading spaces), 0 for one written on one line. */
+function indentOf(text: string): number {
+  return /\n( +)/.exec(text)?.[1]?.length ?? 0;
+}
+
+/** The most characters the note on what a grader's input cut takes (cutsNote), its line on what was shown once included. */
+const CUTS_NOTE_ROOM = 1400;
 
 /** What a grader's input cut, said once ahead of the evidence, so a grader reads a condition only the cut part could show
  *  as unseen, never as consistent: each list's cuts, counted. Undefined when nothing was cut. */
-function cutsNote(cut: { files?: { cut: number; out: number; state: number }; calls?: { args: number; results: number; dropped: number }; mcp?: { args: number; dropped: number } }): string | undefined {
+function cutsNote(cut: { files?: { cut: number; out: number; state: number }; calls?: { args: number; results: number; dropped: number }; mcp?: { args: number; dropped: number }; once?: ShownOnce }): string | undefined {
   const n = (count: number, one: string) => `${count} ${count === 1 ? one : `${one}s`}`;
   const of = (count: number, one: string) => `${count} ${count === 1 ? `${one}'s` : `${one}s'`}`;
+  const once = cut.once;
   const lines = [
+    ...(once ? [`- Shown once: ${[
+      once.polls ? `${n(once.polls, "poll")} collapsed (each answered only "pending" and the next call of its tool asked the same again; the last such poll is kept)` : "",
+      once.echoes ? `${of(once.echoes, "call")} answers repeat values of their own arguments, shown as a pointer` : "",
+      once.files ? `${of(once.files, "file")} contents a call's answer also held, shown in <files> and pointed at from the call` : "",
+      once.skills ? `${once.skills} ${once.skills === 1 ? "copy" : "copies"} of the agent's own skills (under .agents/skills) listed by name` : "",
+    ].filter(Boolean).join("; ")}.`] : []),
     ...(cut.files && (cut.files.cut || cut.files.out || cut.files.state) ? [`- <files>: ${[cut.files.state ? `${n(cut.files.state, "file")} of tool state (under a folder whose name starts with ".") listed by name alone` : "", cut.files.cut ? `${of(cut.files.cut, "file")} text cut in the middle` : "", cut.files.out ? `${of(cut.files.out, "file")} text left out` : ""].filter(Boolean).join("; ")}.`] : []),
     ...(cut.calls && (cut.calls.args || cut.calls.results || cut.calls.dropped) ? [`- <tool-calls>: ${[cut.calls.args ? `${of(cut.calls.args, "call")} arguments cut in the middle` : "", cut.calls.results ? `${n(cut.calls.results, "result")} cut or left out` : "", cut.calls.dropped ? `${n(cut.calls.dropped, "call")} in the middle left out` : ""].filter(Boolean).join("; ")}.`] : []),
     ...(cut.mcp && (cut.mcp.args || cut.mcp.dropped) ? [`- <mcp-calls>: ${[cut.mcp.args ? `${of(cut.mcp.args, "call")} arguments cut or left out` : "", cut.mcp.dropped ? `${n(cut.mcp.dropped, "call")} in the middle left out` : ""].filter(Boolean).join("; ")}.`] : []),
@@ -1158,11 +1321,15 @@ export function toolState(name: string | undefined): boolean {
 /** fitFiles, with how many texts it cut in the middle (`cut`) or left out (`out`), and how many of tool state (toolState)
  *  it listed by name alone (`state`), for the note on what a grader's input cut (cutsNote). A run's own files come first:
  *  past the room, the tool state's texts are left out before any other file is cut. */
-function fitFilesWith(files: readonly FinalFile[], room: number): { text: string; cut: number; out: number; state: number } {
+function fitFilesWith(files: readonly FinalFile[], room: number, byName?: (name: string | undefined) => boolean): { text: string; cut: number; out: number; state: number } {
   const block = (file: FinalFile, text: string) => `<file${file.name === undefined ? "" : ` path="${file.name}"`} bytes="${file.bytes}">\n${text}\n</file>`;
-  const all = files.filter((file): file is FinalFile & { text: string } => file.text !== undefined);
+  const listedByName = files.filter((file) => file.text !== undefined && byName?.(file.name));
+  const all = files.filter((file): file is FinalFile & { text: string } => file.text !== undefined && !byName?.(file.name));
   const others = files.filter((file) => file.text === undefined);
-  const named = others.length ? [`Not shown (not text, or past what a grader is given), by path and size in bytes: ${namesOf(others)}`] : [];
+  const named = [
+    ...(others.length ? [`Not shown (not text, or past what a grader is given), by path and size in bytes: ${namesOf(others)}`] : []),
+    ...(listedByName.length ? [`Not shown (the agent's own skills, copied under .agents/skills when its run started), by path and size in bytes: ${namesOf(listedByName)}`] : []),
+  ];
   const whole = [...all.map((file) => block(file, file.text)), ...named].join("\n");
   if (whole.length <= room) return { text: whole, cut: 0, out: 0, state: 0 };
   const state = all.filter((file) => toolState(file.name));

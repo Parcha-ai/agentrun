@@ -382,10 +382,19 @@ answer when it is one JSON object and nothing else. The report lists it as the g
   given the rubric, the run's input, its answer, its tool calls and the calls each fake received, and with `target`
   that field besides (the whole answer stays, for anything else the rubric checks). Each call shows its arguments as
   `tool_used` reads them, its status, and its result whole to 120,000 characters through the same redaction. The prompt
-  stays under 120,000 characters: past that, the run's final files take room first, but never so much that the calls'
+  stays under 176,000 characters. Past that, what it would show twice is shown once first, each kind counted on a
+  `Shown once` line in `<cuts>`:
+  - a poll whose every `status` read "pending" keeps only its number, tool and status when the next call of that tool
+    asked the same and also read only "pending" (the last such poll, and every other answer, stay whole);
+  - a value of 200 characters or more in a call's answer that equals one of its own arguments points at them;
+  - a value equal to a final file's whole content points at that file in `<files>`;
+  - the package's skills copied under `.agents/skills` are listed by path and size.
+  A pointer stands only where the input still shows whole what it points at; one whose file or arguments the cut
+  takes is undone. The link check reads the calls as the run made them.
+
+  Then the run's final files take room first, but never so much that the calls'
   arguments get less than half of it (or all they need); the files under a folder whose name starts with `.` (a
-  package's skills copied under `.agents/skills`, a tool's cache) are listed by path and size before any file of the
-  run's own is cut. The two call lists share what the rest leaves, each by its whole size, and the fake servers' list
+  tool's cache) are listed by path and size before any file of the run's own is cut. The two call lists share what the rest leaves, each by its whole size, and the fake servers' list
   gets at least half of it (or all it needs). The longest results (and a fake's longest arguments) lose their middle
   first (marked), then the middle calls, and each list's first line says what was cut. A `<cuts>` note ahead of the
   evidence counts every cut, and tells the grader that what a cut left out was not seen; under a cap so tight the note
