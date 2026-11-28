@@ -113,8 +113,9 @@ async function bytes(server, workspace, { path, id, body = "hello" }) {
 
 /** Every operation of WORKSPACE_ROUTES: how a scoped request reaches it, and what a row of another workspace reads as.
  *  `row`: the operation names W1's row by id (agent, run or template), and W2 gets the 404 a missing id gets. `list`: W2's
- *  list holds none of W1's rows. `made`: a write W2 makes lands in W2 alone. `served`: answered to any workspace.
- *  `catalog`: Composio's catalog, tested on its own. `apart`: the file that tests its tenancy, which needs a scan's run
+ *  list holds none of W1's rows. `made`: a write W2 makes lands in W2 alone. `served`: answered to any workspace. `mcp`:
+ *  a workspace's MCP server, named by its name, each kept apart in api-only-mcp-workspace.test.mjs. `catalog`: Composio's
+ *  catalog, tested on its own. `apart`: the file that tests its tenancy, which needs a scan's run
  *  (suggestions-workspace.test.mjs). */
 const TABLE = {
   getRun: { method: "GET", path: "/v2/runs/{run}", row: "run" },
@@ -149,6 +150,14 @@ const TABLE = {
   createAgent: { made: true },
   importTemplate: { made: true },
   createFile: { made: true },
+  listMcpServerNames: { mcp: true },
+  listMcpServers: { mcp: true },
+  getMcpServer: { mcp: true },
+  previewMcpServer: { mcp: true },
+  saveMcpServer: { mcp: true },
+  saveComposioServer: { mcp: true },
+  refreshMcpServer: { mcp: true },
+  deleteMcpServer: { mcp: true },
   // A trigger is its agent's: api-only-workspace-triggers.test.mjs (it needs the launch hook to make one).
   listTriggers: { triggers: true },
   getTrigger: { triggers: true },

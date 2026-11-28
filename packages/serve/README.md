@@ -4151,8 +4151,9 @@ computers this server offers (`GET /computers`, never a paired computer of the o
 workspace's own going on one (`GET /computers/running`); the templates' list, read, import, apply and delete (a bundled
 package stays `403`); the marketplace's list (`/marketplace/templates`, each entry's `here` naming only a package the
 workspace sees); the uploaded files' create, upload, list, read and delete (`/files`); the triggers' list, read,
-firings, create, edit, delete and run now (`/triggers`); and `/capabilities`, `/health` and `/openapi.json`. Every
-other route is `403 forbidden` with
+firings, create, edit, delete and run now (`/triggers`); the MCP servers' list, names, read, preview, save, Composio save,
+refresh and delete (`/settings/mcp-servers`); and `/capabilities`, `/health` and `/openapi.json`. Every other route is
+`403 forbidden` with
 `details.reason: "not_scoped"`. In it, an agent, run, imported template package or file of another workspace (or of none)
 answers the same `404` as an id no row has, and every list holds the workspace's rows alone, paged within them; bundled
 template packages are every workspace's. What it makes is the workspace's: an agent (made or applied), an imported
@@ -4166,6 +4167,27 @@ any other source or target, or no hook, is `422` and nothing is made. Its edit i
 now (`POST /triggers/{id}/fire`) is served only for a trigger that may be on here, so the firing goes to the backend
 through the launch hook. A request with no header reads, imports, applies and deletes the packages of no workspace
 alone: its import of a name a workspace holds is a package of its own, never replacing that workspace's.
+
+A workspace's MCP servers are its own, beside the install's shared ones (saved with no header). In it, the list and the
+reads, saves, refreshes and deletes reach the workspace's servers alone: another workspace's server of a name answers the
+same `404` as a name never saved, a save of that name makes the workspace's own and leaves the other's as it was, and a
+shared server is not the workspace's to read, change or delete. `GET /settings/mcp-server-names` holds its own servers'
+names and the shared ones', what its agents may grant; with no header, the shared ones alone. An agent of the workspace
+reaches its own server of a name before the shared one, at its save and at each run's claim; one that reaches neither is
+refused as a server never saved. A save in a workspace is of an address at the operator's MCP origins
+(`AGENTRUN_API_ONLY_MCP_ORIGINS`): `per_run` (each run hands its own in `mcp_auth`), or `headers` or `bearer`, whose
+credential is sealed in the workspace's own row and sent by its own agents' runs alone (a re-save that sends none keeps
+it); or a per-run Composio save (`user_id: "per_run"`, no `auth_config_id`, else `422 not_allowed`) whose key the install
+names (`api_key_env`). Anything else is the refused route's `404`, before anything is sent. The token with no header still
+writes no credential. One of a workspace's sealed servers at an origin taken off the list can't be used, as a token's
+`per_run` one can't: a run already going when the list changes stops sending its credential at its next call, and its
+preview or refresh by name is the refused route's `404`, nothing sent. A run started on a workspace's agent, by its
+request or the token with no header, checks its `mcp_auth` against that workspace's servers. The owner's shared
+servers still guard it: a workspace's save never stands on an auth config one of them stands on, and its run never binds
+the owner's Composio user. A workspace's server is kept as `<workspace>/<name>`, its sealed credential bound to that row,
+so a credential copied to another workspace's row does not open. A preview is of its own server by name, or of an address at the
+operator's MCP origins (`AGENTRUN_API_ONLY_MCP_ORIGINS`), any other `404` before anything is sent. A sign-in
+(`/oauth/start`) and the Composio triggers' routes stay unscoped.
 
 Launch disks (`archil_disk` on a run's start) are the backend's to map to its tenants: the server keeps no record of which
 tenant a disk it did not make is for, and a run in a workspace may name any of them. It names no agent's own disk
