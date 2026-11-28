@@ -226,6 +226,11 @@ export type SearchBounds = { searchMs?: number; firecrawlMs?: number };
 /** What a call stopped before any backend was asked answers (searchInTurn): the keyless backends' words for a stop. */
 const SEARCH_STOPPED = "the search was stopped";
 
+/** `name` held, in the model's words: out of quota or rate-limited, until its reset (UTC, to the second), or for the
+ *  rest of the run where it named none. */
+const heldWords = (name: string, holding: Holding): string =>
+  `${name} is ${holding.kind === "quota" ? "out of quota" : "rate-limited"} ${Number.isFinite(holding.until) ? `until ${new Date(holding.until).toISOString().replace(/\.\d{3}Z$/, "Z")}` : "for the rest of this run"}`;
+
 /** Whether a search's answer holds nothing for the model: no results and no short answer of its own (`text`). */
 const emptyAnswer = (answer: Search): boolean => !("error" in answer) && !answer.results.length && !answer.text;
 
@@ -265,9 +270,25 @@ export async function searchInTurn(backends: readonly Backend[], breakerOf: (nam
     if (outcome === "empty") empty ??= answer;
     else last = answer;
   }
-  if (empty) return empty;
   const breakers = backends.map((backend) => breakerOf(backend.name));
-  if (breakers.every((breaker) => breaker.off())) return backends.length === 1 && last ? last : { error: SEARCH_UNAVAILABLE };
+  // Each backend off now, in the model's words: who, why, and when it may be asked again.
+  const offs = backends.flatMap((backend, i) => {
+    const holding = breakers[i]!.off() ? breakers[i]!.holding() : undefined;
+    return holding ? [{ name: backend.name, holding }] : [];
+  });
+  // No results while a backend is held reads as "nothing exists": the answer says the search is short of it instead.
+  if (empty) {
+    const others = offs.filter(({ name }) => !("provider" in empty! && empty.provider === name));
+    if (!others.length || "error" in empty) return empty;
+    return { error: `${empty.provider} found no results, and ${others.map(({ name, holding }) => heldWords(name, holding)).join("; ")}; search again after that or answer from what you have` };
+  }
+  if (breakers.every((breaker) => breaker.off())) {
+    // A hold with a named reset says so; one with none keeps SEARCH_UNAVAILABLE, as does a lone backend's own words.
+    const named = offs.some(({ holding }) => Number.isFinite(holding.until));
+    if (backends.length === 1 && last && !("error" in last && last.error === SEARCH_UNAVAILABLE)) return last;
+    if (named) return { error: `search is unavailable: ${offs.map(({ name, holding }) => heldWords(name, holding)).join("; ")}; answer from what you have` };
+    return backends.length === 1 && last ? last : { error: SEARCH_UNAVAILABLE };
+  }
   // A backend that turned off in this call while another only waits: the run's search is not off, so it waits.
   if (last && !("error" in last && last.error === SEARCH_UNAVAILABLE)) return last;
   return busyFor(Math.min(...breakers.filter((breaker) => !breaker.off()).map((breaker) => breaker.left())));
