@@ -33,7 +33,7 @@ import { agentDeleting, purgedAgent } from "./agents.js";
 import { ownedElsewhere } from "./agents-store.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { EFFORTS } from "./model.js";
-import { AgentArchived, type FiringChange, FiringMoved, type FiringRow, type NewFiring, type Store, StoreConstraint, TriggerFull, type TriggerPatch, type TriggerRow } from "./store/index.js";
+import { AgentArchived, type FiringChange, type FiringHooked, FiringMoved, type FiringRow, type NewFiring, type Store, StoreConstraint, TriggerFull, type TriggerPatch, type TriggerRow } from "./store/index.js";
 import { carriesPrevious, type Clock, PAYLOAD_KEPT_BYTES, type PollResult, second, type Source, type TriggerAdapter, validZone } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { type Handed, handToHost, HookFailed, type HookFiring, LAUNCH_HOOK_LATE_START_MS, type LaunchHook } from "./trigger-launch-hook.js";
@@ -161,11 +161,12 @@ export type TriggerFailed = { trigger_id: string; name: string; agent_id: string
 export type RunTrigger = { id: string; firing_key: string; name?: string; attrs?: Record<string, string> };
 /** A host's start of a firing the launch hook handed it (Triggers.handedStart): the firing's key, the trigger, input
  *  origin and title a start here would give the run, and the target and previous-result flag it starts on
- *  (TriggerDeps.start's, so a handed run gets its target's cap, effort and previous result as one started here does; the
- *  host may lower the cap, and its effort holds when the target sets none). The start writes its run with the firing's
- *  start in the same write (store.runs.create `firing`), so a release of the firing meanwhile refuses it (FiringMoved)
- *  and leaves no run. */
-export type HandedStart = { key: string; trigger: RunTrigger; from: MessageOrigin; title: string; target: Extract<Target, { kind: "start_run" }>; previous: boolean };
+ *  (TriggerDeps.start's, so a handed run gets its target's effort and previous result as one started here does, and its
+ *  effort holds when the target sets none), and `told`, the lowest cap the hook told the host for the firing
+ *  (FiringRow.hooked; absent when the firing keeps none), which the run takes the lower of with the target's (toldCap);
+ *  the host may lower it again. The start writes its run with the firing's start in the same write (store.runs.create `firing`), so a
+ *  release of the firing meanwhile refuses it (FiringMoved) and leaves no run. */
+export type HandedStart = { key: string; trigger: RunTrigger; from: MessageOrigin; title: string; target: Extract<Target, { kind: "start_run" }>; told?: FiringHooked; previous: boolean };
 /** The engine's clock and its one timer: Date.now and setTimeout, or a test's. */
 export type TriggerClock = { now(): number; arm(fire: () => void, ms: number): { clear(): void } };
 export type TriggerDeps = {
@@ -435,8 +436,10 @@ export class Triggers {
     this.timer = undefined;
   }
 
-  async list() {
-    return { triggers: await Promise.all((await this.all()).map((t) => this.view(t))) };
+  /** Every trigger's view, or only those of the triggers whose agent `keep` takes (a scoped request's: trigger-scope.ts):
+   *  no view is built for the rest. */
+  async list(keep?: (agentId: string) => boolean) {
+    return { triggers: await Promise.all((await this.all()).filter((t) => keep === undefined || keep(t.agentId)).map((t) => this.view(t))) };
   }
 
   async get(id: string) {
@@ -1284,9 +1287,14 @@ export class Triggers {
   private async handed(trigger: Trigger, firing: FiringRow, hook: LaunchHook): Promise<void> {
     if (trigger.target.kind !== "start_run") return;
     const agentId = trigger.target.agent_id;
+    // The cap is kept with the firing before the host hears it (store.triggers.hooked): every hand of the firing names the
+    // lowest cap told so far or the target's now, whichever is lower, and the host's start never passes it (handedStart),
+    // so a target lowered since lowers it and one raised since, even back to where it was, never raises it.
+    const told = (await this.store.triggers.hooked(trigger.id, firing.key, { max_cost_usd: trigger.target.max_cost_usd ?? null })) ?? { max_cost_usd: trigger.target.max_cost_usd ?? null };
+    if (this.closed) return;
     const sent: HookFiring = {
       firing_id: firing.key, trigger_id: trigger.id, agent_id: agentId, revision_id: (await this.store.agents.get(agentId))?.currentRevision ?? null,
-      input: this.inputOf(trigger, firing), fired_at: second(firing.nominalAt),
+      input: this.inputOf(trigger, firing), fired_at: second(firing.nominalAt), max_cost_usd: told.max_cost_usd,
     };
     const handed: Handed | HookFailed = await handToHost(hook, sent, this.stopping.signal, () => this.clock.now()).catch((error: unknown) => (error instanceof HookFailed ? error : Promise.reject(error)));
     if (this.closed || "stopped" in handed) return;
@@ -1307,8 +1315,10 @@ export class Triggers {
   /** The run the host starts through the API for a firing the launch hook handed it (RunCreate `trigger_firing`),
    *  written by `start` from the firing's key (the run's origin key, so the firing finds it), the trigger, input origin
    *  and title its own start would give the run, and the target and previous-result flag it starts on (the policy's
-   *  start, as drive's). `start` starts the firing in the run's own write (store.runs.create `firing`), which throws
-   *  FiringMoved once the firing has moved since its room was checked. It can also answer a run that write never linked
+   *  start, as drive's): the target as it stands and the lowest cap the hook told the host for the firing (`told`), so
+   *  the run takes the lower of the two (toldCap): a target raised after the hand never raises the run. `start` starts the
+   *  firing in the run's own write (store.runs.create `firing`), which throws FiringMoved once the firing has moved
+   *  since its room was checked. It can also answer a run that write never linked
    *  (startRun's re-delivery under the origin key, or another writer's run after a constraint), and handedRan then
    *  starts the firing with it. Or the run already started under that key, `replayed`. Refused, in words, unless this
    *  server has the hook and the firing, of a start_run trigger on `agentId`, may start now (startRoom). */
@@ -1353,7 +1363,7 @@ export class Triggers {
         try {
           run = await start({
             key, trigger: { id: triggerId, firing_key: key, name: trigger.name, ...(attrs && Object.keys(attrs).length ? { attrs } : {}) }, from: this.originOf(trigger), title: this.titleOf(trigger, room.firing),
-            target: trigger.target, previous: carriesPrevious(this.adapter(trigger.source)),
+            target: trigger.target, ...(room.firing.hooked ? { told: room.firing.hooked } : {}), previous: carriesPrevious(this.adapter(trigger.source)),
           });
         } catch (error) {
           // The run's write found the firing moved since its room was checked (its host released it): nothing was

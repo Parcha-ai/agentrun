@@ -15,7 +15,7 @@ import { AttachHub, readBackOf } from "@parcha/agentrun-computer";
 import { FakeUiDriver, serveUiSocket } from "@parcha/agentrun-computer/fake-ui-driver";
 import { putSealedKey } from "../dist/server-keys.js";
 import { computerForClaim, localWorkspace } from "../dist/workspace/index.js";
-import { pairedOf } from "../dist/workspace/attached-computers.js";
+import { pairedOf, scopedPairedWords } from "../dist/workspace/attached-computers.js";
 import { fauxComputers } from "../dist/faux-computers.js";
 import { computerReadyWords, computerStartingWords } from "../dist/workspace/computer-deps.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
@@ -490,6 +490,31 @@ test("a computer that isn't the run's own is neither recorded nor called a new o
     driver.close();
   }
   assert.deepEqual(asked, [], "the journal never asked");
+});
+
+test("a run of an agent in a workspace never takes a paired computer: its claim refuses it in words, code computer_unavailable; the same run of an agent in none takes it", async () => {
+  const driver = new FakeUiDriver({ groups: ["screen", "input.pointer", "input.keys", "apps", "ui"] });
+  const row = { id: "cmp-desk", name: "Test Mac", hello: driver.hello(), driver: "0", labels: {}, pairingId: "p-1", createdAt: 0, seenAt: 0, revokedAt: null };
+  const hub = new AttachHub();
+  const [served, computer] = socketPair();
+  serveUiSocket(driver, computer);
+  assert.equal((await hub.accept(pairedOf(row), served)).ok, true);
+  const workspaces = { "agent-w": "org:w1", "agent-free": null };
+  const store = { ...memoryStore(), agents: { revision: async () => undefined, workspace: async (id) => workspaces[id] } };
+  const deps = { mode: 1, kinds: KINDS, sealKey: randomBytes(32), providers: {}, spec: () => ({ image: "attached", lifetimeMs: 60_000, network: "open" }), check: { readBackOf, epoch: 3 }, workspace: localWorkspace(scratch()), attached: { rows: async () => [row], hub } };
+  const setting = { kind: "desktop", provider: row.id };
+  try {
+    await assert.rejects(computerForClaim({ runId: "run-w", epoch: 1, agentId: "agent-w", computer: setting }, store, deps), (error) => {
+      assert.equal(error.code, "computer_unavailable");
+      assert.equal(error.message, scopedPairedWords(row.id));
+      return true;
+    });
+    const held = await computerForClaim({ runId: "run-free", epoch: 1, agentId: "agent-free", computer: setting }, store, deps);
+    assert.equal(held.computer?.kind, "desktop", "an agent in no workspace takes it");
+    await held.release();
+  } finally {
+    driver.close();
+  }
 });
 
 test("a Mode 2 computer that mounts the run's folder says the run folder is kept; Mode 1 never claims it", async () => {

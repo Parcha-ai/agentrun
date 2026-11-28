@@ -241,15 +241,19 @@ func TestRelayEndsBothSidesWhenTheGatewayResetsWhileTheClientStaysOpen(t *testin
 	// The client sends its hello and then stays open and silent, as a live archil client waiting on the server does.
 	// With the gateway's side reset, the relay must end both sides now, not when the client next writes.
 	_, _ = conn.Write([]byte("client-hello"))
-	deadline := time.Now().Add(patience)
-	for runtime.NumGoroutine() > idle && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if n := runtime.NumGoroutine(); n > idle {
-		t.Fatalf("%d goroutines still carry the connection after the gateway reset (idle %d)", n-idle, idle)
-	}
+	// The client's side ending comes first: until it does, the relay may not have accepted the connection yet, and a
+	// goroutine count taken then reads idle before the relay's goroutines exist.
 	_ = conn.SetReadDeadline(time.Now().Add(patience))
 	if _, err := io.ReadAll(conn); err != nil && !errors.Is(err, syscall.ECONNRESET) {
 		t.Fatalf("the client's side did not end: %v", err)
+	}
+	deadline := time.Now().Add(patience)
+	n := runtime.NumGoroutine()
+	for n > idle && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+		n = runtime.NumGoroutine()
+	}
+	if n > idle {
+		t.Fatalf("%d goroutines still carry the connection after the gateway reset (idle %d)", n-idle, idle)
 	}
 }

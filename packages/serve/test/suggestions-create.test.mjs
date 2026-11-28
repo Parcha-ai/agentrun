@@ -198,9 +198,14 @@ test("a file the repository already has stops the create before anything is writ
   const row = await store.get(`suggestions.item.${id}`);
   row.suggestion.integration.path = "src/support/inbox.ts";
   await store.put(`suggestions.item.${id}`, row);
-  const before = await state();
+  // The token the create read the repository with is no write: what is compared is what the repository holds.
+  const written = async () => {
+    const { minted: _minted, ...repository } = await state();
+    return repository;
+  };
+  const before = await written();
   await assert.rejects(s.create(id, {}), (error) => error.code === "github_file_exists" && error.extra.details.path === "src/support/inbox.ts" && /only adds files, so nothing was written/.test(error.message));
-  assert.deepEqual(await state(), before, "nothing was written");
+  assert.deepEqual(await written(), before, "nothing was written");
   assert.equal((await s.list({})).suggestions.find((x) => x.id === id).status, "open");
 });
 
@@ -288,11 +293,11 @@ test("a suggested agent's package is kept before its apply, registered after it,
   const origin = (sha) => ({ source: `${id}@agentrun/ticket-triage`, sha, publisher: "faux-org" });
   const rows = new Map();
   const order = [];
-  // The store stamps each put (importedAt) and answers that it wrote the row, as it does.
+  // The store stamps each put (importedAt) and keeps its workspace (none here), as it does.
   let stamp = 0;
   const importedTemplates = {
     list: async () => [...rows.values()],
-    put: async (row) => { order.push(`put ${row.sha}`); rows.set(row.id, { ...row, importedAt: ++stamp }); return true; },
+    put: async (row, workspace) => { order.push(`put ${row.sha}`); rows.set(row.id, { ...row, workspace: workspace ?? null, importedAt: ++stamp }); },
     remove: async (gone) => { order.push("remove"); return rows.delete(gone); },
   };
   const registered = [];

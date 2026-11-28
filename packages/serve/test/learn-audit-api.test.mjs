@@ -171,7 +171,8 @@ test("(h) served runs over v2 read like any run: the answer text, documented tim
   for (const id of [alone]) {
     const row = audits.audits.find((one) => one.run === id);
     assert.ok(row, JSON.stringify(audits));
-    assert.deepEqual([row.shadow_run, row.workflow, row.digest, row.source, typeof row.agreed], [shadows[id].id, "answer", DIGEST, "shadow", "boolean"]);
+    // This world's faux model gives the grader no verdict, asked twice: unread, no evidence either way (null, never counted).
+    assert.deepEqual([row.shadow_run, row.workflow, row.digest, row.source, row.agreed], [shadows[id].id, "answer", DIGEST, "shadow", null]);
     assert.equal(Math.round(row.shadow_cost * 1e6), Math.round(shadows[id].costUsd * 1e6));
     assert.equal(Math.round(row.served_cost * 1e6), Math.round((await store.runs.get(id)).costUsd * 1e6));
   }

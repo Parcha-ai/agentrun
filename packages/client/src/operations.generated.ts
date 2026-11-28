@@ -182,7 +182,7 @@ export type DefinitionInput = {
     mode: "runner";
   } | {
     mode: "sandbox";
-    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
+    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel" | "sprites";
   };
   computer?: {
     kind: "none" | "sandbox" | "desktop" | "phone" | "browser";
@@ -517,6 +517,7 @@ export type RunSummary = {
     kind: "question";
     question: string;
     asked_at: string;
+    expires_at?: string;
   } | {
     kind: "approval";
     id: string;
@@ -824,7 +825,7 @@ export type Run = {
     mode: "runner";
   } | {
     mode: "sandbox";
-    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
+    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel" | "sprites";
   };
   computer?: {
     kind: "sandbox" | "desktop" | "phone" | "browser";
@@ -859,6 +860,7 @@ export type Run = {
     kind: "question";
     question: string;
     asked_at: string;
+    expires_at?: string;
   } | {
     kind: "approval";
     id: string;
@@ -1193,7 +1195,7 @@ export type Capabilities = {
   places: {
     modes: Array<"runner" | "sandbox">;
     boxes: Array<{
-      id: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
+      id: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel" | "sprites";
       available: boolean;
       state: "ready" | "unavailable";
       reason?: string;
@@ -1205,7 +1207,7 @@ export type Capabilities = {
       mode: "runner";
     } | {
       mode: "sandbox";
-      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
+      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel" | "sprites";
     } | null;
     default_reason?: string;
     allow: Array<string>;
@@ -1399,6 +1401,7 @@ export type Features = {
     auth: Array<"none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run">;
     at_rest: "sealed";
     harnesses: Array<string>;
+    composio_key_envs?: Array<string>;
     composio_per_run: boolean;
   };
   tool_permissions?: boolean;
@@ -1901,6 +1904,7 @@ export type ListLearningPromotionsResponse = {
           };
         };
         unjudged?: number;
+        unread?: number;
       }>;
       of?: Array<string>;
       cost_usd?: number | null;
@@ -1931,6 +1935,8 @@ export type ListLearningPromotionsResponse = {
           value?: string;
         }>;
       }>;
+      unread?: number;
+      undecided?: true;
       stopped?: true;
       released?: number;
       fresh_reads?: number;
@@ -1951,6 +1957,7 @@ export type ListLearningPromotionsResponse = {
             agent_right: number;
           };
           unjudged?: number;
+          unread?: number;
         }>;
         of: Array<string>;
         outcomes: {
@@ -1975,6 +1982,7 @@ export type ListLearningPromotionsResponse = {
           }>;
         }>;
         fresh_reads?: number;
+        unread?: number;
       };
     };
     runs?: Array<string>;
@@ -2062,6 +2070,7 @@ export type ListLearningPromotionsResponse = {
             };
           };
           unjudged?: number;
+          unread?: number;
         }>;
         of?: Array<string>;
         cost_usd?: number | null;
@@ -2092,6 +2101,8 @@ export type ListLearningPromotionsResponse = {
             value?: string;
           }>;
         }>;
+        unread?: number;
+        undecided?: true;
         stopped?: true;
         released?: number;
         fresh_reads?: number;
@@ -2112,6 +2123,7 @@ export type ListLearningPromotionsResponse = {
               agent_right: number;
             };
             unjudged?: number;
+            unread?: number;
           }>;
           of: Array<string>;
           outcomes: {
@@ -2136,6 +2148,7 @@ export type ListLearningPromotionsResponse = {
             }>;
           }>;
           fresh_reads?: number;
+          unread?: number;
         };
       } | null;
     } | null;
@@ -3803,7 +3816,8 @@ export type ListComposioEventsResponse = {
 
 /** List the toolkits Composio offers, for the console's toolkit picker; stores nothing (POST /settings/mcp-servers/composio/toolkits). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
 export type ListComposioToolkitsBody = {
-  api_key: string;
+  api_key?: string;
+  api_key_env?: "COMPOSIO_API_KEY" | "AGENTRUN_COMPOSIO_API_KEY";
 };
 export type ListComposioToolkitsResponse = {
   toolkits: Array<{
@@ -3814,8 +3828,9 @@ export type ListComposioToolkitsResponse = {
 
 /** List the actions of a Composio toolkit, for the console's picker; stores nothing (POST /settings/mcp-servers/composio/tools). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
 export type ListComposioToolsBody = {
-  api_key: string;
   toolkit: string;
+  api_key?: string;
+  api_key_env?: "COMPOSIO_API_KEY" | "AGENTRUN_COMPOSIO_API_KEY";
 };
 export type ListComposioToolsResponse = {
   toolkit: string;
@@ -4303,7 +4318,7 @@ export type SaveComposioServerBody = {
   auth_config_id?: string;
   price_usd?: number;
   api_key?: string;
-  api_key_env?: "COMPOSIO_API_KEY";
+  api_key_env?: "COMPOSIO_API_KEY" | "AGENTRUN_COMPOSIO_API_KEY";
 };
 export type SaveComposioServerResponse = {
   server: {
@@ -4314,7 +4329,7 @@ export type SaveComposioServerResponse = {
     auth: {
       type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
       headers?: Array<string>;
-      api_key_env?: "COMPOSIO_API_KEY";
+      api_key_env?: "COMPOSIO_API_KEY" | "AGENTRUN_COMPOSIO_API_KEY";
     };
     credential: "sealed" | "unreadable" | "expired" | null;
     oauth?: {
@@ -4476,8 +4491,28 @@ export type SaveModelGatewayResponse = {
 /** Scan a repository for places its app needs an agent (POST /suggestions/scans). */
 export type ScanForSuggestionsBody = {
   repo: string;
+  start?: "host";
+  run_id?: string;
+  scan?: string;
 };
 export type ScanForSuggestionsResponse = {
+  repo: string;
+  run_id: string;
+  agent_id: string;
+  status: "running";
+  already_running: boolean;
+} | {
+  repo: string;
+  agent_id: string;
+  input: {
+    content: string;
+  };
+  scan: string;
+  status: "starting";
+} | {
+  repo: string;
+  status: "released";
+} | {
   repo: string;
   run_id: string;
   agent_id: string;
@@ -4726,7 +4761,7 @@ export type GetMcpServerResponse = {
   auth: {
     type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
     headers?: Array<string>;
-    api_key_env?: "COMPOSIO_API_KEY";
+    api_key_env?: "COMPOSIO_API_KEY" | "AGENTRUN_COMPOSIO_API_KEY";
   };
   credential: "sealed" | "unreadable" | "expired" | null;
   oauth?: {
@@ -4778,7 +4813,7 @@ export type ListMcpServersResponse = {
     auth: {
       type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
       headers?: Array<string>;
-      api_key_env?: "COMPOSIO_API_KEY";
+      api_key_env?: "COMPOSIO_API_KEY" | "AGENTRUN_COMPOSIO_API_KEY";
     };
     credential: "sealed" | "unreadable" | "expired" | null;
     oauth?: {
@@ -4878,7 +4913,7 @@ export type RefreshMcpServerResponse = {
     auth: {
       type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
       headers?: Array<string>;
-      api_key_env?: "COMPOSIO_API_KEY";
+      api_key_env?: "COMPOSIO_API_KEY" | "AGENTRUN_COMPOSIO_API_KEY";
     };
     credential: "sealed" | "unreadable" | "expired" | null;
     oauth?: {
@@ -4940,7 +4975,7 @@ export type SaveMcpServerResponse = {
   auth: {
     type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
     headers?: Array<string>;
-    api_key_env?: "COMPOSIO_API_KEY";
+    api_key_env?: "COMPOSIO_API_KEY" | "AGENTRUN_COMPOSIO_API_KEY";
   };
   credential: "sealed" | "unreadable" | "expired" | null;
   oauth?: {

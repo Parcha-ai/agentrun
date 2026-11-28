@@ -9,7 +9,7 @@ import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { type Store, UPLOAD_PREFIX } from "./store/index.js";
 import { fetchPackageFiles, type GithubReach, type GithubSource, hiddenPath, ImportRefused, IMPORT_LIMITS, parseSource, resolveSha } from "./template-source.js";
 import { manifestOf } from "./manifest.js";
-import { outOfScope, workspaceNow } from "./workspace-scope.js";
+import { workspaceNow } from "./workspace-scope.js";
 import { MANIFEST, memoryFiles, type Package, PackageError, readPackage, type TemplateRegistry } from "./templates.js";
 import { isObject, type Json, unknownFields } from "./validate.js";
 
@@ -27,6 +27,53 @@ export type TemplateImportDeps = {
   /** The API-only profile: an upload is taken, a GitHub source refused (its backend sends the package). */
   apiOnly?: boolean;
 };
+
+/** One package name's store write and registry change at a time in a workspace (the request's; none's when unscoped),
+ *  per registry (this process's): an import keeps its row and serves its package, a delete reads, removes and drops, each
+ *  whole. Without it a reimport could keep its row before a delete read the row and serve its package after the delete
+ *  dropped the registry's copy, so the registry served a name the store no longer kept (every read 404 until a restart).
+ *  Another workspace's package of the name is its own, so neither waits for the other. */
+export class TemplateNames {
+  readonly #tails = new Map<string, Promise<void>>();
+  readonly #waiting = new Map<string, number>();
+
+  async hold<T>(name: string, work: () => Promise<T>): Promise<T> {
+    const id = nameIn(workspaceNow() ?? null, name);
+    const before = this.#tails.get(id);
+    let release!: () => void;
+    const mine = new Promise<void>((resolve) => { release = resolve; });
+    const tail = before ? before.then(() => mine) : mine;
+    this.#tails.set(id, tail);
+    if (before) {
+      this.#waiting.set(id, (this.#waiting.get(id) ?? 0) + 1);
+      await before;
+      const left = this.#waiting.get(id)! - 1;
+      if (left) this.#waiting.set(id, left);
+      else this.#waiting.delete(id);
+    }
+    try {
+      return await work();
+    } finally {
+      release();
+      if (this.#tails.get(id) === tail) this.#tails.delete(id);
+    }
+  }
+
+  /** How many calls wait for `name` in `workspace` (the request's by default) behind the one that holds it. */
+  waiting(name: string, workspace: string | null = workspaceNow() ?? null): number {
+    return this.#waiting.get(nameIn(workspace, name)) ?? 0;
+  }
+}
+
+const nameIn = (workspace: string | null, name: string) => JSON.stringify([workspace, name]);
+
+const NAMES = new WeakMap<object, TemplateNames>();
+/** The registry's package names' lock (TemplateNames). */
+export function templateNames(registry: object): TemplateNames {
+  let names = NAMES.get(registry);
+  if (!names) NAMES.set(registry, (names = new TemplateNames()));
+  return names;
+}
 
 /** The folder name a package's id ends in: an upload's name, else its path's last part, else the repository's name
  *  (agent.md's `name` is it). */
@@ -85,26 +132,29 @@ export function importedPackage(id: string, origin: { source: string; sha: strin
   return { ...read, id, origin };
 }
 
-/** The packages the store keeps, put in the registry beside the bundled ones; one this build no longer takes is left out,
- *  said through `skipped`, never a stop of the start. */
+/** The packages the store keeps, put in the registry beside the bundled ones, each in its workspace; one this build no
+ *  longer takes is left out, said through `skipped`, never a stop of the start. */
 export async function loadImported(deps: Pick<TemplateImportDeps, "registry" | "store">, skipped: (id: string, why: string) => void): Promise<void> {
   for (const row of await deps.store.importedTemplates.list()) {
     try {
       const files = new Map(Object.entries(row.files).map(([path, data]) => [path, Buffer.from(data, "base64")]));
-      deps.registry.put(importedPackage(row.id, { source: row.source, sha: row.sha, publisher: row.publisher }, files));
+      deps.registry.put(importedPackage(row.id, { source: row.source, sha: row.sha, publisher: row.publisher }, files), row.workspace);
     } catch (error) {
       skipped(row.id, error instanceof PackageError ? error.problems.join("; ") : (error as Error).message);
     }
   }
 }
 
-/** The uploads served here whose row the store no longer keeps (an agent's purge removed it: Agents.purge), no longer
- *  served. Only the package read before the store is removed, so an upload put in meanwhile stays served. */
+/** The uploads served here, in any workspace, whose row the store no longer keeps (an agent's purge removed it:
+ *  Agents.purge), no longer served. Only the package read before the store is removed, so an upload put in meanwhile
+ *  stays served. */
 export async function dropRemovedUploads(deps: Pick<TemplateImportDeps, "registry" | "store">): Promise<void> {
-  const served = deps.registry.list().filter((pkg) => pkg.origin !== null && pkg.id.startsWith(UPLOAD_PREFIX));
+  const served = deps.registry.everywhere().filter(({ pkg }) => pkg.id.startsWith(UPLOAD_PREFIX));
   if (!served.length) return;
-  const stored = new Set(await deps.store.importedTemplates.ids());
-  for (const pkg of served) if (!stored.has(pkg.id) && deps.registry.get(pkg.id) === pkg) deps.registry.remove(pkg.id);
+  const stored = new Set((await deps.store.importedTemplates.keys()).map((key) => JSON.stringify([key.workspace, key.id])));
+  for (const { workspace, pkg } of served) {
+    if (!stored.has(JSON.stringify([workspace, pkg.id])) && deps.registry.get(pkg.id, workspace) === pkg) deps.registry.remove(pkg.id, workspace);
+  }
 }
 
 /** Whether `publisher` is one the owner trusts (case-insensitive, as GitHub's account names are). */
@@ -171,8 +221,7 @@ async function uploadTemplate(deps: TemplateImportDeps, raw: unknown, dryRun: bo
   }
   const replaced = await replacedOf(deps, pkg.id);
   if (dryRun) return { status: 200, pkg, trusted: true, replaced };
-  await keep(deps, { id: pkg.id, source: pkg.origin!.source, sha: pkg.origin!.sha, publisher: "", files: Object.fromEntries([...files].map(([path, data]) => [path, data.toString("base64")])) });
-  deps.registry.put(pkg);
+  await kept(deps, pkg, { id: pkg.id, source: pkg.origin!.source, sha: pkg.origin!.sha, publisher: "", files: Object.fromEntries([...files].map(([path, data]) => [path, data.toString("base64")])) });
   return { status: 201, pkg, trusted: true, replaced };
 }
 
@@ -202,33 +251,27 @@ export async function importTemplate(deps: TemplateImportDeps, raw: unknown, sig
     throw invalid([{ field: "trust_publisher", reason: "missing", message: `${source.owner} has published no package this server has imported yet: read the package (a dry run shows it whole), then import it again with trust_publisher: true to say you trust ${source.owner}.`, fix: "Send trust_publisher: true." }]);
   }
   if (!isTrusted) await trust(deps, source.owner);
-  await keep(deps, { id: pkg.id, source: pkg.origin!.source, sha: pkg.origin!.sha, publisher: pkg.origin!.publisher, files: Object.fromEntries([...files].map(([path, data]) => [path, data.toString("base64")])) });
-  deps.registry.put(pkg);
+  await kept(deps, pkg, { id: pkg.id, source: pkg.origin!.source, sha: pkg.origin!.sha, publisher: pkg.origin!.publisher, files: Object.fromEntries([...files].map(([path, data]) => [path, data.toString("base64")])) });
   return { status: 201, pkg, trusted: true, replaced };
 }
 
-/** An import's refusal of a package name held outside its workspace: a scoped import's, of a name another workspace or
- *  the operator holds; an unscoped one's, of a name a workspace holds, which the operator deletes first to replace. */
-const nameTaken = (id: string) =>
-  new ApiError("name_taken", workspaceNow() !== undefined
-    ? `A template package named ${id} is already on this server, outside this workspace: give the package another name in its manifest.`
-    : `A template package named ${id} is already on this server, imported in a workspace: an import with no workspace never replaces it. Delete it first (DELETE /v2/templates/${id}), or give the package another name in its manifest.`);
-
-/** The sha of the package an import of `id` replaces, or null. In a workspace (workspace-scope.ts), a package of that id
- *  another workspace imported, or an unscoped request did, or one bundled here, is never replaced: the import is 409.
- *  Unscoped, one a workspace imported is never replaced either. */
-async function replacedOf(deps: Pick<TemplateImportDeps, "registry" | "store">, id: string): Promise<string | null> {
-  const held = deps.registry.get(id);
-  if (!held) return null;
-  const workspace = (await deps.store.importedTemplates.workspaces()).get(id);
-  if (workspaceNow() !== undefined ? outOfScope(workspace) : typeof workspace === "string") throw nameTaken(id);
-  return held.origin?.sha ?? null;
+/** The sha of the package an import of `id` replaces in the request's workspace (workspace-scope.ts; none's when
+ *  unscoped), or null. A package of that id in another workspace is that one's own, never replaced. */
+async function replacedOf(deps: Pick<TemplateImportDeps, "registry">, id: string): Promise<string | null> {
+  return deps.registry.get(id)?.origin?.sha ?? null;
 }
 
-/** The import's row written in the request's workspace. The write keeps a row of another workspace (or, scoped, of none)
- *  (ImportedTemplates.put), so a name another import took between replacedOf's check and here is 409, as replacedOf's. */
+/** The import's row written in the request's workspace, in place of the one of its id there. */
 async function keep(deps: { store: { importedTemplates: Pick<Store["importedTemplates"], "put"> } }, row: Parameters<Store["importedTemplates"]["put"]>[0]): Promise<void> {
-  if (!(await deps.store.importedTemplates.put(row, workspaceNow()))) throw nameTaken(row.id);
+  await deps.store.importedTemplates.put(row, workspaceNow());
+}
+
+/** An import's row kept and its package served, holding its name (TemplateNames) across both. */
+async function kept(deps: Pick<TemplateImportDeps, "registry" | "store">, pkg: Package, row: Parameters<Store["importedTemplates"]["put"]>[0]): Promise<void> {
+  await templateNames(deps.registry).hold(pkg.id, async () => {
+    await keep(deps, row);
+    deps.registry.put(pkg);
+  });
 }
 
 /** A package made into an agent here as an imported template, from files this server wrote itself (a suggested agent's,
@@ -236,8 +279,17 @@ async function keep(deps: { store: { importedTemplates: Pick<Store["importedTemp
  *  is in memory), so a thrown error always means no agent was made, which is what Suggestions.create reads it as. An
  *  apply refused (a missing model key, say) takes the kept package back as it was before (removed, or the earlier one),
  *  but only while the row is still the one this call kept: an import of the same id meanwhile (POST /v2/templates/import)
- *  stands. */
+ *  stands. It holds the package's name (TemplateNames) from the keep to the registry's change. */
 export async function applyImported<T>(
+  deps: { registry: Pick<TemplateRegistry, "put">; store: { importedTemplates: Pick<Store["importedTemplates"], "list" | "put" | "remove"> }; apply: (pkg: Package) => Promise<T> },
+  id: string,
+  origin: { source: string; sha: string; publisher: string },
+  files: ReadonlyMap<string, Buffer>,
+): Promise<T> {
+  return templateNames(deps.registry).hold(id, () => keptAndApplied(deps, id, origin, files));
+}
+
+async function keptAndApplied<T>(
   deps: { registry: Pick<TemplateRegistry, "put">; store: { importedTemplates: Pick<Store["importedTemplates"], "list" | "put" | "remove"> }; apply: (pkg: Package) => Promise<T> },
   id: string,
   origin: { source: string; sha: string; publisher: string },
@@ -245,7 +297,8 @@ export async function applyImported<T>(
 ): Promise<T> {
   const pkg = importedPackage(id, origin, files);
   const templates = deps.store.importedTemplates;
-  const row = async () => (await templates.list()).find((one) => one.id === pkg.id);
+  const workspace = workspaceNow();
+  const row = async () => (await templates.list()).find((one) => one.id === pkg.id && one.workspace === (workspace ?? null));
   const before = await row();
   await keep({ store: { importedTemplates: templates } }, { id: pkg.id, source: origin.source, sha: origin.sha, publisher: origin.publisher, files: Object.fromEntries([...files].map(([path, data]) => [path, data.toString("base64")])) });
   // The row as this call kept it, stamped by the store: the undo below touches it only while it is still this one.
@@ -258,8 +311,8 @@ export async function applyImported<T>(
     const ours = kept !== undefined && now !== undefined && now.importedAt === kept.importedAt && now.sha === kept.sha && now.source === kept.source;
     if (ours) {
       const undo = before
-        ? templates.put({ id: before.id, source: before.source, sha: before.sha, publisher: before.publisher, files: before.files })
-        : templates.remove(pkg.id).then(() => undefined);
+        ? templates.put({ id: before.id, source: before.source, sha: before.sha, publisher: before.publisher, files: before.files }, workspace)
+        : templates.remove(pkg.id, workspace).then(() => undefined);
       await undo.catch(() => {});
     }
     throw error;
@@ -268,20 +321,25 @@ export async function applyImported<T>(
   return made;
 }
 
-/** DELETE /v2/templates/{id}: an imported package removed from the store and the registry. A bundled one is 403; none of
- *  that id, 404. Agents applied from it stay. In a workspace the store's delete is of that workspace's row alone, so a
- *  delete whose ownership read went stale (another workspace imported the freed name since) is 404 and removes nothing;
- *  the registry's copy goes only while it is still the package read here. The store's delete is of the row read here
- *  alone: one an import of the id replaced since stands, kept and served, and a workspace's delete that lost to it is
- *  404. */
+/** DELETE /v2/templates/{id}: an imported package of the request's workspace (none's when unscoped) removed from the
+ *  store and the registry. A bundled one is 403; none of that id in the workspace, 404: another workspace's package of
+ *  that id is never reached. Agents applied from it stay. The registry's copy goes only while it is still the package
+ *  read here. The store's delete is of the row read here alone: one an import of the id replaced since (another
+ *  process's, on a shared store) stands, kept, and a workspace's delete that lost to it is 404. In this process the
+ *  delete holds the package's name in its workspace (TemplateNames) from its first read to the registry's change, so an
+ *  import here keeps its row and serves its package wholly before or after it. */
 export async function deleteTemplate(deps: Pick<TemplateImportDeps, "registry" | "store">, id: string): Promise<void> {
+  await templateNames(deps.registry).hold(id, () => deleted(deps, id));
+}
+
+async function deleted(deps: Pick<TemplateImportDeps, "registry" | "store">, id: string): Promise<void> {
   const pkg = deps.registry.get(id);
   if (!pkg) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
   if (pkg.origin === null) throw new ApiError("forbidden", `${id} ships with this server, so it can't be removed.`);
   const workspace = workspaceNow();
   // The row as read here: the store's delete takes it only while it is still this one, so an import of the id that
   // replaced it since (and puts its package in the registry after) is kept in both.
-  const row = await deps.store.importedTemplates.stamp(id);
+  const row = await deps.store.importedTemplates.stamp(id, workspace);
   const removed = row !== undefined && (await deps.store.importedTemplates.remove(id, workspace, row));
   if (workspace !== undefined && !removed) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
   if (deps.registry.get(id) === pkg) deps.registry.remove(id);

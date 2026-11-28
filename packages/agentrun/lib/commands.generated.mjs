@@ -2635,6 +2635,18 @@ export const COMMANDS = [
         "type": "string",
         "required": true,
         "description": "owner/name, or its https://github.com URL."
+      },
+      {
+        "name": "run_id",
+        "type": "string",
+        "required": false,
+        "description": "The run the host started for a reserved scan, sent with that reservation's `scan`."
+      },
+      {
+        "name": "scan",
+        "type": "string",
+        "required": false,
+        "description": "The reservation a host-started run is bound to (the reserve's `scan`); sent alone, the reservation released."
       }
     ],
     "hasBody": true,

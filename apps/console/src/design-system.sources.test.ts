@@ -29,7 +29,7 @@ const RULES: Rule[] = [
   // A bare `shadow` is a class only in a string that is a class list (lower case, no sentence's capitals or apostrophes;
   // an apostrophe after a letter opens no string): "an audit's shadow run" in a title or a readout is the learning
   // words, not a class.
-  { id: "shadow", says: "There is one shadow, under what floats over the page.", fix: "shadow-float; for a halo round a mark, ring-*",
+  { id: "shadow", says: "There are two shadows: under what floats over the page, and at the left edge of a drawer.", fix: "shadow-float, or shadow-drawer on a panel that opens at a page's right; for a halo round a mark, ring-*",
     find: /(?<![\w-])shadow-(?:sm|md|lg|xl|2xl|inner|\[)|(?:["`]|(?<![A-Za-z])')[a-z0-9\s:[\]/.!_-]*(?<![\w-])shadow(?=[\s"'`])[a-z0-9\s:[\]/.!_-]*["'`]/ },
   { id: "off-scale-motion", says: "A duration and an easing are tokens.", fix: "duration-fast, duration-base, duration-slow; ease-standard",
     find: /\bduration-(?:\d+|\[)|\bease-(?:in|out|in-out)\b|\bdelay-(?:\d+|\[)/ },

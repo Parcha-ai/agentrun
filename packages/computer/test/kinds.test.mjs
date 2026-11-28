@@ -32,6 +32,8 @@ import { Agent37Provider } from "../dist/agent37.js";
 import { MorphProvider } from "../dist/morph.js";
 import { BoxdProvider } from "../dist/boxd.js";
 import { GroundboxProvider } from "../dist/groundbox.js";
+import { VercelProvider } from "../dist/vercel.js";
+import { SpritesProvider } from "../dist/sprites.js";
 import { keyPair } from "./fake-agent37.mjs";
 import { BrowserbaseProvider } from "../dist/browserbase.js";
 import { E2BProvider } from "../dist/e2b.js";
@@ -141,7 +143,7 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	assert.deepEqual(declaring("settings"), ["daytona", "modal", "e2b"]);
 	// The image made ready before the first create: Docker's built on this host; the box image registered, pulled or
 	// built as a snapshot in the key's account by the hosted ones (Cloudflare's is the one its relay was deployed FROM).
-	assert.deepEqual(declaring("prepareImage"), ["docker", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "smolcloud", "groundbox"]);
+	assert.deepEqual(declaring("prepareImage"), ["docker", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "smolcloud", "groundbox", "vercel"]);
 	assert.ok(declaring("prepareImage").every((id) => extra[id].prepareImage === true));
 	// Docker's computers run on this machine's engine; every other provider's are remote.
 	assert.deepEqual(declaring("local"), ["docker"]);
@@ -158,7 +160,7 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	assert.deepEqual(PROVIDERS.find((entry) => entry.id === "docker").kinds, ["sandbox", "desktop"]);
 	const mounts = Object.fromEntries(PROVIDERS.map((entry) => [entry.id, entry.mounts]));
 	assert.deepEqual(mounts.docker, ["bind"]);
-	for (const id of ["morph", "boxd", "groundbox"]) assert.deepEqual(mounts[id], ["sync"], id);
+	for (const id of ["morph", "boxd", "groundbox", "vercel", "sprites"]) assert.deepEqual(mounts[id], ["sync"], id);
 	for (const id of ["orgo", "phone-harness", "browserbase", "kernel", "local-chrome", "smolcloud"]) assert.deepEqual(mounts[id], [], id);
 });
 
@@ -191,6 +193,8 @@ test("PROVIDERS' default images: each kind is one of the entry's own, and each v
 		// A desktop has none: it starts from the snapshot prepareImage() builds.
 		boxd: { sandbox: all.BOXD_DEFAULT_IMAGE },
 		groundbox: undefined,
+		vercel: undefined,
+		sprites: { sandbox: all.SPRITES_IMAGE },
 	};
 	for (const [id, images] of Object.entries(expected)) {
 		assert.deepEqual(PROVIDERS.find((entry) => entry.id === id)?.defaultImage, images, `${id}: its default images are its modules' constants`);
@@ -202,6 +206,7 @@ test("PROVIDERS' default images: each kind is one of the entry's own, and each v
 	);
 	assert.equal(all.BOXD_DEFAULT_IMAGE, "default");
 	assert.equal(all.GROUNDBOX_OWN_IMAGE, "default");
+	assert.equal(all.SPRITES_IMAGE, "default");
 	assert.equal("MODAL_DEFAULT_IMAGE" in all, false, "no Modal default image: its prepareImage() answers the box image");
 	for (const name of ["E2B_BASE_TEMPLATE", "E2B_DESKTOP_TEMPLATE"]) assert.equal(name in all, false, `no ${name}: E2B's prepareImage() answers the box template`);
 });
@@ -342,6 +347,8 @@ const BUILT = {
 	morph: [() => new MorphProvider({ apiKey: "fake-test-key", ssh2: AGENT37_SSH2, fetch: async () => new Response(null, { status: 500 }) })],
 	boxd: PROVIDERS.find((one) => one.id === "boxd").capabilities.map(({ options }) => () => new BoxdProvider({ ...options, apiKey: "fake-test-key", Boxd: BOXD_SDK })),
 	groundbox: PROVIDERS.find((one) => one.id === "groundbox").capabilities.map(({ options }) => () => new GroundboxProvider({ ...options, apiKey: "fake-test-key", fetch: async () => new Response(null, { status: 500 }), webSocket: () => assert.fail("a command stream was opened") })),
+	vercel: [() => new VercelProvider({ token: "fake-test-key", teamId: "team_test", projectId: "prj_test", fetch: async () => new Response(null, { status: 500 }) })],
+	sprites: [() => new SpritesProvider({ token: "fake-test-key", fetch: async () => new Response(null, { status: 500 }), webSocket: () => assert.fail("an exec socket was opened") })],
 	orgo: PROVIDERS.find((one) => one.id === "orgo").capabilities.map(({ options }) => () => createOrgo({ ...options, apiKey: "fake-test-key", workspaceId: "ws-test", fetch: async () => new Response(null, { status: 500 }) })),
 };
 
