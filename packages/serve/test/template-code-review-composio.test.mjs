@@ -61,6 +61,20 @@ test("its skill calls only the Composio tools the package lists, posts in one CO
   assert.match(skill, /Their `tools`: `\["read", "mcp:github\/GITHUB_LIST_PULL_REQUESTS_FILES",\n"mcp:github\/GITHUB_GET_REPOSITORY_CONTENT"\]`/);
 });
 
+test("no step needs a shell, the changed files are read page by page, and a re-review applies its previous findings though last_reviewed_sha is always none here", () => {
+  const pkg = readPackages().find((p) => p.name === "code-review-composio");
+  // The three replaced guides; the shared CODEREVIEW.md stays byte-equal, and its one `git grep` is an evidence rule a
+  // read also meets ("only after a read or a `git grep` shows it"), not a step.
+  for (const guide of Object.keys(REPLACED).map((file) => file.replace(/^skills\//, ""))) {
+    assert.doesNotMatch(pkg.skills[guide], /\bgit (show|diff|log|grep|ls-files)\b|\bcd repo\b|\bnl -ba\b|`grep -|`sed -n/, `${guide}: every read is a GitHub tool call; there is no shell`);
+  }
+  for (const guide of ["review/REVIEWER.md", "review/DEEP.md"]) {
+    const text = pkg.skills[guide];
+    assert.match(text, /`per_page` 100, then\n {2}`page` 2, 3 and on until a page holds fewer than 100/, `${guide}: a pull request past 100 files is read whole`);
+    assert.match(text, /\*\*Re-review\*\* \(`previous_findings` given; `last_reviewed_sha` is none here, so review every hunk\): Never/, `${guide}: the previous findings apply on every re-review`);
+  }
+});
+
 test("the package: no computer and no checkout, one required Composio GitHub need with every tool held to the repository and the review held to COMMENT, and a trigger on each new pull request there", () => {
   const pkg = readPackages().find((p) => p.name === "code-review-composio");
   const review = readPackages().find((p) => p.name === "code-review");

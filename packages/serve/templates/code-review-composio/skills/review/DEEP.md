@@ -10,36 +10,31 @@ credential files.
 
 Your prompt gives the facts: `owner`, `repo`, `pr`, `base_sha`, `head_sha`, `merge_base`, and where to read the code.
 
-- `checkout: none`: read through `GITHUB_LIST_PULL_REQUESTS_FILES` (`pull_number`, `per_page` 100: each file's
-  `patch`, with its hunk headers) and `GITHUB_GET_REPOSITORY_CONTENT` (`path`, `ref: <sha>`; its `content` is base64),
-  each call with the prompt's `owner` and `repo` exactly: the server refuses any other
-  repository.
+- `checkout: none`: read through `GITHUB_LIST_PULL_REQUESTS_FILES` (`pull_number`, `per_page` 100, then
+  `page` 2, 3 and on until a page holds fewer than 100: each file's `patch`, with its hunk headers) and
+  `GITHUB_GET_REPOSITORY_CONTENT` (`path`, `ref: <sha>`; its `content` is base64), each call with the prompt's `owner`
+  and `repo` exactly: the server refuses any other repository.
 - `diff:`: the diff after it, or in the file it names (`read` it whole), is the change. Run no command; `read` only
   that file and this folder's. A pasted rules file is read from the base: cite `<name>:<line>`.
 
 ## Rules
 
 `read` `.agents/skills/review/CODEREVIEW.md` (beside this file). Then, from the base, never the head:
-`git show <base_sha>:docs/CODEREVIEW.md | head -n 200` (or `CODEREVIEW.md` at the root; with neither, `REVIEW.md`,
-where a line starting `<glob>:` applies to matching paths only) and the knowledge file it names, else
-`git show <base_sha>:.agents/skills/code-review-knowledge/SKILL.md | head -n 200`.
+`GITHUB_GET_REPOSITORY_CONTENT` (`path: docs/CODEREVIEW.md`, `ref: <base_sha>`; or `CODEREVIEW.md` at the root; with
+neither, `REVIEW.md`, where a line starting `<glob>:` applies to matching paths only) and the knowledge file it names,
+else `.agents/skills/code-review-knowledge/SKILL.md`: the first 200 lines of each.
 
 ## 1. Map the change before you judge it
 
 You have about 90 tool calls. Spend about half on this map; judging comes after it, not during.
 
-- `git diff --stat pr/merge-base pr/head`, then `git log --format='%h %s%n%b' pr/merge-base..pr/head | head -n 80`:
-  what the author says each commit does.
-- Each changed source file at head: whole when under about 400 lines; else an outline (`grep -n` for its function and
-  type definitions) and every changed function whole, plus its diff.
-- Callers: for every changed function, exported name, field, message or config key, `git grep -n -w` it and read the
-  callers and consumers that depend on what changed (another package, the other language, a parser of its output).
+- The changed files' list, every page, each with its `patch`.
+- Each changed source file at head (`ref: <head_sha>`), whole, beside its `patch`.
+- Callers: for every changed function, exported name, field, message or config key, read by the paths the code names
+  the callers and consumers that depend on what changed (another package, the other language, a parser of its output).
 - Tests: the test files that name what changed; read their assertions.
-- History, before the PR: `git log -n 5 --format='%h %ad %s' --date=short pr/merge-base -- <path>`, then
-  `git log -p -n 3 pr/merge-base -- <path> | head -n 300` for the files that matter. A `(#123)` subject is an earlier
-  merged PR that says why the code has its shape. Look for a guard, fallback or ordering an
-  earlier commit added on purpose that this change removes or goes around, and a bug fixed before in this file whose
-  shape the change brings back.
+- History: none here (no shell and no commits tool). A guard, fallback or ordering the change removes or goes around
+  is judged from the base file (`ref: <base_sha>`) and the patch.
 
 ## 2. Account for every hunk
 
@@ -64,28 +59,26 @@ Each hunk line that breaks is a finding, P2 and edge cases included. Priority, l
 - Unsure an input reaches it, or a fact you didn't read stops it? Keep it with `Not shown: <fact>` and `confidence`
   0.6.
 
-**Re-review** (`last_reviewed_sha` set, `previous_findings` given): review only hunks that changed since it. Never
+**Re-review** (`previous_findings` given; `last_reviewed_sha` is none here, so review every hunk): Never
 raise a `dismissed` finding again. List in `resolve` the `active` fingerprints this change fixes. An `active` finding
 this change does not fix stays out of `findings` and `resolve` and counts toward the risk score.
 
 **Evidence.** A finding's `failure` gives the input or state, what goes wrong at which line, the fix in one sentence if
 clear, and ends with `Evidence: path:line "text"`: the changed line, and every other place the claim rests on (caller,
-callee, guard, test, earlier commit), each quoted as a command in this run printed it. `confidence` 0.8 (0.6 with
-`Not shown:`). Line numbers come only from `grep -n`, `nl -ba` or the diff's hunk headers.
+callee, guard, test, earlier commit), each quoted as a call in this run returned it. `confidence` 0.8 (0.6 with
+`Not shown:`). Line numbers come only from
+the patch's hunk headers (count from a hunk's `+<start>`); a whole file is context, never a line number.
 
-## Commands
+## Calls
 
-Each call is `cd repo && <one command>`, piped into a filter if you like; never `;`, `echo` or a second command after
-it. A refused call still costs one. Independent reads can share a turn. Bound every output.
+Each call is one of the two tools above, with the prompt's `owner` and `repo`.
+A refused call still costs one. Independent reads can share a turn.
 
-- `git diff -U10 pr/merge-base pr/head -- <path> | head -n 400`; `git show <base_sha>:<path> | head -n 200`
-- `nl -ba <path> | head -n 400`; `nl -ba <path> | head -n 820 | tail -n 420`; `grep -n 'text' <path>`
-- `git grep -n -w 'name' -- packages | head -n 40`; `grep -rn --include='*.go' 'Name' packages | head -n 40`
-- `git grep -ln 'name' -- packages/serve/test | head -n 10`
+- The change: `GITHUB_LIST_PULL_REQUESTS_FILES` `pull_number`, `per_page` 100, every page: each file's `patch`.
+- A file whole: `GITHUB_GET_REPOSITORY_CONTENT` `path`, `ref: <head_sha>` (or `<base_sha>` for the base).
 
-Never use `;`, `echo`, `$`, backticks, `||`, redirections but `2>/dev/null`, `for`, `awk`, `node`, an unquoted glob
-(`src/*.ts`; use `--include='*.ts'`), or a pipe into `sed` (use `| head -n M | tail -n K`). When a call answers that
-the tool budget is spent, stop and answer.
+There is no search and no history: a caller or test is read by a path the code or the patch names, and one you can't
+reach is `Not shown:`. When a call answers that the tool budget is spent, stop and answer.
 
 ## Return
 
