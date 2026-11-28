@@ -143,8 +143,10 @@ export function wantsGrader(when: GradeWhen, stage1: Stage1, sufficient: boolean
  *    judged task it matches a value (a count, a name), never prose: a regex misses a right answer worded its own way.
  *  - checks sufficient and passing: pass. The grader never flips a structural pass (judges overestimate), but a
  *    grader fail on it goes to the human queue (a check that passes a wrong state).
- *  - checks not sufficient and passing: the grader's verdict; unknown counts as fail and goes to the human queue, and
- *    with no grader (never, or it failed) the pass stands and goes to the human queue. */
+ *  - checks not sufficient and passing: the grader's verdict, pass or fail, with no queue. Passing checks there only
+ *    say nothing structural went wrong; what they can't see is the grader's to decide, so its fail is the verdict, not
+ *    a disagreement. Unknown counts as fail and goes to the human queue, and with no grader (never, or it failed) the
+ *    pass stands and goes to the human queue. */
 export function combine(stage1: "pass" | "fail", sufficient: boolean, grade: GraderVerdict | undefined): { final: "pass" | "fail"; by: "checks" | "grader"; queue?: string } {
 	if (stage1 === "fail") {
 		if (grade?.verdict === "pass") return { final: "fail", by: "checks", queue: "the checks fail and the grader passes it" };
@@ -154,7 +156,7 @@ export function combine(stage1: "pass" | "fail", sufficient: boolean, grade: Gra
 	if (sufficient) return grade?.verdict === "fail" ? { final: "pass", by: "checks", queue: "the checks pass and the grader fails it" } : { final: "pass", by: "checks" };
 	if (!grade) return { final: "pass", by: "checks", queue: "the checks are not sufficient and no grader ran" };
 	if (grade.verdict === "unknown") return { final: "fail", by: "grader", queue: "the grader can't tell" };
-	return { final: grade.verdict, by: "grader", ...(grade.verdict === "fail" ? { queue: "the grader says fail where the checks say pass" } : {}) };
+	return { final: grade.verdict, by: "grader" };
 }
 
 export interface MessagesJudgeOptions {

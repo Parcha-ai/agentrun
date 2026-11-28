@@ -161,8 +161,12 @@ confidence}`. The locus is the earliest decisive error: `planning`, `grounding`,
 | --- | --- | --- | --- |
 | sufficient pass | fail | pass | yes |
 | fail, sufficient or not | pass or unknown | fail | yes |
-| not sufficient pass | pass or fail | the grader's | when it says fail |
+| not sufficient pass | pass or fail | the grader's | no |
 | not sufficient pass | unknown, or none ran | fail (unknown) or pass (none) | yes |
+
+Where the checks are not sufficient, their pass only says nothing structural went wrong; it is no verdict on what they
+can't see, so a grader fail there is the decision the task asked for, not a disagreement. A grader unsure of it answers
+`unknown`, which goes to a person.
 
 A person labels a queued run in `labels.jsonl` (`{run, verdict: pass|fail|infra, note}`), and the report applies it.
 The judge is a seam (`Judge`); `messagesJudge` calls an Anthropic Messages endpoint and asks once more when the answer

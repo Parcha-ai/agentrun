@@ -126,9 +126,13 @@ export function replayLine(record: Promotion): string {
   if (!c?.n) return record.reason;
   const alone = c.alone ?? 0;
   const agreed = c.agreed ?? 0;
+  // An input whose grader's verdict could not be read counts on neither side: the share is of the ones compared.
+  const unread = c.unread ?? 0;
+  const compared = alone - unread;
+  const of = unread ? `of the ${compared} compared` : "of those";
   const on = c.agree_on?.length ? ` on ${fieldsWords(c.agree_on)}` : "";
   const whole = c.agree_on?.length ? "" : c.grader ? "; compared by the fast model" : "; compared the whole answer";
-  return `Checked on ${c.n} ${c.n === 1 ? "input" : "inputs"} of the agent's own runs: ${alone} answered alone (${pctOf(alone / c.n)}, ${pctOf(c.alone_min)} needed), ${agreed} of those said what the agent said${on} (${alone ? pctOf(agreed / alone) : "0%"}, ${pctOf(c.agree_min)} needed${whole})${c.outcomes?.handed_back ? `, ${c.outcomes.handed_back} handed back` : ""}`;
+  return `Checked on ${c.n} ${c.n === 1 ? "input" : "inputs"} of the agent's own runs: ${alone} answered alone (${pctOf(alone / c.n)}, ${pctOf(c.alone_min)} needed), ${agreed} ${of} said what the agent said${on} (${compared ? pctOf(agreed / compared) : "0%"}, ${pctOf(c.agree_min)} needed${whole}${unread ? `; ${unread} unread, counted neither way` : ""})${c.outcomes?.handed_back ? `, ${c.outcomes.handed_back} handed back` : ""}`;
 }
 
 /** Where the loop stands, as the story strip says it: each stage's state and its words, and what happens next. */

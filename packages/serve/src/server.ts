@@ -2285,16 +2285,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const workspace = workspaceNow();
     return workspace === undefined ? {} : { workspace };
   };
-  /** The packages of `pkgs` a scoped request sees: the bundled ones and the ones its workspace imported. */
-  const templatesSeen = async <T extends { id: string; origin: unknown }>(pkgs: T[]): Promise<T[]> => {
-    if (workspaceNow() === undefined) return pkgs;
-    const held = await store.importedTemplates.workspaces();
-    return pkgs.filter((pkg) => pkg.origin === null || !outOfScope(held.get(pkg.id)));
-  };
-  const templateSeen = async (id: string) => {
-    const pkg = registry.get(id);
-    return pkg && (await templatesSeen([pkg]))[0];
-  };
   /** Whether the agent or run `id` is in another workspace than the scoped request's, or in none: read as missing. */
   const agentOutOfScope = async (id: string) => workspaceNow() !== undefined && outOfScope(await store.agents.workspace(id));
   const runOutOfScope = async (id: string) => workspaceNow() !== undefined && outOfScope(await store.runs.workspace(id));
@@ -4629,7 +4619,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const seal = startSeal(secrets);
         // What the server writes of the start (its input, which the run's title is read from) is cut of what it hands.
         const cut = cutHanded(rest, handedSecretValues(secrets));
-        return targets.start(firing.target, cut.input, firing.trigger, firing.from, firing.title, firing.previous, { body: cut, ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets) });
+        return targets.start(firing.target, cut.input, firing.trigger, firing.from, firing.title, firing.previous, { body: cut, ...(firing.told !== undefined ? { told: firing.told } : {}), ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets) });
       });
       return { status: 202, body: await viewOverStore(store, run.run_id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${run.run_id}`, ...(run.replayed ? { "idempotent-replayed": "true" } : {}) } };
     }
@@ -5836,7 +5826,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           definition: definitionOf(agent, revision, entry.version),
           skills: (isObject(revision.skills) ? revision.skills : {}) as Record<string, string>,
           template: entry.template ? { id: entry.template.id, version: entry.template.version, ...(entry.template.secrets ? { secrets: entry.template.secrets } : {}) } : null,
-          origin: entry.template ? registry.get(entry.template.id) : undefined,
+          // The package of its template id in the agent's own workspace, whoever exports it.
+          origin: entry.template ? registry.get(entry.template.id, (await store.agents.workspace(id)) ?? null) : undefined,
           servers: mcpMeta,
           triggers: views,
           signIns: await store.signIns.list(id),
@@ -6202,7 +6193,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "listRunningComputers": {
         const origin = linkOrigin(req);
-        return send(res, 200, await runningComputers(store, (runId) => runRead(runId, origin)), { "cache-control": "no-store" });
+        return send(res, 200, await runningComputers(store, (runId) => runRead(runId, origin), scopeOf()), { "cache-control": "no-store" });
       }
       case "listComputers":
       case "saveComputerKeys":
@@ -6213,7 +6204,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const body = found.name === "saveComputerKeys" ? await bodyOf(req) : undefined;
         const controller = new AbortController();
         req.once("close", () => controller.abort());
-        return send(res, 200, await settingsComputerRoute(computersOf(), found.name, { ...(provider !== undefined ? { provider } : {}), ...(body !== undefined ? { body } : {}), signal: controller.signal }), { "cache-control": "no-store" });
+        return send(res, 200, await settingsComputerRoute(computersOf(), found.name, { ...(provider !== undefined ? { provider } : {}), ...(body !== undefined ? { body } : {}), signal: controller.signal, scoped: workspaceNow() !== undefined }), { "cache-control": "no-store" });
       }
       case "getWorkspaceArchil":
       case "putWorkspaceArchil":
@@ -6576,9 +6567,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, { names: (await listMcpServers(store)).map((row) => row.name).sort() });
       case "getMcpServer":
         return send(res, 200, await mcpServers.get(id));
-      case "previewMcpServer":
+      case "previewMcpServer": {
         // The API token's preview, as the gate reads a token's save: a server it saved is previewed at its shown address.
-        return send(res, 200, await mcpServers.preview(await bodyOf(req), stopping.signal, req.headers.authorization !== undefined && !mayHoldSecrets(req)));
+        // API-only, where this route is served only with the operator's MCP origins: the body the save there takes alone
+        // (apiOnlyMcpSave), else the refused route's own 404, before anything reaches the address.
+        const body = await bodyOf(req);
+        if (options.apiOnly && !apiOnlyMcpSave(body, false, apiOnlyMcpOrigins)) throw new ApiError("not_found", apiOnlyRefusal(`/v2${path}`));
+        return send(res, 200, await mcpServers.preview(body, stopping.signal, req.headers.authorization !== undefined && !mayHoldSecrets(req)));
+      }
       case "saveMcpServer": {
         const body = await bodyOf(req);
         const preset = await mcpServers.composioPreset(id);
@@ -7026,13 +7022,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "listTemplates": {
         // Each package's computer list read against this server now: what an apply here would pick (pickComputer).
-        // Its subagents' tiers likewise: what an apply here would keep of the package's (packageTiers).
-        const listed = await templatesSeen(registry.list());
+        // Its subagents' tiers likewise: what an apply here would keep of the package's (packageTiers). The bundled ones
+        // and those imported in the request's workspace (none's, unscoped): TemplateRegistry.
+        const listed = registry.list();
         const [pickView, tiersView] = await Promise.all([computerHere(listed), tiersHere(listed)]);
         return send(res, 200, { templates: listed.map((pkg) => ({ ...packageView(pkg), computer_here: pickView(pkg), model_tiers_here: tiersView(pkg) })) });
       }
       case "listMarketplaceTemplates": {
-        // The marketplace's list as read (or kept), each entry with the package here that it is, when one is.
+        // The marketplace's list as read (or kept), each entry with the package here that it is, when one is (and the
+        // request's workspace sees it: TemplateRegistry.list is scoped to it).
         const read = await marketplace.list();
         const here = registry.list();
         return send(res, 200, { ...read, templates: read.templates.map((entry) => { const id = hereOf(entry, here); return id ? { ...entry, here: id } : entry; }) });
@@ -7052,17 +7050,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "getTemplate": {
         // One package whole, a bundled one's too: as the list shows it, with the files an import's answer shows, for a
         // person (or a coding agent) to read before they apply it.
-        const pkg = await templateSeen(id);
+        const pkg = registry.get(id);
         if (!pkg) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
         return send(res, 200, { ...packageDetail(pkg, await computerHere([pkg]), await tiersHere([pkg])), console_url: templateLink(linkOrigin(req), pkg.id) });
       }
       case "deleteTemplate":
-        // A scoped request deletes its own workspace's package alone: another's reads as a missing one.
-        if (!(await templateSeen(id))) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
+        // A request deletes its own workspace's package alone (deleteTemplate): another's reads as a missing one.
         await deleteTemplate(importDeps, id);
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "applyTemplate": {
-        const pkg = await templateSeen(id);
+        const pkg = registry.get(id);
         if (!pkg) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
         const body = await bodyOf(req);
         // A dry run writes nothing, so it keeps no Idempotency-Key record either: a retry reads the plan again.

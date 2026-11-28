@@ -52,11 +52,11 @@ export type FoundChunk = { offset: number; relevance?: number; text: string };
 /** A page as an objective answers it: the chunks most likely to hold what the agent wants from it, in page order. */
 export type FoundPage = Pick<Page, "ok" | "url" | "status" | "title" | "original_chars" | "beyond_read"> & Pick<WebPage, "via" | "parallel"> & { found: FoundChunk[]; sift: string };
 
-/** The FOUND_CHUNKS chunks of the whole page `read` most likely to hold `need` (what the agent wants from it), in page
- *  order: its text cut into at most FIND_CHUNKS_MAX chunks, each judged by `decider` with `need` as the task (its
+/** The `found` chunks (its setup's, else FOUND_CHUNKS) of the whole page `read` most likely to hold `need` (what the
+ *  agent wants from it), in page order: its text cut into at most FIND_CHUNKS_MAX chunks, each judged by `decider` with `need` as the task (its
  *  judge request), ranked by score, a refused one after every scored one, ties in page order. A step that fails answers
  *  null, its record saying why. */
-export async function findInPage(decider: WebDecider, url: string, read: WebRead, need: string, options: StepOptions): Promise<Sifted<FoundPage | null>> {
+export async function findInPage(decider: WebDecider, url: string, read: WebRead, need: string, options: StepOptions, found: number = decider.setup?.fetch.found ?? FOUND_CHUNKS): Promise<Sifted<FoundPage | null>> {
   const spans = passagesOf(read.text, FIND_CHUNKS_MAX);
   const judged = await judgeSpans(decider, url, need, read.text, spans, 0, options);
   if ("failure" in judged) return { answer: null, classifier: judged.failure };
@@ -64,7 +64,7 @@ export async function findInPage(decider: WebDecider, url: string, read: WebRead
   const shown = spans
     .map((_, i) => i)
     .sort((a, b) => byScore(scored[a]!.score, scored[b]!.score) || a - b)
-    .slice(0, FOUND_CHUNKS)
+    .slice(0, found)
     .sort((a, b) => a - b);
   const answer: FoundPage = {
     ok: true,

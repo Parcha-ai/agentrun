@@ -187,7 +187,7 @@ refused and kept as it is. It writes nothing without --apply, and prints what it
 (AGENTRUN_STORE_URL's Postgres, else SQLite in --data), the server running or not; on SQLite it adds the workspace
 columns first when no server of this build has opened the store yet. Exit 0 when every agent is set or already there, 1
 when any is refused or missing, 2 for bad arguments, a file that is not that JSON, or a store behind this build (on
-Postgres, below migration 0035), which it never migrates: start a server of this build once.
+Postgres, below migration 0036), which it never migrates: start a server of this build once.
 
 \`agentrun-serve eval-template DIR\` runs a template package's eval cases (all, or each --case) as real runs of its agent
 and grades each run with the case's graders (templates/README.md, "Running the evals"). By default on a server of its

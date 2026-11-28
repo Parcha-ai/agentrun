@@ -26,6 +26,7 @@ import { PgConnection } from "../dist/store/postgres/connection.js";
 const { openapiDocument } = await import("../dist/openapi.js");
 const { mcpSourceKey } = await import("../dist/mcp-sources.js");
 const gate = await import("../dist/secret-writes.js");
+const { tokenWriteOverWords } = await import("../dist/mcp-secret-writes.js");
 // The planes register their operations as their modules load: the server's own imports, as a started server has them.
 await import("../dist/server.js");
 
@@ -64,7 +65,7 @@ test("a save that would drop a saved MCP server's credential is the owner's alon
   const { fake, page, token } = await withSavedServer(t);
   const dropped = await token("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } });
   assert.equal(dropped.status, 403, dropped.text);
-  assert.ok(String(dropped.json?.error?.message).startsWith(gate.SECRET_WRITE_REFUSAL));
+  assert.ok(String(dropped.json?.error?.message).startsWith(tokenWriteOverWords("fake", true)));
   assert.equal((await savedAuth(page))?.auth?.type, "bearer", "the bearer is still saved");
   // A save that keeps it (the same auth type, no value) is refused too: the token saves over no server it did not save.
   const keep = await token("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "bearer" } });
@@ -275,12 +276,12 @@ test("a server the token saved with no credential is the token's to remove (an e
   assert.equal((await page("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } })).status, 200);
   const refused = await token("DELETE", "/settings/mcp-servers/fake");
   assert.equal(refused.status, 403, refused.text);
-  assert.ok(String(refused.json?.error?.message).startsWith(gate.SECRET_WRITE_REFUSAL));
+  assert.ok(String(refused.json?.error?.message).startsWith(tokenWriteOverWords("fake", false)));
   assert.ok(await savedAuth(page), "still saved");
   // A token's save over it (no credential) is refused as its delete is: the token saves over no server it did not save.
   const over = await token("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } });
   assert.equal(over.status, 403, over.text);
-  assert.ok(String(over.json?.error?.message).startsWith(gate.SECRET_WRITE_REFUSAL));
+  assert.ok(String(over.json?.error?.message).startsWith(tokenWriteOverWords("fake", false)));
   assert.equal((await token("DELETE", "/settings/mcp-servers/fake")).status, 403, "still the owner's");
   const ownersRemove = await page("DELETE", "/settings/mcp-servers/fake");
   assert.ok(ownersRemove.status >= 200 && ownersRemove.status < 300, ownersRemove.text);
