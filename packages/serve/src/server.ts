@@ -4298,7 +4298,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // The agent's approvals: the apply's override, else the package's own (a template whose job runs on triggers says
     // never), else ask. Deny and pins hold either way.
     const chosenApprovals = approvals ?? pkg.approvals;
-    const made = compiled(pkg, parameters, { ...(harness ? { harness } : {}), ...(model ? { model } : {}), ...(tiers.modelTiers ? { modelTiers: tiers.modelTiers } : {}), mcp: saved, defaultTools, grants, ...(chosenApprovals ? { approvals: chosenApprovals } : {}), ...(pick ? { computer: pick } : {}) }, templateDeps);
+    // Where no one can answer an ask (accounts off: the store's approvers row), an ask is refused at once, so under approvals
+    // ask a ticked tool would never run: the tick is the owner's one answer, written as the agent's allow. Not one this server
+    // denies (a later lift of that deny is the owner's own call), and not under never, which already runs a tick unasked.
+    const allowTicks = chosenApprovals !== "never" && !(await readApprovers(store.settings)) ? grants.filter((tool) => !denied.includes(tool)) : [];
+    const made = compiled(pkg, parameters, { ...(harness ? { harness } : {}), ...(model ? { model } : {}), ...(tiers.modelTiers ? { modelTiers: tiers.modelTiers } : {}), mcp: saved, defaultTools, grants, allowTicks, ...(chosenApprovals ? { approvals: chosenApprovals } : {}), ...(pick ? { computer: pick } : {}) }, templateDeps);
     // Every trigger is checked as POST /triggers checks it, its parameters filled, before anything is made: a schedule
     // from a parameter that does not read, or a date that has passed, refuses the apply (422 under triggers.<i>). "Passed"
     // by the triggers' own clock, the one POST /triggers checks by and they fire by (a template eval case's `now`).
