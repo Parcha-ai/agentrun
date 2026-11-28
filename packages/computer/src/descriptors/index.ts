@@ -17,13 +17,15 @@ import { ORGO } from "./orgo.js";
 import { PHONE_HARNESS } from "./phone-harness.js";
 import { RENDER } from "./render.js";
 import { SMOLCLOUD } from "./smolcloud.js";
+import { SPRITES } from "./sprites.js";
 
-export const DESCRIPTORS = [DOCKER, DAYTONA, MODAL, E2B, AGENT37, MORPH, CLOUDFLARE, FLY, RENDER, ORGO, PHONE_HARNESS, BROWSERBASE, KERNEL, LOCAL, BOXD, SMOLCLOUD, GROUNDBOX] as const;
+export const DESCRIPTORS = [DOCKER, DAYTONA, MODAL, E2B, AGENT37, MORPH, CLOUDFLARE, FLY, RENDER, ORGO, PHONE_HARNESS, BROWSERBASE, KERNEL, LOCAL, BOXD, SMOLCLOUD, GROUNDBOX, SPRITES] as const;
 
-export { AGENT37, BOXD, BROWSERBASE, CLOUDFLARE, DAYTONA, DOCKER, E2B, FLY, GROUNDBOX, KERNEL, LOCAL, MODAL, MORPH, ORGO, PHONE_HARNESS, RENDER, SMOLCLOUD };
+export { AGENT37, BOXD, BROWSERBASE, CLOUDFLARE, DAYTONA, DOCKER, E2B, FLY, GROUNDBOX, KERNEL, LOCAL, MODAL, MORPH, ORGO, PHONE_HARNESS, RENDER, SMOLCLOUD, SPRITES };
 export { AGENT37_BASE_TEMPLATE } from "./agent37.js";
 export { BOXD_DEFAULT_IMAGE } from "./boxd.js";
 export { GROUNDBOX_OWN_IMAGE } from "./groundbox.js";
+export { SPRITES_IMAGE } from "./sprites.js";
 export { DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU_SNAPSHOT, type DaytonaGpuSnapshot, daytonaGpu, daytonaGpuSnapshot } from "./daytona.js";
 export { ORGO_BASE_IMAGE } from "./orgo.js";
 export { PHONE_GROUPS, PHONE_IMAGE } from "./phone-harness.js";
