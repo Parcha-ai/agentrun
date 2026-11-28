@@ -149,7 +149,7 @@ async function fake(t, answer) {
   t.after(() => new Promise((resolve) => server.close(resolve)));
   const { env } = scratch("race-fake");
   const base = `http://127.0.0.1:${server.address().port}/v2`;
-  return { seen, agentrun: (args) => cli({ ...env, AGENTRUN_API_KEY: "t0k-fake" }, [...args, "--base-url", base]) };
+  return { seen, agentrun: (args) => cli({ ...env, AGENTRUN_API_KEY: "fake-test-key" }, [...args, "--base-url", base]) };
 }
 const later = (ms, value) => new Promise((resolve) => setTimeout(() => resolve(value), ms));
 const CAPS = { tools: [{ name: "read", available: true, harnesses: ["pi"] }, { name: "bash", available: true, sandbox_only: true, harnesses: ["pi"] }], places: { default_place: { mode: "runner" } } };
