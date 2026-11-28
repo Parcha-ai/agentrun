@@ -6576,9 +6576,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, { names: (await listMcpServers(store)).map((row) => row.name).sort() });
       case "getMcpServer":
         return send(res, 200, await mcpServers.get(id));
-      case "previewMcpServer":
+      case "previewMcpServer": {
         // The API token's preview, as the gate reads a token's save: a server it saved is previewed at its shown address.
-        return send(res, 200, await mcpServers.preview(await bodyOf(req), stopping.signal, req.headers.authorization !== undefined && !mayHoldSecrets(req)));
+        // API-only, where this route is served only with the operator's MCP origins: the body the save there takes alone
+        // (apiOnlyMcpSave), else the refused route's own 404, before anything reaches the address.
+        const body = await bodyOf(req);
+        if (options.apiOnly && !apiOnlyMcpSave(body, false, apiOnlyMcpOrigins)) throw new ApiError("not_found", apiOnlyRefusal(`/v2${path}`));
+        return send(res, 200, await mcpServers.preview(body, stopping.signal, req.headers.authorization !== undefined && !mayHoldSecrets(req)));
+      }
       case "saveMcpServer": {
         const body = await bodyOf(req);
         const preset = await mcpServers.composioPreset(id);
