@@ -270,11 +270,11 @@ test("get reads a sandbox by id: pending is starting, running and snapshotting r
 	await assert.rejects(host.exec("not an id", ["true"], CTX), (error) => error.code === "not_found");
 });
 
-test("labels another process wrote: a sandbox not running reads its name's (the adapter's two, the epoch, the deadline), a running one its labels file once, kept; a file that disagrees with its name is not read; a sandbox not named as a computer carries none", async () => {
+test("labels another process wrote: a sandbox not running reads its name's (the adapter's two, the epoch, the deadline, the run's hash), a running one its labels file once, kept; a file that disagrees with its name is not read; a sandbox not named as a computer carries none", async () => {
 	const { rest, host } = restOnly();
 	const file = labelsOf({ "agentrun.run": "run-1", "agentrun.epoch": "7", team: "a" });
 	const id = await madeElsewhere(rest, nameOf({ run: "run-1", epoch: "7" }), { file, status: "suspended" });
-	const named = { "agentrun.computer": "1", "agentrun.computer.name": NAME, "agentrun.computer.deadline": DEADLINE, "agentrun.epoch": "7" };
+	const named = { "agentrun.computer": "1", "agentrun.computer.name": NAME, "agentrun.computer.deadline": DEADLINE, "agentrun.epoch": "7", "agentrun.run.hash": runHash("run-1") };
 	assert.deepEqual((await host.get(id, CTX)).labels, named, "suspended: the name's, and no read wakes it");
 	assert.equal(runs(rest).length, 0);
 	rest.sandboxes.get(id).sandbox.status = "running";
@@ -392,6 +392,40 @@ test("a run's end (releaseOlder at its claim's epoch + 1) deletes the run's sand
 	assert.equal(swept.ok, true, JSON.stringify(swept.error));
 	assert.deepEqual(swept.value.deleted, [due.name], "past the deadline in its name: deleted");
 	assert.deepEqual([status(due.id), status(live.id), status(stranger)], ["terminated", "running", "running"], "before its deadline, or not a computer: left");
+});
+
+test("a sandbox whose labels can't be read (suspended after a restart, or its file unreadable) carries its name's run hash as agentrun.run.hash, which serve's janitor reads; a name with no run hash carries none, a name whose hash part doesn't parse is no computer, and a run's end matches neither", async () => {
+	const { rest, provider, host } = restOnly();
+	const past = new Date(Date.now() - 60_000).toISOString();
+	const pastPart = Date.parse(past).toString(36);
+	const file = (computer, more = {}) => labelsOf({ "agentrun.computer.name": computer, "agentrun.computer.deadline": past, "agentrun.epoch": "1", ...more });
+	const suspended = await madeElsewhere(rest, nameOf({ computer: "computer-0000000000f1", run: "run-1", epoch: "1", deadline: past }), { file: file("computer-0000000000f1", { "agentrun.run": "run-1" }), status: "suspended" });
+	const unreadable = await madeElsewhere(rest, nameOf({ computer: "computer-0000000000f2", run: "run-1", epoch: "1", deadline: past }), { file: file("computer-0000000000f2", { "agentrun.run": "run-1" }) });
+	const noRun = await madeElsewhere(rest, nameOf({ computer: "computer-0000000000f3", epoch: "1", deadline: past }), { file: file("computer-0000000000f3"), status: "suspended" });
+	const badHashes = [];
+	for (const [computer, hash] of [["computer-0000000000f4", "abcdefghijklmn0p"], ["computer-0000000000f5", "abc"], ["computer-0000000000f6", `${runHash("run-1")}a`], ["computer-0000000000f7", "abcdefgh-ijklmnop"]]) {
+		badHashes.push(await madeElsewhere(rest, `${computer}-r${hash}-e1-d${pastPart}`, { status: "suspended" }));
+	}
+	rest.proxy.script = (_body, one) => (one.sandbox.id === unreadable ? text(500, "boom") : undefined);
+	const HASH = "agentrun.run.hash";
+
+	for (const [id, what] of [[suspended, "suspended"], [unreadable, "its file unreadable"]]) {
+		const { labels } = await host.get(id, CTX);
+		assert.equal(labels[HASH], runHash("run-1"), `${what}: the name's run hash`);
+		assert.equal(labels["agentrun.run"], undefined, `${what}: the run itself is the file's`);
+	}
+	const bare = (await host.get(noRun, CTX)).labels;
+	assert.deepEqual([bare[HASH], bare["agentrun.run"]], [undefined, undefined], "no run hash in the name: neither label");
+	for (const id of badHashes) assert.deepEqual((await host.get(id, CTX)).labels, {}, `${rest.sandboxes.get(id).sandbox.name}: no computer`);
+
+	const listed = await provider.list({});
+	assert.equal(listed.ok, true, JSON.stringify(listed.error));
+	assert.deepEqual(listed.value.map(({ ref, labels }) => [ref.name, labels[HASH]]).sort(), [["computer-0000000000f1", runHash("run-1")], ["computer-0000000000f2", runHash("run-1")], ["computer-0000000000f3", undefined]], "every computer listed, by the hash its name holds; the unparsed names are no computers");
+
+	const ended = await releaseOlder(provider, "run-1", 99);
+	assert.equal(ended.ok, true, JSON.stringify(ended.error));
+	assert.deepEqual(ended.value.released, [], "a run's end reads the run from the file alone: it matches none of them");
+	assert.ok([suspended, unreadable, noRun, ...badHashes].every((id) => rest.sandboxes.get(id).sandbox.status !== "terminated"), "nothing deleted");
 });
 
 // --- exec over SSH ---
