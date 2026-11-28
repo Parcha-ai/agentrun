@@ -128,7 +128,7 @@ export function reseededLaunchOf(deps: ReseedDeps): (runId: string, epoch: numbe
     if (signal?.aborted) return row;
     const waited: SeedWaited = open.size ? "timed_out" : "ended";
     if (open.size) deps.log(`run ${runId}: starts from its agent's learning as it is now: its open round${open.size === 1 ? "" : "s"} (${[...open].join(", ")}) did not end within ${Math.round(deps.waitMs / 1000)} s`);
-    const own: Pick<NonNullable<RunLaunch["learning"]>, "use" | "noWorkflows" | "model"> = { ...(start.noWorkflows ? { noWorkflows: true as const } : {}), ...(start.use ? { use: true as const } : {}), ...(start.model ? { model: start.model } : {}) };
+    const own: Pick<NonNullable<RunLaunch["learning"]>, "use" | "settings" | "noWorkflows" | "model"> = { ...(start.noWorkflows ? { noWorkflows: true as const } : {}), ...(start.use ? { use: true as const } : {}), ...(start.settings ? { settings: start.settings } : {}), ...(start.model ? { model: start.model } : {}) };
     let written: unknown;
     try {
       written = { ...startOfSeed(await seedOf(deps.data, deps.store, run.agentId), await deps.shown(), own), waited };

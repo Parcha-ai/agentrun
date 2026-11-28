@@ -12,7 +12,8 @@ import type { Context } from "@earendil-works/chord/context";
 import { CALL_RESULT_CHARS, scrubUrls, TRIGGER_LABELS, type TimelineEvent } from "./timeline/index.js";
 import { withDecisions } from "./decision-rows.js";
 import { currentLearning, holdsForOk, type ItemStatus, type Learning, secretsShown } from "./learning.js";
-import { withLearning } from "./learning-run.js";
+import { withDroppedWork, withLearning } from "./learning-run.js";
+import { droppedWorkOf, learningChildrenOf } from "./learning-work.js";
 import { runLearningEnd } from "./store-reads/learning.js";
 import { heldNumber, redactedCall } from "./key-refusal.js";
 import { runCutValues, runErrorWordsOf, underCut } from "./run-cut.js";
@@ -88,16 +89,18 @@ export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store,
       const receipts = await decisionsOverStore(snapshot, runId, context).catch(() => null);
       const decisionShown = { redact, hold: 6 * values.reduce((most, value) => Math.max(most, value.length), 0) + 16 };
       const own = receipts === null || receipts.length ? withDecisions(rows, receipts, decisionShown, { ended }) : rows;
-      // The run's learning end, once its learning merged or dropped (runLearningEnd).
+      // The run's learning end, once its learning merged or dropped (runLearningEnd), and each piece of its learning work
+      // that dropped before it started (learning-work.ts: its cap left too little for it).
       const end = await runLearningEnd(snapshot, runId);
+      const dropped = droppedWorkOf(await learningChildrenOf(snapshot.settings, runId));
       // Each trigger the rows name, read once for this read: its name now, or none for one gone.
       const names = new Map<string, string | undefined>();
       for (const row of own) if (row.trigger && !names.has(row.trigger.id)) names.set(row.trigger.id, (await snapshot.triggers.get(row.trigger.id))?.name);
-      return { run, own, end, names };
+      return { run, own, end, dropped, names };
     })) };
   });
   if (!read) return [];
-  const { values, redact, run, own, end, names } = read;
+  const { values, redact, run, own, end, dropped, names } = read;
   // An error row reads as the run's error does (run-cut.ts runErrorWordsOf, main's errorWords): a refused key in plain
   // words, else no held value and no loopback address. Read after the snapshot, through the server's own handles (the
   // agent's sign-ins), which the snapshot's connection would hold up.
@@ -107,7 +110,7 @@ export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store,
   // The run's learning row (learning-run.ts withLearning, main's row): what the end held for the owner's OK read as the run's
   // view reads it (on its agent's folder's main), its words cut by the same set.
   const learning = end ? (holdsForOk(end as Learning) && run && deps.statuses ? currentLearning(end as Learning, await deps.statuses(run.agentId)) : (end as Learning)) : undefined;
-  const learned = withLearning(own, learning, secretsShown(values));
+  const learned = withDroppedWork(withLearning(own, learning, secretsShown(values)), dropped);
   // A refused key's plain words are its summary and its text alike; any other error keeps each in the one rule.
   const shown = shownOf(values);
   return learned.map((row) => {

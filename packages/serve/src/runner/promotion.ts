@@ -48,7 +48,7 @@ import type { AuxiliaryAdmitter } from "../source-sync/auxiliary.js";
 import type { Context } from "@earendil-works/chord/context";
 import type { LearnedWorkflow } from "../learning.js";
 import { LEARNING_LABEL } from "../learning.js";
-import { loopOf } from "../learning-setting.js";
+import { loopOf, runLearningOf } from "../learning-setting.js";
 import { LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
 import { launchBody, readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { uuidv7 } from "../ids.js";
@@ -343,13 +343,15 @@ async function decide(deps: PromotionDeps, workflow: LearnedWorkflow, digest: st
   return startCheck(deps, workflow, digest);
 }
 
-/** The loop's numbers (learning-setting.ts) of the revision the claim runs: its definition's `learning`, each one it
- *  leaves out at its default, and the answer paths its check compares on (its agree_on; none, the whole answer). A read
+/** The loop's numbers (learning-setting.ts) of the run the claim runs: the settings its start asked to learn with (its
+ *  launch's `learning.settings`, learning-setting.ts runLearningOf), else its revision's definition's `learning`, each one
+ *  left out at its default, and the answer paths its check compares on (its agree_on; none, the whole answer). A read
  *  that fails throws: no check is saved on defaults (a bar with no agree_on would compare the whole answer for the
  *  check's life); the claim's gate leaves the run to its agent and the next claim reads it again (#3182 review). */
-async function loopOfRevision(deps: Pick<PromotionDeps, "store" | "revisionId">) {
+async function loopOfRevision(deps: Pick<PromotionDeps, "store" | "revisionId"> & Partial<Pick<PromotionDeps, "launch">>) {
+  if (deps.launch?.learning?.settings) return loopOf(runLearningOf(deps.launch, undefined));
   const revision = await deps.store.agents.revision(deps.revisionId);
-  return loopOf((revision?.body as { learning?: unknown } | undefined)?.learning);
+  return loopOf(runLearningOf(deps.launch, revision?.body));
 }
 
 /** Which check of a compile a new revision's is: 2 when the workflow's newest record of another revision is a first

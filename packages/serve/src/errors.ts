@@ -105,6 +105,9 @@ export const ERROR_STATUS = {
   // A run start, or a message that would start a turn, with no model_key where the server holds no key for the run's
   // model (run-model-key.ts): nothing to spend, so refused before any model call.
   model_key_required: 422,
+  // POST /agents/{agent_id}/runs with `learning: { settings? }` but no model_key or no max_cost_usd of its own: all of a
+  // run's learning work spends its own key inside its own cap, so nothing starts and nothing is stored.
+  learning_needs_cap: 400,
   // A run start while every runner here refused to claim any run (runner/presence.ts): its run isolation refused
   // (run-child-host.ts runIsolationOf), in the runner's words and their fix. Not retryable: it stays so until the runner
   // is started again as the words say.

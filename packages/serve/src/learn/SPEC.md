@@ -90,8 +90,13 @@ refuses the whole answer.
 
 ## Compile once
 
+What starts learning: a run of an agentic revision whose definition says `learning` (true or an object), or a run whose
+start asks for it with `learning: {settings}` (RunCreate; its own model key and cap required), on a server whose
+learning is on. Such a run's loop numbers are its start's settings when it gave them, else its definition's
+(learning-setting.ts runLearningOf), and every piece of its learning work spends inside its own cap.
+
 The compile turn is one more turn of a run's session at its end. It asks for the first workflow once the agent has its
-definition's `learning.compile_after` completed runs of its own (20 by default; a run its learned workflow answered
+definition's (or the run's own settings') `learning.compile_after` completed runs of its own (20 by default; a run its learned workflow answered
 alone and a check's replay run are not counted), and for a revision of one only when its promotion record holds it,
 once per hold. A hand-back, a stop by the money rule and a wrong grade of a served run ask for none: each is one
 sample, and the hold reads it among the workflow's others. The turn reads the agent's last runs (each run's input, tool

@@ -31,11 +31,11 @@ import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context"
 import { overCapMessage } from "@parcha/agentrun-kernel/kernel/cap";
 import { sourceSyncOf } from "../source-sync/types.js";
 import type { AuxiliaryAdmitter } from "../source-sync/auxiliary.js";
-import { agreeOnOf, auditLoopOf, type AuditLoop } from "../learning-setting.js";
+import { agreeOnOf, auditLoopOf, type AuditLoop, runLearningOf } from "../learning-setting.js";
 import { launchBody, readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { runEntries } from "../store-reads/journal.js";
 import { runPathOverStore } from "../store-reads/learning.js";
-import { FINAL_STATES, type RunRow, type Store, StoreConstraint } from "../store/store.js";
+import { FINAL_STATES, type RunRow, type Store, StoreConstraint, StoreLaunchMissing } from "../store/store.js";
 import { openRunLaunch, sealHandedLaunch } from "../store/seal.js";
 import { type AtRunEnd, LEARNING_CHILD_MS, noteLearningChild, RUN_CAP_MIN_USD } from "../learning-work.js";
 import { isObject, type Json } from "../validate.js";
@@ -98,11 +98,18 @@ export async function auditLoopOfRevision(store: Pick<Store, "agents">, revision
   }
 }
 
-/** The answer paths an audit of a run of revision `revisionId` compares on, as its check does (learning-setting.ts
- *  agreeOnOf: its agree_on); undefined, the whole answer. A read that fails throws: settleAudits leaves the row to a
- *  later claim, never comparing on the whole answer an agent that named its fields (#3182 review). */
-export async function agreeOnOfRevision(store: Pick<Store, "agents">, revisionId: string): Promise<readonly string[] | undefined> {
-  return agreeOnOf(((await store.agents.revision(revisionId))?.body as { learning?: unknown } | undefined)?.learning);
+/** The answer paths an audit of run `run` compares on, as its check does (learning-setting.ts agreeOnOf: its agree_on,
+ *  read from the settings its start asked to learn with, else its revision's definition: runLearningOf); undefined, the
+ *  whole answer. A read that fails throws: settleAudits leaves the row to a later claim, never comparing on the whole
+ *  answer an agent that named its fields (#3182 review). A run with no launch (one made before launches, or purged) reads
+ *  its revision's. */
+export async function agreeOnOfRun(store: Pick<Store, "agents" | "runs">, run: Pick<RunRow, "id" | "revisionId">): Promise<readonly string[] | undefined> {
+  const launch = await store.runs.launch(run.id).then((one) => readLaunchBody(one.body), (error: unknown) => {
+    if (error instanceof StoreLaunchMissing) return undefined;
+    throw error;
+  });
+  if (launch?.learning?.settings) return agreeOnOf(runLearningOf(launch, undefined));
+  return agreeOnOf(runLearningOf(launch, (await store.agents.revision(run.revisionId))?.body));
 }
 
 /** The served answer shadow run `shadowRun` audits: its open line's `turn`'s answer, read from the served run by that row's
@@ -203,7 +210,8 @@ export async function startAudit(deps: AuditDeps & { readonly runId: string; rea
       log(`workflow-first: ${serve.name} at ${serve.digest} serves this run, never audited: ${auditsOffWords(writer)}`);
       return;
     }
-    const loop = auditLoopOf((revision?.body as { learning?: unknown } | undefined)?.learning);
+    // Drawn at the rate the run's start asked to learn with, else its revision's (runLearningOf).
+    const loop = auditLoopOf(runLearningOf(launch, revision?.body));
     const before = (await servedRuns(store, agentId, loop.audit_later_after, serve.name, serve.digest, (row) => row.id !== runId)).length;
     const k = auditEveryOf(loop, before);
     if (!auditDrawn(runId, k)) return;
@@ -317,7 +325,7 @@ export async function settleAudits(deps: AuditDeps): Promise<void> {
       // (runner/compare-end.ts), else the whole answer. A grade of the served run, where one was given, outranks this row
       // (learn/audit.ts windowOf).
       const verdict = comparedOf(isObject(shadow.metrics as Json) ? (shadow.metrics as { audit?: { compared?: unknown } }).audit?.compared : undefined);
-      return a === null || b === null ? null : answerJudged({ agent: b, answer: a, ...(verdict ? { compared: verdict } : {}) }, await agreeOnOfRevision(store, served.revisionId));
+      return a === null || b === null ? null : answerJudged({ agent: b, answer: a, ...(verdict ? { compared: verdict } : {}) }, await agreeOnOfRun(store, served));
     }) : { all: lines, added: [] };
     const written = rowsOf(added);
     if (written.length) log(`workflow-first: ${written.length} audit row${written.length === 1 ? "" : "s"} written (${written.filter((row) => row.agreed === false).length} disagreeing)`);
@@ -347,7 +355,7 @@ export async function gradeRow(deps: AuditDeps, run: RunRow, correct: boolean, e
   const known = expected && Object.keys(expected).length ? expected : undefined;
   const { all } = await addLines(deps, [row], async (one) => {
     if (correct) return true;
-    const on = known ? await agreeOnOfRevision(deps.store, run.revisionId) : undefined;
+    const on = known ? await agreeOnOfRun(deps.store, run) : undefined;
     if (!on?.length) return false;
     const said = await auditedAnswer(deps, one);
     return said === null ? null : answerJudged({ agent: said, answer: said, expected: known }, on);

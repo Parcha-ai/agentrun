@@ -913,6 +913,12 @@ export type Run = {
     runs: Array<string>;
     ended_at: string | null;
     deadline_at: string | null;
+    dropped?: Array<{
+      kind: "replay" | "shadow";
+      reason: "no_budget";
+      at: string;
+      detail: string;
+    }>;
   };
   path?: "agent" | "handed_back" | "workflow" | "replay" | "audit" | null;
   workflow?: {
@@ -1029,7 +1035,22 @@ export type RunCreate = {
   } | ComposioRunBinding>;
   labels?: Record<string, string>;
   workflow_first?: boolean;
-  learning?: "use";
+  learning?: "use" | {
+    settings?: {
+      compile_after?: number;
+      agree_min?: number;
+      alone_min?: number;
+      agree_on?: Array<string>;
+      audit_every?: number;
+      audit_every_later?: number;
+      audit_later_after?: number;
+      hold_window?: number;
+      hold_disagree?: number;
+      stop_window?: number;
+      repick?: boolean;
+      repick_max_chars?: number;
+    };
+  };
   repo?: string;
   archil_disk?: {
     disk_id: string;
@@ -1374,6 +1395,7 @@ export type Features = {
   };
   thinking?: Array<string>;
   learning?: "on" | "off";
+  run_learning?: boolean;
   browser_live?: {
     read_only: boolean;
     take_over: boolean;

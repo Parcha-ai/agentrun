@@ -140,7 +140,7 @@ import { agentDeleting, answerOf, logged, purgedAgent } from "./agents.js";
 import { keepGrade } from "./runner/feedback-round.js";
 import { gradeRow, notAuditableOf } from "./runner/audit.js";
 import { auditsOffWords, auditWriterOf, isShadowRun, readAudits, servingLinesOf, shadowRunId } from "./learn/audit.js";
-import { auditLoopOf, COMPILE_AFTER_MAX, holdsReservedKey, RESERVED_SEGMENT } from "./learning-setting.js";
+import { auditLoopOf, COMPILE_AFTER_MAX, holdsReservedKey, RESERVED_SEGMENT, RUN_LEARNING_NEEDS_CAP, runLearningIssues } from "./learning-setting.js";
 import { FINAL_STATES, type ListedFilter, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
 import { championOf, forgetRunCopies, type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, promotionsOf, promotionsShown, servingOf, servingStateOf, shownDeep } from "./learn/promote.js";
 import { workflowNodesOf } from "./learn/workflow-nodes.js";
@@ -1239,6 +1239,9 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       mcp_client: { transports: ["streamable-http"], auth: [...MCP_AUTH_TYPES], at_rest: "sealed", harnesses: [...harnessIds(env)], composio_per_run: true, composio_key_envs: [...COMPOSIO_KEY_ENVS] },
       /** This server's learning switch (`--learning`): on, a run learns when its agent says `learning: true`; off, none does. */
       learning,
+      /** POST /agents/{agent_id}/runs takes `learning: { settings? }`: the run learns for its agent with those loop numbers
+       *  whatever its revision says, on its own model_key inside its own max_cost_usd (else 400 learning_needs_cap). */
+      run_learning: true,
       /** /settings/webhook: one URL POSTed, signed by the Standard Webhooks spec, when a run needs its person and when it
        *  ends (webhooks.ts); its secret kept sealed under the same seal key. */
       // Always sealed: the server starts with its seal key (seal-key.ts bootSealKey), so nothing is kept in the clear.
@@ -4694,7 +4697,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   async function createRun(req: IncomingMessage, agentId: string) {
     const entry = await needRunnableAgent(agentId);
-    const { body, handed } = handedLaunchSecrets(await bodyOf(req), handedBy(req));
+    const raw = await bodyOf(req);
+    // A run that asks to learn with its own settings spends its own key inside its own cap, all its learning work with it:
+    // asked with no model_key or no max_cost_usd of its own, nothing starts and nothing is stored.
+    if (isObject(raw) && isObject(raw.learning) && (raw.model_key === undefined || raw.max_cost_usd === undefined)) throw new ApiError("learning_needs_cap", RUN_LEARNING_NEEDS_CAP);
+    const { body, handed } = handedLaunchSecrets(raw, handedBy(req));
     // Its mcp_auth checked against the servers its agent's runs call: the agent's workspace's, whoever starts it.
     const runIn = (await store.agents.workspace(agentId)) ?? null;
     // The host's run for a firing the launch hook handed it: the firing's own run, under the firing's key (a second start
@@ -4749,7 +4756,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const issues: InputIssue[] = [
       ...externalIssues(external),
       ...(pinned !== undefined ? [{ field: "revision", reason: "not_allowed", message: "An inline run pins no revision: it runs the revision of its external version.", fix: "Remove revision." }] : []),
-      ...runBodyIssues(run),
+      // An inline run's learning is "use" or absent: only a run of a stored agent asks to learn with its own settings.
+      ...(isObject(run.learning) ? [{ field: "learning", reason: "not_an_option", message: `An inline run's learning is "${RUN_LEARNING_USE}" or absent: only a run of a stored agent (POST /agents/{agent_id}/runs) asks to learn with its own settings.`, fix: `Send learning "${RUN_LEARNING_USE}", or none.` }, ...runBodyIssues({ ...run, learning: RUN_LEARNING_USE })] : runBodyIssues(run)),
       ...definitionBodyIssues(given, { harnesses }),
       // The agent's id is this server's, one per external reference, and its version is the reference's.
       ...(["id", "version"] as const).flatMap((key) => (isObject(definition) && definition[key] !== undefined ? [{ field: `definition.${key}`, reason: "not_allowed", message: `An inline agent's ${key} is its external reference's: the definition names none.`, fix: `Remove definition.${key}.` }] : [])),
@@ -4850,7 +4858,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (body.max_cost_usd !== undefined && !(typeof body.max_cost_usd === "number" && body.max_cost_usd > 0 && Number.isFinite(body.max_cost_usd))) issues.push({ field: "max_cost_usd", reason: "wrong_type", message: "max_cost_usd is a number above 0" });
     if (body.file_ids !== undefined && !Array.isArray(body.file_ids)) issues.push({ field: "file_ids", reason: "wrong_type", message: "file_ids is a list of file ids" });
     if (body.workflow_first !== undefined && typeof body.workflow_first !== "boolean") issues.push({ field: "workflow_first", reason: "wrong_type", message: "workflow_first is true or false" });
-    if (body.learning !== undefined && body.learning !== RUN_LEARNING_USE) issues.push({ field: "learning", reason: "not_an_option", message: `learning is "${RUN_LEARNING_USE}" (the run starts from what its agent learned and keeps nothing), or absent (its agent's own)` });
+    if (isObject(body.learning)) issues.push(...runLearningIssues(body.learning));
+    else if (body.learning !== undefined && body.learning !== RUN_LEARNING_USE) issues.push({ field: "learning", reason: "not_an_option", message: `learning is "${RUN_LEARNING_USE}" (the run starts from what its agent learned and keeps nothing), an object { settings } (the run learns for its agent with these loop numbers, on its own model_key inside its own max_cost_usd), or absent (its agent's own)` });
     issues.push(...labelsIssues(body.labels));
     return issues;
   }

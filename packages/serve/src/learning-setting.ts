@@ -165,6 +165,33 @@ export function learningSettingIssue(value: unknown, at = "learning"): string | 
   return undefined;
 }
 
+/** What is wrong with a run start's `learning` object (RunCreate.learning `{settings?}`: the run learns for its agent
+ *  with these loop numbers, whatever its revision says), each issue at its field; none when it is right. `settings` takes
+ *  what a definition's `learning` object takes (learningSettingIssue), never true or false. */
+export function runLearningIssues(value: Record<string, unknown>): { field: string; reason: string; message: string }[] {
+  const issues = Object.keys(value).filter((key) => key !== "settings").map((key) => ({ field: `learning.${key}`, reason: "not_allowed", message: `learning is {settings?}: it keeps no ${key}` }));
+  const { settings } = value;
+  if (settings === undefined) return issues;
+  if (!isLoop(settings)) return [...issues, { field: "learning.settings", reason: "wrong_type", message: `learning.settings is an object of the loop's numbers ({${LOOP_KEYS.map((key) => `${key}?`).join(", ")}}), as an agent definition's learning takes them` }];
+  const why = learningSettingIssue(settings, "learning.settings");
+  if (why === undefined) return issues;
+  const field = /^(learning\.settings(?:\.[a-z_]+)?)/.exec(why)?.[1] ?? "learning.settings";
+  return [...issues, { field, reason: "wrong_type", message: why }];
+}
+
+/** learning_needs_cap's words: a run start's `learning` object with no model_key or no max_cost_usd of its own. */
+export const RUN_LEARNING_NEEDS_CAP = "A run that asks to learn (learning: {settings}) spends its own model_key inside its own max_cost_usd, its learning work with it: send both, or send learning \"use\" or none.";
+
+/** The loop numbers a run start's valid `learning` object asks for, as a revision keeps them (learningSettingOf): `{}`,
+ *  every default, when it names none. */
+export const runLearningSettingsOf = (value: { readonly settings?: unknown }): LearningLoop => learningSettingOf((value.settings ?? {}) as LearningLoop) as LearningLoop;
+
+/** The `learning` a run's loop reads (compile_after, the check's bar, the audit's numbers, the re-pick): the settings its
+ *  start asked to learn with (its launch's `learning.settings`, RunCreate `learning: {settings}`) when it gave them, else
+ *  its revision's definition's `learning`. */
+export const runLearningOf = (launch: { readonly learning?: { readonly settings?: LearningLoop } } | undefined, revisionBody: unknown): unknown =>
+  launch?.learning?.settings ?? (revisionBody as { learning?: unknown } | null | undefined)?.learning;
+
 /** A valid `learning` as a revision keeps it: an object's keys in one order, so two definitions that say the same are
  *  one body (agree_on's list as its owner gave it: its order is theirs). */
 export function learningSettingOf(value: LearningSetting): LearningSetting {

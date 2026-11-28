@@ -32,7 +32,7 @@ import { repickLabelOf, repickRewrite } from "../learn/repick.js";
 import { holdsSave, learningOf, type LearningRead, readAt, readLearning, readOf, runMergeOf } from "../learn/rows.js";
 import { completedRun, type CompileAsk, compileStoppedOf, CORRECTED_SAVES, lastOwnRuns, STOP_RESTARTS, stoppedRecord, stopsOf, sinceReset, type CompileTrace, compileDue, compilePrompt, compileReference, COMPILE_TRACES, DRAFT_FAILED, draftFailedOf, type DraftChecked, type HeldAsk, heldNamesOf, newCompileAttempt } from "../learn/compile.js";
 import { heldOnGiveBacks, reviseAttemptOf, sdkInputText } from "./promotion.js";
-import { loopOf, repickOf } from "../learning-setting.js";
+import { loopOf, repickOf, runLearningOf } from "../learning-setting.js";
 import { CORRECTIONS_FILE } from "../learn/corrections.js";
 import { CHECK_TEXT_MAX, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, resetAtOf } from "../learn/promote.js";
 import { type DraftDecisions, draftDecisionProviders, draftDryRun, draftFiles, draftMcpTools, unpricedCalls, WORKFLOWS_DIR } from "../learn/workflow-draft.js";
@@ -507,12 +507,16 @@ async function describedOf(tools: readonly string[], store: Pick<Store, "mcp" | 
 /** The most of an agent's kept learning, newest first, read for a held workflow's ask since its hold (compileAskOf). */
 const HELD_ASKED_READ = 200;
 
-/** The definition's `learning` of the revision run `runId` runs; undefined when it can't be read. */
+/** The `learning` run `runId`'s loop reads (learning-setting.ts runLearningOf): the settings its start asked to learn
+ *  with (its launch's), else its revision's definition's; undefined when neither can be read. */
 async function learningOfRun(store: Store, runId: string): Promise<unknown> {
   try {
     const run = await store.runs.get(runId);
-    const revision = run ? await store.agents.revision(run.revisionId) : undefined;
-    return (revision?.body as { learning?: unknown } | undefined)?.learning;
+    if (!run) return undefined;
+    const launch = await store.runs.launch(runId).then((one) => readLaunchBody(one.body), () => undefined);
+    if (launch?.learning?.settings) return runLearningOf(launch, undefined);
+    const revision = await store.agents.revision(run.revisionId);
+    return runLearningOf(launch, revision?.body);
   } catch {
     return undefined;
   }

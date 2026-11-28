@@ -6,6 +6,7 @@ import type { RunRow } from "./agent-rows.js";
 import type { AnalyticsFilter } from "./store-reads/analytics.js";
 import type { TimelineEvent } from "./timeline/index.js";
 import { detailShown, type Learning, LEARNING_LABEL, LEARNING_REASONS, type Shown } from "./learning.js";
+import type { DroppedWork } from "./learning-work.js";
 
 /** The run's learning row, once its learning merged or dropped (`seed_failed` included): its state, reason and detail,
  *  its summary the detail itself as the run's view says it (learning.ts detailShown: cut of the host's secrets now,
@@ -21,6 +22,19 @@ export function withLearning(rows: readonly TimelineEvent[], learning: Learning 
   // No store entry makes it: the served view adds it at each read, and learning that starts over (seeded, reflecting)
   // has none.
   return [...rows, row];
+}
+
+/** A learning row for each piece of learning work the run dropped before it started (learning-work.ts droppedWorkOf: a
+ *  check replay or a shadow its cap left too little for), at its time, its summary and detail the words its
+ *  `learning_work.dropped` says. Added at each read, as the learning row is. */
+export function withDroppedWork(rows: readonly TimelineEvent[], dropped: readonly DroppedWork[]): TimelineEvent[] {
+  if (!dropped.length) return [...rows];
+  const said = dropped.map((one, i) => ({
+    id: `${LEARNING_LABEL}:dropped:${i}`, timestamp: one.at, created_at: one.at, kind: "learning" as const, summary: one.detail, agent_label: LEARNING_LABEL,
+    tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, text: one.detail,
+    learning: { state: "dropped" as const, reason: one.reason, detail: one.detail },
+  }));
+  return [...rows, ...said];
 }
 
 /** How the runs that tried to learn fared, over the runs the analytics' `from`, `to` and `agent` pick (by when they

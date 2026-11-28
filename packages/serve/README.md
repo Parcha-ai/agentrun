@@ -1672,6 +1672,8 @@ with too little left they are dropped and spend nothing. GET `/v2/runs/{run_id}`
   child counts as ended.
 - Revoke the key once the run is terminal and `learning_work.state` is not `running`. No request of the run or its
   children answers 401 for it then.
+- `dropped`, when any piece dropped before it started: each one's `kind` (`replay` or `shadow`), `reason`
+  (`no_budget`), `at` and `detail` in words. The run's timeline has a `learning` row for each, saying the same.
 - `deadline_at`, while `running`: the latest instant that work may still spend on the key. It is the later of the
   compile turn's start plus its 10 minute timeout and each child's start plus 30 minutes, and it only moves later. The
   server cancels a child still at work at its 30 minutes, as a person's cancel is, and it then counts as ended. Set
@@ -5079,6 +5081,19 @@ Learning is off unless an agent's definition says `learning: true` (an agentic o
 definition that sets it keeps it on its revision, `false` included, and an edit that leaves it out keeps the agent's; one
 that never sets it stores nothing, so its revision id is the one it had before the switch. The server's `--learning off`
 turns learning off for every run it starts, whatever the agent says.
+
+A run can also ask for it at its start (`POST /v2/agents/{id}/runs`, the field `learning`):
+
+- `"use"`: the run starts from what its agent learned and keeps nothing (a held-out evaluation).
+- `{"settings": {...}}` (`capabilities.features.run_learning`): the run learns for its agent with those loop numbers,
+  whatever its revision's `learning` says, one that says none included. `settings` takes what a definition's `learning`
+  object takes (`compile_after`, `agree_min`, `audit_every`, ...), each left out at its default. The numbers stand for
+  that run: when its job compiles, the bar its check passes, how often its served answer is audited. A follow-up keeps
+  them. It must bring its own `model_key` and `max_cost_usd`, else `400 learning_needs_cap` and nothing starts or is
+  stored, since all of its learning work spends that key inside that cap: the compile turn inside its claim, a check's
+  replay runs on their share of what the cap leaves, and an audit's shadow on what is left after that. A replay or a
+  shadow that does not fit is dropped before it starts, nothing spent, and says so in words in the run's
+  `learning_work.dropped` and in a `learning` row of its timeline. An inline run (`POST /v2/runs`) takes `"use"` alone.
 
 An agent learns two things. Its owner's corrections: the words they give after a run (a grade's, or a message after
 the job's first) become one line of the agent's `corrections.md`, and every later run reads the file whole. And its

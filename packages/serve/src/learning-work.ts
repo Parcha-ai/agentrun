@@ -18,6 +18,7 @@
 // Replay.deadlineAt), and the runner holding it cancels it there as a person's cancel is (runner.ts).
 import { FINAL_STATES, type RunRow, type Settings, type Store } from "./store/store.js";
 import { readLaunchBody } from "./run-launch.js";
+import { said } from "./learning-words.js";
 
 /** The smallest cap a run is started with: a child its run's cap leaves less than this for is dropped (`no_budget`). */
 export const RUN_CAP_MIN_USD = 0.01;
@@ -64,13 +65,28 @@ export type LearningChild = {
   readonly dropped?: "no_budget";
 };
 
-/** The `learning_work` field of a run's view. */
+/** A piece of learning work that dropped before it started, as a run's view and its timeline say it: its kind, why
+ *  (`no_budget`: its run's cap left too little for it), when, and the reason in words. */
+export type DroppedWork = {
+  readonly kind: "replay" | "shadow";
+  readonly reason: "no_budget";
+  readonly at: string;
+  readonly detail: string;
+};
+
+/** The `learning_work` field of a run's view. `dropped`: each piece that dropped before it started, oldest first; present
+ *  only when one did. */
 export type LearningWork = {
   readonly state: "none" | "running" | "ended";
   readonly runs: string[];
   readonly ended_at: string | null;
   readonly deadline_at: string | null;
+  readonly dropped?: DroppedWork[];
 };
+
+/** Each piece of learning work in `children` that dropped before it started, in words. */
+export const droppedWorkOf = (children: readonly LearningChild[]): DroppedWork[] =>
+  children.flatMap((child) => (child.dropped ? [{ kind: child.kind, reason: child.dropped, at: new Date(child.at).toISOString(), detail: said.childDropped(child.kind) }] : []));
 
 const childOf = (value: unknown): LearningChild | undefined => {
   if (typeof value !== "object" || value === null) return undefined;
@@ -184,10 +200,13 @@ export async function learningWorkOf(store: Pick<Store, "runs" | "settings">, ru
     }
     last = Math.max(last, row?.endedAt ?? child.at);
   }
+  // What dropped before it started is said in words beside the state, so a caller sees why less ran than asked.
+  const dropped = droppedWorkOf(children);
+  const told = dropped.length ? { dropped } : {};
   if (going.length || (own.learns && own.compiling)) {
     const deadline = later(deadlineIn(saved), own.learns && own.compiling && own.compileBy !== null ? own.compileBy : undefined);
-    return { state: "running", runs: going, ended_at: null, deadline_at: deadline === undefined ? null : new Date(deadline).toISOString() };
+    return { state: "running", runs: going, ended_at: null, deadline_at: deadline === undefined ? null : new Date(deadline).toISOString(), ...told };
   }
   if (!children.length && !(own.learns && own.compiled)) return { state: "none", runs: [], ended_at: null, deadline_at: null };
-  return { state: "ended", runs: [], ended_at: Number.isFinite(last) ? new Date(last).toISOString() : null, deadline_at: null };
+  return { state: "ended", runs: [], ended_at: Number.isFinite(last) ? new Date(last).toISOString() : null, deadline_at: null, ...told };
 }

@@ -627,7 +627,7 @@ test("(agree_on) a revision read that fails while the audit is settled leaves it
   const w = await world(t, { learning: { audit_every: 1, hold_window: 1, hold_disagree: 1, agree_on: ["answer", "sure"] }, says: () => SHADOW_SAYS, submit: () => ({ answer: 42, sure: true }) });
   const revision = w.store.agents.revision.bind(w.store.agents);
   let failing = false;
-  w.store.agents.revision = (id) => (failing && /agreeOnOfRevision/.test(new Error().stack ?? "") ? Promise.reject(new Error("the store is busy")) : revision(id));
+  w.store.agents.revision = (id) => (failing && /agreeOnOfRun/.test(new Error().stack ?? "") ? Promise.reject(new Error("the store is busy")) : revision(id));
   const served = await w.start("same-1", "What is six times seven");
   assert.equal(served.metrics?.path, "workflow", JSON.stringify(served.metrics));
   failing = true;
