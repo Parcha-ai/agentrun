@@ -345,7 +345,7 @@ export type ServeOptions = {
   /** The variable `publicUrl` was read from (the CLI's: AGENTRUN_PUBLIC_URL, else Render's RENDER_EXTERNAL_URL), for words
    *  that name it; AGENTRUN_PUBLIC_URL when not given. */
   publicUrlFrom?: PublicUrlFrom;
-  /** The home whose Claude Code, Codex, pi, OpenCode and Copilot CLI sessions setup offers to import and GET /v2/wrapped reads (default this
+  /** The home whose Claude Code, Codex, pi, OpenCode, Copilot CLI and Cursor CLI sessions setup offers to import and GET /v2/wrapped reads (default this
    *  user's), and the temp directory whose projects setup leaves out (default the OS's). */
   sessionsHome?: { home: string; temp?: string };
   /** How long GET /v2/wrapped waits for its read of `sessionsHome`'s home before it answers 503 with a retry, while the

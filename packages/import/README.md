@@ -1,6 +1,6 @@
 # @parcha/agentrun-import
 
-Reads the coding-agent sessions under a home (Claude Code, Codex, pi, OpenCode, GitHub Copilot CLI) into one Session shape: normalized token
+Reads the coding-agent sessions under a home (Claude Code, Codex, pi, OpenCode, GitHub Copilot CLI, Cursor's CLI) into one Session shape: normalized token
 usage, subagents counted under their parent, and cursors so a second pass reads only what changed. AgentRun's server
 imports past sessions through it.
 
@@ -30,7 +30,7 @@ const sessions = await parseHome(homedir(), { sources: ["claude-code", "codex"] 
   that does not open, for each session it lists or as itself when it lists none) while the rest are totalled; without
   it, parseHome throws `ReadFailures`. An unreadable file is never taken for an empty one.
 - `env` names where a source keeps its own directory (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `COPILOT_HOME`, OpenCode's `XDG_DATA_HOME` and
-  `OPENCODE_DB`); without it the home's.
+  `OPENCODE_DB`, `CURSOR_CONFIG_DIR` or `XDG_CONFIG_HOME` for Cursor); without it the home's.
 - `threads` reads the files on that many worker threads (default: the cores the process may run on less one, two on
   two, at most 16, and no more than the workers whose heaps, 80 MiB each at the default `workerOldMb`, fit in the memory
   still free (the machine's, page cache counted as free, at most its container's limit) once `readAhead` is set aside;
@@ -76,7 +76,7 @@ calls at once hold two pools' memory.
 ## Known answer
 
 ```sh
-node dist/cli.js <home> [--sources claude-code,codex,pi,opencode,copilot] [--threads N] [--read-ahead BYTES[k|m|g]] --known-answer
+node dist/cli.js <home> [--sources claude-code,codex,pi,opencode,copilot,cursor] [--threads N] [--read-ahead BYTES[k|m|g]] --known-answer
 ```
 
 One JSONL line per session, sorted by key: `{key, source, tokens: {input, output, cacheRead, cacheWrite, cacheWrite1h},
@@ -188,6 +188,19 @@ it: zeros, known, never unknown. So:
 - `events.N.jsonl` archives (written only with `COPILOT_SESSION_EVENT_LOG_ROTATION_BYTES`) and the pre-0.0.342
   `history-session-state` folder are not read. A rotated session's tokens still come whole from its last shutdown;
   the requests in its archives are not counted.
+
+Cursor's CLI (`cursor-agent`) keeps each chat in a SQLite store of its own, `~/.cursor/chats/<workspace hash>/<agent
+id>/store.db` (an ACP session's under `~/.cursor/acp-sessions/<id>/`), with a `meta.json` beside it. The store is read
+once, whole and read-only, and no cursor is kept: each read reads it all again. A chat's id is its folder's name
+(`cursorSessionId(file)`).
+
+Cursor's CLI keeps no token usage on the machine: no tokens, cost or error for a request, and each turn's model only
+encrypted. Its usage is on Cursor's server (tokscale reads it from Cursor's usage CSV export; that is out of scope here).
+So each answer counts as one request of unknown tokens on an unknown model, keyed by Cursor's `requestId` where the
+message names one (a later message of the same request adds to it), else by its message id. A chat's cost is `null`.
+No message has a time of its own, so every turn is at the chat's start (the agent's `createdAt`) and the chat ends at
+`meta.json`'s `updatedAtMs`. The messages are JSON; only their order needs the root blob, a protobuf of which the reader
+reads one field.
 
 ## Readers
 

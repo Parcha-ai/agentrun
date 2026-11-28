@@ -3871,7 +3871,7 @@ class RunSummaryPending6(TypedDict):
 
 
 class RunSummaryImportedFrom(TypedDict):
-    source: Literal["claude-code", "codex", "pi", "opencode", "copilot"]
+    source: Literal["claude-code", "codex", "pi", "opencode", "copilot", "cursor"]
     session: str
 
 
@@ -6276,7 +6276,7 @@ class RunPending6(TypedDict):
 
 
 class RunImportedFrom(TypedDict):
-    source: Literal["claude-code", "codex", "pi", "opencode", "copilot"]
+    source: Literal["claude-code", "codex", "pi", "opencode", "copilot", "cursor"]
     session: str
 
 
@@ -9615,7 +9615,7 @@ class GetStatsResponseAnalyticsByDayItem(TypedDict):
 
 
 class GetStatsResponseAnalyticsBySourceItem(TypedDict):
-    source: Literal["live", "claude-code", "codex", "pi", "opencode", "copilot"]
+    source: Literal["live", "claude-code", "codex", "pi", "opencode", "copilot", "cursor"]
     runs: int
     completed: int
     needs_review: int
