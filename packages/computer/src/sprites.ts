@@ -263,12 +263,19 @@ class SpritesHost implements MachineHost {
 			named();
 			exec.wake();
 		});
+		// The bound's timer and abort listener both go once the start settles: a long-lived signal keeps no listener per exec.
 		let timer: ReturnType<typeof setTimeout> | undefined;
+		let onAbort: (() => void) | undefined;
 		const bound = new Promise<Error>((done) => {
 			timer = setTimeout(() => done(new HostError("timeout", `the exec socket of ${id} did not open within ${Math.round(ctx.timeoutMs / 1000)} s`)), ctx.timeoutMs);
-			ctx.signal?.addEventListener("abort", () => done(new HostError("aborted", `the exec socket of ${id} was aborted`)), { once: true });
+			onAbort = () => done(new HostError("aborted", `the exec socket of ${id} was aborted`));
+			if (ctx.signal?.aborted) onAbort();
+			else ctx.signal?.addEventListener("abort", onAbort, { once: true });
 		});
-		const failed = await Promise.race([open, bound]).finally(() => clearTimeout(timer));
+		const failed = await Promise.race([open, bound]).finally(() => {
+			clearTimeout(timer);
+			if (onAbort) ctx.signal?.removeEventListener("abort", onAbort);
+		});
 		if (failed === undefined) return exec;
 		socket.close(1000);
 		if (failed instanceof HostError) throw failed;
