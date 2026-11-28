@@ -19,7 +19,10 @@
 // reads its settings from its own environment: the provider module's names (Fly's COMPUTER_FLY_API_TOKEN and
 // COMPUTER_FLY_APP), AGENTRUN_PUBLIC_URL (the https address the internet reaches this process at) and PORT.
 // AGENTRUN_BIND_HOST optionally restricts the listening interface (127.0.0.1 for a local fixture); unset, it listens
-// on all interfaces so remote machines can dial it. --provider
+// on all interfaces so remote machines can dial it. AGENTRUN_REACH_EVERY_MS optionally sets the ms between
+// reachesThisRun's asks (default 1000, for a host swapping instances; a local fixture with nothing to swap needs no
+// second). A module that exports conformanceClock (a fake host keeping its own time) runs on that clock, so the
+// deadline case waits on it; any other runs on the wall clock. --provider
 // takes a registry id or a conformance module's path. --only (the conformance CLI's) narrows the run to groups and case
 // ids, for a test over a fake host whose daemon answers some of them; such a run is partial at best, and exits 0 when
 // every case it ran passed. No token or key is printed: every value of the module's secret names, and every machine
@@ -52,7 +55,7 @@ const BEGIN = "DIAL-CONFORMANCE-REPORT-BEGIN";
 const END = "DIAL-CONFORMANCE-REPORT-END";
 const FRAME_BEGIN = "DIAL-CONFORMANCE-FRAME-BEGIN";
 const FRAME_END = "DIAL-CONFORMANCE-FRAME-END";
-const USAGE = "usage: node dial-conformance.mjs --provider <registry id or module path> [--only <groups and case ids>] [--exit], with AGENTRUN_PUBLIC_URL and PORT set";
+const USAGE = "usage: node dial-conformance.mjs --provider <registry id or module path> [--only <groups and case ids>] [--exit], with AGENTRUN_PUBLIC_URL and PORT set (AGENTRUN_BIND_HOST and AGENTRUN_REACH_EVERY_MS optional)";
 /** A name of a module's ENV that holds a secret (the conformance CLI's rule). */
 const SECRET_NAME = /(^|_)(KEY|TOKEN|SECRET)(_|$)/;
 /** `text` with every machine token in it redacted by its shape, whether or not this run minted it. */
@@ -89,12 +92,17 @@ function argsOf(argv) {
 	return args;
 }
 
-/** The conformance module for a registry id or a path, and what a registry provider declares of itself. */
+/**
+ * The conformance module for a registry id or a path, what a registry provider declares of itself, and the clock the
+ * module's provider runs on (conformanceClock, as the conformance CLI takes it) when it exports one.
+ */
 async function moduleOf(name) {
 	const file = isProviderId(name) ? await providerModule(name) : await import(pathToFileURL(resolve(name)).href);
 	const module = typeof file.conformance === "function" ? await file.conformance() : file;
 	if (typeof module.createProvider !== "function") throw new Error(`${name}: its conformance module exports no createProvider()`);
-	return { module, declared: isProviderId(name) ? descriptorOf(name)?.capabilities : undefined };
+	const clock = module.conformanceClock;
+	if (clock !== undefined && (typeof clock?.now !== "function" || typeof clock?.sleep !== "function")) throw new Error(`${name}: conformanceClock is not a clock: it has no now() and sleep(ms)`);
+	return { module, declared: isProviderId(name) ? descriptorOf(name)?.capabilities : undefined, clock };
 }
 
 /**
@@ -277,7 +285,9 @@ async function main({ provider: name, only, exit }, env, state) {
 	if (!publicUrl) throw new Error(`AGENTRUN_PUBLIC_URL is not set: the provider's machines dial it, so it is the https address the internet reaches this process at\n${USAGE}`);
 	const port = Number(env.PORT);
 	if (!env.PORT || !Number.isInteger(port) || port < 0 || port > 65_535) throw new Error(`PORT is the port this process listens on, not ${JSON.stringify(env.PORT ?? "")}\n${USAGE}`);
-	const { module, declared } = await moduleOf(name);
+	const every = env.AGENTRUN_REACH_EVERY_MS ? Number(env.AGENTRUN_REACH_EVERY_MS) : 1_000;
+	if (!Number.isSafeInteger(every) || every < 1) throw new Error(`AGENTRUN_REACH_EVERY_MS is the ms between asks of the public address, a whole number from 1, not ${JSON.stringify(env.AGENTRUN_REACH_EVERY_MS)}\n${USAGE}`);
+	const { module, declared, clock } = await moduleOf(name);
 	const run = randomUUID();
 
 	const store = memoryMintedTokens();
@@ -407,7 +417,7 @@ async function main({ provider: name, only, exit }, env, state) {
 			if (unknown.length > 0) throw new Error(`--only: ${unknown.join(", ")} is neither a group nor a case id of the provider's suite\n${USAGE}`);
 		}
 		// Nothing is created until the public address reaches this process: a machine dials it, with a token minted here.
-		await reachesThisRun(publicUrl, run, controller.signal);
+		await reachesThisRun(publicUrl, run, controller.signal, { every });
 		const report = await runConformance(provider, {
 			image,
 			cases,
@@ -415,6 +425,7 @@ async function main({ provider: name, only, exit }, env, state) {
 			...(only === undefined ? {} : { only }),
 			long: true,
 			signal: controller.signal,
+			...(clock === undefined ? {} : { clock }),
 			dial: () => kit,
 			drifted: async () => {
 				const arch = provider.host?.facts?.arch ?? "amd64";

@@ -104,7 +104,7 @@ export interface RunnerProcessOptions {
   /** What a person should see at the start (a clock far from the store's Postgres): stderr by default. */
   warn?: (message: string) => void;
   /** How often the store's runner floor is read again (Store.schemaState): each renewal (RUNNER_RENEW_EVERY_MS) unless a
-   *  test says. */
+   *  test says, and soon after each hint the store gives that it changed (Store.watchSchema; watchFloor). */
   floorEveryMs?: number;
 }
 
@@ -412,39 +412,62 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
   };
 }
 
-/** Reads `store`'s runner floor every `everyMs` (Store.schemaState): `outdated` settles, once, with the words of why,
- *  when it is above `known`, the version this runner's build knows, and the reads stop. A read that fails (a busy store,
- *  a connection down) is tried at the next one: a renew's own failure says so, and only a floor read says to stop. */
-function watchFloor(store: Store, known: number, everyMs: number): { readonly outdated: Promise<string>; stop(): void } {
+/** The least time between two reads of the runner floor that the store's hints ask for (Store.watchSchema): a busy
+ *  store's file changes at each commit, this runner's own included, so its hints are read at most once a second. */
+export const FLOOR_HINT_GAP_MS = 1_000;
+
+/** Reads `store`'s runner floor every `everyMs` (Store.schemaState), and again soon after each hint that the store
+ *  changed under another process (Store.watchSchema: SQLite's file; at most once per FLOOR_HINT_GAP_MS): `outdated`
+ *  settles, once, with the words of why, when it is above `known`, the version this runner's build knows, and the reads
+ *  stop. A read that fails (a busy store, a connection down) is tried at the next one: a renew's own failure says so, and
+ *  only a floor read says to stop. */
+export function watchFloor(store: Store, known: number, everyMs: number): { readonly outdated: Promise<string>; stop(): void } {
   let settle!: (why: string) => void;
   const outdated = new Promise<string>((resolve) => (settle = resolve));
   if (!store.schemaState) return { outdated, stop: () => {} };
   let reading = false;
   let done = false;
+  // When the last read began, and whether a hint came while one was going: that read may have begun before the change.
+  let readAt = 0;
+  let hintedSince = false;
+  let hintTimer: NodeJS.Timeout | undefined;
   const read = async () => {
     if (reading || done) return;
     reading = true;
+    readAt = Date.now();
+    hintedSince = false;
     try {
       const state = await store.schemaState!();
       if (done || state.runnerFloor === null || state.runnerFloor <= known) return;
-      done = true;
-      clearInterval(timer);
+      stop();
       settle(`the store is at schema version ${state.version}, and its runner floor rose to ${state.runnerFloor}, above the version this runner knows (${known}): a later server changed the schema in a way this runner cannot run beside`);
     } catch {
       // Tried again at the next read.
     } finally {
       reading = false;
+      if (hintedSince) hinted();
     }
+  };
+  const hinted = () => {
+    if (done) return;
+    if (reading) return void (hintedSince = true);
+    if (hintTimer) return;
+    hintTimer = setTimeout(() => {
+      hintTimer = undefined;
+      void read();
+    }, Math.max(0, readAt + FLOOR_HINT_GAP_MS - Date.now()));
+    hintTimer.unref();
   };
   const timer = setInterval(() => void read(), everyMs);
   timer.unref();
-  return {
-    outdated,
-    stop: () => {
-      done = true;
-      clearInterval(timer);
-    },
+  const unwatch = store.watchSchema?.(hinted);
+  const stop = () => {
+    done = true;
+    clearInterval(timer);
+    clearTimeout(hintTimer);
+    unwatch?.();
   };
+  return { outdated, stop };
 }
 
 const storeFactories = new WeakSet<object>();

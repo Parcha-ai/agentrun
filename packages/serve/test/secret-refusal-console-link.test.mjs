@@ -190,6 +190,7 @@ test("the API document says what a refusal's details hold: console_url, a URI, a
   assert.deepEqual(shape?.required, ["console_url"]);
   assert.equal(shape.additionalProperties, false);
   assert.equal(shape.properties.console_url.format, "uri");
+  assert.match(shape.properties.console_url.description, /Absent [^.]*on an API-only server \(`AGENTRUN_API_ONLY=1`, which has no owner's session and serves no console\)/, "an API-only server sends no console_url");
 });
 
 test("the link never carries a value the request sent, whatever the plane: a property over the MCP page builder", async () => {

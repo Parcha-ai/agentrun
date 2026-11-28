@@ -2155,6 +2155,10 @@ export interface Store {
   /** Reads the store's schema version and its runner floor now, without a lock or a write: a runner reads it at each
    *  renewal (runner/main.ts), and stops once the floor is above the version its build knows. */
   schemaState?(): Promise<StoreSchemaState>;
+  /** Calls `hint` when the store may have changed under another process's write, so a reader of schemaState reads again
+   *  at once rather than at its next timer (runner/main.ts watchFloor). A hint only, which may come for any write, its own
+   *  too: SQLite's, from its file. None on Postgres, whose runner reads at each renewal. Answers the unsubscribe. */
+  watchSchema?(hint: () => void): () => void;
   /** The server's pass over the ledger (run-patch.ts backfillLedger), as its open runs it: true once the reopened runs are
    *  marked recorded again under this build's split (store_meta.ledger_rerecorded), which only a pass that started with
    *  no runner of an earlier build there and no run held by a claim taken before the open and RUNNER_STALE_MS marks

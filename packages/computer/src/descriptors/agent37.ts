@@ -19,6 +19,8 @@ export const AGENT37 = defineProvider({
 	// The SSH key the provider makes for itself, kept in the server's sealed store: one per server.
 	secrets: { option: "secrets" },
 	metered: true,
+	// Its create answers the size the vendor runs the computer at (resources), which its time is priced by.
+	sized: true,
 	mounts: ["archil"],
 	// None: its programs run in a network of their own, their loopback alone (isolation.ts), and the instance is made
 	// deny-all. Open and a list: the instance is made allow-all, and its programs' one way out is init's egress proxy,

@@ -1,0 +1,31 @@
+[
+  {
+    "type": "directory",
+    "oid": "4a1ae7616775c10fa258d1ea9696a00f800e6202",
+    "size": 0,
+    "path": "gimp"
+  },
+  {
+    "type": "file",
+    "oid": "9b5230a1660e71d5fa18b2778c59cd2a965add82",
+    "size": 7716864,
+    "lfs": {
+      "oid": "31c0aeec617ddc8f6a60eea02a2594e6956a047c9f30d56f1416ff1520860aaf",
+      "size": 7716864,
+      "pointerSize": 132
+    },
+    "path": "gimp/dbbf4b99-2253-4b10-9274-45f246af2466/yicun.raw"
+  },
+  {
+    "type": "file",
+    "oid": "ff6b6dc4d60842efdb10a2aa8dc002e64014587d",
+    "size": 9201,
+    "path": "libreoffice_calc/1273e544-688f-496b-8d89-3e0f40aa0606/NetIncome.xlsx"
+  },
+  {
+    "type": "file",
+    "oid": "e209478923b2894fa0618df1579ddc3593230fb7",
+    "size": 6194,
+    "path": "libreoffice_calc/1273e544-688f-496b-8d89-3e0f40aa0606/3_NetIncome_gt1.xlsx"
+  }
+]

@@ -23,6 +23,9 @@ export type Wrapped = {
   /** Requests whose session recorded no tokens for them (Cursor's CLI keeps none; pi leaves usage off an aborted
    *  request): `tokens` holds none of theirs, so a year of only these has unknown tokens, not zero. */
   tokensUnknownRequests: number;
+  /** The year's requests whose time is only their session's start (Cursor keeps no message times): counted in the hours
+   *  and days at that start, never in `activeMs`. */
+  timeUnknownRequests: number;
   /** Local days with a request, ascending: that day's requests and tokens (input, output and cache together). */
   days: { day: string; requests: number; tokens: number }[];
   /** Requests by local hour of the day (24) and by weekday (7, Sunday first). */
@@ -44,7 +47,7 @@ const by = <T>(map: Map<string, T>, key: string, make: () => T): T => map.get(ke
 /** `year` under `home`, from parseHome's reads: its options (`state` and `requests` aside). */
 export async function wrappedHome(home: string, year: number, options: Omit<ParseOptions, "state" | "requests"> & { price?: (model: string | undefined, usage: Usage) => Promise<number | undefined> | number | undefined } = {}): Promise<Wrapped> {
   const prices: Catalog | undefined = options.catalog === false ? undefined : (options.catalog ?? (await builtinCatalog()));
-  const out: Wrapped = { year, sessions: 0, turns: 0, requests: 0, tokens: noTokens(), cost: 0, unpricedRequests: 0, tokensUnknownRequests: 0, days: [], hours: new Array<number>(24).fill(0), weekdays: new Array<number>(7).fill(0), activeMs: 0, harnesses: [], models: [], sources: [] };
+  const out: Wrapped = { year, sessions: 0, turns: 0, requests: 0, tokens: noTokens(), cost: 0, unpricedRequests: 0, tokensUnknownRequests: 0, timeUnknownRequests: 0, days: [], hours: new Array<number>(24).fill(0), weekdays: new Array<number>(7).fill(0), activeMs: 0, harnesses: [], models: [], sources: [] };
   const days = new Map<string, { requests: number; tokens: number }>();
   const harnesses = new Map<string, { sessions: number; requests: number; tokens: number; tokensUnknownRequests: number }>();
   const models = new Map<string, { requests: number; tokens: Tokens; cost: number; unpricedRequests: number; tokensUnknownRequests: number }>();
@@ -52,7 +55,8 @@ export async function wrappedHome(home: string, year: number, options: Omit<Pars
   // The usage of each model's requests of the year, priced once the read is over (a rejection of the price then rejects
   // this call, with no promise left floating), and each request that carries none, which no price can cover.
   const usages = new Map<string, Usage[]>();
-  const harnessOf = (source: string) => ((options.readers ?? READERS) as Record<string, { harness: string } | undefined>)[source]?.harness ?? source;
+  const readerOf = (source: string) => ((options.readers ?? READERS) as Record<string, { harness: string; untimed?: true } | undefined>)[source];
+  const harnessOf = (source: string) => readerOf(source)?.harness ?? source;
   await parseHome(home, {
     ...options,
     requests: (totals, requests, started) => {
@@ -64,6 +68,7 @@ export async function wrappedHome(home: string, year: number, options: Omit<Pars
         by(sources, totals.source, () => ({ sessions: 0, requests: 0 })).sessions += 1;
         by(harnesses, harnessOf(totals.source), () => ({ sessions: 0, requests: 0, tokens: 0, tokensUnknownRequests: 0 })).sessions += 1;
       }
+      const untimed = readerOf(totals.source)?.untimed === true;
       for (let i = 0; i < mine.length; i++) {
         const r = mine[i]!;
         const when = new Date(r.at);
@@ -82,7 +87,8 @@ export async function wrappedHome(home: string, year: number, options: Omit<Pars
         const m = by(models, r.model ?? "unknown", () => ({ requests: 0, tokens: noTokens(), cost: 0, unpricedRequests: 0, tokensUnknownRequests: 0 }));
         m.requests += 1;
         if (r.usage) addTokens(m.tokens, r.usage);
-        if (i > 0 && r.at - mine[i - 1]!.at < ACTIVE_GAP_MS) out.activeMs += r.at - mine[i - 1]!.at;
+        if (untimed) out.timeUnknownRequests += 1;
+        else if (i > 0 && r.at - mine[i - 1]!.at < ACTIVE_GAP_MS) out.activeMs += r.at - mine[i - 1]!.at;
         // A request with no usage (pi leaves it off an aborted request) is unpriced; known zero usage is free and priced.
         if (r.usage) by(usages, r.model ?? "unknown", () => []).push(r.usage);
         else {

@@ -42,7 +42,10 @@ const runningIn = (pgid) =>
 		}
 	});
 
-const sandbox = (fields = {}) => ({ id: ID, status: "running", metadata: LABELS, created_at: "2026-11-18T00:00:00.000Z", stop_reason: null, ...fields });
+// Every Sandbox the API answers carries its size (cpus, memory_gb and disk_gb are required in the API's Sandbox schema).
+const sandbox = (fields = {}) => ({ id: ID, status: "running", cpus: 2, memory_gb: 4, disk_gb: 20, metadata: LABELS, created_at: "2026-11-18T00:00:00.000Z", stop_reason: null, ...fields });
+/** The size sandbox() answers, as the adapter reads it. */
+const SIZE = { cpus: 2, memoryMb: 4096, diskGb: 20 };
 const refusal = (code, message) => ({ error: { code, message } });
 
 /** Every fake command stream a host here was given: at the end, the directory each start named goes. */
@@ -175,7 +178,7 @@ test("get reads Groundbox's statuses as the adapter's, an ended sandbox's record
 	const states = { queued: "starting", starting: "starting", resuming: "starting", running: "running", pausing: "stopped", paused: "stopped", shutting_down: "stopped", shut_down: "stopped", stopping: "gone" };
 	for (const [status, state] of Object.entries(states)) {
 		const { calls, host } = hostOf(() => [200, sandbox({ status })]);
-		assert.deepEqual(await host.get(ID, CTX), { id: ID, labels: LABELS, state, createdAt: new Date("2026-11-18T00:00:00.000Z") }, status);
+		assert.deepEqual(await host.get(ID, CTX), { id: ID, labels: LABELS, state, createdAt: new Date("2026-11-18T00:00:00.000Z"), resources: SIZE }, status);
 		assert.deepEqual([calls[0].method, calls[0].path], ["GET", `/v1/sandboxes/${ID}`]);
 	}
 	for (const status of ["stopped", "failed"]) assert.equal(await hostOf(() => [200, sandbox({ status })]).host.get(ID, CTX), undefined, `${status} is a record of a sandbox that will not come back`);
@@ -183,6 +186,24 @@ test("get reads Groundbox's statuses as the adapter's, an ended sandbox's record
 	const unknown = await hostOf(() => [200, sandbox({ status: "migrating" })]).host.get(ID, CTX);
 	assert.deepEqual([unknown.state, unknown.why], ["stopped", "Groundbox reads its status as migrating"]);
 	await assert.rejects(hostOf(() => [404, refusal("not_found", "No sandbox sbx_0123456789ab")]).host.get(ID, CTX), (error) => error.code === "not_found");
+});
+
+test("a sandbox's size is the one Groundbox says it gave, read from its answer: its computer's time is priced by it, whatever the spec asked", async () => {
+	// The spec named no size: Groundbox chose one, and only its answer says which.
+	const chosen = await hostOf(() => [200, sandbox({ cpus: 2, memory_gb: 8, disk_gb: 20 })]).host.get(ID, CTX);
+	assert.deepEqual(chosen.resources, { cpus: 2, memoryMb: 8192, diskGb: 20 });
+	// The answer is read over the request: a size Groundbox gave other than the one asked is the one billed.
+	const { host } = hostOf((method) => [200, method === "POST" ? sandbox({ status: "starting" }) : sandbox({ cpus: 4, memory_gb: 16, disk_gb: 40 })]);
+	await host.create(request({ cpus: 2, memoryMb: 4096 }), CTX);
+	assert.deepEqual((await host.get(ID, CTX)).resources, { cpus: 4, memoryMb: 16_384, diskGb: 40 });
+	// A listing's machines carry it too, so a computer found again by its name keeps its size.
+	const listed = await hostOf(() => [200, { data: [sandbox({ cpus: 6, memory_gb: 12, disk_gb: 20 })], next_cursor: null }]).host.list(LABELS, CTX);
+	assert.deepEqual(listed[0].resources, { cpus: 6, memoryMb: 12_288, diskGb: 20 });
+	// A figure the answer does not give, or gives as no whole positive number, is none: never a guess.
+	const partial = await hostOf(() => [200, sandbox({ cpus: undefined, memory_gb: "4", disk_gb: 0 })]).host.get(ID, CTX);
+	assert.equal(partial.resources, undefined);
+	const some = await hostOf(() => [200, sandbox({ memory_gb: null })]).host.get(ID, CTX);
+	assert.deepEqual(some.resources, { cpus: 2, diskGb: 20 });
 });
 
 test("list is one listing of the live sandboxes that carry every label, the labels as the API's metadata filter, every page", async () => {

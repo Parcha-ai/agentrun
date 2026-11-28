@@ -18,6 +18,8 @@ export const GROUNDBOX = defineProvider({
 	label: "Groundbox",
 	keys: [{ name: "GROUNDBOX_API_KEY", option: "apiKey", required: true }],
 	metered: true,
+	// Its create answers the size the vendor runs the computer at (resources), which its time is priced by.
+	sized: true,
 	// None yet: the guest kernel has FUSE, and Archil's client there is untried.
 	mounts: [],
 	// All three are ours: root in the guest makes a network namespace, so init's fence holds none and its egress proxy

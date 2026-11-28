@@ -427,6 +427,22 @@ test("LVI (11-26): the host reads a bundle's /run/title as the export cuts it, l
   await screenShare(await bundleOf({ answer: "Run $ env SYNTH_MODE=dev node app.js" }), []);
 });
 
+test("LVI (11-26 r2): an exported title holding any env command's output is cut, and the host takes the export's own cut", async () => {
+  const seed = `meadow${nonce()}basalt`;
+  for (const title of [`Say: $ printenv SYNTH_ROOM ${seed} $ ls`, `Say: $ echo $SYNTH_ROOM ${seed}`, `Say: $ cat .env ${seed} $ ls`, `$ env | sort SYNTH_A=1 SYNTH_ROOM=${seed} $ ls`]) {
+    const body = await bundleOf({ title });
+    assert.ok(!body.includes(seed), title);
+    await screenShare(body, []);
+    // Built by hand, uncut: refused.
+    const doc = JSON.parse(await bundleOf());
+    await assert.rejects(screenShare(resigned({ ...doc, run: { ...doc.run, title } }), []), (error) => error.code === "input_invalid" && (error.extra.details.counts["env-dump"] ?? 0) >= 1, title);
+  }
+  // A value ahead of a cut marker is output, not the export's cut: refused.
+  const doc = JSON.parse(await bundleOf());
+  const title = `Say: $ echo $SYNTH_ROOM ${seed} [redacted:env-dump 1 lines]`;
+  await assert.rejects(screenShare(resigned({ ...doc, run: { ...doc.run, title } }), []), (error) => error.code === "input_invalid" && (error.extra.details.counts["env-dump"] ?? 0) >= 1, title);
+});
+
 test("a workflow call's output is read knowing its call at any index: one past a million empty effects still refuses", { timeout: 900_000 }, async () => {
   // An effect's index is any number of digits: a pointer the host reads as no call's would leave the call's output to the
   // context-free rules, and a bare .pgpass line passes those.

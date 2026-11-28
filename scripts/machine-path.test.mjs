@@ -13,6 +13,15 @@ test('a home folder is a machine path: a user name under home or Users, or under
   }
 });
 
+test('the VM account `user` is not a machine path, and a name that only starts with it still is', () => {
+  for (const text of [path('home', 'user', 'Desktop', 'a.raw'), path('home', 'user', 'x'), `"path": "${path('home', 'user', 'NetIncome.xlsx')}"`]) {
+    assert.equal(MACHINE_PATH.test(text), false, text);
+  }
+  for (const text of [path('home', 'userx', 'a'), path('home', 'users', 'a'), path('home', 'ubuntu', 'a'), path('home', 'dana', 'a'), `${path('home', 'user', 'x')} ${path('home', 'dana', 'y')}`]) {
+    assert.ok(MACHINE_PATH.test(text), text);
+  }
+});
+
 test('macOS\'s shared folder, an API route template and a passwd line are not', () => {
   for (const text of [path('Users', 'Shared', 'agentrun', 'labels.json'), ['C:', 'Users', 'Shared', 'x'].join('\\'), `/agents/{agent_id}${path('home', 'files', '{path}')}`, `pda:x:1500:1500::${path('home', 'pda:')}bin/bash`]) {
     assert.equal(MACHINE_PATH.test(text), false, text);

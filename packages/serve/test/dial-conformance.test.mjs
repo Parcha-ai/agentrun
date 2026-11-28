@@ -37,10 +37,10 @@ const ONLY = "provider,drift,health.hello,health.ping,health.unknown-method,heal
 /**
  * The script run with `args` and `env` (beside PATH alone), with --exit unless `exit` is false: its exit code and what it
  * wrote; `onLine` sees each stderr line whole, once its newline came (a pipe may split a line across chunks), and the
- * child.
+ * child. It binds 127.0.0.1 alone and asks its public address every 50 ms: on the loopback no host swaps instances.
  */
 function run(args, env, onLine = () => {}, { exit = true } = {}) {
-  const child = spawn(process.execPath, [SCRIPT, ...args, ...(exit ? ["--exit"] : [])], { env: { PATH: process.env.PATH, AGENTRUN_BIND_HOST: "127.0.0.1", ...env }, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [SCRIPT, ...args, ...(exit ? ["--exit"] : [])], { env: { PATH: process.env.PATH, AGENTRUN_BIND_HOST: "127.0.0.1", AGENTRUN_REACH_EVERY_MS: "50", ...env }, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "";
   let stderr = "";
   let partial = "";
@@ -259,23 +259,42 @@ test("a request target no URL parses (//[/) is refused, a socket's and a plain r
 
 test("nothing runs until AGENTRUN_PUBLIC_URL reaches the script: an address still answered by another process (a host's previous instance) is waited out", { skip: BUILT, timeout: 120_000 }, async () => {
   const port = await freePort();
-  // The public address, as a host that picks an instance per connection moves it over: its first four connections stay
-  // with the previous instance, which answers every request on them with its own /v2/health (no run id) and keeps them
-  // open, so an ask that kept one alive would never reach the script; every later connection goes to the script as is
-  // (the machine's daemon fetch with its token, and its attach socket).
-  let asked = 0;
+  // The public address, as a host that picks an instance per connection moves it over: the first four connections whose
+  // first request is the script's ask (GET /v2/health with cache-control: no-store, as reachesThisRun asks) stay with the
+  // previous instance, which answers every request on them with its own /v2/health (no run id) and keeps them open, so an
+  // ask that kept one alive would never reach the script; every other connection goes to the script as is (the machine's
+  // daemon fetch with its token, and its attach socket). A connection is routed by its first request, not by its order:
+  // the front listens on an ephemeral port, where a stray client on a busy machine (a daemon of another suite redialing a
+  // port its server left, saying GET / as Go-http-client) could otherwise take one of the four, and the script would then
+  // count fewer answers from another than it was given.
+  const isAsk = (head) => head.startsWith("GET /v2/health HTTP/1.1\r\n") && /\r\ncache-control: no-store\r\n/i.test(head.slice(0, head.indexOf("\r\n\r\n") + 2));
+  let stale = 0;
+  // Every connection the front took, ended with it: one that never sends a request holds no close open.
+  const taken = new Set();
   const front = createServer((socket) => {
+    taken.add(socket);
+    socket.on("close", () => taken.delete(socket));
     socket.on("error", () => undefined);
-    if (++asked <= 4) {
-      let said = "";
-      return void socket.on("data", (chunk) => {
-        said += chunk;
-        for (; said.includes("\r\n\r\n"); said = said.slice(said.indexOf("\r\n\r\n") + 4)) socket.write('HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 15\r\nconnection: keep-alive\r\n\r\n{"status":"ok"}');
-      });
-    }
-    const behind = connect(port, "127.0.0.1");
-    behind.on("error", () => socket.destroy());
-    socket.pipe(behind).pipe(socket);
+    let said = "";
+    const first = (chunk) => {
+      said += chunk.toString("latin1");
+      if (!said.includes("\r\n\r\n")) return;
+      socket.off("data", first);
+      if (stale < 4 && isAsk(said)) {
+        stale += 1;
+        const old = (more) => {
+          said += more;
+          for (; said.includes("\r\n\r\n"); said = said.slice(said.indexOf("\r\n\r\n") + 4)) socket.write('HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 15\r\nconnection: keep-alive\r\n\r\n{"status":"ok"}');
+        };
+        old("");
+        return void socket.on("data", old);
+      }
+      const behind = connect(port, "127.0.0.1");
+      behind.on("error", () => socket.destroy());
+      behind.write(Buffer.from(said, "latin1"));
+      socket.pipe(behind).pipe(socket);
+    };
+    socket.on("data", first);
   });
   await new Promise((done) => front.listen(0, "127.0.0.1", done));
   try {
@@ -289,6 +308,7 @@ test("nothing runs until AGENTRUN_PUBLIC_URL reaches the script: an address stil
     assert.ok(at("skip health.declared") > at(`${health} reaches this process`), "the run's first case comes after");
     assert.deepEqual(reportOf(ran).results.map(({ id }) => id), ["health.declared"]);
   } finally {
+    for (const socket of taken) socket.destroy();
     await new Promise((done) => front.close(done));
   }
 });
@@ -344,13 +364,14 @@ test("reachesThisRun's ask opens a connection for each ask, even to a server tha
   }
 });
 
-test("the script refuses in words, and exits 1, without --provider, AGENTRUN_PUBLIC_URL or PORT, or with an --only that names nothing in the suite", async () => {
+test("the script refuses in words, and exits 1, without --provider, AGENTRUN_PUBLIC_URL or PORT, with an AGENTRUN_REACH_EVERY_MS that is no whole number of ms, or with an --only that names nothing in the suite", async () => {
   for (const [args, env, words] of [
     [["--provider", FIXTURE, "--only", "provider.deadlin"], { PORT: "0", AGENTRUN_PUBLIC_URL: "http://127.0.0.1:1" }, "--only: provider.deadlin is neither a group nor a case id of the provider's suite"],
     [["--provider", FIXTURE, "--only", ","], { PORT: "0", AGENTRUN_PUBLIC_URL: "http://127.0.0.1:1" }, "--only names no group or case id"],
     [[], { PORT: "0", AGENTRUN_PUBLIC_URL: "http://127.0.0.1:1" }, "usage: node dial-conformance.mjs --provider <registry id or module path>"],
     [["--provider", FIXTURE], { PORT: "0" }, "AGENTRUN_PUBLIC_URL is not set: the provider's machines dial it"],
     [["--provider", FIXTURE], { AGENTRUN_PUBLIC_URL: "http://127.0.0.1:1" }, 'PORT is the port this process listens on, not ""'],
+    [["--provider", FIXTURE], { PORT: "0", AGENTRUN_PUBLIC_URL: "http://127.0.0.1:1", AGENTRUN_REACH_EVERY_MS: "0" }, 'AGENTRUN_REACH_EVERY_MS is the ms between asks of the public address, a whole number from 1, not "0"'],
   ]) {
     const ran = await run(args, env);
     assert.equal(ran.code, 1, words);

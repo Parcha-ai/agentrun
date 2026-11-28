@@ -15,7 +15,7 @@ export type WrappedCard = { id: string; name: string; reads: readonly (keyof Wra
 export const WRAPPED_CARDS: readonly WrappedCard[] = [
   { id: "cover", name: "Year in tokens", reads: ["year", "sessions", "turns", "requests", "tokens", "tokens_unknown_requests", "cost_usd", "unpriced_requests", "days", "unread_files"], waits: ["race-card-renderer"] },
   { id: "split", name: "Harnesses and models", reads: ["year", "harnesses", "models", "unread_files"], waits: ["race-card-renderer"] },
-  { id: "hours", name: "When you work", reads: ["year", "hours", "weekdays", "active_ms", "days", "unread_files"], waits: ["race-card-renderer"] },
+  { id: "hours", name: "When you work", reads: ["year", "hours", "weekdays", "active_ms", "time_unknown_requests", "requests", "days", "unread_files"], waits: ["race-card-renderer"] },
   { id: "cache", name: "Cache grade", reads: ["year", "cache"], waits: ["race-card-renderer", "cache-analyzer"] },
   { id: "laptop", name: "On your laptop", reads: ["tokens", "days", "models"], waits: ["race-card-renderer", "derived"] },
   { id: "leak", name: "Leak receipt (opt-in)", reads: ["year", "secrets"], waits: ["race-card-renderer", "secret-count", "opt-in"] },

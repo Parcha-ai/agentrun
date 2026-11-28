@@ -12319,6 +12319,7 @@ class GetWrappedResponse(TypedDict):
     cost_usd: float
     unpriced_requests: int
     tokens_unknown_requests: int
+    time_unknown_requests: int
     days: list[GetWrappedResponseDaysItem]
     hours: list[int]
     weekdays: list[int]

@@ -505,6 +505,53 @@ serverless exec, for at most 295 s. A known limit: a command, once sent, cannot 
 once, but the command runs on to its own deadline, and the run's next command, or a write to its folder, waits until it
 has ended. A command not yet sent when the call is stopped is never sent.
 
+## Back up and restore
+
+A server is its data directory, its store and its seal key. Back up all three, together:
+
+- **The data directory** (`--data DIR`; `/data` in the image, on the `agentrun-data` volume). It holds the runs' folders
+  (`DIR/disk/`), the API token (`DIR/.token`), the password's hash (`DIR/owner.json`), the key that signs session cookies
+  (`DIR/.session-secret`), the remembered public address and, on SQLite, the store. Two things are not in it. Tokens
+  that `AGENTRUN_TOKEN` or `AGENTRUN_TOKENS` hand the server are in no file (a start with `AGENTRUN_TOKEN` removes `DIR/.token`):
+  keep them as you keep the seal key, and hand the same ones to the restored server. With Archil on (Mode 2,
+  `PUT /v2/workspace/archil`), runs' folders and uploads are on each agent's Archil disk, not in `DIR/disk/`:
+  the store keeps which disk is each agent's, and the files stay on Archil, so a copy of `DIR` does not hold them.
+- **The store**. On SQLite (the default) it is `DIR/store.sqlite`, in the data directory. With `AGENTRUN_STORE_URL` set to
+  a Postgres, it is the schema `AGENTRUN_STORE_SCHEMA` names (`agentrun` by default) in that database.
+- **The seal key**. Saved keys, MCP server credentials, webhook trigger secrets, the outbound webhook's secret and
+  sign-ins are sealed under it in the store ([Tool keys](#tool-keys)). With `AGENTRUN_SEAL_KEY` set, the key is
+  that value and is in no file: keep a copy of it where you keep your other secrets. Without it, the key is
+  `DIR/seal/seal.key` and a copy of the data directory carries it, so anyone who holds that copy can open every
+  sealed secret: keep the copy as you would the key.
+
+To back up, stop the server and every runner on its store, then copy. A copy taken while the server runs can catch
+the store between writes.
+
+```sh
+# SQLite: the whole data directory, modes kept
+cp -a DIR /backups/agentrun-data
+# Postgres: the store's schema (agentrun, or the one AGENTRUN_STORE_SCHEMA names), then the data directory
+pg_dump --format=custom --schema=agentrun --file=/backups/agentrun-store.dump "$AGENTRUN_STORE_URL"
+cp -a DIR /backups/agentrun-data
+```
+
+To restore, put the copy where `--data` points (on Postgres, `pg_restore --dbname="$AGENTRUN_STORE_URL"
+/backups/agentrun-store.dump` into a database that does not hold the schema yet), and start the server with the same
+`AGENTRUN_SEAL_KEY` and tokens when you set them. It comes back as it was: the same token, the same password, every agent, run and
+trigger, and each sealed secret opens. A store serves one server at a time: a restored copy started while the
+original still runs on the same Postgres schema is refused.
+
+**Losing the seal key loses every sealed secret.** Nothing opens them without it, and the server never makes a new key
+over them: a restore with the store and a missing or different key does not start. Missing, it says
+
+```
+agentrun-serve does not start: this store's secrets were sealed with another key; hand the server the original AGENTRUN_SEAL_KEY. There is no key in DIR/seal/seal.key: put the original there (mode 0600, in a 0700 directory), or hand it as AGENTRUN_SEAL_KEY.
+```
+
+and with another key it ends `The AGENTRUN_SEAL_KEY handed now is not it.` Put the original key back and start again.
+Without it, that store does not start: start over on a new data directory (and, on Postgres, a new schema), which
+holds no agents, runs or secrets, and enter the keys and secrets again.
+
 ## Upgrading from 0.1.0-beta.26
 
 0.1.0-beta.27 keeps every agent in one store, `DIR/store.sqlite`, with its revisions (and this version also keeps each run
@@ -2947,7 +2994,10 @@ What can go wrong, told apart:
   owner's console saves, or saved over or deleted a server the token did not save (the owner's, sealing a credential or
   not), which only the owner's console changes or deletes. The link opens Settings → MCP servers with the form filled in
   (name, URL, kind of credential, toolkit; for a saved server, its Change form), never the credential. A URL that could
-  hold one is left out.
+  hold one is left out. An [API-only](#api-only) server has no owner's session and serves no console: its `403` has no
+  `details.console_url`, and a save over or delete of a server the token did not save says to use another name. A
+  credential's value from the token there says what it can send instead: a `per_run` server whose runs hand it in
+  `mcp_auth`, or a Composio key named by `api_key_env` (a Composio listing's `403` names `api_key_env` alone).
 - `412 precondition_failed`: the server changed while the save or delete ran (another save, a sign-in, a removal), so
   nothing was written over it: read it again and try again. An owner's save that lands while the token's save or delete
   of a server it saved is under way makes the server the owner's, and the token's is this `412`.

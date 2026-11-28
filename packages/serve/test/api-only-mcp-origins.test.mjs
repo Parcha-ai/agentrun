@@ -17,7 +17,7 @@ import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { follow, serve, storeBytes, withEnv } from "./support.mjs";
 import { registryPin, storeOn } from "./store-helpers.mjs";
 
-const { SECRET_WRITE_REFUSAL } = await import("../dist/secret-writes.js");
+const { SECRET_WRITE_REFUSAL, SECRET_WRITE_REFUSAL_API_ONLY } = await import("../dist/secret-writes.js");
 const { apiOnlyRefusal } = await import("../dist/api-only.js");
 const { API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom } = await import("../dist/env-switch.js");
 const { mcpSourceKey, ownersRecord, storedSource } = await import("../dist/mcp-sources.js");
@@ -169,13 +169,15 @@ test("API-only with the address's origin listed: the token saves contextforge as
   assert.ok(gw.sent.includes(`Bearer ${RUN}`), "with the run's own token");
 });
 
-test("API-only with the origin listed: a save that carries a credential (headers, a bearer token) is the secret-write refusal (403), and the address gets nothing", async (t) => {
+test("API-only with the origin listed: a save that carries a credential (headers, a bearer token) is the secret-write refusal (403) in the API-only server's words, which name per_run and no owner's session or console, and the address gets nothing", async (t) => {
   const gw = await gateway(t);
   const s = await setup(t, [gw.origin]);
   for (const auth of [{ type: "headers", headers: { authorization: `Bearer ${OTHER}` } }, { type: "bearer", token: OTHER }]) {
     const refused = await s.token("PUT", PATH, { url: gw.fake.url, auth });
     assert.equal(refused.status, 403, `${auth.type}: ${JSON.stringify(refused.body)}`);
-    assert.ok(String(refused.body.error?.message).startsWith(SECRET_WRITE_REFUSAL), refused.body.error?.message);
+    assert.equal(refused.body.error?.message, SECRET_WRITE_REFUSAL_API_ONLY, auth.type);
+    assert.doesNotMatch(String(refused.body.error?.message), /signed-in session|console/, auth.type);
+    assert.equal(refused.body.error?.details?.console_url, undefined, auth.type);
   }
   assert.deepEqual(gw.fake.log, [], "the address got nothing");
   assert.deepEqual(await names(s), { names: [] }, "nothing saved");
@@ -244,7 +246,8 @@ test("API-only with the origin listed: the token's per_run save over a server it
     const refused = await s.token("PUT", `/settings/mcp-servers/${name}`, perRun(gw.fake.url));
     assert.equal(refused.status, 403, `${name}: ${JSON.stringify(refused.body)}`);
     // In words about the server it would write over, never the secret-write words: the body sent no secret.
-    assert.ok(String(refused.body.error?.message).startsWith(tokenWriteOverWords(name, name === "sealed")), refused.body.error?.message);
+    // An API-only server has no owner's session and serves no console, so the words send the caller to neither.
+    assert.equal(refused.body.error?.message, tokenWriteOverWords(name, name === "sealed", true), name);
     assert.equal(String(refused.body.error?.message).includes(SECRET_WRITE_REFUSAL), false, refused.body.error?.message);
     assert.deepEqual(await rowOf(store, name), before, `${name}: the row is unchanged`);
   }

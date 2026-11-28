@@ -682,6 +682,9 @@ export type Serve = { url: string; baseUrl: string; port: number; token: string;
   stopping(): { runs: number; boundMs: number };
   /** Resolves once every run's listing is current (run-listing.ts Lister.settled): for tests and benchmarks. */
   listingSettled(): Promise<void>;
+  /** The check a new revision of an agent in `workspace` (null: in none) gets before it is written (saveable), whatever
+   *  the request scope it is called in: for tests. */
+  saveable(revision: NewRevision, previous: RevisionRow | null, options: { workspace: string | null; toolsUnnamed?: boolean }): Promise<{ warnings: InputIssue[]; stamp: SaveStamp }>;
   /** Says in the store, until the stop, that the runner beside this server refused to claim any run, in `words` (its run
    *  isolation refused, cli.ts): while no runner that claims is there, a start is refused in them and the runs queued
    *  fail (runner/presence.ts). Once; a second call keeps the first. */
@@ -1714,8 +1717,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** A server's listing to pin, from the row `server` means in `workspace` (the request's, unless an agent's is named):
    *  its workspace's own when it saved one, read there, else the shared one (read as the server's own work, which reaches
    *  the shared rows). */
-  const pinListingOf = (server: string, signal: AbortSignal, workspace: string | null | undefined = workspaceNow()) => {
-    const own = workspace !== null && workspace !== undefined && mcpMeta.has(mcpRowKey(server, workspace));
+  const pinListingOf = (server: string, signal: AbortSignal, workspace: string | null) => {
+    const own = workspace !== null && mcpMeta.has(mcpRowKey(server, workspace));
     return own ? inWorkspace(workspace, () => mcpServers.pinListing(server, signal)) : outsideWorkspace(() => mcpServers.pinListing(server, signal));
   };
   // Each saved server's tools in the harnesses' shape (the registry keeps input_schema; a bound tool takes inputSchema),
@@ -2561,7 +2564,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const localSources = new LocalSources(store, { secrets: () => [...serverSecrets(), sdkSecret, ...tokens.map(entry => entry.token)] });
   const sources = sourceService(store, sourceWorkspaces, async (entry, snapshot) => {
     const prepared = await prepareSource(snapshot, destinationPreparation(store, entry.agent.id, {
-      env: () => env, boxes: () => boxOffers, check: revision => saveable(revision),
+      env: () => env, boxes: () => boxOffers, check: async (revision) => saveable(revision, null, { workspace: (await store.agents.workspace(entry.agent.id)) ?? null }),
       // Readiness needs a successful probe, not capabilities' display fallback after a failed helper check.
       // A different runner repeats this prerequisite at claim, before its ownership helper changes any bytes/modes.
       projectExecution: async () => ({ isolation: runIsolationName(await runIsolationOf(base, 1, () => {})),
@@ -3824,8 +3827,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  that cannot be listed keeps the agent's `previous` pin for it when every tool the save grants from it is already
    *  there (an edit that grants nothing new from it, its instructions say); else the save is refused (422) in words naming
    *  it: nothing is saved, and saving again once it answers pins it. Each server is the one `workspace` (the revision's
-   *  agent's; the request's unless named) means by its name (metaOf). */
-  async function mcpListingOf(revision: NewRevision, previous?: unknown, workspace: string | null | undefined = workspaceNow()): Promise<{ tools: (server: string) => ReturnType<typeof mcpTools>; pin: () => McpPin | undefined }> {
+   *  agent's, whoever asks) means by its name (metaOf). */
+  async function mcpListingOf(revision: NewRevision, previous: unknown, workspace: string | null): Promise<{ tools: (server: string) => ReturnType<typeof mcpTools>; pin: () => McpPin | undefined }> {
     const tools = revision.kind === "agentic" ? ((revision.body as { tools?: readonly string[] }).tools ?? []) : [];
     const granted = tools.filter((tool) => mcpToolOf(tool) !== undefined);
     const listings = new Map<string, NonNullable<Awaited<ReturnType<typeof mcpServers.pinListing>>>>();
@@ -3875,9 +3878,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  pinned at this, its first run (mcp-pin-first.ts pinFirst, the claim's path too). One that can't be (a server that
    *  can't be listed, or no longer lists a granted tool) is left unpinned, and runnable refuses it (409) as before. Its
    *  servers are its agent's (`agent`) workspace's, as runnable and the run's claim read them, whoever starts it. */
-  async function pinFirst(revision: Revision, agent?: string): Promise<Revision> {
+  async function pinFirst(revision: Revision, agent: string): Promise<Revision> {
     if (((revision as { mcpPin?: unknown }).mcpPin ?? null) !== null) return revision;
-    const workspace = agent === undefined ? undefined : await store.agents.workspace(agent);
+    const workspace = (await store.agents.workspace(agent)) ?? null;
     const pin = await pinFirstOf(revision, { saved: (server) => metaOf(server, workspace) !== undefined, pinListing: (server) => pinListingOf(server, stopping.signal, workspace), pinOnce: (id, made) => store.agents.pinOnce(id, made) });
     return pin ? ({ ...revision, mcpPin: pin } as unknown as Revision) : revision;
   }
@@ -3886,14 +3889,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks, and
    *  its pins (mcpListingOf, monidPinOf), each carrying from `previous` what its grants did not change. A revision that
    *  names no place is checked where it would run (fallbackPlace). `toolsUnnamed`: a create whose definition names no tools
-   *  (the store has given it its empty list by now), which would get a shell in the default box. `workspace`: the agent's,
-   *  whose MCP servers its runs call (the request's unless named). */
-  async function saveable(revision: NewRevision, previous?: RevisionRow | null, { toolsUnnamed = false, workspace = workspaceNow() }: { toolsUnnamed?: boolean; workspace?: string | null } = {}): Promise<{ warnings: InputIssue[]; stamp: SaveStamp }> {
+   *  (the store has given it its empty list by now), which would get a shell in the default box. `workspace`: the agent's
+   *  (null: in none), whoever asks: its MCP servers are the ones its runs call, and one in a workspace names no paired
+   *  computer. */
+  async function saveable(revision: NewRevision, previous: RevisionRow | null | undefined, { toolsUnnamed = false, workspace }: { toolsUnnamed?: boolean; workspace: string | null }): Promise<{ warnings: InputIssue[]; stamp: SaveStamp }> {
     // The store's NewRevision keeps the revision's fields under `body` (AgenticBody|WorkflowBody); build the flat shape the
     // host checks (runnable.ts RevisionShape) from it, as shapeOf does for a run's Revision.
     const body = revision.body as AgenticBody & Partial<WorkflowBody>;
     // An agent in a workspace never names a paired computer; its run's claim refuses one too (computer-for-claim.ts).
-    const setting = workspaceNow() === undefined ? undefined : settingOfDefinition(body)?.computer;
+    const setting = workspace === null ? undefined : settingOfDefinition(body)?.computer;
     if (setting && namesPaired(setting)) throw invalid([{ field: body.computer !== undefined ? "definition.computer" : "definition.place", reason: "not_an_option", message: scopedPairedWords(setting.provider) }]);
     if (nativeOf(body)) {
       const overrides = nativeModelOverrides(body);
@@ -4009,7 +4013,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const entry = await agents.create(definition, async (revision) => {
       // A template's apply says whether its package named its tools (applyWith): one that named none, and no computer
       // list, is the agent that would get Docker's box, whatever its grants compiled to, and is refused where there is none.
-      const saved = await saveable(revision, null, { toolsUnnamed: toolsUnnamed ?? definition.definition.tools === undefined });
+      const saved = await saveable(revision, null, { toolsUnnamed: toolsUnnamed ?? definition.definition.tools === undefined, workspace: workspaceNow() ?? null });
       warnings = saved.warnings;
       return saved.stamp;
     }, place.mode === "sandbox" && tools ? { place, tools } : undefined, template);
@@ -4769,7 +4773,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const mapped = await store.agents.byExternal(externalKey(ref));
     const stored = mapped ? await store.agents.externalRevision(mapped.id, String(ref.version)) : undefined;
     const current = !stored && mapped?.currentRevision ? await store.agents.revision(mapped.currentRevision) : undefined;
-    const revision = stored ? made : { ...made, ...(await saveable(made, current)).stamp };
+    const revision = stored ? made : { ...made, ...(await saveable(made, current, { workspace: mapped ? (await store.agents.workspace(mapped.id)) ?? null : null })).stamp };
     const inline = {
       external: { source: ref.source, kind: ref.kind, id: ref.id, version: String(ref.version) },
       name: checked.definition.name as string,
@@ -5571,8 +5575,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if (await writesSecretFor(found.name, body, checked)) {
         authFailed(`/v2${path}`, "secret_without_session");
         // Where the person finishes it: the operation's console page, filled with what the request held that is no
-        // secret (secretPageFor), at the address people open the console at.
-        const page = await secretPageFor(found.name, body, { params, store: mcpStore });
+        // secret (secretPageFor), at the address people open the console at. An API-only server serves no console
+        // (api-only.ts), so its refusal names no page.
+        const page = options.apiOnly === true ? undefined : await secretPageFor(found.name, body, { params, store: mcpStore });
         const link = page === undefined ? undefined : `${linkOrigin(req)}${page}`;
         throw new ApiError("forbidden", secretWriteRefusal(link, secretRefusalWords(found.name, checked)), link === undefined ? {} : { details: { console_url: link } });
       }
@@ -7896,6 +7901,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // may be out, which the stop drains before its store closes: its bound holds it (PLAN_STOP_BOUND_MS).
     stopping: () => ({ runs: 0, boundMs: plan.state === "signed_in" ? PLAN_STOP_BOUND_MS : 0 }),
     listingSettled: () => lister.settled(),
+    saveable: (revision, previous, options) => saveable(revision, previous, options),
     refuseRuns: (words) => {
       if (refusedBeside || refusedStopped) return;
       refusedBeside = keepPresence(store.runners, `${hostname()}:${process.pid}:beside`, words, { warn: (line) => void process.stderr.write(`agentrun-serve: ${line}\n`) });

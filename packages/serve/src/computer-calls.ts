@@ -228,3 +228,37 @@ export function recordedClient(client: ComputerClient): ComputerClient {
     close: () => client.close(),
   };
 }
+
+/** `client` with each call cut by the claim's `signal` (beside the call's own signal, which still cuts it) until
+ *  `release()`: a call in flight when it aborts ends then, and one made after it is refused before it is sent. A run's
+ *  tools and their setup take the claim's signal (LoopDeps.signal: a lost claim, or the runner's shutdown once its drain
+ *  is over), so a call to a daemon that never answers ends with the loop that made it, and the runner's close goes on at
+ *  once instead of sitting out its whole stop window. From `release()` on (the run's end: its background processes
+ *  ended, its scratch swept through the computer), no call is cut by it, one in flight included: the close's own window
+ *  bounds them, as it always did. */
+export function claimCutClient(client: ComputerClient, signal: AbortSignal): { readonly client: ComputerClient; release(): void } {
+  // Bound: a provider's DaemonClient reads its own fields through `this`.
+  const send = client.call.bind(client) as (method: string, params: unknown, options?: { signal?: AbortSignal }) => Promise<unknown>;
+  const cut = new AbortController();
+  let released = false;
+  const onAbort = () => {
+    if (!released) cut.abort(signal.reason);
+  };
+  if (signal.aborted) onAbort();
+  else signal.addEventListener("abort", onAbort, { once: true });
+  return {
+    client: {
+      call: ((method: string, params: unknown, options?: { signal?: AbortSignal }) => {
+        if (released) return send(method, params, options);
+        // A signal of the call's own (AbortSignal.any holds its sources weakly): what listens for it, the run channel's
+        // stand-in across the process among them, never piles up on the one claim's signal call after call.
+        return send(method, params, { ...options, signal: AbortSignal.any(options?.signal ? [options.signal, cut.signal] : [cut.signal]) });
+      }) as ComputerClient["call"],
+      close: () => client.close(),
+    },
+    release: () => {
+      released = true;
+      signal.removeEventListener("abort", onAbort);
+    },
+  };
+}
