@@ -373,8 +373,8 @@ test("the store keeps each imported package by id, its files as read: a put repl
   await rows.put({ id: "github:acme/other", source: "github:acme/other", sha: SHA_A, publisher: "acme", files: {} });
   await rows.put({ id: ID, source: `${ID}@v2`, sha: SHA_B, publisher: "acme", files: { "agent.md": "eA==" } });
   assert.deepEqual((await rows.list()).map(({ importedAt, ...row }) => (assert.equal(typeof importedAt, "number"), row)), [
-    { id: "github:acme/agents/templates/kyb", source: `${ID}@v2`, sha: SHA_B, publisher: "acme", files: { "agent.md": "eA==" } },
-    { id: "github:acme/other", source: "github:acme/other", sha: SHA_A, publisher: "acme", files: {} },
+    { id: "github:acme/agents/templates/kyb", source: `${ID}@v2`, sha: SHA_B, publisher: "acme", files: { "agent.md": "eA==" }, workspace: null },
+    { id: "github:acme/other", source: "github:acme/other", sha: SHA_A, publisher: "acme", files: {}, workspace: null },
   ]);
   assert.equal(await rows.remove(ID), true);
   assert.equal(await rows.remove(ID), false);

@@ -435,9 +435,9 @@ test("on SQLite the server adds the workspace columns to a store an earlier buil
   await first.agents.create({ id: "agent-1", name: "Agent one" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
   await first.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
   await first.close();
-  // An earlier build of this version: no workspace columns, nor their indexes.
+  // An earlier build of this version: no workspace columns on agents or runs, nor their indexes.
   const raw = new DatabaseSync(file);
-  raw.exec("DROP INDEX agents_by_workspace; DROP INDEX runs_by_workspace; ALTER TABLE agents DROP COLUMN workspace; ALTER TABLE runs DROP COLUMN workspace; ALTER TABLE imported_templates DROP COLUMN workspace");
+  raw.exec("DROP INDEX agents_by_workspace; DROP INDEX runs_by_workspace; ALTER TABLE agents DROP COLUMN workspace; ALTER TABLE runs DROP COLUMN workspace");
   raw.close();
   const runner = await openSqliteStore({ file, role: "runner" });
   await runner.close();
@@ -461,7 +461,7 @@ test("on Postgres the store keeps each agent's, run's and imported package's wor
     assert.deepEqual((await store.agents.list({ workspace: W2 })).map((a) => a.id), ["agent-2"]);
     await store.importedTemplates.put({ id: "pkg-1", source: "upload:pkg-1", sha: "a".repeat(40), publisher: "", files: {} }, W1);
     await store.importedTemplates.put({ id: "pkg-2", source: "upload:pkg-2", sha: "b".repeat(40), publisher: "", files: {} });
-    assert.deepEqual(Object.fromEntries(await store.importedTemplates.workspaces()), { "pkg-1": W1, "pkg-2": null });
+    assert.deepEqual(await store.importedTemplates.keys(), [{ id: "pkg-1", workspace: W1 }, { id: "pkg-2", workspace: null }]);
   } finally {
     await store.close();
   }
@@ -575,7 +575,7 @@ test("a scoped request's Agent Factory pages (scope=active, scope=review) hold i
   assert.deepEqual(await ids(unscoped, "/v2/runs?scope=review"), new Set([w1Review, w2Review]));
 });
 
-test("two workspaces importing one new package name at once: one takes it, the other is 409 name_taken, and the name stays the first's", { timeout: 60_000 }, async (t) => {
+test("two workspaces importing one new package name at once both take it, each its own package", { timeout: 60_000 }, async (t) => {
   const { store } = await storeOn(t);
   const registry = new TemplateRegistry([]);
   const rows = store.importedTemplates;
@@ -596,15 +596,18 @@ test("two workspaces importing one new package name at once: one takes it, the o
   const second = await inWorkspace(W2, () => importTemplate(deps, upload(UPLOADED.replace("Answers a question.", "Answers W2's question.")), signal));
   assert.equal(second.status, 201);
   release();
-  await assert.rejects(first, (error) => error.code === "name_taken", "the import held between its check and its write is refused");
-  assert.equal((await rows.workspaces()).get("upload:notes"), W2, "W2 keeps the name");
-  const kept = (await rows.list()).find((row) => row.id === "upload:notes");
-  assert.equal(kept.sha, second.pkg.origin.sha, "W2's package stands, its files as W2 sent them");
-  assert.equal(registry.get("upload:notes").origin.sha, second.pkg.origin.sha, "and is the one served");
-  // W2 imports its own package again: replaced in place, still W2's.
+  const mine = await first;
+  assert.deepEqual([mine.status, mine.replaced, second.replaced], [201, null, null], "neither replaced the other's");
+  assert.notEqual(mine.pkg.origin.sha, second.pkg.origin.sha);
+  assert.deepEqual(await rows.keys(), [{ id: "upload:notes", workspace: W1 }, { id: "upload:notes", workspace: W2 }]);
+  for (const [workspace, made] of [[W1, mine], [W2, second]]) {
+    assert.equal((await rows.stamp("upload:notes", workspace))?.sha, made.pkg.origin.sha, `${workspace}'s row stands`);
+    assert.equal(inWorkspace(workspace, () => registry.get("upload:notes"))?.origin.sha, made.pkg.origin.sha, `${workspace}'s is the one it is served`);
+  }
+  // W2 imports its own package again: replaced in place, still W2's, W1's untouched.
   const again = await inWorkspace(W2, () => importTemplate(deps, upload(UPLOADED), signal));
   assert.deepEqual([again.status, again.replaced], [201, second.pkg.origin.sha]);
-  assert.equal((await rows.workspaces()).get("upload:notes"), W2);
+  assert.equal((await rows.stamp("upload:notes", W1))?.sha, mine.pkg.origin.sha);
 });
 
 test("workspace-backfill --apply on a SQLite store an earlier build of this version made (no workspace columns) adds them and sets the agents, no server started", sqliteOnly("the SQLite store's columns"), async (t) => {
@@ -616,7 +619,7 @@ test("workspace-backfill --apply on a SQLite store an earlier build of this vers
   await first.agents.create({ id: "agent-1", name: "Agent one" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
   await first.close();
   const raw = new DatabaseSync(file);
-  raw.exec("DROP INDEX agents_by_workspace; DROP INDEX runs_by_workspace; ALTER TABLE agents DROP COLUMN workspace; ALTER TABLE runs DROP COLUMN workspace; ALTER TABLE imported_templates DROP COLUMN workspace");
+  raw.exec("DROP INDEX agents_by_workspace; DROP INDEX runs_by_workspace; ALTER TABLE agents DROP COLUMN workspace; ALTER TABLE runs DROP COLUMN workspace");
   raw.close();
   const map = join(dir, "map.json");
   writeFileSync(map, JSON.stringify({ "agent-1": W1 }));
@@ -808,7 +811,7 @@ test("a scoped run names no Archil disk that is another workspace's agent's own:
   }
 });
 
-test("an unscoped import of a package name a workspace holds is 409 name_taken and changes nothing; the operator deletes it first, then imports it", { timeout: 60_000 }, async (t) => {
+test("an unscoped import of a package name a workspace holds is the operator's own package, among those of no workspace; the workspace's stands", { timeout: 60_000 }, async (t) => {
   const { store } = await storeOn(t);
   const registry = new TemplateRegistry([]);
   const deps = { registry, store: { importedTemplates: store.importedTemplates, settings: store.settings }, reach: async () => { throw new Error("no GitHub read here"); }, apiOnly: true };
@@ -817,22 +820,20 @@ test("an unscoped import of a package name a workspace holds is 409 name_taken a
   const mine = await inWorkspace(W1, () => importTemplate(deps, upload(UPLOADED), signal));
   assert.equal(mine.status, 201);
   const theirs = UPLOADED.replace("Answers a question.", "The operator's.");
-  for (const extra of [{ dry_run: true }, {}]) {
-    await assert.rejects(importTemplate(deps, upload(theirs, extra), signal), (error) => error.code === "name_taken" && /DELETE \/v2\/templates\/upload:notes/.test(error.message), JSON.stringify(extra));
-  }
-  // The store's own write keeps W1's row whatever the check before it found (an operator's import racing W1's).
-  assert.equal(await store.importedTemplates.put({ id: "upload:notes", source: "upload:notes", sha: "f".repeat(40), publisher: "", files: {} }), false);
-  const kept = (await store.importedTemplates.list()).find((row) => row.id === "upload:notes");
-  assert.equal(kept.sha, mine.pkg.origin.sha, "W1's package stands");
-  assert.equal((await store.importedTemplates.workspaces()).get("upload:notes"), W1);
-  assert.equal(registry.get("upload:notes").origin.sha, mine.pkg.origin.sha, "and is the one served");
-  await deleteTemplate(deps, "upload:notes");
+  const dry = await importTemplate(deps, upload(theirs, { dry_run: true }), signal);
+  assert.deepEqual([dry.replaced, registry.get("upload:notes")], [null, undefined], "a dry run sees no package of its own to replace, and writes none");
   const ops = await importTemplate(deps, upload(theirs), signal);
   assert.deepEqual([ops.status, ops.replaced], [201, null]);
-  assert.equal((await store.importedTemplates.workspaces()).get("upload:notes"), null, "the operator's, in no workspace");
-  // An unscoped package the operator imports again is replaced in place.
+  assert.deepEqual(await store.importedTemplates.keys(), [{ id: "upload:notes", workspace: null }, { id: "upload:notes", workspace: W1 }]);
+  assert.equal((await store.importedTemplates.stamp("upload:notes", W1))?.sha, mine.pkg.origin.sha, "W1's package stands");
+  assert.equal(inWorkspace(W1, () => registry.get("upload:notes"))?.origin.sha, mine.pkg.origin.sha, "and is the one W1 is served");
+  assert.equal(registry.get("upload:notes")?.origin.sha, ops.pkg.origin.sha, "the operator's is the one served unscoped");
+  // An unscoped package the operator imports again is replaced in place; its delete takes it alone.
   const again = await importTemplate(deps, upload(UPLOADED), signal);
   assert.deepEqual([again.status, again.replaced], [201, ops.pkg.origin.sha]);
+  await deleteTemplate(deps, "upload:notes");
+  assert.deepEqual(await store.importedTemplates.keys(), [{ id: "upload:notes", workspace: W1 }]);
+  assert.equal(inWorkspace(W1, () => registry.get("upload:notes"))?.origin.sha, mine.pkg.origin.sha);
 });
 
 test("the trigger engine's timer, armed by a scoped request, fires out of that workspace: a later firing of another workspace's agent starts unscoped", { timeout: 60_000 }, async (t) => {

@@ -12,7 +12,7 @@ import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { JOURNAL_FIRST_ID, RunStorage } from "../journal/storage.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
-import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, LEARNING_LEDGER, LEARNING_LEDGER_ADDED, LEARNING_LEDGER_AGENT, LEARNING_LEDGER_BY_HAND, LEARNING_ROWS, LEARNING_SPEND, LEARNING_SPEND_AGENT, LEARNING_SPEND_OF_RUN, ledgerUpgrade, learningRowsUpgrade, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUN_LAUNCH_CENSUS, RUN_LAUNCH_CENSUS_ERASED, RUN_LAUNCH_CENSUS_ERASED_MADE, RUN_LAUNCH_CENSUS_SETTLE, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, splitUpgrade, STORE_META_LEDGER_BACKFILLED, STORE_META_LEDGER_RERECORDED, TRIGGERS_TEMPLATE_ID, WORKSPACE_ADDED, WORKSPACE_INDEXES } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, IMPORTED_TEMPLATES_KEYS, LEARNING_LEDGER, LEARNING_LEDGER_ADDED, LEARNING_LEDGER_AGENT, LEARNING_LEDGER_BY_HAND, LEARNING_ROWS, LEARNING_SPEND, LEARNING_SPEND_AGENT, LEARNING_SPEND_OF_RUN, ledgerUpgrade, learningRowsUpgrade, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUN_LAUNCH_CENSUS, RUN_LAUNCH_CENSUS_ERASED, RUN_LAUNCH_CENSUS_ERASED_MADE, RUN_LAUNCH_CENSUS_SETTLE, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, splitUpgrade, STORE_META_LEDGER_BACKFILLED, STORE_META_LEDGER_RERECORDED, TRIGGERS_TEMPLATE_ID, uploadKeysUpgrade, WORKSPACE_ADDED, WORKSPACE_INDEXES } from "../schema.js";
 import {
   ActiveRuns, AgentArchived, AgentDeleting, AgentPurged, CommandTaken, ExternalBodyConflict, Fenced, FiringMoved, RunFinal, RunPurged, RunnerBelowFloor, RunsMadeFromLeft, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, UPLOAD_PREFIX, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
@@ -313,7 +313,11 @@ const intervalOf = (r: ComputerIntervalRecord): ComputerIntervalRow => ({
   memoryMb: orNull(r.memory_mb), diskGb: orNull(r.disk_gb), startedAt: Number(r.started_at), kept: Number(r.kept) === 1, endedAt: orNull(r.ended_at), bookedMs: Number(r.booked_ms),
 });
 const ledgerRowOf = (r: ComputerLedgerRecord): ComputerLedgerRow => ({ provider: r.provider, sessionId: r.session_id, labels: JSON.parse(r.labels), detail: JSON.parse(r.detail), updatedAt: r.updated_at });
-type ImportedTemplateRecord = { id: string; source: string; sha: string; publisher: string; files: string; imported_at: number };
+type ImportedTemplateRecord = { id: string; source: string; sha: string; publisher: string; files: string; imported_at: number; workspace: string | null };
+/** Imported packages by id, those of no workspace first, then by workspace: the same on SQLite and Postgres. */
+const IMPORTED_ORDER = "id, workspace IS NOT NULL, workspace";
+/** A row's `workspace` column held to `workspace`, or to none when it is undefined. */
+const ofWorkspace = (workspace: string | undefined): { sql: string; params: string[] } => (workspace === undefined ? { sql: "workspace IS NULL", params: [] } : { sql: "workspace = ?", params: [workspace] });
 type PairedRecord = { id: string; name: string; hello: string; driver: string; labels: string; pairing_id: string; created_at: number; seen_at: number | null; revoked_at: number | null };
 const pairedOf = (r: PairedRecord): PairedComputerRow => ({ id: r.id, name: r.name, hello: JSON.parse(r.hello), driver: r.driver, labels: JSON.parse(r.labels), pairingId: r.pairing_id, createdAt: r.created_at, seenAt: r.seen_at, revokedAt: r.revoked_at });
 type MintedRecord = { machine: string; kind: string; os: string; arch: string; expires_at: number; revoked_at: number | null; created_at: number; runner: string | null; incarnation: string | null; run: string | null; refused: string | null };
@@ -492,8 +496,9 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     // and drops it (the ledger's step below, then ledgerUpgrade). Version 16 keeps no learning as rows: the server adds
     // them (schema.ts learningRowsUpgrade). Version 17 has its reopened runs' ledger rows under the split before: the
     // server adds the mark (STORE_META_LEDGER_RERECORDED, unset) and each runner's known version (runners.knows) and
-    // writes 18 (schema.ts splitUpgrade), last, and the open's backfill records those rows again (marked once no runner of
-    // 17 is there). A runner refuses each version of SQLITE_UPGRADES until that server has,
+    // writes 18 (schema.ts splitUpgrade), and the open's backfill records those rows again (marked once no runner of
+    // 17 is there). Version 18 keys an imported package by its id alone: the server keys each by its workspace and id and
+    // writes 19 (schema.ts uploadKeysUpgrade), last. A runner refuses each version of SQLITE_UPGRADES until that server has,
     // and a runner of 15, whose end writes the epoch, refuses 16 and later (SchemaVersionUnknown), or stops at its next
     // floor read; a runner of 17, whose end writes the split before, refuses 18 the same way. A later version is refused too, a runner in words that name its floor (a SQLite runner opens only its
     // own version, so the floor is the version): RunnerBelowFloor.
@@ -666,9 +671,10 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
         if (found <= 13) await connection.write(purgeUpgrade(await named("runs"), await named("agents")).map((sql) => ({ sql })), { full: true });
         if (found <= 14) await connection.write(diskUpgrade(await named("runs")).map((sql) => ({ sql })), { full: true });
         if (found <= 15) await connection.write(ledgerUpgrade(await named("learning_ledger")).map((sql) => ({ sql })), { full: true });
-        // ledgerUpgrade writes 16, the rows step 17 after it, and the split's step 18, last.
+        // ledgerUpgrade writes 16, the rows step 17 after it, the split's step 18, and the upload keys' step 19, last.
         if (found <= 16) await connection.write(learningRowsUpgrade().map((sql) => ({ sql })), { full: true });
-        await connection.write(splitUpgrade(await named("runners")).map((sql) => ({ sql })), { full: true });
+        if (found <= 17) await connection.write(splitUpgrade(await named("runners")).map((sql) => ({ sql })), { full: true });
+        await connection.write(uploadKeysUpgrade().map((sql) => ({ sql })), { full: true });
       }
       // Every run an earlier build ended gets its ledger row once, here, on the schema this build reads, and every run a
       // follow-up opened again has its row recorded again under this build's split: marked done only when no runner of 17
@@ -696,14 +702,15 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
 const SQLITE_FLOOR = async (): Promise<number> => SCHEMA_VERSION;
 
 /** An agents, runs or imported_templates table an earlier build of this version made keeps no workspace (schema.ts
- *  WORKSPACE_ADDED): each added where missing, every row unscoped, then their indexes. The server's open runs it, and so
- *  does prepareWorkspaceColumns. */
+ *  WORKSPACE_ADDED): each added where missing, every row unscoped, then their indexes and the imported packages' keys
+ *  (IMPORTED_TEMPLATES_KEYS, made with the table where it was missing). The server's open runs it, and so does
+ *  prepareWorkspaceColumns. */
 async function addWorkspaceColumns(connection: Connection): Promise<void> {
   const missing: { sql: string }[] = [];
   for (const [table, sql] of Object.entries(WORKSPACE_ADDED)) {
     if (!(await connection.all<{ name: string }>(`SELECT name FROM pragma_table_info('${table}')`)).some((column) => column.name === "workspace")) missing.push({ sql });
   }
-  await connection.write([...missing, ...WORKSPACE_INDEXES.map((sql) => ({ sql }))], { full: true });
+  await connection.write([...missing, ...[...WORKSPACE_INDEXES, ...IMPORTED_TEMPLATES_KEYS].map((sql) => ({ sql }))], { full: true });
 }
 
 /** The workspace columns of the store at `file`, added as the server's open adds them (addWorkspaceColumns), for a
@@ -1158,7 +1165,7 @@ class SqliteStore implements Store {
       purge: (agentId) =>
         this.#purging(() => db.transaction(async (tx) => {
           await d.lockRow(tx, "agents", "id", agentId);
-          const agent = await tx.get<{ purged_at: number | null }>("SELECT purged_at FROM agents WHERE id = ?", agentId);
+          const agent = await tx.get<{ purged_at: number | null; workspace: string | null }>("SELECT purged_at, workspace FROM agents WHERE id = ?", agentId);
           if (!agent || agent.purged_at !== null) return false;
           // Each run a tombstone first (Runs.purge): a run started past the delete's listing keeps the agent for the next one.
           const left = await tx.get<{ id: string }>("SELECT id FROM runs WHERE agent_id = ? AND purged_at IS NULL LIMIT 1", agentId);
@@ -1172,15 +1179,17 @@ class SqliteStore implements Store {
           // else owns one, and a server that serves no template route (API-only) could never remove it. Each is held by its
           // id, in order, before it is read: two purges of agents applied from one upload read it in turn, so the later
           // reads the earlier's purge (committed) and removes the upload. Only the package it was applied from goes, by its
-          // sha too: a newer upload of the same name, which another deploy has yet to apply, stays.
+          // sha too: a newer upload of the same name, which another deploy has yet to apply, stays. An upload is its
+          // workspace's (none's for an agent of none): another workspace's of the same name, and its agents, are not read.
           const packageId = (alias: string) => d.jsonText(`${alias}.package`, ["id"]);
+          const workspace = ofWorkspace(agent.workspace ?? undefined);
           const applied = (await tx.all<{ id: string | null; sha: string | null }>(`SELECT DISTINCT ${packageId("r")} AS id, ${d.jsonText("r.package", ["sha"])} AS sha FROM revisions r WHERE r.agent_id = ? AND r.package IS NOT NULL`, agentId))
             .filter((row): row is { id: string; sha: string } => row.id !== null && row.id.startsWith(UPLOAD_PREFIX) && row.sha !== null)
             .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
           for (const { id, sha } of applied) {
             await d.lockKey(tx, `imported_templates:${id}`);
-            const kept = await tx.get<{ id: string }>(`SELECT r.id FROM revisions r JOIN agents a ON a.id = r.agent_id WHERE r.agent_id <> ? AND a.purged_at IS NULL AND ${packageId("r")} = ? LIMIT 1`, agentId, id);
-            if (!kept) await tx.run("DELETE FROM imported_templates WHERE id = ? AND sha = ?", id, sha);
+            const kept = await tx.get<{ id: string }>(`SELECT r.id FROM revisions r JOIN agents a ON a.id = r.agent_id WHERE r.agent_id <> ? AND a.purged_at IS NULL AND a.${workspace.sql} AND ${packageId("r")} = ? LIMIT 1`, agentId, ...workspace.params, id);
+            if (!kept) await tx.run(`DELETE FROM imported_templates WHERE id = ? AND sha = ? AND ${workspace.sql}`, id, sha, ...workspace.params);
           }
           // Each revision's content; its id, kind, parent and time stay, which its runs' tombstones name.
           await tx.run("UPDATE revisions SET body = '{}', skills = NULL, package = NULL, note = NULL, mcp_pin = NULL, monid_pin = NULL WHERE agent_id = ?", agentId);
@@ -2615,28 +2624,26 @@ class SqliteStore implements Store {
     };
 
     this.importedTemplates = {
-      list: async () => (await db.all<ImportedTemplateRecord>("SELECT id, source, sha, publisher, files, imported_at FROM imported_templates ORDER BY id")).map((row) => ({
-        id: row.id, source: row.source, sha: row.sha, publisher: row.publisher, files: JSON.parse(row.files) as Record<string, string>, importedAt: row.imported_at,
+      list: async () => (await db.all<ImportedTemplateRecord>(`SELECT id, source, sha, publisher, files, imported_at, workspace FROM imported_templates ORDER BY ${IMPORTED_ORDER}`)).map((row) => ({
+        id: row.id, source: row.source, sha: row.sha, publisher: row.publisher, files: JSON.parse(row.files) as Record<string, string>, importedAt: row.imported_at, workspace: row.workspace,
       })),
-      ids: async () => (await db.all<{ id: string }>("SELECT id FROM imported_templates ORDER BY id")).map((row) => row.id),
+      keys: async () => db.all<{ id: string; workspace: string | null }>(`SELECT id, workspace FROM imported_templates ORDER BY ${IMPORTED_ORDER}`),
       put: async ({ id, source, sha, publisher, files }, workspace) => {
-        const replace = "ON CONFLICT (id) DO UPDATE SET source = excluded.source, sha = excluded.sha, publisher = excluded.publisher, files = excluded.files, imported_at = excluded.imported_at";
-        // In one statement: the row is made in the workspace (none, unscoped), or replaced only while it is that workspace's
-        // (none's), so of two imports of one name at once the later one writes nothing (and is refused), whatever each
-        // checked before.
-        const [result] = await db.write([workspace === undefined
-          ? { sql: `INSERT INTO imported_templates (id, source, sha, publisher, files, imported_at) VALUES (?, ?, ?, ?, ?, ?) ${replace} WHERE imported_templates.workspace IS NULL`, params: [id, source, sha, publisher, JSON.stringify(files), now()] }
-          : { sql: `INSERT INTO imported_templates (id, source, sha, publisher, files, imported_at, workspace) VALUES (?, ?, ?, ?, ?, ?, ?) ${replace} WHERE imported_templates.workspace = excluded.workspace`, params: [id, source, sha, publisher, JSON.stringify(files), now(), workspace] }]);
-        return (result?.changes ?? 0) === 1;
+        // In one statement: made in the workspace (none, unscoped), or the one of its id there replaced.
+        const replace = "DO UPDATE SET source = excluded.source, sha = excluded.sha, publisher = excluded.publisher, files = excluded.files, imported_at = excluded.imported_at";
+        await db.write([workspace === undefined
+          ? { sql: `INSERT INTO imported_templates (id, source, sha, publisher, files, imported_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (id) WHERE workspace IS NULL ${replace}`, params: [id, source, sha, publisher, JSON.stringify(files), now()] }
+          : { sql: `INSERT INTO imported_templates (id, source, sha, publisher, files, imported_at, workspace) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (workspace, id) WHERE workspace IS NOT NULL ${replace}`, params: [id, source, sha, publisher, JSON.stringify(files), now(), workspace] }]);
       },
-      stamp: async (id) => {
-        const row = await db.get<{ sha: string; imported_at: number }>("SELECT sha, imported_at FROM imported_templates WHERE id = ?", id);
+      stamp: async (id, workspace) => {
+        const held = ofWorkspace(workspace);
+        const row = await db.get<{ sha: string; imported_at: number }>(`SELECT sha, imported_at FROM imported_templates WHERE id = ? AND ${held.sql}`, id, ...held.params);
         return row ? { sha: row.sha, importedAt: row.imported_at } : undefined;
       },
-      workspaces: async () => new Map((await db.all<{ id: string; workspace: string | null }>("SELECT id, workspace FROM imported_templates")).map((row) => [row.id, row.workspace])),
       remove: async (id, workspace, read) => {
-        const where = ["id = ?", ...(workspace === undefined ? [] : ["workspace = ?"]), ...(read === undefined ? [] : ["sha = ?", "imported_at = ?"])];
-        const params = [id, ...(workspace === undefined ? [] : [workspace]), ...(read === undefined ? [] : [read.sha, read.importedAt])];
+        const held = ofWorkspace(workspace);
+        const where = ["id = ?", held.sql, ...(read === undefined ? [] : ["sha = ?", "imported_at = ?"])];
+        const params = [id, ...held.params, ...(read === undefined ? [] : [read.sha, read.importedAt])];
         const [result] = await db.write([{ sql: `DELETE FROM imported_templates WHERE ${where.join(" AND ")}`, params }]);
         return (result?.changes ?? 0) === 1;
       },

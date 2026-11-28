@@ -49,11 +49,13 @@
 // split wrote (store_meta.ledger_rerecorded, run-patch.ts backfillLedger): a runner of 17 still writes a reopened run's
 // row with its job at the first round's figure, after the pass that records it again, so it must not open the store;
 // and each runner's row says the version its build knows (runners.knows), so the server marks that pass done only once
-// none of 17 is there.
+// none of 17 is there. Version 19 keys each imported template package by its workspace and id (IMPORTED_TEMPLATES_KEYS), so
+// each workspace's package name is its own: the table is made again without its key on the id alone, each row in the
+// workspace it had (uploadKeysUpgrade), as Postgres migration 0035 does, which raises the runner floor.
 // The server upgrades these in place at its open (listingUpgrade from 11, relayUpgrade from 12, purgeUpgrade from 13,
-// diskUpgrade from 14, ledgerUpgrade from 15, learningRowsUpgrade from 16, then splitUpgrade from 17); a runner of this
-// build waits for it.
-export const SCHEMA_VERSION = 18;
+// diskUpgrade from 14, ledgerUpgrade from 15, learningRowsUpgrade from 16, splitUpgrade from 17, then uploadKeysUpgrade
+// from 18); a runner of this build waits for it.
+export const SCHEMA_VERSION = 19;
 
 /** One answer per approval of a run: a second approve or deny command naming the same approval is refused
  *  (StoreConstraint), so the first answer a person gives wins from the moment it is written, before the runner takes it
@@ -130,13 +132,12 @@ export const RUN_LAUNCH_CENSUS_ERASED = `CREATE TRIGGER IF NOT EXISTS run_launch
 /** Whether the store holds RUN_LAUNCH_CENSUS_ERASED: a store no server of this build opened yet holds none. */
 export const RUN_LAUNCH_CENSUS_ERASED_MADE = `SELECT 1 AS found FROM sqlite_master WHERE type = 'trigger' AND name = 'run_launch_census_erased'`;
 
-/** A template package imported from GitHub (POST /v2/templates/import), by its id (`github:<owner>/<repo>[/<path>]`): its
- *  source as given (ref and all), the full commit SHA read, the GitHub account that publishes it, and its files as read
- *  (`files`, a JSON object of path to base64). A re-import of the id replaces the row. The server checks the files again
- *  as it loads them at its start (templates.ts readPackage); nothing in them runs. In STORE_DDL, and added at a server
- *  open to a store an earlier build of this version made. */
-export const IMPORTED_TEMPLATES = `CREATE TABLE IF NOT EXISTS imported_templates (
-    id TEXT PRIMARY KEY,
+/** The table of the template packages imported (POST /v2/templates/import), named `table`: each one's id
+ *  (`github:<owner>/<repo>[/<path>]`, or `upload:<name>`), its source as given (ref and all), the full commit SHA read,
+ *  the GitHub account that publishes it, its files as read (`files`, a JSON object of path to base64) and its workspace.
+ *  Keyed by workspace and id (IMPORTED_TEMPLATES_KEYS): a re-import of the id in its workspace replaces the row. */
+const importedTemplatesTable = (table: string) => `CREATE TABLE IF NOT EXISTS ${table} (
+    id TEXT NOT NULL,
     source TEXT NOT NULL,
     sha TEXT NOT NULL,
     publisher TEXT NOT NULL,
@@ -144,6 +145,29 @@ export const IMPORTED_TEMPLATES = `CREATE TABLE IF NOT EXISTS imported_templates
     imported_at INTEGER NOT NULL,
     workspace TEXT
   ) STRICT`;
+/** The imported template packages (importedTemplatesTable). The server checks the files again as it loads them at its
+ *  start (templates.ts readPackage); nothing in them runs. In STORE_DDL, and added at a server open to a store an earlier
+ *  build of this version made. */
+export const IMPORTED_TEMPLATES = importedTemplatesTable("imported_templates");
+/** An imported package's key: its workspace and id, or its id alone among those of no workspace (workspace null). */
+export const IMPORTED_TEMPLATES_KEYS: readonly string[] = [
+  "CREATE UNIQUE INDEX IF NOT EXISTS imported_templates_in_workspace ON imported_templates (workspace, id) WHERE workspace IS NOT NULL",
+  "CREATE UNIQUE INDEX IF NOT EXISTS imported_templates_of_none ON imported_templates (id) WHERE workspace IS NULL",
+];
+/** Version 18 → 19 on SQLite (the server's open, sqlite/store.ts, last): imported_templates made again without its key on
+ *  the id alone, each row copied in the workspace it had (the column is there by then: WORKSPACE_ADDED), keyed by
+ *  IMPORTED_TEMPLATES_KEYS, and the version. */
+export function uploadKeysUpgrade(): readonly string[] {
+  return [
+    "DROP TABLE IF EXISTS imported_templates_keyed",
+    importedTemplatesTable("imported_templates_keyed"),
+    "INSERT INTO imported_templates_keyed (id, source, sha, publisher, files, imported_at, workspace) SELECT id, source, sha, publisher, files, imported_at, workspace FROM imported_templates",
+    "DROP TABLE imported_templates",
+    "ALTER TABLE imported_templates_keyed RENAME TO imported_templates",
+    ...IMPORTED_TEMPLATES_KEYS,
+    "UPDATE store_meta SET schema_version = 19 WHERE singleton = 1",
+  ];
+}
 
 /** The workspace of each agent, run and imported template package (workspace-scope.ts): the opaque name a scoped request
  *  made the row in, null for one made unscoped (every row before it). A run with none reads as its agent's. In STORE_DDL,
@@ -920,6 +944,7 @@ export const STORE_DDL: readonly string[] = [
   ) STRICT`,
   ...LEARNING_ROWS,
   IMPORTED_TEMPLATES,
+  ...IMPORTED_TEMPLATES_KEYS,
   ...WORKSPACE_INDEXES,
   MINTED_TOKENS,
   RUNNERS,

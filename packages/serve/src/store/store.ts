@@ -1889,26 +1889,26 @@ export interface ImportedTemplateRow {
   readonly files: Readonly<Record<string, string>>;
   /** When it was last imported (stamped by the store). */
   readonly importedAt: number;
+  /** The workspace a scoped request imported it in (workspace-scope.ts), null for none: its id is that workspace's own. */
+  readonly workspace: string | null;
 }
 
+/** The imported packages, each keyed by its workspace and id: one id is a package in each workspace, and one among those
+ *  of none. Each call's `workspace` is the one it reaches (a scoped request's, workspace-scope.ts); absent, none. */
 export interface ImportedTemplates {
-  /** Every imported package, by id. */
+  /** Every imported package of every workspace, by id, those of none first. */
   list(): Promise<ImportedTemplateRow[]>;
-  /** Every imported package's id, sorted, with none of its files read. */
-  ids(): Promise<string[]>;
-  /** Keeps the package under its id, in place of the one there (a re-import at a new SHA replaces it): true. `workspace`:
-   *  the workspace a scoped request imported it in (workspace-scope.ts), written with it; absent, none. The one there is
-   *  replaced only while it is in that same workspace (or none): one of another is kept, nothing is written, and the
-   *  answer is false. */
-  put(row: Omit<ImportedTemplateRow, "importedAt">, workspace?: string): Promise<boolean>;
-  /** One package's sha and import time, with none of its files read: undefined when none has that id. */
-  stamp(id: string): Promise<Pick<ImportedTemplateRow, "sha" | "importedAt"> | undefined>;
-  /** Every imported package's workspace by id (null: none), with none of its files read. */
-  workspaces(): Promise<ReadonlyMap<string, string | null>>;
-  /** Removes the package: false when none had that id. `workspace`: removes it only while it is in that workspace, in
-   *  the one write, so a package of that id another workspace (or none) holds is kept and the answer is false. `read`:
-   *  removes it only while it is still the row a caller read (its sha and import time), in the same write, so an import
-   *  of that id that replaced the row since is kept and the answer is false. */
+  /** Every imported package's id and workspace, in list's order, with none of its files read. */
+  keys(): Promise<Pick<ImportedTemplateRow, "id" | "workspace">[]>;
+  /** Keeps the package under its id in `workspace`, in place of the one of that id there (a re-import at a new SHA
+   *  replaces it). */
+  put(row: Omit<ImportedTemplateRow, "importedAt" | "workspace">, workspace?: string): Promise<void>;
+  /** The sha and import time of the package of that id in `workspace`, with none of its files read: undefined when it
+   *  has none. */
+  stamp(id: string, workspace?: string): Promise<Pick<ImportedTemplateRow, "sha" | "importedAt"> | undefined>;
+  /** Removes the package of that id in `workspace`: false when it has none. `read`: removes it only while it is still the
+   *  row a caller read (its sha and import time), in the same write, so an import of that id that replaced the row since
+   *  is kept and the answer is false. */
   remove(id: string, workspace?: string, read?: Pick<ImportedTemplateRow, "sha" | "importedAt">): Promise<boolean>;
 }
 

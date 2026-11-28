@@ -4115,11 +4115,11 @@ delete (`/files`); and `/capabilities`, `/health` and `/openapi.json`. Every oth
 `details.reason: "not_scoped"`. In it, an agent, run, imported template package or file of another workspace (or of none)
 answers the same `404` as an id no row has, and every list holds the workspace's rows alone, paged within them; bundled
 template packages are every workspace's. What it makes is the workspace's: an agent (made or applied), an imported
-package (an import whose name another workspace holds is `409 name_taken`), a file. A run is its agent's workspace's,
+package (its name is the workspace's own: another workspace imports the same name as its own package), a file. A run is its agent's workspace's,
 whoever started it, so a run a request with no header starts on that agent is the workspace's too. A run's `file_ids`
 take the workspace's files alone: one out of it reads as no file. An `Idempotency-Key` is the workspace's own: the same
-key in another workspace starts afresh. An import with no header of a name a workspace holds is `409 name_taken` too,
-never replacing that workspace's package: the operator deletes it first.
+key in another workspace starts afresh. A request with no header reads, imports, applies and deletes the packages of no
+workspace alone: its import of a name a workspace holds is a package of its own, never replacing that workspace's.
 
 Launch disks (`archil_disk` on a run's start) are the backend's to map to its tenants: the server keeps no record of which
 tenant a disk it did not make is for, and a run in a workspace may name any of them. It names no agent's own disk
@@ -4136,7 +4136,7 @@ the header and serves every row. The backend names the workspace itself: it over
 `agentrun-serve workspace-backfill FILE [--apply]` puts agents made before the backend sent the header in a workspace:
 FILE is `{"<agent id>": "<workspace>"}`. It sets an agent with none, refuses one in another workspace and keeps it, and
 without `--apply` writes nothing and prints what it would do. On SQLite it adds the workspace columns first when a server
-of this build has not yet opened the store. A store behind this build (on Postgres, below migration 0034) is refused with
+of this build has not yet opened the store. A store behind this build (on Postgres, below migration 0035) is refused with
 exit 2 and never migrated: start a server of this build once, then run it again.
 
 Known limits:
@@ -4147,8 +4147,8 @@ Known limits:
 - Publisher trust is the server's. Once any workspace imports from a GitHub publisher with `trust_publisher`, every
   workspace imports from it without, and a dry run's `trusted: true` tells a workspace that some workspace trusted it.
 - `workspace-backfill` maps agents alone. A template package imported before the backend sent the header stays in no
-  workspace: no workspace sees it, an import of its name is `409 name_taken`, and an agent made from it is not applied
-  again in a workspace (its package reads as missing). Delete the package and import it again with the header.
+  workspace: no workspace sees it, and an agent made from it is not applied again in a workspace (its package reads as
+  missing). Import it again with the header; a request with no header deletes the old one.
 - Launch disks are not a workspace's. A disk no agent owns, one another workspace's run named at launch included, is
   served to a run in any workspace that names it. A backend that lets its tenants pick a launch disk keeps their disks
   apart itself; one that maps each tenant's disk at launch, and takes no disk from the caller, needs nothing more.

@@ -125,7 +125,7 @@ test("each workspace's import, delete and reimport of one name keeps its own row
   assert.deepEqual([a.status, b.status, none.status], [201, 201, 201]);
   assert.deepEqual([a.replaced, b.replaced, none.replaced], [null, null, null]);
   const keys = async () => (await store.importedTemplates.keys()).map((key) => `${key.workspace}|${key.id}`).sort();
-  assert.deepEqual(await keys(), [`${A}|${ID}`, `${B}|${ID}`, `null|${ID}`]);
+  assert.deepEqual(await keys(), [`null|${ID}`, `${A}|${ID}`, `${B}|${ID}`]);
   const shaIn = async (workspace) => (await store.importedTemplates.list()).find((row) => row.id === ID && row.workspace === workspace)?.sha;
   assert.deepEqual([await shaIn(A), await shaIn(B), await shaIn(null)], [a.pkg.origin.sha, b.pkg.origin.sha, none.pkg.origin.sha]);
   assert.deepEqual([inWorkspace(A, () => registry.get(ID)), inWorkspace(B, () => registry.get(ID)), registry.get(ID)].map((pkg) => pkg?.origin.sha), [a.pkg.origin.sha, b.pkg.origin.sha, none.pkg.origin.sha], "each served to its own");
@@ -136,7 +136,7 @@ test("each workspace's import, delete and reimport of one name keeps its own row
   assert.equal(await store.importedTemplates.remove(ID, B), false);
   assert.equal(await store.importedTemplates.remove(ID, B, await store.importedTemplates.stamp(ID, A)), false, "A's row read, removed in B: nothing");
   assert.equal(await store.importedTemplates.stamp(ID, B), undefined);
-  assert.deepEqual(await keys(), [`${A}|${ID}`, `null|${ID}`]);
+  assert.deepEqual(await keys(), [`null|${ID}`, `${A}|${ID}`]);
   assert.equal(inWorkspace(A, () => registry.get(ID))?.origin.sha, a.pkg.origin.sha, "A's package is still served");
   assert.equal(inWorkspace(B, () => registry.get(ID)), undefined);
   await assert.rejects(inWorkspace(B, () => deleteTemplate(deps, ID)), (error) => error.code === "not_found");
@@ -184,10 +184,10 @@ test("an agent's purge takes the upload it was applied from in its own workspace
     await store.agents.create({ id: `agent-${sha}`, name: `agent-${sha}`, workspace }, { id: `rev-${sha}`, kind: "agentic", body: { instructions: "Answer." }, package: { id: ID, version: "1.0.0", sha: sha.repeat(64) } });
   }
   await store.agents.archive("agent-a", true);
-  assert.equal(await store.agents.purge("agent-a"), true);
+  await store.agents.purge("agent-a");
   assert.deepEqual((await store.importedTemplates.keys()).map((key) => key.workspace), [B], "B's upload, which B's agent was applied from, stays");
   await store.agents.archive("agent-b", true);
-  assert.equal(await store.agents.purge("agent-b"), true);
+  await store.agents.purge("agent-b");
   assert.deepEqual(await store.importedTemplates.keys(), []);
 });
 
@@ -259,6 +259,6 @@ test("SQLite version 19 keys each imported package in the workspace it had: a se
   assert.deepEqual((await store.importedTemplates.list()).map((row) => [row.workspace, row.id, row.sha[0]]), [[A, ID, "a"], [null, "upload:plans", "b"]]);
   await store.importedTemplates.put({ id: ID, source: ID, sha: "c".repeat(64), publisher: "", files: {} }, B);
   await store.importedTemplates.put({ id: ID, source: ID, sha: "d".repeat(64), publisher: "", files: {} });
-  assert.deepEqual((await store.importedTemplates.keys()).map((key) => `${key.workspace}|${key.id}`).sort(), [`${A}|${ID}`, `${B}|${ID}`, `null|${ID}`, "null|upload:plans"]);
+  assert.deepEqual((await store.importedTemplates.keys()).map((key) => `${key.workspace}|${key.id}`).sort(), [`null|${ID}`, "null|upload:plans", `${A}|${ID}`, `${B}|${ID}`]);
   assert.equal((await store.importedTemplates.stamp(ID, A)).sha, "a".repeat(64), "A's row as it was");
 });

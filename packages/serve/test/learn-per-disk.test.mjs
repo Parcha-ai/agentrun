@@ -79,8 +79,8 @@ async function purgedRun(store, id, launch) {
   await store.runs.purge(id, KEPT);
 }
 
-test("a store as the run purge left it (version 14, no runs.disk) comes to this version (18) at its server's open, never at a runner's: each run's disk from its launch, a run purged before as the default disk's", async (t) => {
-  assert.equal(SCHEMA_VERSION, 18);
+test("a store as the run purge left it (version 14, no runs.disk) comes to this version (19) at its server's open, never at a runner's: each run's disk from its launch, a run purged before as the default disk's", async (t) => {
+  assert.equal(SCHEMA_VERSION, 19);
   const dir = scratch("agentrun-per-disk-upgrade-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const first = await openSqliteStore({ dataDir: dir, role: "server" });
