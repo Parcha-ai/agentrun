@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: fix
+---
+A run in a process of its own (every `agentrun-serve` start runs each run that way) now has its computers' time held and booked under its `max_cost_usd`, at the prices `GET /v2/settings/prices` lists. Until now the run's process asked its runner for the computer without handing over the run's ledger, so the runner never metered the computer: each `compute_time` line read `unpriced`, each computer's `booked_seconds` was 0, nothing logged `compute_spend_unbooked`, and a run could go past its cap on computer time. The runner's meter now books on the run's ledger across the channel, and waits, as before, until the run's cap can judge. A lost sandbox past its bound now also ends such a run from outside a tool call, as it does for a run in the runner's own process.

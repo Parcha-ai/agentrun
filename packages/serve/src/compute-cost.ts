@@ -120,9 +120,10 @@ export const computeTag = (one: Pick<ResourceOf, "resource" | "gpuType">): strin
 const microUsd = (usd: number) => Math.ceil(Math.round(usd * 1e12) / 1e6) / 1e6;
 
 /** The run's ledger as the meter books on it, the run's pause for a refusal of the next stretch, and whether its cap can
- *  judge a step now (`judges`, RunLedger.judges: false while the run's spec, whose cap it is, is still built; a promise
- *  of it from a run's own process, across its channel). */
-export type ComputeLedger = { readonly paid?: PaidBooking; readonly pause?: (refusal: Refusal) => Promise<void>; readonly judges?: () => boolean | Promise<boolean> };
+ *  judge a step now (`judges`, RunLedger.judges: false while the run's spec, whose cap it is, is still built). `judged`
+ *  (RunLedger.judged) settles once `judges` is true: the meter never reads it; a run's own process hands it to its
+ *  runner, whose meter can't ask `judges` across the channel at once (run-child-host.ts heldComputeLedger). */
+export type ComputeLedger = { readonly paid?: PaidBooking; readonly pause?: (refusal: Refusal) => Promise<void>; readonly judges?: () => boolean; readonly judged?: () => Promise<void> };
 
 /** A hold-only step on the ledger, given back by `drop` (answered once the ledger has it back). */
 type Hold = { drop(): Promise<void> };

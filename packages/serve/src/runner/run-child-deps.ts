@@ -4,6 +4,7 @@
 import { readBackOf } from "@parcha/agentrun-computer";
 import { recordedClient } from "../computer-calls.js";
 import { heldInstall, type HeldComputerAsk, type Held } from "./held.js";
+import type { ComputeLedger } from "../compute-cost.js";
 import type { Claim, Journal } from "./loop-contract.js";
 import { routeOf } from "./model-route.js";
 import type { Channel } from "./run-channel.js";
@@ -11,7 +12,6 @@ import { remoteSaveSlots } from "./save-slots.js";
 import { runEnv } from "./main.js";
 import { heldHands, type ComputerHold, type HoldAsk, type HoldEvent, type HoldState } from "../workspace/computer-hold.js";
 import type { ClaimComputer } from "../workspace/computer-for-claim.js";
-import type { ComputeLedger } from "../compute-cost.js";
 import type { AdapterSpecDeps } from "./adapter-run-spec.js";
 import type { Store } from "../store/store.js";
 import { postedTracing } from "../otel/tracer.js";
@@ -129,9 +129,14 @@ export async function computerHere(got: ClaimComputer): Promise<ClaimComputer> {
 export function childDeps(init: ChildInit, store: Store, journal: Journal, held: Held, channel: Pick<Channel, "post" | "call">): AdapterSpecDeps {
   const computerForClaim = (async (_launch: unknown, _store: unknown, given: Record<string, unknown>) => {
     const recordings = given.recordings as { say?: (words: string) => void } | undefined;
-    const compute = given.compute as { ledger?: ComputeLedger } | undefined;
+    // The run's ledger is this process's: handed to the runner, whose meter books the claim's computers' time on it. Its
+    // admit and settle alone, never its sums.
+    const ledger = (given.compute as { ledger?: ComputeLedger } | undefined)?.ledger;
+    const paid = ledger?.paid;
     const ask: HeldComputerAsk = {
       hadComputer: given.hadComputer as () => Promise<boolean>,
+      ...(paid ? { compute: { paid: { admit: (request) => paid.admit(request), settle: (id, usd, options) => paid.settle(id, usd, options) }, ...(ledger.pause ? { pause: ledger.pause } : {}), judged: () => ledger.judged?.() ?? Promise.resolve() } } : {}),
+      ...(typeof given.stopRun === "function" ? { stopRun: given.stopRun as HeldComputerAsk["stopRun"] } : {}),
       ...(typeof given.turnedOff === "string" ? { turnedOff: given.turnedOff } : {}),
       ...(given.signal instanceof AbortSignal ? { signal: given.signal } : {}),
       ...(recordings?.say ? { say: recordings.say } : {}),
@@ -139,8 +144,6 @@ export function childDeps(init: ChildInit, store: Store, journal: Journal, held:
       ...(typeof given.onStarting === "function" ? { onStarting: given.onStarting as HeldComputerAsk["onStarting"] } : {}),
       ...(typeof given.onConnected === "function" ? { onConnected: given.onConnected as HeldComputerAsk["onConnected"] } : {}),
       ...(typeof given.onComputerNote === "function" ? { onComputerNote: given.onComputerNote as HeldComputerAsk["onComputerNote"] } : {}),
-      // The run's ledger, for its computers' time: the meter is the runner's, beside the computer, at the runner's prices.
-      ...(compute?.ledger ? { compute: { ledger: compute.ledger } } : {}),
     };
     return await computerHere((await held.computer(ask)) as ClaimComputer);
   }) as unknown as AdapterSpecDeps["computerForClaim"];

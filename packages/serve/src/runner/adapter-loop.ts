@@ -490,6 +490,10 @@ export interface RunLedger {
    *  step asked then waits for the spec, so a step the build itself waits on (a computer's hold before its create,
    *  compute-cost.ts) is not asked until this is true. Absent: it always can. */
   judges?(): boolean;
+  /** Settles once `judges` is true (the spec built), and fails as the spec's build fails: how a reader in another process
+   *  (the runner's computer meter for a run's own process, run-child-deps.ts) learns it, where `judges` can't be asked at
+   *  once. Absent: it always can. */
+  judged?(): Promise<void>;
 }
 
 /** pi's retry of a model request that failed in a way it retries (a provider's 429, overload or 5xx, a dropped connection,
@@ -2021,6 +2025,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           },
           flush: () => deps.flush(),
           judges: () => capJudges,
+          judged: () => specSet,
         };
         // A phase of the host's, on the run's timeline while its step runs. Said before the root exists (the claim's computer
         // waiting on its image build, inside specOf), it makes the root then, the row in its creating commit (above), so a
