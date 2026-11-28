@@ -61,6 +61,28 @@ test("a quota naming no reset keeps SEARCH_UNAVAILABLE", async () => {
   assert.deepEqual(await searchInTurn(backends, breakerOf), { error: SEARCH_UNAVAILABLE });
 });
 
+test("one provider held while the one asked found nothing: the receipt names the provider asked and keeps its fee, as with nothing held", async () => {
+  const until = Date.parse(MIDNIGHT);
+  const run = async (order, holds) => {
+    const sent = { parallel: 0, exa: 0 };
+    const nothingFound = (id) => async () => {
+      sent[id] += 1;
+      return new Response(JSON.stringify({ results: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    const web = createWeb({ order: { search: order, fetch: [] }, keys: { parallel: "not-a-secret", exa: "not-a-secret" }, holds, send: { parallel: nothingFound("parallel"), exa: nothingFound("exa") }, now: () => NOW });
+    return { ...(await web.search({ objective: "Who founded Framework?", queries: ["framework founder"] })), sent };
+  };
+  const alone = await run(["parallel"], []);
+  const held = await run(["parallel", "exa"], [{ provider: "exa", tool: "key", kind: "quota", until }]);
+  assert.deepEqual(alone.answer.results, [], "nothing held: the empty answer");
+  assert.match(held.answer.error, /parallel found no results, and exa is out of quota until 2026-11-29T00:00:00Z/);
+  assert.deepEqual([held.sent, alone.sent], [{ parallel: 1, exa: 0 }, { parallel: 1, exa: 0 }], "one search sent either way; the held provider never asked");
+  assert.equal(held.receipt.provider, "parallel", "the receipt names the provider that was asked and found nothing");
+  assert.ok(alone.receipt.cost.usd > 0, "Parallel's search carries a fee");
+  assert.deepEqual(held.receipt.cost, alone.receipt.cost, "the same fee line as the search with nothing held");
+  assert.deepEqual(held.receipt.tries.map(({ provider, outcome }) => [provider, outcome]), [["parallel", "empty"], ["exa", "held"]]);
+});
+
 test("a run's Web started with the server's keyless holds: web_search names each provider and its reset, unsent", async () => {
   const until = Date.parse(MIDNIGHT);
   const unsent = async () => {
