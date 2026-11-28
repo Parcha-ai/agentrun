@@ -35,7 +35,7 @@ const redact = (line) => line.replace(/(AGENTRUN_API_KEY=)\S+/g, "$1<redacted>")
 
 /** How long a stopped server has to drain and exit before its process group is killed (SIGKILL), and how long it then
  *  has to be gone. */
-const STOP_MS = 10_000;
+export const STOP_MS = 10_000;
 const KILLED_MS = 5_000;
 /** How long the processes a server started have to go once it has exited, before they count as left running. */
 const LEFT_MS = 2_000;
@@ -119,17 +119,19 @@ export async function startServer({ env = {}, faux = "faux-model.mjs", fauxBrows
       void exited.then(({ code, signal }) => { if (waiters.delete(w)) { clearTimeout(timer); reject(new Error(`the server exited (${signal ?? code}) before printing a line matching ${re}`)); } });
     });
   };
-  /** Stops it as a person does (SIGTERM: it drains its runs and exits), killing its process group at STOP_MS. Refused
+  /** Stops it as a person does (SIGTERM: it drains its runs and exits), killing its process group at STOP_MS. Resolves to
+   *  its pid and whether it had to be killed (SIGKILL) for the caller to report; refused
    *  when it is still running KILLED_MS after that, when it exits leaving a process of its group running (killed then),
    *  or when its directory cannot be removed: a stop that did not happen is never taken for one that did. */
   const stop = async () => {
+    let killed = false;
     try {
       if (child.exitCode === null && child.signalCode === null) {
         child.kill("SIGTERM");
-        const late = setTimeout(() => killGroup(child.pid), STOP_MS);
+        const late = setTimeout(() => { killed = true; killGroup(child.pid); }, STOP_MS);
         let unkilled;
-        const killed = new Promise((_, reject) => { unkilled = setTimeout(() => reject(new Error(`the server (pid ${child.pid}) was still running ${KILLED_MS} ms after SIGKILL`)), STOP_MS + KILLED_MS); });
-        await Promise.race([exited, killed]).finally(() => { clearTimeout(late); clearTimeout(unkilled); });
+        const gone = new Promise((_, reject) => { unkilled = setTimeout(() => reject(new Error(`the server (pid ${child.pid}) was still running ${KILLED_MS} ms after SIGKILL`)), STOP_MS + KILLED_MS); });
+        await Promise.race([exited, gone]).finally(() => { clearTimeout(late); clearTimeout(unkilled); });
       }
       const left = await leftIn(child.pid);
       if (left) {
@@ -138,6 +140,7 @@ export async function startServer({ env = {}, faux = "faux-model.mjs", fauxBrows
         throw new Error(`the server exited and left processes of its own running (killed now):\n${left}`);
       }
       ended(child.pid);
+      return { pid: child.pid, killed };
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -18,7 +18,7 @@ import { spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { promiseHooks } from "node:v8";
-import { apiOf, attachServer, flowScope, launchBrowser, newContext, newPage, owner, ROOT, signIn, startServer, strayed } from "./harness.mjs";
+import { apiOf, attachServer, flowScope, launchBrowser, newContext, newPage, owner, ROOT, signIn, startServer, STOP_MS, strayed } from "./harness.mjs";
 import { flows } from "./flows/index.mjs";
 
 const FLOW_MS = 60_000;
@@ -87,7 +87,7 @@ async function runFlow(flow) {
   const stray = new Promise((_, reject) => { fail = reject; });
   stray.catch(() => {});
   const self = { name: flow.name, stray: (error) => { strays.push(error); fail(error); } };
-  let server, context, result, unstopped;
+  let server, context, result, unstopped, killed;
   const failed = (error) => ({ name: flow.name, state: "FAIL", ms: Date.now() - started, note: String(error?.stack ?? error).split("\n").slice(0, 6).join("\n"), log: server?.log() });
   running.add(self);
   await flowScope.run(self, async () => {
@@ -113,7 +113,8 @@ async function runFlow(flow) {
       // The server stops while the next flow starts: one with a run still in its turn waits out its drain (up to the
       // harness's SIGKILL at 10 s), and nothing of the next flow is its. Results print once every one has stopped, and
       // a stop that failed (the server would not die, left a process running, or its directory stayed) fails its flow.
-      if (server) stopping.push(server.stop().catch((error) => { unstopped = error; }));
+      // One that had to be killed (SIGKILL) passes, and is reported with its flow and counted.
+      if (server) stopping.push(server.stop().then((how) => { if (how?.killed) killed = how.pid; }, (error) => { unstopped = error; }));
       running.delete(self);
     }
   });
@@ -121,7 +122,8 @@ async function runFlow(flow) {
   // not stop: read once all have ended and stopped.
   return () => {
     const r = result.state === "PASS" && strays.length ? { ...failed(strays[0]), ms: result.ms } : result;
-    if (!unstopped) return r;
+    const k = killed ? { killed } : {};
+    if (!unstopped) return { ...r, ...k };
     const note = `its server did not stop: ${unstopped.message}`;
     return r.state === "PASS" ? { ...failed(unstopped), note, ms: r.ms } : { ...r, note: `${r.note}\n${note}` };
   };
@@ -155,7 +157,12 @@ for (const r of results) {
   if (r.state === "FAIL") console.log(`  ${r.note.replaceAll("\n", "\n  ")}\n  -- the server's output --\n  ${(r.log ?? "").replaceAll("\n", "\n  ")}`);
 }
 const count = (s) => results.filter((r) => r.state === s).length;
-console.log(`${count("PASS")} passed, ${count("FAIL")} failed, ${count("PENDING")} pending${count("SKIP") ? `, ${count("SKIP")} skipped (an attached server)` : ""}`);
+// A server still running STOP_MS after SIGTERM (a run left in its turn, draining) was killed: the flow passes, but no
+// kill goes unsaid.
+const STOP_S = STOP_MS / 1000;
+const kills = results.filter((r) => r.killed);
+for (const r of kills) console.log(`KILLED  ${r.name}: its server (pid ${r.killed}) was still running ${STOP_S} s after SIGTERM and was killed (SIGKILL)`);
+console.log(`${count("PASS")} passed, ${count("FAIL")} failed, ${count("PENDING")} pending${count("SKIP") ? `, ${count("SKIP")} skipped (an attached server)` : ""}${kills.length ? `, ${kills.length} ${kills.length === 1 ? "server" : "servers"} killed after ${STOP_S} s` : ""}`);
 if (values.tap) {
   const at = values.url ? `server ${values.url}` : `checkout ${spawnSync("git", ["-C", checkout, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim() || "(not a git checkout)"}`;
   const tap = ["TAP version 13", `# console real-browser flows, ${at}, node ${process.version}`, `1..${results.length}`];
@@ -164,6 +171,7 @@ if (values.tap) {
     if (r.state === "PENDING" || r.state === "SKIP") tap.push(`${line} # SKIP ${r.state.toLowerCase()}: ${r.note}`);
     else tap.push(`${line} # time=${r.ms}ms`, ...(r.state === "FAIL" ? ["  ---", ...r.note.split("\n").map((l) => `  # ${l}`), "  ..."] : []));
   });
+  tap.push(...kills.map((r) => `# killed ${r.name}: server pid ${r.killed} still running ${STOP_S} s after SIGTERM (SIGKILL)`));
   tap.push(`# pass ${count("PASS")}`, `# fail ${count("FAIL")}`, `# skip ${count("PENDING") + count("SKIP")}`);
   writeFileSync(values.tap, `${tap.join("\n")}\n`);
 }
