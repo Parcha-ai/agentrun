@@ -3,11 +3,16 @@
 // lane is a new agent of its own (POST /agents) with the console's lane instructions and a new agent's default tools on
 // this server, and one run of its first revision (POST /agents/{agent_id}/runs) carrying the race's task, cap and labels:
 // race:<label>, lane, harness and model. `race show LABEL` reads the runs that label groups (GET /runs?label=race:LABEL).
+// With --wait, either follows every lane's run to its end on the run's own timeline, as `runs wait` does (follow.mjs
+// waitRun: the long-polled timeline the console's live run reads too, never a polled list), and prints the lanes side by side.
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { waitRun } from "./follow.mjs";
 
 /** Exits: 0 every lane started (start) or the race read (show); 1 a lane not started, the others' runs going on; 2 refused
- *  (a lane, task, cap or label not given as the command takes it). */
+ *  (a lane, task, cap or label not given as the command takes it). With --wait: 0 every lane completed; 1 a lane failed,
+ *  was cancelled, did not start, could not be followed or is still running past --timeout; else 8 (gh's "pending", as
+ *  `runs wait`) when a lane waits on a person. */
 const REFUSED = 2;
 const RACE_KEY = "race";
 const LANE_KEY = "lane";
@@ -23,6 +28,18 @@ const RUNNER_SHELL = new Set(["bash"]);
 const LABEL = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 /** The race view reads at most this many runs of a label: more is a label used for something else too. */
 const RACE_READ = 50;
+/** --wait's bound when no --timeout is given: the runs go on past it. */
+const WAIT_DEFAULT_S = 1800;
+/** The most of a lane's answer its table row shows: its first line, cut. */
+const ANSWER_MAX = 60;
+const ENDED = new Set(["completed", "failed", "cancelled"]);
+const PERSON = new Set(["input_required", "paused"]);
+const WAIT_HELP = [
+  ["--wait", "then follow every lane's run to its end and print the lanes side by side: exit 0 when every lane completed, 1 when one failed, was cancelled, did not start or still runs past --timeout, 8 when one waits on a person"],
+  ["--timeout SECONDS", `with --wait: stop waiting after this long (default ${WAIT_DEFAULT_S}), exit 1; the runs go on`],
+  ["--json", "with --wait: the lanes as JSON, in place of the table"],
+];
+const WAIT_OPTIONS = { wait: { type: "boolean" }, timeout: { type: "string" }, json: { type: "boolean" } };
 
 /** A new race's label as the console makes one: when it starts (UTC, to the minute) and 48 random bits. */
 export function newRaceLabel(now = new Date(), random = randomUUID) {
@@ -82,6 +99,108 @@ async function call(cli, target, io, method, path, value, headers = {}) {
 /** What went wrong with a request that threw, in its own words (an Exit's message names the server not reached). */
 const wordsOf = (error) => (error instanceof Error ? error.message : String(error));
 
+/** --wait's seconds, or undefined without --wait; --timeout or --json without it is refused. */
+function waitOf(values, cli) {
+  if (!values.wait) {
+    if (values.timeout !== undefined || values.json) throw cli.fail(REFUSED, `${values.json ? "--json" : "--timeout"} goes with --wait.`);
+    return undefined;
+  }
+  if (values.timeout === undefined) return WAIT_DEFAULT_S;
+  const seconds = Number(values.timeout);
+  if (!(Number.isFinite(seconds) && seconds > 0)) throw cli.fail(REFUSED, `--timeout ${values.timeout}: seconds above 0.`);
+  return seconds;
+}
+
+/** Text a model or a server wrote, safe on a terminal: escape sequences and other control characters gone, its first
+ *  line with words in it, cut at ANSWER_MAX. */
+function lineOf(text) {
+  const plain = String(text ?? "").replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "").replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)?/g, "");
+  const line = plain.split(/\r\n|\r|\n/).map((part) => part.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").trim()).find(Boolean) ?? "";
+  return line.length > ANSWER_MAX ? `${line.slice(0, ANSWER_MAX - 1).trimEnd()}…` : line;
+}
+
+/** A run's answer for its row: its final answer (or text output), else its error's code and words. */
+function answerOf(run) {
+  const said = run?.result?.final_answer ?? (typeof run?.result?.output === "string" ? run.result.output : undefined);
+  if (typeof said === "string" && lineOf(said)) return lineOf(said);
+  const error = run?.error;
+  return error ? lineOf(error.code && error.message ? `${error.code}: ${error.message}` : (error.message ?? error.code)) : "";
+}
+
+/** One lane's run followed until it ends or waits on a person, or `deadline` passes (waitRun, on a client of its own
+ *  whose stderr is kept, so the lanes' words are said once, in lane order): the run as last read, the server's words. */
+async function follow(cli, target, io, runId, deadline) {
+  let run;
+  let said = "";
+  const kept = { stdout: io.stdout, stderr: { isTTY: false, write: (text) => ((said += String(text)), true) } };
+  const client = { ...cli.clientOf(target, kept), print: (value) => (run = value) };
+  try {
+    const code = await waitRun(client, runId, Math.max(1, deadline - Date.now()));
+    return { code, run, said };
+  } catch (error) {
+    return { lost: wordsOf(error), run, said };
+  }
+}
+
+/** Every lane followed at once, then the lanes side by side on stdout (a table, or JSON with --json) and a line on stderr
+ *  for each lane that did not complete; its exit code. `lanes`: each `{ lane, harness, model, run_id?, error?, unsure? }`. */
+async function waitLanes(cli, target, io, label, lanes, seconds, json) {
+  const deadline = Date.now() + seconds * 1000;
+  const followed = await Promise.all(lanes.map((lane) => (lane.run_id && !lane.error ? follow(cli, target, io, lane.run_id, deadline) : undefined)));
+  const now = Date.now();
+  const rows = lanes.map((lane, i) => {
+    const got = followed[i];
+    const run = got?.run;
+    const status = lane.error ? "not started" : run?.status ?? "unknown";
+    return { ...lane, status, cost_usd: run?.cost?.usd ?? null, cap_usd: run?.cost?.cap_usd ?? null, seconds: run ? secondsOf(run, now) : null, answer: lane.error ? lineOf(lane.error) : answerOf(run), got };
+  });
+  const printed = rows.map(({ got, ...row }) => row);
+  if (json) io.stdout.write(`${JSON.stringify({ label, filter: `${RACE_KEY}:${label}`, console: `#/races/${encodeURIComponent(label)}`, lanes: printed }, null, 2)}\n`);
+  else io.stdout.write(tableOf(printed));
+  let failed = false;
+  let person = false;
+  const again = `agentrun race show ${label} --wait`;
+  for (const row of rows) {
+    const name = `Lane ${row.lane} (${row.harness}/${row.model})`;
+    const { got } = row;
+    if (row.error) {
+      failed = true;
+      io.stderr.write(`${name} did not start: ${row.error}${row.archive ? ` (its agent was not archived: ${row.archive})` : ""}\n`);
+    } else if (!row.run_id) {
+      failed = true;
+      io.stderr.write(`${name} may have started: its start had no answer (${row.unsure}). See agentrun race show ${label}.\n`);
+    } else if (got.lost !== undefined) {
+      failed = true;
+      io.stderr.write(`${name} could not be followed: ${got.lost}; see ${again}.\n`);
+    } else if (got.run === undefined) {
+      failed = true;
+      io.stderr.write(`${name} could not be read: ${lineOf(got.said) || `exit ${got.code}`}; see ${again}.\n`);
+    } else if (row.status === "completed") {
+      continue;
+    } else if (ENDED.has(row.status)) {
+      failed = true;
+      io.stderr.write(`${name} ${row.status === "cancelled" ? "was cancelled" : "failed"}.\n`);
+    } else if (PERSON.has(row.status)) {
+      person = true;
+      io.stderr.write(got.run.pending?.kind === "approval"
+        ? `${name} waits on an approval: answer it on the race's page in the console, #/races/${encodeURIComponent(label)}; then ${again}.\n`
+        : `${name}: ${got.said.trim()}\n`);
+    } else {
+      failed = true;
+      io.stderr.write(`${name} is still ${row.status} after ${seconds} s; it goes on: see ${again}.\n`);
+    }
+  }
+  return failed ? 1 : person ? 8 : 0;
+}
+
+/** The lanes as a table: one row each, its columns padded to line up, the answer last. */
+function tableOf(rows) {
+  const money = (usd, cap) => (typeof usd === "number" ? `$${usd.toFixed(4)}${typeof cap === "number" ? ` of $${cap.toFixed(2)}` : ""}` : "-");
+  const cells = [["LANE", "HARNESS/MODEL", "STATUS", "COST", "SECONDS", "ANSWER"], ...rows.map((row) => [String(row.lane), `${row.harness}/${row.model}`, row.status, money(row.cost_usd, row.cap_usd), row.seconds === null ? "-" : String(row.seconds), row.answer])];
+  const widths = cells[0].map((_, col) => Math.max(...cells.map((line) => line[col].length)));
+  return cells.map((line) => line.map((cell, col) => (col === line.length - 1 ? cell : cell.padEnd(widths[col]))).join("  ").trimEnd()).join("\n") + "\n";
+}
+
 function taskOf(value, cli) {
   if (value === undefined) throw cli.fail(REFUSED, "--task TEXT|@FILE is the task every lane runs.");
   let task = value;
@@ -107,8 +226,9 @@ export const RACE_START = {
     ["--max-cost-usd USD", "each lane's cap (default 1)"],
     ["--label LABEL", "the race's label (default: the start time and random letters, as the console's)"],
     ["--file FILE_ID", "a file uploaded with POST /files, given to every lane's run (repeatable)"],
+    ...WAIT_HELP,
   ],
-  options: { lane: { type: "string", multiple: true }, task: { type: "string" }, "max-cost-usd": { type: "string" }, label: { type: "string" }, file: { type: "string", multiple: true } },
+  options: { lane: { type: "string", multiple: true }, task: { type: "string" }, "max-cost-usd": { type: "string" }, label: { type: "string" }, file: { type: "string", multiple: true }, ...WAIT_OPTIONS },
   async run({ values, env, io, cli }) {
     const given = values.lane ?? [];
     const lanes = given.map(laneOf);
@@ -122,6 +242,7 @@ export const RACE_START = {
     if (!LABEL.test(label)) throw cli.fail(REFUSED, `--label ${label}: a race's label is 1 to 64 letters, digits, dots, dashes or underscores, starting with a letter or digit.`);
     const files = values.file ?? [];
     const reads = {};
+    const seconds = waitOf(values, cli);
     const target = cli.targetOf(values, env);
     // What a new agent gets here: the server's tools for each harness, where its default place is, and the runner's shell.
     // Both are read before any lane starts, as the console's form waits for them: without the computers, a lane on the
@@ -165,6 +286,7 @@ export const RACE_START = {
       }
       return { ...said, agent_id: definition.id, run_id: run.answer?.run_id, status: run.answer?.status };
     }));
+    if (seconds !== undefined) return waitLanes(cli, target, io, label, started, seconds, values.json);
     io.stdout.write(`${JSON.stringify({ label, filter: `${RACE_KEY}:${label}`, console: `#/races/${encodeURIComponent(label)}`, lanes: started }, null, 2)}\n`);
     for (const lane of started) {
       const name = `Lane ${lane.lane} (${lane.harness}/${lane.model})`;
@@ -186,13 +308,15 @@ export const RACE_SHOW = {
   pathParams: ["label"],
   summary: "A race's lanes: each lane's harness, model, run, status, cost and seconds, in lane order",
   route: "GET /runs?label=race:LABEL",
-  help: [["LABEL", "the race's label, as race start printed it"]],
-  options: {},
+  help: [["LABEL", "the race's label, as race start printed it"], ...WAIT_HELP],
+  options: WAIT_OPTIONS,
   async run({ args, values, env, io, cli }) {
     const label = args[0];
     if (!LABEL.test(label)) throw cli.fail(REFUSED, `${label}: a race's label is 1 to 64 letters, digits, dots, dashes or underscores, starting with a letter or digit.`);
+    const seconds = waitOf(values, cli);
+    const target = cli.targetOf(values, env);
     const query = new URLSearchParams({ limit: String(RACE_READ), label: `${RACE_KEY}:${label}` });
-    const read = await call(cli, cli.targetOf(values, env), io, "GET", `/runs?${query}`);
+    const read = await call(cli, target, io, "GET", `/runs?${query}`);
     if (read.refused) throw cli.fail(1, `GET /runs: ${read.refused.message}`);
     const runs = Array.isArray(read.answer?.runs) ? read.answer.runs : [];
     if (!runs.length) throw cli.fail(REFUSED, `No run carries the label ${RACE_KEY}:${label}.`);
@@ -200,6 +324,7 @@ export const RACE_SHOW = {
     const lane = (run) => Number(run.labels?.[LANE_KEY]);
     const lanes = [...runs].sort((a, b) => (lane(a) || Infinity) - (lane(b) || Infinity) || String(a.created_at).localeCompare(String(b.created_at)))
       .map((run) => ({ lane: run.labels?.[LANE_KEY] ?? null, harness: run.labels?.harness ?? null, model: run.labels?.model ?? null, run_id: run.run_id, status: run.status, cost_usd: run.cost?.usd ?? null, cap_usd: run.cost?.cap_usd ?? null, seconds: secondsOf(run, now) }));
+    if (seconds !== undefined) return waitLanes(cli, target, io, label, lanes.map(({ lane, harness, model, run_id }) => ({ lane, harness, model, run_id })), seconds, values.json);
     io.stdout.write(`${JSON.stringify({ label, lanes, ...(read.answer?.next_cursor ? { more: true } : {}) }, null, 2)}\n`);
     return 0;
   },
