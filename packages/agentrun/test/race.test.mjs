@@ -207,3 +207,125 @@ test("race start starts no lane when the server's computers do not read: a lane'
   assert.match(out.err, /GET \/computers: try again\. No lane was started\./);
   assert.equal(seen.filter((r) => r.method === "POST").length, 0);
 });
+
+/** `--wait`'s fake runs: each run's timeline (long-polled, as `runs wait` reads it) and the run itself, from `runs`
+ *  (run id -> the run as GET /runs/{id} answers it); a run whose status is not terminal answers an unchanged page. */
+const ENDED = new Set(["completed", "failed", "cancelled", "input_required", "paused"]);
+function waited(runs) {
+  return (method, path) => {
+    const read = served(method, path);
+    if (read) return read;
+    const timeline = /^\/runs\/([^/?]+)\/timeline\?/.exec(path);
+    if (timeline) {
+      const run = runs[decodeURIComponent(timeline[1])];
+      const ended = ENDED.has(run.status) && run.final !== false;
+      return { status: 200, body: { run_id: run.run_id, status: run.status, rows: [], next_after: 1, unchanged: !ended, has_more: false, final: ended, poll_after_ms: 100 } };
+    }
+    const one = /^\/runs\/([^/?]+)$/.exec(path);
+    if (one) return { status: 200, body: runs[decodeURIComponent(one[1])] };
+    return undefined;
+  };
+}
+const runOf = (id, lane, harness, model, status, extra = {}) => ({ run_id: id, status, labels: { race: "w", lane: String(lane), harness, model }, created_at: "2026-11-28T04:00:00.000Z", ended_at: ENDED.has(status) ? "2026-11-28T04:00:12.000Z" : null, cost: { usd: 0.031, cap_usd: 0.5 }, ...extra });
+/** A fake that starts each lane as run-<n> and answers `--wait`'s reads from `runs`. */
+const starting = (runs) => {
+  const wait = waited(runs);
+  return async (method, path, body) => {
+    const read = wait(method, path);
+    if (read) return read;
+    if (method === "POST" && path === "/agents") return { status: 201, body: { agent_id: body.definition.id, revision: "rv" } };
+    const lane = /^\/agents\/race-[^/]+-(\d+)-1\/runs$/.exec(path);
+    if (method === "POST" && lane) return { status: 201, body: { run_id: `run-${lane[1]}`, status: "queued" } };
+    return { status: 404, body: { error: { code: "not_found", message: `no ${method} ${path}` } } };
+  };
+};
+
+test("race start --wait follows each lane's run to its end on the run's own timeline, prints the lanes side by side and exits 1 when a lane failed", { timeout: 60_000 }, async (t) => {
+  const runs = {
+    "run-1": runOf("run-1", 1, "pi", "a", "completed", { result: { final_answer: "Block sort.\u001b[31m red\u001b[0m\nIt is in place." } }),
+    "run-2": runOf("run-2", 2, "pi", "b", "failed", { error: { code: "model_error", message: "the model failed" } }),
+  };
+  const { seen, agentrun } = await fake(t, starting(runs));
+  const out = await agentrun(["race", "start", "--lane", "pi/a", "--lane", "pi/b", "--task", "x", "--label", "w", "--wait"]);
+  assert.equal(out.code, 1, out.err);
+  const lines = out.out.trimEnd().split("\n");
+  assert.match(lines[0], /^LANE +HARNESS\/MODEL +STATUS +COST +SECONDS +ANSWER$/);
+  assert.match(lines[1], /^1 +pi\/a +completed +\$0\.0310 of \$0\.50 +12 +Block sort\. red$/, "the answer's first line, its control characters gone");
+  assert.match(lines[2], /^2 +pi\/b +failed +\$0\.0310 of \$0\.50 +12 +model_error: the model failed$/);
+  assert.ok(!out.out.includes("\u001b"), "no escape from a model's text reaches the terminal");
+  assert.match(out.err, /^Lane 2 \(pi\/b\) failed\.$/m);
+  const reads = seen.filter((r) => r.method === "GET" && r.path.startsWith("/runs"));
+  assert.ok(reads.some((r) => /^\/runs\/run-1\/timeline\?after=0&wait_ms=0$/.test(r.path)), "each lane is waited on its run's own timeline, as runs wait does");
+  assert.ok(!reads.some((r) => r.path.startsWith("/runs?")), "no list polling while lanes have runs to follow");
+});
+
+test("race start --wait --json: every lane completed is exit 0, each lane with its status, cost, seconds and answer", { timeout: 60_000 }, async (t) => {
+  const runs = { "run-1": runOf("run-1", 1, "pi", "a", "completed", { result: { final_answer: "13" } }), "run-2": runOf("run-2", 2, "pi", "b", "completed", { result: { final_answer: "14" } }) };
+  const { agentrun } = await fake(t, starting(runs));
+  const out = await agentrun(["race", "start", "--lane", "pi/a", "--lane", "pi/b", "--task", "x", "--label", "w", "--wait", "--json"]);
+  assert.equal(out.code, 0, out.err);
+  const printed = JSON.parse(out.out);
+  assert.equal(printed.label, "w");
+  assert.deepEqual(printed.lanes.map((l) => [l.lane, l.run_id, l.status, l.cost_usd, l.cap_usd, l.seconds, l.answer]), [[1, "run-1", "completed", 0.031, 0.5, 12, "13"], [2, "run-2", "completed", 0.031, 0.5, 12, "14"]]);
+});
+
+test("race start --wait past --timeout exits 1 and names each lane still running; the runs go on", { timeout: 60_000 }, async (t) => {
+  const runs = { "run-1": runOf("run-1", 1, "pi", "a", "completed", { result: { final_answer: "done" } }), "run-2": runOf("run-2", 2, "pi", "b", "running") };
+  const { agentrun } = await fake(t, starting(runs));
+  const out = await agentrun(["race", "start", "--lane", "pi/a", "--lane", "pi/b", "--task", "x", "--label", "w", "--wait", "--timeout", "1"]);
+  assert.equal(out.code, 1, out.err);
+  assert.match(out.out, /^2 +pi\/b +running /m);
+  assert.match(out.err, /^Lane 2 \(pi\/b\) is still running after 1 s; it goes on: see agentrun race show w --wait\.$/m);
+  assert.doesNotMatch(out.err, /Lane 1/);
+});
+
+test("race start --wait: a lane waiting on an approval ends the wait for that lane, says where to answer it, exit 8 when no lane failed", { timeout: 60_000 }, async (t) => {
+  const runs = { "run-1": runOf("run-1", 1, "pi", "a", "completed", { result: { final_answer: "done" } }), "run-2": runOf("run-2", 2, "pi", "b", "input_required", { pending: { kind: "approval", id: "ap-1", tool: "bash", summary: "rm -rf build" } }) };
+  const { agentrun } = await fake(t, starting(runs));
+  const out = await agentrun(["race", "start", "--lane", "pi/a", "--lane", "pi/b", "--task", "x", "--label", "w", "--wait"]);
+  assert.equal(out.code, 8, out.err);
+  assert.match(out.out, /^2 +pi\/b +input_required /m);
+  assert.match(out.err, /^Lane 2 \(pi\/b\) waits on an approval: answer it on the race's page in the console, #\/races\/w; then agentrun race show w --wait\.$/m);
+});
+
+test("race start --wait: a lane that did not start is a row of its own and exit 1, the other lane still followed to its end", { timeout: 60_000 }, async (t) => {
+  const runs = { "run-1": runOf("run-1", 1, "pi", "a", "completed", { result: { final_answer: "done" } }) };
+  const start = starting(runs);
+  const { agentrun } = await fake(t, async (method, path, body) => (method === "POST" && path === "/agents" && body.definition.id.endsWith("-2-1") ? { status: 422, body: { error: { code: "input_invalid", message: "no such harness" } } } : start(method, path, body)));
+  const out = await agentrun(["race", "start", "--lane", "pi/a", "--lane", "nope/b", "--task", "x", "--label", "w", "--wait"]);
+  assert.equal(out.code, 1, out.err);
+  assert.match(out.out, /^1 +pi\/a +completed /m);
+  assert.match(out.out, /^2 +nope\/b +not started +- +- +input_invalid: no such harness$/m);
+  assert.match(out.err, /^Lane 2 \(nope\/b\) did not start: input_invalid: no such harness$/m);
+});
+
+test("race show LABEL --wait reads the race's runs once, follows each to its end and prints the table", { timeout: 60_000 }, async (t) => {
+  const runs = { "run-1": runOf("run-1", 1, "pi", "a", "completed", { result: { final_answer: "one" } }), "run-2": runOf("run-2", 2, "codex", "b", "completed", { result: { final_answer: "two" } }) };
+  const wait = waited(runs);
+  const { seen, agentrun } = await fake(t, async (method, path) => (path.startsWith("/runs?") ? { status: 200, body: { runs: [runs["run-2"], runs["run-1"]] } } : (wait(method, path) ?? { status: 404, body: {} })));
+  const out = await agentrun(["race", "show", "w", "--wait"]);
+  assert.equal(out.code, 0, out.err);
+  assert.match(out.out, /^1 +pi\/a +completed .* one$/m);
+  assert.match(out.out, /^2 +codex\/b +completed .* two$/m);
+  assert.equal(seen.filter((r) => r.path.startsWith("/runs?")).length, 1);
+});
+
+test("race start --wait: a lane completed whose timeline is not final yet (end-of-run work going on) at --timeout is not done: exit 1, named on stderr", { timeout: 60_000 }, async (t) => {
+  const runs = { "run-1": runOf("run-1", 1, "pi", "a", "completed", { final: false, result: { final_answer: "done" } }), "run-2": runOf("run-2", 2, "pi", "b", "completed", { result: { final_answer: "done" } }) };
+  const { agentrun } = await fake(t, starting(runs));
+  const out = await agentrun(["race", "start", "--lane", "pi/a", "--lane", "pi/b", "--task", "x", "--label", "w", "--wait", "--timeout", "1"]);
+  assert.equal(out.code, 1, out.err);
+  assert.match(out.err, /^Lane 1 \(pi\/a\) is still finishing after 1 s; it goes on: see agentrun race show w --wait\.$/m);
+  assert.doesNotMatch(out.err, /Lane 2/);
+});
+
+test("race show LABEL --wait with more runs than one page under the label never reports the race done: exit 1, said on stderr", { timeout: 60_000 }, async (t) => {
+  const runs = { "run-1": runOf("run-1", 1, "pi", "a", "completed", { result: { final_answer: "one" } }), "run-2": runOf("run-2", 2, "pi", "b", "completed", { result: { final_answer: "two" } }) };
+  const wait = waited(runs);
+  const { agentrun } = await fake(t, async (method, path) => (path.startsWith("/runs?") ? { status: 200, body: { runs: [runs["run-1"], runs["run-2"]], next_cursor: "c2" } } : (wait(method, path) ?? { status: 404, body: {} })));
+  const out = await agentrun(["race", "show", "w", "--wait"]);
+  assert.equal(out.code, 1, out.err);
+  assert.match(out.err, /^More than 50 runs carry the label race:w: only the first 50 were followed, so the race is not reported done\.$/m);
+  const json = await agentrun(["race", "show", "w", "--wait", "--json"]);
+  assert.equal(JSON.parse(json.out).more, true);
+});

@@ -47,7 +47,7 @@ const graderOf = (run, file) => run.graders.find((g) => g.grader === file);
 
 test("every shipped package's cases load, and each case's fake MCP servers serve their fixtures", { timeout: 120_000 }, async () => {
   const packages = readPackages(TEMPLATES_DIR);
-  assert.deepEqual(packages.map((p) => p.name), ["agent-scout", "code-review", "inbound-lead", "kyb", "market-monitor", "release-notes"]);
+  assert.deepEqual(packages.map((p) => p.name), ["agent-scout", "code-review", "code-review-composio", "inbound-lead", "kyb", "market-monitor", "release-notes"]);
   for (const p of packages) {
     const { cases } = readCases(join(TEMPLATES_DIR, p.name));
     assert.deepEqual(cases.map((c) => c.name), p.evals, `${p.name}: every case reads`);
@@ -1243,9 +1243,9 @@ test("an answer that is one JSON object and nothing else is its json block: for 
 });
 
 test("the output check agrees with ajv on the shipped packages' output schemas", () => {
-  const ajv = new Ajv2020({ strict: false, allErrors: true, validateFormats: false });
   for (const p of readPackages(TEMPLATES_DIR)) {
-    const check = ajv.compile(p.outputSchema);
+    // One ajv per package: two packages may answer in one schema (code-review and code-review-composio share its $id).
+    const check = new Ajv2020({ strict: false, allErrors: true, validateFormats: false }).compile(p.outputSchema);
     for (const value of [{}, [], null, "x", { findings: [] }]) {
       const ours = "value" in structuredAnswer(`\`\`\`json\n${JSON.stringify(value)}\n\`\`\``, p.outputSchema);
       assert.equal(ours, check(value), `${p.name}: ${JSON.stringify(value)}`);

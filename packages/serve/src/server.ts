@@ -35,12 +35,13 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
-import { API_ONLY_ROUTES, WORKSPACE_ROUTES, apiOnlyMcpSave, apiOnlyRefusal, apiOnlyTriggerEdit, apiOnlyTriggerMade, apiOnlyTriggerSkipped, apiOnlyTurnsOn, servedApiOnly, servedScoped } from "./api-only.js";
+import { API_ONLY_ROUTES, WORKSPACE_ROUTES, apiOnlyMcpPreview, apiOnlyMcpSave, apiOnlyRefusal, apiOnlyTriggerEdit, apiOnlyTriggerMade, apiOnlyTriggerSkipped, apiOnlyTurnsOn, servedApiOnly, servedScoped } from "./api-only.js";
 import { triggersInWorkspace } from "./trigger-scope.js";
-import { inWorkspace, outOfScope, scopedSettings, scopedSlot, slotPath, WORKSPACE, WORKSPACE_HEADER, WORKSPACE_NAME, WORKSPACE_NO_GITHUB, WORKSPACE_TOKENS_ENV, workspaceNow, workspaceTokensFrom } from "./workspace-scope.js";
+import { inWorkspace, outOfScope, outsideWorkspace, scopedSettings, scopedSlot, slotPath, WORKSPACE, WORKSPACE_HEADER, WORKSPACE_NAME, WORKSPACE_NO_GITHUB, WORKSPACE_TOKENS_ENV, workspaceNow, workspaceTokensFrom } from "./workspace-scope.js";
+import { mcpRowKey, mcpRowWorkspace, mcpView, requestNames } from "./mcp-workspace.js";
 import { API_ONLY_ENV, API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV } from "./env-switch.js";
 import { pricesInForce } from "./prices.js";
-import { composioOutsideNamespaceServers, holdApiOnlyMcpOrigins, offApiOnlyMcpServers } from "./mcp-api-only-origins.js";
+import { composioOutsideNamespaceServers, holdApiOnlyMcpOrigins, offApiOnlyMcpOrigins, offApiOnlyMcpServers } from "./mcp-api-only-origins.js";
 import { declaredKeys, keysOwed, keysOwedRefusal, type RunKeys, runKeysOf, runKeysTriggerSkipped, undeclaredKeys, withCarried } from "./run-keys.js";
 import { capacityOverStore, capacityWindowOf } from "./capacity.js";
 import { carriedFields } from "./answer-json.js";
@@ -200,7 +201,7 @@ import { LOOPBACK, MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oa
 import { type RunNotice, WEBHOOK_EVENTS, WEBHOOK_FILE, waitMarkerOf, Webhooks } from "./webhooks.js";
 import { SLACK_EVENTS, SlackPosts } from "./slack.js";
 import { appPermissionWarnings } from "./template-github-permissions.js";
-import { templateApplied, templateTriggerSecret, templateWebhookSecrets, triggerMade, triggerRotated, webhookRotated, webhookSaved, withTriggerSecret } from "./trigger-secrets-shown.js";
+import { scopedShown, templateApplied, templateTriggerSecret, templateWebhookSecrets, triggerMade, triggerRotated, webhookRotated, webhookSaved, withTriggerSecret } from "./trigger-secrets-shown.js";
 import { type SealedSettingsOverStore } from "./sealed-settings-store.js";
 import { type ServerSecrets } from "./server-secrets.js";
 import { openServerSecretsOverStore } from "./server-secrets-store.js";
@@ -1650,7 +1651,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const fields = { count: outside.length, servers: outside.join(","), line: "runs that grant these Composio servers the API token saved before its Composio users were namespaced are refused, nothing sent: delete each, then save it again" };
     log ? log(logLine("api_only_composio_outside_namespace", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("api_only_composio_outside_namespace", fields)}\n`);
   }
-  const mcpServers =mcpServersOverStore(store, own(withSecrets(base, "own")), VERSION);
+  // The registry as the request being served reaches it (mcp-workspace.ts): a scoped request's workspace servers alone, by
+  // their names; an unscoped one's (and this server's own work's) the shared servers alone.
+  const mcpStore = mcpView(store, requestNames);
+  /** Whether `name` is, to a request in a workspace on an API-only server, its own saved server at an origin since taken off
+   *  the operator's MCP origins (offApiOnlyMcpOrigins: per_run, or a credential the token sealed): its preview or refresh
+   *  is the refused route's 404, as a new save there is, before its credential is opened or anything reaches the address. */
+  const scopedOffApiOnlyOrigins = async (name: unknown): Promise<boolean> => {
+    if (!options.apiOnly || workspaceNow() === undefined || typeof name !== "string") return false;
+    const row = await getMcpServer(mcpStore, name);
+    return row !== undefined && (await offApiOnlyMcpOrigins(mcpStore, name, row)) !== undefined;
+  };
+  const mcpServers = mcpServersOverStore(mcpStore, own(withSecrets(base, "own")), VERSION);
+  // A Composio cleanup reads every workspace's records before it removes a thing there (McpServersOverStore.registry).
+  mcpServers.registry = store;
   if (options.githubMcpOrigin) mcpServers.appOrigin = options.githubMcpOrigin;
   if (options.composioMcpOrigin) mcpServers.composioOrigin = options.composioMcpOrigin;
   if (options.composioControl) mcpServers.composioControl = options.composioControl;
@@ -1662,18 +1676,45 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // that pin and the credentials from the store at a run's claim (runner/mcp-claim.ts); this server hands a run no MCP
   // source. Each with what it is (its source and toolkit, mcp-sources.ts), which a template's apply maps its MCP needs on,
   // and the variable a Composio server saved with api_key_env reads its key from (`keyEnv`), which a run's start checks.
-  let mcpMeta = new Map<string, { url: string; auth: string; tools: readonly McpTool[]; source: SourceRecord; keyEnv?: string }>();
+  // Every row, by its row key (a workspace's server's "<workspace>/<name>", mcp-workspace.ts), each read in its own
+  // workspace; a reader takes them by name through metaOf and metaSeen.
+  type McpMeta = { url: string; auth: string; tools: readonly McpTool[]; source: SourceRecord; keyEnv?: string };
+  let mcpMeta = new Map<string, McpMeta>();
   const refreshMcpMeta = async (): Promise<void> => {
     mcpMeta = new Map(await Promise.all((await listMcpServers(store)).map(async (row) => {
-      const keyEnv = await mcpServers.keyEnvOf(row);
-      return [row.name, { url: row.url, auth: row.auth, tools: (row.tools as McpTool[]) ?? [], source: await mcpServers.sourceOf(row), ...(keyEnv ? { keyEnv } : {}) }] as const;
+      const workspace = mcpRowWorkspace(row.name);
+      const read = async () => {
+        const shown = workspace === undefined ? row : { ...row, name: row.name.slice(workspace.length + 1), sealedAs: row.name };
+        const keyEnv = await mcpServers.keyEnvOf(shown);
+        return { url: row.url, auth: row.auth, tools: (row.tools as McpTool[]) ?? [], source: await mcpServers.sourceOf(shown), ...(keyEnv ? { keyEnv } : {}) };
+      };
+      return [row.name, await (workspace === undefined ? outsideWorkspace(read) : inWorkspace(workspace, read))] as const;
     })));
   };
   await refreshMcpMeta();
+  /** The saved server a request in `workspace` (or an agent's run there) means by `server`: the workspace's own, else the
+   *  shared one of that name. */
+  const metaOf = (server: string, workspace: string | null | undefined = workspaceNow()): McpMeta | undefined =>
+    (workspace !== null && workspace !== undefined ? mcpMeta.get(mcpRowKey(server, workspace)) : undefined) ?? mcpMeta.get(server);
+  /** Every saved server `workspace` reaches, by name: the shared ones, each under a name the workspace saved one of its own
+   *  under taken by its own. Never another workspace's. */
+  const metaSeen = (workspace: string | null | undefined = workspaceNow()): Map<string, McpMeta> => {
+    const seen = new Map<string, McpMeta>();
+    for (const [key, meta] of mcpMeta) if (mcpRowWorkspace(key) === undefined) seen.set(key, meta);
+    if (workspace !== null && workspace !== undefined) for (const [key, meta] of mcpMeta) if (mcpRowWorkspace(key) === workspace) seen.set(key.slice(workspace.length + 1), meta);
+    return new Map([...seen].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+  };
+  /** A server's listing to pin, from the row `server` means in `workspace` (the request's, unless an agent's is named):
+   *  its workspace's own when it saved one, read there, else the shared one (read as the server's own work, which reaches
+   *  the shared rows). */
+  const pinListingOf = (server: string, signal: AbortSignal, workspace: string | null | undefined = workspaceNow()) => {
+    const own = workspace !== null && workspace !== undefined && mcpMeta.has(mcpRowKey(server, workspace));
+    return own ? inWorkspace(workspace, () => mcpServers.pinListing(server, signal)) : outsideWorkspace(() => mcpServers.pinListing(server, signal));
+  };
   // Each saved server's tools in the harnesses' shape (the registry keeps input_schema; a bound tool takes inputSchema),
   // with whether each can be granted: a known meta tool can't (mcp-meta.ts).
   const mcpTools = (server: string) => {
-    const saved = mcpMeta.get(server);
+    const saved = metaOf(server);
     return saved && marked(saved.url, { tools: saved.tools.map(boundTool) }).tools;
   };
   // The server's tool settings, in the store: capabilities say what they resolve to, again after a PUT. load() reads them
@@ -2578,7 +2619,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // (called at request time, after they are assigned) rather than reading them before their declaration.
     told: (error) => told(error),
     runnable,
-    pinFirst: (revision) => pinFirst(revision),
+    pinFirst: (revision, agent) => pinFirst(revision, agent),
     readyFiles: async (ids) => (await uploadsHere()).readyFiles(ids as string[]),
     files: { hold: (runId, ids) => uploads.hold(runId, ids), release: (runId) => uploads.release(runId), place: (runId, agentId, launch) => archilFiles.place(runId, agentId, launch) },
     fallbackPlace: (kind, tools) => fallbackPlace(kind, tools),
@@ -3649,7 +3690,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const tools = revision.kind === "agentic" ? (body.tools ?? []) : [];
     if (!(revision as { mcpPin?: unknown }).mcpPin && tools.some((tool) => mcpToolOf(tool))) return null;
     try {
-      await runnable(revision, resolvePlace(body.place as Place | undefined, await fallbackPlace(revision.kind, tools)), { capped: body.maxCostUsd !== undefined, price: readDecisionPrice });
+      await runnable(revision, resolvePlace(body.place as Place | undefined, await fallbackPlace(revision.kind, tools)), { capped: body.maxCostUsd !== undefined, price: readDecisionPrice, agent: entry.agent.id });
       return null;
     } catch (error) {
       if (error instanceof ApiError && error.code === "agent_not_runnable") return { message: error.message, fields: error.extra.fields ?? [] };
@@ -3668,7 +3709,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  `carried`: the names of the tool keys the run carries (run-keys.ts), each read as one this host holds. `held`: the
    *  run holds its computer (hold: true): kept from running by its model alone, it is not refused, and the refusal is
    *  returned for its launch, its start to answer it (computer-held.ts). */
-  async function runnable(revision: Revision, place: Place, { capped = false, price = decisionPrice, carried = [], held = false }: { capped?: boolean; price?: (model: string) => Promise<unknown>; carried?: readonly string[]; held?: boolean } = {}): Promise<HeldRefusal | undefined> {
+  async function runnable(revision: Revision, place: Place, { capped = false, price = decisionPrice, carried = [], held = false, agent }: { capped?: boolean; price?: (model: string) => Promise<unknown>; carried?: readonly string[]; held?: boolean; agent?: string } = {}): Promise<HeldRefusal | undefined> {
     if (cliLearningOf(revision.body)) throw new ApiError("agent_not_runnable", "Continue in the original CLI session; this connection records learning without launching its tools.");
     if (sdkOf(revision.body)) throw new ApiError("agent_not_runnable", "This agent runs in its backend SDK. Call its SDK wrapper to start a task; AgentRun does not launch its tools or credentials.");
     const native = nativeOf(revision.body);
@@ -3688,16 +3729,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // An agentic revision's MCP tools are checked as its save pinned them (its pin, never the server's listing now), for
     // a server still saved here; a granted tool its pin does not hold is said first, with how to pin it.
     const pin = ((revision as { mcpPin?: unknown }).mcpPin ?? {}) as McpPin;
+    // The servers its tools name are its agent's (`agent`) workspace's own, else the shared ones (metaOf), as its run's
+    // claim reads them.
+    const workspace = agent === undefined ? undefined : await store.agents.workspace(agent);
     if (revision.kind === "agentic") {
       const unpinned = ((revision.body as { tools?: readonly string[] }).tools ?? []).flatMap((tool, index) => {
         const named = mcpToolOf(tool);
-        if (!named || !mcpMeta.has(named.server)) return [];
+        if (!named || !metaOf(named.server, workspace)) return [];
         const pinned = Object.hasOwn(pin, named.server) && pin[named.server]!.tools.some((one) => one.name === named.tool);
         if (pinned) return [];
         // Its first run could not pin it (mcp-pin-first.ts) because this server refuses its server's address: a loopback
         // one on a server whose operator never said it is a local install. Saving again is refused the same way, so the
         // words say the cause, as the save's refusal does (mcp-servers-store.ts reached).
-        const at = URL.parse(mcpMeta.get(named.server)!.url)?.hostname ?? "";
+        const at = URL.parse(metaOf(named.server, workspace)!.url)?.hostname ?? "";
         const why = options.mcpLoopback !== true && LOOPBACK.test(at) ? `its server ${named.server} can't be listed here to pin it: ${loopbackWords(at)}` : "save the agent again to pin it.";
         return [{ field: `definition.tools[${index}]`, reason: "not_an_option", message: `The MCP tool ${tool} was not pinned when this revision was saved: ${why}`, tool }];
       });
@@ -3707,7 +3751,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // without the server's tools, and nothing sent (composioEnvKey).
       const unset = ((revision.body as { tools?: readonly string[] }).tools ?? []).flatMap((tool, index) => {
         const named = mcpToolOf(tool);
-        const saved = named ? mcpMeta.get(named.server) : undefined;
+        const saved = named ? metaOf(named.server, workspace) : undefined;
         const keyEnv = saved?.keyEnv as ComposioKeyEnv | undefined;
         const got = named && saved && keyEnv ? composioEnvKey(named.server, saved.url, keyEnv, mcpServers.composioOrigin) : undefined;
         return got && "refused" in got ? [{ field: `definition.tools[${index}]`, reason: got.reason, message: got.refused, tool, keyEnv: keyEnv!, unset: got.reason === "missing" }] : [];
@@ -3715,7 +3759,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if (unset.length) throw new ApiError("agent_not_runnable", [...new Set(unset.map((one) => one.message))].join(" "), { fields: unset.map(({ tool: _tool, keyEnv: _keyEnv, unset: _unset, ...issue }) => issue), details: { unbound: [], missing: Object.fromEntries(unset.filter((one) => one.unset).map((one) => [one.tool, [one.keyEnv]])) } });
     }
     const pinnedTools = (server: string) => {
-      const saved = mcpMeta.get(server);
+      const saved = metaOf(server, workspace);
       if (!saved || !Object.hasOwn(pin, server)) return undefined;
       // A meta tool at the URL it was pinned on or at the server's URL now (a server moved to a provider's host since).
       return pin[server]!.tools.map((tool) => {
@@ -3772,8 +3816,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  listing in the harnesses' shape for the save's checks (blockersOf's `mcp`), and `pin` making the pin from them. A server
    *  that cannot be listed keeps the agent's `previous` pin for it when every tool the save grants from it is already
    *  there (an edit that grants nothing new from it, its instructions say); else the save is refused (422) in words naming
-   *  it: nothing is saved, and saving again once it answers pins it. */
-  async function mcpListingOf(revision: NewRevision, previous?: unknown): Promise<{ tools: (server: string) => ReturnType<typeof mcpTools>; pin: () => McpPin | undefined }> {
+   *  it: nothing is saved, and saving again once it answers pins it. Each server is the one `workspace` (the revision's
+   *  agent's; the request's unless named) means by its name (metaOf). */
+  async function mcpListingOf(revision: NewRevision, previous?: unknown, workspace: string | null | undefined = workspaceNow()): Promise<{ tools: (server: string) => ReturnType<typeof mcpTools>; pin: () => McpPin | undefined }> {
     const tools = revision.kind === "agentic" ? ((revision.body as { tools?: readonly string[] }).tools ?? []) : [];
     const granted = tools.filter((tool) => mcpToolOf(tool) !== undefined);
     const listings = new Map<string, NonNullable<Awaited<ReturnType<typeof mcpServers.pinListing>>>>();
@@ -3789,7 +3834,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const refused: InputIssue[] = [];
     await Promise.all([...new Set(granted.map((tool) => mcpToolOf(tool)!.server))].map(async (server) => {
       try {
-        const listing = await mcpServers.pinListing(server, stopping.signal);
+        const listing = await pinListingOf(server, stopping.signal, workspace);
         if (listing) listings.set(server, listing);
       } catch (error) {
         if (!(error instanceof ApiError)) throw error;
@@ -3802,7 +3847,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const bound = (server: string) => {
       const kept = carried.get(server);
       // A carried server's tools are checked as pinned, a meta tool marked at its URL then or now (as runnable does).
-      if (kept) return kept.tools.map((tool) => { const meta = metaToolOf(kept.url, tool.name) ?? (mcpMeta.has(server) ? metaToolOf(mcpMeta.get(server)!.url, tool.name) : undefined); return meta ? { ...tool, grantable: false as const, reason: meta.reason } : tool; });
+      if (kept) return kept.tools.map((tool) => { const now = metaOf(server, workspace); const meta = metaToolOf(kept.url, tool.name) ?? (now ? metaToolOf(now.url, tool.name) : undefined); return meta ? { ...tool, grantable: false as const, reason: meta.reason } : tool; });
       return listings.get(server)?.tools.map((tool) => ({ ...boundTool(tool), ...(tool.grantable === false ? { grantable: false as const, reason: tool.reason! } : {}) }));
     };
     return {
@@ -3821,10 +3866,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   /** The revision a run starts on, its MCP tools pinned: one saved with no pin that grants a tool of a server saved here is
    *  pinned at this, its first run (mcp-pin-first.ts pinFirst, the claim's path too). One that can't be (a server that
-   *  can't be listed, or no longer lists a granted tool) is left unpinned, and runnable refuses it (409) as before. */
-  async function pinFirst(revision: Revision): Promise<Revision> {
+   *  can't be listed, or no longer lists a granted tool) is left unpinned, and runnable refuses it (409) as before. Its
+   *  servers are its agent's (`agent`) workspace's, as runnable and the run's claim read them, whoever starts it. */
+  async function pinFirst(revision: Revision, agent?: string): Promise<Revision> {
     if (((revision as { mcpPin?: unknown }).mcpPin ?? null) !== null) return revision;
-    const pin = await pinFirstOf(revision, { saved: (server) => mcpMeta.has(server), pinListing: (server) => mcpServers.pinListing(server, stopping.signal), pinOnce: (id, made) => store.agents.pinOnce(id, made) });
+    const workspace = agent === undefined ? undefined : await store.agents.workspace(agent);
+    const pin = await pinFirstOf(revision, { saved: (server) => metaOf(server, workspace) !== undefined, pinListing: (server) => pinListingOf(server, stopping.signal, workspace), pinOnce: (id, made) => store.agents.pinOnce(id, made) });
     return pin ? ({ ...revision, mcpPin: pin } as unknown as Revision) : revision;
   }
 
@@ -3832,8 +3879,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks, and
    *  its pins (mcpListingOf, monidPinOf), each carrying from `previous` what its grants did not change. A revision that
    *  names no place is checked where it would run (fallbackPlace). `toolsUnnamed`: a create whose definition names no tools
-   *  (the store has given it its empty list by now), which would get a shell in the default box. */
-  async function saveable(revision: NewRevision, previous?: RevisionRow | null, { toolsUnnamed = false }: { toolsUnnamed?: boolean } = {}): Promise<{ warnings: InputIssue[]; stamp: SaveStamp }> {
+   *  (the store has given it its empty list by now), which would get a shell in the default box. `workspace`: the agent's,
+   *  whose MCP servers its runs call (the request's unless named). */
+  async function saveable(revision: NewRevision, previous?: RevisionRow | null, { toolsUnnamed = false, workspace = workspaceNow() }: { toolsUnnamed?: boolean; workspace?: string | null } = {}): Promise<{ warnings: InputIssue[]; stamp: SaveStamp }> {
     // The store's NewRevision keeps the revision's fields under `body` (AgenticBody|WorkflowBody); build the flat shape the
     // host checks (runnable.ts RevisionShape) from it, as shapeOf does for a run's Revision.
     const body = revision.body as AgenticBody & Partial<WorkflowBody>;
@@ -3867,7 +3915,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     const named = (revision.kind === "agentic" ? { kind: "agentic" as const, ...(body as AgenticBody) } : workflowShape(body as never)) as unknown as RevisionShape;
     const shape = named.place ? named : { ...named, place: await fallbackPlace(named.kind, named.tools ?? []), unnamed: true as const };
-    const listing = await mcpListingOf(revision, previous?.mcpPin);
+    const listing = await mcpListingOf(revision, previous?.mcpPin, workspace);
     const mcp = listing.tools;
     const { monid, warnings: usage = [] } = (await monidPinOf(revision, previous)) ?? {};
     const blockers = await blockersOf(envAtPlace(env, shape.place), shape, settings.get(), { boxes: boxOffers, computerReady, shellOf, noExec: await noExecNow(), offers, mcp, monid });
@@ -3964,12 +4012,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** A definition edit's body made into a new revision of agent `entry`, as PUT /agents/{id}/definition makes one
    *  (commitAgent: the definition's checks and what this host refuses of it, saveable), with what this host still lacks for
    *  it; then its computer reconciled. `template`: the package an apply with agent_id wrote it from; `fromPackage`: the
-   *  body is that package's whole definition, so what it leaves out that the package owns is gone (commitAgent). */
+   *  body is that package's whole definition, so what it leaves out that the package owns is gone (commitAgent). Its MCP
+   *  servers are the agent's workspace's, whoever edits it: the ones its runs call. */
   async function reviseAgentOf(entry: AgentEntry, body: Json, options: { contract?: boolean; ifCurrent?: string | null; template?: TemplatePackage; fromPackage?: boolean } = {}): Promise<{ entry: AgentEntry; warnings: InputIssue[] }> {
     let warnings: InputIssue[] = [];
+    const workspace = (await store.agents.workspace(entry.agent.id)) ?? null;
     const check = async (revision: NewRevision, on: RevisionRow | null) => {
       // The pins of the revision this try builds on (commitAgent's read, a retry's newer one) carry what it kept.
-      const saved = await saveable(revision, on);
+      const saved = await saveable(revision, on, { workspace });
       warnings = saved.warnings;
       return saved.stamp;
     };
@@ -4174,8 +4224,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const keyWarnings: InputIssue[] = brought.map((name) => ({ field: `secrets.${name}`, reason: NOT_SET_UP, message: `${name} is not set on this server: it takes it from each run (${RUN_KEYS_ENV}=1), so a run that does not carry it in keys is refused.`, fix: `Send keys.${name} with each run, or add it in Settings → API Keys.` }));
     // Each MCP need on the saved server whose source and toolkit match (the owner's pick when several do, never a silent
     // one: several and no pick is a 422); the package's
-    // tool names, mcp:<toolkit>/<tool>, read as that server's from here on (templates.ts onServers).
-    const mapped = serversFor(template, [...mcpMeta].map(([name, meta]) => ({ name, ...meta.source })), picks);
+    // tool names, mcp:<toolkit>/<tool>, read as that server's from here on (templates.ts onServers). An update's servers
+    // are its agent's workspace's, whoever applies it: the ones its runs call; a new agent's, the request's.
+    const workspace = onto ? ((await store.agents.workspace(onto.agent.id)) ?? null) : workspaceNow();
+    const mapped = serversFor(template, [...metaSeen(workspace)].map(([name, meta]) => ({ name, ...meta.source })), picks);
     const servers = Object.fromEntries(mapped.flatMap(({ need, server }) => (server ? [[need.toolkit, server]] : [])));
     const pkg = onServers(template, servers);
     const saved: McpServed[] = mapped.flatMap(({ need, server }) => (server ? [{ ...need, server }] : []));
@@ -4311,13 +4363,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // A package that names no tools and no computer list makes the agent a create that names no tools makes (createAgentOf),
     // whatever its grants compiled to: it would get Docker's box, and is refused where there is none (noPlaceOf).
     const toolsUnnamed = pkg.tools === undefined && !pick;
-    return { pkg, onto, missing, unsaved, saved, mapped, grants, pick, toolsUnnamed, made, emptyFeeds, hostless, unmade, hadByName, remade, resent, removing, digest, origin, warned: [...keyWarnings, ...skipped, ...kept, ...modelWarnings, ...computerWarnings] };
+    return { pkg, onto, workspace, missing, unsaved, saved, mapped, grants, pick, toolsUnnamed, made, emptyFeeds, hostless, unmade, hadByName, remade, resent, removing, digest, origin, warned: [...keyWarnings, ...skipped, ...kept, ...modelWarnings, ...computerWarnings] };
   }
 
   /** applyTemplate's work, in its turn on the agent where it has agent_id: prepareApply's reads and checks, then its
    *  writes. */
   async function applyWith(template: Package, body: Json) {
-    const { pkg, onto, saved, mapped, grants, toolsUnnamed, made, emptyFeeds, hostless, unmade, hadByName, remade, resent, removing, digest, origin, warned } = await prepareApply(template, body, { plan: false });
+    const { pkg, onto, workspace, saved, mapped, grants, toolsUnnamed, made, emptyFeeds, hostless, unmade, hadByName, remade, resent, removing, digest, origin, warned } = await prepareApply(template, body, { plan: false });
     // A fresh apply of what already made a live agent here (the same package and parameters) still makes one, and says
     // which is there: an apply with its agent_id updates that one instead. Read before this apply's agent is made.
     const twins: InputIssue[] = (await twinsOf(onto, pkg.id, digest))
@@ -4428,7 +4480,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // first call is refused; or that the check could not be made (template-github-permissions.ts). An unticked tool is
     // not the agent's, so nothing is said of it.
     const ticked = saved.map((need) => ({ ...need, tools: need.tools.filter((tool) => grants.includes(mcpToolName(need.server, tool))) }));
-    const appShort = await appPermissionWarnings({ name: pkg.name, mcp: ticked }, (server) => mcpMeta.get(server)?.auth === "github_app", () => githubConnect.installationPermissions(stopping.signal));
+    const appShort = await appPermissionWarnings({ name: pkg.name, mcp: ticked }, (server) => metaOf(server, workspace)?.auth === "github_app", () => githubConnect.installationPermissions(stopping.signal));
     // A webhook trigger's secret is in no apply answer: each one's warning sends the person to the console for it.
     const hooks = made.triggers.flatMap((trigger, i) => (!hostless.has(i) && isObject(trigger.source) && trigger.source.kind === "webhook" ? [templateTriggerSecret(i)] : []));
     // Each github trigger: what it runs on, when made (a note, never a lack); skipped, what to do about it.
@@ -4520,29 +4572,37 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  go the same way: each a tool key name to its value as text, else 422 by name, never with the value; whether the
    *  run's revision reads each is its start's check (prepareLaunch), by name alone. `by`: who hands them (handedBy). A
    *  per-run Composio binding is sealed with it, and the token's binding of a Composio user the owner connects here
-   *  (composio-owners.ts, read at this check) is 422 at its composio_user_id, nothing written. */
-  function handedLaunchSecrets(body: Json, by: "token" | "owner"): { body: Json; handed: () => Promise<Handed> } {
+   *  (composio-owners.ts, read at this check) is 422 at its composio_user_id, nothing written. `handed(workspace)`: the
+   *  run's workspace (its agent's: null for none), whose servers its claim reads (mcp-workspace.ts runMcp), so each entry
+   *  is checked against the server the run calls by that name, whoever starts it; omitted, the request's. */
+  function handedLaunchSecrets(body: Json, by: "token" | "owner"): { body: Json; handed: (workspace?: string | null) => Promise<Handed> } {
     if (body.mcp_auth === undefined && body.model_key === undefined && body.keys === undefined) return { body, handed: async () => ({}) };
     const { mcp_auth, model_key, keys: given, ...rest } = body;
-    const handed = async (): Promise<Handed> => {
+    const handed = async (workspace?: string | null): Promise<Handed> => {
+      const target = workspace === undefined ? workspaceNow() : (workspace ?? undefined);
+      if (target !== workspaceNow()) return target === undefined ? outsideWorkspace(() => handed()) : inWorkspace(target, () => handed());
       const issues: InputIssue[] = [];
       const mcp = mcp_auth === undefined ? undefined : mcpAuthOf(mcp_auth, issues);
       const auth: Record<string, RunMcpAuth[string]> = {};
       let owners: Set<string> | undefined;
       for (const [server, entry] of Object.entries(mcp ?? {})) {
-        const row = await getMcpServer(store, server);
+        // The server a run in the workspace calls by this name, as its claim reads it (mcp-workspace.ts): the workspace's
+        // own, else the shared one, each read and checked in its own reach.
+        const own = workspaceNow() !== undefined && (await getMcpServer(mcpStore, server)) !== undefined;
+        const reading = <T,>(work: () => Promise<T>): Promise<T> => (own ? work() : outsideWorkspace(work));
+        const row = await reading(() => getMcpServer(mcpStore, server));
         const field = `mcp_auth.${server}`;
         if (!row) {
           issues.push({ field, reason: "not_an_option", message: `No MCP server ${server} is saved here.` });
           continue;
         }
         // A per-run Composio server takes a binding (its key is its own); a per_run server takes headers; no other takes either.
-        const perRunComposio = composioPerRun(row, await store.settings.get(composioMadeKey(server)));
+        const perRunComposio = composioPerRun(row, await reading(() => mcpStore.settings.get(composioMadeKey(server))));
         if ("composio" in entry) {
           // A token's binding never calls as a user the owner calls as here (composio-owners.ts), one refusal per profile: on
           // API-only, where every caller is the token, McpServersOverStore.tokenBinding (which also checks a named account
           // is listed under the user); on the full profile, the token's binding here. The owner's session binds any user.
-          const refused = perRunComposio && options.apiOnly ? await mcpServers.tokenBinding(server, row, entry.composio, field, options.composioControl ?? {}, stopping.signal) : undefined;
+          const refused = perRunComposio && options.apiOnly ? await reading(() => mcpServers.tokenBinding(server, row, entry.composio, field, options.composioControl ?? {}, stopping.signal)) : undefined;
           if (!perRunComposio) issues.push({ field, reason: "not_an_option", message: `The MCP server ${server} is not a per-run Composio server: only one saved through the Composio preset with user_id "${COMPOSIO_PER_RUN}" takes a Composio account from a run.` });
           else if (refused) issues.push(refused);
           else if (!options.apiOnly && by === "token" && ownersUser((owners ??= await ownersComposioUsers(store)), entry.composio.user_id)) issues.push({ field: `${field}.composio_user_id`, reason: "not_allowed", message: "That composio_user_id is a Composio user the owner connects on this install: a run the API token starts or messages binds its own person's Composio user, never the owner's." });
@@ -4631,6 +4691,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   async function createRun(req: IncomingMessage, agentId: string) {
     const entry = await needRunnableAgent(agentId);
     const { body, handed } = handedLaunchSecrets(await bodyOf(req), handedBy(req));
+    // Its mcp_auth checked against the servers its agent's runs call: the agent's workspace's, whoever starts it.
+    const runIn = (await store.agents.workspace(agentId)) ?? null;
     // The host's run for a firing the launch hook handed it: the firing's own run, under the firing's key (a second start
     // answers that run), started by the trigger's target policy as a firing here starts one (its cap, which the host's may
     // lower, its effort when it sets one, its previous result, its trigger, origin and title), with the host's body and
@@ -4643,7 +4705,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const { trigger_firing: given, ...rest } = body;
       // The firing's room is checked and held as drive's is while its run is written; the firing is started with the run.
       const run = await triggers.handedStart(given, agentId, async (firing) => {
-        const secrets = await handed();
+        const secrets = await handed(runIn);
         const seal = startSeal(secrets);
         // What the server writes of the start (its input, which the run's title is read from) is cut of what it hands.
         const cut = cutHanded(rest, handedSecretValues(secrets));
@@ -4659,7 +4721,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const headers: Record<string, string> = { location: `/v2/runs/${first.runId}`, "idempotent-replayed": "true" };
         return { status: 202, body: await viewOverStore(store, first.runId, viewDepsFor(linkOrigin(req))), headers };
       }
-      const secrets = await handed();
+      const secrets = await handed(runIn);
       const seal = startSeal(secrets);
       // What the server writes of the start (its input, which the run's title is read from) is cut of what it hands; the
       // idempotency fingerprint stays the body's as sent.
@@ -4716,7 +4778,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const headers: Record<string, string> = { location: `/v2/runs/${first.runId}`, "idempotent-replayed": "true" };
         return { status: 202, body: await viewOverStore(store, first.runId, viewDepsFor(linkOrigin(req))), headers };
       }
-      const secrets = await handed();
+      // An inline agent already stored is in its own workspace: its runs call that workspace's servers.
+      const secrets = await handed(mapped ? ((await store.agents.workspace(mapped.id)) ?? null) : undefined);
       const seal = startSeal(secrets);
       // What the server writes of the start (its input, which the run's title is read from) is cut of what it hands.
       const started = await startInline(store, startDeps, inline, cutHanded(run, handedSecretValues(secrets)), { ...(origin ? { origin } : {}), ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets) });
@@ -5367,8 +5430,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // The one route with no token: a pushed trigger source's request, checked by its source before anything else is
     // read (push-handler.ts).
     if (found.name === "receiveHook") {
+      // An API-only server takes a trigger's own hook alone (no source's whose key is the server's, as GitHub's is), for a
+      // trigger it would turn on, so the firing goes to the backend (api-only.ts).
+      const hookAdapters = options.apiOnly ? adapters.filter((adapter) => adapter.settings?.scope === "trigger") : adapters;
+      const takes = options.apiOnly ? (source: string, target: string) => apiOnlyTurnsOn(source, target, options.launchHook !== undefined) : undefined;
       // A body cut at its cap or its time is answered, then its socket closed: never read to its end.
-      const answer = await receivePush({ adapters, hooked: (id) => triggers.hookSource(id), ...(options.hookBodyMs !== undefined ? { bodyMs: options.hookBodyMs } : {}), ignored: (id, eventId) => triggers.ignored(id, eventId), listening: (kind) => triggers.listening(kind), notice: async (adapterId, event, body) => (adapterId === "github" && event === "installation" ? githubConnect.installationEvent(body, (detail) => triggers.turnOff("github", detail)) : undefined), receive: (id, eventId, payload, attrs) => triggers.receive(id, eventId, payload, attrs), scoped: (kind, scope) => triggers.scoped(kind, scope), setting: (adapterId, scope, field) => triggerSettings.get(adapterId)?.get(scope, field), refused: authFailed, say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)) }, req, ...((([, segment, sub]) => [segment!, sub] as const)(/^\/hooks\/([^/]+)(?:\/([^/]+))?$/.exec(path)!)));
+      const answer = await receivePush({ adapters: hookAdapters, hooked: (id) => triggers.hookSource(id, undefined, takes), ...(options.hookBodyMs !== undefined ? { bodyMs: options.hookBodyMs } : {}), ignored: (id, eventId) => triggers.ignored(id, eventId), listening: (kind) => triggers.listening(kind), notice: async (adapterId, event, body) => (adapterId === "github" && event === "installation" ? githubConnect.installationEvent(body, (detail) => triggers.turnOff("github", detail)) : undefined), receive: (id, eventId, payload, attrs) => triggers.receive(id, eventId, payload, attrs), scoped: (kind, scope) => triggers.scoped(kind, scope), setting: (adapterId, scope, field) => triggerSettings.get(adapterId)?.get(scope, field), refused: authFailed, say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)) }, req, ...((([, segment, sub]) => [segment!, sub] as const)(/^\/hooks\/([^/]+)(?:\/([^/]+))?$/.exec(path)!)));
       return send(res, answer.status, answer.body, answer.headers ?? {});
     }
     // A paired computer's driver trading its pairing code for its token: the code is its credential (computer-attach.ts),
@@ -5492,12 +5559,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           return part;
         }
       });
-      const checked: SecretRequest = { params, store, apiOnly: options.apiOnly === true };
+      // Read through the request's view: a scoped token's save or delete is judged on its workspace's row alone.
+      const checked: SecretRequest = { params, store: mcpStore, apiOnly: options.apiOnly === true, workspace: workspaceNow() };
       if (await writesSecretFor(found.name, body, checked)) {
         authFailed(`/v2${path}`, "secret_without_session");
         // Where the person finishes it: the operation's console page, filled with what the request held that is no
         // secret (secretPageFor), at the address people open the console at.
-        const page = await secretPageFor(found.name, body, { params, store });
+        const page = await secretPageFor(found.name, body, { params, store: mcpStore });
         const link = page === undefined ? undefined : `${linkOrigin(req)}${page}`;
         throw new ApiError("forbidden", secretWriteRefusal(link, secretRefusalWords(found.name, checked)), link === undefined ? {} : { details: { console_url: link } });
       }
@@ -5780,7 +5848,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // read. A revision saved before pins were made at save holds none until its first run, which pins its saved
         // server's listing then (pinFirst): so until then, that listing now (mcp-servers-store.ts).
         const pin = (revision as { mcpPin?: McpPin | null } | undefined)?.mcpPin ?? undefined;
-        const listed = !pin && tooling?.tools.some((name) => mcpToolOf(name)) ? new Map((await store.mcp.servers()).map((row) => [row.name, (row.tools ?? []) as { name: string; annotations?: unknown }[]])) : undefined;
+        const listed = !pin && tooling?.tools.some((name) => mcpToolOf(name)) ? new Map([...metaSeen()].map(([name, meta]) => [name, meta.tools])) : undefined;
         const effectOf = (name: string) => {
           if (pin) return pinnedEffect(pin, name);
           const parsed = mcpToolOf(name);
@@ -5856,7 +5924,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           template: entry.template ? { id: entry.template.id, version: entry.template.version, ...(entry.template.secrets ? { secrets: entry.template.secrets } : {}) } : null,
           // The package of its template id in the agent's own workspace, whoever exports it.
           origin: entry.template ? registry.get(entry.template.id, (await store.agents.workspace(id)) ?? null) : undefined,
-          servers: mcpMeta,
+          servers: metaSeen(),
           triggers: views,
           signIns: await store.signIns.list(id),
           now: options.triggerClock?.now() ?? Date.now(),
@@ -5979,7 +6047,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (run.kind === "workflow") throw unsupported("messages.steer_workflow_runs", "A workflow run takes no messages here: its workflow runs to its end, or a cancel ends it.");
         const { body, handed } = handedLaunchSecrets(await bodyOf(req), handedBy(req));
         const answer = await idempotent(req, `/runs/${id}/messages`, body, async () => {
-          const secrets = await handed();
+          // Checked against the servers the run calls: its workspace's (its own, else its agent's), whoever sends it.
+          const secrets = await handed((await store.runs.workspace(run.id)) ?? null);
           const seal = await messageSeal(run, secrets);
           const extra = unknownFields(body, ["content", "said"]);
           if (extra.length) throw invalid(extra);
@@ -6591,26 +6660,35 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "listMcpServers":
         return send(res, 200, await mcpServers.list());
       // Names only: what the API-only profile serves in place of the list.
-      case "listMcpServerNames":
-        return send(res, 200, { names: (await listMcpServers(store)).map((row) => row.name).sort() });
+      case "listMcpServerNames": {
+        // A scoped request's: its workspace's servers and the shared ones (the ones its agents may grant), by name.
+        const names = new Set((await outsideWorkspace(() => listMcpServers(mcpStore))).map((row) => row.name));
+        if (workspaceNow() !== undefined) for (const row of await listMcpServers(mcpStore)) names.add(row.name);
+        return send(res, 200, { names: [...names].sort() });
+      }
       case "getMcpServer":
         return send(res, 200, await mcpServers.get(id));
       case "previewMcpServer": {
         // The API token's preview, as the gate reads a token's save: a server it saved is previewed at its shown address.
-        // API-only, where this route is served only with the operator's MCP origins: the body the save there takes alone
-        // (apiOnlyMcpSave), else the refused route's own 404, before anything reaches the address.
+        // API-only: in a workspace, its own server by name or an address at the operator's MCP origins alone (api-only.ts
+        // apiOnlyMcpPreview); outside one, where this route is served only with those origins, the body the save there
+        // takes alone (apiOnlyMcpSave). Anything else is the refused route's 404, before anything reaches the address.
         const body = await bodyOf(req);
-        if (options.apiOnly && !apiOnlyMcpSave(body, false, apiOnlyMcpOrigins)) throw new ApiError("not_found", apiOnlyRefusal(`/v2${path}`));
+        const scoped = workspaceNow() !== undefined;
+        // Its own server by name, at an origin taken off the list since its save: refused as a new save there is.
+        if (options.apiOnly && scoped && (!apiOnlyMcpPreview(body, apiOnlyMcpOrigins) || (isObject(body) && (await scopedOffApiOnlyOrigins(body.name))))) throw new ApiError("not_found", apiOnlyRefusal(`/v2${path}`));
+        if (options.apiOnly && !scoped && !apiOnlyMcpSave(body, false, apiOnlyMcpOrigins)) throw new ApiError("not_found", apiOnlyRefusal(`/v2${path}`));
         return send(res, 200, await mcpServers.preview(body, stopping.signal, req.headers.authorization !== undefined && !mayHoldSecrets(req)));
       }
       case "saveMcpServer": {
         const body = await bodyOf(req);
         const preset = await mcpServers.composioPreset(id);
         // API-only, where this route is served only with the operator's MCP origins: a per_run server at one of them alone,
-        // under a name no Composio preset has (api-only.ts apiOnlyMcpSave). Anything else is the refused route's own 404,
-        // before anything reaches the address. The secret-write gate has already refused a credential, and a save over a
-        // server the token did not save or one that seals a credential (403).
-        if (options.apiOnly && !apiOnlyMcpSave(body, preset, apiOnlyMcpOrigins)) throw new ApiError("not_found", apiOnlyRefusal(`/v2${path}`));
+        // under a name no Composio preset has (api-only.ts apiOnlyMcpSave); in a workspace, also one with headers or a
+        // bearer token, sealed in its own row. Anything else is the refused route's own 404, before anything reaches the
+        // address. The secret-write gate has already refused a credential outside a workspace, and a save over a server
+        // the token did not save or (outside a workspace) one that seals a credential (403).
+        if (options.apiOnly && !apiOnlyMcpSave(body, preset, apiOnlyMcpOrigins, workspaceNow() !== undefined)) throw new ApiError("not_found", apiOnlyRefusal(`/v2${path}`));
         // A server that isn't a Composio preset's is saved at once, as ever: no save waits on another's listing.
         if (!preset) {
           const saved = await mcpServers.save(id, body, stopping.signal, secretSeen as McpCredentialMark | undefined, undefined, undefined, undefined, undefined, byToken);
@@ -6651,6 +6729,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // The name is checked before Composio is called: a refused name leaves nothing made there.
         mcpNameOf(id);
         const body = await bodyOf(req);
+        // A workspace's Composio server is per_run on the toolkit's own auth config: each run names its user and account,
+        // checked as the run's binding. A Composio user or auth config of the save's own is the shared project's, which
+        // another workspace's save could name too, so its account would be theirs: 422 before anything is sent.
+        if (workspaceNow() !== undefined && isObject(body)) {
+          const issues: InputIssue[] = [];
+          if (body.user_id !== COMPOSIO_PER_RUN) issues.push({ field: "user_id", reason: "not_allowed", message: `A save in a workspace is per-run: send user_id "${COMPOSIO_PER_RUN}", and each run names its Composio user and account in mcp_auth.` });
+          if (body.auth_config_id !== undefined) issues.push({ field: "auth_config_id", reason: "not_allowed", message: "A save in a workspace stands on the toolkit's own auth config: send no auth_config_id." });
+          if (issues.length) throw invalid(issues);
+        }
         // In the Composio turn. A save over a preset server removes there, once it is saved, the MCP server the save before
         // made and what that save made that this one no longer stands on (an account of another user, an auth config of
         // another toolkit), with the key it was made with, and says so as a delete does; what another saved server uses is
@@ -6684,6 +6771,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "deleteComposioSubscription":
         return send(res, 200, await composioTriggers.forget(id), { "cache-control": "no-store" });
       case "refreshMcpServer": {
+        // A workspace's own server at an origin taken off the operator's MCP origins: refused before it is listed again.
+        if (await scopedOffApiOnlyOrigins(id)) throw new ApiError("not_found", apiOnlyRefusal(`/v2${path}`));
         const refreshed = await mcpServers.refresh(id, stopping.signal);
         await refreshMcpMeta();
         return send(res, 200, refreshed);
@@ -7050,8 +7139,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         });
         const replayed = answer.headers?.["idempotent-replayed"] === "true";
         const { note: _, ...first } = answer.body as Json;
-        // Its minted secret to the owner's session alone (trigger-secrets-shown.ts); the token gets secret_set and the words.
-        return send(res, answer.status, secret && !replayed ? triggerMade(first, secret, mayHoldSecrets(req), new Date().toISOString()) : answer.body, answer.headers);
+        // Its minted secret to the owner's session, or to a request in a workspace (trigger-secrets-shown.ts); the token
+        // gets secret_set and the words.
+        return send(res, answer.status, secret && !replayed ? triggerMade(first, secret, mayHoldSecrets(req) || scopedShown(), new Date().toISOString()) : answer.body, answer.headers);
       }
       case "listTemplates": {
         // Each package's computer list read against this server now: what an apply here would pick (pickComputer).
@@ -7113,7 +7203,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, answer.status, answer.status === 201 || answer.status === 200 ? templateApplied(answer.body as Json, minted, shown) : answer.body, answer.headers);
       }
       case "rotateTriggerSecret":
-        // A secret write: the dispatch's one check let only the owner's session this far (trigger-secrets-shown.ts).
+        // A secret write: the dispatch's one check let only the owner's session, or a request in a workspace for a trigger
+        // of its own, this far (trigger-secrets-shown.ts).
         // It takes no body: the new secret is made here, never given. Any body is refused before it rotates, `{}` too: a
         // length other than 0, or one sent chunked, is a body whatever it holds.
         if (req.headers["transfer-encoding"] !== undefined || Number(req.headers["content-length"] ?? 0) !== 0) {
@@ -7314,7 +7405,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (shareRoute) return void shareRoute(req, res, raw).catch(fail);
     // API-only (api-only.ts): any address but the run routes is refused here, before the page, the owner's routes, the
     // MCP endpoint, the token-less hooks or the token check read anything of the request.
-    if (options.apiOnly && !servedApiOnly(ROUTES, req.method, raw, apiOnlyMcpOrigins.length > 0)) return fail(new ApiError("not_found", apiOnlyRefusal(raw)));
+    if (options.apiOnly && !servedApiOnly(ROUTES, req.method, raw, apiOnlyMcpOrigins.length > 0, options.launchHook !== undefined)) return fail(new ApiError("not_found", apiOnlyRefusal(raw)));
     // Before the page: its cookie must not stand in for the token on the owner's own routes, nor on the MCP endpoint.
     if (owner && (raw === "/v2/setup" || raw === "/v2/setup/import" || raw === "/v2/setup/code" || raw.startsWith("/v2/auth/"))) return void ownerRoute(req, res, raw.slice(3), owner).catch(fail);
     if (raw === MCP_PATH) return void mcp(req, res).catch(fail);

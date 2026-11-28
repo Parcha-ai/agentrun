@@ -131,7 +131,8 @@ test("Firecrawl, keyed and keyless: two queries answering and one rate-limited p
     assert.deepEqual([first.answer.provider, (first.answer.results ?? []).map((hit) => hit.url)], [provider, ["https://a.example/", "https://b.example/"]], `${provider}: the two queries' hits are answered, not dropped for the third's long rate limit`);
     assert.deepEqual([asked(), first.receipt.tries[0]?.limit], [3, { kind: "rate", retryAfter: wait }], `${provider}: three requests sent, the long rate limit on the receipt`);
     const again = await w.search({ objective: OBJECTIVE, queries: QUERIES.slice(0, 3) }, { n: 3 });
-    assert.deepEqual([again.answer, asked()], [{ error: SEARCH_UNAVAILABLE }, 3], `${provider}: the long rate limit still holds the next search: it is not sent`);
+    assert.match(again.answer.error ?? "", new RegExp(`^search is unavailable: ${provider} is rate-limited until \\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ; answer from what you have$`), `${provider}: the long rate limit still holds the next search: it is not sent`);
+    assert.equal(asked(), 3, `${provider}: the long rate limit still holds the next search: it is not sent`);
   }
 });
 
@@ -152,7 +153,8 @@ test("Firecrawl, keyed and keyless: of two rate limits a search's queries meet, 
     const first = await w.search({ objective: OBJECTIVE, queries: QUERIES.slice(0, 3) }, { n: 3 });
     assert.deepEqual([(first.answer.results ?? []).map((hit) => hit.url), first.receipt.tries[0]?.limit], [["https://a.example/"], { kind: "rate", retryAfter: wait }], `${provider}: the answering query's hits, and the longer of the two rate limits (${LONG} s, not ${SHORT} s) on the receipt`);
     const again = await w.search({ objective: OBJECTIVE, queries: QUERIES.slice(0, 3) }, { n: 3 });
-    assert.deepEqual([again.answer, asked()], [{ error: SEARCH_UNAVAILABLE }, 3], `${provider}: the breaker holds the ${LONG} s wait: the next search is not sent`);
+    assert.match(again.answer.error ?? "", new RegExp(`^search is unavailable: ${provider} is rate-limited until \\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ; answer from what you have$`), `${provider}: the breaker holds the ${LONG} s wait: the next search is not sent`);
+    assert.equal(asked(), 3, `${provider}: the breaker holds the ${LONG} s wait: the next search is not sent`);
   }
   // A quota met by a later query wins over a longer rate limit met by an earlier one.
   const paidQuota = keyed((_path, body) => (body.query === QUERIES[0] ? json({ error: "slow" }, 429, { "retry-after": String(LONG) }) : body.query === QUERIES[1] ? json({ error: "credits" }, 402) : firecrawlRows([row("c")])));

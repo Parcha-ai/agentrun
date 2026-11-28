@@ -96,8 +96,9 @@ export function WrappedPage({ v2, year, go, cards = wrappedCards }: { v2: Client
   const harnessTokens = data ? data.harnesses.reduce((n, h) => n + h.tokens, 0) : 0;
 
   const drawn = data ? WRAPPED_CARDS.map((card) => ({ card, node: cards(card, data, leakShown) })).filter((c) => c.node !== null && c.node !== undefined && c.node !== false) : [];
-  // The leak receipt is off until the person turns it on, and offered only for a year whose keys the import counted.
-  const offersLeak = Boolean(data?.secrets) && (data?.sessions ?? 0) > 0 && (data?.requests ?? 0) > 0;
+  // The leak receipt is off until the person turns it on, and offered only for a year whose keys the import counted
+  // (the store's count: a year whose session files are gone keeps it).
+  const offersLeak = Boolean(data?.secrets);
   const shownCards = (drawn.length > 0 || offersLeak) && (
     <section className={card} aria-labelledby="w-cards" data-cards>
       <h2 id="w-cards" className={heading}>Cards</h2>
@@ -154,6 +155,7 @@ export function WrappedPage({ v2, year, go, cards = wrappedCards }: { v2: Client
               {unread}
               <p className="font-sans text-body text-muted-foreground" role="status">No {data.unread_files > 0 ? "readable " : ""}coding agent sessions under this machine's home in {shown}.</p>
               {importedSection}
+              {shownCards}
             </div>
           )
           : (

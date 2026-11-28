@@ -113,8 +113,9 @@ async function bytes(server, workspace, { path, id, body = "hello" }) {
 
 /** Every operation of WORKSPACE_ROUTES: how a scoped request reaches it, and what a row of another workspace reads as.
  *  `row`: the operation names W1's row by id (agent, run or template), and W2 gets the 404 a missing id gets. `list`: W2's
- *  list holds none of W1's rows. `made`: a write W2 makes lands in W2 alone. `served`: answered to any workspace.
- *  `catalog`: Composio's catalog, tested on its own. `apart`: the file that tests its tenancy, which needs a scan's run
+ *  list holds none of W1's rows. `made`: a write W2 makes lands in W2 alone. `served`: answered to any workspace. `mcp`:
+ *  a workspace's MCP server, named by its name, each kept apart in api-only-mcp-workspace.test.mjs. `catalog`: Composio's
+ *  catalog, tested on its own. `apart`: the file that tests its tenancy, which needs a scan's run
  *  (suggestions-workspace.test.mjs). */
 const TABLE = {
   getRun: { method: "GET", path: "/v2/runs/{run}", row: "run" },
@@ -149,6 +150,14 @@ const TABLE = {
   createAgent: { made: true },
   importTemplate: { made: true },
   createFile: { made: true },
+  listMcpServerNames: { mcp: true },
+  listMcpServers: { mcp: true },
+  getMcpServer: { mcp: true },
+  previewMcpServer: { mcp: true },
+  saveMcpServer: { mcp: true },
+  saveComposioServer: { mcp: true },
+  refreshMcpServer: { mcp: true },
+  deleteMcpServer: { mcp: true },
   // A trigger is its agent's: api-only-workspace-triggers.test.mjs (it needs the launch hook to make one).
   listTriggers: { triggers: true },
   getTrigger: { triggers: true },
@@ -157,6 +166,7 @@ const TABLE = {
   updateTrigger: { triggers: true },
   deleteTrigger: { triggers: true },
   fireTrigger: { triggers: true },
+  rotateTriggerSecret: { triggers: true },
   getCapabilities: { method: "GET", path: "/v2/capabilities", served: true },
   getHealth: { method: "GET", path: "/v2/health", served: true },
   getOpenapi: { method: "GET", path: "/v2/openapi.json", served: true },
@@ -489,7 +499,7 @@ test("a listed token without the header is 403; the header off an API-only serve
     assert.deepEqual([answer.status, answer.body.error?.code], [400, "bad_request"], `${JSON.stringify(workspace)}: ${answer.text}`);
   }
   assert.equal((await send(server, "GET", "/v2/runs", { workspace: "x".repeat(128) })).status, 200, "128 characters is a name");
-  for (const [method, path] of [["DELETE", "/v2/agents/a1/learning"], ["GET", "/v2/usage"], ["DELETE", "/v2/runs/r1"], ["POST", "/v2/triggers/t1/secret"], ["POST", "/v2/runs"]]) {
+  for (const [method, path] of [["DELETE", "/v2/agents/a1/learning"], ["GET", "/v2/usage"], ["DELETE", "/v2/runs/r1"], ["POST", "/v2/settings/webhook/secret"], ["POST", "/v2/runs"]]) {
     const answer = await inW1(server, method, path, method === "GET" || method === "DELETE" ? {} : { body: {} });
     assert.deepEqual([answer.status, answer.body.error?.code, answer.body.error?.details?.reason], [403, "forbidden", "not_scoped"], `${method} ${path}: ${answer.text}`);
   }
