@@ -15,7 +15,7 @@ export default async function fakeJev(url, init = {}) {
   const first = raw.startsWith("--") ? raw.indexOf("\r\n\r\n") + 4 : -1;
   const body = raw === "" ? {} : JSON.parse(first > 3 ? raw.slice(first, raw.indexOf("\r\n--", first)) : raw);
   const images = first > 3 ? raw.split(/\r\n--/).length - 2 : 0;
-  if (process.env.AGENTRUN_TEST_FAUX_JEV_CALLS) appendFileSync(process.env.AGENTRUN_TEST_FAUX_JEV_CALLS, `${JSON.stringify({ pid: process.pid, key_fd: process.env.AGENTRUN_SERVE_DECISION_KEY_FD, path: new URL(String(url)).pathname, authorized: auth === `Bearer ${CANARY}`, questions: Object.keys(body.questions ?? {}), images })}\n`);
+  if (process.env.AGENTRUN_TEST_FAUX_JEV_CALLS) appendFileSync(process.env.AGENTRUN_TEST_FAUX_JEV_CALLS, `${JSON.stringify({ pid: process.pid, path: new URL(String(url)).pathname, authorized: auth === `Bearer ${CANARY}`, questions: Object.keys(body.questions ?? {}), images })}\n`);
   // AGENTRUN_TEST_FAUX_JEV_HANG: every call is received and never answered; it ends only when its request is aborted.
   if (process.env.AGENTRUN_TEST_FAUX_JEV_HANG) {
     return new Promise((_, reject) => {

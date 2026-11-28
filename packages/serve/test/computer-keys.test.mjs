@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { PROVIDERS } from "@parcha/agentrun-computer";
-import { KEY_TABLE, keyChoices, keyTableOf, providerOptions, testConnection } from "../dist/computer-keys.js";
+import { COMPUTER_KEY_NAMES, KEY_TABLE, keyChoices, keyTableOf, providerOptions, testConnection } from "../dist/computer-keys.js";
 
 const KEY = "fake-test-key-0001";
 const SECRET = "fake-test-key-secret-0002";
@@ -35,6 +35,8 @@ test("computer keys: the saved keys become each provider's create() options; a n
     ["daytona", { DAYTONA_API_KEY: KEY, DAYTONA_API_URL: "https://daytona.example/api", DAYTONA_TARGET: "eu" }, { apiKey: KEY, apiUrl: "https://daytona.example/api", target: "eu" }],
     ["modal", { MODAL_TOKEN_ID: KEY, MODAL_TOKEN_SECRET: SECRET }, { tokenId: KEY, tokenSecret: SECRET, app: "agentrun" }],
     ["e2b", { E2B_API_KEY: KEY }, { apiKey: KEY }],
+    // A cloud that speaks E2B's API (Maritime's domain, SUFY's API URL) and a template of the operator's own.
+    ["e2b", { E2B_API_KEY: KEY, AGENTRUN_E2B_DOMAIN: "sb.mtm.sh", AGENTRUN_E2B_API_URL: "https://us-south-1-sandbox.sufyapi.com", AGENTRUN_E2B_TEMPLATE: "osworld-ubuntu" }, { apiKey: KEY, domain: "sb.mtm.sh", apiUrl: "https://us-south-1-sandbox.sufyapi.com", template: "osworld-ubuntu" }],
     ["orgo", { ORGO_API_KEY: KEY, ORGO_WORKSPACE_ID: "ws-1" }, { apiKey: KEY, workspaceId: "ws-1" }],
     ["fly", { FLY_API_TOKEN: KEY, FLY_APP: "acme-computers" }, { apiToken: KEY, app: "acme-computers" }],
     ["phone-harness", { PHONE_HARNESS_API_KEY: KEY }, { apiKey: KEY }],
@@ -54,6 +56,9 @@ test("computer keys: the saved keys become each provider's create() options; a n
   assert.deepEqual(providerOptions("e2b", { E2B_API_KEY: KEY }, { e2bConnect: "dial" }), { ok: true, options: { apiKey: KEY, connect: "dial" } });
   assert.deepEqual(providerOptions("modal", { MODAL_TOKEN_ID: KEY, MODAL_TOKEN_SECRET: SECRET }, { modalConnect: "dial" }), { ok: true, options: { tokenId: KEY, tokenSecret: SECRET, app: "agentrun", connect: "dial" } });
   assert.deepEqual(providerOptions("daytona", { DAYTONA_API_KEY: KEY, DAYTONA_TARGET: "" }), { ok: true, options: { apiKey: KEY } }, "an empty optional key is left out");
+  // E2B's domain, API URL and template are no secrets: never on the launcher's list, so they stay in the environment.
+  assert.ok(COMPUTER_KEY_NAMES.includes("E2B_API_KEY"));
+  for (const name of ["AGENTRUN_E2B_DOMAIN", "AGENTRUN_E2B_API_URL", "AGENTRUN_E2B_TEMPLATE"]) assert.equal(COMPUTER_KEY_NAMES.includes(name), false, name);
 });
 
 test("computer keys: a required key not saved is refused in words that name what to save; an id the table does not list is no provider", () => {
@@ -197,4 +202,16 @@ test("computer keys: keyChoices' failures: a refused key names the key to check;
   assert.deepEqual(denied, { ok: false, error: { code: "denied", message: "Orgo refused the saved key: check ORGO_API_KEY in Settings → Computers. (the vendor said: 401 for [the key])" } });
   const none = await keyChoices("orgo", "ORGO_WORKSPACE_ID", { keys: { ORGO_API_KEY: KEY } }, { orgo: choosingModule({ ok: false, error: { code: "not_found", message: "this Orgo key's account has no workspace: make one at orgo.ai" } }).create });
   assert.deepEqual(none, { ok: false, error: { code: "not_found", message: "this Orgo key's account has no workspace: make one at orgo.ai" } });
+});
+
+test("a key split by a control character, a terminal sequence or a box in a vendor's words is withheld with them", async () => {
+  const [head, rest] = [KEY.slice(0, 9), KEY.slice(9)];
+  for (const between of ["\u0000", "\u001b[0m", "\ufffe"]) {
+    const leaky = fakeModule({ ok: true, value: { detail: `token ${head}${between}${rest} works` } });
+    const ok = await testConnection("kernel", { keys: { KERNEL_API_KEY: KEY } }, { kernel: leaky.create });
+    assert.deepEqual(ok, { ok: true, value: { detail: "[the key]" } }, JSON.stringify(between));
+  }
+  // Control: words with no key in them are kept as they came.
+  const plain = fakeModule({ ok: true, value: { detail: "token \u001b[0mworks" } });
+  assert.deepEqual(await testConnection("kernel", { keys: { KERNEL_API_KEY: KEY } }, { kernel: plain.create }), { ok: true, value: { detail: "token \u001b[0mworks" } });
 });

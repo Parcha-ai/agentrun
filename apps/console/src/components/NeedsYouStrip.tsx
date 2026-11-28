@@ -1,6 +1,7 @@
 import { cliRunOf, cliRunLabel } from "@/lib/cliLearning";
 import { useEffect, useState } from "react";
 import { ApprovalCard } from "@/components/ApprovalCard";
+import { PackedGrid } from "@/components/PackedGrid";
 import { Button } from "@/components/ui/button";
 import { cost, planOf, soFar, runTitle } from "@/lib/format";
 import { backendSdkLabel, backendSdkOf } from "@/lib/backendSdk";
@@ -98,13 +99,14 @@ export function NeedsYouStrip({ asking, failed, failedAll, live, learning = [], 
         </p>
       ))}
       {asking.length > 0 && (
-        <ul className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+        // Packed: each card its own height, and the next one starts right under it, not under the tallest card beside it.
+        <PackedGrid className="grid-cols-1 gap-3 xl:grid-cols-2" data-asking>
           {asking.map((r) => r.native ? <li key={r.run_id} className="space-y-2 border p-4"><a href={runHref(r.run_id)} className="text-body underline underline-offset-2">{runTitle(r)}</a><p className="text-small text-muted-foreground">Native sessions cannot receive another message. <a href={`#/playground?agent=${encodeURIComponent(r.agent_id)}`} className="underline underline-offset-2">Start a new native run</a> to continue.</p></li> : r.pending?.kind === "approval"
             ? <Approval key={`${r.run_id}:${r.pending.id}`} run={r} pending={r.pending} agentName={agentName(r.agent_id)} at={at} onApprove={approve} />
             : askOf(r)
             ? <Asking key={`${r.run_id}:${askOf(r)!.asked_at}`} run={r} ask={askOf(r)!} agentName={agentName(r.agent_id)} at={at} onHandBack={handBack} />
             : <Question key={`${r.run_id}:${r.pending?.kind === "question" ? r.pending.asked_at : r.pending?.kind === "budget" ? (r.pending.at ?? "") : ""}`} run={r} agentName={agentName(r.agent_id)} at={at} onAnswer={onAnswer} />)}
-        </ul>
+        </PackedGrid>
       )}
       {(groups.length > 0 || backendFailures.length > 0) && (
         <div className="border">
@@ -219,14 +221,22 @@ function Asked({ run, agentName, at, onAnswer }: { run: Run; agentName: string; 
       {sent ? (
         <p className="mt-3 font-mono text-body text-success-text">Answered: {sent} · <a href={runHref(run.run_id)} className="underline-offset-4 hover:underline">open the run</a></p>
       ) : (
-        <form onSubmit={(e) => void send(e)} className="mt-3 flex flex-wrap items-center gap-2">
-          {choices.map((c) => (
-            <button key={c} type="button" onClick={() => setText(c)} className={cn("border px-3 py-1.5 text-body hover:border-border-strong", text === c ? "border-warning text-warning-text" : "border-border")}>{c}</button>
-          ))}
-          <Input value={text} onChange={(e) => setText(e.target.value)} aria-label={`Answer ${agentName}`} placeholder={choices.length ? "Or type an answer…" : "Type an answer…"}
-            className="h-9 min-w-[9rem] flex-1 font-sans text-lead" />
-          <Button type="submit" variant="solid" size="sm" disabled={busy || !text.trim()}>{busy ? "Sending…" : "Send"}</Button>
-          {problem && <p className="w-full font-mono text-small text-destructive-text" role="alert">{problem}</p>}
+        // The choices on a row of their own, and under them the answer box with Send: a box beside the choices took what
+        // width they left, and pushed Send to a line of its own.
+        <form onSubmit={(e) => void send(e)} className="mt-3 space-y-2">
+          {choices.length > 0 && (
+            <div className="flex flex-wrap gap-2" data-choices>
+              {choices.map((c) => (
+                <button key={c} type="button" onClick={() => setText(c)} className={cn("border px-3 py-1.5 text-body hover:border-border-strong", text === c ? "border-warning text-warning-text" : "border-border")}>{c}</button>
+              ))}
+            </div>
+          )}
+          <div className="flex items-center gap-2">
+            <Input value={text} onChange={(e) => setText(e.target.value)} aria-label={`Answer ${agentName}`} placeholder={choices.length ? "Or type an answer…" : "Type an answer…"}
+              fieldSize="sm" className="min-w-0 flex-1 font-sans text-lead" />
+            <Button type="submit" variant="solid" size="sm" className="shrink-0" disabled={busy || !text.trim()}>{busy ? "Sending…" : "Send"}</Button>
+          </div>
+          {problem && <p className="font-mono text-small text-destructive-text" role="alert">{problem}</p>}
         </form>
       )}
     </li>

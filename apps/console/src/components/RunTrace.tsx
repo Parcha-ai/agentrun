@@ -279,7 +279,7 @@ function SpanPanel({ span, trace, run, from, now, reveal, onPick, onClose, onRec
     ["Span", span.id],
   ];
   return (
-    <aside ref={panel} aria-label="Call details" onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); onClose(); } }} className="relative border-t bg-card p-5 xl:w-2/5 xl:max-w-lg xl:shrink-0 xl:overflow-auto xl:border-l xl:border-t-0">
+    <aside ref={panel} aria-label="Call details" onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); onClose(); } }} className="relative border-t bg-card p-5 xl:w-2/5 xl:max-w-lg xl:shrink-0 xl:overflow-auto xl:border-l xl:border-t-0 xl:shadow-drawer">
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
@@ -463,7 +463,6 @@ function lineParts(lines: readonly UsageLine[]) {
 const NO_LINES: Record<NonNullable<RunUsage["reason"]>, string> = {
   running: "Cost by line appears when the run ends.",
   not_booked: "This run's cost is its harness's own figure, so it can't be split by line.",
-  reopened: "A follow-up reopened this learning run, so its cost can't be split by round.",
 };
 
 /** The run's cost line by line, from the server's booking: a row a line, with its quantity, its cost and how the cost
@@ -846,8 +845,9 @@ export function RunTrace({ run, read, readUsage, version, live, panel, now: fixe
   const stop = (cursor !== null && listed.some((s) => s.id === cursor) ? cursor : selected && listed.some((s) => s.id === selected.id) ? selected.id : listed[0]?.id) ?? null;
   const rowButton = (id: string) => rowRefs.current.get(id)?.querySelector("button") ?? null;
   /** What had the keyboard when the panel opened (a row, a finding): it gets it back when the panel closes. One
-   *  opened from inside the panel (the request that called it) keeps the first. */
-  const from = () => { const active = document.activeElement; if (active instanceof HTMLElement && active !== document.body && !active.closest("aside")) opener.current = active; };
+   *  opened from inside the panel (the request that called it) keeps the first. Only this panel is "inside": the run
+   *  may itself sit in another page's <aside> (Agent Factory's session), and a row there is an opener like any other. */
+  const from = () => { const active = document.activeElement; if (active instanceof HTMLElement && active !== document.body && !active.closest('aside[aria-label="Call details"]')) opener.current = active; };
   /** A span opened from the table, the panel or the breakdown: on a narrow screen its panel comes into view. */
   const pick = (id: string) => { from(); setReveal(true); setPicked(id); };
   /** A span picked on the overview: its table row comes into view and is the keyboard's stop, and the view stays put. */

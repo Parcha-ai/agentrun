@@ -126,8 +126,11 @@ export const Motion: Story = {
           ))}
         </ul>
       </Block>
-      <Block title="The one shadow" note="Only under what floats over the page.">
-        <div className="inline-block border border-border-strong bg-card px-4 py-3 text-small shadow-float">shadow-float</div>
+      <Block title="The two shadows" note="Under what floats over the page, and at the left edge of a drawer that opens at a page's right.">
+        <div className="flex flex-wrap items-center gap-8">
+          <div className="inline-block border border-border-strong bg-card px-4 py-3 text-small shadow-float">shadow-float</div>
+          <div className="inline-block border-l bg-background px-4 py-6 text-small shadow-drawer">shadow-drawer</div>
+        </div>
       </Block>
     </Themes>
   ),

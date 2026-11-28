@@ -363,6 +363,16 @@ await browser.reconcile(harness, () => true, context);   // settles what a dead 
   earlier charge billed the session past this one's `at` (a `handle.charge` taken while its release was under way, the
   release confirmed before it), by that many seconds; this charge bills none of it again and never a negative. It must
   not throw: a throw fails the commit, and a call's charge is then carried by the session's next one.
+- `onRaceReleased({ conversationId, tag, ids, madeAt })`: a release by a session's tag ended sessions besides that session's own
+  (a create retried behind the provider's API, or a create race of that tag, left them running), and no record bills
+  their time. Called with their ids once a status read confirms each stopped, including one whose release stopped it and
+  then failed. Each id is saved on the session's inventory row (`owed`) before its stop is sent, and stays there, across
+  a restart, until a read confirms its stop and it is told: the session's own release confirms the ones its row owes, and
+  a run open's reconcile those of a row that ended lost or that a release left owing. Called again for an id only when a
+  process ends between the call and the commit that takes it off the row, so a host books what they ran under one key
+  per id. `madeAt`, by id, is when the provider made each, where its tag lookup said (`LeaseRef.madeAt`): saved on the
+  row (`made`) with the id before its stop is sent, so a later process, whose lookups no longer list a stopped session,
+  hands it on too; absent when the lookup said for none. A throw here never fails the release.
 
 Per conversation, the host writes a `BrowserConfig` (`label`, `run`, and the policy: proxies, verified, captcha, geolocation,
 region, a raw context id, the session timeout, the idle release and the batch timeout; `DEFAULT_BROWSER_POLICY` holds the
@@ -373,7 +383,12 @@ as background tasks, which `waitForIdle` skips and closing the harness aborts: b
 releases gets them at the provider all the same: `handle.close()` waits, 30 s at most, for every one no drain since covered.
 A host that stops waiting on a release calls `handle.charge(conversation, ctx)` to book the time known so far: each session
 still open (live, held, or releasing) is billed through now, not final, its `chargedThrough` moved in the same commit, and
-the release's own charge, when it lands, bills only the time after it. A release the store cannot record (a storage error)
+the release's own charge, when it lands, bills only the time after it. A record with no session id yet (its create under
+way, or its answer lost and the session not yet found by its tag) is not charged: its release's charge bills the whole
+session once it is found. A session already charged through now gets no $0 charge. The row `onSession` is told at a
+release is the session as its release confirmed it: a `handle.charge` taken after that confirm and before its commit
+bills past it, and is in the charges (`onCharge`, the bill) but not in that row, whose `spent` is then short of the
+record's by that charge. A release the store cannot record (a storage error)
 is still made at the provider, and the record is left for the next run's reconcile; once the store has failed,
 `handle.close()` releases every session the process still holds, and over a healthy store it releases nothing. At run open,
 after the extensions are installed and

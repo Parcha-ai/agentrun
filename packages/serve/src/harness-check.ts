@@ -176,6 +176,11 @@ const cutEvery = <T>(value: T, cut: (text: string) => string): T =>
  *  report (`ok: false`, `failures`). Every string of the report and every line it says has the server's secrets and the
  *  recipe's keys cut (runner/redact.ts secretRedactor), so an agent's words in it (a failed turn's stderr, a refusal, a
  *  log line) never carry a key out to the report's file or the terminal. */
+
+/** The tool a name the agent offered its model is one of ours under: `<server>__<tool>`, our server `agentrun` or a run's
+ *  own name (`ar` and exactly 6 lowercase hex digits, the ACP adapter's mcpServerName); undefined for any other. Any name
+ *  of that form, not only this run's: the proxy's policy already refused a request that offered a tool under another. */
+export const checkToolOf = (name: string): string | undefined => /^(?:agentrun|ar[0-9a-f]{6})__(.+)$/s.exec(name)?.[1];
 export async function harnessCheck(options: HarnessCheckOptions): Promise<HarnessCheckReport> {
   // The values cut: the server's secrets, then the recipe's keys' values once it is loaded (checkRun adds them).
   const held = [...hostSecrets(options.env), ...keyValues(options.env)];
@@ -391,10 +396,13 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
     // Its refusals are listed beside it, never counted: a port watcher's GET / is refused too.
     if (recipe.model.billing === "proxy") {
       const firstRequest = messages()[0];
-      const ours = new Set(tools.map((tool) => `agentrun__${tool.name}`));
+      // Ours by our MCP server's name at that start: `agentrun`, or a start's own (`ar` and 6 hex digits) under a recipe
+      // with the title tie (the ACP adapter's mcpServerName).
+      const names = new Set(tools.map((tool) => tool.name));
+      const ours = (name: string) => names.has(checkToolOf(name) ?? "");
       const offered = firstRequest?.tools ?? [];
       const refusals = logs.filter((l) => /refus/i.test(l.message)).map((l) => ({ message: l.message, ...(typeof l.reason === "string" ? { reason: l.reason } : {}) }));
-      stage2.tools_off = { ok: !!firstRequest, firstRequest: offered, notOurs: offered.filter((name) => !ours.has(name)), ...(refusals.length ? { proxyRefusals: refusals } : {}) };
+      stage2.tools_off = { ok: !!firstRequest, firstRequest: offered, notOurs: offered.filter((name) => !ours(name)), ...(refusals.length ? { proxyRefusals: refusals } : {}) };
     } else stage2.tools_off = { ok: null, why: "plan billing: the vendor's model requests never reach this host, so the tools it offers are not seen" };
 
     // Stage 2: the environment is the allowlist.

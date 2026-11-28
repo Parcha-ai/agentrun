@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { RunGraphView, useRunGraph } from "@/components/RunGraphView";
 import { ClientError } from "@/lib/client";
 import type { RunGraph } from "@/lib/runGraph";
+import escalated from "@/fixtures/run.escalated.graph.json";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
@@ -39,6 +40,17 @@ describe("useRunGraph", () => {
 });
 
 describe("RunGraphView", () => {
+  it("opens a node's details as a drawer beside the graph: a line and the drawer's shadow at its left edge", () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    root = createRoot(host);
+    act(() => root!.render(createElement(RunGraphView, { data: escalated.body as unknown as RunGraph, fileUrl: (ref: string) => ref, initial: { path: "/root/steps/0" } })));
+    const drawer = host.querySelector<HTMLElement>("[data-node-drawer]")!;
+    expect(drawer.querySelector('aside[aria-label="Node details"]')).toBeTruthy();
+    // Beside the graph from lg, under it below: the shadow is the breakpoint's, on a positioned box.
+    for (const c of ["relative", "lg:border-l", "lg:shadow-drawer"]) expect(drawer.className.split(" "), c).toContain(c);
+    expect(drawer.className).not.toMatch(/(^| )shadow-(float|drawer)( |$)/);
+  });
   it("draws a run whose graph the server withheld (a saved secret split across its words): no nodes, and says so", () => {
     const data = {
       run: { id: "r", agent: "a", revision: "1", status: "completed", paused: false, startedAt: "2026-11-24T00:00:00Z", endedAt: "2026-11-24T00:00:09Z" },

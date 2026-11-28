@@ -148,6 +148,54 @@ test("retry: true sends again on 429, 5xx and no answer with doubling pauses, up
 	assert.equal(four.calls.length, 3);
 });
 
+test("a 429 or 503 Retry-After longer than the backoff is waited out, in seconds or as an HTTP date, within the call's bound", async () => {
+	const after = (status, value) => async () => new Response("", { status, headers: { "Retry-After": value } });
+	const replies = (...each) => {
+		let n = 0;
+		const calls = [];
+		return { calls, fetch: async (url, init) => (calls.push(String(url)), each[Math.min(n++, each.length - 1)](url, init)) };
+	};
+	const ok200 = async () => new Response("{}", { status: 200 });
+	// Seconds: the vendor asks for 3 s, the backoff would send again after 2 ms.
+	const seconds = replies(after(429, "3"), ok200);
+	const one = client(seconds.fetch, { timeoutMs: 60_000 });
+	assert.equal((await one.api.call("GET", "https://api.example.test/r", { retry: true })).ok, true);
+	assert.deepEqual(one.pauses, [3000]);
+	// An HTTP date 5 s ahead, read on a clock held at a whole second (an HTTP date has no milliseconds): exactly 5 s.
+	const now = Date.now;
+	const frozen = Date.UTC(2026, 10, 28, 12, 0, 0);
+	Date.now = () => frozen;
+	try {
+		const dated = replies(after(503, new Date(frozen + 5_000).toUTCString()), ok200);
+		const two = client(dated.fetch, { timeoutMs: 60_000 });
+		assert.equal((await two.api.call("GET", "https://api.example.test/r", { retry: true })).ok, true);
+		assert.deepEqual(two.pauses, [5000]);
+	} finally {
+		Date.now = now;
+	}
+	// A retry rule of the vendor's own honours it too.
+	const own = replies(after(503, "2"), ok200);
+	const three = client(own.fetch, { timeoutMs: 60_000 });
+	assert.equal((await three.api.call("POST", "https://api.example.test/w", { retry: (status) => status === 503 })).ok, true);
+	assert.deepEqual(three.pauses, [2000]);
+	// Shorter than the backoff, a date in the past, or words that are neither: the backoff.
+	for (const value of ["0", new Date(Date.now() - 60_000).toUTCString(), "soon"]) {
+		const short = replies(after(429, value), ok200);
+		const four = client(short.fetch, { timeoutMs: 60_000 });
+		assert.equal((await four.api.call("GET", "https://api.example.test/r", { retry: true })).ok, true, value);
+		assert.deepEqual(four.pauses, [2], value);
+	}
+	// Longer than the call's bound: no early send, the failure now, with the wait it was asked for.
+	const long = replies(after(429, "120"), ok200);
+	const five = client(long.fetch, { timeoutMs: 60_000 });
+	const refused = await five.api.call("GET", "https://api.example.test/r", { retry: true });
+	assert.equal(long.calls.length, 1);
+	assert.deepEqual(five.pauses, []);
+	assert.equal(refused.ok, false);
+	assert.equal(refused.error.code, "limit");
+	assert.match(refused.error.message, /^GET \/r: 429 .*Retry-After 120 s.*bound of 60 s/);
+});
+
 test("retry as a function resends only the answers it names, never no answer", async () => {
 	const own = (status) => status === 500;
 	const first = answers({ status: 500 }, { status: 200 });

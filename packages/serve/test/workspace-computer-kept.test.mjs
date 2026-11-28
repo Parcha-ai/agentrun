@@ -834,6 +834,7 @@ test("a sandbox parked and resumed within 10 minutes is the same sandbox: no cre
   const said = [];
   const first = await one.claim(3);
   assert.equal(first.keeps, "sandbox", "the claim's sandbox is one a park keeps");
+  assert.equal(first.fresh, true, "one this claim started (pr-checkout.ts may hand it a token)");
   // What the run left in the sandbox outside its folder before the park (/tmp/outside-1), as the vendor's machine holds it.
   one.account.computers.get("c1").outside = "/tmp/outside-1";
   assert.equal(await first.park("approval"), true, "kept");
@@ -846,6 +847,7 @@ test("a sandbox parked and resumed within 10 minutes is the same sandbox: no cre
   assert.deepEqual(creates(one.account), ["c1"], "no create");
   assert.equal(resumed.computer.kind, "sandbox");
   assert.deepEqual([resumed.replaced, resumed.keeps], [undefined, "sandbox"], "not replaced (no replaced line, no note); kept again at a later park");
+  assert.equal(resumed.fresh, undefined, "not one this claim started: what an earlier claim left in it may still run, so no checkout is made in it");
   assert.equal(one.account.computers.get("c1").outside, "/tmp/outside-1", "the file outside the run folder is still there");
   assert.equal(said.length, 1);
   assert.equal(computerReadyWords(said[0]), "The sandbox is ready: Linux (amd64), from Docker. It's the same sandbox, as the wait left it.");
@@ -862,6 +864,7 @@ test("a sandbox resumed after 10 minutes is a new one: the kept one let go, said
   assert.deepEqual(creates(one.account), ["c1", "c2"], "a new sandbox");
   assert.deepEqual(deletes(one.account), ["c1"], "the kept one let go before it");
   assert.deepEqual(resumed.replaced, { kind: "sandbox", folderKept: false, lapsed: true });
+  assert.equal(resumed.fresh, true, "a new one, this claim's own start");
   assert.equal(said.length, 1, "said once");
   assert.equal(computerReadyWords(said[0]), "The sandbox is ready: Linux (amd64), from Docker. The sandbox wasn't kept: 10 minutes passed. It's a new sandbox: the one before is gone, with what was on it.");
   assert.equal(computerReplacedNote(resumed.replaced), "AgentRun server note: your computer was replaced. The earlier one is gone, with its files and processes. Check its files again before relying on them.");
@@ -2057,6 +2060,56 @@ test("a cap with no room for a computer's next stretch pauses the run once, and 
   assert.equal(pauses[0].forGood, false, "a raise lets it go on");
   assert.deepEqual(bookings(admits), [["vcpu", 0.006], ["memory", 0.0024], ["vcpu", 0.006], ["memory", 0.0024]], "both stretches booked");
   await held.release();
+});
+
+/** A ledger whose cap judges only once the run's spec is built (RunLedger.judges): each step waits for the build
+ *  (`built()`), and fails with it (`failed()`). */
+function buildingLedger() {
+  const { admits, ledger } = ledgerOf();
+  let judges = false;
+  let built;
+  let failed;
+  const spec = new Promise((resolve, reject) => ((built = resolve), (failed = reject)));
+  spec.catch(() => undefined);
+  const paid = {
+    admit: async (request) => (await spec, ledger.paid.admit(request)),
+    settle: async (id, usd, options) => (await spec, ledger.paid.settle(id, usd, options)),
+  };
+  return { admits, ledger: { paid, pause: ledger.pause, judges: () => judges }, built: () => ((judges = true), built()), failed: () => failed(new Error("the run's spec failed")) };
+}
+/** Its interval's booked time, once the writes after a booking have landed (real time, bounded). */
+async function bookedMsOf(one, want) {
+  for (let i = 0; i < 200 && (await intervalsOf(one))[0]?.bookedMs !== want; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  return (await intervalsOf(one))[0]?.bookedMs;
+}
+
+test("a computer let go while the run's spec is built has its time booked once the cap judges, never waited for at its delete and never dropped", async () => {
+  const one = await server();
+  const building = buildingLedger();
+  const held = await one.claim(3, { spec: SIZED, compute: { ledger: building.ledger, env: PRICES, every: ticker().every } });
+  one.clock.now = T0 + 60_000;
+  // Its delete answers while the spec is still built: the stop does not wait on a cap that can't judge yet.
+  await held.release();
+  assert.deepEqual(bookings(building.admits), [], "nothing booked while the cap can't judge");
+  building.built();
+  await until(() => bookings(building.admits).length === 2, "its time booked once the cap judges");
+  // 60 s of 2 vCPUs at $0.00001: $0.0012; of 4 GiB at $0.000002: $0.00048.
+  assert.deepEqual(bookings(building.admits), [["vcpu", 0.0012], ["memory", 0.00048]]);
+  assert.equal(await bookedMsOf(one, 60_000), 60_000, "its interval says how much was booked");
+});
+
+test("a computer let go because the run's spec failed books nothing, and says so on the log: its time is the run's unheld time", async () => {
+  const one = await server();
+  const building = buildingLedger();
+  const said = [];
+  const held = await one.claim(3, { spec: SIZED, compute: { ledger: building.ledger, env: PRICES, every: ticker().every }, log: (line) => void said.push(line) });
+  one.clock.now = T0 + 60_000;
+  await held.release();
+  building.failed();
+  await until(() => said.filter((line) => line.includes("compute_spend_unbooked")).length === 2, "each resource's unbooked time said");
+  assert.ok(said.some((line) => /60 s of e2b c1's vcpu time was not booked on the run's ledger \(.*the run's spec failed/.test(line)), said.join("\n"));
+  assert.deepEqual(bookings(building.admits), []);
+  assert.equal(await bookedMsOf(one, 0), 0, "none of it booked");
 });
 
 test("a computer with no price set is never refused and never held: it runs as before, its time on the usage read alone", async () => {

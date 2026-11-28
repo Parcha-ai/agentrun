@@ -189,6 +189,24 @@ test("without the ui group: a screen with no app in front lists the apps, and an
 	assert.deepEqual(calls[0].params, { id: "xfce4-terminal" });
 });
 
+// A Linux computerd that predates its own url check put a url starting with "-" into the app's argv as a flag
+// (Chromium's --renderer-cmd-prefix runs a command): the surface refuses one before the call leaves it, on every
+// computer, in computerd's words.
+test("apps.open refuses a url that starts with a dash, after whitespace too, and sends nothing", async () => {
+	const { surface, calls } = surfaceOf({ groups: ["screen", "input.pointer", "input.keys", "apps"], os: "linux", apps: [{ id: "chromium" }], foreground: null });
+	for (const url of ["--renderer-cmd-prefix=touch /tmp/owned", "-new-instance", "-", " \t-private", "\n--x"]) {
+		await assert.rejects(
+			surface.call("apps.open", { id: "chromium", url }),
+			(error) => error instanceof SurfaceError && error.kind === "invalid" && error.message === `url ${JSON.stringify(url)} starts with "-": the app would take it as a flag, not a url`,
+			`apps.open with url ${JSON.stringify(url)}`,
+		);
+	}
+	assert.deepEqual(calls, [], "a refused url sends nothing");
+	await surface.call("apps.open", { id: "chromium", url: "https://example.com/-x" });
+	await surface.call("apps.open", { id: "chromium", url: "/tmp/-notes.txt" });
+	assert.deepEqual(calls.map((call) => call.params.url), ["https://example.com/-x", "/tmp/-notes.txt"]);
+});
+
 test("without the ui group: a ref, an into or an expect is refused before anything runs", async () => {
 	const { surface, calls } = surfaceOf({ groups: ["screen", "input.pointer"] });
 	await assert.rejects(surface.call("act", { steps: [{ press: "@e3" }] }), (error) => error instanceof SurfaceError && error.kind === "unsupported" && /needs the ui group/.test(error.message));

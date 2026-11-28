@@ -68,13 +68,16 @@ test("an Exa contents request is $0.001 a URL for each content asked; an endpoin
   assert.equal(exaFeeOf("/answer", { query: "q" }), undefined);
 });
 
-test("a Firecrawl search is 2 credits per 10 results (and a credit a result it scrapes), a scrape 1 credit (and 4 more for JSON), at $0.00099 a credit", () => {
+test("a Firecrawl search is 2 credits per 10 results (and each result it scrapes at its PDF page cap), a scrape its PDF page cap (and 4 more for JSON), at $0.00099 a credit; a proxy other than basic has no price", () => {
   const credits = (n) => Math.round(n * 0.00099 * 1e6) / 1e6;
   assert.equal(firecrawlFeeOf("/v2/search", { query: "q" }).usd, credits(2), "10 results by default");
   assert.equal(firecrawlFeeOf("/v2/search", { query: "q", limit: 3 }).usd, credits(2));
   assert.equal(firecrawlFeeOf("/v2/search", { query: "q", limit: 25 }).usd, credits(6));
-  assert.equal(firecrawlFeeOf("/v2/search", { query: "q", limit: 5, scrapeOptions: { formats: ["markdown"] } }).usd, credits(7));
-  assert.equal(firecrawlFeeOf("/v2/scrape", { url: "https://a.example/", formats: ["markdown"] }).usd, credits(1));
-  assert.equal(firecrawlFeeOf("/v2/scrape", { url: "https://a.example/", formats: ["markdown", { type: "json", prompt: "p" }] }).usd, credits(5));
+  const read = (pages) => ({ proxy: "basic", parsers: [{ type: "pdf", maxPages: pages }] });
+  assert.equal(firecrawlFeeOf("/v2/search", { query: "q", limit: 5, scrapeOptions: { formats: ["markdown"], ...read(2) } }).usd, credits(12));
+  assert.equal(firecrawlFeeOf("/v2/search", { query: "q", limit: 5, scrapeOptions: { formats: ["markdown"] } }), undefined, "a scraping search leaving the proxy to Firecrawl");
+  assert.equal(firecrawlFeeOf("/v2/scrape", { url: "https://a.example/", formats: ["markdown"], ...read(1) }).usd, credits(1));
+  assert.equal(firecrawlFeeOf("/v2/scrape", { url: "https://a.example/", formats: ["markdown", { type: "json", prompt: "p" }], ...read(1) }).usd, credits(5));
+  assert.equal(firecrawlFeeOf("/v2/scrape", { url: "https://a.example/", formats: ["markdown"] }), undefined, "a scrape leaving the proxy to Firecrawl");
   assert.equal(firecrawlFeeOf("/v2/crawl", { url: "https://a.example/" }), undefined);
 });

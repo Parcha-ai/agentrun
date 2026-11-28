@@ -7,6 +7,7 @@
 // them from the agent's learning at the claim's seed itself (learning-seed.ts workflowsAt).
 import type { Context } from "@earendil-works/chord/context";
 import type { LearnedWorkflow, Shown } from "../learning.js";
+import type { AtRunEnd } from "../learning-work.js";
 import type { Recorded } from "../learn/replay-calls.js";
 import type { RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
@@ -34,6 +35,10 @@ export interface LearnedFirstDeps {
   readonly log: (line: string) => void;
   readonly shown: () => Promise<Shown>;
   readonly spendOff?: (what: string) => string | undefined;
+  /** Whether the claim holds its run's own key now, and where it queues what starts at its run's end (promotion.ts
+   *  startCheck: a check on that key starts there). */
+  readonly keyed?: () => boolean;
+  readonly atEnd?: AtRunEnd;
 }
 
 /** What the claim starts with: its first choice, the workflows its learned_workflow tool runs, and a replay run's
@@ -48,7 +53,7 @@ export interface LearnedFirst {
  *  claim that is refused throws ClaimRefused, as replayClaimed does. */
 export async function learnedFirst(deps: LearnedFirstDeps, laid: readonly LearnedWorkflow[]): Promise<LearnedFirst> {
   const { store, agentId, runId, revisionId, launch, context, log, shown } = deps;
-  const own = { ...(deps.sealKey ? { sealKey: deps.sealKey } : {}), ...(deps.spendOff ? { spendOff: deps.spendOff } : {}), ...(deps.admitAuxiliary ? { admitAuxiliary: deps.admitAuxiliary } : {}) };
+  const own = { ...(deps.sealKey ? { sealKey: deps.sealKey } : {}), ...(deps.spendOff ? { spendOff: deps.spendOff } : {}), ...(deps.admitAuxiliary ? { admitAuxiliary: deps.admitAuxiliary } : {}), ...(deps.keyed ? { keyed: deps.keyed } : {}), ...(deps.atEnd ? { atEnd: deps.atEnd } : {}) };
   // A replay run lays only the workflow it replays (promotion.ts replayLaid).
   const laidFlows = replayLaid(launch, laid);
   if (launch.learning && !launch.replay && !launch.audit) await settleAudits({ store, agentId, revisionId, context, log, shown, ...own });

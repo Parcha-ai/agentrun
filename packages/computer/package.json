@@ -1,6 +1,6 @@
 {
   "name": "@parcha/agentrun-computer",
-  "version": "0.1.0-beta.62",
+  "version": "0.1.0-beta.68",
   "description": "The open platform's computer protocol: a daemon in every computer, and one provisioner per vendor, starting with Docker.",
   "keywords": [
     "agentrun",
@@ -10,7 +10,10 @@
     "daytona",
     "boxd",
     "smolcloud",
-    "groundbox"
+    "groundbox",
+    "vercel",
+    "sprites",
+    "instabox"
   ],
   "type": "module",
   "license": "Apache-2.0",
@@ -80,6 +83,18 @@
     "./groundbox": {
       "types": "./dist/groundbox.d.ts",
       "default": "./dist/groundbox.js"
+    },
+    "./vercel": {
+      "types": "./dist/vercel.d.ts",
+      "default": "./dist/vercel.js"
+    },
+    "./sprites": {
+      "types": "./dist/sprites.d.ts",
+      "default": "./dist/sprites.js"
+    },
+    "./instabox": {
+      "types": "./dist/instabox.d.ts",
+      "default": "./dist/instabox.js"
     },
     "./orgo": {
       "types": "./dist/orgo.d.ts",

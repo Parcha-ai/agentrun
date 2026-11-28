@@ -16,7 +16,7 @@
 // with names no key, no account key and no database or Redis credential, and carries no environment at all.
 import { isIP } from "node:net";
 import { posix } from "node:path";
-import { type AttachHub, type ComputerSpec, DEFAULT_DOCKER_IMAGE, DOCKER_RECIPE, DOCKER_RECIPE_HAS, type DockerVolume, type HostedDial, PROVIDERS, providerFor, readBackOf, servingRefusals, SETTING_KINDS } from "@parcha/agentrun-computer";
+import { type AttachHub, type ComputerSpec, DEFAULT_DOCKER_IMAGE, DEFAULT_MAX_TUNNELS, DOCKER_RECIPE, DOCKER_RECIPE_HAS, type DockerVolume, type HostedDial, MAX_TUNNELS_CEILING, maxTunnelsOf, PROVIDERS, providerFor, readBackOf, servingRefusals, SETTING_KINDS } from "@parcha/agentrun-computer";
 // The local container engine's provider, for its check() of the operator's size settings at the start (dockerLimitsOf).
 import { DockerProvider } from "@parcha/agentrun-computer/docker";
 import { DOCKER_IMAGE_ENV } from "../box-image.js";
@@ -27,12 +27,12 @@ import { KEY_TABLE, type ProviderFactories } from "../computer-keys.js";
 import type { FauxComputers } from "../faux-computers.js";
 import { envValue, type KeyEnv, keyReader } from "../key-meta.js";
 import { boxAllowOf, boxAllowSetIn } from "../box-settings.js";
-import { BOX_CPUS_ENV, BOX_MEMORY_ENV, BOX_PIDS_ENV } from "../start-switches.js";
+import { BOX_CPUS_ENV, BOX_MAX_TUNNELS_ENV, BOX_MEMORY_ENV, BOX_PIDS_ENV } from "../start-switches.js";
 import { readLaunchBody } from "../run-launch.js";
 import type { Store } from "../store/index.js";
 import { SERVER_NOTE_LABEL } from "@parcha/agentrun-kernel/kernel/cap";
 import type { PairedRelay } from "./attached-computers.js";
-import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type ComputerSaid, type KeptKind, type OpenComputerView, type Replaced } from "./computer-for-claim.js";
+import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type ComputerSaid, type KeptKind, type OpenComputerView, type Reach, type Replaced } from "./computer-for-claim.js";
 import { computerHeldWords, computerLapsedWords, computerLostWords, computerRefusedWords, KEEP_WORDS } from "./computer-kept.js";
 import { storeLedger } from "./computer-ledger.js";
 import { computerProviderFactories, computerProviderMakers, type ProviderLoad, providerSecretsOf } from "./computer-providers.js";
@@ -50,7 +50,7 @@ const refused = (words: string): Error => Object.assign(new Error(words), { code
 /** The settings that size a Docker computer (a sandbox or a desktop): its CPUs, its memory (swap included) and how many
  *  processes and threads it may hold at once. Unset, the Docker provider's own defaults hold. A vendor's computer sizes
  *  itself and is never given them. */
-export { BOX_CPUS_ENV, BOX_MEMORY_ENV, BOX_PIDS_ENV };
+export { BOX_CPUS_ENV, BOX_MAX_TUNNELS_ENV, BOX_MEMORY_ENV, BOX_PIDS_ENV };
 
 /** A Docker computer's size, as the Docker provider takes it on its spec. */
 export type DockerLimits = Pick<ComputerSpec, "cpus" | "memoryMb" | "pids">;
@@ -96,6 +96,17 @@ export function dockerLimitsOf(env: KeyEnv): DockerLimits {
     if (refusal) throw new Error(`${name} ${JSON.stringify(envValue(env, name)!.trim())} is refused by the Docker provider: ${refusal.message} (${name} is ${form})`);
   }
   return limits as DockerLimits;
+}
+
+/** `env`'s AGENTRUN_BOX_MAX_TUNNELS: the cap on connections a Docker computer's egress proxy holds open at once, or
+ *  undefined when unset or empty, so the proxy's default (DEFAULT_MAX_TUNNELS) holds. A value that is not a whole number
+ *  from 1 to MAX_TUNNELS_CEILING throws, naming it: the server's start checks the setting, so no run meets one. */
+export function boxMaxTunnelsOf(env: KeyEnv): number | undefined {
+  const value = envValue(env, BOX_MAX_TUNNELS_ENV)?.trim();
+  if (value === undefined || value === "") return undefined;
+  const cap = maxTunnelsOf(value);
+  if (cap === undefined) throw new Error(`${BOX_MAX_TUNNELS_ENV} ${JSON.stringify(value)} is not a whole number from 1 to ${MAX_TUNNELS_CEILING}: it caps the connections a Docker computer's egress proxy holds open at once (unset, ${DEFAULT_MAX_TUNNELS})`);
+  return cap;
 }
 
 /** The Docker host's own addresses, for a Docker provider whose interfaces aren't that host's (the server in a
@@ -182,7 +193,8 @@ export interface ComputerDepsOptions {
  *  this machine's container engine, its descriptor's `local`, Docker's: the owner's AGENTRUN_DOCKER_IMAGE when set, else
  *  for a sandbox the package's recipe, which its prepareImage() builds, and a desktop refused in words, needing an image
  *  with an X server, which the recipe lacks; a provider whose descriptor declares imageEnv (Daytona's
- *  AGENTRUN_DAYTONA_SNAPSHOT): that variable's value in `env` when set; any other provider's, and such a one's while it
+ *  AGENTRUN_DAYTONA_SNAPSHOT, E2B's AGENTRUN_E2B_TEMPLATE): that variable's value in `env` when set (E2B's provider is
+ *  made with it too, and its prepareImage() answers it); any other provider's, and such a one's while it
  *  is unset: its descriptor's defaultImage for the kind, the computer package's PROVIDERS[].defaultImage; none for a
  *  vendor that prepares its own image and names no default (Agent37's), which the claim starts from what its
  *  prepareImage() answers; a kind with none otherwise refused in words), the leak bound for its lifetime (its clean end is the run's release), and its
@@ -327,6 +339,17 @@ export const computerFilesNote = ({ kind, screenshot, writes, outlives }: { read
   return `${SERVER_NOTE_LABEL}this ${kind}'s own disk is not this run's files: nothing saved on the ${kind} reaches the user, and ${outlives ? `it stays on the ${kind} after the run ends` : "it is deleted when the run ends"}. ${keep}`;
 };
 
+/** What the run's model is told, once in its run, when its computer reaches less than the internet (ClaimComputer.reach),
+ *  labelled as the server's (SERVER_NOTE_LABEL), so it never spends its steps retrying what is refused there: with
+ *  "none", that nothing on it reaches the internet; with a list, the hosts it reaches, on ports 80 and 443 alone (the
+ *  egress proxy's rule, hosted/network.ts), and that anything else is refused. Tools that run outside the computer (the
+ *  server's own) are not held to it. */
+export const computerReachNote = ({ kind, reach }: { readonly kind: "sandbox" | "desktop" | "phone"; readonly reach: Reach }): string => {
+  const after = `Don't retry what fails for that; say in your answer what needed it. Tools of yours that don't run on the ${kind} aren't affected.`;
+  if (reach === "none") return `${SERVER_NOTE_LABEL}this ${kind} has no internet access: nothing on it reaches a website or a server outside it, so a page, a download or a package install from the internet fails there. ${after}`;
+  return `${SERVER_NOTE_LABEL}this ${kind} reaches only these hosts on the internet, on ports 80 and 443: ${reach.allow.join(", ")}. Anything else from it is refused. ${after}`;
+};
+
 /** The claim's computer as the runner's specs call it: what the run's launch lets the computer reach (its box_allow),
  *  read from the launch row when the store has one and the claim does not say, then computerForClaim. */
 export const claimComputer = async (
@@ -367,8 +390,10 @@ export function computerDepsFrom(options: ComputerDepsOptions): { computerForCla
   // vendor that prepares its image (Agent37's) knows its own.
   const named = envValue(env, DOCKER_IMAGE_ENV);
   const preparedImage = named !== undefined ? { image: named } : { recipe: DOCKER_RECIPE };
-  // The operator's Docker host addresses (AGENTRUN_DOCKER_HOST_ADDRESSES), checked once here.
+  // The operator's Docker host addresses (AGENTRUN_DOCKER_HOST_ADDRESSES) and egress proxy cap (AGENTRUN_BOX_MAX_TUNNELS),
+  // checked once here.
   const namedAddresses = dockerHostAddressesOf(env);
+  const maxTunnels = boxMaxTunnelsOf(env);
   // Where this process's Docker has the data, read once, when a Docker provider is first built.
   let paths: Promise<DockerPaths> | undefined;
   /** A local provider's host options (its descriptor's `local`: its computers run on this machine's container engine):
@@ -388,7 +413,8 @@ export function computerDepsFrom(options: ComputerDepsOptions): { computerForCla
     const allow = boxAllow ?? boxAllowOf(env as NodeJS.ProcessEnv);
     const read = volume && Array.isArray(allow) && options.hostAddresses ? await options.hostAddresses() : undefined;
     const addresses = read ? unionOf(read, namedAddresses).addresses : (namedAddresses ?? []);
-    return { ...(volume ?? {}), ...(addresses.length > 0 ? { egress: { hostAddresses: addresses } } : {}) };
+    const egress = { ...(addresses.length > 0 ? { hostAddresses: addresses } : {}), ...(maxTunnels === undefined ? {} : { maxTunnels }) };
+    return { ...(volume ?? {}), ...(Object.keys(egress).length > 0 ? { egress } : {}) };
   };
   /** The options a provider takes beside its keys, by what its descriptor declares, never by its id: for a local one,
    *  its image source and its host options; for a remote one, the server's dial; for one that makes secrets of its own

@@ -11,14 +11,20 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { queued, registryPin, storeOn } from "./store-helpers.mjs";
+import { agentWithRevision, queued, registryPin, storeOn } from "./store-helpers.mjs";
 import { stranger } from "./fixtures/stranger.mjs";
 
-const { githubAppAccess } = await import("../dist/runner/github-app.js");
+const { githubAppAccess: accessOf } = await import("../dist/runner/github-app.js");
+/** githubAppAccess for the claim of run-1, a run in no workspace, queued at its first use. */
+async function githubAppAccess(store, key, input, options = {}) {
+  if (!(await store.runs.get("run-1"))) await queued(store);
+  return accessOf(store, key, input, { run: "run-1", ...options });
+}
 const { mcpClaim } = await import("../dist/runner/mcp-claim.js");
 const { mcpGateway } = await import("../dist/mcp-gateway.js");
 const { heldRedactor, keepText } = await import("../dist/runner/redact.js");
 const { githubTokens, GITHUB_UNUSABLE } = await import("../dist/runner/mcp-github.js");
+const { WORKSPACE_NO_GITHUB } = await import("../dist/workspace-scope.js");
 const { mcpForClaim } = await import("../dist/runner/mcp-run.js");
 const KEY = randomBytes(32);
 const { privateKey: PEM } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs1", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
@@ -83,6 +89,56 @@ test("no App the runner can open is no access: never connected, no seal key, or 
   await connected(store, { key: randomBytes(32) });
   assert.equal(await githubAppAccess(store, KEY, { content: "https://github.com/acme/widgets" }), undefined, "another key's rows");
   assert.equal(await githubAppAccess(store, undefined, { content: "https://github.com/acme/widgets" }), undefined, "no seal key");
+});
+
+/** Why a workspace has no token of the server's App, in the words a run's checkout and its github_app calls give, and a
+ *  workspace's suggestions and GitHub requests too (WORKSPACE_NO_GITHUB). */
+const IN_WORKSPACE = "a workspace doesn't use this server's GitHub App, so only public repositories are read";
+
+test("a run in a workspace, its own agent's or its own, is withheld the App in words and mints nothing; a run the store does not hold has no access: the App is never opened and GitHub is asked nothing", async (t) => {
+  const { store } = await storeOn(t);
+  await connected(store);
+  const github = await fakeGitHub(t);
+  await store.agents.create({ id: "scoped", name: "scoped", workspace: "org:acme" }, { id: "rev-scoped", kind: "agentic", body: { instructions: "Answer." } });
+  await store.runs.create({ id: "run-scoped", agentId: "scoped", revisionId: "rev-scoped" });
+  await agentWithRevision(store);
+  await store.runs.create({ id: "run-own", agentId: "agent-1", revisionId: "rev-1", workspace: "org:acme" });
+  assert.equal(GITHUB_UNUSABLE.inWorkspace, IN_WORKSPACE);
+  assert.equal(WORKSPACE_NO_GITHUB, IN_WORKSPACE, "a workspace's requests are refused in the same words");
+  for (const run of ["run-scoped", "run-own"]) {
+    const access = await accessOf(store, KEY, { content: "Fix https://github.com/acme/widgets" }, { run, api: github.api });
+    assert.equal(access?.withheld, IN_WORKSPACE, run);
+    assert.equal(access.target, undefined, `${run}: no repository to mint for`);
+    assert.deepEqual(await access.mint({ repo: "acme/widgets" }, { contents: "read" }), { ok: false, reason: "withheld", message: IN_WORKSPACE }, run);
+  }
+  assert.equal(await accessOf(store, KEY, { content: "Fix https://github.com/acme/widgets" }, { run: "run-unknown", api: github.api }), undefined, "run-unknown");
+  assert.deepEqual(github.asked, []);
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
+  assert.equal((await (await accessOf(store, KEY, { content: "Fix https://github.com/acme/widgets" }, { run: "run-1", api: github.api })).mint({ repo: "acme/widgets" })).ok, true, "the same server's run in no workspace");
+});
+
+test("a run in a workspace granted a github_app server's tools: its calls are refused unsent in the withheld words, never 'no GitHub App' on a server that has one, and its tools' listing is refused in the same words", async (t) => {
+  const { store } = await storeOn(t);
+  await connected(store);
+  const github = await fakeGitHub(t);
+  const fake = await startFakeMcp({ token: () => true });
+  t.after(() => fake.close());
+  const ADD = { name: "add", title: "Add", description: "Add two numbers.", inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] }, annotations: { readOnlyHint: true } };
+  await store.mcp.put({ name: "gh", url: fake.url, auth: "github_app", tools: [ADD], sealed: null });
+  await store.agents.create({ id: "scoped", name: "scoped", workspace: "org:acme" }, { id: "rev-scoped", kind: "agentic", body: { instructions: "Answer." }, mcpPin: await registryPin(store) });
+  await store.runs.create({ id: "run-scoped", agentId: "scoped", revisionId: "rev-scoped" });
+  const claim = await store.claim("run-scoped", "runner-a", { leaseMs: 60_000 });
+  const githubApp = await accessOf(store, KEY, { content: "Fix https://github.com/acme/widgets" }, { run: "run-scoped", api: github.api });
+  const step = await mcpClaim({ store, claim, grants: ["mcp:gh/add"], sealKey: KEY, signal: new AbortController().signal, githubApp, githubMcpOrigin: new URL(fake.url).origin });
+  t.after(() => step.release());
+  const work = mkdtempSync(join(tmpdir(), "github-app-"));
+  t.after(() => rmSync(work, { recursive: true, force: true }));
+  const answer = await mcpGateway({ redact: keepText, pin: step.pin, credentials: step.credentials, work: () => work }).call("gh", "add", { a: 1, b: 1 }, { signal: new AbortController().signal });
+  assert.equal(answer.isError, true);
+  assert.equal(answer.content[0].text, `The MCP server gh's credential can't be used right now: ${IN_WORKSPACE}.`);
+  const { registryListing } = await import("../dist/mcp-pin-first.js");
+  await assert.rejects(registryListing(store, KEY, { loopback: true, githubApp, appOrigin: new URL(fake.url).origin })("gh"), (error) => error.message === IN_WORKSPACE);
+  assert.deepEqual(github.asked, [], "GitHub was asked nothing");
 });
 
 test("a run that names no repository has access with no target: the claim step refuses its calls in words", async (t) => {
@@ -152,12 +208,12 @@ test("the GitHub API base has one way in, a test runner's option: no api_url (or
   const { GITHUB_FIELDS } = await import("../dist/github.js");
   assert.deepEqual(Object.values(GITHUB_FIELDS).sort(), ["app_id", "client_id", "installations", "private_key", "settings_url", "slug", "webhook_secret"], "the App's fields: no API base among them (settings_url is the App's page on GitHub, shown to its owner)");
   const githubApi = files.filter((f) => /\bgithubApi\b/.test(text[f])).sort();
-  // run-child-host.ts hands the spec deps' option to a run's own process in its loop's start message, and run-child.ts
+  // run-child-host.ts hands the spec deps' option to a run's own process in its loop's start message, and run-child-deps.ts
   // puts it back in that process's spec deps: the same option carried, never read from anywhere else.
-  assert.deepEqual(githubApi, ["runner/adapter-run-spec.ts", "runner/cli-run-spec.ts", "runner/github-app.ts", "runner/pr-checkout.ts", "runner/run-child-host.ts", "runner/run-child.ts", "server.ts"], "the spec deps (a test runner's option, which github-app.ts's doc names), carried to a run's process, the checkout's revoke beside the mint, and the server's own test seam");
+  assert.deepEqual(githubApi, ["runner/adapter-run-spec.ts", "runner/cli-run-spec.ts", "runner/github-app.ts", "runner/pr-checkout.ts", "runner/run-child-deps.ts", "runner/run-child-host.ts", "server.ts"], "the spec deps (a test runner's option, which github-app.ts's doc names), carried to a run's process, the checkout's revoke beside the mint, and the server's own test seam");
   // GitHub's site a run's pull request is fetched from (pr-checkout.ts) likewise: the spec deps' test option alone.
   const githubWeb = files.filter((f) => /\bgithubWeb\b/.test(text[f])).sort();
-  assert.deepEqual(githubWeb, ["runner/adapter-run-spec.ts", "runner/pr-checkout.ts", "runner/run-child-host.ts", "runner/run-child.ts"], "the spec deps, carried to a run's process, and the checkout that reads them");
+  assert.deepEqual(githubWeb, ["runner/adapter-run-spec.ts", "runner/pr-checkout.ts", "runner/run-child-deps.ts", "runner/run-child-host.ts"], "the spec deps, carried to a run's process, and the checkout that reads them");
   for (const f of ["cli.ts", "runner/main.ts", "server.ts"]) assert.ok(!/githubWeb|GITHUB_WEB_URL/.test(text[f]), `${f} maps nothing onto it`);
   assert.ok(!/githubApi|GITHUB_API_URL|github-api/.test(text["cli.ts"]), "the CLI maps nothing onto it");
   assert.deepEqual(files.filter((f) => /process\.env\.[A-Z_]*GITHUB|env\[["'][A-Z_]*GITHUB/.test(text[f])), [], "no environment variable names it");
@@ -166,7 +222,7 @@ test("the GitHub API base has one way in, a test runner's option: no api_url (or
   // githubMcpOrigin (test/support.mjs startInProcessRunner); the CLI and the runner's main never name it; no environment
   // variable or flag maps onto it; absent, GitHub's hosted MCP.
   const githubMcpOrigin = files.filter((f) => /\bgithubMcpOrigin\b/.test(text[f])).sort();
-  assert.deepEqual(githubMcpOrigin, ["mcp-servers-store.ts", "mcp-store.ts", "runner/adapter-run-spec.ts", "runner/cli-run-spec.ts", "runner/mcp-claim.ts", "runner/mcp-run.ts", "runner/run-child-host.ts", "runner/run-child.ts", "server.ts"], "the claim step's and registries' seam, the spec deps and mcpForClaim that hand it on (to a run's process too), and the server's own test seam");
+  assert.deepEqual(githubMcpOrigin, ["mcp-servers-store.ts", "mcp-store.ts", "runner/adapter-run-spec.ts", "runner/cli-run-spec.ts", "runner/mcp-claim.ts", "runner/mcp-run.ts", "runner/run-child-deps.ts", "runner/run-child-host.ts", "server.ts"], "the claim step's and registries' seam, the spec deps and mcpForClaim that hand it on (to a run's process too), and the server's own test seam");
   for (const f of ["cli.ts", "runner/main.ts"]) assert.ok(!/githubMcpOrigin|GITHUB_MCP_ORIGIN|mcp-origin/i.test(text[f]), `${f} maps nothing onto it`);
   const lines = Object.entries(text).flatMap(([f, body]) => body.split("\n").map((line) => [f, line]));
   assert.deepEqual(lines.filter(([, line]) => /githubMcpOrigin|GITHUB_MCP_ORIGIN/.test(line) && /process\.env|\benv\[|\bargv\b|--[a-z]/.test(line)), [], "no environment variable or flag names it");

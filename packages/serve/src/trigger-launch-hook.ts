@@ -33,8 +33,20 @@ const loopback = (hostname: string): boolean => hostname === "localhost" || host
 export type LaunchHook = { readonly url: string; readonly secret: string; readonly bound?: (ms: number) => AbortSignal };
 
 /** What the host is sent for a firing: its id (the message's webhook-id too), its trigger, the agent and the revision a
- *  run would start on now, the run's input as the trigger gives it, and the firing's time. */
-export type HookFiring = { firing_id: string; trigger_id: string; agent_id: string; revision_id: string | null; input: Json; fired_at: string };
+ *  run would start on now, the run's input as the trigger gives it, the firing's time, and the trigger's cap: the most
+ *  its run may cost, which the host's own max_cost_usd may lower and never raise. The firing keeps the lowest cap any
+ *  hand of it told (FiringRow.hooked): a retry sends the lower of it and the target's cap by then, and the host's start
+ *  runs under the lower of it and the target's cap at the start (toldCap), never past what the host was last told. A
+ *  null means the agent's default when the host starts the run. */
+export type HookFiring = { firing_id: string; trigger_id: string; agent_id: string; revision_id: string | null; input: Json; fired_at: string; max_cost_usd: number | null };
+
+/** A handed firing's cap: the lower of the lowest its hook told the host (`told`) and its target's now, so a target
+ *  lowered after the hand lowers it and one raised after never raises it. A told null (the agent's default) takes the
+ *  cap the target has gained since, which the agent's default still bounds at the host's start (TriggerTargets.start). */
+export function toldCap(told: number | null, now: number | undefined): number | null {
+  if (now === undefined) return told;
+  return told === null ? now : Math.min(told, now);
+}
 
 /** The host's answer: taken (2xx); or `stopped`, the server's stop cut it short and the firing is left as it was. Any
  *  other answer, or none, is a HookFailed. */

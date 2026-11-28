@@ -4,6 +4,7 @@ import type { Fee } from "../fees.js";
 import type { Hit } from "../search.js";
 import { codeOf, costOf, costTogether } from "./failure.js";
 import { PASSAGES_MAX } from "./passages.js";
+import { type JevSetup, setupOf } from "./setup.js";
 
 /** What a provider said of one item: p(needed), or null where it refused the question. What is done with it is the
  *  step's (search.ts, fetch.ts), never the decider's. */
@@ -32,6 +33,8 @@ export type PageAnswers = { wall: Record<string, number> | null; injection: numb
 
 export interface WebDecider {
   readonly id: string;
+  /** What the decide layer does with this decider's scores in each step (setup.ts); absent: as under "shipped". */
+  readonly setup?: JevSetup;
   sift(query: string, hits: readonly Hit[], task: string | undefined, ctx: DecideContext): Promise<Verdicts>;
   judge(url: string, task: string, passages: readonly string[], ctx: DecideContext): Promise<Verdicts>;
   guard(url: string, status: number, text: string, ctx: DecideContext): Promise<PageAnswers>;
@@ -183,7 +186,7 @@ function requestsOf<T>(items: readonly T[], request: (items: readonly T[], first
 /** Two requests' verdicts as one ask's: the first's model and temperature, the rest in order and summed. */
 const together = (a: Verdicts, b: Verdicts): Verdicts => ({ ...a, verdicts: [...a.verdicts, ...b.verdicts], tokens: tokensTogether(a.tokens, b.tokens), cost: costTogether(a.cost, b.cost), questions_sha256: [...a.questions_sha256, ...b.questions_sha256] });
 
-function tokensTogether(a: Tokens | null, b: Tokens | null): Tokens | null {
+export function tokensTogether(a: Tokens | null, b: Tokens | null): Tokens | null {
   if (!a || !b) return null;
   return { in: a.in + b.in, out: a.out === null || b.out === null ? null : a.out + b.out, basis: a.basis === "reported" && b.basis === "reported" ? "reported" : "counted" };
 }
@@ -233,13 +236,16 @@ export type JevWeb = {
   fetch?: typeof fetch;
 };
 /** The web decider Jev gives on TypeSafe's route, as a host's web tools run it: JEV_MODEL on every request, results
- *  ranked under rerank+label. Built from what it is handed alone, never from the process's environment: `null` (no
- *  TypeSafe key, or Jev turned off) gives none. */
-export function jevWebDecider(jev: JevWeb | null): { decider: WebDecider; policy: "rerank+label"; model: typeof JEV_MODEL } | undefined {
+ *  ranked under rerank+label, under the Jev setup `setup` names (setup.ts; DEFAULT_JEV_SETUP when none is given, an
+ *  unknown name throws). Built from what it is handed alone, never from the process's environment: `null` (no TypeSafe
+ *  key, or Jev turned off) gives none. */
+export function jevWebDecider(jev: JevWeb | null, setup?: string): { decider: WebDecider; policy: "rerank+label"; model: typeof JEV_MODEL; setup: JevSetup } | undefined {
   if (jev === null) return undefined;
   if (typeof jev?.key !== "string" || jev.key.trim() === "") throw new TypeError("jevWebDecider needs TypeSafe's key, or null for no Jev");
+  const chosen = setupOf(setup);
   const provider = jev.jevProvider({ apiKey: jev.key, ...(jev.fetch ? { fetch: jev.fetch } : {}) });
-  return { decider: deciderFrom(provider, { price: jev.price, model: JEV_MODEL }), policy: "rerank+label", model: JEV_MODEL };
+  // Jev's provider on TypeSafe's route needs TYPESAFE_API_KEY, so deciderFrom pins JEV_MODEL (pinnedModel), as for any caller.
+  return { decider: { ...deciderFrom(provider, { price: jev.price }), setup: chosen }, policy: "rerank+label", model: JEV_MODEL, setup: chosen };
 }
 
 export function deciderFrom(provider: DecisionAsker, options: DeciderOptions): WebDecider {
@@ -252,7 +258,14 @@ export function deciderFrom(provider: DecisionAsker, options: DeciderOptions): W
     const text = JSON.stringify({ state: request.state, questions: request.questions });
     const bytes = Buffer.byteLength(text);
     const fee: Fee = { name, by: provider.id, usd: holdOf(price, bytes), basis: `the most a request of ${bytes} bytes may cost at ${provider.id}'s price` };
-    const go = () => provider.decide(request, { decisionId: `web-${request.kind}-${sha256(text).slice(0, 24)}`, signal: ctx.signal, deadlineMs: ctx.deadlineMs });
+    // A request on a call already stopped asks no hold. One stopped while its hold was admitted is never sent, and is
+    // unsent, so decisionPay settles it at $0: a provider's own pre-send stop reads as a failure that may have billed.
+    const unsent = () => Object.assign(new DecideError("aborted", `${provider.id}'s request was stopped before it was sent`), { unsent: true });
+    if (ctx.signal.aborted) throw unsent();
+    const go = async () => {
+      if (ctx.signal.aborted) throw unsent();
+      return provider.decide(request, { decisionId: `web-${request.kind}-${sha256(text).slice(0, 24)}`, signal: ctx.signal, deadlineMs: ctx.deadlineMs });
+    };
     const outcome = await (ctx.pay ? ctx.pay(fee, go, (answered) => ({ usd: answered.cost_usd, basis: answered.cost_basis })) : go());
     const cost: Cost = { usd: outcome.cost_usd, basis: outcome.cost_basis };
     const tokens: Tokens | null = outcome.usage

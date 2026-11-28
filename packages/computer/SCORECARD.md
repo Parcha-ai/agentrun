@@ -23,8 +23,10 @@ documented calls, not from written code. The size column is an estimate, and siz
 
 ## The table
 
-Of 30 rows (26 vendors; Google, Fly.io, Beam and boxes.dev have two rows each): 0 clean, 5 fit if unverified facts hold,
-15 need a workaround, 10 are blocked. Render's row is built since (`src/render.ts`, a dial sandbox).
+Of 31 rows (27 vendors; Google, Fly.io, Beam and boxes.dev have two rows each): 0 clean, 5 fit if unverified facts hold,
+16 need a workaround, 10 are blocked. Render's row is built since (`src/render.ts`, a dial sandbox), and so are
+Vercel's (`src/vercel.ts`), Fly.io Sprites' (`src/sprites.ts`) and InstaBox's (`src/instabox.ts`), hosted sandboxes
+whose unverified facts wait on their live runs.
 
 | Vendor | Rents | Fit | Size (estimate) | Shared pieces it would use |
 | --- | --- | --- | --- | --- |
@@ -41,12 +43,13 @@ Of 30 rows (26 vendors; Google, Fly.io, Beam and boxes.dev have two rows each): 
 | [Cube Sandbox](https://github.com/TencentCloud/CubeSandbox) | self-hosted KVM microVMs behind an E2B-compatible API | needs a workaround (a copy of E2B's host, which takes no API URL; one arch per deployment) | about 320 | [prepareImage][pi] |
 | [DigitalOcean MicroVMs](https://docs.digitalocean.com/products/microvms) | a microVM running one OCI image | blocked (the idle pause can't be switched off; exec would also need a shim of ours over the pty console) | about 300 if the pause could be switched off | [packed labels][pl], [prepareImage][pi] |
 | [Fly Machines](https://docs.fly.io/machines/api/machines-resource) | KVM microVMs from an OCI image | blocked (`exec`: answers once the command ends) | n/a | none |
-| [Fly.io Sprites](https://docs.fly.io/sprites) | persistent Linux VMs that sleep when idle | needs a workaround (no image or snapshot a create can name, so no desktop or Archil; `extend` rewrites the label list, or is left out) | 220-290, sandbox only | [framedExec][fe], [packed labels][pl] |
+| [Fly.io Sprites](https://docs.fly.io/sprites) | persistent Linux VMs that sleep when idle | built (`src/sprites.ts`, a sandbox alone: no image or snapshot a create can name, so no desktop or Archil; `extend` left out; unverified until the live run: amd64, a label string's 64 bytes, a taken name's 409, root and its network namespace, 75 s of exec silence, an exec keeping a sprite awake) | 304, built | [framedExec][fe], [packed labels][pl] |
 | [Freestyle VMs](https://www.freestyle.sh/docs/vms.md) | Linux VMs | needs a workaround (a per-VM SSH identity made and deleted outside create, delete and the sweep) | about 280 | [ssh-exec][se], [packed labels][pl], [prepareImage][pi] |
 | [Google Agent Platform sandboxes](https://docs.cloud.google.com/gemini-enterprise-agent-platform/scale/sandbox?hl=en) | Google-managed gVisor containers | blocked (`exec`: one-shot, not root) | n/a | none |
 | [Google GKE Agent Sandbox](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/agent-sandbox) | gVisor pods on the user's cluster | needs a workaround (a Kubernetes client and GKE auth in the host; unverified: root makes a network namespace under GKE's gVisor, the exec stream has no idle cut) | 300-380 | [framedExec][fe], [packed labels][pl], [prepareImage][pi] |
 | [Hugging Face Sandboxes](https://huggingface.co/docs/huggingface_hub/main/concepts/sandbox) | a VM per Job | blocked (network fence: no nested namespaces, per the vendor's docs) | about 240 if the fence held | [ssh-exec][se], [packed labels][pl], [backstopAt][bs], [prepareImage][pi] |
 | [Hyperbrowser Sandboxes](https://hyperbrowser.ai/docs/sandboxes/introduction.md) | Firecracker microVMs | blocked (the sandbox record has no name or label, per the vendor's OpenAPI, so a listing finds nothing of ours: the vendor, or our side, would have to keep the labels) | 230-260 if labels were kept | [framedExec][fe] with [sse][ss], [prepareImage][pi] |
+| [InstaBox](https://instabox.sh/llms-full.txt) | Firecracker microVMs from InstaBox's templates | built (`src/instabox.ts`, a sandbox alone: exec over InstaBox's SSH gateway as a token the API mints per machine, the gateway's host key pinned; no upload, since its file API writes as the machine's user; no desktop or Archil, since a create names InstaBox's templates alone; a paid plan, since the free one won't switch the idle pause off; unverified until the live run: the token's none auth and host key, a taken name's 409, a deleted machine's read, sshd the one vendor listener, `minimal` on every paid plan, the 8 KiB metadata on compact JSON, 75 s of SSH silence) | 459, built | [ssh-exec][se], [packed labels][pl], [backstopAt][bs] |
 | [Kasm Workspaces](https://docs.kasm.com/docs/reference/developer-api) | a container session streamed to a person | blocked (`exec`: no two-way exec stream) | n/a | none |
 | [Koyeb Sandboxes](https://www.koyeb.com/docs/sandboxes) | microVMs as Koyeb services | fits if (unverified: `idle_timeout` 0 never sleeps; the exec WebSocket has no idle cut and runs as root; root makes a network namespace; a taken name's status; labels kept on our side or by the vendor, since a service has the name and no label) | 260-300 | [framedExec][fe] |
 | [microsandbox](https://docs.microsandbox.dev/cloud/overview.md) | libkrun microVMs (hosted cloud in private beta) | needs a workaround (exec only through an SDK whose backend and key are process-wide) | 220-240 | [prepareImage][pi] |
@@ -57,7 +60,7 @@ Of 30 rows (26 vendors; Google, Fly.io, Beam and boxes.dev have two rows each): 
 | [Render Sandboxes](https://render.com/docs/sandboxes) | Firecracker microVMs | needs a workaround (built as a dial sandbox, `src/render.ts`: no stdin, so the sandbox dials the server, `agentrun-dial` started by one `runs/sync` call; no label, so the labels live in a file in the sandbox; Core passed live over dial) | 505, built | [dial][dl], [prepareImage][pi] |
 | [Runloop Devboxes](https://docs.runloop.ai/docs/devboxes/overview.md) | VMs | needs a workaround (two SSE feeds merged by hand) | 270-290 | [framedExec][fe] with [sse][ss], [backstopAt][bs], [prepareImage][pi] |
 | [Together Code Sandbox](https://docs.together.ai/docs/together-code-sandbox.md) | Firecracker microVMs booted from snapshots | fits if (unverified: root makes a network namespace; the SSE feed holds 75 s of silence; the `ttl` cap; the tag value limit; amd64) | 240-270 | [framedExec][fe] with [sse][ss], [packed labels][pl], [prepareImage][pi] |
-| [Vercel Sandbox](https://vercel.com/docs/sandbox) | Firecracker microVMs | fits if (unverified: the log stream keeps a character split across two chunks whole and holds 75 s of silence; a taken name's status reads as `exists`; root makes a network namespace) | 230-290 | [framedExec][fe], [packed labels][pl], [prepareImage][pi] |
+| [Vercel Sandbox](https://vercel.com/docs/sandbox) | Firecracker microVMs | built (`src/vercel.ts`; unverified until the live run: the log stream keeps a character split across two chunks whole and holds 75 s of silence; a taken name's status reads as `exists`; root makes a network namespace) | 283, built | [framedExec][fe], [packed labels][pl], [prepareImage][pi] |
 
 ## Each vendor
 
@@ -255,6 +258,8 @@ provider spec.
 - **Sprites, what's open:** with no image or snapshot to name, [prepareImage](PROVIDERS.md#wire-it-up) can't give a
   desktop or an Archil mount; ours, a post-boot step that runs `box/install.sh` on a running machine. For the sandbox
   kind, unverified: root's network namespace, whether a silent exec keeps a Sprite awake, whether a read wakes one.
+- **Sprites, built:** `src/sprites.ts`, key `SPRITES_TOKEN`; its tests run on a fake of the REST API and the exec
+  socket's binary frames, the exec pre-check and the provider's Core cases included.
 - **Machines:** `exec` returns stdout, stderr and the exit code in one response
   ([execute command](https://docs.fly.io/api/machines/machines/execute-command.md)): blocked until dial-out.
 
@@ -325,6 +330,30 @@ provider spec.
   exec runs as root, root makes a network namespace; the docs give `timeoutMs`, a process's "Maximum runtime in
   milliseconds", no default ([processes](https://hyperbrowser.ai/docs/sandboxes/processes.md)). The macOS runtime
   would be a direct `ComputerProvider`, outside the adapter.
+
+### InstaBox
+
+- **Rents:** Firecracker microVMs from InstaBox's templates (`minimal`, `agent-browser`, `universal`) or a workspace's
+  snapshots, 2 to 32 vCPUs with 2 GiB each ([docs](https://instabox.sh/llms-full.txt),
+  [OpenAPI](https://api.instabox.sh/v1/openapi.json)).
+- **Exec:** SSH through InstaBox's gateway with [`SshExec`](PROVIDERS.md#exec-shapes-that-work), logged in as a token
+  the REST API mints per machine (`POST /v1/machines/{id}/ssh-tokens`). The token rides in the username, so the gateway's
+  host key is pinned to the `hostKeyFingerprint` the token's answer names (`SshLogin.hostKey`). The REST exec is
+  one-shot stdin with a 10-minute cap, so it is not used.
+- **Labels and lifetime:** metadata (32 keys of `[A-Za-z0-9_.-]`, 512-character values, 8 KiB), packed
+  (`labels: { packed }`) since a caller's label name may not fit the key form; the listing filters by metadata. The
+  delete timer (`deleteAfterSeconds`, at most a day) is set at create to the backstop; the idle pause and the maximum
+  run are switched off, which only a paid plan allows (the free plan's create is a 403 `spec_not_allowed`, explained in
+  words). The janitor ends a computer at its deadline.
+- **Image:** InstaBox's templates by id, or a snapshot by name or `sn_` id. A create names no image of ours, so no
+  desktop and no Archil mount.
+- **Built:** `src/instabox.ts`, key `INSTABOX_API_KEY`; its tests run on a fake of the REST API and the SSH gateway, the
+  exec pre-check and the provider's Core cases included. No `upload` (the file API writes as the machine's user, not
+  root) and no `extend`.
+- **Open:** unverified until the live run: the gateway takes the token with SSH's none auth and its host key's sha256 is
+  `hostKeyFingerprint`; a taken name answers 409; a deleted machine reads 404 or a `deleted` record; sshd's port 22 is
+  the one vendor listener; `minimal` is on every paid plan; the 8 KiB metadata bound counts compact JSON; a silent SSH
+  channel holds 75 s; root's `unshare -n`; whether SSH sessions count toward the exec concurrency limit.
 
 ### Kasm Workspaces
 
@@ -497,7 +526,9 @@ provider spec.
   [prepareImage](PROVIDERS.md#wire-it-up).
 - **Network:** the vendor's `deny-all` drops all egress ([firewall](https://vercel.com/docs/sandbox/concepts/firewall));
   it is optional hardening under init's fence.
-- **Open:** the facts in the table, all unverified; nothing of ours blocks.
+- **Built:** `src/vercel.ts`, keys `VERCEL_TOKEN`, `VERCEL_TEAM_ID` and `VERCEL_PROJECT_ID`; its tests run on a REST
+  fake of the API, the exec pre-check included.
+- **Open:** the facts in the table, unverified until the live run; nothing of ours blocks.
 
 ## What would change a row
 

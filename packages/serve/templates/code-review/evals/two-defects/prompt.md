@@ -1,7 +1,7 @@
 ---
 description: Two files, one defect each, the second quieter than the first; the sweep keeps going after the first finding and covers both files.
 runs: 3
-max_cost_usd: 0.10
+max_cost_usd: 0.30
 ---
 Review this diff. Its head is 8b9c0d1e2f30415263748596a7b8c9d0e1f20314; there is no checkout, the diff is the whole change.
 

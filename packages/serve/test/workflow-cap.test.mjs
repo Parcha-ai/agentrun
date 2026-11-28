@@ -335,8 +335,8 @@ test("a capped workflow's polled call held at its cap past its poll window is se
       },
       input: { schemaId: "In" },
       output: { schemaId: "Search", path: "found" },
-      // A poll window of 8 s, which the hold below outlasts (wide enough that a loaded box's own delays are not the window).
-      root: { node: "chain", steps: [{ node: "call", label: "search", via: "tool", tool: "web_search", args: { query: "{question}", n: 2 }, out: "Search", as: "found", deadline_s: 8, poll: { until: { predicate: "field_type", path: "objective", type: "string" }, interval_s: 1, deadline_s: 8 } }] },
+      // A poll window of 5 s, which the hold below outlasts (wide enough that a loaded box's own delays are not the window).
+      root: { node: "chain", steps: [{ node: "call", label: "search", via: "tool", tool: "web_search", args: { query: "{question}", n: 2 }, out: "Search", as: "found", deadline_s: 5, poll: { until: { predicate: "field_type", path: "objective", type: "string" }, interval_s: 1, deadline_s: 5 } }] },
     };
     const id = `polled-${letGoFirst}`;
     const made = await api("POST", "/agents", flowAgent(id, flow, { tools: ["web_search"], tool_settings: { web_search: { provider: "parallel" } } }));
@@ -345,8 +345,8 @@ test("a capped workflow's polled call held at its cap past its poll window is se
     await follow(api, runId, SETTLED, { deadlineMs: 60_000 });
     assert.equal((await view(api, runId)).pending?.node, "search");
     if (letGoFirst) await releasedOnStore(store, runId);
-    // Held 10 s, past the 8 s window.
-    await new Promise((resolve) => setTimeout(resolve, 10_000));
+    // Held 6.5 s, past the 5 s window.
+    await new Promise((resolve) => setTimeout(resolve, 6_500));
     assert.equal((await api("PATCH", `/runs/${runId}`, { max_cost_usd: 1 })).status, 200);
     await follow(api, runId, ENDED, { deadlineMs: 60_000 });
     const run = await view(api, runId);
@@ -356,15 +356,15 @@ test("a capped workflow's polled call held at its cap past its poll window is se
 });
 
 test("a polled call held at its cap and resumed by a raise while its window still has time runs under the window the hold moved, not the old one, and still under its own deadline_s", { timeout: 300_000 }, async (t) => {
-  // A 36 s poll window, held from its start (the pause, about when it opened); the search answers after 18 s. Let go,
-  // and raised 24 s after the pause: the next process resumes with at most 12 s of the old window left, 6 s or more short
-  // of the search, and above 0 unless it takes 12 s to come up. The hold moves the window by the time held, so it ends
-  // 36 s after the resume, 18 s past the search's end. The call's own deadline_s is 36 s (twice the search: room), then
-  // 9 s (half: none), which still ends it. That one runs first, so a run that fails the other has passed it.
-  const cases = [{ deadline: 9, want: "failed" }, { deadline: 36, want: "completed" }];
+  // An 18 s poll window, held from its start (the pause, about when it opened); the search answers after 9 s. Let go,
+  // and raised 12 s after the pause: the next process resumes with at most 6 s of the old window left, 3 s or more short
+  // of the search, and above 0 unless it takes 6 s to come up. The hold moves the window by the time held, so it ends
+  // 18 s after the resume, 9 s past the search's end. The call's own deadline_s is 18 s (twice the search: room), then
+  // 4.5 s (half: none), which still ends it. That one runs first, so a run that fails the other has passed it.
+  const cases = [{ deadline: 4.5, want: "failed" }, { deadline: 18, want: "completed" }];
   for (const { deadline, want } of cases) {
     const calls = join(await scratch(t), `parallel-calls-${deadline}.jsonl`);
-    withEnv(t, { PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: calls, AGENTRUN_TEST_FAUX_PARALLEL_SEARCH: "slow:18000" }, KEYS);
+    withEnv(t, { PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: calls, AGENTRUN_TEST_FAUX_PARALLEL_SEARCH: "slow:9000" }, KEYS);
     const { api, store } = await serve(t, { fauxParallel: FAUX_PARALLEL });
     const flow = {
       v: 2, name: "polled-resumed",
@@ -374,7 +374,7 @@ test("a polled call held at its cap and resumed by a raise while its window stil
       },
       input: { schemaId: "In" },
       output: { schemaId: "Search", path: "found" },
-      root: { node: "chain", steps: [{ node: "call", label: "search", via: "tool", tool: "web_search", args: { query: "{question}", n: 2 }, out: "Search", as: "found", deadline_s: deadline, poll: { until: { predicate: "field_type", path: "objective", type: "string" }, interval_s: 1, deadline_s: 36 } }] },
+      root: { node: "chain", steps: [{ node: "call", label: "search", via: "tool", tool: "web_search", args: { query: "{question}", n: 2 }, out: "Search", as: "found", deadline_s: deadline, poll: { until: { predicate: "field_type", path: "objective", type: "string" }, interval_s: 1, deadline_s: 18 } }] },
     };
     const id = `polled-resumed-${deadline}`;
     assert.equal((await api("POST", "/agents", flowAgent(id, flow, { tools: ["web_search"], tool_settings: { web_search: { provider: "parallel" } } }))).status, 201);
@@ -385,7 +385,7 @@ test("a polled call held at its cap and resumed by a raise while its window stil
     assert.equal((await view(api, runId)).pending?.node, "search");
     await releasedOnStore(store, runId);
     const goneAt = Date.now() - started;
-    await new Promise((resolve) => setTimeout(resolve, Math.max(0, pausedAt + 24_000 - Date.now())));
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, pausedAt + 12_000 - Date.now())));
     assert.equal((await api("PATCH", `/runs/${runId}`, { max_cost_usd: 1 })).status, 200);
     const raisedAt = Date.now() - started;
     await follow(api, runId, ENDED, { deadlineMs: 90_000 });
@@ -462,33 +462,7 @@ async function parkedAtCap(t) {
 /** The run's row of command `id` once the runner answered it (taken or refused). */
 const rowOf = async (store, runId, id) => (await store.commands(runId, id - 1)).find((r) => r.id === id);
 
-test("a capped workflow paused at its cap that a refused raise wakes parks again on its pause on every claim: no second budget entry, nothing sent, and a later raise resumes it", { timeout: 120_000 }, async (t) => {
-  const { sendCommand } = await import("../dist/runner/commands.js");
-  const { server, runId, pause, events } = await parkedAtCap(t);
-  const { api, data, store } = server;
-  const words = storeRun(data, runId).summary;
-  // A raise not above the cap, as a race of two raises or a retry leaves one for the run's next claim: the row as the
-  // server writes it. Until the dispatch's refusal is written the row stays untaken and wakes the run on each poll; each
-  // of those claims parks it again on the pause it stood at.
-  await sendCommand(store, runId, { kind: "raise", body: { capUsd: 0.12 } });
-  const second = await events.nth(runId, "released", 2);
-  assert.equal(second.end, "parked", JSON.stringify(second));
-  await events.nth(runId, "released", 3);
-  const again = await view(api, runId);
-  assert.deepEqual([again.status, again.pending?.kind, again.pending?.node, again.pending?.cap_usd], ["input_required", "budget", "second", 0.12], JSON.stringify(again));
-  assert.deepEqual(await budgetsOnStore(store, runId), [pause], "the claims the refused raise woke wrote no budget entry");
-  assert.equal(storeRun(data, runId).summary, words, "parked again in the pause's words");
-  assert.equal(await answeredOnStore(store, runId), 1, "the second node's request never sent");
-  const raised = await api("PATCH", `/runs/${runId}`, { max_cost_usd: 1 });
-  assert.deepEqual([raised.status, raised.body.resumed], [200, true], JSON.stringify(raised.body));
-  await events.nth(runId, "ended", 1);
-  const run = await view(api, runId);
-  assert.deepEqual([run.status, run.result?.output], ["completed", { answer: 42 }], JSON.stringify(run));
-  assert.deepEqual(await budgetsOnStore(store, runId), [pause], "one pause in the run's life");
-  assert.equal(await answeredOnStore(store, runId), 2);
-});
-
-test("a capped workflow paused at its cap that a refused raise wakes: the raise is answered refused and the run is claimed once for it", { timeout: 120_000, skip: "the refusal of a row the runner's dispatch took for now is written by fix/refused-outcome-claim-loop (dispatch, runner, run-child); until then the row stays untaken" }, async (t) => {
+test("a capped workflow paused at its cap that a refused raise wakes: the raise is answered refused and the run is claimed once for it", { timeout: 120_000 }, async (t) => {
   const { sendCommand } = await import("../dist/runner/commands.js");
   const { server, runId, pause, events } = await parkedAtCap(t);
   const { api, data, store } = server;

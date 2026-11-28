@@ -157,12 +157,13 @@ async function cutRunFile(store: RunReadsStore, runId: string, workspace: Worksp
   // underCut asks for, and every read of the run's cut and census around them. Past it, or when the worker fails, the read
   // is refused 503, never answered uncut, and never answered late.
   const timeMs = deps.cutMs ?? CUT_MS;
-  const until = Date.now() + timeMs;
+  // Counted on the monotonic clock: a wall clock set on or back mid-read moves neither the deadline nor the time left.
+  const until = performance.now() + timeMs;
   const unmade = (why: string) => new ApiError("unavailable", `this file's cut was not made (${why}), and it is never served uncut: read it again`);
   const lateRead = `the read did not finish within ${timeMs} ms`;
   const cutText = (values: readonly string[], held: readonly (readonly [number, number])[] = []): Promise<string> => {
     // Asked for past the deadline (the read has already been refused): no worker is started for it.
-    const left = until - Date.now();
+    const left = until - performance.now();
     if (left <= 0) return Promise.reject(unmade(lateRead));
     return (deps.cut ?? cutInWorker)(text, values, Buffer.byteLength(text), held, left).catch((error: unknown) => {
       if (error instanceof CutUnserved) throw unmade(error.message);
@@ -340,9 +341,14 @@ export function runTimelines(deps: TimelineDeps): { page(store: Store, runId: st
     const final = view.poll_after_ms === 0;
     // What it waits on now, while it is live: a request sent or answered is a change, as a row is (GRE-4835).
     const waiting = final ? inFlightOf([], []) : inFlightOf(deps.inFlight ? await deps.inFlight(store, runId, deps.context) : [], toolsInFlight(rows));
+    // A queued run reads queued whether a runner holds it or not (its first rows not shown yet), so whether one does (the
+    // view's claim, true or false: never its renewal) is a change too: a long poll on a queued page ends when a claim
+    // lapses or comes back, as a run read would tell. Only while queued, the one status that hides it: the pages of a run
+    // that shows add no change at its claim's release, which a page reader (the console, follow) would read as nothing new.
+    const held = status === "queued" ? (view.claim ? ":held" : ":unheld") : "";
     // The run's rows as they stand now, then its status and what it waits on: a change to any is one more change the page carries.
     log.sync(rows);
-    log.setState(`${status}:${state}${waiting.key ? `:${waiting.key}` : ""}`);
+    log.setState(`${status}:${state}${held}${waiting.key ? `:${waiting.key}` : ""}`);
     const page = log.page(after, limit);
     // The run's whole Cost object, as GET /runs/{id} serves it (store-view costOfView): the page and the run read send the
     // same shape, so a reader need not read both to price the run.

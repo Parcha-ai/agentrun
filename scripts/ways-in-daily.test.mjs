@@ -107,3 +107,58 @@ test('a hosted row that skipped reads not walked, saying why, and does not make 
   assert.match(table, /\| Railway \(hosted\) \| [^|]+ \| not walked: no RAILWAY_API_TOKEN, RAILWAY_WORKSPACE_ID \|/);
   assert.match(table, /\| Render \(hosted\) \| [^|]+ \| PASS \|/);
 });
+
+// After each publish the daily walk also runs at the release's tag, so every beta gets its npx, Compose, Railway-on-image
+// and Render rows, not only main's tip once a day. A workflow_run event carries main's tip as github.sha (the workflow file
+// is the default branch's), so each checkout names the tag's commit, and the called walks are handed it.
+const AT = '${{ github.event.workflow_run.head_sha || github.sha }}';
+const PUBLISHED = "github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'";
+const workflowAt = (name) => parse(readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), 'utf8'));
+const checkouts = (jobs) => Object.entries(jobs).flatMap(([id, job]) => (job.steps ?? []).filter((step) => /^actions\/checkout@/.test(step.uses ?? '')).map((step) => [id, step]));
+
+test('after each publish the daily walk runs at the published tag too, and only when the publish succeeded; the schedule stays', () => {
+  assert.equal(workflowAt('release.yml').name, 'Publish verified beta');
+  assert.deepEqual(workflow.on.workflow_run, { workflows: ['Publish verified beta'], types: ['completed'] });
+  assert.ok(workflow.on.schedule?.[0]?.cron, 'still on its schedule');
+  // Every job with no needs waits for a publish that succeeded; the rest follow the image's job.
+  for (const [id, job] of Object.entries(workflow.jobs)) {
+    if (id === 'report') assert.equal(job.if, `always() && (${PUBLISHED})`, 'the report, after the rows, of a publish that succeeded');
+    else if (!job.needs) assert.equal(job.if, PUBLISHED, `${id} walks only after a publish that succeeded`);
+  }
+  // One run per tag, which never queues behind (or in place of) the daily run on main.
+  assert.match(workflow.concurrency.group, /github\.event\.workflow_run\.head_sha/);
+});
+
+// Every walk the daily walk calls (each uses: ./.github/workflows/...), read from the workflow itself, so a row added or
+// missed is in this list either way.
+const calledWalks = () => Object.entries(workflow.jobs).filter(([, job]) => /^\.\/\.github\/workflows\//.test(job.uses ?? '')).map(([id, job]) => [id, job, job.uses.replace('./.github/workflows/', '')]);
+
+test("after a publish each row walks the tag's commit, not main's tip: its own checkouts, each walk it calls, and every checkout in those", () => {
+  const own = checkouts(workflow.jobs);
+  assert.ok(own.length >= 6, 'the daily walk checks out in its own jobs');
+  for (const [id, step] of own) assert.equal(step.with?.ref, AT, `${id}'s checkout`);
+  const called = calledWalks();
+  assert.deepEqual(called.map(([id]) => id).sort(), ['coolify', 'dokploy', 'helm', 'launcher'], 'the rows that call a walk');
+  for (const [id, job, name] of called) {
+    assert.equal(job.with?.ref, AT, `${id} hands ${name} the tag's commit`);
+    const walk = workflowAt(name);
+    assert.deepEqual(walk.on.workflow_call.inputs?.ref, { type: 'string', default: '' }, `${name} takes a ref`);
+    const steps = checkouts(walk.jobs);
+    assert.ok(steps.length > 0, `${name} checks out`);
+    // Empty on its own push or pull request, so the checkout keeps its own default there; a walk the publish also starts
+    // on its own falls back to the publish's commit (the tag), never to main's tip.
+    for (const [jobId, step] of steps) assert.match(step.with?.ref, /^\$\{\{ inputs\.ref( \|\| github\.event\.workflow_run\.head_sha)? \}\}$/, `${name} ${jobId}'s checkout`);
+  }
+  // On a publish install-walk installs what npm and the registry serve (the release itself), from the tag's scripts.
+  assert.match(readFileSync(new URL('../.github/workflows/install-walk.yml', import.meta.url), 'utf8'), /github\.event_name \}\}" = workflow_run/);
+});
+
+test("a called walk's concurrency group names the commit it was handed, so a daily run never cancels or replaces a release's walk", () => {
+  // A called workflow's github.workflow is the caller's, and its github.ref (and github.sha) are main's on the schedule and
+  // after a publish alike: without the commit both runs share one group, and helm-walk and selfhost-walk cancel in progress.
+  for (const name of new Set(calledWalks().map(([, , n]) => n))) {
+    const { concurrency } = workflowAt(name);
+    assert.ok(concurrency.group.endsWith("${{ inputs.ref && format('-{0}', inputs.ref) || '' }}"), `${name}'s group names the handed commit, and is as before with none`);
+  }
+  for (const name of ['helm-walk.yml', 'selfhost-walk.yml']) assert.equal(workflowAt(name).concurrency['cancel-in-progress'], true, `${name} still cancels a superseded run of the same commit`);
+});

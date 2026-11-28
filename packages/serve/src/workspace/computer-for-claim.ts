@@ -44,8 +44,8 @@
 // id and the agent's), found again by its owner at each later claim and attached under the new claim, and detached, not
 // deleted, at the run's end. A run that finds it held by another run still going is refused, naming that run.
 import { randomUUID } from "node:crypto";
-import type { BrowserComputerProvider, BrowserSpec, ComputerClient, ComputerConnection, ComputerError, ComputerOwner, ComputerProvider, ComputerSpec, DaemonMethod, DaemonMethods, HelloResult, MountKind, MountReadBack, Result, ScreenWatch, ScreenWatchHandlers, WatchOptions } from "@parcha/agentrun-computer";
-import { isBrowserProvider, ownerFilter, releaseOlder, RUN_LABEL, runLabels } from "@parcha/agentrun-computer";
+import type { BrowserComputerProvider, BrowserSpec, ComputerClient, ComputerConnection, ComputerError, ComputerOwner, ComputerProvider, ComputerRef, ComputerSpec, DaemonMethod, DaemonMethods, HelloResult, MountKind, MountReadBack, Result, ScreenWatch, ScreenWatchHandlers, WatchOptions } from "@parcha/agentrun-computer";
+import { epochOf, isBrowserProvider, ownerFilter, releaseOlder, releaseUnheld, RUN_LABEL, runLabels } from "@parcha/agentrun-computer";
 import { type RecordInput, type Recording, type RecordWatch, startRecording } from "../computer-record.js";
 import { computerOfPlace, type ComputerSetting as RevisionComputer, type PlaceView } from "../computer-setting.js";
 import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions, settingOptions } from "../computer-keys.js";
@@ -56,13 +56,13 @@ import { getSealedKey } from "../server-keys.js";
 import type { Claim, Store } from "../store/index.js";
 import { type AgentComputerHold, agentComputerOf, forgetAgentComputer, holdAgentComputer, keepAgentComputer, liveHolderOf, reconcileAgentComputer, serverIdOf } from "./agent-computer.js";
 import type { MountCheck } from "./attach.js";
-import { type AttachedComputers, pairedProvider, withPaired } from "./attached-computers.js";
+import { type AttachedComputers, namesPaired, pairedProvider, scopedPairedWords, withPaired } from "./attached-computers.js";
 import { computerHold, type HeldComputer, heldHands } from "./computer-hold.js";
 import { endingDeletes, figuresOf, type IntervalWrites, intervalWrites, stderrLog } from "./computer-intervals.js";
 import { type ComputeLedger, type ComputeMeter, computeMeter, type ComputeMeterOptions } from "../compute-cost.js";
 import { bounded, deleteKept, dropKept, endKept, finishedKept, heldElsewhere, keepKept, KEEP_MS, KEPT_DELETE_MS, type Kept, keptBy, type KeptHolder, keptTaken, type ParkCause, type ParkedEnd, pinnedOf, readKept, restoreKept, takeKept } from "./computer-kept.js";
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
-import { type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, registryHere, resolveComputer, runShellOf, type ShellPlace } from "./resolve-computer.js";
+import { type BrowserHolds, type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, registryHere, resolveComputer, runShellOf, type ShellPlace, type UnheldOptions, type UnheldSession } from "./resolve-computer.js";
 import { computerDenied } from "../tool-gate.js";
 import { loadToolSettings } from "../tool-plane.js";
 import { computerDeniedWords, computerStillOffWords } from "../refusal-words.js";
@@ -205,9 +205,6 @@ export interface ComputerForClaimDeps {
   /** The paired computers (attached-computers.ts): each one more provider of `kinds` for this claim, claimed through the
    *  hub of this process. Absent: none is. */
   readonly attached?: AttachedComputers;
-  /** Why this run's harness takes no computer of `kind`, in words (a CLI harness's of a browser), or undefined: a kind
-   *  it refuses is refused with code computer_unavailable before anything is made. Absent: every kind. */
-  readonly refuseKind?: (kind: Exclude<ComputerSettingKind, "none">) => string | undefined;
   /** Told what became of the agent's own computer at the claim (a persistent setting): made, attached from an earlier
    *  run, or made again because the one this server kept is gone; and when a sandbox the claim made was lost mid-run and
    *  a new one started in its place (computer-lost.ts lostRecreatedWords). The run's caller says it on the run's
@@ -266,9 +263,19 @@ export interface ClaimComputer {
    *  computer or --faux's launch, nor a browser (its sessions are the browser tool's). The adapter loop records it in the
    *  run's journal, which is how a later claim knows the run had one (hadComputer). */
   readonly made?: MadeKind;
+  /** This claim started the computer (a vendor's launch, or --faux's), so nothing has run in it but what the claim runs:
+   *  never one an earlier claim kept at its park and this claim took back, the agent's own (a persistent setting, even
+   *  made new: every run of the agent shares it) or a paired computer. Only such a computer gets a checkout with the
+   *  server's GitHub token (pr-checkout.ts checkoutWhereNoExec). */
+  readonly fresh?: true;
   /** The computer outlives the run: a person's paired computer or the agent's own (a persistent setting), never deleted
    *  when the run ends, so the model is never told it is (computerFilesNote). */
   readonly outlives?: true;
+  /** Where the run's sandbox, desktop or phone reaches, where that is less than the internet (its spec's network,
+   *  computer-deps.ts networkOf): "none", nowhere; a list, those hosts alone. The model is told so once
+   *  (computerReachNote). Absent: an open network, a paired computer (a person's own, whose network is theirs), a
+   *  browser, or a computer --faux's launch made. */
+  readonly reach?: Reach;
   /** The kind of computer a park of this claim keeps (`park`): a desktop, a phone or a sandbox the claim made through its
    *  provider, or took back from an earlier claim's park. Absent: a park lets the computer go as the run's end does. */
   readonly keeps?: KeptKind;
@@ -293,6 +300,13 @@ export interface ClaimComputer {
   keepRow?(): Promise<boolean>;
 }
 
+/** Where a computer reaches, where that is less than the internet: "none", nowhere; a list, those hosts alone. */
+export type Reach = "none" | { readonly allow: readonly string[] };
+
+/** Where a computer made with `network` reaches (Reach): none for an open network, or none named. */
+const reachOf = (network: ComputerSpec["network"] | undefined): Reach | undefined =>
+  network === "none" ? "none" : typeof network === "object" && network !== null ? { allow: [...network.allow] } : undefined;
+
 /** The kinds of computer a claim makes the run fresh. */
 export type MadeKind = "desktop" | "sandbox" | "phone";
 /** The kinds of computer a park keeps. */
@@ -314,8 +328,13 @@ const unavailable = (words: string): Error => Object.assign(new Error(words), { 
 const claimLost = (words: string): Error => Object.assign(new Error(words), { code: "claim_lost" });
 const noop = async (): Promise<void> => {};
 
-/** A claim's create request: the run and its claim epoch, so a retry of the claim's create finds the computer it made. */
-const claimRequestId = (claim: { readonly runId: string; readonly epoch: number }) => `${claim.runId}#${claim.epoch}`;
+/** A claim's create request: the run and its claim epoch, so a retry of the claim's create finds the computer it made.
+ *  Each claim takes the run's next epoch, so two claims of one run never share a request, and so never a computer's
+ *  name: a dial machine's token and hub socket go by that name (the computer package's hosted/provider.ts). */
+export const claimRequestId = (claim: { readonly runId: string; readonly epoch: number }) => `${claim.runId}#${claim.epoch}`;
+
+/** The create request of the claim's `times`th sandbox made after a loss: the claim's own, then the count. */
+export const lostRequestId = (claim: { readonly runId: string; readonly epoch: number }, times: number) => `${claimRequestId(claim)}#lost-${times}`;
 
 /** A kept machine (its provider's `id`) a claim gave back, and what marks its row ended once it is gone. */
 type KeptGone = { readonly id: string; readonly gone: () => Promise<void> };
@@ -338,18 +357,18 @@ function keptDeletes(provider: ComputerProvider, kept: KeptGone): ComputerProvid
 }
 
 /** The run's computers of a lower claim epoch released (the janitor's releaseOlder: one claim's computer at a time), its
- *  failure thrown in its words; true when it deleted one, an earlier claim's computer its runner never let go (a runner
+ *  failure thrown in its words; the ones it deleted, each an earlier claim's computer its runner never let go (a runner
  *  lost, a crash). A run's first claim is epoch 1 (a queued run is epoch 0; each claim and release moves it up one): no
  *  claim came before it to leave a computer, so the provider is not asked (its list is a vendor round trip before the
  *  create). */
-async function releaseOlderClaims(provider: ComputerProvider, claim: { readonly runId: string; readonly epoch: number }, signal: AbortSignal | undefined, ending?: { readonly entry: string; readonly writes: IntervalWrites; readonly keptGone?: KeptGone }): Promise<boolean> {
-  if (claim.epoch <= 1) return false;
+async function releaseOlderClaims(provider: ComputerProvider, claim: { readonly runId: string; readonly epoch: number }, signal: AbortSignal | undefined, ending?: { readonly entry: string; readonly writes: IntervalWrites; readonly keptGone?: KeptGone }): Promise<readonly ComputerRef[]> {
+  if (claim.epoch <= 1) return [];
   // Each delete that answers ok ends its interval as it answers (computer-intervals.ts endingDeletes), so one deleted
   // before another failed, or before the call was cut, keeps its end; one detached or not let go is left open.
   const releasing = ending ? endingDeletes(provider, ending.entry, ending.writes) : provider;
   const older = await releaseOlder(ending?.keptGone ? keptDeletes(releasing, ending.keptGone) : releasing, claim.runId, claim.epoch, signal ? { signal } : {});
   if (!older.ok) throw new Error(older.error.message);
-  return older.value.released.length > 0;
+  return older.value.released;
 }
 
 /** The agent's computer setting: the launch's, else its revision's (computer, else place), else the launch's place. The
@@ -463,15 +482,71 @@ export function claimBrowser(provider: ComputerProvider, spec: ComputerSpec): { 
     if (!answered.ok) throw failed(answered.error);
     return answered.value;
   };
+  // When the vendor's listing said each session a find listed was made (madeAt): a session a release by its tag ended beside
+  // the one it was for is charged from then.
+  const made = new Map<string, string>();
+  // The tag labels of the sessions this claim is opening now, how many opens each: a let-go never releases one whose
+  // create is still in flight (releaseUnheld), which its create answers.
+  const creating = new Map<string, number>();
+  // The run and claim epoch its sessions are made under: what a let-go releases the unheld ones of (releaseUnheld).
+  const run = spec.labels?.[RUN_LABEL];
+  const epoch = spec.labels ? epochOf(spec.labels) : undefined;
+  const unheld = run !== undefined && epoch?.ok
+    ? {
+        async releaseUnheld(holds: () => BrowserHolds | Promise<BrowserHolds>, { signal, releasing, released }: UnheldOptions = {}) {
+          // Read once, at the first computer of the run and epoch the list gave (after the list).
+          let read: Promise<{ ids: ReadonlySet<string>; tags: Set<string> }> | undefined;
+          const held = () => (read ??= Promise.resolve(holds()).then((got) => ({ ids: got.ids, tags: new Set([...got.tags].map(labelValue)) })));
+          const left: string[] = [];
+          const session = (one: { ref: { id: string }; labels: Record<string, string>; createdAt?: Date }): UnheldSession => ({ id: one.ref.id, tag: one.labels[SESSION_TAG] ?? null, createdAt: one.createdAt?.toISOString() ?? null });
+          const swept = await valueOf(
+            releaseUnheld(
+              provider,
+              run,
+              epoch.value,
+              async (info) => {
+                const tag = info.labels[SESSION_TAG] ?? "";
+                if (creating.has(tag)) {
+                  left.push(info.ref.id);
+                  return true;
+                }
+                const { ids, tags } = await held();
+                return ids.has(info.ref.id) || tags.has(tag);
+              },
+              {
+                ...(signal ? { signal } : {}),
+                ...(releasing ? { releasing: (one) => releasing(session(one)) } : {}),
+                ...(released ? { released: (one) => released(session(one)) } : {}),
+              },
+            ),
+          );
+          for (const one of swept.released) open.delete(one.ref.id);
+          return {
+            released: swept.released.map(session),
+            failed: swept.failed.map((one) => `${one.ref.id}: ${one.problem}`),
+            creating: left,
+          };
+        },
+      }
+    : {};
   return {
     browser: {
+      ...unheld,
       provider: provider.id,
       maxLifetimeS: Math.floor(lifetime / 1000),
       features: structuredClone(features),
       async open(tag, lifetimeS, browser?: BrowserSpec, signal?: AbortSignal) {
         const lifetimeMs = Math.min(lifetime, Math.max(1, Math.round(lifetimeS)) * 1000);
+        const label = labelValue(tag);
+        creating.set(label, (creating.get(label) ?? 0) + 1);
         // Each open is its own request: a session closed and opened again under one tag is a new one.
-        const created = await provider.create({ ...spec, lifetimeMs, labels: { ...spec.labels, [SESSION_TAG]: labelValue(tag) }, ...(browser ? { browser } : {}) }, { requestId: randomUUID(), ...(signal ? { signal } : {}) });
+        const created = await provider
+          .create({ ...spec, lifetimeMs, labels: { ...spec.labels, [SESSION_TAG]: label }, ...(browser ? { browser } : {}) }, { requestId: randomUUID(), ...(signal ? { signal } : {}) })
+          .finally(() => {
+            const left = (creating.get(label) ?? 1) - 1;
+            if (left > 0) creating.set(label, left);
+            else creating.delete(label);
+          });
         if (!created.ok) throw failed(created.error);
         open.add(created.value.id);
         return created.value.id;
@@ -479,8 +554,10 @@ export function claimBrowser(provider: ComputerProvider, spec: ComputerSpec): { 
       async find(tag) {
         const listed = await provider.list({ ...spec.labels, [SESSION_TAG]: labelValue(tag) });
         if (!listed.ok) throw failed(listed.error);
+        for (const one of listed.value) if (one.createdAt instanceof Date) made.set(one.ref.id, one.createdAt.toISOString());
         return listed.value.map((one) => one.ref.id);
       },
+      madeAt: (id) => made.get(id) ?? null,
       async running(id, signal) {
         const found = await provider.attach({ id }, signal ? { signal } : {});
         if (found.ok) return true;
@@ -557,7 +634,7 @@ async function providerLaunch(
   interval: { readonly writes: IntervalWrites; readonly entry: string; readonly kind: string; readonly meter?: ComputeMeter; readonly keptGone?: KeptGone },
 ): Promise<ProviderComputer & { releasedOlder: boolean }> {
   const { writes, entry, keptGone } = interval;
-  const releasedOlder = await releaseOlderClaims(provider, claim, signal, { entry, writes, ...(keptGone ? { keptGone } : {}) });
+  const releasedOlder = (await releaseOlderClaims(provider, claim, signal, { entry, writes, ...(keptGone ? { keptGone } : {}) })).length > 0;
   // Its first stretch held under the run's cap at what the create asks for, before anything is made: refused, nothing is.
   const ahead = await interval.meter?.before(entry, figuresOf(spec));
   // The claim is the request: a retry of this launch under the same epoch gets the computer it made, never a second.
@@ -957,6 +1034,10 @@ export async function computerForClaim(
   let ownKind: MadeKind | undefined;
   /** The computer outlives the run: a paired one or the agent's own (ClaimComputer.outlives). */
   let outlives = false;
+  /** This claim started the computer (ClaimComputer.fresh). */
+  let startedHere = false;
+  /** Where the computer made, or taken back, reaches (ClaimComputer.reach). */
+  let reach: Reach | undefined;
   const now = deps.now ?? Date.now;
   /** The store's clock (the deadlines': the database's on Postgres), the one a kept computer's `until` is stamped and
    *  judged by everywhere (computer-kept.ts Kept.until), never this runner's own. */
@@ -1015,21 +1096,32 @@ export async function computerForClaim(
   };
   /** What a computer of `kind` from `entry` is made with under this claim, but its mount: the deps' spec, within what
    *  `provider` declares it makes, from the image it prepares (readyImage) or the spec's, under the claim's labels. */
-  const specOf = async (entry: ProviderEntry, provider: ComputerProvider, kind: ComputerSettingKind, configuration: KindCapabilities, signal: AbortSignal | undefined, gpu?: ComputerSpec["gpu"]): Promise<ComputerSpec> => {
-    // What this provider makes, as it declares it: the spec asks for one of its networks, within its lifetime
-    // (computer-deps.ts computerSpecOf).
+  /** What the run asks of a computer from `provider`: what the launch allows, within what the provider declares it makes
+   *  (its networks, its lifetime: computer-deps.ts computerSpecOf). */
+  const runOf = (provider: ComputerProvider): ComputerRun => {
     const { network: networks, maxLifetimeMs } = provider.capabilities();
-    const run: ComputerRun = {
+    return {
       ...(launch.boxAllow === undefined ? {} : { boxAllow: launch.boxAllow }),
       ...(launch.boxAllowSet ? { boxAllowSet: true as const } : {}),
       ...(networks ? { networks } : {}),
       ...(typeof maxLifetimeMs === "number" ? { maxLifetimeMs } : {}),
     };
+  };
+  /** Where a computer of `kind` from `provider` made under this launch reaches (ClaimComputer.reach): the spec's network,
+   *  read without its image. A spec this server refuses now says nothing. */
+  const reachSpec = (entry: ProviderEntry, provider: ComputerProvider, kind: MadeKind, configuration: KindCapabilities): Reach | undefined => {
+    try {
+      return reachOf(deps.spec(entry, kind, runOf(provider), configuration.image).network);
+    } catch {
+      return undefined;
+    }
+  };
+  const specOf = async (entry: ProviderEntry, provider: ComputerProvider, kind: ComputerSettingKind, configuration: KindCapabilities, signal: AbortSignal | undefined, gpu?: ComputerSpec["gpu"]): Promise<ComputerSpec> => {
     // A provider that declares it prepares its own image (its prepareImage(): its recipe built when the engine lacks it,
     // an image by name pulled) does so first, and the computer starts from the tag it answers: the recipe's tag is in no
     // registry, so a run of it unbuilt would be refused. The spec comes first, so a setting it refuses builds nothing. A
     // configuration that names its image starts from it, else the kind's default.
-    const asked = deps.spec(entry, kind as Exclude<ComputerSettingKind, "none">, run, configuration.image);
+    const asked = deps.spec(entry, kind as Exclude<ComputerSettingKind, "none">, runOf(provider), configuration.image);
     const ready = await readyImage(entry, provider, signal, deps.onImageWait);
     const image = ready ?? asked.image;
     if (image === undefined) throw new Error(`${entry.label} names no image for its ${kind} computer and prepares none`);
@@ -1059,7 +1151,7 @@ export async function computerForClaim(
       }
       const call = deps.signal ? { signal: deps.signal } : {};
       const ahead = await meter?.before(entry.id, figuresOf(spec));
-      const created = await provider.create({ ...spec, ...(mount ? { mount } : {}) }, { requestId: `${claimRequestId(launch)}#lost-${times}`, ...call });
+      const created = await provider.create({ ...spec, ...(mount ? { mount } : {}) }, { requestId: lostRequestId(launch, times), ...call });
       if (!created.ok) {
         void ahead?.drop();
         throw new Error(created.error.message);
@@ -1198,6 +1290,8 @@ export async function computerForClaim(
         const again = record.kind === "sandbox" ? lostAware(taken, renewalOf(provider, entry, () => specOf(entry, provider, kind, configuration, deps.signal, gpu), folder)) : taken;
         keepable = { provider, entry: entry.id, kind: record.kind, computer: again, pinned: pinnedHere(entry, configuration), epoch: record.epoch, disk: record.disk };
         ownKind = record.kind;
+        // Made under this launch by the claim that parked it, so with the network this claim's spec asks.
+        reach = reachSpec(entry, provider, record.kind, configuration);
         const screen = record.kind === "sandbox" ? undefined : record.kind;
         made = { id: again.id, machine: again.machine, ...(again.watch && screen ? { watch: again.watch, gone: goneOf(provider, again.id, runLabels(launch.runId, record.epoch), screen) } : {}) };
         madeBy = entry;
@@ -1226,6 +1320,7 @@ export async function computerForClaim(
         const ownWatch = (own as unknown as { watch?: WatchOf }).watch;
         made = { id: own.id, ...(ownWatch ? { watch: ownWatch } : {}) };
         madeBy = entry;
+        startedHere = true;
         return own;
       }
       // Under a runner of its own process, through its relay: the box is routed under the run's claim (launch.claim, a
@@ -1233,14 +1328,19 @@ export async function computerForClaim(
       const provider = pairedRow ? pairedProvider(pairedRow, deps.attached?.hub, deps.attached?.relay, launch.claim as Claim | undefined) : await vendorProvider(entry, keys, configuration);
       outlives = pairedRow !== undefined || persistent === true;
       const spec: ComputerSpec = { ...(await specOf(entry, provider, kind, configuration, signal, gpu)), ...(mount ? { mount } : {}) };
+      // A paired computer is a person's own, its network theirs: the spec's network says nothing of it.
+      reach = !pairedRow && kind !== "browser" ? reachOf(spec.network) : undefined;
       // A browser makes nothing here: the run's browser tool opens each session through it, so a session lives (and is
       // booked) only while the tool holds it.
       if (kind === "browser") {
-        // The run's sessions of a lower claim epoch go first, as a computer's do (the janitor's releaseOlder).
-        await releaseOlderClaims(provider, launch, signal, { entry: entry.id, writes });
+        // The run's sessions of a lower claim epoch go first, as a computer's do (the janitor's releaseOlder); the ones it
+        // released, by id and when, are the browser's sweptOlder.
+        const swept = await releaseOlderClaims(provider, launch, signal, { entry: entry.id, writes });
+        const sweptAt = new Date().toISOString();
         const opened = claimBrowser(provider, spec);
         madeBy = entry;
-        return { id: entry.id, groups: ["cdp"], browser: opened.browser, release: opened.release };
+        const browser = swept.length > 0 ? { ...opened.browser, sweptOlder: new Map(swept.map((ref) => [ref.id, sweptAt])) } : opened.browser;
+        return { id: entry.id, groups: ["cdp"], browser, release: opened.release };
       }
       let launched: Awaited<ReturnType<typeof ownedLaunch>> | ProviderComputer;
       /** The labels the provider lists this computer under: its owner's for the agent's own, else the run's. */
@@ -1276,6 +1376,7 @@ export async function computerForClaim(
         const { releasedOlder } = fresh;
         const held = kind === "sandbox" && !pairedRow ? lostAware(fresh, renewalOf(provider, entry, async () => spec, mount?.kind)) : fresh;
         launched = held;
+        startedHere = !pairedRow;
         if (!pairedRow) ownKind = kind as MadeKind;
         if (!pairedRow && (kind === "desktop" || kind === "phone" || kind === "sandbox")) keepable = { provider, entry: entry.id, kind, computer: held, pinned: pinnedHere(entry, configuration), epoch: launch.epoch, disk: undefined };
         if (!pairedRow && (releasedOlder || journalSays || lost || heldThere || refused)) replaced = { kind: kind as MadeKind, folderKept: deps.mode === 2 && mount !== undefined, ...(lost ? { lost: true as const } : heldThere ? { elsewhere: true as const } : lapsed ? { lapsed: true as const } : {}), ...(refused ? { refused: true as const } : {}) };
@@ -1324,6 +1425,8 @@ export async function computerForClaim(
     return { computer: undefined, off: true, release: noop };
   }
   const setting = await settingOf(launch, store);
+  // A run of an agent in a workspace never takes a paired computer, whatever its revision names (its save refuses one).
+  if (namesPaired(setting) && launch.agentId !== undefined && typeof (await store.agents.workspace(launch.agentId)) === "string") throw unavailable(scopedPairedWords(setting.provider));
   // Programs it needs (computer.needs) are checked in a sandbox's box alone: a setting that needs them and is any other
   // kind is refused before anything is rented, never run without them.
   const needs = (setting as { needs?: readonly string[] } | undefined)?.needs;
@@ -1342,8 +1445,6 @@ export async function computerForClaim(
   const resolved = await resolveComputer(setting, deps.mode, kinds, side);
   if ("refused" in resolved) throw unavailable(resolved.refused);
   if (resolved.kind === "none") return { computer: undefined, release: noop };
-  const refusedKind = deps.refuseKind?.(resolved.kind);
-  if (refusedKind) throw unavailable(refusedKind);
   // The program its provider runs on this machine (the phone's adb) is checked before anything is rented.
   const hostRefusal = resolved.provider ? deps.hostWhy?.(resolved.provider) : undefined;
   if (hostRefusal) throw unavailable(`This agent's computer is a ${resolved.kind} on ${resolved.provider}, and this runner cannot run it: ${hostRefusal.replace(/[.!?]+$/, "")}.`);
@@ -1471,7 +1572,9 @@ export async function computerForClaim(
     ...(held ? { held } : {}),
     ...(replaced ? { replaced } : {}),
     ...(ownKind ? { made: ownKind } : {}),
+    ...(startedHere ? { fresh: true as const } : {}),
     ...(outlives ? { outlives: true as const } : {}),
+    ...(reach && runComputer && runComputer.kind !== "browser" ? { reach } : {}),
     ...(keeps ? { keeps: keeps.kind } : {}),
     ...(meter ? { settle: () => meter.stopAll() } : {}),
     release,

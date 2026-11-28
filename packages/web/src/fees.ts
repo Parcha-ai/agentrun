@@ -7,8 +7,8 @@ export type ParallelSearchMode = "turbo" | "fast" | "basic" | "advanced";
  *  `mode`: `turbo` or `fast` $1 per 1,000 requests, `basic` or `advanced` $5 per 1,000, each with 10 results included,
  *  and each result past those 10 $1 per 1,000. Extract: $1 per 1,000 URLs. */
 export const PARALLEL_SEARCH_MODE_USD: Readonly<Record<ParallelSearchMode, number>> = Object.freeze({ turbo: 0.001, fast: 0.001, basic: 0.005, advanced: 0.005 });
-/** A `fast` search's price: the mode the web tools search in (web-search.ts). */
-export const PARALLEL_SEARCH_USD = 0.001;
+/** A `fast` search's price, the mode the web tools search in by default (parallel.ts PARALLEL_DEFAULTS). */
+export const PARALLEL_SEARCH_USD: number = PARALLEL_SEARCH_MODE_USD.fast;
 export const PARALLEL_SEARCH_RESULT_USD = 0.001;
 export const PARALLEL_SEARCH_INCLUDED = 10;
 export const PARALLEL_EXTRACT_USD = 0.001;
@@ -84,29 +84,86 @@ export function exaFeeOf(path: string, body: unknown): Fee | undefined {
 
 /** Firecrawl's price of a credit at the key's plan: Standard, $99 a month for 100,000 credits
  *  (https://www.firecrawl.dev/pricing, read 2026-11-24; the plan's credits read from /v2/team/credit-usage that day).
- *  Credits past the plan cost $5 per 2,000 ($0.0025). A search is 2 credits per 10 results, and a credit for each result
- *  it scrapes; a scrape is 1 credit, and 4 more for the JSON format. */
+ *  Credits past the plan cost $5 per 2,000 ($0.0025). Firecrawl's credit rule (https://docs.firecrawl.dev/billing, read
+ *  2026-11-28): a search is "2 credits / 10 results", "Rounded up per 10 results", and "Additional per-page scrape costs
+ *  apply to each result that is scraped"; a scrape is "1 credit / page", a PDF "+1 credit / PDF page", JSON "+4 credits /
+ *  page"; "Firecrawl returned no document: 0 credits". Measured on 2026-11-28 (17 calls, creditsUsed equal to the
+ *  account's counter each time): a PDF is 1 credit a page parsed, not 1 more than its pages, and a result with no
+ *  document is 0. */
 export const FIRECRAWL_CREDIT_USD = 0.00099;
 export const FIRECRAWL_SEARCH_CREDITS = 2;
 export const FIRECRAWL_SCRAPE_CREDITS = 1;
 export const FIRECRAWL_JSON_CREDITS = 4;
+/** The most pages Firecrawl parses of one PDF (its parsers' maxPages bound): a body that caps none is held at it. */
+export const FIRECRAWL_PDF_PAGES_MAX = 10_000;
 
 /** Whether a scrape's `formats` asks for JSON (a string or an object of that type). */
 const asksJson = (formats: unknown): boolean => Array.isArray(formats) && formats.some((format) => format === "json" || (typeof format === "object" && format !== null && (format as { type?: unknown }).type === "json"));
+/** The most pages `parsers` lets Firecrawl parse of a PDF: its pdf parser's maxPages, else Firecrawl's own most. */
+const pdfPagesOf = (parsers: unknown): number => {
+  const pdf = Array.isArray(parsers) ? parsers.find((one) => typeof one === "object" && one !== null && (one as { type?: unknown }).type === "pdf") : undefined;
+  const pages = (pdf as { maxPages?: unknown } | undefined)?.maxPages;
+  return typeof pages === "number" && Number.isInteger(pages) && pages >= 1 ? Math.min(pages, FIRECRAWL_PDF_PAGES_MAX) : FIRECRAWL_PDF_PAGES_MAX;
+};
+/** The most credits one document scraped under `options` may cost (an HTML page 1, a PDF 1 a page up to its cap, JSON
+ *  4 more), or undefined when it asks a proxy other than basic: an escalated proxy is priced nowhere here, so a body
+ *  asking one (or leaving it to Firecrawl's own "auto") is never sent. */
+const documentCredits = (options: { formats?: unknown; parsers?: unknown; proxy?: unknown }): number | undefined =>
+  options.proxy !== "basic" ? undefined : Math.max(FIRECRAWL_SCRAPE_CREDITS, pdfPagesOf(options.parsers)) + (asksJson(options.formats) ? FIRECRAWL_JSON_CREDITS : 0);
 
-/** The fee of a request to Firecrawl's `path` with `body`: a search's by its limit (10 by default) and whether it scrapes
- *  its results, a scrape's by whether it asks for JSON. Undefined for an endpoint the web tools do not ask. */
+/** The fee of a request to Firecrawl's `path` with `body`, its hold: the most it may cost under the body's caps. A search
+ *  is 2 credits per 10 of its limit (10 by default), rounded up, and, when it scrapes its results, each result at the
+ *  most one scraped document may cost (documentCredits); a scrape is one document's most. What it is charged is the
+ *  credits Firecrawl reports, never above this (firecrawlChargeOf). Undefined for an endpoint the web tools do not ask,
+ *  and for a body asking a proxy other than basic (a search for its results, a scrape for its page). */
 export function firecrawlFeeOf(path: string, body: unknown): Fee | undefined {
-  const asked = (body ?? {}) as { limit?: unknown; scrapeOptions?: { formats?: unknown }; formats?: unknown };
+  const asked = (body ?? {}) as { limit?: unknown; scrapeOptions?: { formats?: unknown; parsers?: unknown; proxy?: unknown }; formats?: unknown; parsers?: unknown; proxy?: unknown };
   const fee = (name: string, credits: number, basis: string): Fee => ({ name, by: "firecrawl", usd: usd(FIRECRAWL_CREDIT_USD * credits), basis: `${basis}: ${credits} credit${credits === 1 ? "" : "s"} at the key's plan price` });
   if (path === "/v2/search") {
     const n = typeof asked.limit === "number" && asked.limit > 0 ? Math.floor(asked.limit) : 10;
-    const scraped = asked.scrapeOptions ? n * (FIRECRAWL_SCRAPE_CREDITS + (asksJson(asked.scrapeOptions.formats) ? FIRECRAWL_JSON_CREDITS : 0)) : 0;
-    return fee("Firecrawl's search", FIRECRAWL_SEARCH_CREDITS * Math.ceil(n / 10) + scraped, `Firecrawl's list price for a search of ${n} results${scraped ? ", each scraped" : ""}`);
+    const each = asked.scrapeOptions ? documentCredits(asked.scrapeOptions) : 0;
+    if (each === undefined) return undefined;
+    return fee("Firecrawl's search", FIRECRAWL_SEARCH_CREDITS * Math.ceil(n / 10) + n * each, `Firecrawl's most for a search of ${n} results${each ? `, each scraped at up to ${each} credit${each === 1 ? "" : "s"}` : ""}`);
   }
-  if (path === "/v2/scrape") return fee("Firecrawl's scrape", FIRECRAWL_SCRAPE_CREDITS + (asksJson(asked.formats) ? FIRECRAWL_JSON_CREDITS : 0), "Firecrawl's list price for a scrape");
+  if (path === "/v2/scrape") {
+    const most = documentCredits(asked);
+    return most === undefined ? undefined : fee("Firecrawl's scrape", most, "Firecrawl's most for a scrape");
+  }
   return undefined;
 }
+
+/** The credits Firecrawl reports an answer to `path` cost (`json`, its parsed body; undefined when it was not JSON):
+ *  a search's top-level creditsUsed, a scrape's data.metadata.creditsUsed; undefined unless a whole number, 0 or more. */
+export function firecrawlCreditsOf(path: string, json: unknown): number | undefined {
+  const said = path === "/v2/search" ? (json as { creditsUsed?: unknown } | undefined)?.creditsUsed : (json as { data?: { metadata?: { creditsUsed?: unknown } } } | undefined)?.data?.metadata?.creditsUsed;
+  return typeof said === "number" && Number.isInteger(said) && said >= 0 ? said : undefined;
+}
+
+/** What an answer of `status` to `path` held at `fee` is charged, and the receipt's line for it: the credits Firecrawl
+ *  reports at the plan price; the hold when it reports more (saying how many). Reporting none it can be read by, a 2xx
+ *  is charged the hold, and a 408 or a 5xx 0 credits (saying so). */
+export function firecrawlChargeOf(fee: Fee, path: string, json: unknown, status = 200): { usd: number; basis: string } {
+  const hold = Math.round(fee.usd / FIRECRAWL_CREDIT_USD);
+  const plural = (n: number) => `${n} credit${n === 1 ? "" : "s"}`;
+  const reported = firecrawlCreditsOf(path, json);
+  // Firecrawl's billing page (https://docs.firecrawl.dev/billing): "A scrape that fails outright, for example because
+  // the site never responded, is not charged." A 408 or a 5xx with no count of its own is that failure: 0 credits.
+  if (reported === undefined && (status === 408 || status >= 500)) return { usd: 0, basis: `Firecrawl answered ${status} and reported no credit count: 0 credits; a request that fails outright is not charged` };
+  if (reported === undefined) return { usd: fee.usd, basis: `the hold, ${plural(hold)}; Firecrawl reported no credit count` };
+  const charged = usd(FIRECRAWL_CREDIT_USD * reported);
+  if (charged > fee.usd) return { usd: fee.usd, basis: `the hold, ${plural(hold)}; Firecrawl reported ${plural(reported)}` };
+  return { usd: charged, basis: `Firecrawl reported ${plural(reported)} (hold ${plural(hold)}), at the key's plan price` };
+}
+
+/** The words a Pay's `charged` carries for the receipt's line (chargedSaying): what a request was charged, and why. */
+const chargedWords = new WeakMap<() => number, () => string | undefined>();
+/** `charged`, carrying `said`, the receipt's words for its charge (undefined until there is one). */
+export const chargedSaying = (charged: () => number, said: () => string | undefined): (() => number) => {
+  chargedWords.set(charged, said);
+  return charged;
+};
+/** The receipt's words `charged` carries (chargedSaying), if any. */
+export const chargedSaid = (charged: (() => number) | undefined): string | undefined => (charged ? chargedWords.get(charged)?.() : undefined);
 
 /** A paid request that was not sent: the run's cap refused it, or it has no price here. Its message says why, in the
  *  cap's words. */
@@ -123,3 +180,14 @@ export class PaidRefused extends Error {
 export type Pay = (fee: Fee, send: () => Promise<Response>, charged?: () => number, settled?: (booked: boolean) => void) => Promise<Response>;
 /** No cap: the request is sent as it is. */
 export const unmetered: Pay = (_fee, send) => send();
+
+/** What a paid request's send gives its Pay when the request never left this process (keyed.ts paidSend): a 400, which
+ *  a cap settles at $0 (a 4xx is booked at nothing), marked with why, so the receipt's line for it says so (unsentOf). */
+const unsentAnswers = new WeakMap<Response, string>();
+export const unsentAnswer = (why: string): Response => {
+  const answer = new Response(null, { status: 400 });
+  unsentAnswers.set(answer, why);
+  return answer;
+};
+/** Why `answer` stands for a request that never left (unsentAnswer); undefined for any answer a provider gave. */
+export const unsentOf = (answer: Response): string | undefined => unsentAnswers.get(answer);

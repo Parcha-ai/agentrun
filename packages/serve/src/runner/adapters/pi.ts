@@ -13,12 +13,12 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, createModels, getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
-import { AgentDoc, type Conversation, defineExtension, defineTool, type Extension, GenerationTask, type Harness, hook, type JsonObject, ProviderDoc, type Registry, type Submission, type ToolExecutionApi, ToolTask, type ToolRegistration } from "@earendil-works/pi-durable";
+import { AgentDoc, AssistantEntry, type Conversation, type Cursor, defineExtension, type EntryRecord, defineTool, type Extension, GenerationTask, type Harness, hook, type JsonObject, ProviderDoc, type Registry, type Submission, type ToolExecutionApi, ToolResultEntry, ToolTask, type ToolRegistration } from "@earendil-works/pi-durable";
 import { anthropicPolicy, withWebSearches } from "@parcha/agentrun-harness-claude";
 import { type AdapterSession, type AgentAdapter, HOST_RESULT_MAX_CHARS, type HostTool, type NestedCalls, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus, type Wire } from "@parcha/agentrun-kernel";
 import { conversationLabel, type ModelProxy, NATIVE_SEARCH_USD, type ProviderPolicy, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { INTERRUPTED_TEXT } from "@parcha/agentrun-kernel/kernel";
-import { boundTo, resultMaxChars, TurnBudget } from "@parcha/agentrun-kernel/process";
+import { boundTo, resultMaxChars, TurnBudget, type TurnRecord } from "@parcha/agentrun-kernel/process";
 import { randomBytes } from "node:crypto";
 import { DEFAULT_HARNESS } from "../../harness.js";
 import { durableWait } from "../../workflow/pi-versions.js";
@@ -154,10 +154,11 @@ const PROVIDER = "agentrun-session";
 /** The input tokens pi (the @earendil-works/pi-* 1.5.2 packages serve pins) sends in a run's first model request before
  *  the agent's own prompt: pi writes no system prompt of its own, so it is serve's (the environment line and the wrapper
  *  around the agent's instructions) and the host's code mode tool, which every run is offered, with no tool granted.
- *  Counted with o200k_base on the first request a run sent through its spec to a scripted provider on gpt-6.1-sol, 286
- *  tokens, stated at 280 so its date line never puts it over (test/cap-save-warning.test.mjs keeps it at or under that
- *  count). A save under a cap prices a least step on it (cap-short.ts). */
-export const PI_BASE_INPUT_TOKENS = 280;
+ *  Counted with o200k_base on the first request a run sent through its spec to a scripted provider on gpt-6.1-sol, 346
+ *  tokens (code mode's Python sentence and its `language` field among them), stated at 340 so its date line never puts
+ *  it over (test/cap-save-warning.test.mjs keeps it at or under that count). A save under a cap prices a least step on
+ *  it (cap-short.ts). */
+export const PI_BASE_INPUT_TOKENS = 340;
 
 /** A host tool's value (HostTool's `structured`) in its pi result's details, which the model never reads: what a call
  *  nested in tools_call or a script reads (piNested). */
@@ -418,7 +419,32 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
     if (!turn) turns.set(key, (turn = new TurnBudget(spec.system)));
     return turn;
   };
-  const tools = [...spec.tools.filter((tool) => !owned.has(tool.name)).map((tool) => piTool(tool, io, (callId) => (io.gate ? (passed.has(callId) ? 0 : 1) : undefined), touched, nestedRefusals, windowOf, turnOf)), ...(options.tools ?? []).map((tool) => announcing(tool, io))];
+  // A session opened again in a turn (a park, a lost claim) has a budget that has read no answer: before its first call
+  // runs (beforeTool; piTool's execute for a call pi reruns without it) it takes the turn back from the conversation's
+  // own entries (turnRecordsOf), once per conversation, so the calls this process answers split what their answer left
+  // beside the results handed before it. A conversation whose answer this process read (afterResponse) has its turn
+  // already and reads nothing. A read that fails is not the turn: it rejects in plain words (the store's own error is its
+  // cause, never the model's to read) and is not kept, so the next call reads again; the call that met it never runs.
+  const restoring = new Map<string, Promise<void>>();
+  const answered = new Set<string>();
+  const restoreOf = (conversationId: unknown, context: Context): Promise<void> => {
+    const key = String(conversationId);
+    if (answered.has(key)) return Promise.resolve();
+    const known = restoring.get(key);
+    if (known) return known;
+    const restored = (async () => {
+      const conversation = await run.harness.conversation(conversationId as never, context);
+      if (conversation) turnOf(key).restore(await turnRecordsOf((cursor) => conversation.entries({}, TURN_PAGE, cursor as Cursor | undefined, context)));
+    })().catch((error: unknown) => {
+      if (restoring.get(key) === restored) restoring.delete(key);
+      throw new Error(TURN_UNREAD, { cause: error });
+    });
+    restoring.set(key, restored);
+    return restored;
+  };
+  // A call whose turn could not be read before it ran, blocked (beforeTool): its result is these words alone, an error.
+  const unread = new Set<string>();
+  const tools = [...spec.tools.filter((tool) => !owned.has(tool.name)).map((tool) => piTool(tool, io, (callId) => (io.gate ? (passed.has(callId) ? 0 : 1) : undefined), touched, nestedRefusals, windowOf, turnOf, restoreOf)), ...(options.tools ?? []).map((tool) => announcing(tool, io))];
   // A refused call's words (the gate's deny, main's), by call: its result is those words alone, as main gives them.
   const refusals = refusalWords();
   const extension = defineExtension({
@@ -428,6 +454,16 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
       hook(ToolTask, {
         beforeTool: async (call, api, hookContext: Context) => {
           touched.add(call.id);
+          // A call the model made takes its turn back before it runs (restoreOf): a pi-native tool (bash, web_fetch, a
+          // subagent) has no execute of the host's to read it in, and a read after its run could only lose what it did.
+          // A read that fails blocks the call before its intent, so nothing ran and the model may ask again.
+          if (call.parent === undefined) {
+            const failed = await restoreOf(api.conversationId, hookContext).then(() => false, () => true);
+            if (failed) {
+              unread.add(call.id);
+              return { block: TURN_UNREAD };
+            }
+          }
           if (!io.gate) return undefined;
           // A nested call (one a tool made) is marked so: the cap's wrap-up lets it through, as its parent's part.
           const answer = await io.gate({ callId: call.id, tool: call.name, args: (call.arguments ?? {}) as Record<string, unknown>, ...(call.parent === undefined ? {} : { nested: true as const }) }, hookContext);
@@ -457,8 +493,13 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
         afterTool: async (call, result, api, hookContext: Context) => {
           const refused = refusals.resultOf(call.id, result, call.parent !== undefined);
           if (refused) return refused as never;
+          if (unread.delete(call.id) && result.diagnostics?.some((diagnostic) => diagnostic.code === "blocked")) return { output: [{ type: "text", text: TURN_UNREAD }], isError: true } as never;
           const agent = (await api.snapshot(AgentDoc, api.conversationId, hookContext).catch(() => undefined)) as { readonly model?: { readonly provider: string } } | undefined;
-          return (await boundPiResult(result, windowOf(agent?.model), call.parent === undefined ? { turn: turnOf(api.conversationId), callId: call.id } : undefined)) as never;
+          // A call pi reran without its beforeTool (its intent stored before a crash) reads its turn here. One that
+          // cannot be read keeps what the tool did, held to the window's bound alone: a run that may have spent is never
+          // replaced by an error the model would answer by running it again.
+          const turn = call.parent === undefined && (await restoreOf(api.conversationId, hookContext).then(() => true, () => false)) ? turnOf(api.conversationId) : undefined;
+          return (await boundPiResult(result, windowOf(agent?.model), turn ? { turn, callId: call.id } : undefined)) as never;
         },
       }),
       // An answer's cost is the runner's booking of its request, never pi's $0 for a model it has no price for: set on
@@ -467,10 +508,8 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
         afterResponse: async (message, api, hookContext: Context) => {
           // The turn's facts, for its calls' results: the input its request held (cached input included), the answer's
           // output, and the calls it made.
-          const usage = message.usage as { input?: number; output?: number; cacheRead?: number; cacheWrite?: number } | undefined;
-          const held = usage ? (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0) : 0;
-          const calls = Array.isArray(message.content) ? message.content.filter((part) => (part as { type?: string }).type === "toolCall").length : undefined;
-          turnOf(api.conversationId).open({ ...(held > 0 ? { inputTokens: held, outputTokens: usage?.output ?? 0 } : {}), ...(calls === undefined ? {} : { calls }) });
+          turnOf(api.conversationId).open(turnFactsOf(message));
+          answered.add(String(api.conversationId));
           if (!io.bookedCost) return;
           // The conversation that asked, by the id pi sends with each of its requests (its pi.provider document's), as
           // the session's client names it to the proxy (port-models.ts sessionApi).
@@ -664,6 +703,52 @@ function piNested(api: ToolExecutionApi, context: Context, touched: ReadonlySet<
   };
 }
 
+/** An answer's facts for its turn's budget: the input its request held (cached input included), the answer's output, and
+ *  the calls it made (pi's AssistantMessage: its usage, its toolCall parts). */
+function turnFactsOf(message: { readonly usage?: unknown; readonly content?: unknown }): { inputTokens?: number; outputTokens?: number; calls?: number } {
+  const usage = message.usage as { input?: number; output?: number; cacheRead?: number; cacheWrite?: number } | undefined;
+  const held = usage ? (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0) : 0;
+  const calls = Array.isArray(message.content) ? message.content.filter((part) => (part as { type?: string }).type === "toolCall").length : undefined;
+  return { ...(held > 0 ? { inputTokens: held, outputTokens: usage?.output ?? 0 } : {}), ...(calls === undefined ? {} : { calls }) };
+}
+
+/** Entries read a page at a time when a session takes its turn back. */
+const TURN_PAGE = 32;
+
+/** A call's words when its turn could not be read back from its conversation (restoreOf): plain, the store's own error
+ *  kept off the model's transcript, and within RESULT_ALWAYS_WHOLE_CHARS, so no bound cuts them. */
+const TURN_UNREAD = "This call did not run: its turn could not be read back from its conversation, so what the turn has left for its result is unknown. Nothing it would do was done; it may be called again.";
+/** The same for a call pi runs again after a crash (piTool's execute, no beforeTool): this run of it did nothing, but an
+ *  earlier attempt may have taken effect before the crash, so it is never told it is free to call again. */
+const TURN_UNREAD_RESUMED = "This call stopped before running again: it was resuming after a restart, and its turn could not be read back from its conversation. An earlier attempt of it may already have taken effect; check what it did before calling it again.";
+
+/**
+ * A conversation's turn as its entries keep it (newest first, a page at a time from `page`): its last answer's facts and
+ * the length of each result handed since, in the order they were, as TurnBudget.restore takes them. pi writes an
+ * answer's entry before any of its calls runs and a result's entry as afterTool held it, so a stop anywhere in the turn
+ * leaves both. No answer: nothing.
+ */
+export async function turnRecordsOf(page: (cursor: unknown) => Promise<{ readonly items: readonly EntryRecord[]; readonly next?: unknown }>): Promise<TurnRecord[]> {
+  const settled: TurnRecord[] = [];
+  let cursor: unknown;
+  do {
+    const { items, next } = await page(cursor);
+    for (const entry of items) {
+      const [message] = entry.model ?? [];
+      if (AssistantEntry.is(entry) && message) {
+        const { inputTokens, outputTokens, calls } = turnFactsOf(message as never);
+        return [{ open: inputTokens === undefined ? null : { inputTokens, outputTokens: outputTokens ?? 0, ...(calls === undefined ? {} : { calls }) } }, ...settled.reverse()];
+      }
+      if (ToolResultEntry.is(entry) && message && "toolCallId" in message) {
+        const text = (message.content as readonly { type: string; text?: string }[]).map((part) => (part.type === "text" ? (part.text ?? "") : "")).join("");
+        settled.push({ settled: { callId: message.toolCallId, chars: text.length } });
+      }
+    }
+    cursor = next;
+  } while (cursor !== undefined);
+  return [];
+}
+
 /**
  * `result` with its text held to the kernel's bound for a model of `contextWindow` (boundResult: the window's share, under
  * HOST_RESULT_MAX_CHARS; none known, that bound alone), as every bridged harness's tool bridge holds a result, and, for a
@@ -671,11 +756,11 @@ function piNested(api: ToolExecutionApi, context: Context, touched: ReadonlySet<
  * undefined (the result stands as it is); past it, its text parts as one text cut at the bound with its note, or refused
  * in words for a window too small for any cut, its images kept after it. Never the oversized text.
  */
-export async function boundPiResult<R extends { readonly output?: readonly { readonly type: string; readonly text?: string }[] }>(result: R, contextWindow: number | undefined, claim?: { readonly turn: TurnBudget; readonly callId: string }): Promise<R | undefined> {
+export async function boundPiResult<R extends { readonly output?: readonly { readonly type: string; readonly text?: string }[]; readonly isError?: boolean }>(result: R, contextWindow: number | undefined, claim?: { readonly turn: TurnBudget; readonly callId: string }): Promise<R | undefined> {
   const parts = result.output;
   if (!parts) return undefined;
   const whole = parts.map((part) => (part.type === "text" ? (part.text ?? "") : "")).join("");
-  const { text, truncated } = boundTo(whole, await maxOf(contextWindow, claim));
+  const { text, truncated } = boundTo(whole, await maxOf(contextWindow, claim), { error: Boolean(result.isError) });
   claim?.turn.settle(claim.callId, text.length);
   if (!truncated) return undefined;
   return { ...result, output: [{ type: "text", text }, ...parts.filter((part) => part.type !== "text")] } as unknown as R;
@@ -727,7 +812,7 @@ export function boundedProgress(forward: (chunk: string) => void, max: number): 
  *  which a file read sizes an image by), and pi's output stream (the running tool's live slot); and its attempt
  *  (`attemptOf`: above 0 for a call the gate did not pass in this session, pi's rerun after a crash). Exported for the
  *  test of what its tool streams to pi (test/pi-tool-progress.test.mjs); the session builds it (sessionOn). */
-export function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: string) => number | undefined = () => undefined, touched: Set<string> = new Set(), nestedRefusals: ReadonlyMap<string, string> = new Map(), windowOf: (ref: { readonly provider: string } | undefined) => number | undefined = () => undefined, turnOf?: (conversationId: unknown) => TurnBudget) {
+export function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: string) => number | undefined = () => undefined, touched: Set<string> = new Set(), nestedRefusals: ReadonlyMap<string, string> = new Map(), windowOf: (ref: { readonly provider: string } | undefined) => number | undefined = () => undefined, turnOf?: (conversationId: unknown) => TurnBudget, restoreOf?: (conversationId: unknown, context: Context) => Promise<void>) {
   return defineTool({
     name: tool.name,
     description: tool.description,
@@ -747,6 +832,11 @@ export function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: stri
       const window = windowOf(ref);
       // A call the model made claims its share of its turn (a nested call's result goes to the tool that made it).
       const claim = turnOf && !api.callId.includes("/") ? { turn: turnOf(api.conversationId), callId: api.callId } : undefined;
+      // A first run read its turn in beforeTool (or was blocked there), so a read that fails here is a call pi runs again
+      // after a crash, with no beforeTool: an earlier attempt of it may have acted, and its words say so (TURN_UNREAD_RESUMED).
+      if (claim) await restoreOf?.(api.conversationId, toolContext).catch((error: unknown) => {
+        throw new Error(TURN_UNREAD_RESUMED, { cause: error instanceof Error && error.cause !== undefined ? error.cause : error });
+      });
       const max = await maxOf(window, claim);
       const answer = await tool.call(args ?? {}, {
         callId: api.callId, signal: toolContext.abortSignal ?? io.signal,
@@ -759,7 +849,7 @@ export function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: stri
       });
       // The answer's text within the bound for the calling agent's model (its window, when the host knows it), as the
       // tool bridge holds a bridged harness's; the host's record of the call (its tool_end) carries the same text.
-      const { text, truncated } = boundTo(answer.text, max);
+      const { text, truncated } = boundTo(answer.text, max, { error: Boolean(answer.isError) });
       io.onEvent({ type: "tool_end", callId: api.callId, name: tool.name, isError: Boolean(answer.isError), result: text, ...(truncated ? { truncated } : {}) });
       const images = (answer.images ?? []).map((image) => ({ type: "image" as const, data: image.data, mimeType: image.mimeType }));
       // A nested call's (its id `<callId>/<key>`) value in the result's details (which the model never reads), recorded

@@ -1,6 +1,7 @@
 // A cut worker that fails on cue, for cut-pool's tests: the text "hang" never answers, "exit" stops the worker, "throw"
 // throws a TypeError whose message names the text and answers its name, "crash" throws one uncaught (the worker's
-// "error" event), and any other text answers upper-cased.
+// "error" event), "stale" first answers the job before it with "LEAK", "twice" answers its own job two times, and any
+// other text answers upper-cased.
 import { parentPort } from "node:worker_threads";
 
 parentPort.on("message", (job) => {
@@ -15,5 +16,7 @@ parentPort.on("message", (job) => {
       return;
     }
   }
+  if (job.text === "stale") parentPort.postMessage({ id: job.id - 1, text: "LEAK" });
   parentPort.postMessage({ id: job.id, text: job.text.toUpperCase() });
+  if (job.text === "twice") parentPort.postMessage({ id: job.id, text: "TWICE AGAIN" });
 });

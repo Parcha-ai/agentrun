@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ProblemCard } from "@/components/Problem";
 import { ListSkeleton } from "@/components/Skeleton";
-import { Button } from "@/components/ui";
+import { Button, Checkbox } from "@/components/ui";
 import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 import { wrappedCards } from "@/components/WrappedCards";
 import { harnessLabel } from "@/lib/agentForm";
@@ -58,6 +58,12 @@ function wrappedProblem(e: unknown): Problem {
 
 /** A model's price, by its own requests: whole, the priced part of them, or none known. */
 const priceOf = (m: Wrapped["models"][number]) => (m.unpriced_requests >= m.requests && m.requests > 0 ? "no known price" : `${dollars(m.cost_usd)}${m.unpriced_requests > 0 ? " priced only" : ""}`);
+/** Whether none of a year's (or a row's) requests had its tokens recorded: its tokens are unknown, never 0. */
+/** The harnesses whose sessions never record tokens (Cursor's chat store keeps none). */
+const NO_TOKENS: ReadonlySet<string> = new Set(["cursor"]);
+const unrecorded = (r: { requests: number; tokens_unknown_requests: number }) => r.requests > 0 && r.tokens_unknown_requests >= r.requests;
+/** A harness's or model's tokens: compact, or not recorded when none of its requests' were. */
+const tokensOf = (r: { requests: number; tokens: number; tokens_unknown_requests: number }) => (unrecorded(r) ? "tokens not recorded" : compact(r.tokens));
 const hours = (ms: number) => `${(ms / 3_600_000).toFixed(1)} h`;
 const monthOf = (day: string) => Number(day.slice(5, 7)) - 1;
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -70,11 +76,14 @@ export function WrappedPage({ v2, year, go, cards = wrappedCards }: { v2: Client
   const [data, setData] = useState<Wrapped | null>(null);
   const [error, setError] = useState<Problem | null>(null);
   const [tries, setTries] = useState(0);
+  const [leakShown, setLeakShown] = useState(false);
   useEffect(() => {
     const abort = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     setData(null);
     setError(null);
+    // The leak receipt is asked for again in each year: turned on for one, it is off in the next.
+    setLeakShown(false);
     const ask = () => v2.wrapped(shown, abort.signal).then(setData, (e: unknown) => {
       if (abort.signal.aborted) return;
       // A long home: the server goes on reading and says when to ask again. The skeleton stays until the year comes.
@@ -88,14 +97,29 @@ export function WrappedPage({ v2, year, go, cards = wrappedCards }: { v2: Client
 
   const total = data ? data.tokens.input + data.tokens.output + data.tokens.cache_read + data.tokens.cache_write : 0;
   const months = data ? MONTHS.map((_, m) => data.days.filter((d) => monthOf(d.day) === m).reduce((n, d) => n + d.tokens, 0)) : [];
-  const busiest = data?.days.reduce<Wrapped["days"][number] | null>((best, d) => (!best || d.tokens > best.tokens ? d : best), null) ?? null;
+  const noTokens = data ? unrecorded(data) : false;
+  // The busiest day by tokens, or by requests in a year whose tokens were not recorded.
+  const weight = (d: Wrapped["days"][number]) => (noTokens ? d.requests : d.tokens);
+  const busiest = data?.days.reduce<Wrapped["days"][number] | null>((best, d) => (!best || weight(d) > weight(best) ? d : best), null) ?? null;
+  // The harnesses none of whose requests' tokens were recorded, by name: one that never records them ("Cursor doesn't
+  // record tokens"), and one that does but recorded none this year (only aborted requests), said apart.
+  const silent = data ? data.harnesses.filter((h) => unrecorded(h) && NO_TOKENS.has(h.harness)).map((h) => harnessLabel(h.harness)) : [];
+  const none = data ? data.harnesses.filter((h) => unrecorded(h) && !NO_TOKENS.has(h.harness)).map((h) => `${harnessLabel(h.harness)}'s`) : [];
   const modelTokens = data ? data.models.reduce((n, m) => n + m.tokens, 0) : 0;
   const harnessTokens = data ? data.harnesses.reduce((n, h) => n + h.tokens, 0) : 0;
 
-  const drawn = data ? WRAPPED_CARDS.map((card) => ({ card, node: cards(card, data) })).filter((c) => c.node !== null && c.node !== undefined && c.node !== false) : [];
-  const shownCards = drawn.length > 0 && (
+  const drawn = data ? WRAPPED_CARDS.map((card) => ({ card, node: cards(card, data, leakShown) })).filter((c) => c.node !== null && c.node !== undefined && c.node !== false) : [];
+  // The leak receipt is off until the person turns it on, and offered only for a year whose keys the import counted
+  // (the store's count: a year whose session files are gone keeps it).
+  const offersLeak = Boolean(data?.secrets);
+  const shownCards = (drawn.length > 0 || offersLeak) && (
     <section className={card} aria-labelledby="w-cards" data-cards>
       <h2 id="w-cards" className={heading}>Cards</h2>
+      {offersLeak && (
+        <div className="mt-2" data-leak-opt-in>
+          <Checkbox checked={leakShown} onChange={(e) => setLeakShown(e.target.checked)} label="Show the leak receipt" note="How many keys and tokens the import cut: counts only." />
+        </div>
+      )}
       <div className="mt-3 grid gap-4 md:grid-cols-2">{drawn.map(({ card: c, node }) => <div key={c.id}>{node}</div>)}</div>
     </section>
   );
@@ -144,6 +168,7 @@ export function WrappedPage({ v2, year, go, cards = wrappedCards }: { v2: Client
               {unread}
               <p className="font-sans text-body text-muted-foreground" role="status">No {data.unread_files > 0 ? "readable " : ""}coding agent sessions under this machine's home in {shown}.</p>
               {importedSection}
+              {shownCards}
             </div>
           )
           : (
@@ -152,24 +177,31 @@ export function WrappedPage({ v2, year, go, cards = wrappedCards }: { v2: Client
               <p className="font-sans text-small text-muted-foreground">Read on this machine from its own session files. Nothing leaves it: no prompt, title, path or project is in what the page shows.</p>
               <section className={card} aria-labelledby="w-year">
                 <h2 id="w-year" className={heading}>Your year in tokens</h2>
-                <p className="mt-2 font-mono text-figure font-semibold tabular-nums">{compact(total)} tokens</p>
+                <p className="mt-2 font-mono text-figure font-semibold tabular-nums">{noTokens ? "Tokens not recorded" : `${compact(total)} tokens`}</p>
+                {silent.length > 0 && <p className="mt-1 font-sans text-body text-muted-foreground">{silent.join(" and ")} {silent.length === 1 ? "doesn't" : "don't"} record tokens, so {silent.length === 1 ? "its" : "their"} requests count here without them.</p>}
+                {none.length > 0 && <p className="mt-1 font-sans text-body text-muted-foreground">No tokens were recorded for {none.join(" and ")} requests this year, so they count here without them.</p>}
                 <p className="mt-1 font-mono text-body text-muted-foreground">
-                  {data.sessions.toLocaleString("en-US")} sessions · {data.turns.toLocaleString("en-US")} prompts · {data.requests.toLocaleString("en-US")} model requests · {dollars(data.cost_usd)}
-                  {data.unpriced_requests > 0 ? ` + ${data.unpriced_requests.toLocaleString("en-US")} requests with no known price` : ""}
+                  {data.sessions.toLocaleString("en-US")} sessions · {data.turns.toLocaleString("en-US")} prompts · {data.requests.toLocaleString("en-US")} model requests · {data.unpriced_requests >= data.requests && data.requests > 0 ? "no known price" : dollars(data.cost_usd)}
+                  {data.unpriced_requests > 0 && data.unpriced_requests < data.requests ? ` + ${data.unpriced_requests.toLocaleString("en-US")} requests with no known price` : ""}
                 </p>
-                <p className="mt-1 font-mono text-body text-muted-foreground">
-                  {compact(data.tokens.input)} in · {compact(data.tokens.output)} out · {compact(data.tokens.cache_read)} cache read · {compact(data.tokens.cache_write)} cache write
-                </p>
-                <div className="mt-4"><Bars values={months} labels={MONTHS} label="Tokens by month" /></div>
-                <div className="mt-1 flex gap-1 font-mono text-micro text-muted-foreground">{MONTHS.map((m) => <span key={m} className="flex-1 text-center">{m}</span>)}</div>
-                {busiest && <p className="mt-3 font-mono text-body text-muted-foreground">Busiest day: {busiest.day}, {compact(busiest.tokens)} tokens across {data.days.length} days at work.</p>}
+                {!noTokens && (
+                  <>
+                    <p className="mt-1 font-mono text-body text-muted-foreground">
+                      {compact(data.tokens.input)} in · {compact(data.tokens.output)} out · {compact(data.tokens.cache_read)} cache read · {compact(data.tokens.cache_write)} cache write
+                      {data.tokens_unknown_requests > 0 ? ` + ${data.tokens_unknown_requests.toLocaleString("en-US")} requests with no recorded tokens` : ""}
+                    </p>
+                    <div className="mt-4"><Bars values={months} labels={MONTHS} label="Tokens by month" /></div>
+                    <div className="mt-1 flex gap-1 font-mono text-micro text-muted-foreground">{MONTHS.map((m) => <span key={m} className="flex-1 text-center">{m}</span>)}</div>
+                  </>
+                )}
+                {busiest && <p className="mt-3 font-mono text-body text-muted-foreground">Busiest day: {busiest.day}, {noTokens ? `${busiest.requests.toLocaleString("en-US")} requests` : `${compact(busiest.tokens)} tokens`} across {data.days.length} days at work.</p>}
               </section>
               <section className={card} aria-labelledby="w-who">
                 <h2 id="w-who" className={heading}>Harnesses and models</h2>
                 <div className="mt-3 grid gap-6 md:grid-cols-2">
                   <ul className="grid content-start gap-3" aria-label="Harnesses">
                     {data.harnesses.map((h) => (
-                      <Share key={h.harness} name={harnessLabel(h.harness)} figure={`${compact(h.tokens)} · ${h.sessions} sessions`} part={h.tokens} of={harnessTokens}>
+                      <Share key={h.harness} name={harnessLabel(h.harness)} figure={`${tokensOf(h)} · ${h.sessions} sessions`} part={h.tokens} of={harnessTokens}>
                         <p className="col-span-2 flex flex-wrap gap-x-3 font-mono text-small text-muted-foreground">
                           {h.sources.map((source) => {
                             const runs = data.imported.find((i) => i.source === source)?.runs ?? 0;
@@ -182,7 +214,7 @@ export function WrappedPage({ v2, year, go, cards = wrappedCards }: { v2: Client
                     ))}
                   </ul>
                   <ul className="grid content-start gap-3" aria-label="Models">
-                    {data.models.map((m) => <Share key={m.model} name={m.model} figure={`${compact(m.tokens)} · ${priceOf(m)}`} part={m.tokens} of={modelTokens} />)}
+                    {data.models.map((m) => <Share key={m.model} name={m.model} figure={`${tokensOf(m)} · ${priceOf(m)}`} part={m.tokens} of={modelTokens} />)}
                   </ul>
                 </div>
               </section>

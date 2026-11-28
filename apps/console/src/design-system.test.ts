@@ -77,7 +77,7 @@ describe("tailwind.config.ts", () => {
     const fonts = [...stylesCss.matchAll(/@fontsource\/[a-z-]+\/(\d+)\.css/g)].map((m) => m[1]);
     expect([...new Set(fonts)].sort()).toEqual(["400", "600"]);
   });
-  it("keeps square defaults, shared action shapes, and one shadow", () => {
+  it("keeps square defaults, shared action shapes, and two shadows", () => {
     expect(tokens.light.radius).toBe("0px");
     for (const shape of SHAPES) {
       expect(theme.borderRadius[shape.name]).toBe(`var(--radius-${shape.name})`);
@@ -85,6 +85,18 @@ describe("tailwind.config.ts", () => {
     }
     // Actions share the 8px radius.
     expect(tokens.light["radius-action"]).toBe("0.5rem");
-    expect(Object.keys(theme.boxShadow)).toEqual(["none", "float"]);
+    // Under what floats over the page, and at the left edge of a drawer: each a token with a value in both themes.
+    expect(Object.keys(theme.boxShadow)).toEqual(["none", "float", "drawer"]);
+    for (const name of ["float", "drawer"] as const) {
+      expect(theme.boxShadow[name]).toBe(`var(--shadow-${name})`);
+      for (const mode of ["light", "dark"] as const) expect(tokens[mode][`shadow-${name}`], `${name} in ${mode}`).toMatch(/rgb\(0 0 0 \/ 0\.\d+\)/);
+    }
+    // A drawer's is cast to its left only: a negative x, no y, and a spread that takes back half its blur above and below.
+    for (const mode of ["light", "dark"] as const) {
+      const cast = /^-(\d+)px 0 (\d+)px -(\d+)px rgb\(0 0 0 \/ 0\.\d+\)$/.exec(tokens[mode]["shadow-drawer"]);
+      expect(cast, `${mode}: ${tokens[mode]["shadow-drawer"]}`).not.toBeNull();
+      const [x, blur, spread] = cast!.slice(1).map(Number);
+      expect([x, blur]).toEqual([spread, 2 * spread]);
+    }
   });
 });

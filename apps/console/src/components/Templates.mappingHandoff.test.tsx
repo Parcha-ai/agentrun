@@ -12,7 +12,7 @@ const template: TemplateView = {
   id: "github:acme/agents/templates/review", name: "review", display_name: "Review", version: "1.0.0", description: "Review changes.",
   bundled: false, source: "github:acme/agents/templates/review@main", sha: "0123456789abcdef0123456789abcdef01234567", publisher: "acme",
   category: null, tags: [], license: null, author: null, repository: null, output: null, input_schema: null,
-  harness: ["pi"], model: null, effort: null, tools: null, tool_policy: null, computer: null, needs: null, computer_here: null, checkout: null,
+  harness: ["pi"], model: null, effort: null, tools: null, tool_policy: null, computer: null, needs: null, computer_here: null, model_tiers_here: { harness: "pi", fast: null, strong: null, note: null }, checkout: null,
   parameters: { type: "object", additionalProperties: false, properties: {} }, secrets: [], budget: null, learning: false, approvals_default: "ask", triggers: [], skills: [], evals: [],
   mcp: [{ source: "github", toolkit: "github", reason: null, required: true, tools: [{ name: "read", tool: "mcp:github/read", asks: "allow" }] }],
 };

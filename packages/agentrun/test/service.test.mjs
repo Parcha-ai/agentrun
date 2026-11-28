@@ -55,6 +55,9 @@ test("the LaunchAgent: its label, arguments, PATH and log, started at login and 
   assert.match(text, /<key>PATH<\/key>\s*<string>\/opt\/homebrew\/bin:\/usr\/bin<\/string>/);
   assert.match(text, /&amp; &lt;more&gt; &quot;quoted&quot;/);
   assert.deepEqual(plistArgs(text), ["/u/mac/.agentrun/bin/agentrun", "--no-open", ...ODD]);
+  // A stop (`service restart`, `stop`, `remove`, a re-install) gets 60 s before launchd's SIGKILL, not its default 20 s:
+  // the runner beside the server closes in up to 55 s with its 30 s drain (packages/serve's runnerCloseBoundMs).
+  assert.match(text, /<key>ExitTimeOut<\/key>\s*<integer>60<\/integer>/);
 });
 
 test("the systemd user unit: its command quoted as systemd reads it, restarted on failure, its output appended to the log", () => {

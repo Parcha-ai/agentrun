@@ -70,7 +70,7 @@ test("a draft its check had nothing to check it on: its stop's reason is the com
     r2: { compiled: { workflow: "sort-invoice", attempts: [{ ok: true, errors: [] }], digest: D2 } },
   };
   const bar = { compile_after: 20, agree_min: 0.8, alone_min: 0.7, attempt: 1 };
-  const nothing = "nothing to check it on: the agent has no completed run of its own to check it against. It is not promoted, and it stops: nothing compiles again until a hold or its owner acts";
+  const nothing = "nothing to check it on: the agent has no completed run of its own to check it against. It is not promoted, and it stops: nothing compiles again until a correction or compile_after new runs of the agent's own restart it";
   const promotions = [
     { workflow: "sort-invoice", digest: D1, at: new Date(T0).toISOString(), decided: "hold", reason: nothing, check: { ...bar, n: 0, agreed: 0, alone: 0, of: [], stopped: true } },
     { workflow: "sort-invoice", digest: D2, at: new Date(T0 + 1).toISOString(), decided: "hold", reason: "checked on 6 of the agent's inputs: held, and this was the recompile's check, so it stops", check: { ...bar, attempt: 2, n: 6, agreed: 1, alone: 6, of: [], stopped: true } },

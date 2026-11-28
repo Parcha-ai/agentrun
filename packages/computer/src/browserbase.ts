@@ -61,6 +61,7 @@ import {
 	restCall,
 	type UrlStore,
 	causedFail,
+	createdOf,
 	vendorFailure,
 	withoutCreateLabel,
 } from "./browser.js";
@@ -756,7 +757,7 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 	async list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {
 		const found = await this.#sessions(labels, signal);
 		if (!found.ok) return found;
-		return ok(found.value.map((s) => ({ ref: refOf(s), labels: fromMetadata(s.userMetadata), deadline: deadlineOf(s), state: "running", network: "open" })));
+		return ok(found.value.map((s) => ({ ref: refOf(s), labels: fromMetadata(s.userMetadata), deadline: deadlineOf(s), state: "running", network: "open", ...createdOf(s.createdAt ?? s.startedAt) })));
 	}
 
 	/** Always open: a Browserbase browser reaches the open web, and a change is refused in words. */

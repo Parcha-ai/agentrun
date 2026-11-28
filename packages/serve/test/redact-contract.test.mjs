@@ -5,31 +5,16 @@
 // an entry point's own contract fixes it. Where the entry points answer differently, the test's diagnostics say which
 // differ, so a change that moves one of them shows up there. Every key-shaped text here is put together at run time.
 import assert from "node:assert/strict";
-import { generateKeyPairSync } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import { addressForms } from "../dist/calendar/address.js";
-import * as refusal from "../dist/key-refusal.js";
 import { redactLearned, redactSecrets } from "../dist/learn/secrets.js";
-import { CALL_RESULT_CHARS, scrubUrls } from "../dist/timeline/index.js";
-import { cut } from "../dist/timeline/util.js";
+import { adversarial, BACKSLASH, BOM, CUT_KEY, DENSE, ENTRIES, fill, SHY, short, SIZE, WORK_PARTS, workPartName, ZWSP } from "./fixtures/redact-work.mjs";
 
-const ENTRIES = {
-  redacted: (text, values) => refusal.redacted(text, values),
-  redactedAnswer: (text, values) => refusal.redactedAnswer(text, values),
-  redactedCall: (text, values) => cut(refusal.redactedCall(text, values, CALL_RESULT_CHARS, scrubUrls), CALL_RESULT_CHARS),
-  redactSecrets: (text, values) => redactSecrets(text, values),
-  runFile: (text, values) => redactSecrets(text, values, Buffer.byteLength(text)),
-};
-
-const CUT_KEY = `not-a-secret-${"cut-key-0123456789abcdef"}`;
 /** A held value of 64 characters in no secret's shape. */
 const SPLIT = `${["not-a-secret", "split-key"].join("-")}-${"0123456789abcdef".repeat(3)}`.slice(0, 64);
 const P24 = ["Zq8VbN3xLmT6pR2w", "Yk9HsD4fGj7Ac5Ue"];
 const login = (user, password) => [user, password].join(":");
-const SIZE = 256 * 1024;
-const fill = (unit, size = SIZE) => unit.repeat(Math.ceil(size / unit.length)).slice(0, size);
-/** Characters that render as nothing, by code point: a zero-width space, a soft hyphen, a byte order mark. */
-const [ZWSP, SHY, BOM] = [0x200b, 0xad, 0xfeff].map((code) => String.fromCharCode(code));
 /** A made-up PEM-like key: `count` body lines of 64 characters (turns of the base64 of "fake-body-not-a-real-key", each
  *  numbered), its armor built in pieces. */
 const fakePem = (count) => {
@@ -798,6 +783,149 @@ const CASES = [
       exact: Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, text])),
     }));
   })(),
+  // A terminal sequence shows as nothing where a terminal or a log viewer renders it: a held value split by one reads
+  // whole there, so it withholds the text, whether the sequence is a CSI (ESC "[", parameters, intermediates, a final
+  // byte: a colour, a cursor move, a private mode), an OSC (ESC "]" to a BEL or ESC and a backslash: a title, a hyperlink), the
+  // 8-bit CSI and OSC (U+009B, U+009D, to U+009C), or a two-character escape (ESC "7", ESC "(" "B"), as it stands, in a
+  // JSON string (once, and twice), as JSON's \u escape in prose, as Python's \x escape in a single-quoted dict,
+  // percent-encoded, as an HTML character reference, and before each of the value's characters. So does a backspace
+  // that strikes a character out: the terminal shows what comes after it in its place.
+  ...(() => {
+    const [H, R] = P24;
+    const all = Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"]));
+    const E = "\u001b";
+    return [
+      ["a CSI colour reset as it stands", `x ${H}${E}[0m${R} y`],
+      ["a CSI colour with parameters as it stands", `x ${H}${E}[1;38;5;196m${R} y`],
+      ["a CSI private mode as it stands", `x ${H}${E}[?25l${R} y`],
+      ["a CSI with an intermediate byte as it stands", `x ${H}${E}[2 q${R} y`],
+      ["an OSC title ended by a BEL", `x ${H}${E}]0;build log \u0007${R} y`],
+      ["an OSC hyperlink ended by ESC and a backslash", `x ${H}${E}]8;;https://example.test/a${E}\\${R} y`],
+      ["an 8-bit CSI", `x ${H}\u009b31m${R} y`],
+      ["an 8-bit OSC ended by U+009C", `x ${H}\u009d0;title\u009c${R} y`],
+      ["a two-character escape", `x ${H}${E}7${R} y`],
+      ["a character set designation", `x ${H}${E}(B${R} y`],
+      ["a CSI colour in a JSON string", JSON.stringify({ note: `see ${H}${E}[31m${R} more` })],
+      ["a CSI colour in JSON written in a JSON string", JSON.stringify({ out: JSON.stringify({ note: `see ${H}${E}[31m${R} more` }) })],
+      ["a CSI colour as JSON's \\u escape in prose", `x ${H}\\u001b[0m${R} y`],
+      ["a CSI colour as Python's \\x escape in a single-quoted dict", `{'a': 'see ${H}\\x1b[0m${R} more'}`],
+      ["a CSI colour percent-encoded", `x ${H}%1B%5B0m${R} y`],
+      ["a CSI colour with its ESC as an HTML character reference", `x ${H}&#x1b;[0m${R} y`],
+      ["a CSI colour before each of its characters", `v=${[...H, ...R].map((char, i) => `${E}[3${i % 8}m${char}`).join("")}${E}[0m ok`],
+      ["a backspace striking out a character", `x ${H}Z\b${R} y`],
+      ["two backspaces striking out two characters", `x ${H}__\b\b${R} y`],
+    ].map(([what, text]) => ({ name: `a held value split by a terminal sequence, ${what}, withholds the text`, text, values: [P24.join("")], hides: [H.slice(0, 8), R.slice(0, 8)], exact: all }));
+  })(),
+  // A terminal ignores a NUL or a DEL inside a sequence and runs any other C0 control there (a backspace moves back)
+  // without ending the sequence; CAN (U+0018) or SUB (U+001A) aborts it, and it shows as nothing. A control a view
+  // drops, as it stands or as a view decodes it, takes no place on screen either: a backspace after it strikes out the
+  // character before it. A held value split by any of these withholds the text.
+  ...(() => {
+    const [H, R] = P24;
+    const all = Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"]));
+    const E = "\u001b";
+    return [
+      ["a NUL inside a CSI colour as it stands", `x ${H}${E}[0\u0000m${R} y`],
+      ["a NUL inside a CSI colour in a JSON string", JSON.stringify({ note: `see ${H}${E}[0\u0000m${R} more` })],
+      ["a NUL inside a CSI colour, percent-encoded", `x ${H}%1B%5B0%00m${R} y`],
+      ["a NUL inside a CSI colour as Python's \\x escape in a single-quoted dict", `{'a': 'see ${H}\\x1b[0\\x00m${R} more'}`],
+      ["a U+0001 inside a CSI colour", `x ${H}${E}[0\u0001m${R} y`],
+      ["a DEL inside a CSI colour", `x ${H}${E}[0\u007fm${R} y`],
+      ["a NUL inside an OSC title ended by a BEL", `x ${H}${E}]0;build\u0000 log\u0007${R} y`],
+      ["a CSI aborted by a CAN", `x ${H}${E}[0\u0018${R} y`],
+      ["a CSI aborted by a SUB", `x ${H}${E}[1;3\u001a${R} y`],
+      ["a backspace inside a CSI, striking out the character before it", `x ${H}Z${E}[0\bm${R} y`],
+      ["a backspace after a NUL, striking out the character before the NUL", `x ${H}Z\u0000\b${R} y`],
+      ["a backspace after a zero-width space, striking out the character before it", `x ${H}Z\u200b\b${R} y`],
+      // A character that shows as a blank or a box takes a cell, though the views drop it: two backspaces strike out it
+      // and the character before it.
+      ["two backspaces after a braille blank", `x ${H}Z\u2800\b\b${R} y`],
+      ["two backspaces after a space", `x ${H}Z \b\b${R} y`],
+      ["two backspaces after a no-break space", `x ${H}Z\u00a0\b\b${R} y`],
+      ["two backspaces after a private use character", `x ${H}Z\ue000\b\b${R} y`],
+      ["two backspaces after U+FFFE", `x ${H}Z\ufffe\b\b${R} y`],
+      // A printable character past ASCII inside a CSI does not end it: the terminal ignores the rest to its final byte.
+      ["a CSI colour with a character past ASCII inside", `x ${H}${E}[0\u00e9m${R} y`],
+      ["a CSI colour with a braille blank inside", `x ${H}${E}[0\u2800m${R} y`],
+    ].map(([what, text]) => ({ name: `a held value split by a terminal sequence, ${what}, withholds the text`, text, values: [P24.join("")], hides: [H.slice(0, 8), R.slice(0, 8)], exact: all }));
+  })(),
+  // Normalization reads past a terminal control as a reader does: a held value with a precomposed Hangul syllable, its
+  // conjoining jamo split by a BEL (dropped, as any control is) or by a CSI colour (gone on screen), withholds the text.
+  // A backspace strikes out a whole character: one past U+FFFF (a surrogate pair) goes with both halves. Jamo split by a
+  // backspace read whole where it is dropped, as before terminal readings.
+  ...(() => {
+    const [H, R] = P24;
+    const all = Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"]));
+    const syllable = `${H}가${R}`;
+    return [
+      { what: "conjoining jamo split by a BEL, the value precomposed", text: `x ${H}ᄀ\u0007ᅡ${R} y`, value: syllable },
+      { what: "conjoining jamo split by a CSI colour, the value precomposed", text: `x ${H}ᄀ\u001b[0mᅡ${R} y`, value: syllable },
+      { what: "a backspace striking out a character past U+FFFF", text: `x ${H}\u{10400}\b${R} y`, value: P24.join("") },
+      { what: "two backspaces striking out a character past U+FFFF and the one before it", text: `x ${H}Z\u{10400}\b\b${R} y`, value: P24.join("") },
+      // On screen the backspace strikes out the first jamo; with it dropped as a control, the jamo compose.
+      { what: "conjoining jamo split by a backspace, the value precomposed", text: `x ${H}\u1100\b\u1161${R} y`, value: syllable },
+    ].map(({ what, text, value }) => ({ name: `a held value read across a terminal control, ${what}, withholds the text`, text, values: [value], hides: [H.slice(0, 8), R.slice(0, 8)], exact: all }));
+  })(),
+  // Controls: coloured output with no held value shows as it came; a held value coloured whole is cut in place, its
+  // colours kept; a backspace that strikes out a held value's own character leaves no held value on screen and shows as
+  // it came; and a held value split by an ESC and a letter it would read as no sequence's (as the views read any lone
+  // control) still withholds the text.
+  ...(() => {
+    const [H, R] = P24;
+    const V = P24.join("");
+    const E = "\u001b";
+    const ls = `${E}[0m${E}[01;34mbin${E}[0m  ${E}[01;32mrun.sh${E}[0m  ${E}[01;31mdata.tar.gz${E}[0m \n`;
+    const same = (text) => Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, text]));
+    const coloured = `${E}[31m${V}${E}[0m done`;
+    const cut = `${E}[31m[redacted]${E}[0m done`;
+    return [
+      { name: "coloured output with no held value shows as it came (control)", text: ls, values: [V], hides: [], exact: same(ls) },
+      { name: "a held value coloured whole is cut in place, its colours kept (control)", text: coloured, values: [V], hides: [H.slice(0, 8), R.slice(0, 8)], exact: { redacted: cut, redactedAnswer: cut, redactSecrets: cut, runFile: cut } },
+      { name: "a backspace striking out the last character of a held value's head, its rest after, shows as it came (control)", text: `x ${H}\b${R.slice(0, 4)}zzzz y`, values: [V], hides: [], exact: same(`x ${H}\b${R.slice(0, 4)}zzzz y`) },
+      { name: "a held value split by an ESC and its rest's first letter withholds the text (control)", text: `x ${H}${E}${R} y`, values: [V], hides: [H.slice(0, 8), R.slice(0, 8)], exact: Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"])) },
+    ];
+  })(),
+  // More characters that show as a box, a blank or nothing: U+FFFE, the interlinear annotation characters
+  // (U+FFF9-FFFB), the noncharacters U+FDD0-FDEF, private use (U+E000-F8FF), the braille blank (U+2800, which shows as
+  // a space and is no whitespace), and a lone surrogate. Between a held value's halves each hides it from no view: as it
+  // stands, in a JSON string as JSON.stringify writes it (a lone surrogate as its \u escape), as JSON's \u escape in
+  // prose, percent-encoded and as an HTML character reference where it has those forms, and between each of the value's
+  // characters, it withholds the text.
+  ...(() => {
+    const [H, R] = P24;
+    const B = String.fromCharCode(92);
+    const all = Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"]));
+    const hex4 = (code) => code.toString(16).padStart(4, "0");
+    return [0xfffe, 0xfff9, 0xfffa, 0xfffb, 0xfdd0, 0xfdef, 0xe000, 0xf8ff, 0x2800, 0xd800, 0xdbff, 0xdc00, 0xdfff].flatMap((code) => {
+      const char = String.fromCharCode(code);
+      const at = `U+${hex4(code).toUpperCase()}`;
+      const lone = code >= 0xd800 && code <= 0xdfff;
+      return [
+        [`${at} as it stands`, `x ${H}${char}${R} y`],
+        [`${at} in a JSON string as JSON.stringify writes it`, JSON.stringify({ note: `see ${H}${char}${R} more` })],
+        [`${at} as JSON's \\u escape in prose`, `x ${H}${B}u${hex4(code)}${R} y`],
+        [`${at} between each of its characters`, `v=${[...H, ...R].join(char)} ok`],
+        // A lone surrogate has no UTF-8 bytes, and a browser reads its reference as U+FFFD, which shows.
+        ...(lone ? [] : [[`${at} percent-encoded`, `x ${H}${encodeURIComponent(char)}${R} y`], [`${at} as an HTML character reference`, `x ${H}&#x${hex4(code)};${R} y`]]),
+      ].map(([what, text]) => ({ name: `a held value split by a character that shows as a box or a blank, ${what}, withholds the text`, text, values: [P24.join("")], hides: [H.slice(0, 8), R.slice(0, 8)], exact: all }));
+    });
+  })(),
+  // Controls: a character past U+FFFF (two surrogates, as they stand or as two \u escapes) is no lone surrogate: a
+  // held value holding one is cut in place whole, and a text of such characters, private use characters and braille
+  // with no held value shows as it came.
+  ...(() => {
+    const [H, R] = P24;
+    const B = String.fromCharCode(92);
+    const V = `${H}\u{1F600}${R}`;
+    const same = (text) => Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, text]));
+    const plain = `x ${V} y`;
+    const words = `see \u{1F600} and \uE000\uF8FF in \u2801\u2803\u2800\u2809 done`;
+    return [
+      { name: "a held value holding a character past U+FFFF is cut in place whole (control)", text: plain, values: [V], hides: [H.slice(0, 8), R.slice(0, 8)], exact: { redacted: "x [redacted] y", redactedAnswer: "x [redacted] y", redactSecrets: "x [redacted] y", runFile: "x [redacted] y" } },
+      { name: "a held value holding a character past U+FFFF, written as two \\u escapes in prose, withholds the text (control)", text: `x ${H}${B}ud83d${B}ude00${R} y`, values: [V], hides: [H.slice(0, 8), R.slice(0, 8)], exact: Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"])) },
+      { name: "a text of characters past U+FFFF, private use characters and braille, with no held value, shows as it came (control)", text: words, values: [P24.join("")], hides: [], exact: same(words) },
+    ];
+  })(),
   // U+FFFF, a noncharacter, shows as a box at most, so a reader still reads a held value split by one: as it stands, in
   // a JSON string (JSON.stringify keeps it as it is; once, and twice: JSON in JSON), as JSON's \uffff escape in prose
   // and in a JSON string, percent-encoded (its UTF-8 bytes), as an HTML character reference, and between each of the
@@ -975,6 +1103,242 @@ const CASES = [
       { name: "a held value with a : whole in prose beside a quote is cut in place (control)", text: `say "hi" ${LOGIN} ok`, values: [LOGIN], hides: ["s3cretpass"], exact: all('say "hi" [redacted] ok') },
     ];
   })(),
+  // A held value that holds a "+" (base64, a key's body), printed split into string literals joined by "+" (code that
+  // builds it: `"ab" + "cd+ef"`, a line each, single-quoted, over a Python line continuation). The join read the "+"
+  // between the strings as text and its "+" views read the value's own "+" as a space, so no reading held the value: it
+  // showed. The join's values now read the strings back to back without that operator, keeping the value's own "+", so
+  // each withholds the text. The same splits of a value with no "+" withheld before, double-quoted, and still do;
+  // single-quoted they showed too (the join that reads an apostrophe as a quote has no view with "+" as a space), and now
+  // withhold. The operator standing where the value's own "+" is withheld before and still does; strings joined by "+"
+  // that hold no held value show as they came (controls).
+  ...(() => {
+    const all = (shown) => Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, shown]));
+    // A made-up body line of a key, 64 base64 characters with "+" at 31 and 55 and "/" at 22 and 41.
+    const BODY = ["Zq8VbN3xLmT6pR2wYk9HsD", "/", "q7Xk2Lr9", "+", "fJ8mWb3Nc", "/", "hP4sYd6Gv1EzQ", "+", "uKa0Rw7H"].join("");
+    assert.ok(BODY.length === 64 && BODY[31] === "+" && BODY[55] === "+" && BODY[22] === "/" && BODY[41] === "/", BODY);
+    const SHORT = `${P24[0].slice(0, 6)}+${P24[1].slice(0, 6)}`;
+    const chunks = (value, n) => value.match(new RegExp(`.{1,${n}}`, "g"));
+    const at = (value, i) => [value.slice(0, i), value.slice(i)];
+    const lit = (parts, q = '"') => parts.map((part) => `${q}${part}${q}`);
+    // Each way of printing `value` split into literals: what it is, and the text. A key's body in chunks of 16, a short
+    // value in chunks of 4.
+    const splits = (value, n = value.length > 16 ? 16 : 4) => [
+      [`in ${n}-character chunks, one a line`, ["const body =", ...lit(chunks(value, n)).map((part) => `  ${part} +`), '  "";'].join("\n")],
+      [`in ${n}-character chunks on one line`, `const body = ${lit(chunks(value, n)).join(" + ")};`],
+      [`in ${n}-character single-quoted chunks, one a line`, ["body = (", ...lit(chunks(value, n), "'").map((part) => `  ${part} +`), "  '')"].join("\n")],
+      ...[...value].flatMap((char, i) => (char === "+" ? [i, i + 1] : [])).flatMap((i) => [
+        [`in halves at ${i} on one line`, `const body = ${lit(at(value, i)).join(" + ")};`],
+        [`in halves at ${i}, a line each`, `const body =\n  ${lit(at(value, i)).join(" +\n  ")};`],
+        [`in single-quoted halves at ${i}`, `body = ${lit(at(value, i), "'").join(" + ")}`],
+        [`in halves at ${i} with no spaces`, `x=${lit(at(value, i)).join("+")}`],
+        [`in halves at ${i} over a Python line continuation`, `body = ${lit(at(value, i)).join(` + ${String.fromCharCode(92)}\n    `)}`],
+      ]),
+      ["in halves at its middle", `const body = ${lit(at(value, value.length >> 1)).join(" + ")};`],
+      ["in single-quoted halves at its middle", `body = ${lit(at(value, value.length >> 1), "'").join(" + ")}`],
+      // As a write call's arguments carry the code: in a JSON string, its quotes escaped.
+      ["in halves at its middle, written in a JSON string", JSON.stringify({ path: "body.js", content: `const body = ${lit(at(value, value.length >> 1)).join(" + ")};\n` })],
+      [`in ${n}-character chunks, one a line, written in a JSON string`, JSON.stringify({ path: "body.js", content: ["const body =", ...lit(chunks(value, n)).map((part) => `  ${part} +`), '  "";'].join("\n") })],
+    ];
+    const noPlus = (value) => value.replaceAll("+", "A");
+    const before = (what) => (what.includes("single-quoted") ? "" : ", as before");
+    return [
+      ...[BODY, SHORT].flatMap((value) => splits(value).map(([what, text]) => ({
+        name: `a held value with a "+" printed as string literals joined by "+" ${what} withholds the text (${value.length} characters)`,
+        text, values: [value], hides: [value.slice(0, 6), value.slice(-6)], exact: all("[redacted]"),
+      }))),
+      ...[BODY, SHORT].flatMap((value) => splits(noPlus(value)).map(([what, text]) => ({
+        name: `a held value with no "+" printed as string literals joined by "+" ${what} withholds the text${before(what)} (${value.length} characters)`,
+        text, values: [noPlus(value)], hides: [value.slice(0, 6), value.slice(-6)], exact: all("[redacted]"),
+      }))),
+      // "+" and Python's line continuation with no space between them are one run, "+\\", an operator all the same: as
+      // the code stands and written in a JSON string (Python accepts "+\\" before a line break, never "\\+").
+      ...[BODY, SHORT, noPlus(BODY)].flatMap((value) => {
+        const code = `body = ${lit(at(value, value.includes("+") ? value.indexOf("+") + 1 : 32)).join(`+${String.fromCharCode(92)}\n    `)}`;
+        return [[code, "as the code stands"], [JSON.stringify({ path: "body.py", content: `${code}\n` }), "written in a JSON string"]].map(([text, how]) => ({
+          name: `a held value ${value.includes("+") ? 'with a "+"' : 'with no "+"'} printed as Python literals joined by "+\\" and a line break, ${how}, withholds the text (${value.length} characters)`,
+          text, values: [value], hides: [value.slice(0, 6), value.slice(-6)], exact: all("[redacted]"),
+        }));
+      }),
+      // The operator kept: a held value's own "+" written as the operator between two literals in one JSON string, and its
+      // rest in the next string, a property name between them. Withheld before the operator was read as one, and still.
+      {
+        name: 'a held value whose own "+" is the operator between two literals in one JSON string, its rest in the next string past a property name, withholds the text',
+        text: JSON.stringify({ a: '"Zq8VbN3x" + "LmT6pR2w"', b: "Yk9HsD4f" }), values: ["Zq8VbN3x+LmT6pR2wYk9HsD4f"], hides: ["Zq8VbN3x", "Yk9HsD4f"], exact: all("[redacted]"),
+      },
+      // A held value with two "+", one the operator between two single-quoted literals and one inside the second, its
+      // rest past a property name: withheld before the operator was read as one (the values read with the operator in
+      // them), shown when the operator was left out but the "+" inside a string kept, withheld now that main's reading
+      // of the values, with the operator, is read too.
+      {
+        name: 'a held value with two "+", one the operator between two single-quoted literals and one inside a literal, its rest past a property name, withholds the text',
+        text: "{'a': 'Zq8VbN3x' + 'LmT6+pR2w', 'b': 'Yk9HsD4f'}", values: ["Zq8VbN3x+LmT6+pR2wYk9HsD4f"], hides: ["Zq8VbN3x", "Yk9HsD4f"], exact: all("[redacted]"),
+      },
+      // Accepted, as before: the values read with no "," match a held value with its "," dropped, so its two sides in two
+      // strings withhold the text though the "," is not printed. A "+" is no such mark: only an operator printed between
+      // the two is left out, so with none printed the text shows, as before.
+      {
+        name: `a held value's two sides around a "," in two strings of an array, the "," not printed, withholds the text (accepted)`,
+        text: JSON.stringify(["Zq8VbN3xLmT6", "pR2wYk9HsD4f"]), values: ["Zq8VbN3xLmT6,pR2wYk9HsD4f"], hides: ["Zq8VbN3x"], exact: all("[redacted]"),
+      },
+      {
+        name: `a held value's two sides around a "+" in two strings of an array, the "+" not printed, shows as it came, as before (control)`,
+        text: JSON.stringify(["Zq8VbN3xLmT6", "pR2wYk9HsD4f"]), values: ["Zq8VbN3xLmT6+pR2wYk9HsD4f"], hides: [], exact: all(JSON.stringify(["Zq8VbN3xLmT6", "pR2wYk9HsD4f"])),
+      },
+      // Prose before single-quoted literals (P1-3): an apostrophe in "Here's" or "I've" opened a string, so the code's own
+      // apostrophes were read the wrong way round and its literals never joined. An apostrophe with a letter or a digit
+      // on both sides opens no string, and a string an apostrophe opened ends at a line break, as a literal of Python
+      // or JavaScript does.
+      ...[BODY, SHORT, noPlus(BODY)].flatMap((value) => {
+        const [a, b] = at(value, value.includes("+") ? value.indexOf("+") + 1 : value.length >> 1);
+        const code = `key = '${a}' + '${b}'`;
+        return [
+          ["after a line of prose with one apostrophe", `Here's the key in Python:\n${code}`],
+          ["after prose with one apostrophe two lines up", `Here's the key.\nPaste it in:\n${code}`],
+          ["after prose with one apostrophe on the same line", `Here's the key: ${code}`],
+          ["after prose ending in a lone apostrophe", `The servers' key:\n${code}`],
+          ["in a fenced answer between prose with apostrophes", `Here's how:\n\`\`\`python\n${code}\n\`\`\`\nThat's it.`],
+          ["joined by a Python line continuation after prose with one apostrophe", `I've split it: key = '${a}' ${String.fromCharCode(92)}\n'${b}'`],
+          ["joined by a Python line continuation after prose ending in a lone apostrophe", `The servers' key:\nkey = '${a}' ${String.fromCharCode(92)}\n    '${b}'`],
+          ["after a comment with one apostrophe, written in a JSON string", JSON.stringify({ path: "a.py", content: `# Here's it\n${code}\n` })],
+        ].map(([how, text]) => ({
+          name: `a held value ${value.includes("+") ? 'with a "+"' : 'with no "+"'} printed as single-quoted literals ${how.startsWith("joined") ? how : `joined by "+" ${how}`} withholds the text (${value.length} characters)`,
+          text, values: [value], hides: [value.slice(0, 6), value.slice(-6)], exact: all("[redacted]"),
+        }));
+      }),
+      ...[
+        ["prose with apostrophes around single-quoted literals that hold no held value", "Here's the URL, and it's short:\nurl = 'https://h.example/' + 'a+b' + '/c'\nThat's all, the servers' too."],
+        ["a held value's halves in single-quoted literals on two lines with a word between them, after an apostrophe", `Here's a note:\nk = '${BODY.slice(0, 32)}' + note\n  + '${BODY.slice(32)}'`],
+      ].map(([what, text]) => ({ name: `${what} shows as it came (control)`, text, values: [BODY], hides: [], exact: all(text) })),
+      // A Python string prefix (r'...', b'...', f'...', rb'...', in any case) before an apostrophe: the letters before it
+      // are the prefix, not a word of prose, so the apostrophe opens the string. Read as prose, the dict's later
+      // apostrophes paired the wrong way round and its values were never read together: a held value split across two of
+      // them showed, where it was withheld before the prose rule.
+      ...["r", "R", "b", "B", "u", "U", "f", "F", "rb", "rB", "Rb", "RB", "br", "bR", "Br", "BR", "fr", "fR", "Fr", "FR", "rf", "rF", "Rf", "RF"].flatMap((prefix) => {
+        const code = `{'a': ${prefix}'Zq8VbN3x', 'b': 'LmT6pR2w'}`;
+        return [[code, "as the code stands"], [JSON.stringify({ path: "a.py", content: `d = ${code}\n` }), "written in a JSON string"]].map(([text, how]) => ({
+          name: `a held value split across two single-quoted values of a dict, the first with the string prefix ${prefix}, ${how}, withholds the text, as before`,
+          text, values: [P24[0]], hides: ["Zq8VbN3x", "LmT6pR2w"], exact: all("[redacted]"),
+        }));
+      }),
+      // An apostrophe whose line ends before its string does: this reading ends the string there, main's read on to the
+      // next apostrophe, so the two pair the code's quotes the other way round. Main's reading cut the value's literal at
+      // its "," or ":" and read its two sides together; whatever main withheld, withheld still, with an operator on the
+      // line too (main's reading then also reads the operator, in its own join).
+      ...[
+        ["after an assignment the line ends in", "x = '\nk = 'Zq8V,bN3xLmT6pR2w'"],
+        ["after prose ending in a lone apostrophe", "the servers'\nk = 'Zq8V,bN3xLmT6pR2w'"],
+        ["at its \":\", after an assignment the line ends in", "x = '\nk = 'Zq8V:bN3xLmT6pR2w'"],
+        ["after an assignment the line ends in, with an operator on the line", "x = '\nk = 'Zq8V,bN3xLmT6pR2w' + 'a'"],
+      ].map(([how, text]) => ({
+        name: `a held value written with a "," or ":" inside a single-quoted literal ${how} withholds the text, as main did`,
+        text, values: [P24[0]], hides: ["bN3xLmT6pR2w"], exact: all("[redacted]"),
+      })),
+      // Prose with an apostrophe before a dict whose first value has a string prefix: the prose's apostrophe opens nothing
+      // and the prefix's opens its string, so the dict's values read together. Main read the prose's as opening a string
+      // and showed the held value split across them; each prefix is needed here, as main's reading finds nothing.
+      ...[
+        ...["r", "R", "b", "B", "u", "U", "f", "F", "rb", "rB", "Rb", "RB", "br", "bR", "Br", "BR", "fr", "fR", "Fr", "FR", "rf", "rF", "Rf", "RF", "ur", "UR", "Ur", "uR"],
+        ...["N", "E", "X", "L", "u8", "#13"],
+      ].map((prefix) => ({
+        name: `a held value split across two single-quoted values of a dict after prose with an apostrophe, the first with the prefix ${prefix}, withholds the text`,
+        text: `Here's the key: {'a': ${prefix}'Zq8VbN3x', 'b': 'LmT6pR2w'}`, values: [P24[0]], hides: ["Zq8VbN3x", "LmT6pR2w"], exact: all("[redacted]"),
+      })),
+      // Every other prefix a language writes before a quote (Python 2's ur'...', SQL's N'...', E'...', X'...' and B'...',
+      // C's L'x', u'x', U'x' and u8'x', Rust's b'x', Delphi's #13'...'): as the first of the values, in a call's
+      // arguments, a list, a SQL row, and as a literal earlier on the line. Each withheld before the prose rule, and now.
+      ...(() => {
+        const [a, b] = ["Zq8VbN3x", "LmT6pR2w"];
+        return [
+          ...["ur", "UR", "Ur", "uR"].map((p) => [`the first of a dict's values with the string prefix ${p}`, `{'a': ${p}'${a}', 'b': '${b}'}`]),
+          ["a Python 2 dict whose first key has the prefix u", `{u'a': '${a}', 'b': '${b}'}`],
+          ["a bytes literal beside a str in a call's arguments", `print(b'${a}', '${b}')`],
+          ["a bytes literal beside a str in a list", `[b'${a}', '${b}']`],
+          ["an f-string beside a str in a call's arguments", `print(f'${a}', '${b}')`],
+          ["an earlier prefixed argument, the value in later plain ones", `log(f'key', '${a}', '${b}')`],
+          ["an earlier raw string on the same line", `p = r'abc'; d = {'a': '${a}', 'b': '${b}'}`],
+          ...["N", "E"].map((p) => [`a SQL ${p}'...' string beside a plain one`, `SELECT ${p}'${a}', '${b}'`]),
+          ...["X'00'", "N'x'", "B'0101'"].map((p) => [`a SQL ${p} in an earlier column`, `INSERT INTO t VALUES (${p}, '${a}', '${b}')`]),
+          ...["L", "u", "U", "u8"].map((p) => [`a C ${p}'x' character literal earlier on the line`, `c = ${p}'x'; d = {'a': '${a}', 'b': '${b}'}`]),
+          ["a Rust b'x' byte literal earlier on the line", `let c = b'x'; d = {'a': '${a}', 'b': '${b}'}`],
+          ["a Delphi control character before a literal", `s := #13'${a}', '${b}';`],
+        ].flatMap(([how, code]) => [[code, ""], [JSON.stringify({ path: "a.txt", content: `${code}\n` }), ", written in a JSON string"]].map(([text, where]) => ({
+          name: `a held value split across two single-quoted literals, ${how}${where}, withholds the text, as before`,
+          text, values: [P24[0]], hides: [a, b], exact: all("[redacted]"),
+        })));
+      })(),
+      // A known gap, pinned both ways. A word that is exactly a string prefix before prose's apostrophe ("Plan B's",
+      // "the r's", "item #13's") opens a string, as the prefix rule says, so on the same line the single-quoted literals
+      // after it pair the wrong way round and a held value split across them shows. Main shows each of these too (its
+      // reading opens every apostrophe); reading such an apostrophe as prose as well would read the join a third time,
+      // past WORK. Follow-up: a prefix word before prose's apostrophe on the same line as joined literals. With a line
+      // break after it the string ends there and the literals are withheld (main showed those), and so after "It's".
+      ...(() => {
+        const code = "key = 'Zq8VbN3x' + 'LmT6pR2w'";
+        const words = [
+          ...["B", "N", "E", "X", "L", "U", "R", "F"].map((p) => [p, `Plan ${p}'s`]),
+          ...["u8", "r", "u", "b", "f", "br", "rb", "fr", "rf", "ur"].map((p) => [p, `the ${p}'s`]),
+          ["#13", "item #13's"],
+        ];
+        const at = (lead) => [
+          ["on the same line", `${lead} key: ${code}`, true],
+          ["on the same line, written in a JSON string", JSON.stringify({ note: `${lead} key: ${code}` }), true],
+          ["a line before", `${lead} key:\n${code}`, false],
+        ];
+        return [
+          ...words.flatMap(([prefix, lead]) => at(lead).map(([how, text, shown]) => [`after the prefix word ${prefix} and prose's apostrophe ${how}`, text, shown])),
+          ...at("It's").map(([how, text]) => [`after prose's apostrophe with no prefix word ${how}`, text, false]),
+        ].map(([how, text, shown]) => ({
+          name: shown
+            ? `a held value split across single-quoted literals joined by "+" ${how} shows as it came, as main shows it (known gap)`
+            : `a held value split across single-quoted literals joined by "+" ${how} withholds the text (main showed it)`,
+          text, values: [P24[0]], hides: shown ? [] : ["Zq8VbN3x", "LmT6pR2w"], exact: all(shown ? text : "[redacted]"),
+        }));
+      })(),
+      // The values read with each "+" as nothing (the join's values pass), and each needle holding a "+" read so too: a
+      // held value's base64 across a property name, a key's line across one, a login with a ":" and a "+" across a
+      // single-quoted dict's values, a value of 8 characters with a "+", and the same split where an operator stands.
+      // Each withheld before the values read "+" as nothing, and now.
+      ...(() => {
+        const LOGIN = "pa55w0rd>Zq8VbN3xLmT";
+        const b64 = Buffer.from(LOGIN).toString("base64");
+        const PEM = [`-----BEGIN ${"PRIVATE KEY"}-----`, BODY, "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7", `-----END ${"PRIVATE KEY"}-----`].join("\n");
+        return [
+          ["a held value's base64 across a title and a snippet", `{"title":"${b64.slice(0, 14)}","snippet":"${b64.slice(14)}"}`, LOGIN],
+          ["a key's base64 line across a title and a snippet", `{"title":"${BODY.slice(0, 20)}","snippet":"${BODY.slice(20)}"}`, PEM],
+          ["a login with a \":\" and a \"+\" across a single-quoted dict's values", "{'t': 'user:Zq8+Vb', 's': 'N3xLmT'}", "user:Zq8+VbN3xLmT"],
+          ["the same written in a JSON string", JSON.stringify({ path: "a.py", content: "d = {'t': 'user:Zq8+Vb', 's': 'N3xLmT'}\n" }), "user:Zq8+VbN3xLmT"],
+          ["a value of 8 characters with a \"+\" across a single-quoted dict's values", "{'a': 'Zq8+Vb', 'b': 'N3'}", "Zq8+VbN3"],
+          ["a value of 8 characters with a \"+\" across a JSON object's values", '{"a":"Zq8+Vb","b":"N3"}', "Zq8+VbN3"],
+          ["a held value's base64 split where its \"+\" is, an operator there", `x = "${b64.slice(0, 11)}" + "${b64.slice(12)}"`, LOGIN],
+          ["a login split where its \"+\" is, an operator there", "k = 'user:Zq8' + 'VbN3xLmT'", "user:Zq8+VbN3xLmT"],
+        ].map(([how, text, value]) => ({ name: `${how} withholds the text, as before`, text, values: [value], hides: [], exact: all("[redacted]") }));
+      })(),
+      // Prose stays prose: a word before the apostrophe that is no prefix ("C'est", "l'eau", "I'm", "O'Brien", "qu'il",
+      // "y'all", "o'clock"), and a word that is one ("Ur", "Plan B's"), whose string ends at the line break.
+      ...[
+        ["after French prose", "C'est l'eau:\n"],
+        ['after "Ur\'" in prose', "Ur'a key:\n"],
+        ['after "Plan B\'s" in prose', "Plan B's key:\n"],
+        ...["I'm sure", "O'Brien's", "d'accord", "n'est-ce pas", "qu'il", "y'all", "at 5 o'clock"].map((words) => [`after "${words}" on the same line`, `${words}: `]),
+      ].map(([how, before]) => ({
+        name: `a held value printed as single-quoted literals joined by "+" ${how} withholds the text`,
+        text: `${before}key = '${P24[0]}' + '${P24[1]}'`, values: [P24.join("")], hides: [P24[0], P24[1]], exact: all("[redacted]"),
+      })),
+      // Python's implicit join, no operator between the literals: read back to back before too.
+      ...[BODY, SHORT].map((value) => ({
+        name: `a held value with a "+" printed as Python literals joined by nothing but a line break withholds the text, as before (control, ${value.length} characters)`,
+        text: `body = (\n    ${lit(at(value, value.indexOf("+") + 1)).join("\n    ")}\n)`, values: [value], hides: [value.slice(0, 6), value.slice(-6)], exact: all("[redacted]"),
+      })),
+      {
+        name: 'the operator "+" standing where a held value\'s own "+" is, between two string literals, withholds the text, as before (control)',
+        text: `const body = ${lit(SHORT.split("+")).join(" + ")};`, values: [SHORT], hides: [SHORT.slice(0, 6)], exact: all("[redacted]"),
+      },
+      ...[
+        ['string literals joined by "+" that hold no held value', `const url = "https://h.example/" + "a+b" + '/c' + "+d";\nlet n = 1 + 2;`],
+        ["a held value's halves in string literals with a word between them", `const body = ${lit(at(BODY, 32)).join(" + note + ")};`],
+      ].map(([what, text]) => ({ name: `${what} shows as it came (control)`, text, values: [BODY], hides: [], exact: all(text) })),
+    ];
+  })(),
   // A combining mark (P2-B): NFKC composes a letter and the mark after it into one character, so a held value with a
   // mark after its first or last letter, written as it is, escaped or percent-encoded, lost that letter. The squeeze
   // decomposes and drops every combining mark, on the held value's side and the text's, so each withholds the text. A
@@ -1036,8 +1400,6 @@ const CASES = [
   })(),
 ];
 
-const short = (text) => (text.length > 60 ? `${JSON.stringify(text.slice(0, 40))}…(${text.length})` : JSON.stringify(text));
-
 for (const c of CASES) {
   test(`contract: ${c.name}`, { timeout: 120_000 }, (t) => {
     const outs = {};
@@ -1065,117 +1427,6 @@ test("valueLeft: a held value only a view finds, wholly inside a cut in place, i
   assert.equal(valueLeft(`cb?token=${P24.join("")} ok`, [P24.join("")]), false);
 });
 
-/** A held value of MIN_SECRET (8) characters in no secret's shape, for a text that holds it every few characters. */
-const DENSE = ["q8Vx", "R2mT"].join("");
-const BACKSLASH = String.fromCharCode(92);
-
-/** A held value of two lines of 40 characters or more: three parts (each line, and both joined), each a needle. */
-const TWO_LINES = [`made-up-first-line-${"q8VxR2mT".repeat(3)}`, `made-up-second-line-${"R2mTq8Vx".repeat(3)}`];
-/** A held value whose longest form needs the most a run's tail read takes (8,192 characters). */
-const LONG = `${CUT_KEY}-${"q8VxR2mT7kPz".repeat(120)}`;
-/** A held key as one is held in practice: a 4096-bit RSA key's PKCS #8 PEM, made here (about 3,270 characters, 50 body
- *  lines of 64 and a short last one): 51 parts, each a form and a plain needle, beside its whole forms. */
-const RSA_PEM = generateKeyPairSync("rsa", { modulusLength: 4096, privateKeyEncoding: { type: "pkcs8", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } }).privateKey.trim();
-
-/** The adversarial texts of `size` characters, each with the held values it is read with, each text stressing a stage:
- *  - the shapes' prefixes and runs;
- *  - each view's decoders over a text of nothing but what they decode: percent-encoded bytes, ASCII and not, "+",
- *    JSON's escapes at one level and two (each kind, back to back), a second level that starts and fails, Python's
- *    escapes ("\'", "\x41") and a single-quoted dict opened and never closed, named and numeric references (a name
- *    never closed, zeros as long as the text, no ";"), non-ASCII
- *    stretches for NFKC, characters that render as nothing (zero-width spaces, soft hyphens, both between letters),
- *    control characters (as they stand, escaped, percent-encoded, as references);
- *  - the join view over JSON, well formed and malformed: strings never closed, nesting as deep as the text, strings of
- *    nothing but backslashes;
- *  - a held value found every 9 characters, each find cut in place, and one in every string of a JSON text; and every
- *    11, a character between each two finds that no cut covers, so each find is checked against its own covered stretch
- *    of the view;
- *  - a held value of two lines, its lines over and over: its parts found at every line, each cut in place;
- *  - a held 4096-bit RSA key, over and over, and its body's lines in reverse order (never the key whole, every line a
- *    part cut in place): its 51 parts searched in each view;
- *  - runs too long to read, each with a held value's head glued to its end: each run's tail read again, 8,192
- *    characters of it, for the held value. */
-const adversarial = (size) => {
-  const f = (unit) => fill(unit, size);
-  const shapes = [
-    f("eyJ"), f("eyJ-"), `-----BEGIN ${fill("A", size - 11)}`, `-----BEGIN ${fill("PRIVATE KEY ", size - 11)}`, `://a:${fill("a", size - 5)}`, f("://a:"),
-    f("sk-"), f("github_pat_"), f("ghp_"), f("xoxb-"), f("whsec_"), f("Bearer "), `Bearer ${fill("a", size - 7)}`, f("?token="),
-    `?token=${fill("a", size - 7)}`, f(`${"a".repeat(1021)}eyJ`), f("eyJaaaaaaaa."), `account ${fill("1 ", size - 8)}`, f("routing number "), f("sort code "),
-    `IBAN GB00${fill("A ", size - 9)}`, f("AKIA"), f("AIza"), f("-----BEGIN "), f("a-sk-"), f("Bearer a-Bearer "),
-    f("xapp-"), `eyJaaaaaaaa.${fill("eyJ", size - 12)}`, f(`${"a".repeat(1020)}eyJ `),
-  ];
-  const B = BACKSLASH;
-  const views = [
-    f("%41"), f("%e9"), f("a+"), f(`${B}n`), f(`${B}${B}n`), f(`${B}u0041`), f(`${B}${B}u0041`), f(`${B}${B}u004`),
-    f(`${B}t${B}"${B}/${B}${B}${B}r${B}b${B}f`), f(`${B}${B}${B}"${B}${B}t${B}${B}${B}${B}`),
-    f(String.fromCharCode(0xe9)), f(`a${String.fromCharCode(0x301)}`), f(ZWSP), f(SHY), f(`a${SHY}b${ZWSP}`),
-    // The stacked decoders, each kind back to back and mixed; character references, whole and cut short; precomposed
-    // letters and letters each with a combining mark, for the decomposing squeeze.
-    f(`%41${B}u0041&#65;+`), f(`&#65;`), f(`&#x1F600;`), f(`&#`), f(`&#1234567`), f(String.fromCharCode(0x179)), f(`Z${String.fromCharCode(0x301, 0x327)}`),
-    // The join view: strings, names and values, empty strings, a lone quote, escaped quotes, JSON written in a string,
-    // a name with no value, and runs between JSON's punctuation.
-    f('"a",'), f('{"k":"v"},'), f('"",'), f('"'), f(`${B}"`), `"${fill(`[${B}"a${B}",${B}"b${B}"],`, size - 1)}`, f('":'), f('"a"   '), f("a,"),
-    // Malformed JSON: a string never closed (with words, and one run of the text's whole length), nesting as deep as
-    // the text (arrays, objects, both, opened and closed), strings of nothing but backslashes (closed, never closed, a
-    // lone one escaping the quote after it), and a text that builds every view at once.
-    `{"k":"${fill("ab ", size - 6)}`, `"${fill("a", size - 1)}`, f("["), f('{"a":'), f('[{"a":['), `${fill("[", size / 2)}${fill("]", size / 2)}`,
-    `"${fill(B, size - 2)}"`, `"${fill(B, size - 1)}`, f(`"${B}${B}${B}"`), f(`"${B}`), f(`"%41+${B}u0041&#65;",`),
-    // The strings join's four views at once: a quote, percent, "+", an escaped quote and an escaped backslash.
-    f(`"%41+${B}"${B}${B}n&#65;",`), f(`"a+${B}${B}",`),
-    // The quoted joins (a single-quoted dict's, read once as JSON's escapes and once as Python's): a lone apostrophe, a
-    // name and its value opened and never closed, an apostrophe escaped, and Python's escapes back to back.
-    f("'"), f("'a': '"), f(`'${B}`), f(`'a${B}'b${B}x41${B}${B}',`), f(`${B}x4`),
-    // Named and numeric references: whole, a name never closed, a zero, one with no ";", zeros as long as the text, and
-    // "+" in a quoted JSON text with a reference.
-    f("&amp;"), f("&ampx"), f("&#0"), f("&#65"), `&#${fill("0", size - 2)}`, f('"a&#65;+",'),
-    // A single-quoted dict written in a JSON string (a call's arguments, read one level down): many strings each holding
-    // one, one string holding a dict opened and never closed, and Python's escapes at both levels, back to back.
-    f(`"{'a': 'b'}",`), `"{'a': '${fill("ab ", size - 9)}`, `"${fill(`${B}${B}x41${B}${B}'`, size - 1)}"`, f(`"'${B}${B}x4${B}${B}'",`),
-    f(`'${B}${B}${B}${B}x41`),
-    // Control characters the views drop, as they stand, between letters, escaped (JSON's, twice, Python's in a
-    // single-quoted dict), percent-encoded, as character references, and inside JSON strings.
-    f("\u0000"), f("a\u0001"), f("\u007f\u0085"), f(`${B}u0000`), f(`${B}${B}u001f`), f(`'a${B}x01`), f("%00%C2%85"), f("&#1;&#x7f;"), f('"a\u0000",'),
-    // U+FFFF, which the views drop in the text and keep only as a join's separator: as it stands, between letters and
-    // inside JSON strings, escaped, percent-encoded, as a reference.
-    f("\uffff"), f("a\uffff"), f('"a\uffff",'), f(`${B}uffff`), f("%EF%BF%BF"), f("&#xffff;"),
-  ];
-  return [
-    ...[...shapes, ...views].map((text) => ({ text, values: [CUT_KEY] })),
-    { text: f(`${DENSE} `), values: [DENSE] },
-    // A held value found in every string of a JSON text, each find cut in place: the join view moves each cut to where
-    // its string stands in the join, its cursor passing each cut once a pass.
-    { text: f(`"${DENSE}",`), values: [DENSE] },
-    // Every view at once, each over the text at nearly its whole length: one closed JSON string holding each family (a
-    // percent byte, "+", a reference, an escaped quote, Python's "\x41" and an apostrophe one level down) turns on all
-    // sixteen, and the held value's strings after it decode to themselves in each. It heads each block of about 4 KiB, so
-    // each answer piece holds it too.
-    { text: f(`"%41+&#65;${B}"${B}${B}x41${B}${B}'",${`"${DENSE}",`.repeat(370)}`), values: [DENSE] },
-    // The same in a string never closed, and in one escaped quote after another (JSON written in a string).
-    { text: `{"k":"${fill(`${DENSE} `, size - 6)}`, values: [DENSE] },
-    { text: f(`${BACKSLASH}"${DENSE}${BACKSLASH}",`), values: [DENSE] },
-    { text: f(`${DENSE} x `), values: [DENSE] },
-    // A held value found every 9 characters with a control between each two finds: the views drop it, so they read the
-    // finds glued together, each still cut in place.
-    { text: f(`${DENSE}\u0000`), values: [DENSE] },
-    { text: f(`${DENSE}\uffff`), values: [DENSE] },
-    { text: f(`"${DENSE}\uffff",`), values: [DENSE] },
-    { text: f(`${TWO_LINES.join("\n")}\n`), values: [TWO_LINES.join("\n")] },
-    { text: f(`${RSA_PEM}\n`), values: [RSA_PEM] },
-    { text: f(`${RSA_PEM.split("\n").slice(1, -1).reverse().join("\n")}\n`), values: [RSA_PEM] },
-    { text: f(`${"z".repeat(9000)}${LONG.slice(0, 16)} `), values: [LONG] },
-  ];
-};
-
-/** Each entry point that reads a text whole or in pieces, as the work count drives it: redactSecrets and redactLearned
- *  with no byte bound, an answer, a call's result and a row's head. */
-const READERS = {
-  redactSecrets: (text, values) => redactSecrets(text, values, Buffer.byteLength(text)),
-  redactLearned: (text, values) => redactLearned(text, values, Buffer.byteLength(text)),
-  redactedAnswer: ENTRIES.redactedAnswer,
-  redactedCall: ENTRIES.redactedCall,
-  redacted: ENTRIES.redacted,
-};
-
 // The work count reads every stage: a text no shape's prefix is in, read with forms and needles only, still counts.
 test("the work count reads each stage: a form's search, a view and its decoders, the whole-text check", async () => {
   const { cutSpans, holds, scanned } = await import("../dist/redact/match.js");
@@ -1197,15 +1448,17 @@ test("the work count reads each stage: a form's search, a view and its decoders,
   // A text with JSON's escapes is read in the squeezed view and the JSON view: two views built, each searched.
   const json = count(() => holds(escaped, { ...none, plain: [DENSE] }, { cuts: [[0, 3]] }));
   if (json < 3 * escaped.length) problems.push(`the JSON view: ${json} for ${escaped.length}`);
-  // Each find checked against the view's covered stretches visits some of them: F finds, each inside its own cut,
-  // against F covered stretches, visit about log2(F) each; against one covered stretch, one each. The same text and
-  // finds otherwise, so the two counts differ by those visits (and the cover's pass over F cuts, not one).
+  // Each find checked against the view's covered stretches visits some of them, searched forward from the find before:
+  // F finds, each inside its own cut, against F covered stretches, visit a few each (the next stretch, the one after
+  // it, and back); against one covered stretch, none after the first. The same text and finds otherwise, so the two
+  // counts differ by those visits (and the cover's pass over F cuts, not one). A search from the first stretch at each
+  // find would visit about log2(F) = 12 each, and more as the text grows.
   const finds = 4096;
   const separate = `${DENSE} x `.repeat(finds);
   const each = Array.from({ length: finds }, (_, i) => [11 * i, 11 * i + DENSE.length]);
   const apart = count(() => holds(separate, { ...none, plain: [DENSE] }, { cuts: each }));
   const together = count(() => holds(separate, { ...none, plain: [DENSE] }, { cuts: [[0, separate.length]] }));
-  if (apart - together < 6 * finds) problems.push(`the finds checked against ${finds} covered stretches: ${apart - together} more than against one`);
+  if (apart - together < 2 * finds || apart - together > 8 * finds) problems.push(`the finds checked against ${finds} covered stretches: ${apart - together} more than against one`);
   assert.deepEqual(problems, []);
 });
 
@@ -1245,71 +1498,36 @@ test("adversarial texts: the characters the shape scanners visit are at most a f
   assert.deepEqual(over, []);
 });
 
-// The whole pipeline reads a text in work linear in its length: every character a stage visits, counted by match.ts
-// (the shapes' prefixes and runs, each form, hex and folded search, each view built, its decoders and its cover, each
-// needle searched in it, the cut) and by key-refusal.ts (each piece's end found, each peek, the pass's join), is at most
-// WORK per character of the text, at 128 KiB and at 512 KiB, through each reader, for one held value.
-//
-// WORK, from the code's structure, per character of the text, one held value (at most 7 forms and 7 plain needles: as
-// written, and its base64 at three alignments in two alphabets; one hex; at most one folded):
-// - the shapes, sought over the text and over its cut, and each run read: 128, the shapes' own bound (the test above);
-// - planCut's finds: the text lowered (1), each form and the hex searched (2 each, a find and the text before it: 16),
-//   the folded search (4), the finds merged (1): about 21;
-// - one whole-text check: what the text holds that a view decodes (9); sixteen views at most: the squeezed one and the
-//   percent-decoded two (one with "+") built in 9 reads each (its special characters found, its blanks, its non-ASCII
-//   stretches squeezed twice, its cover), the views of JSON's escapes alone (two levels, and one where the text has an
-//   escaped backslash) and the two stacked ones (one with "+") in 23 each (two levels of escapes read per character
-//   decoded); the nested join, which reads the text as JSON first (3: at level 0, again at level 1 inside a string, and
-//   the whitespace after a string), writes its join (2: each character in it at most twice, values then all, or names
-//   then all), and two decoding views over that join (one with "+": 46 each, 92); the strings join, read at level 0
-//   alone (2) and written (2), and four decoding views over it (one level of JSON's escapes alone, with percent, with
-//   percent and "+", and two levels: 46 each, 184); the quoted join (a single-quoted dict's), read at level 0 (2) and
-//   written (2), and the again join (each JSON string's text read one level down for a dict written in it), the text
-//   read at level 0 for its strings and they at level 1 (3) and written (2), and the two written once more one after the
-//   other (4); three decoding views over them (JSON's escapes over both: 92; Python's over the quoted join where the
-//   text holds one, and both levels of them over the again join where it holds a quote: 46 each; 184); then each
-//   searched for 7 plain needles, the hex and the fold, lowered and flattened, each find checked against the covered
-//   stretches (21 each, 42 over a join, 84 over the two joins one after the other): about 1,082; planCut runs two (the
-//   text with its cuts, then the cut text, at most 10/8 as long): about 2,435;
-// - so planCut is about 2,584; an answer adds its pieces' ends and joins (10), heldIn's check of what it returns (10/8
-//   of a check: 1,353), of the pieces as they came (1,082), and its shape pass (64): about 5,093.
-// That sum takes each stage at its most at once, and its views are all reachable together: familiesOf reads each family
-// as present or absent, so one closed JSON string holding each of them turns on all sixteen views, and the rest of the
-// text decodes to itself at nearly its whole length in each (the text of DENSE's strings, each block of about 4 KiB
-// headed by one such string). It is the most measured here: 963.0 per character at 128 KiB and 967.8 at 512 KiB,
-// through redactedAnswer; every other text measures under 450 (a held RSA key's, made anew each run, moves by a few).
-// A held value of two lines adds its three parts as forms and plain needles (about 30 more). A held value of k long
-// lines adds k + 1 of each: its work grows with k, linear in the text all the same.
-// WORK stays 1,024, the bound from before the stacked and join views. The most measured, and each text's most, are in
-// the test's diagnostics; a text that passes 1,024 is a finding, not a reason to raise the bound. A stage that read again from the start at each find passes the text once per find:
-// a held value found every 9 characters is found 14,563 times in 128 KiB, and one in every string of a JSON text (every
-// 11 characters) 47,662 times in 512 KiB, which a join that passed the cuts from the first at each string reads about
-// 2.3 billion times over.
-const WORK = 1024;
-
-test("adversarial texts: the characters the whole pipeline visits are at most WORK per character, at 128 KiB and 512 KiB", async (t) => {
-  const { scanned } = await import("../dist/redact/match.js");
-  const over = [];
-  for (const size of [128 * 1024, 512 * 1024]) {
-    let most = 0;
-    let where = "";
-    for (const { text, values } of adversarial(size)) {
-      let its = 0;
-      let by = "";
-      for (const [name, read] of Object.entries(READERS)) {
-        scanned.chars = 0;
-        read(text, values);
-        const per = scanned.chars / text.length;
-        if (per > its) [its, by] = [per, name];
-        if (per > most) [most, where] = [per, `${name} ${short(text)}`];
-        if (scanned.chars > WORK * text.length) over.push(`${size}: ${name} ${short(text)}: ${scanned.chars} for ${text.length}`);
-      }
-      // Each text's most, so a change that moves one text shows up here.
-      t.diagnostic(`${size / 1024} KiB: ${its.toFixed(1)} per character, ${by}, ${short(text)}`);
-    }
-    t.diagnostic(`${size / 1024} KiB: the most characters visited per character of a text: ${most.toFixed(1)}, ${where}`);
+// The work count of the adversarial texts above (fixtures/redact-work.mjs) runs in parts, one test file each
+// (redact-contract-work-<k>.test.mjs): together they read every text, each in exactly one part.
+test("adversarial texts: the work count's parts read every text exactly once, each part file its own part", () => {
+  const files = readdirSync(new URL(".", import.meta.url)).filter((file) => /^redact-contract-work-\d+\.test\.mjs$/.test(file));
+  assert.deepEqual(files.sort(), Array.from({ length: WORK_PARTS }, (_, i) => `redact-contract-work-${i + 1}.test.mjs`).sort());
+  for (const file of files) {
+    const k = Number(file.match(/\d+/)[0]);
+    const text = readFileSync(new URL(file, import.meta.url), "utf8");
+    assert.deepEqual([...text.matchAll(/adversarialWork\(t, (\d+)\)/g)].map((m) => Number(m[1])), [k], file);
+    // The name written out is the part's own: scripts/ci-timings.mjs credits a test's time by the name its file declares.
+    assert.deepEqual([...text.matchAll(/(?<![.\w$])test\(("(?:[^"\\\n]|\\.)*")/g)].map((m) => JSON.parse(m[1])), [workPartName(k)], file);
   }
-  assert.deepEqual(over, []);
+  const count = adversarial(32 * 1024).length;
+  const parts = Array.from({ length: WORK_PARTS }, (_, i) => Array.from({ length: count }, (_, at) => at).filter((at) => at % WORK_PARTS === i));
+  assert.deepEqual(parts.flat().sort((a, b) => a - b), Array.from({ length: count }, (_, at) => at));
+  assert.ok(parts.every((part) => part.length > 0));
+});
+
+// Malformed JSON nested as deep as the text, past a call's stop: every name opens another object or array, so the text
+// holds names and no value, and two of the views the read past the stop walks show none of a piece of it. That read
+// gives up there and the call's result is withheld whole; before the read counted what each view shows, it showed the
+// first CALL_RESULT_CHARS. It fails closed whatever the read's budget (with none, a view still shows fewer characters
+// than the read needs in a piece): withheld, not shown, pinned as it is now, so a change either way is seen.
+test("malformed JSON nested as deep as the text, past a call's stop, is withheld whole: '{\"a\":' and '[{\"a\":[' at 128 KiB and 512 KiB", () => {
+  const shown = [];
+  for (const unit of ['{"a":', '[{"a":[']) for (const size of [128 * 1024, 512 * 1024]) {
+    const out = ENTRIES.redactedCall(fill(unit, size), [CUT_KEY]);
+    if (out !== "[redacted]") shown.push(`${unit} at ${size}: ${out.length} characters`);
+  }
+  assert.deepEqual(shown, []);
 });
 
 // A text of very many shape finds, read whole (no byte bound, as learning's compile reads a previous answer): its finds

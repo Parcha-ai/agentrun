@@ -14,7 +14,7 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; vi.useRealTimers(); });
 const settle = async () => { for (let i = 0; i < 6; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
 
-const RUN: Run = { sha: null, updated_at: new Date(TRACE_END).toISOString(), poll_after_ms: 0, place: { mode: "runner" },
+const RUN: Run = { sha: null, updated_at: new Date(TRACE_END).toISOString(), poll_after_ms: 0, place: { mode: "runner" }, learning_work: { state: "none", runs: [], ended_at: null, deadline_at: null },
   run_id: "run_7f3a9c2e", agent_id: "supplier-screening", agent_version: 1, revision: "rv1", kind: "agentic", status: "completed", state: "idle", title: "Screen Northwind Freight Ltd",
   created_at: new Date(TRACE_START).toISOString(), ended_at: new Date(TRACE_END).toISOString(), result: null, error: null, cost: { usd: TRACE_USD, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null,
 };
@@ -218,6 +218,24 @@ describe("the Dev tools tab", () => {
     // Escape closes it too, from inside it.
     await click(opened);
     await act(async () => { panel(host)!.querySelector("button")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    expect(panel(host)).toBeNull();
+    expect(document.activeElement).toBe(opened);
+  });
+
+  it("gives the keyboard back the same way where the run is itself shown in another page's panel", async () => {
+    const host = await open(TRACE);
+    // Agent Factory shows a run in an <aside> beside its board. Only what is inside Call details is no opener: a row of
+    // the trace is one, whatever panel the run sits in.
+    document.body.appendChild(document.createElement("aside")).appendChild(host);
+    const opened = rowOf(host, "+1:29.6")!.querySelector("button")!;
+    opened.focus();
+    await click(opened);
+    // A press takes the keyboard to what was pressed, as a browser does (jsdom's click does not): the keyboard is on
+    // Close when the panel goes, so it comes back to the row only if the row was kept as the opener.
+    const closing = panel(host)!.querySelector<HTMLButtonElement>("button[aria-label='Close call details']")!;
+    closing.focus();
+    expect(document.activeElement).toBe(closing);
+    await click(closing);
     expect(panel(host)).toBeNull();
     expect(document.activeElement).toBe(opened);
   });
@@ -623,6 +641,15 @@ describe("the Dev tools tab", () => {
     expect(host.querySelectorAll("[data-overview] [data-span]")).toHaveLength(320);
     await click([...host.querySelectorAll("button")].find((b) => b.textContent === "Show all 320"));
     expect(callRows(host)).toHaveLength(320);
+  });
+
+  it("draws a call's panel as a drawer where it is beside the table: a line and the drawer's shadow at its left edge", async () => {
+    const host = await open(TRACE, { open: "m:0:24" });
+    const drawer = panel(host)!;
+    // Beside the table from xl, under it below: the shadow is the breakpoint's, and the panel is positioned, so the
+    // shadow is drawn over the table's own content.
+    for (const c of ["relative", "xl:border-l", "xl:shadow-drawer"]) expect(drawer.className.split(/\s+/), c).toContain(c);
+    expect(drawer.className).not.toMatch(/(^|\s)shadow-(float|drawer)(\s|$)/);
   });
 
   it("every pane of the tab that scrolls is the place its out-of-flow content is set against, so none of it scrolls the page", async () => {

@@ -29,27 +29,27 @@ async function firecrawlWeb(t, answer, { settings, order = { search: ["firecrawl
 
 const keyless = (label, ...said) => assert.ok(!JSON.stringify(said).includes(FIRECRAWL_CANARY), `${label}: the key is never handed back`);
 
-test("a search is one paid request to Firecrawl's /v2/search on the run's key, the n asked, each result scraped as markdown; the hits in the one search shape, at 2 credits per 10 results and 1 a scraped result", async (t) => {
+test("a search is one paid request to Firecrawl's /v2/search on the run's key, the n asked, no scrape of its results asked; the hits in the one search shape, held at 2 credits per 10 results", async (t) => {
   const { fc, w, fees, logs } = await firecrawlWeb(t, () => firecrawlResults(FIRECRAWL_HITS));
   const { answer, receipt } = await w.search(" widgets ", { n: 3 });
   assert.equal(fc.got.length, 1);
   assert.equal(fc.got[0].path, "/v2/search");
   assert.equal(fc.got[0].headers.authorization, `Bearer ${FIRECRAWL_CANARY}`);
-  assert.deepEqual(fc.got[0].body, { query: "widgets", limit: 3, scrapeOptions: { formats: ["markdown"], onlyMainContent: true } });
+  assert.deepEqual(fc.got[0].body, { query: "widgets", limit: 3 });
   assert.deepEqual(answer, { provider: "firecrawl", objective: "widgets", queries: ["widgets"], results: [
     { url: "https://first.example/widgets", title: "Widgets, explained", snippet: "All about widgets and their uses." },
     { url: "https://second.example/gadgets", title: "Gadgets", snippet: "A second result." },
   ] });
   assert.deepEqual([receipt.provider, receipt.tries.map((one) => [one.provider, one.outcome])], ["firecrawl", [["firecrawl", "ok"]]]);
-  assert.deepEqual(fees.map((fee) => [fee.name, fee.by, fee.usd]), [["Firecrawl's search", "firecrawl", Math.round(5 * CREDIT * 1e6) / 1e6]]);
+  assert.deepEqual(fees.map((fee) => [fee.name, fee.by, fee.usd]), [["Firecrawl's search", "firecrawl", Math.round(2 * CREDIT * 1e6) / 1e6]]);
   keyless("search", answer, receipt, logs);
 });
 
-test("Firecrawl's search settings shape the request and its fee: freshness, domains, country, highlights; 25 results, each scraped, are 31 credits", async (t) => {
+test("Firecrawl's search settings shape the request and its fee: freshness, domains, country, highlights; 25 results are held at 6 credits", async (t) => {
   const { fc, w, fees } = await firecrawlWeb(t, () => firecrawlResults(FIRECRAWL_HITS), { settings: { tbs: "qdr:w", includeDomains: ["first.example"], country: "DE", highlights: false } });
   await w.search("widgets", { n: 25 });
-  assert.deepEqual(fc.got[0].body, { query: "widgets", limit: 25, tbs: "qdr:w", includeDomains: ["first.example"], country: "DE", highlights: false, scrapeOptions: { formats: ["markdown"], onlyMainContent: true } });
-  assert.deepEqual(fees.map((fee) => fee.usd), [Math.round(31 * CREDIT * 1e6) / 1e6]);
+  assert.deepEqual(fc.got[0].body, { query: "widgets", limit: 25, tbs: "qdr:w", includeDomains: ["first.example"], country: "DE", highlights: false });
+  assert.deepEqual(fees.map((fee) => fee.usd), [Math.round(6 * CREDIT * 1e6) / 1e6]);
 });
 
 test("settings Firecrawl does not take are refused when the Web is made, never sent: include and exclude domains together among them", () => {
@@ -58,15 +58,15 @@ test("settings Firecrawl does not take are refused when the Web is made, never s
   }
 });
 
-test("a fetch is one paid request to Firecrawl's /v2/scrape: markdown, main content only; one credit; read once a run", async (t) => {
+test("a fetch is one paid request to Firecrawl's /v2/scrape: markdown, main content only, on the basic proxy, a PDF read whole; held at Firecrawl's most, 10,000 pages; read once a run", async (t) => {
   const markdown = "# Read by Firecrawl\n\nThe answer is forty-two. See [the registry](https://registry.example/1).";
   const { fc, w, fees } = await firecrawlWeb(t, (path, body) => (path === "/v2/scrape" ? firecrawlPage(body.url, markdown) : undefined));
   const first = await w.fetch(PUBLIC);
   assert.equal(fc.got[0].headers.authorization, `Bearer ${FIRECRAWL_CANARY}`);
-  assert.deepEqual(fc.got[0].body, { url: PUBLIC, formats: ["markdown"], onlyMainContent: true });
-  assert.deepEqual([first.answer.ok, first.answer.via, first.answer.title, first.answer.text, first.answer.links], [true, "firecrawl", "Read by Firecrawl", markdown, ["https://registry.example/1"]]);
+  assert.deepEqual(fc.got[0].body, { url: PUBLIC, formats: ["markdown"], onlyMainContent: true, proxy: "basic" });
+  assert.deepEqual([first.answer.ok, first.answer.via, first.answer.title, first.answer.text, first.answer.links], [true, "firecrawl", "Read by Firecrawl", markdown, []], "the link its text writes is not listed again");
   assert.deepEqual([first.receipt.provider, first.receipt.tries.map((one) => [one.provider, one.outcome])], ["firecrawl", [["firecrawl", "ok"]]]);
-  assert.deepEqual(fees.map((fee) => [fee.name, fee.usd]), [["Firecrawl's scrape", CREDIT]]);
+  assert.deepEqual(fees.map((fee) => [fee.name, fee.usd]), [["Firecrawl's scrape", Math.round(10_000 * CREDIT * 1e6) / 1e6]]);
   await w.fetch(PUBLIC, { offset: 5 });
   assert.equal(fc.got.length, 1);
 });
@@ -74,7 +74,7 @@ test("a fetch is one paid request to Firecrawl's /v2/scrape: markdown, main cont
 test("Firecrawl's scrape settings: the whole page, and the cache age it may answer from", async (t) => {
   const { fc, w } = await firecrawlWeb(t, (_path, body) => firecrawlPage(body.url, "Fresh."), { settings: { onlyMainContent: false, maxAgeMs: 0 } });
   await w.fetch(PUBLIC);
-  assert.deepEqual(fc.got[0].body, { url: PUBLIC, formats: ["markdown"], onlyMainContent: false, maxAge: 0 });
+  assert.deepEqual(fc.got[0].body, { url: PUBLIC, formats: ["markdown"], onlyMainContent: false, maxAge: 0, proxy: "basic" });
 });
 
 test("a page that answered Firecrawl 404 is a failed turn, the direct fetch behind it reads; a 403 on one page (Firecrawl's prompt-injection refusal) leaves Firecrawl asked for the next", async (t) => {

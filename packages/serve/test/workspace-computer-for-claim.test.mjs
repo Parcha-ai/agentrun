@@ -14,8 +14,8 @@ import { after, test } from "node:test";
 import { AttachHub, readBackOf } from "@parcha/agentrun-computer";
 import { FakeUiDriver, serveUiSocket } from "@parcha/agentrun-computer/fake-ui-driver";
 import { putSealedKey } from "../dist/server-keys.js";
-import { computerForClaim, localWorkspace } from "../dist/workspace/index.js";
-import { pairedOf } from "../dist/workspace/attached-computers.js";
+import { computerForClaim, computerSpecOf, localWorkspace } from "../dist/workspace/index.js";
+import { pairedOf, scopedPairedWords } from "../dist/workspace/attached-computers.js";
 import { fauxComputers } from "../dist/faux-computers.js";
 import { computerReadyWords, computerStartingWords } from "../dist/workspace/computer-deps.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
@@ -105,18 +105,18 @@ function views(refusal) {
   return { open, opened, closed, holds, gones };
 }
 
-async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine, unprepared = false, kinds = KINDS, onConnected, onStarting, hostWhy, hadComputer, epoch = 3, list, spec = SPEC, workspaceExec } = {}) {
+async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine, unprepared = false, kinds = KINDS, onConnected, onStarting, hostWhy, hadComputer, epoch = 3, list, spec = SPEC, workspaceExec, networks, boxAllow } = {}) {
   const root = scratch();
   const store = memoryStore();
   const sealKey = randomBytes(32);
   for (const [name, value] of Object.entries(keys)) await putSealedKey(store, sealKey, name, value);
   const record = { created: [], released: [], options: [], ...(existing ? { existing } : {}) };
-  const providers = Object.fromEntries(["docker", "e2b", "daytona", "modal", "agent37", "phone-harness"].map((id) => [id, (options, extras) => (record.options.push([id, options, typeof extras.ledger.put]), { ...fakeProvider(root, record, groups, machine), ...(unprepared ? { prepareImage: undefined } : {}), ...(list ? { list } : {}) })]));
+  const providers = Object.fromEntries(["docker", "e2b", "daytona", "modal", "agent37", "phone-harness"].map((id) => [id, (options, extras) => (record.options.push([id, options, typeof extras.ledger.put]), { ...fakeProvider(root, record, groups, machine), ...(unprepared ? { prepareImage: undefined } : {}), ...(list ? { list } : {}), ...(networks ? { capabilities: () => ({ lifetime: "janitor", maxLifetimeMs: 86_400_000, network: networks }) } : {}) })]));
   record.revoked = 0;
   const revokeMount = async () => void (record.revoked += 1);
   const workspace = localWorkspace(root);
   if (workspaceExec) { const execute = workspace.exec.bind(workspace); workspace.exec = (argv, options) => workspaceExec(argv, options, execute); }
-  const run = () => computerForClaim({ runId: "run-1", epoch, computer: setting }, store, { mode, kinds, sealKey, providers, spec, workspace, check: { readBackOf, epoch }, revokeMount, ...(view ? { openComputerView: view.open } : {}), ...(onConnected ? { onConnected } : {}), ...(onStarting ? { onStarting } : {}), ...(hostWhy ? { hostWhy } : {}), ...(hadComputer ? { hadComputer } : {}) });
+  const run = () => computerForClaim({ runId: "run-1", epoch, computer: setting, ...(boxAllow ? { boxAllow } : {}) }, store, { mode, kinds, sealKey, providers, spec, workspace, check: { readBackOf, epoch }, revokeMount, ...(view ? { openComputerView: view.open } : {}), ...(onConnected ? { onConnected } : {}), ...(onStarting ? { onStarting } : {}), ...(hostWhy ? { hostWhy } : {}), ...(hadComputer ? { hadComputer } : {}) });
   return { root, record, run };
 }
 
@@ -430,6 +430,7 @@ test("a first claim gets no such line and never asks the journal, nor does a lat
   assert.equal(made.replaced, undefined);
   assert.deepEqual(asked, [], "a first claim has nothing before it to ask about");
   assert.equal(made.made, "sandbox", "its computer recorded, for a later claim");
+  assert.equal(made.fresh, true, "one this claim started");
   assert.equal(computerReadyWords(said[0]), "The sandbox is ready: Linux (amd64), from Docker.");
   await made.release();
   const later = await claim({ kind: "sandbox", provider: "docker" }, { onConnected: (one) => void said.push(one) });
@@ -467,6 +468,7 @@ test("a computer that isn't the run's own is neither recorded nor called a new o
   const fauxDeps = { mode: 1, kinds: faux.kinds, keyTable: faux.keyTable, launch: faux.launch, providers: {}, spec: () => ({ image: "faux", lifetimeMs: 60_000, network: "open" }), check: { readBackOf }, workspace: localWorkspace(scratch()), hadComputer };
   const fauxDesk = await computerForClaim({ runId: "run-1", epoch: 3, computer: { kind: "desktop", provider: "faux-desktop" } }, memoryStore(), fauxDeps);
   assert.deepEqual([fauxDesk.made, fauxDesk.replaced], [undefined, undefined], "--faux's desktop");
+  assert.equal(fauxDesk.fresh, true, "--faux's desktop is started by the claim all the same");
   await fauxDesk.release();
 
   const driver = new FakeUiDriver({ groups: ["screen", "input.pointer", "input.keys", "apps", "ui"] });
@@ -481,12 +483,38 @@ test("a computer that isn't the run's own is neither recorded nor called a new o
     const pairedDeps = { mode: 1, kinds: KINDS, sealKey: randomBytes(32), providers: {}, spec: () => ({ image: "attached", lifetimeMs: 60_000, network: "open" }), check: { readBackOf, epoch: 3 }, workspace: localWorkspace(scratch()), attached: { rows: async () => [row], hub }, hadComputer, onConnected: (one) => void said.push(one) };
     const held = await computerForClaim({ runId: "run-1", epoch: 3, computer: { kind: "desktop", provider: row.id } }, store, pairedDeps);
     assert.deepEqual([held.made, held.replaced], [undefined, undefined], "a paired computer");
+    assert.equal(held.fresh, undefined, "a paired computer is never one the claim started: a person's own machine");
     assert.deepEqual(said.map((one) => one.replaced), [undefined], "its ready line says no new one");
     await held.release();
   } finally {
     driver.close();
   }
   assert.deepEqual(asked, [], "the journal never asked");
+});
+
+test("a run of an agent in a workspace never takes a paired computer: its claim refuses it in words, code computer_unavailable; the same run of an agent in none takes it", async () => {
+  const driver = new FakeUiDriver({ groups: ["screen", "input.pointer", "input.keys", "apps", "ui"] });
+  const row = { id: "cmp-desk", name: "Test Mac", hello: driver.hello(), driver: "0", labels: {}, pairingId: "p-1", createdAt: 0, seenAt: 0, revokedAt: null };
+  const hub = new AttachHub();
+  const [served, computer] = socketPair();
+  serveUiSocket(driver, computer);
+  assert.equal((await hub.accept(pairedOf(row), served)).ok, true);
+  const workspaces = { "agent-w": "org:w1", "agent-free": null };
+  const store = { ...memoryStore(), agents: { revision: async () => undefined, workspace: async (id) => workspaces[id] } };
+  const deps = { mode: 1, kinds: KINDS, sealKey: randomBytes(32), providers: {}, spec: () => ({ image: "attached", lifetimeMs: 60_000, network: "open" }), check: { readBackOf, epoch: 3 }, workspace: localWorkspace(scratch()), attached: { rows: async () => [row], hub } };
+  const setting = { kind: "desktop", provider: row.id };
+  try {
+    await assert.rejects(computerForClaim({ runId: "run-w", epoch: 1, agentId: "agent-w", computer: setting }, store, deps), (error) => {
+      assert.equal(error.code, "computer_unavailable");
+      assert.equal(error.message, scopedPairedWords(row.id));
+      return true;
+    });
+    const held = await computerForClaim({ runId: "run-free", epoch: 1, agentId: "agent-free", computer: setting }, store, deps);
+    assert.equal(held.computer?.kind, "desktop", "an agent in no workspace takes it");
+    await held.release();
+  } finally {
+    driver.close();
+  }
 });
 
 test("a Mode 2 computer that mounts the run's folder says the run folder is kept; Mode 1 never claims it", async () => {
@@ -577,4 +605,25 @@ test("a sandbox's GPUs go into the spec its provider makes the computer with; GP
   assert.equal(await refusal({ kind: "sandbox", provider: "modal", gpu: { type: "H100", count: 1 } }, { mode: 2, keys: MODAL_KEYS }), "Modal could not start a sandbox computer: this run's folder can't be synced into a computer here");
   assert.equal(await refusal({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } }, { mode: 2, keys: { DAYTONA_API_KEY: "dk" } }), "Daytona could not start a sandbox computer: this run's folder can't be synced into a computer here");
   assert.match(await refusal({ kind: "sandbox", provider: "docker", gpu: { type: "T4", count: 1 } }), /^A Docker sandbox can't have this agent's GPUs: this provider offers no GPU/);
+});
+
+// The network each computer is made with is the server's own spec builder's (computerSpecOf, under the default list),
+// and where it reaches is the claim's (ClaimComputer.reach), which the run's model is told (computerReachNote): a
+// desktop whose provider makes no network but none (its programs held to loopback) is made with none and reaches
+// nowhere; a sandbox under an allow list reaches that list's hosts; a sandbox of a launch that names no list is made
+// with none, as it always was. A desktop whose provider makes open is made open and has no reach to tell.
+test("where a computer reaches: none made with none, the list made with a list, nothing to tell made open", async () => {
+  const DESKTOP_GROUPS = ["screen", "input.pointer", "input.keys"];
+  for (const [what, setting, options, network, reach] of [
+    ["a desktop whose provider makes none alone", { kind: "desktop", provider: "e2b" }, { keys: { E2B_API_KEY: "ek-test" }, groups: DESKTOP_GROUPS, networks: ["none"] }, "none", "none"],
+    ["a desktop whose provider makes open", { kind: "desktop", provider: "e2b" }, { keys: { E2B_API_KEY: "ek-test" }, groups: DESKTOP_GROUPS, networks: ["none", "open", "allow"] }, "open", undefined],
+    ["a sandbox under an allow list", { kind: "sandbox", provider: "docker" }, { networks: ["none", "allow"], boxAllow: ["pypi.org"] }, { allow: ["pypi.org"] }, { allow: ["pypi.org"] }],
+    ["a sandbox of a launch that names no list", { kind: "sandbox", provider: "docker" }, { networks: ["none", "allow"] }, "none", "none"],
+  ]) {
+    const { record, run } = await claim(setting, { ...options, spec: computerSpecOf({}) });
+    const answer = await run();
+    assert.deepEqual(record.created[0].network, network, `${what}: made with it`);
+    assert.deepEqual(answer.reach, reach, `${what}: reaches ${JSON.stringify(answer.reach)}`);
+    await answer.release();
+  }
 });

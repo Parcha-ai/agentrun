@@ -12,10 +12,10 @@ import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { JOURNAL_FIRST_ID, RunStorage } from "../journal/storage.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
-import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, LEARNING_LEDGER, LEARNING_LEDGER_ADDED, LEARNING_LEDGER_AGENT, LEARNING_LEDGER_BY_HAND, LEARNING_ROWS, LEARNING_SPEND, LEARNING_SPEND_AGENT, LEARNING_SPEND_OF_RUN, ledgerUpgrade, learningRowsUpgrade, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUN_LAUNCH_CENSUS, RUN_LAUNCH_CENSUS_ERASED, RUN_LAUNCH_CENSUS_ERASED_MADE, RUN_LAUNCH_CENSUS_SETTLE, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, STORE_META_LEDGER_BACKFILLED, TRIGGERS_TEMPLATE_ID } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, IMPORTED_TEMPLATES_KEYS, LEARNING_LEDGER, LEARNING_LEDGER_ADDED, LEARNING_LEDGER_AGENT, LEARNING_LEDGER_BY_HAND, LEARNING_ROWS, LEARNING_SPEND, LEARNING_SPEND_AGENT, LEARNING_SPEND_OF_RUN, ledgerUpgrade, learningRowsUpgrade, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUN_LAUNCH_CENSUS, RUN_LAUNCH_CENSUS_ERASED, RUN_LAUNCH_CENSUS_ERASED_MADE, RUN_LAUNCH_CENSUS_SETTLE, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, splitUpgrade, STORE_META_LEDGER_BACKFILLED, STORE_META_LEDGER_RERECORDED, TRIGGER_FIRINGS_HOOKED, TRIGGERS_TEMPLATE_ID, uploadKeysUpgrade, WORKSPACE_ADDED, WORKSPACE_INDEXES } from "../schema.js";
 import {
   ActiveRuns, AgentArchived, AgentDeleting, AgentPurged, CommandTaken, ExternalBodyConflict, Fenced, FiringMoved, RunFinal, RunPurged, RunnerBelowFloor, RunsMadeFromLeft, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, UPLOAD_PREFIX, type AgentRow, type Agents,
-  type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
+  type Claim, type Command, type FiringHooked, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
   type JournalReads, type KeptListing, type LaunchSealedWrite, type RunLabels, type UpdatedRun,
   type ReleasedState, type RunState, type SecureRewriteOptions, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type LearningSpend, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpCredentialMark, type McpPinRow, type McpRemoved, type McpServerRow, type McpServerWrite, type McpTokensMark, type McpOwnersMark,
@@ -44,8 +44,8 @@ import { cleanText, type Dialect, settledBody } from "../dialect.js";
 import { inMemory } from "./memory.js";
 import { dropAgentLearning, dropRunLearning, learningRows } from "./learning-rows.js";
 import { Connection, DEFAULT_BUSY_TIMEOUT_MS, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
-import { applyRunPatch, backfillLedger, BY_HAND_BEFORE, EXACT_COST_USD, NOT_A_LEARNING_RUN, recordLedger, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
-import { launchDiskOf, readableJson,readLaunch, readLearningStarts, readSeededBefore, readUsageMetadata, writeLaunch, writeLaunchSealed } from "./run-launch.js";
+import { applyRunPatch, BY_HAND_BEFORE, EXACT_COST_USD, ledgerPasses, NOT_A_LEARNING_RUN, recordLedger, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
+import { launchDiskOf, readableJson,readLaunch, readLearningStarts, readSeededBefore, readUsageMetadata, writeLaunch, writeLaunchLearning, writeLaunchSealed } from "./run-launch.js";
 import { canonical } from "../agent-body.js";
 import { mcpRecordKeys } from "../mcp-record-keys.js";
 import type { LedgerRow, SpendRow } from "../../learn/ledger.js";
@@ -118,7 +118,7 @@ type TriggerRecord = {
 type FiringRecord = {
   trigger_id: string; key: string; by: string | null; nominal_at: number | null; status: FiringStatus; at: number; run_id: string | null; reason: string | null;
   error: string | null; count: number | null; attempts: number; retry_at: number | null; payload: string | null; attrs: string | null; notified: number | null;
-  catch_up: number | null; paused: number | null; shown: number | null; waits_on: string | null;
+  catch_up: number | null; paused: number | null; shown: number | null; waits_on: string | null; hooked: string | null;
 };
 /** No audit's shadow run (learn/audit.ts SHADOW_PREFIX "audit."): the prefix compared as it is, which LIKE does not on
  *  SQLite (it folds case). */
@@ -135,13 +135,14 @@ const listingBehind = (now: string) => ({
   sql: `(runs.listing_mark < runs.list_mark OR (runs.listing_live = 1 AND NOT ${heldAt(now)}) OR (runs.listing_until IS NOT NULL AND runs.listing_until <= ${now}))`,
   params: (at: readonly SqliteValue[]): SqliteValue[] => [...at, ...at],
 });
-const FIRING_COLUMNS = "trigger_id, key, by, nominal_at, status, at, run_id, reason, error, count, attempts, retry_at, payload, attrs, notified, catch_up, paused, shown, waits_on";
+const FIRING_COLUMNS = "trigger_id, key, by, nominal_at, status, at, run_id, reason, error, count, attempts, retry_at, payload, attrs, notified, catch_up, paused, shown, waits_on, hooked";
 /** A sent firing's retry_at is its startBy (settle's one exception), never a retry. */
 const firingOf = (r: FiringRecord): FiringRow => ({
   triggerId: r.trigger_id, key: r.key, by: r.by ?? "manual", nominalAt: r.nominal_at ?? r.at, status: r.status, at: r.at, runId: r.run_id, reason: r.reason,
   error: r.error === null ? null : JSON.parse(r.error), count: r.count, attempts: r.attempts, retryAt: r.status === "sent" ? null : r.retry_at,
   startBy: r.status === "sent" ? r.retry_at : null, payload: r.payload,
   attrs: r.attrs === null ? null : JSON.parse(r.attrs), notified: r.notified === 1, catchUp: r.catch_up === 1, paused: r.paused === 1, shown: r.shown !== 0, waitsOn: r.waits_on,
+  hooked: r.hooked === null ? null : JSON.parse(r.hooked),
 });
 /** The trigger's patch as columns: name -> [column, value]. */
 const TRIGGER_PATCH: { [K in keyof TriggerPatch]-?: (value: NonNullable<TriggerPatch[K]> | null) => [string, SqliteValue] } = {
@@ -256,6 +257,17 @@ const triggerOf = (r: TriggerRecord): TriggerRow => ({
   createdAt: r.created_at, updatedAt: r.updated_at, templateId: r.template_id ?? null,
 });
 const json = (value: unknown): string => JSON.stringify(value ?? null);
+
+/** A firing's kept cap after a hand that tells its target's cap `now` (Triggers.hooked): the first hand's, else the lower
+ *  of the kept one and `now`, so it is the lowest any hand has told the host. A cap told after a kept null stays under
+ *  the agent's default that null stood for (`under_default`). */
+function lowestHooked(kept: FiringHooked | null, now: number | null): FiringHooked {
+  if (!kept) return { max_cost_usd: now };
+  if (now === null) return kept;
+  if (kept.max_cost_usd === null) return { max_cost_usd: now, under_default: true };
+  return now < kept.max_cost_usd ? { ...kept, max_cost_usd: now } : kept;
+}
+
 /** A UTF-16 surrogate standing alone (in `u` mode a whole pair is one code point, so only a lone half matches). */
 const LONE_SURROGATE = /[\ud800-\udfff]/u;
 /** A run's labels as its column holds them: keys sorted, so the same labels are the same text; null for none. A key or value
@@ -313,13 +325,17 @@ const intervalOf = (r: ComputerIntervalRecord): ComputerIntervalRow => ({
   memoryMb: orNull(r.memory_mb), diskGb: orNull(r.disk_gb), startedAt: Number(r.started_at), kept: Number(r.kept) === 1, endedAt: orNull(r.ended_at), bookedMs: Number(r.booked_ms),
 });
 const ledgerRowOf = (r: ComputerLedgerRecord): ComputerLedgerRow => ({ provider: r.provider, sessionId: r.session_id, labels: JSON.parse(r.labels), detail: JSON.parse(r.detail), updatedAt: r.updated_at });
-type ImportedTemplateRecord = { id: string; source: string; sha: string; publisher: string; files: string; imported_at: number };
+type ImportedTemplateRecord = { id: string; source: string; sha: string; publisher: string; files: string; imported_at: number; workspace: string | null };
+/** Imported packages by id, those of no workspace first, then by workspace: the same on SQLite and Postgres. */
+const IMPORTED_ORDER = "id, workspace IS NOT NULL, workspace";
+/** A row's `workspace` column held to `workspace`, or to none when it is undefined. */
+const ofWorkspace = (workspace: string | undefined): { sql: string; params: string[] } => (workspace === undefined ? { sql: "workspace IS NULL", params: [] } : { sql: "workspace = ?", params: [workspace] });
 type PairedRecord = { id: string; name: string; hello: string; driver: string; labels: string; pairing_id: string; created_at: number; seen_at: number | null; revoked_at: number | null };
 const pairedOf = (r: PairedRecord): PairedComputerRow => ({ id: r.id, name: r.name, hello: JSON.parse(r.hello), driver: r.driver, labels: JSON.parse(r.labels), pairingId: r.pairing_id, createdAt: r.created_at, seenAt: r.seen_at, revokedAt: r.revoked_at });
 type MintedRecord = { machine: string; kind: string; os: string; arch: string; expires_at: number; revoked_at: number | null; created_at: number; runner: string | null; incarnation: string | null; run: string | null; refused: string | null };
 const mintedOf = (r: MintedRecord): MintedTokenRow => ({ machine: r.machine, kind: r.kind, os: r.os, arch: r.arch, expiresAt: r.expires_at, revokedAt: r.revoked_at, createdAt: r.created_at, runner: r.runner, incarnation: r.incarnation, run: r.run, refused: r.refused });
-type RunnerRecord = { runner: string; incarnation: string; refused: string | null; host: string | null; port: number | string | null; seen_at: number | string; version: string | null; slots: number | string | null };
-const runnerOf = (r: RunnerRecord): RunnerRow => ({ runner: r.runner, incarnation: r.incarnation, refused: r.refused, host: r.host, port: r.port === null ? null : Number(r.port), seenAt: Number(r.seen_at), version: r.version, slots: r.slots === null ? null : Number(r.slots) });
+type RunnerRecord = { runner: string; incarnation: string; refused: string | null; host: string | null; port: number | string | null; seen_at: number | string; version: string | null; slots: number | string | null; knows: number | string | null };
+const runnerOf = (r: RunnerRecord): RunnerRow => ({ runner: r.runner, incarnation: r.incarnation, refused: r.refused, host: r.host, port: r.port === null ? null : Number(r.port), seenAt: Number(r.seen_at), version: r.version, slots: r.slots === null ? null : Number(r.slots), knows: r.knows === null ? null : Number(r.knows) });
 type TriggerSettingRecord = { adapter: string; scope: string; field: string; sealed: string; updated_at: number };
 const triggerSettingOf = (r: TriggerSettingRecord): TriggerSettingRow => ({ adapter: r.adapter, scope: r.scope, field: r.field, sealed: r.sealed, updatedAt: r.updated_at });
 type McpOauthRecord = { state: string; server: string; sealed: Uint8Array; working: string | null; expires_at: number };
@@ -370,6 +386,10 @@ export const SQLITE_RUNNER_NEEDS: readonly { readonly table: string; readonly co
   { table: "learning_ledger", columns: ["run_id", ...Object.keys(LEARNING_LEDGER_ADDED)], why: "write each run's learning ledger row and spend at its end (learning_ledger, learning_spend)" },
   { table: "learning_spend", columns: ["run_id"], why: "write each run's learning ledger row and spend at its end (learning_ledger, learning_spend)" },
   { table: "learning_saves", columns: ["merge_key"], why: "keep each agent's learning as rows (learning_saves, learning_items, learning_records)" },
+  // Every claim with a seal key reads its run's workspace, its own else its agent's (runner/github-app.ts githubAppAccess,
+  // Runs.workspace), before its checkout and MCP setup. The server adds both at its start (addWorkspaceColumns).
+  { table: "agents", columns: ["workspace"], why: "keep each agent's and run's workspace (agents.workspace, runs.workspace)" },
+  { table: "runs", columns: ["workspace"], why: "keep each agent's and run's workspace (agents.workspace, runs.workspace)" },
 ];
 
 /** What a runner of this build waits for on a file of this version (SQLITE_RUNNER_NEEDS' first missing column's `why`),
@@ -475,6 +495,8 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     file = options.file;
   }
   const connection = await Connection.open(file, { owner: role === "server", ...(options.busyTimeoutMs === undefined ? {} : { busyTimeoutMs: options.busyTimeoutMs }) });
+  // The server's pass over the ledger, from its open (run-patch.ts ledgerPasses): set by the open's, a server's alone.
+  let rerecord: (() => Promise<boolean>) | undefined;
   try {
     let found = await versionOf(connection);
     if (found === null && role === "server") {
@@ -488,9 +510,12 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     // purgeUpgrade). Version 14 keeps no disk on a run: the server adds it and writes each run's from its launch (schema.ts
     // diskUpgrade). Version 15 keeps each ledger row's epoch: the server repairs the rows that release could leave wrong
     // and drops it (the ledger's step below, then ledgerUpgrade). Version 16 keeps no learning as rows: the server adds
-    // them (schema.ts learningRowsUpgrade), last. A runner refuses each version of SQLITE_UPGRADES until that server has,
+    // them (schema.ts learningRowsUpgrade). Version 17 has its reopened runs' ledger rows under the split before: the
+    // server adds the mark (STORE_META_LEDGER_RERECORDED, unset) and each runner's known version (runners.knows) and
+    // writes 18 (schema.ts splitUpgrade), last, and the open's backfill records those rows again (marked once no runner of
+    // 17 is there). A runner refuses each version of SQLITE_UPGRADES until that server has,
     // and a runner of 15, whose end writes the epoch, refuses 16 and later (SchemaVersionUnknown), or stops at its next
-    // floor read. A later version is refused too, a runner in words that name its floor (a SQLite runner opens only its
+    // floor read; a runner of 17, whose end writes the split before, refuses 18 the same way. A later version is refused too, a runner in words that name its floor (a SQLite runner opens only its
     // own version, so the floor is the version): RunnerBelowFloor.
     const upgrading = found !== null && SQLITE_UPGRADES.has(found);
     if (upgrading && role === "runner") throw new StoreAwaitsServer(`bring this store from version ${found} to ${SCHEMA_VERSION}`);
@@ -544,6 +569,11 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
       if (role === "runner") throw new StoreAwaitsServer("add each trigger's package mark");
       await connection.write([{ sql: TRIGGERS_TEMPLATE_ID }], { full: true });
     }
+    // Nor what the launch hook told a firing's host (schema.ts TRIGGER_FIRINGS_HOOKED): the server adds the column,
+    // nullable, every firing handed before reading as told nothing. No runner reads firings.
+    if (role === "server" && !(await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('trigger_firings')")).some((column) => column.name === "hooked")) {
+      await connection.write([{ sql: TRIGGER_FIRINGS_HOOKED }], { full: true });
+    }
     // An earlier build of version 13 kept each runner's relay in a table of its own (runner_relays), which the server's
     // open below drops for runners (schema.ts RUNNERS). A runner says it is there, and where its relay answers, through
     // runners alone, so it waits for that server.
@@ -574,6 +604,12 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     // waits for the server that adds the tables.
     if (role === "runner" && (await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('learning_saves')")).length === 0) {
       throw new StoreAwaitsServer("keep each agent's learning as rows (learning_saves, learning_items, learning_records)");
+    }
+    // A claim with a seal key reads its run's workspace, its own else its agent's (runner/github-app.ts, Runs.workspace): a
+    // runner waits for the server that adds both columns (addWorkspaceColumns, below).
+    const keepsWorkspace = async (table: "agents" | "runs") => (await connection.all<{ name: string }>(`SELECT name FROM pragma_table_info('${table}') WHERE name = 'workspace'`)).length > 0;
+    if (role === "runner" && !((await keepsWorkspace("agents")) && (await keepsWorkspace("runs")))) {
+      throw new StoreAwaitsServer("keep each agent's and run's workspace (agents.workspace, runs.workspace)");
     }
     // The per-run viewer table was renamed browser_viewers → computer_viewers (schema.ts). Its rows are ephemeral, so none
     // migrate; the server drops a stale browser_viewers an earlier build of this version left, so none lingers beside it.
@@ -613,8 +649,11 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
         { sql: RUN_ATTEMPTS },
         // Nor any learning ledger (schema.ts LEARNING_LEDGER, LEARNING_SPEND; version 15's, with each row's `epoch`, is
         // repaired and its epoch dropped by ledgerUpgrade below). Nor the mark that every ended run has its row
-        // (STORE_META_LEDGER_BACKFILLED), nor the by-hand index (LEARNING_LEDGER_BY_HAND).
+        // (STORE_META_LEDGER_BACKFILLED), nor the by-hand index (LEARNING_LEDGER_BY_HAND). Nor, before 18, the mark that
+        // every reopened run's row is under this build's split (STORE_META_LEDGER_RERECORDED): unset, so the open's
+        // backfill records them again.
         ...(metaColumns.has("ledger_backfilled") ? [] : [{ sql: STORE_META_LEDGER_BACKFILLED }]),
+        ...(metaColumns.has("ledger_rerecorded") ? [] : [{ sql: STORE_META_LEDGER_RERECORDED }]),
         { sql: LEARNING_LEDGER },
         { sql: LEARNING_LEDGER_AGENT },
         { sql: LEARNING_LEDGER_BY_HAND },
@@ -641,6 +680,12 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
       const ledgerNow = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('learning_ledger')")).map((column) => column.name));
       const ledgerMissing = Object.entries(LEARNING_LEDGER_ADDED).filter(([column]) => !ledgerNow.has(column)).map(([, sql]) => ({ sql }));
       if (ledgerMissing.length > 0) await connection.write(ledgerMissing, { full: true });
+      await addWorkspaceColumns(connection);
+      // An imported_templates an earlier build of this version made is keyed by its id alone: made again, each row in the
+      // workspace it had, keyed by workspace and id (schema.ts uploadKeysUpgrade). No runner reads it, so none waits.
+      if ((await connection.all<{ pk: number }>("SELECT pk FROM pragma_table_info('imported_templates') WHERE name = 'id'")).some((column) => column.pk > 0)) {
+        await connection.write(uploadKeysUpgrade().map((sql) => ({ sql })), { full: true });
+      }
       await backfillNativeCommandOwners(connection);
       // Here `found` is SCHEMA_VERSION or a version in the window (any other was refused above): each step runs for the
       // versions before the one that first kept what it adds.
@@ -657,24 +702,58 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
         if (found <= 13) await connection.write(purgeUpgrade(await named("runs"), await named("agents")).map((sql) => ({ sql })), { full: true });
         if (found <= 14) await connection.write(diskUpgrade(await named("runs")).map((sql) => ({ sql })), { full: true });
         if (found <= 15) await connection.write(ledgerUpgrade(await named("learning_ledger")).map((sql) => ({ sql })), { full: true });
-        // Last: ledgerUpgrade writes 16, and the rows step writes 17 after it.
-        await connection.write(learningRowsUpgrade().map((sql) => ({ sql })), { full: true });
+        // ledgerUpgrade writes 16, the rows step 17 after it, and the split's step 18, last.
+        if (found <= 16) await connection.write(learningRowsUpgrade().map((sql) => ({ sql })), { full: true });
+        await connection.write(splitUpgrade(await named("runners")).map((sql) => ({ sql })), { full: true });
       }
-      // Every run an earlier build ended gets its ledger row once, here, on the schema this build reads.
-      await backfillLedger(connection, options.now ?? Date.now);
+      // Every run an earlier build ended gets its ledger row once, here, on the schema this build reads, and every run a
+      // follow-up opened again has its row recorded again under this build's split: marked done only when no runner of 17
+      // was there at its start and no run was held by a claim taken before this open and RUNNER_STALE_MS, else tried
+      // again on the server's timer (Store.rerecordReopened).
+      rerecord = await ledgerPasses(connection, options.now ?? Date.now, SQLITE_FLOOR);
+      await rerecord();
     }
   } catch (error) {
     await connection.close().catch(() => undefined);
     throw error;
   }
-  const store = storeOver(connection, options.now ?? Date.now, inMemory(file) ? undefined : file);
+  const store = storeOver(connection, options.now ?? Date.now, SCHEMA_VERSION, inMemory(file) ? undefined : file);
   // A SQLite runner opens only its own version (the server upgrades the file in place at its start, never beside a
   // runner on another build): its floor is the version itself.
   const schemaState = async () => {
     const version = await versionOf(connection);
     return { version, runnerFloor: version, known: SCHEMA_VERSION };
   };
-  return Object.assign(store, { schemaState });
+  if (role !== "server") return Object.assign(store, { schemaState });
+  return Object.assign(store, { schemaState, rerecordReopened: rerecord! });
+}
+
+/** The runner floor of a SQLite store a server of this build opened: the version itself (a runner opens only its own). */
+const SQLITE_FLOOR = async (): Promise<number> => SCHEMA_VERSION;
+
+/** An agents, runs or imported_templates table an earlier build of this version made keeps no workspace (schema.ts
+ *  WORKSPACE_ADDED): each added where missing, every row unscoped, then their indexes and the imported packages' keys
+ *  (IMPORTED_TEMPLATES_KEYS; the server's open drops the key on the id alone after it, uploadKeysUpgrade). The server's
+ *  open runs it, and so does prepareWorkspaceColumns. */
+async function addWorkspaceColumns(connection: Connection): Promise<void> {
+  const missing: { sql: string }[] = [];
+  for (const [table, sql] of Object.entries(WORKSPACE_ADDED)) {
+    if (!(await connection.all<{ name: string }>(`SELECT name FROM pragma_table_info('${table}')`)).some((column) => column.name === "workspace")) missing.push({ sql });
+  }
+  await connection.write([...missing, ...[...WORKSPACE_INDEXES, ...IMPORTED_TEMPLATES_KEYS].map((sql) => ({ sql }))], { full: true });
+}
+
+/** The workspace columns of the store at `file`, added as the server's open adds them (addWorkspaceColumns), for a
+ *  command that opens the store as a runner does, which adds none (workspace-backfill.ts). Only on a store at this
+ *  build's version: any other is left as it is, for the runner's open to refuse in its words. Additive and idempotent,
+ *  with no owner lock: on a store a server of this build has opened, nothing is added. */
+export async function prepareWorkspaceColumns(file: string): Promise<void> {
+  const connection = await Connection.open(file);
+  try {
+    if ((await versionOf(connection)) === SCHEMA_VERSION) await addWorkspaceColumns(connection);
+  } finally {
+    await connection.close();
+  }
 }
 
 /** Every unrefused approve or deny after the first for one approval of a run, refused with why (the open above). */
@@ -746,10 +825,10 @@ function readOnly(tx: Tx): Tx {
 
 /** The Store over `connection`, on whichever database it is (SQLite here, Postgres in postgres/store.ts), on the store's
  *  clock `now` (ms), its identity `where` (Store.where). The opener sets the schema up and checks its version first.
- *  `file`: a SQLite store's database file, beside which secureRewrite keeps its marker (SCRUB_SUFFIX), and whose WAL a
- *  purge checkpoints. */
-export function storeOver(connection: StoreConnection, now: () => number, file?: string): Store {
-  return new SqliteStore(connection, now, undefined, file === undefined ? undefined : `${file}${SCRUB_SUFFIX}`);
+ *  `knows`: the schema version this build knows on that database (Runners.knows). `file`: a SQLite store's database
+ *  file, beside which secureRewrite keeps its marker (SCRUB_SUFFIX), and whose WAL a purge checkpoints. */
+export function storeOver(connection: StoreConnection, now: () => number, knows: number, file?: string): Store {
+  return new SqliteStore(connection, now, knows, undefined, file === undefined ? undefined : `${file}${SCRUB_SUFFIX}`);
 }
 
 /** How long a purge's checkpoint waits for another connection's reader or writer before it leaves the log to the next
@@ -757,10 +836,20 @@ export function storeOver(connection: StoreConnection, now: () => number, file?:
 const PURGE_CHECKPOINT_BUSY_MS = 20;
 
 /** Run `runId`'s learning ledger (learn/ledger.ts), gone: its row, each spend row it booked, and an audit's spend row of
- *  it (its shadow's, of_run). What a run's purge (Runs.purge) and its delete (Runs.remove) both drop. */
-async function dropLedger(tx: SqliteExecutor, runId: string): Promise<void> {
+ *  it (its shadow's, of_run). What a run's purge (Runs.purge) and its delete (Runs.remove) both drop, but that a purge
+ *  (`purge`) keeps the figure of each spend row it booked on another run's account (of_run: a keyed replay's check on
+ *  the paying run's key, an audit's shadow's cost), which is that run's learning and is not purged with it: its $ alone,
+ *  the revision it named gone (no read of a kept row reads one: ownCheck and the audit's cost read of_run and usd), so
+ *  the paying run's view (runFiguresOf), the agent's ledger (summarize) and the learning total read the one row. The
+ *  paying run's own purge takes it (of_run). */
+async function dropLedger(tx: SqliteExecutor, runId: string, { purge = false }: { purge?: boolean } = {}): Promise<void> {
   await tx.run("DELETE FROM learning_ledger WHERE run_id = ?", runId);
-  await tx.run("DELETE FROM learning_spend WHERE run_id = ? OR of_run = ?", runId, runId);
+  if (!purge) {
+    await tx.run("DELETE FROM learning_spend WHERE run_id = ? OR of_run = ?", runId, runId);
+    return;
+  }
+  await tx.run("DELETE FROM learning_spend WHERE of_run = ? OR (run_id = ? AND of_run IS NULL)", runId, runId);
+  await tx.run("UPDATE learning_spend SET workflow = NULL, digest = NULL WHERE run_id = ?", runId);
 }
 
 /** A run's content in every table that keeps it by the run's id, gone: what a run's purge (Runs.purge) and its delete
@@ -849,6 +938,8 @@ class SqliteStore implements Store {
   readonly sealedSecrets: SealedSecrets;
   readonly #db: StoreConnection;
   readonly #now: () => number;
+  /** The schema version this build knows on this database (Runners.knows), which a snapshot keeps. */
+  readonly #knows: number;
   /** The store this one is a snapshot of, or itself (Store.origin). */
   readonly origin: Store;
   /** Where this store's data is: its connection's (StoreConnection.where). */
@@ -872,10 +963,11 @@ class SqliteStore implements Store {
    *  it asked), so a marker is never removed without a checkpoint that truncated every writer's frames. */
   #scrubMarks = 0;
 
-  constructor(db: StoreConnection, now: () => number, origin?: Store, scrubMarker?: string) {
+  constructor(db: StoreConnection, now: () => number, knows: number, origin?: Store, scrubMarker?: string) {
     this.#db = db;
     this.#scrubMarker = scrubMarker;
     this.#now = now;
+    this.#knows = knows;
     this.origin = origin ?? this;
     this.where = db.where;
     const d = db.dialect;
@@ -883,8 +975,10 @@ class SqliteStore implements Store {
     this.#clock = clock;
     if (!d.nowSql) this.leaseClock = now;
 
-    const insertAgent = (tx: SqliteExecutor, agent: { id: string; name: string; description?: string | null }, at: number) =>
-      tx.run("INSERT INTO agents (id, name, description, created_at) VALUES (?, ?, ?, ?)", agent.id, agent.name, agent.description ?? null, at);
+    const insertAgent = async (tx: SqliteExecutor, agent: { id: string; name: string; description?: string | null; workspace?: string }, at: number) => {
+      await tx.run("INSERT INTO agents (id, name, description, created_at) VALUES (?, ?, ?, ?)", agent.id, agent.name, agent.description ?? null, at);
+      if (agent.workspace !== undefined) await tx.run("UPDATE agents SET workspace = ? WHERE id = ?", agent.workspace, agent.id);
+    };
     /** Agent `agentId`'s row, held (a writer's row lock, as its purge takes it), or undefined when there is none; refused
      *  (AgentPurged) once it is purged: a write that waited on the purge's lock reads its purge time, and one that took the
      *  lock first commits before the purge reads anything. */
@@ -1012,8 +1106,17 @@ class SqliteStore implements Store {
         const row = await db.get<RevisionRecord>(`SELECT ${REVISION_COLUMNS} FROM revisions WHERE agent_id = ? AND external_version = ?`, agentId, version);
         return row && revisionOf(row);
       },
-      list: async ({ archived = false, purged = false } = {}) =>
-        (await db.all<AgentRecord>(`SELECT ${AGENT_COLUMNS} FROM agents WHERE archived_at IS ${archived ? "NOT NULL" : "NULL"}${purged ? "" : " AND purged_at IS NULL"} ORDER BY created_at, id`)).map(agentOf),
+      list: async ({ archived = false, purged = false, workspace } = {}) =>
+        (await db.all<AgentRecord>(`SELECT ${AGENT_COLUMNS} FROM agents WHERE archived_at IS ${archived ? "NOT NULL" : "NULL"}${purged ? "" : " AND purged_at IS NULL"}${workspace === undefined ? "" : " AND workspace = ?"} ORDER BY created_at, id`, ...(workspace === undefined ? [] : [workspace]))).map(agentOf),
+      workspace: async (id) => {
+        const row = await db.get<{ workspace: string | null }>("SELECT workspace FROM agents WHERE id = ?", id);
+        return row && row.workspace;
+      },
+      adoptWorkspace: async (id, workspace) => {
+        await db.write([{ sql: "UPDATE agents SET workspace = ? WHERE id = ? AND workspace IS NULL", params: [workspace, id] }]);
+        const row = await db.get<{ workspace: string | null }>("SELECT workspace FROM agents WHERE id = ?", id);
+        return row && row.workspace;
+      },
       archive: async (id, archived, why) =>
         db.transaction(async (tx) => {
           const at = now();
@@ -1092,7 +1195,7 @@ class SqliteStore implements Store {
       purge: (agentId) =>
         this.#purging(() => db.transaction(async (tx) => {
           await d.lockRow(tx, "agents", "id", agentId);
-          const agent = await tx.get<{ purged_at: number | null }>("SELECT purged_at FROM agents WHERE id = ?", agentId);
+          const agent = await tx.get<{ purged_at: number | null; workspace: string | null }>("SELECT purged_at, workspace FROM agents WHERE id = ?", agentId);
           if (!agent || agent.purged_at !== null) return false;
           // Each run a tombstone first (Runs.purge): a run started past the delete's listing keeps the agent for the next one.
           const left = await tx.get<{ id: string }>("SELECT id FROM runs WHERE agent_id = ? AND purged_at IS NULL LIMIT 1", agentId);
@@ -1106,15 +1209,17 @@ class SqliteStore implements Store {
           // else owns one, and a server that serves no template route (API-only) could never remove it. Each is held by its
           // id, in order, before it is read: two purges of agents applied from one upload read it in turn, so the later
           // reads the earlier's purge (committed) and removes the upload. Only the package it was applied from goes, by its
-          // sha too: a newer upload of the same name, which another deploy has yet to apply, stays.
+          // sha too: a newer upload of the same name, which another deploy has yet to apply, stays. An upload is its
+          // workspace's (none's for an agent of none): another workspace's of the same name, and its agents, are not read.
           const packageId = (alias: string) => d.jsonText(`${alias}.package`, ["id"]);
+          const workspace = ofWorkspace(agent.workspace ?? undefined);
           const applied = (await tx.all<{ id: string | null; sha: string | null }>(`SELECT DISTINCT ${packageId("r")} AS id, ${d.jsonText("r.package", ["sha"])} AS sha FROM revisions r WHERE r.agent_id = ? AND r.package IS NOT NULL`, agentId))
             .filter((row): row is { id: string; sha: string } => row.id !== null && row.id.startsWith(UPLOAD_PREFIX) && row.sha !== null)
             .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
           for (const { id, sha } of applied) {
             await d.lockKey(tx, `imported_templates:${id}`);
-            const kept = await tx.get<{ id: string }>(`SELECT r.id FROM revisions r JOIN agents a ON a.id = r.agent_id WHERE r.agent_id <> ? AND a.purged_at IS NULL AND ${packageId("r")} = ? LIMIT 1`, agentId, id);
-            if (!kept) await tx.run("DELETE FROM imported_templates WHERE id = ? AND sha = ?", id, sha);
+            const kept = await tx.get<{ id: string }>(`SELECT r.id FROM revisions r JOIN agents a ON a.id = r.agent_id WHERE r.agent_id <> ? AND a.purged_at IS NULL AND a.${workspace.sql} AND ${packageId("r")} = ? LIMIT 1`, agentId, ...workspace.params, id);
+            if (!kept) await tx.run(`DELETE FROM imported_templates WHERE id = ? AND sha = ? AND ${workspace.sql}`, id, sha, ...workspace.params);
           }
           // Each revision's content; its id, kind, parent and time stay, which its runs' tombstones name.
           await tx.run("UPDATE revisions SET body = '{}', skills = NULL, package = NULL, note = NULL, mcp_pin = NULL, monid_pin = NULL WHERE agent_id = ?", agentId);
@@ -1242,6 +1347,16 @@ class SqliteStore implements Store {
       },
       firings: async (triggerId) =>
         (await db.all<FiringRecord>(`SELECT ${FIRING_COLUMNS} FROM trigger_firings WHERE trigger_id = ? AND shown = 1 ORDER BY at DESC, ${d.firingOrder} DESC`, triggerId)).map(firingOf),
+      hooked: async (triggerId, key, now) =>
+        db.transaction(async (tx) => {
+          // Read under the row's lock, so two hands of the firing never both read the cap the other lowers.
+          const row = await tx.get<{ hooked: string | null }>(`SELECT hooked FROM trigger_firings WHERE trigger_id = ? AND key = ?${d.claimOneLock}`, triggerId, key);
+          if (!row) return undefined;
+          const kept: FiringHooked | null = row.hooked ? JSON.parse(row.hooked) : null;
+          const next = lowestHooked(kept, now.max_cost_usd);
+          if (next !== kept) await tx.run("UPDATE trigger_firings SET hooked = ? WHERE trigger_id = ? AND key = ?", json(next), triggerId, key);
+          return next;
+        }),
       settle: async (triggerId, key, change, streak) =>
         db.transaction(async (tx) => {
           const at = now();
@@ -1444,7 +1559,7 @@ class SqliteStore implements Store {
     };
 
     this.runs = {
-      create: async ({ id, agentId, revisionId, origin, labels, expectedCurrent, settingsGuards, startedAt, firing }, launch) => {
+      create: async ({ id, agentId, revisionId, origin, labels, expectedCurrent, settingsGuards, startedAt, firing, workspace }, launch) => {
         // sign_in_handed is not written here: the runner writes it at its claim (runs.update under the epoch fence).
         const insert = `INSERT INTO runs (id, agent_id, revision_id, state, epoch, labels, disk, started_at) VALUES (?, ?, ?, 'queued', 0, ?, ?, ?) RETURNING ${RUN_COLUMNS}`;
         const labelled = labelsColumn(labels);
@@ -1465,6 +1580,7 @@ class SqliteStore implements Store {
             if (source && source.purged_at !== null) throw new RunPurged(of, id);
           }
           const row = await tx.get<RunRecord>(insert, id, agentId, revisionId, labelled, launchDiskOf(launch), startedAt ?? at);
+          if (workspace !== undefined) await tx.run("UPDATE runs SET workspace = ? WHERE id = ?", workspace, id);
           if (origin) await tx.run("INSERT INTO run_origins (key, run_id, fingerprint, created_at) VALUES (?, ?, ?, ?)", origin.key, id, origin.fingerprint ?? null, at);
           if (launch) await writeLaunch(tx, id, launch, at);
           if (firing) await startFiring(tx, firing, id, at);
@@ -1509,12 +1625,31 @@ class SqliteStore implements Store {
         const row = await db.get<RunRecord>(`SELECT ${RUN_COLUMNS} FROM runs WHERE id = ?`, id);
         return row && runOf(row);
       },
+      workspace: async (id) => {
+        const row = await db.get<{ workspace: string | null }>("SELECT COALESCE(runs.workspace, agents.workspace) AS workspace FROM runs JOIN agents ON agents.id = runs.agent_id WHERE runs.id = ?", id);
+        return row && row.workspace;
+      },
       launch: (runId) => readLaunch(db, runId),
+      reseedLearning: (runId, learning, epoch) => db.transaction((tx) => writeLaunchLearning(tx, runId, learning, epoch, d.shareLock, clock())),
+      learningDeadlines: async (runIds) => {
+        const out = new Map<string, number>();
+        if (runIds.length === 0) return out;
+        const body = readableJson(d, "body");
+        const rows = await db.all<{ run_id: string; replay: string | null; audit: string | null }>(
+          `SELECT run_id, ${d.jsonText(body, ["replay", "deadline_at"])} AS replay, ${d.jsonText(body, ["audit", "deadline_at"])} AS audit FROM run_launch WHERE run_id IN (${runIds.map(() => "?").join(", ")})`,
+          ...runIds,
+        );
+        for (const row of rows) {
+          const at = Date.parse(row.replay ?? row.audit ?? "");
+          if (Number.isFinite(at)) out.set(row.run_id, at);
+        }
+        return out;
+      },
       usageMetadata: (runId, options) => readUsageMetadata(db, runId, options),
       projectCheckpoints: (filter) => readProjectCheckpoints(db, filter),
       learningStarts: (agentId) => readLearningStarts(db, agentId, NOT_A_LEARNING_RUN),
       seededBefore: (agentId, at) => readSeededBefore(db, agentId, at),
-      list: async ({ agentId, revisionId, state, archived, labels, disk, limit, purged = false, scope, before }) => {
+      list: async ({ agentId, revisionId, state, archived, labels, disk, limit, purged = false, scope, before, workspace }) => {
         // A built-in learning run (a run's grade and merge, queued with its kept learning) is no run of a person's: no list,
         // count, stat or notice names it. A purged run is a tombstone: only the readers that sum or count ask for it.
         // The Agent Factory's active scope alone lists a learning run: there it is an execution like any other. Its review
@@ -1523,6 +1658,8 @@ class SqliteStore implements Store {
         const params: SqliteValue[] = [];
         if (agentId !== undefined) (where.push("agent_id = ?"), params.push(agentId));
         if (revisionId !== undefined) (where.push("revision_id = ?"), params.push(revisionId));
+        // A run with no workspace of its own is its agent's (Runs.workspace), as the plain list reads it (listed, below).
+        if (workspace !== undefined) (where.push("COALESCE(runs.workspace, (SELECT agents.workspace FROM agents WHERE agents.id = runs.agent_id)) = ?"), params.push(workspace));
         if (state !== undefined) (where.push("state = ?"), params.push(state));
         if (archived !== undefined) where.push(`archived_at IS ${archived ? "NOT NULL" : "NULL"}`);
         // Each label, key and value bound as parameters (never spliced into a JSON path), all of them held.
@@ -1548,7 +1685,7 @@ class SqliteStore implements Store {
       },
       // A list's page from the rows alone: filtered, ordered and cut to the page in the query, one read whatever the number
       // of runs, each row with its listing (schema.ts RUN_LISTING_COLUMNS) and its agent's archive time.
-      listed: async ({ agentId, revisionId, labels, source, startedFrom, startedBefore, model, archived, status, going, after, limit, offset = 0 }) => {
+      listed: async ({ agentId, revisionId, labels, source, startedFrom, startedBefore, model, archived, status, going, after, limit, offset = 0, workspace }) => {
         const n = clock();
         const behind = listingBehind(n.sql);
         // Neither a built-in learning run nor an audit's shadow run (learn/audit.ts SHADOW_PREFIX, matched as it is, case and all).
@@ -1556,6 +1693,8 @@ class SqliteStore implements Store {
         const params: SqliteValue[] = [];
         if (agentId !== undefined) (where.push("runs.agent_id = ?"), params.push(agentId));
         if (revisionId !== undefined) (where.push("runs.revision_id = ?"), params.push(revisionId));
+        // A run with no workspace of its own is its agent's (Runs.workspace).
+        if (workspace !== undefined) (where.push("COALESCE(runs.workspace, agents.workspace) = ?"), params.push(workspace));
         for (const [key, value] of Object.entries(labels ?? {})) (where.push(d.jsonObjectHas("runs.labels")), params.push(key, value));
         if (source === "live") where.push("runs.imported_from IS NULL");
         else if (source !== undefined) (where.push(`${d.jsonText("runs.imported_from", ["source"])} = ?`), params.push(source));
@@ -1741,7 +1880,8 @@ class SqliteStore implements Store {
           }
           // Its ledger row and every spend row it booked or that audits it, as a remove takes them: what it cost stays on its
           // tombstone (cost_usd, the metrics' figures), which the readers of money (usage, stats) read; no series shows it.
-          await dropLedger(tx, runId);
+          // What it booked on another run's account stays that run's, its figure alone (dropLedger `purge`).
+          await dropLedger(tx, runId, { purge: true });
           // Its row's content, its metrics cut to their figures and names (tombstoneMetrics), with what its spend's readers
           // read from its journal folded in. Its outcome stays: a code (RunOutcome), never words.
           const metrics = tombstoneMetrics(run.metrics === null ? null : JSON.parse(run.metrics), kept);
@@ -2475,9 +2615,10 @@ class SqliteStore implements Store {
 
     // Stamped and judged on the deadlines' clock (fence.ts storeNow: the database's on Postgres), the one a claim's lease
     // runs on, so a runner on another host whose own clock is behind the server's never reads as gone (nor its relay).
-    const RUNNERS_SELECT = "SELECT runner, incarnation, refused, host, port, seen_at, version, slots FROM runners";
+    const RUNNERS_SELECT = "SELECT runner, incarnation, refused, host, port, seen_at, version, slots, knows FROM runners";
     this.runners = {
-      put: async ({ runner, incarnation, refused, host = null, port = null, version = null, slots = null }, { unlessLiveMs } = {}) => {
+      knows,
+      put: async ({ runner, incarnation, refused, host = null, port = null, version = null, slots = null, knows = null }, { unlessLiveMs } = {}) => {
         const n = clock();
         // With unlessLiveMs, the upsert's WHERE leaves a row another incarnation renewed within it as it is, in the same
         // statement: no read between, so a later process's put can never land between a look and this write.
@@ -2485,8 +2626,8 @@ class SqliteStore implements Store {
         const [, result] = await db.write([
           { sql: `DELETE FROM runners WHERE seen_at < ${n.sql} - ${d.bigintParam}`, params: [...n.params, RUNNER_ROWS_KEPT_MS] },
           {
-            sql: `INSERT INTO runners (runner, incarnation, refused, host, port, seen_at, version, slots) VALUES (?, ?, ?, ?, ?, ${n.sql}, ?, ?) ON CONFLICT (runner) DO UPDATE SET incarnation = excluded.incarnation, refused = excluded.refused, host = excluded.host, port = excluded.port, seen_at = excluded.seen_at, version = excluded.version, slots = excluded.slots${unlessLive}`,
-            params: [runner, incarnation, refused, host, port, ...n.params, version, slots, ...(unlessLiveMs === undefined ? [] : [unlessLiveMs])],
+            sql: `INSERT INTO runners (runner, incarnation, refused, host, port, seen_at, version, slots, knows) VALUES (?, ?, ?, ?, ?, ${n.sql}, ?, ?, ?) ON CONFLICT (runner) DO UPDATE SET incarnation = excluded.incarnation, refused = excluded.refused, host = excluded.host, port = excluded.port, seen_at = excluded.seen_at, version = excluded.version, slots = excluded.slots, knows = excluded.knows${unlessLive}`,
+            params: [runner, incarnation, refused, host, port, ...n.params, version, slots, knows, ...(unlessLiveMs === undefined ? [] : [unlessLiveMs])],
           },
         ]);
         return (result?.changes ?? 0) === 1;
@@ -2523,18 +2664,27 @@ class SqliteStore implements Store {
     };
 
     this.importedTemplates = {
-      list: async () => (await db.all<ImportedTemplateRecord>("SELECT id, source, sha, publisher, files, imported_at FROM imported_templates ORDER BY id")).map((row) => ({
-        id: row.id, source: row.source, sha: row.sha, publisher: row.publisher, files: JSON.parse(row.files) as Record<string, string>, importedAt: row.imported_at,
+      list: async () => (await db.all<ImportedTemplateRecord>(`SELECT id, source, sha, publisher, files, imported_at, workspace FROM imported_templates ORDER BY ${IMPORTED_ORDER}`)).map((row) => ({
+        id: row.id, source: row.source, sha: row.sha, publisher: row.publisher, files: JSON.parse(row.files) as Record<string, string>, importedAt: row.imported_at, workspace: row.workspace,
       })),
-      ids: async () => (await db.all<{ id: string }>("SELECT id FROM imported_templates ORDER BY id")).map((row) => row.id),
-      put: async ({ id, source, sha, publisher, files }) => {
-        await db.write([{
-          sql: "INSERT INTO imported_templates (id, source, sha, publisher, files, imported_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET source = excluded.source, sha = excluded.sha, publisher = excluded.publisher, files = excluded.files, imported_at = excluded.imported_at",
-          params: [id, source, sha, publisher, JSON.stringify(files), now()],
-        }]);
+      keys: async () => db.all<{ id: string; workspace: string | null }>(`SELECT id, workspace FROM imported_templates ORDER BY ${IMPORTED_ORDER}`),
+      put: async ({ id, source, sha, publisher, files }, workspace) => {
+        // In one statement: made in the workspace (none, unscoped), or the one of its id there replaced.
+        const replace = "DO UPDATE SET source = excluded.source, sha = excluded.sha, publisher = excluded.publisher, files = excluded.files, imported_at = excluded.imported_at";
+        await db.write([workspace === undefined
+          ? { sql: `INSERT INTO imported_templates (id, source, sha, publisher, files, imported_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (id) WHERE workspace IS NULL ${replace}`, params: [id, source, sha, publisher, JSON.stringify(files), now()] }
+          : { sql: `INSERT INTO imported_templates (id, source, sha, publisher, files, imported_at, workspace) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (workspace, id) WHERE workspace IS NOT NULL ${replace}`, params: [id, source, sha, publisher, JSON.stringify(files), now(), workspace] }]);
       },
-      remove: async (id) => {
-        const [result] = await db.write([{ sql: "DELETE FROM imported_templates WHERE id = ?", params: [id] }]);
+      stamp: async (id, workspace) => {
+        const held = ofWorkspace(workspace);
+        const row = await db.get<{ sha: string; imported_at: number }>(`SELECT sha, imported_at FROM imported_templates WHERE id = ? AND ${held.sql}`, id, ...held.params);
+        return row ? { sha: row.sha, importedAt: row.imported_at } : undefined;
+      },
+      remove: async (id, workspace, read) => {
+        const held = ofWorkspace(workspace);
+        const where = ["id = ?", held.sql, ...(read === undefined ? [] : ["sha = ?", "imported_at = ?"])];
+        const params = [id, ...held.params, ...(read === undefined ? [] : [read.sha, read.importedAt])];
+        const [result] = await db.write([{ sql: `DELETE FROM imported_templates WHERE ${where.join(" AND ")}`, params }]);
         return (result?.changes ?? 0) === 1;
       },
     };
@@ -3045,7 +3195,7 @@ class SqliteStore implements Store {
   }
 
   async snapshot<T>(read: (store: Store) => Promise<T>): Promise<T> {
-    return this.#db.transaction((tx) => read(new SqliteStore(snapshotOf(this.#db, tx), this.#now, this.origin)), { read: true });
+    return this.#db.transaction((tx) => read(new SqliteStore(snapshotOf(this.#db, tx), this.#now, this.#knows, this.origin)), { read: true });
   }
 
   /** How many journals the store keeps (open, of a claim not released). */
@@ -3116,7 +3266,9 @@ class SqliteStore implements Store {
     );
     for (const row of rows) {
       const command = commandOf(row);
-      out.set(command.runId, [...(out.get(command.runId) ?? []), command]);
+      const held = out.get(command.runId);
+      if (held) held.push(command);
+      else out.set(command.runId, [command]);
     }
     return out;
   }

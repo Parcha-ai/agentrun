@@ -16,6 +16,7 @@ import { putPromotions } from "./learned-workflow-seed-support.mjs";
 
 const { billOf, amortize, costSummary } = await import("../dist/learning-cost.js");
 const { agentCostOverStore, costStopOverStore, runAllInOverStore } = await import("../dist/store-reads/learning.js");
+const { runCostOverStore, toolsUsdOverStore } = await import("../dist/store-view.js");
 
 const A = "a".repeat(16);
 const B = "b".repeat(16);
@@ -269,6 +270,43 @@ test("A8 (2): C's next K = compile_after served runs each carry (compile + check
   for (const id of ["run-04", "run-05", "run-06"]) assert.deepEqual(pick(id), ["workflow", 0.1, 0.3, 0.4], `${id}: a third of $0.30 compile + $0.60 check`);
   assert.deepEqual(pick("run-07"), ["workflow", 0.1, 0, 0.1], "C is paid");
   assert.deepEqual(pick("replay-1"), ["replay", 0.3, 0, 0], "a check's spend is on its revision's served runs");
+});
+
+/** `store`, its snapshots watched: each call a snapshot's reader makes on the store it is given (`runs.get`,
+ *  `learning.ledger`, `readJournal`) is noted in `calls`, by name; the store's own calls outside a snapshot are not. */
+function watchingSnapshots(store) {
+  const calls = [];
+  const noting = (target, prefix) => new Proxy(target, {
+    get(on, key) {
+      const value = Reflect.get(on, key, on);
+      if (typeof key !== "string") return value;
+      if (typeof value === "function") return (...args) => (calls.push(`${prefix}${key}`), value.apply(on, args));
+      return prefix === "" && value !== null && typeof value === "object" ? noting(value, `${key}.`) : value;
+    },
+  });
+  const watched = new Proxy(store, { get: (on, key) => (key === "snapshot" ? (read) => on.snapshot((snapshot) => read(noting(snapshot, ""))) : Reflect.get(on, key, on)) });
+  return { watched, calls };
+}
+
+test("GET /runs/{id} of a served run reads its usd and tools_usd in one snapshot and the agent's ledger outside it: the reads in the snapshot are the same whatever the agent's runs, and its figures are as before (#4050 review)", async (t) => {
+  const store = await splitStore(t);
+  const read = async () => {
+    const { watched, calls } = watchingSnapshots(store);
+    return { cost: await runCostOverStore(watched, "run-04", 0.1), calls: calls.sort() };
+  };
+  const few = await read();
+  assert.deepEqual([few.cost.all.path, few.cost.all.usd, few.cost.all.learning_usd, few.cost.all.all_in_usd, few.cost.all.share_usd], ["workflow", 0.1, 0.3, 0.4, 0.3], "a third of $0.30 compile + $0.60 check, as the agent's ledger spreads it");
+  assert.equal(few.cost.tools_usd, await toolsUsdOverStore(store, "run-04"), "tools_usd read in the snapshot");
+  assert.ok(!few.calls.includes("runs.list"), `no list of the agent's runs in the snapshot: ${few.calls.join(", ")}`);
+  // 300 more runs of the agent by hand, after its served ones: run-04's share is the same.
+  for (let at = 0; at < 300; at++) {
+    const id = `hand-${String(at).padStart(3, "0")}`;
+    await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: LEARNS });
+    await store.runs.update(await store.claim(id, "runner-a", { leaseMs: 60_000 }), { state: "ended", costUsd: 1, metrics: { path: "agent" } });
+  }
+  const many = await read();
+  assert.deepEqual(many.cost, few.cost, "the same figures with 300 more runs");
+  assert.deepEqual(many.calls, few.calls, "the same reads in the snapshot with 300 more runs: none of the agent's ledger");
 });
 
 test("A8 (3): a compile whose drafts all failed has no revision to serve: its turn's spend is unattributed on the agent ledger, never on a run", async (t) => {

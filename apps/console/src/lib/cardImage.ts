@@ -56,7 +56,8 @@ const MONO = "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, m
 const SANS = "'Schibsted Grotesk', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif";
 /** A character's advance as a share of the font size, to fit a line: exact for a monospace font, a wide average for sans. */
 const ADVANCE = { mono: 0.6, sans: 0.56 } as const;
-const MAX_ROWS = 6;
+/** The most rows a card draws: a body with more loses the rest. */
+export const MAX_ROWS = 6;
 const MAX_CHARTS = 2;
 /** The most bars of one chart the alt reads (a year by day): a screen reader reads the rest as a count. */
 const ALT_BARS = 365;
@@ -269,9 +270,11 @@ function draw(body: CardBody): { marks: string[]; shown: number[]; rows: number;
 
   // The figure, its unit after it.
   if (body.figure) {
-    const unit = body.figure.unit ? line(body.figure.unit, INNER / 3, 32, "mono") : "";
-    const unitWidth = unit ? textWidth(unit, 32, "mono") + 20 : 0;
-    const value = line(body.figure.value, INNER - unitWidth, 112, "mono");
+    // The figure keeps the room it always had (the card less its unit, the unit held to a third), and the unit then takes
+    // all the room the figure leaves: a short figure ("2") lets a long unit ("keys and tokens cut") draw whole.
+    const held = body.figure.unit ? Math.min(textWidth(body.figure.unit, 32, "mono"), INNER / 3) + 20 : 0;
+    const value = line(body.figure.value, INNER - held, 112, "mono");
+    const unit = body.figure.unit ? line(body.figure.unit, INNER - textWidth(value, 112, "mono") - 20, 32, "mono") : "";
     y += 24 + 104;
     out.push(textEl({ x: PAD, y, size: 112, face: "mono", fill: paint("primary-text"), text: value, weight: 600 }));
     if (unit) out.push(textEl({ x: PAD + textWidth(value, 112, "mono") + 20, y, size: 32, face: "mono", fill: paint("muted-foreground"), text: unit }));

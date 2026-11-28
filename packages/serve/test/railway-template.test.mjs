@@ -86,6 +86,8 @@ test("each deploy generates a token and a seal key this server takes, with 256 b
     assert.equal(sealKeyOf(env.AGENTRUN_SEAL_KEY)?.length, 32, env.AGENTRUN_SEAL_KEY.length);
     assert.equal(env.AGENTRUN_PUBLIC_URL, "https://agentrun-production-ab12.up.railway.app");
     assert.deepEqual([env.PORT, env.RAILWAY_RUN_UID, env.AGENTRUN_RUN_USER], ["7340", "0", "same"]);
+    // Railway's SIGTERM-to-SIGKILL wait (its default 0): the runner's 40 s stop and a ChatGPT renewal's save inside it.
+    assert.equal(env.RAILWAY_DEPLOYMENT_DRAINING_SECONDS, "45");
   }
   const bits = (v) => {
     const [, n, alphabet] = /secret\((\d+), "([^"]+)"\)/.exec(v.defaultValue);
@@ -424,4 +426,19 @@ test("--walk alone walks the template of deploy/README.md's button, and none whi
   assert.equal(buttonCode(readme), button === BUTTON_PLACEHOLDER ? undefined : /new\/template\/([^?]+)\?/.exec(button)[1]);
   assert.equal(buttonCode(`${BUTTON_MARK}\n${buttonLine("abc-12")}\n`), "abc-12");
   assert.equal(buttonCode(`${BUTTON_MARK}\n${BUTTON_PLACEHOLDER}\n`), undefined);
+});
+
+// Railway's published template (agentrun-1) is older than template.json: it has no RAILWAY_DEPLOYMENT_DRAINING_SECONDS, so
+// Railway's default (0 s) stops the server at once on a redeploy, and the daily walk's "Railway (hosted)" row fails on the
+// difference. Until it is republished (in Railway's template editor, on the workspace's account), every place that sends
+// people to it says so and gives the one variable to set, at template.json's value. Once the walk is green again, drop
+// these notes and this test together.
+test("while the published template is being republished, each place that sends people to it says so and names the draining variable to set, at template.json's value", async () => {
+  const draining = renderValue(service.variables.RAILWAY_DEPLOYMENT_DRAINING_SECONDS.defaultValue, { domain: "x" });
+  assert.equal(draining, "45");
+  for (const path of ["README.md", "deploy/README.md", "docs/SKILL.md"]) {
+    const text = (await read(path)).replace(/\s+/g, " ");
+    assert.match(text, /published template is being republished/i, `${path} says the published template is being republished`);
+    assert.ok(text.includes(`\`RAILWAY_DEPLOYMENT_DRAINING_SECONDS\` to \`${draining}\``), `${path} names the variable and ${draining}`);
+  }
 });

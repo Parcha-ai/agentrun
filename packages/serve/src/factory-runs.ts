@@ -23,24 +23,27 @@ function cursorOf(text: string | null, filter: Filters): Cursor["before"] | unde
   return value.before;
 }
 
+/** `filter.workspace`: a scoped request's (workspace-scope.ts), its runs alone, selected in the query before the page is
+ *  cut, as the plain list selects them (Runs.listed). */
 export async function factoryRunsPage(
   store: Pick<Store, "runs">,
   url: URL,
-  filter: { agent?: string; revision?: string },
+  filter: { agent?: string; revision?: string; workspace?: string },
   summarize: (rows: readonly RunRow[]) => Promise<Record<string, unknown>[]>,
   now: () => number = Date.now,
 ) {
   const scope = url.searchParams.get("scope");
   if (scope !== "active" && scope !== "review") throw new ApiError("bad_request", "scope is active or review");
   if (url.searchParams.has("status") || url.searchParams.has("archived")) throw new ApiError("bad_request", "scope cannot be combined with status or archived: active includes archived executions; review lists terminal reviews separately");
-  for (const [key, value] of Object.entries(filter)) if (value !== undefined && !ID.test(value)) throw new ApiError("bad_request", `${key} is an id`);
+  const { workspace, ...ids } = filter;
+  for (const [key, value] of Object.entries(ids)) if (value !== undefined && !ID.test(value)) throw new ApiError("bad_request", `${key} is an id`);
   const asked = url.searchParams.get("limit");
   const limit = asked === null ? 50 : Number(asked);
   if (asked !== null && (!/^\d+$/.test(asked) || limit < 1 || limit > 100)) throw new ApiError("bad_request", "limit is an integer from 1 to 100");
-  const bound = { ...filter, scope } satisfies Filters;
+  const bound = { ...ids, scope } satisfies Filters;
   const before = cursorOf(url.searchParams.get("cursor"), bound);
   const observed_at = new Date(now()).toISOString();
-  const rows = await store.runs.list({ scope, agentId: filter.agent, revisionId: filter.revision, before, limit: limit + 1 });
+  const rows = await store.runs.list({ scope, agentId: filter.agent, revisionId: filter.revision, ...(workspace !== undefined ? { workspace } : {}), before, limit: limit + 1 });
   const page = rows.slice(0, limit);
   // The page's rows go to the caller together, so what it reads beside them is read once for the page, never per run
   // (server.ts runsPage: each run's kept listing). Failures are surfaced, never hidden as empty.

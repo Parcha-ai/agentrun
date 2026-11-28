@@ -2,6 +2,7 @@
 // the card its owner reads before choosing it. Measured on Cursor 2026.11.13-eacade1 over ACP (harness S0; cursor.ts
 // says what its recipe holds). Written for AgentRun.
 import type { AdapterFacts } from "@parcha/agentrun-kernel";
+import { START_SERVER } from "./calls.js";
 import { ACP_CODES } from "./facts.js";
 import { CURSOR_PIN } from "./pinned-binary.js";
 
@@ -37,6 +38,9 @@ export function cursorCard(limits: CursorLimits = CURSOR_LIMITS): string {
   ].join(" ");
 }
 
+/** A title Cursor gives one of our tools' calls, our server under its start's own name: the tool's name after it. */
+const HOST_TITLE = new RegExp(`^${START_SERVER}(?:-[^:]*)?: (.+)$`);
+
 export const cursorFacts: AdapterFacts = Object.freeze<AdapterFacts>({
   id: "cursor",
   label: "Cursor",
@@ -58,8 +62,9 @@ export const cursorFacts: AdapterFacts = Object.freeze<AdapterFacts>({
   normalizeModel: (model: { provider: string; modelId: string }) => model,
   // Installed by its owner, never on first use: the archive the pin names, its digests checked (serve's harness-archive.ts).
   install: Object.freeze({ npmLine: CURSOR_INSTALL, spec: `cursor@${CURSOR_PIN.version}`, codes: Object.freeze({ install: CURSOR_CODES.notInstalled, pins: ACP_CODES.binaryMismatch }) }),
-  // Its MCP calls are titled `agentrun-<tool>: <tool>` (its permission asks) or `agentrun: <tool>` (its updates).
-  hostName: (given: string) => /^agentrun(?:-[^:]*)?: (.+)$/.exec(given)?.[1]?.trim() ?? given,
+  // Its MCP calls are titled `<server>-<tool>: <tool>` (its permission asks) or `<server>: <tool>` (its updates), our
+  // server under its start's own name (calls.ts mcpServerName): one under any other is another server's, and keeps its words.
+  hostName: (given: string) => HOST_TITLE.exec(given)?.[1]?.trim() ?? given,
   policy: () => {
     throw new Error("acp: Cursor is billed to its owner's plan: its model requests never reach a proxy, so it has no proxy policy");
   },

@@ -7,11 +7,12 @@ import type { Run, TimelinePage } from "@/lib/v2";
 
 // Archive's answer can describe the run as it was before a newer read landed: the page keeps the newer state and takes
 // only archived_at from the answer, then reads the run again.
+import escalated from "@/fixtures/run.escalated.graph.json";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.useRealTimers(); });
 
-const at = (status: Run["status"], archived: boolean): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" },
+const at = (status: Run["status"], archived: boolean): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" }, learning_work: { state: "none", runs: [], ended_at: null, deadline_at: null },
   run_id: "r1", agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", status, state: status === "working" ? "working" : "idle", title: "What is two and two?",
   created_at: "2026-10-30T06:00:00Z", ended_at: status === "working" ? null : "2026-10-30T06:00:03Z", result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: archived ? "2026-11-01T07:00:00Z" : null,
 });
@@ -363,6 +364,73 @@ describe("LiveRun, a take-over while the run is slow to read", () => {
     await act(async () => { slow!(); });
     await settle();
     expect(panel()).toContain("Yours after the agent's step");
+  });
+
+  // The Agent Factory's panel draws this view: its board must read the card again after a take-over or a hand-back, as
+  // after a message, and only once the run's own re-read has landed (the board reads what the run now says).
+  it("tells its holder once the re-read that follows a take-over has landed, not before", async () => {
+    let reads = 0;
+    let slow: (() => void) | undefined;
+    const desktop = { ...at("working", false), computer: { kind: "desktop", provider: "e2b", state: "ready" } } as Run;
+    const v2 = {
+      getRun: () => (++reads === 1 ? Promise.resolve(desktop) : new Promise<Run>((resolve) => { slow = () => resolve(desktop); })),
+      listFiles: async () => ({ run_id: "r1", files: [], complete: true, truncated: false }),
+      listRevisions: async () => ({ revisions: [], next_cursor: null }),
+      getTimeline: () => new Promise<TimelinePage>(() => {}),
+      runComputer: async () => ({ state: "live", kind: "desktop", viewer: "/v2/runs/r1/computer/live/v/AbCdEfGhIjKlMnOpQrStUv#t=SECRET", hold: "agent" }),
+      takeOverComputer: async () => ({ hold: "pending" }),
+      computers: async () => ({ kinds: [] }),
+    };
+    const changed = vi.fn();
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(LiveRun, { v2: v2 as never, runId: "r1", caps: null, agentName: () => "Drive", onChanged: changed })));
+    const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+    await settle();
+    await act(async () => { [...host.querySelectorAll('[role="tab"]')].find((t) => t.textContent === "Screen")!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await settle();
+    await act(async () => { [...host.querySelectorAll("button")].find((b) => (b.textContent ?? "").trim() === "Take over")!.click(); });
+    await settle();
+    // The take-over is answered and the run's re-read is still on its way: nothing to read on the board yet.
+    expect(slow).toBeTypeOf("function");
+    expect(changed).not.toHaveBeenCalled();
+    await act(async () => { slow!(); });
+    await settle();
+    expect(changed).toHaveBeenCalledTimes(1);
+  });
+
+  // The same for every other thing a person does here that only reads the run again: a pause or a resume of a
+  // workflow from its graph, and an archive. Its card on the board says Working, Waiting or nothing by that read.
+  it("tells its holder after a workflow's pause and after an archive, once each one's re-read has landed", async () => {
+    const working = { ...at("working", false), kind: "workflow" } as Run;
+    const graph = { ...escalated.body, run: { ...escalated.body.run, status: "working", paused: false, endedAt: null } };
+    const pauses: string[] = [], archives: string[] = [];
+    const v2 = {
+      getRun: async () => working,
+      listFiles: async () => ({ run_id: "r1", files: [], complete: true, truncated: false }),
+      listRevisions: async () => ({ revisions: [], next_cursor: null }),
+      getTimeline: () => new Promise<TimelinePage>(() => {}),
+      getRunGraph: async () => graph,
+      pauseRun: async (id: string) => { pauses.push(id); return { paused: true, status: "working" }; },
+      archiveRun: async (id: string) => { archives.push(id); return { ...working, archived_at: "2026-11-26T06:00:00Z" }; },
+    };
+    const changed = vi.fn();
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(LiveRun, { v2: v2 as never, runId: "r1", caps: null, agentName: () => "Review", onChanged: changed })));
+    const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+    const button = (label: string) => [...host.querySelectorAll("button")].find((b) => (b.textContent ?? "").trim() === label);
+    await settle();
+    expect(changed).not.toHaveBeenCalled();
+    expect(button("Pause"), "the graph's Pause").toBeTruthy();
+    await act(async () => { button("Pause")!.click(); });
+    await settle();
+    expect(pauses).toEqual(["r1"]);
+    expect(changed).toHaveBeenCalledTimes(1);
+    await act(async () => { button("Archive")!.click(); });
+    await settle();
+    expect(archives).toEqual(["r1"]);
+    expect(changed).toHaveBeenCalledTimes(2);
   });
 });
 

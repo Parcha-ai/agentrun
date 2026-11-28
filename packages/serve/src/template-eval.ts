@@ -51,6 +51,7 @@ import { applyBodyOf, compiled, filledPins, filledSource, onServerName, onServer
 import { INPUTS_DIR } from "./uploads.js";
 import { inputIssues, inputSchemaOf, isObject, type Json, MODEL_REF } from "./validate.js";
 import { RUN_FILE_CUT_MAX } from "./run-files.js";
+import { ON_DATA_WITH_SERVER } from "./template-eval-words.js";
 
 /** What a grader run is told, whatever the rubric: blind, strict, and its verdict as one JSON block. */
 export const GRADER_INSTRUCTIONS = `You grade one run of an AI agent against one rubric. You see the rubric, the task the agent was given, its answer, and the tool calls it made; nothing else, and nothing else matters.
@@ -77,10 +78,14 @@ export const RUN_TIMEOUT_MS = 30 * 60_000;
  *  never by the run's whole timeout. 5 minutes: a busy machine's runner can be slow to make its first claim. */
 export const QUEUE_TIMEOUT_MS = 5 * 60_000;
 export const GRADER_NAME = "Template eval grader";
+/** How often the eval's own server's timeline long poll reads the store while a run's page waits (server.ts
+ *  timelinePollMs; its default is 1 s). Each run and each llm grade is waited on in turn, and its end is served only at
+ *  the next read, so the default's lag (half a second on average) is paid once per run, end to end; a read is one run's
+ *  view and rows from the local store, four a second. */
+export const EVAL_TIMELINE_POLL_MS = 250;
 /** The folder under TMPDIR where local evals keep the one install of each harness's pin they all share. */
 export const EVAL_HARNESSES = "agentrun-eval-harnesses";
-/** An owner's data folder is the eval's own server's to open (EvalOptions.data): a named server keeps its own. */
-export const ON_DATA_WITH_SERVER = "--on-data is the data folder of the eval's own server, and --server names another server: give one of them";
+export { ON_DATA_WITH_SERVER };
 
 const PROMPT_FIELDS = ["description", "runs", "max_cost_usd", "input"];
 const CASE_FIELDS = ["parameters", "grants", "mcp", "web", "monid", "learning", "now", "email", "calendar", "feed", "previous", "files"];
@@ -1262,9 +1267,12 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** How long the run read that asks whether a runner holds a queued run may take. */
 export const CLAIM_READ_TIMEOUT_MS = 10_000;
-/** The least time between two of those reads of one run. */
+/** The most time between two of those reads of one run while its page says nothing changed: a server whose queued page
+ *  changes when a claim lapses or comes back (run-reads-over-store.ts) ends the page's wait for it, and one whose page
+ *  doesn't (an older server) is read again on this cadence. */
 export const CLAIM_READ_EVERY_MS = 5_000;
-/** How long a timeline page read asks the server to wait for a new row (its wait_ms). */
+/** How long a timeline page read asks the server to wait for a new row (its wait_ms) at most: less when the run's next
+ *  claim read falls due sooner, so the wait never runs past it. */
 const PAGE_WAIT_MS = 5_000;
 /** How long that read may take: its wait, and 10 s for the answer to arrive. */
 export const PAGE_READ_TIMEOUT_MS = PAGE_WAIT_MS + 10_000;
@@ -1307,14 +1315,27 @@ export async function waitRun(api: Api, runId: string, deadline: number, signal?
   const started = Date.now();
   // A run nobody takes stays queued: given up on once it has gone queueTimeoutMs with no runner holding it, by name, never
   // left to the whole deadline. A run's view reads queued until its first rows show, held or not (a slow start on a busy
-  // machine), so a queued page past the bound asks the run read whether a runner holds it now. Once one has, every queued
-  // page asks (at most one read in CLAIM_READ_EVERY_MS): a claim can lapse for a moment on a stalled machine (not renewed
-  // in time, then claimed again), so one read that finds none never ends the wait. The run is cancelled only when reads
-  // found no runner holding it from the first such read to one queueTimeoutMs later, none between them finding one. A read
-  // that doesn't answer (failed, stalled past its bound, or stopped) says neither.
+  // machine), so a queued page past the bound asks the run read whether a runner holds it now. Once one has, queued pages
+  // go on asking: a claim can lapse for a moment on a stalled machine (not renewed in time, then claimed again), so one
+  // read that finds none never ends the wait. The run is cancelled only when reads found no runner holding it from the
+  // first such read to one queueTimeoutMs later, none between them finding one. A read that doesn't answer (failed,
+  // stalled past its bound, or stopped) says neither.
+  //
+  // When it asks (readDue): just past the bound for its first read; then on a queued page that changed (a server's page
+  // changes when a claim lapses or comes back), else CLAIM_READ_EVERY_MS after the last read, or sooner, when a read that
+  // found none would have stood for queueTimeoutMs: the read that cancels the run comes as its bound ends, never up to
+  // a cadence later. A page read never waits past the next read due, so no fixed wait stands between the eval and it.
   let unheldSince: number | undefined = started;
   let everHeld = false;
   let askedAt = -Infinity;
+  // The latest claim read's answer: false (none held then) brings the next read to the end of the bound it counts toward.
+  let lastHeld: boolean | undefined;
+  const readDue = (): number => {
+    if (askedAt === -Infinity) return everHeld ? -Infinity : started + queueTimeoutMs + 1;
+    const next = askedAt + CLAIM_READ_EVERY_MS;
+    return lastHeld === false && unheldSince !== undefined ? Math.min(next, unheldSince + queueTimeoutMs) : next;
+  };
+  let queued = false;
   let rows: Json[] = [];
   let state: unknown;
   for (;;) {
@@ -1326,9 +1347,11 @@ export async function waitRun(api: Api, runId: string, deadline: number, signal?
     // CALLS_PAGE_ROWS rows a page, the most a calls=whole page holds (an older server's default is 500). A page its bound
     // cut (stalled past PAGE_READ_TIMEOUT_MS, run to the deadline, or stopped) is no page: it is asked again, unless the
     // stop or the deadline below ends the wait.
+    // A queued run's page waits no longer than its next claim read is due (readDue): 0 when it is due now.
+    const waitMs: number = queued ? Math.max(0, Math.min(PAGE_WAIT_MS, Math.ceil(readDue() - Date.now()))) : PAGE_WAIT_MS;
     const read = bounded(deadline, PAGE_READ_TIMEOUT_MS, signal);
     const answered = read.send
-      ? await api("GET", `/runs/${runId}/timeline?after=${after}&wait_ms=${PAGE_WAIT_MS}&calls=whole&limit=${CALLS_PAGE_ROWS}`, undefined, {}, { signal: read.signal }).catch((error: unknown) => {
+      ? await api("GET", `/runs/${runId}/timeline?after=${after}&wait_ms=${waitMs}&calls=whole&limit=${CALLS_PAGE_ROWS}`, undefined, {}, { signal: read.signal }).catch((error: unknown) => {
           if (read.signal.aborted) return undefined;
           throw error;
         })
@@ -1353,9 +1376,11 @@ export async function waitRun(api: Api, runId: string, deadline: number, signal?
         everHeld = true;
         unheldSince = undefined;
       }
-      if (status === "queued" && (everHeld || Date.now() - started > queueTimeoutMs) && Date.now() - askedAt >= CLAIM_READ_EVERY_MS) {
+      queued = status === "queued";
+      if (queued && (everHeld || Date.now() - started > queueTimeoutMs) && (page.unchanged !== true || Date.now() >= readDue())) {
         askedAt = Date.now();
         const held = await heldNow(api, runId, deadline, signal);
+        lastHeld = held === "deadline" ? undefined : held;
         if (held === "deadline") timedOut = true;
         else if (held === true) {
           everHeld = true;
@@ -1663,7 +1688,9 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     // A token of its own on a scratch folder. On the owner's folder none is given: a given token makes the server remove
     // the folder's .token (server.ts), the owner's saved API token, so the eval's server reads the one the folder keeps,
     // and a .token it had to make there (the folder had none) goes when it closes, the folder as it was.
-    const serve = await startServe({ mcpLoopback: true, mcpStandIns: true, data: data!, port: 0, ...(options.data === undefined ? { token: randomBytes(24).toString("base64url") } : {}), templates: join(scratch!, "templates"), drainTimeout: "5s", harnessInstall, feedsAt: (url: string) => feedRoutes.route?.(url) ?? null, ...(options.serve ?? {}), ...(clock ? { triggerClock: clock } : {}) }).catch((error: unknown) => {
+    // Its timeline long poll reads the store every EVAL_TIMELINE_POLL_MS, not the server's default second: the eval is its
+    // one reader and goes on only once a run's end is served, one run or grade at a time.
+    const serve = await startServe({ mcpLoopback: true, mcpStandIns: true, data: data!, port: 0, ...(options.data === undefined ? { token: randomBytes(24).toString("base64url") } : {}), templates: join(scratch!, "templates"), drainTimeout: "5s", timelinePollMs: EVAL_TIMELINE_POLL_MS, harnessInstall, feedsAt: (url: string) => feedRoutes.route?.(url) ?? null, ...(options.serve ?? {}), ...(clock ? { triggerClock: clock } : {}) }).catch((error: unknown) => {
       removeTree(scratch!);
       throw error;
     });
@@ -2171,8 +2198,9 @@ async function sameAsLocal(ctx: Ctx, one: EvalCase, agent: Json, used: Readonly<
   }
   const served = ctx.served;
   const view = JSON.parse(JSON.stringify(packageView(pkg))) as Json;
-  // computer_here is the server's answer to the package's computer list, never the package: not compared.
-  const differs = [...new Set([...Object.keys(view), ...Object.keys(served)])].filter((key) => key !== "computer_here" && !same(view[key], served[key]));
+  // computer_here and model_tiers_here are the server's answers to the package's computer list and tiers, never the
+  // package: not compared.
+  const differs = [...new Set([...Object.keys(view), ...Object.keys(served)])].filter((key) => key !== "computer_here" && key !== "model_tiers_here" && !same(view[key], served[key]));
   const { parameters } = applyBodyOf(pkg, { parameters: one.parameters, grants: one.grants });
   const local = compiled(applied, parameters, { mcp: [], defaultTools: [], grants: [] }).agent;
   const sha = (text: string) => createHash("sha256").update(text).digest("hex");

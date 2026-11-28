@@ -1,18 +1,18 @@
-// Each Wrapped card as a CardBody: what it says, from the year the server counted (GET /v2/wrapped) and nothing else.
-// A card is drawn when every wait of its is met (SATISFIED_WAITS) and the year has sessions; a card with no body here
-// is never drawn, whatever it waits on. No number is one the year does not give: a price not known is said as unknown,
-// never $0, and requests with no known price are counted beside the price.
+// Each Wrapped card as a CardBody: what it says, from the year the server counted (GET /v2/wrapped) and nothing else. A
+// card is drawn when every wait of its is met (SATISFIED_WAITS) and the year has sessions (or the store keeps it); a
+// card with no body here is never drawn, whatever it waits on. No number is one the year does not give: a price not
+// known is said as unknown, never $0, and requests with no known price are counted beside the price.
 import { harnessLabel } from "@/lib/agentForm";
-import { type CardBar, type CardBody, type CardChart, chartCapacity } from "@/lib/cardImage";
+import { type CardBar, type CardBody, type CardChart, chartCapacity, MAX_ROWS } from "@/lib/cardImage";
 import { compact, dollars } from "@/lib/format";
 import type { Wrapped } from "@/lib/v2";
 import type { CardWait, WrappedCard } from "@/lib/wrappedCards";
 
-/** The waits met in this build: the card renderer and the cache analyzer (the year's `cache`, from the runs imported
- *  here). The leak scan's counts-only mode and the launch benchmark have not landed, and no card's derived rules can be
- *  computed from the year alone (the agent type's need subagent shares and parallelism; the laptop's need last month's
- *  cost and an electricity estimate). */
-export const SATISFIED_WAITS: ReadonlySet<CardWait> = new Set<CardWait>(["race-card-renderer", "cache-analyzer"]);
+/** The waits met in this build: the card renderer, the cache analyzer (the year's `cache`, from the runs imported here)
+ *  and the import's key count (the year's `secrets`). `opt-in` is met only on the page, when the person turns the card
+ *  on. The launch benchmark has not landed, and no card's derived rules can be computed from the year alone (the agent
+ *  type's need subagent shares and parallelism; the laptop's need last month's cost and an electricity estimate). */
+export const SATISFIED_WAITS: ReadonlySet<CardWait> = new Set<CardWait>(["race-card-renderer", "cache-analyzer", "secret-count"]);
 
 /** A card's body from the year, or null to draw nothing. Reads only the fields its card's `reads` names. */
 export type BodyOf = (data: Wrapped) => CardBody | null;
@@ -45,13 +45,26 @@ function busiest(counts: readonly number[]): number | undefined {
   return best;
 }
 
-/** The year's list price: unknown when no request was priced, and the requests with no known price as a row of their own. */
-function priceRows(data: Pick<Wrapped, "cost_usd" | "unpriced_requests" | "requests">): { label: string; value: string }[] {
+/** The year's list price: unknown when no request was priced, and the requests with no known price as a row of their own:
+ *  those whose tokens were recorded (a request with none has no price either, and tokenRows counts it). */
+function priceRows(data: Pick<Wrapped, "cost_usd" | "unpriced_requests" | "requests" | "tokens_unknown_requests">): { label: string; value: string }[] {
   const none = data.unpriced_requests >= data.requests;
   const rows = [{ label: "At list price", value: none ? "Unknown" : usd(data.cost_usd) }];
-  if (data.unpriced_requests > 0) rows.push({ label: "No known price", value: plural(data.unpriced_requests, "request", "requests") });
+  const unpriced = data.unpriced_requests - data.tokens_unknown_requests;
+  if (unpriced > 0) rows.push({ label: "No known price", value: plural(unpriced, "request", "requests") });
   return rows;
 }
+
+/** The year's tokens as a card's figure: unknown, never 0, when no request's tokens were recorded (Cursor keeps none). */
+const tokenFigure = (data: Pick<Wrapped, "tokens" | "requests" | "tokens_unknown_requests">) =>
+  ({ value: data.requests > 0 && data.tokens_unknown_requests >= data.requests ? "Unknown" : compact(allTokens(data.tokens)), unit: "tokens" });
+/** The requests whose tokens were not recorded, as a row, when there are any. */
+const tokenRows = (data: Pick<Wrapped, "tokens_unknown_requests">): { label: string; value: string }[] =>
+  data.tokens_unknown_requests > 0 ? [{ label: "Tokens not recorded", value: plural(data.tokens_unknown_requests, "request", "requests") }] : [];
+
+/** A cover's or summary's rows within what the card draws: a year with both requests of unknown tokens and requests of no
+ *  known price has a row too many, and leaves out its days at work, which the hours card shows. */
+const fitRows = (rows: { label: string; value: string }[]) => (rows.length > MAX_ROWS ? rows.filter((r) => r.label !== "Days at work") : rows);
 
 /** The foot line of a year read short: as the page says it. */
 const unreadNote = (data: Pick<Wrapped, "unread_files">): { footnote?: string } =>
@@ -87,14 +100,15 @@ function shareBars(shares: readonly Share[], capacity: number): CardBar[] {
 const cover: BodyOf = (data) => ({
   eyebrow: eyebrow(data),
   title: `Your ${data.year} in agents`,
-  figure: { value: compact(allTokens(data.tokens)), unit: "tokens" },
-  rows: [
+  figure: tokenFigure(data),
+  rows: fitRows([
     { label: "Sessions", value: count(data.sessions) },
     { label: "Prompts", value: count(data.turns) },
     { label: "Model requests", value: count(data.requests) },
     { label: "Days at work", value: count(data.days.length) },
+    ...tokenRows(data),
     ...priceRows(data),
-  ],
+  ]),
   ...unreadNote(data),
 });
 
@@ -141,14 +155,15 @@ const summary: BodyOf = (data) => {
   return {
     eyebrow: eyebrow(data),
     title: `${data.year} in agents`,
-    figure: { value: compact(allTokens(data.tokens)), unit: "tokens" },
-    rows: [
+    figure: tokenFigure(data),
+    rows: fitRows([
+      ...tokenRows(data),
       ...priceRows(data),
       { label: "Days at work", value: count(data.days.length) },
       ...(harness ? [{ label: "Top harness", value: harness }] : []),
       ...(model ? [{ label: "Top model", value: model }] : []),
       ...(hour === undefined ? [] : [{ label: "Busiest hour", value: hourWords(hour) }]),
-    ],
+    ]),
     ...unreadNote(data),
   };
 };
@@ -190,12 +205,35 @@ const cache: BodyOf = (data) => {
   };
 };
 
-/** The cards with a body, by id. The others (laptop, leak, type, launch) need what the year does not hold. */
-export const CARD_BODIES: Readonly<Record<string, BodyOf>> = { cover, split, hours, cache, summary };
+/** The year's leak receipt: the keys and tokens the import cut out of the sessions it counted, how many sessions held
+ *  one and how many were counted. Counts alone, never a key; none drawn with no run counted. Off the page until the person
+ *  turns it on (its `opt-in` wait). */
+const leak: BodyOf = (data) => {
+  const year = data.secrets;
+  if (!year) return null;
+  return {
+    eyebrow: eyebrow(data),
+    title: "Your leak receipt",
+    figure: { value: count(year.removed), unit: year.removed === 1 ? "key or token cut" : "keys and tokens cut" },
+    rows: [
+      { label: "Sessions with a key", value: count(year.runs_holding) },
+      { label: "Sessions checked", value: count(year.runs) },
+    ],
+    footnote: `From the ${plural(year.runs, "run", "runs")} counted on import; counts only, no key shown.`,
+  };
+};
 
-/** `card`'s body from `data`: none for an empty year (no sessions or no requests) or a card with no body in `bodies`. */
+/** The cards with a body, by id. The others (laptop, type, launch) need what the year does not hold. */
+export const CARD_BODIES: Readonly<Record<string, BodyOf>> = { cover, split, hours, cache, leak, summary };
+
+/** The cards drawn from what the store keeps of the year's imported runs (its cache, the keys their import cut), not from
+ *  the session files: a year whose files are gone keeps them, while the store does. */
+const STORED: ReadonlySet<string> = new Set(["cache", "leak"]);
+
+/** `card`'s body from `data`: none for an empty year (no sessions or no requests) unless the store keeps it (STORED),
+ *  or a card with no body in `bodies`. */
 export function toBody(card: WrappedCard, data: Wrapped, bodies: Readonly<Record<string, BodyOf>> = CARD_BODIES): CardBody | null {
-  if (data.sessions === 0 || data.requests === 0) return null;
+  if ((data.sessions === 0 || data.requests === 0) && !STORED.has(card.id)) return null;
   return bodies[card.id]?.(data) ?? null;
 }
 

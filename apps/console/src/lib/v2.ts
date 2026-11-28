@@ -21,8 +21,8 @@ export type ApiError = Omit<components["ErrorBody"], "code"> & { code: component
 export type Permission = AgentTool["permission"];
 /** One tool's setting, read by any settings key: a provider where the tool has a choice (web_search, web_fetch, browser),
  *  and a permission; on an MCP server's wildcard in the server's settings, `allow_reads` (its read-only tools run with no
- *  one asked). */
-export type ToolSetting = { provider?: NonNullable<Body<"putToolSettings">["web_search" | "web_fetch" | "browser"]>["provider"]; permission?: Permission; pin?: ToolPin; pin_broken?: true; allow_reads?: true };
+ *  one asked); on web_search or web_fetch in an agent's own, `jev: "off"` (Jev off for both its web tools). */
+export type ToolSetting = { provider?: NonNullable<Body<"putToolSettings">["web_search" | "web_fetch" | "browser"]>["provider"]; permission?: Permission; pin?: ToolPin; pin_broken?: true; allow_reads?: true; jev?: "off" };
 /** A tool setting that can carry a pin (an MCP tool's): the server's read gives `pin_broken` for one that doesn't read. */
 type PinnedSetting = Extract<NonNullable<Body<"putToolSettings">[string]>, { pin?: unknown }>;
 /** A tool's pin: each argument fixed to one value, or one of a list (null: left out). A call outside it is refused. */
@@ -278,8 +278,9 @@ export type SuggestionDetail = Answer<"getSuggestion">;
 export type SuggestionReadiness = SuggestionDetail["github"];
 /** POST /v2/suggestions/{id}/create's answer: the suggestion with its agent, branch and pull request. */
 export type SuggestionCreated = Answer<"createSuggestedAgent">;
-/** POST /v2/suggestions/scans's answer: the scan's run. */
-export type ScanStarted = Answer<"scanForSuggestions">;
+/** POST /v2/suggestions/scans's answer to a scan sent with `repo` alone, as the console sends it: the scan's run. A host's
+ *  reservation and its release answer without one. */
+export type ScanStarted = Extract<Answer<"scanForSuggestions">, { run_id: string }>;
 
 /** PATCH /v2/runs/{id} {max_cost_usd}'s answer: the cap now. */
 export type RaiseAnswer = Answer<"raiseRunCap">;

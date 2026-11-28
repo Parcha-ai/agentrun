@@ -14,15 +14,14 @@ import { forModel } from "./result.js";
 import { isWorkspaceError, type Stat, type Workspace, workspaceErrorWords } from "./workspace/index.js";
 import { heldAt, saveOnce } from "./save-once.js";
 import { type Slots as SaveSlots, slots as saveSlots } from "./slots.js";
+import { MEDIA_DIR, savePath, WEB_SAVE_TOOL } from "./web-save-path.js";
 
-export const WEB_SAVE_TOOL = "web_save";
+export { MEDIA_DIR, savePath, WEB_SAVE_TOOL } from "./web-save-path.js";
 /** The most bytes a saved file may have. */
 export const SAVE_MAX_BYTES = 200 * 1024 * 1024;
 /** One deadline for a whole download: a 200 MiB file at about 350 KB/s. A page's 30 s (@parcha/agentrun-web page.ts
  *  TIMEOUT_MS) would cut a large file on any link under about 7 MB/s. */
 export const SAVE_TIMEOUT_MS = 600_000;
-/** The folder a bare name is saved in. */
-export const MEDIA_DIR = "media";
 /** The longest path web_save takes, and the most characters of a declared type and of a failure's words an answer
  *  carries: with the URL's URL_MAX, they bound every answer (host-bounds.test.mjs). */
 export const PATH_MAX_CHARS = 1_024;
@@ -118,8 +117,6 @@ export function typeFor(bytes: Uint8Array, declared: string, path: string): { ty
 /** A failure's words, at most WORDS_MAX_CHARS. */
 const wordsOf = (error: unknown): string => clip(String((error as Error)?.message ?? error), WORDS_MAX_CHARS);
 
-/** Where `path` is saved: as given, or under media/ when it names no folder. */
-export const savePath = (path: string): string => (path.includes("/") ? path : `${MEDIA_DIR}/${path}`);
 
 /** `args.url` downloaded and saved at `args.path` in `work`: what was saved, or why nothing was. Never throws. */
 export async function webSave(args: unknown, work: Workspace, options: SaveOptions = {}): Promise<Saved | Unsaved> {

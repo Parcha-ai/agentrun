@@ -49,6 +49,24 @@ describe("ApprovalCard", () => {
     expect(mount().host.textContent).not.toContain("Asks because");
   });
 
+  it("an ACP agent's call reads as what it does (the server's summary, newlines kept) above the agent's own arguments, as the server masked them", () => {
+    const acp: PendingApproval = { kind: "approval", id: "ap_acp", tool: "acp_execute", call_id: "call_7", args_preview: "{\"CommandLine\":\"curl -H 'Authorization: Bearer [redacted]' https://example.test/a\\nls -la\",\"WaitMsBeforeAsync\":500}", summary: "curl -H 'Authorization: Bearer [redacted]' https://example.test/a\nls -la", requested_at: "2026-11-04T10:00:00.000Z" };
+    for (const compact of [false, true]) {
+      const { host } = mount({ pending: acp, compact });
+      const does = host.querySelector("[aria-label='acp_execute does']");
+      expect(does?.textContent, compact ? "on the race page and the strip" : "on the run page").toBe("curl -H 'Authorization: Bearer [redacted]' https://example.test/a\nls -la");
+      const args = host.querySelector("[aria-label='acp_execute arguments']")!;
+      expect(does!.compareDocumentPosition(args) & Node.DOCUMENT_POSITION_FOLLOWING, "above the arguments").toBeTruthy();
+      expect(args.textContent).toBe("CommandLine: curl -H 'Authorization: Bearer [redacted]' https://example.test/a\nls -la\nWaitMsBeforeAsync: 500");
+      expect(host.textContent).not.toMatch(/toolCallId|"title"|"kind"/);
+      act(() => root?.unmount()); document.body.innerHTML = "";
+    }
+    // A call with no arguments of the agent's own (Cursor's: its title says what it runs) shows no empty block.
+    const { host } = mount({ pending: { ...acp, args_preview: "{}", summary: "python3 fib.py" } });
+    expect(host.querySelector("[aria-label='acp_execute does']")?.textContent).toBe("python3 fib.py");
+    expect(host.querySelector("[aria-label='acp_execute arguments']")).toBeNull();
+  });
+
   it("names the tool, shows its arguments in a block of their own that scrolls, and what a call costs", () => {
     const { host } = mount();
     expect(host.querySelector("[aria-label='Approval required']")).toBeTruthy();

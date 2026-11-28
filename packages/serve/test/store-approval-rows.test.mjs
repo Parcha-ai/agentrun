@@ -146,6 +146,41 @@ test("a call still waiting reads not run yet, then waiting for your approval, an
   assert.equal(rows.some((row) => /^AgentRun: /.test(row.summary ?? "")), false);
 });
 
+test("an ACP agent's own call reads as its command, newlines kept, or its title: never the gate's JSON, its toolCallId or the agent's own fields", async (t) => {
+  // run-adapters-acp's permissionGateCall: acp_<kind>, { title, kind, input, toolCallId }. Antigravity's input names its
+  // command (CommandLine) beside its own bookkeeping; Cursor's carries none, so its title says what it runs.
+  const command = "cat << 'EOF' > fib.py\ndef fib(n):\n    return n\nEOF";
+  const agy = { id: "c1", tool: "acp_execute", args: { title: "Write fib.py", kind: "execute", input: { CommandLine: command, WaitMsBeforeAsync: 500, toolSummary: "write the file" }, toolCallId: "toolu_01abcdef" } };
+  const cursor = { id: "c2", tool: "acp_execute", args: { title: "python3 fib.py", kind: "execute", input: null, toolCallId: "toolu_02abcdef" }, answer: { approved: true }, result: { text: "6765", isError: false } };
+  const store = await runWith(t, [cursor, agy], { ended: false });
+  const rows = await timelineOverStore(store, "run-1", deps);
+  const waiting = readFor(rows, "c1").after[0];
+  assert.equal(waiting?.summary, `Waiting for your approval: acp_execute ${command}`);
+  assert.equal(waiting?.text, command, "the row's text is the command, its newlines kept");
+  const asked = readFor(rows, "c2").after[0];
+  assert.equal(asked?.summary, "Asked your approval: acp_execute python3 fib.py");
+  assert.equal(asked?.text, "python3 fib.py");
+  for (const row of [waiting, asked]) assert.doesNotMatch(`${row?.summary}\n${row?.text}`, /toolCallId|toolu_|WaitMsBeforeAsync|toolSummary|CommandLine|\\n|[{}"]/, "no JSON and none of the agent's own fields");
+});
+
+test("an ACP agent's call that names no command and no title reads as the agent's own input, never the gate's wrapper", async (t) => {
+  const edit = { id: "c1", tool: "acp_edit", args: { kind: "edit", input: { path: "notes.txt", content: `token ${HELD}` }, toolCallId: "toolu_03abcdef" } };
+  const store = await runWith(t, [edit], { ended: false });
+  const rows = await timelineOverStore(store, "run-1", deps);
+  const waiting = readFor(rows, "c1").after[0];
+  assert.equal(waiting?.summary, 'Waiting for your approval: acp_edit {"path":"notes.txt","content":"token [redacted]"}');
+  assert.equal(waiting?.tool_input_preview, '{"path":"notes.txt","content":"token [redacted]"}');
+  assert.doesNotMatch(`${waiting?.summary}\n${waiting?.text}\n${waiting?.tool_input_preview}`, /toolCallId|toolu_|"kind"|"input"/);
+});
+
+test("an ACP agent's call to another MCP server reads with that server's name first on its approval row", async (t) => {
+  const other = { id: "c1", tool: "acp_other", args: { title: "agentrun-look_up: look_up", kind: "other", input: {}, toolCallId: "toolu_04abcdef", server: "other-mcp" } };
+  const store = await runWith(t, [other], { ended: false });
+  const rows = await timelineOverStore(store, "run-1", deps);
+  const waiting = readFor(rows, "c1").after[0];
+  assert.equal(waiting?.summary, 'Waiting for your approval: acp_other Calls MCP server "other-mcp": agentrun-look_up: look_up');
+});
+
 test("two approvals in one run each read in order, and reading the rows twice gives the same rows", async (t) => {
   const store = await runWith(t, [fetchCall("c1", { approved: true }, { text: "one", isError: false }), fetchCall("c2", { approved: false, note: "not that page twice" }, { text: "refused", isError: true })]);
   const rows = await timelineOverStore(store, "run-1", deps);

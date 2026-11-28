@@ -76,6 +76,28 @@ export type LaunchedComputer = {
   release(): Promise<void>;
 };
 
+/** What the run's browser holds as its claim lets the run go: the ids of every session its custody held (still holds, or
+ *  released itself, which a vendor may list as running a moment longer), and the tags of its sessions whose id it does
+ *  not know (a create whose answer was lost), any session of which it may hold. */
+export type BrowserHolds = { readonly ids: ReadonlySet<string>; readonly tags: ReadonlySet<string> };
+
+/** The sessions released that a create race left running and nothing held (ClaimBrowser.releaseUnheld, or a release by a
+ *  session's tag that ended others beside it): each with its tag's label (null where it carries none) and when its vendor
+ *  made it (an ISO time; null where the vendor does not say); each release that failed, in words; and each session left
+ *  to a create of this claim still in flight, by id. */
+/** A released session as a host books it (UnheldSessions' `released`). */
+export type UnheldSession = UnheldSessions["released"][number];
+
+/** What ClaimBrowser.releaseUnheld is called with beside the holds: its abort, and what the host records around each
+ *  release (the janitor's UnheldHooks, each session as UnheldSession). */
+export type UnheldOptions = { readonly signal?: AbortSignal; readonly releasing?: (session: UnheldSession) => Promise<void>; readonly released?: (session: UnheldSession) => Promise<void> };
+
+export type UnheldSessions = {
+  readonly released: ReadonlyArray<{ readonly id: string; readonly tag: string | null; readonly createdAt: string | null }>;
+  readonly failed: readonly string[];
+  readonly creating: readonly string[];
+};
+
 /** A browser computer's provider as the run's browser tool opens its sessions through it: each session one computer of
  *  the provider's, made under the run's labels and the tool's tag (so a create whose answer was lost is found again),
  *  its CDP URL read through the provider's connect at each attach (a secret: it goes only to the driver), and released
@@ -102,10 +124,28 @@ export type ClaimBrowser = {
    *  view's, computer-record.ts browserWatch) until the caller stops it at the session's release, or the claim's release
    *  stops it. Absent: nothing is recorded. */
   readonly record?: (id: string, watch: RecordWatch) => Recording;
+  /** The run's sessions of a lower claim epoch that this claim's sweep released as it opened (the janitor's releaseOlder:
+   *  releaseOlderBrowsers, or a browser computer's releaseOlderClaims), by id, each with when that sweep answered (an ISO
+   *  time): such a session ran until then at the latest. Absent where the sweep released none. */
+  readonly sweptOlder?: ReadonlyMap<string, string>;
   /** The provider's own record of session `id` (BrowserComputerProvider.sessionUsage), read once as it is let go: when it
    *  says the session started and ended, and its proxy bytes, each null where it does not say; undefined for a session it
    *  does not know. Absent where the provider keeps no such record. A failed read throws. */
   readonly usage?: (id: string, signal?: AbortSignal) => Promise<BrowserSessionUsage | undefined>;
+  /** When the claim lets the run go: releases every session made under the run's labels (its run and this claim's epoch)
+   *  that `holds` does not keep (the janitor's releaseUnheld): a create whose reply was lost can leave one nobody holds,
+   *  which a vendor that ends its sessions itself runs to its lifetime otherwise. A session another run's labels, another
+   *  epoch's or no readable epoch carry is never touched. Each released one, with its tag's label and when its vendor made
+   *  it (null where it does not say), and each release that failed, in words. `holds` is read once the vendor's list has
+   *  answered, so a session listed was made after its custody's record (pi-browser's create waits for that record): the
+   *  record holds it. A session whose create this claim still has in flight is held too, and named (creating). A list
+   *  that fails throws its words. Absent where the run's labels name no run and epoch (a browser no claim opened).
+   *  `releasing` runs before each release is sent, with the session as `released` names it (the janitor's UnheldHooks: one
+   *  that throws holds that session back, named in `failed`); `released` once its release answered, before the next is
+   *  sent. */
+  readonly releaseUnheld?: (holds: () => BrowserHolds | Promise<BrowserHolds>, options?: UnheldOptions) => Promise<UnheldSessions>;
+  /** When the vendor's listing said session `id` was made (an ISO time), for one a find listed; null otherwise. */
+  readonly madeAt?: (id: string) => string | null;
   /** The files a session downloaded, kept by the provider: where its features declare downloads. */
   readonly downloads?: {
     list(id: string): Promise<BrowserFile[]>;
@@ -164,6 +204,8 @@ type HereFields = {
   readonly prepareImage?: boolean;
   /** Its descriptor's imageEnv has a value here: the operator names the image every computer of it starts from. */
   readonly imageNamed?: true;
+  /** That image, where the reader had the value (registryHere): a setting that names it selects as one that names none. */
+  readonly namedImage?: string;
 };
 
 /** `entry` as this server has it, by `set` (whether a key, or a setting of this server, has a value here): with the
@@ -197,16 +239,30 @@ const hereNames = (entry: HereFields): string[] => [...Object.values(entry.mount
 
 /** `registry` with each provider as this server has it (entryHere), reading only the names an entry's mountsWith or
  *  imageEnv names, by `valueOf` (key-meta.ts keyReader: the environment's value, else the saved key), and the options
- *  its server settings give, by `optionsOf` (settingOptions; absent: none). A value of whitespace alone is none. */
+ *  its server settings give, by `optionsOf` (settingOptions; absent: none), and the image its imageEnv names here, trimmed
+ *  (namedImage: E2B's AGENTRUN_E2B_TEMPLATE). A value of whitespace alone is none. */
 export async function registryHere<Registry extends { readonly PROVIDERS: readonly ProviderEntry[] }>(registry: Registry, valueOf: (name: string) => Promise<string | undefined>, optionsOf?: (provider: string) => Readonly<Record<string, unknown>>): Promise<Registry> {
   const names = [...new Set(registry.PROVIDERS.flatMap(hereNames))];
-  const set = new Set((await Promise.all(names.map(async (name) => ((await valueOf(name))?.trim() ? name : "")))).filter((name) => name !== ""));
-  return { ...registry, PROVIDERS: registry.PROVIDERS.map((entry) => entryHere(entry, (name) => set.has(name), optionsOf?.(entry.id))) };
+  const values = new Map((await Promise.all(names.map(async (name) => [name, (await valueOf(name))?.trim() ?? ""] as const))).filter(([, value]) => value !== ""));
+  return {
+    ...registry,
+    PROVIDERS: registry.PROVIDERS.map((entry) => {
+      const here = entryHere(entry, (name) => values.has(name), optionsOf?.(entry.id));
+      const image = entry.imageEnv === undefined ? undefined : values.get(entry.imageEnv);
+      return image === undefined ? here : { ...here, namedImage: image };
+    }),
+  };
 }
 
 /** Whether a computer of `entry` that mounts the owner's Archil disk has Archil's image in the owner's vendor account:
  *  its provider prepares it (prepareImage), or the operator names it here (imageNamed, entryHere). */
 const archilImageHere = (entry: HereFields): boolean => entry.prepareImage === true || entry.imageNamed === true;
+
+/** The image a setting's configuration is selected by on `entry` (configurationOf): none where the setting names the
+ *  image the operator names here (namedImage), which every computer of the provider starts from; else the setting's. */
+const selectingImage = (entry: HereFields, image: string | undefined): string | undefined => (image !== undefined && image === entry.namedImage ? undefined : image);
+/** The operator's image here (namedImage), as a list of none or one. */
+const namedImages = (entry: HereFields): string[] => (entry.namedImage === undefined ? [] : [entry.namedImage]);
 
 /** The kind of the run's folder a sandbox or a desktop of `entry` with files and exec holds in `mode`, or undefined for
  *  none. Mode 1: a bind of this machine. Mode 2: an Archil mount where the provider takes one and Archil's image is here
@@ -348,7 +404,7 @@ function selectedFor(setting: ComputerSetting, registry: Pick<KindRegistry, "SET
   const kind = setting.kind as ComputerSettingKind;
   if (kind === "none" || !Object.hasOwn(registry.SETTING_KINDS, kind)) return undefined;
   const entry = registry.PROVIDERS.find((one) => one.id === setting.provider);
-  const configuration = entry && configurationOf(servingOf(registry, entry, kind), setting.image, entry.defaultImage?.[kind]);
+  const configuration = entry && configurationOf(servingOf(registry, entry, kind), selectingImage(entry, setting.image), entry.defaultImage?.[kind]);
   return entry && configuration ? { kind, entry, configuration } : undefined;
 }
 
@@ -455,10 +511,10 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
     return { refused: `${entry.label} gives no ${kind} computer${why.length > 0 ? `: ${why.join("; ")}` : ""}. Pick ${pick}` };
   }
   // The configuration the setting's image selects: one the provider does not offer for the kind is refused, naming those
-  // it does.
-  const configuration = configurationOf(serving, setting.image, entry.defaultImage?.[kind]);
+  // it does, the operator's image here first (namedImage: one that names it selects as one that names none).
+  const configuration = configurationOf(serving, selectingImage(entry, setting.image), entry.defaultImage?.[kind]);
   if (!configuration) {
-    const images = imagesOf(serving, entry.defaultImage?.[kind]);
+    const images = [...namedImages(entry), ...imagesOf(serving, entry.defaultImage?.[kind])];
     const offers = images.length === 0 ? `offers no ${kind} image to choose: remove the image` : `offers the ${kind} image${images.length === 1 ? "" : "s"} ${images.join(", ")}: pick one`;
     // A configuration its descriptor parks (built, not offered yet): refused saying so, never as an unknown image.
     const parked = entry.parked?.find((one) => one.image === setting.image);

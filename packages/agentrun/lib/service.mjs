@@ -19,15 +19,19 @@ export const INSTALL_COMMAND = "curl -fsSL https://agentrun.ai/install | sh";
 /** How long a start waits for the server to answer /health before it says it did not. */
 export const HEALTH_WAIT_MS = 90_000;
 /** How long `agentrun stop` waits for the background AgentRun to end after its SIGTERM before it sends a SIGKILL: past the
- *  server's own drain (--drain-timeout, 30 s by default), so a busy run gets its turn and the server cleans up. */
-export const STOP_WAIT_MS = 45_000;
+ *  close of the runner beside the server (55 s with its 30 s --drain-timeout: the drain, then the loops' stop), so a busy
+ *  run gets its turn and its end and release are written. */
+export const STOP_WAIT_MS = 60_000;
 const INSTALLER = fileURLToPath(new URL("../install.sh", import.meta.url));
 
 const xml = (text) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const unxml = (text) => text.replace(/&quot;/g, '"').replace(/&gt;/g, ">").replace(/&lt;/g, "<").replace(/&amp;/g, "&");
 
 /** The LaunchAgent: started at login (RunAtLoad), started again when it exits with a failure (KeepAlive), its output in
- *  `log`, with the PATH of the shell that installed it (launchd's own has no Homebrew, so no docker) and `env`. */
+ *  `log`, with the PATH of the shell that installed it (launchd's own has no Homebrew, so no docker) and `env`. A stop
+ *  gets 60 s before launchd's SIGKILL (ExitTimeOut; its default is 20 s), as `agentrun stop` waits (STOP_WAIT_MS): the
+ *  runner beside the server closes in up to 55 s (its 30 s drain, then the loops' stop), which outlasts a signed-in
+ *  server's 27 s stop and a ChatGPT renewal its runner sends. */
 export function plistText({ program, args, path, log, env = {} }) {
   const strings = [program, ...args].map((arg) => `    <string>${xml(arg)}</string>`).join("\n");
   const vars = Object.entries({ PATH: path, ...env }).map(([key, value]) => `    <key>${xml(key)}</key>\n    <string>${xml(value)}</string>`).join("\n");
@@ -52,6 +56,8 @@ ${vars}
     <key>SuccessfulExit</key>
     <false/>
   </dict>
+  <key>ExitTimeOut</key>
+  <integer>60</integer>
   <key>StandardOutPath</key>
   <string>${xml(log)}</string>
   <key>StandardErrorPath</key>

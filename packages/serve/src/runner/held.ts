@@ -22,6 +22,8 @@ import type { RunModelKey } from "../store/seal.js";
 import type { EndOfRunKept, EndOfRunTurn } from "./loop-contract.js";
 import type { LearnedFirst } from "./learned-first.js";
 import type { ProjectCheckpoint } from "../source-sync/checkpoints.js";
+import type { PaidBooking } from "../paid-calls.js";
+import type { Refusal } from "@parcha/agentrun-kernel";
 
 /** One MCP tool of the claim, its call made by the runner (mcp-run.ts mcpForClaim), with what the gate reads of it. */
 export interface HeldMcpTool {
@@ -57,6 +59,14 @@ export interface HeldMcpAsk {
  *  is. The run, its epoch, its folder, its mode and its revision are the runner's own reads of the claim. */
 export interface HeldComputerAsk {
   readonly hadComputer: () => Promise<boolean>;
+  /** The run's one ledger, which lives in the run's process (ComputeLedger less `judges`, whose answer can't cross the
+   *  channel at once: `judged` says when it turns true): the runner's meter of the claim's computers books their time on
+   *  it, as computerForClaim's in-process caller hands it (ComputerForClaimDeps.compute). Absent: a run with no ledger,
+   *  whose computers' time is on the usage read alone. */
+  readonly compute?: { readonly paid: PaidBooking; readonly pause?: (refusal: Refusal) => Promise<void>; readonly judged: () => Promise<void> };
+  /** Stops the run for good in its words (ComputerForClaimDeps.stopRun): a lost sandbox past its bound ends the run from
+   *  any caller, one outside a tool call too. */
+  readonly stopRun?: (words: string) => Promise<void>;
   readonly turnedOff?: string;
   readonly signal?: AbortSignal;
   readonly say?: (words: string) => void;
@@ -97,7 +107,8 @@ export interface Held {
   githubAppAccess(): Promise<GithubAppAccessAt | undefined>;
   /** The saved model keys of the models of the claim's subagent tiers (claim-secrets.ts subagentTierKeys asks): an agentic
    *  run granted the subagent tool gets its routed tiers' keys; a replay's or an audit's grader, its fast tier's key alone
-   *  (none when its revision names agree_on or routes no fast tier). None to any other run, to one that holds a model key
+   *  (none when its revision names agree_on or routes no fast tier: its grader is then the run's own model, on the key
+   *  the run already holds). None to any other run, to one that holds a model key
    *  of its own, or to a held run its model kept from running. */
   subagentTierKeys(): Promise<Record<string, string>>;
   /** The model keys the host's models of `tiers` need (claim-secrets.ts tierModelKeys), the plan's reader with them: of
@@ -126,9 +137,12 @@ export interface Held {
   /** A change of the claim's computer's hold, committed to the run's journal here: signalled on the runner, whose live
    *  view of the computer tells its open viewer (computer-journal.ts heardComputerHold). */
   computerHold(change: ComputerHoldChange): Promise<void>;
-  /** The MCP credentials run `from` was handed, sealed again for run `id`, a run this one starts (promotion.ts,
-   *  audit.ts): none unless `from` is the claim's own run. */
-  handOn(from: string, id: string): Promise<Uint8Array | undefined>;
+  /** The MCP credentials run `from` was handed, and its own model key when `keyed` (store/seal.ts sealHandedLaunch),
+   *  sealed again for run `id`, a run this one starts (promotion.ts, audit.ts): none unless `from` is the claim's own run. */
+  handOn(from: string, id: string, keyed: boolean): Promise<Uint8Array | undefined>;
+  /** What the replays the claim's own run started on its own key took beside it (learning-work.ts keyedBesideOf), read by
+   *  the runner: its learning_work row and those replays' rows and launches, none of which the run's process reads. */
+  keyedBeside(): Promise<number | null>;
   /** The run's agent's live sign-in pointer for `resolution`, and its forgotten ones (sign-ins-store.ts signInReads): what
    *  its learning end holds to refuse a pointer in what the run learned. */
   signInPeek(resolution: string): Promise<unknown>;

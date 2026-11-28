@@ -117,6 +117,16 @@ test("held: U+FFFF in the imported text is no marker: between two halves of a he
   assert.equal(out.text, `printed ${head}[redacted:held-value]${rest} end \uffff`);
 });
 
+test("held: a terminal sequence or a backspace overstrike between two halves of a held value fails closed", async () => {
+  // A terminal renders the sequence as nothing and the struck-out character as gone, so the value reads whole there.
+  const [head, rest] = [HELD.slice(0, 14), HELD.slice(14)];
+  for (const between of ["\u001b[0m", "\u001b[1;31m", "\u001b]0;t\u0007", "Z\b"]) {
+    assert.deepEqual(await scrub(`printed ${head}${between}${rest} end`, { mode: "cut", held: [HELD] }), { ok: false, counts: {} }, JSON.stringify(between));
+  }
+  // Control: coloured output with no held value is kept as it came.
+  await kept("\u001b[01;34mbin\u001b[0m  \u001b[01;32mrun.sh\u001b[0m", [HELD]);
+});
+
 test("held: a value left in the text in a form the pass cannot cut in place fails closed", async () => {
   // Partly percent-encoded: valueMatcher's decoded view sees it, no held form stands in place (a split by a blank is
   // cut whole since ruling XIV).

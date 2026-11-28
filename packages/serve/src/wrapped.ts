@@ -21,9 +21,17 @@ export function cacheView(cache: StoreAnalytics["cache"] | undefined) {
   };
 }
 
-/** `wrapped` (the import package's) as GET /v2/wrapped serves it, the runs imported from each source (`imported`), and
- *  their cache (`cache`, cacheView). */
-export function wrappedView(wrapped: Wrapped, imported: readonly { source: string; runs: number }[], unreadFiles = 0, cache?: StoreAnalytics["cache"]) {
+/** The keys and tokens the import cut from the year's imported runs (StoreAnalytics.secrets) as GET /v2/wrapped serves
+ *  them: the runs counted, those that held a key, and the keys cut. Null when no run of the year was counted. Numbers
+ *  alone: no key, shape or place. */
+export function secretsView(secrets: StoreAnalytics["secrets"] | undefined) {
+  if (!secrets?.runs) return null;
+  return { runs: secrets.runs, runs_holding: secrets.holding, removed: secrets.removed };
+}
+
+/** `wrapped` (the import package's) as GET /v2/wrapped serves it, the runs imported from each source (`imported`), their
+ *  cache (`cache`, cacheView) and the keys their import cut (`secrets`, secretsView). */
+export function wrappedView(wrapped: Wrapped, imported: readonly { source: string; runs: number }[], unreadFiles = 0, cache?: StoreAnalytics["cache"], secrets?: StoreAnalytics["secrets"]) {
   const { input, output, cacheRead, cacheWrite } = wrapped.tokens;
   return {
     year: wrapped.year,
@@ -33,18 +41,20 @@ export function wrappedView(wrapped: Wrapped, imported: readonly { source: strin
     tokens: { input, output, cache_read: cacheRead, cache_write: cacheWrite },
     cost_usd: wrapped.cost,
     unpriced_requests: wrapped.unpricedRequests,
+    tokens_unknown_requests: wrapped.tokensUnknownRequests,
     days: wrapped.days,
     hours: wrapped.hours,
     weekdays: wrapped.weekdays,
     active_ms: wrapped.activeMs,
     // The sources behind each harness (several can share one), so the console links a harness's numbers to their runs
     // without a copy of the table, in the order of `sources`: a source of a reader outside it is its own harness, as wrappedHome counts it.
-    harnesses: wrapped.harnesses.map((h) => ({ ...h, sources: wrapped.sources.map((s) => s.source).filter((source) => ((HARNESS_OF as Record<string, string | undefined>)[source] ?? source) === h.harness) })),
-    models: wrapped.models.map(({ model, requests, tokens, cost, unpricedRequests }) => ({ model, requests, tokens: total(tokens), cost_usd: cost, unpriced_requests: unpricedRequests })),
+    harnesses: wrapped.harnesses.map(({ harness, sessions, requests, tokens, tokensUnknownRequests }) => ({ harness, sessions, requests, tokens, tokens_unknown_requests: tokensUnknownRequests, sources: wrapped.sources.map((s) => s.source).filter((source) => ((HARNESS_OF as Record<string, string | undefined>)[source] ?? source) === harness) })),
+    models: wrapped.models.map(({ model, requests, tokens, cost, unpricedRequests, tokensUnknownRequests }) => ({ model, requests, tokens: total(tokens), cost_usd: cost, unpriced_requests: unpricedRequests, tokens_unknown_requests: tokensUnknownRequests })),
     sources: wrapped.sources,
     imported: imported.map(({ source, runs }) => ({ source, runs })),
     unread_files: unreadFiles,
     cache: cacheView(cache),
+    secrets: secretsView(secrets),
   };
 }
 

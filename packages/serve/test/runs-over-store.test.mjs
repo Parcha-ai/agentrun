@@ -682,6 +682,18 @@ test("startRun records the exact seed, # Learned section and learned workflows a
   assert.deepEqual(learningStartOf(launch), expected);
 });
 
+test("startRun reads its agent's open rounds before its seed and names them: a round that merges and ends between the two reads is in the seed", async () => {
+  const store = await freshStore();
+  const reads = [];
+  const deps = learningDeps({
+    openRounds: async () => (reads.push("rounds"), ["run-round"]),
+    seedFor: async () => (reads.push("seed"), { seed: learningSeed() }),
+  });
+  const run = await startRun(store, deps, entryOf(), { input: { content: "hi" }, max_cost_usd: 1 });
+  assert.deepEqual(reads, ["rounds", "seed"]);
+  assert.deepEqual(readLaunchBody((await store.runs.launch(run.id)).body).learning.after, ["run-round"]);
+});
+
 test("startRun records the learned workflows the seed offers the run, none holding a host secret; a seed with none records none", async () => {
   const store = await freshStore();
   const seed = () => ({

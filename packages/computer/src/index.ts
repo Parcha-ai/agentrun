@@ -41,6 +41,8 @@ export { type DockerVolume, VOLUME_SUBPATH_ENGINE } from "./docker/volume.js";
 export {
 	DEFAULT_DOCKER_IMAGE,
 	DOCKER_BASE,
+	DOCKER_NODE_SHA256,
+	DOCKER_NODE_VERSION,
 	DOCKER_RECIPE,
 	DOCKER_RECIPE_HAS,
 	ensureImage,
@@ -56,6 +58,7 @@ export {
 } from "./docker/image.js";
 export { ADB_ENV_NAMES, adbEnv, BASE_ENV_NAMES, CHROME_ENV_NAMES, childEnv, chromeEnv, DOCKER_ENV_NAMES, dockerEnv, type HostEnv } from "./child-env.js";
 export { containerSigns, EGRESS_IMAGE, EGRESS_LABEL, EGRESS_MOUNT, EGRESS_SOCKET } from "./docker/egress.js";
+export { DEFAULT_MAX_TUNNELS, MAX_TUNNELS_CEILING, maxTunnelsOf } from "./docker/egress-proxy.js";
 export {
 	ARCHIL_HELPER,
 	ARCHIL_SYNC_SOCKET,
@@ -102,6 +105,9 @@ export {
 	causeOf,
 	memoryUrls,
 	RECOVER_MS,
+	recoverCreate,
+	recoveriesInFlight,
+	type RecoveryInFlight,
 	type ReleaseConfirm,
 	type RestReply,
 	type UrlStore,
@@ -111,7 +117,7 @@ export {
 export { CHROME_ENV, CHROME_FLAGS, checkChrome, chromeFence, findChrome, killTree, NO_CHROME } from "./chrome.js";
 export { DAEMON_IN_COMPUTER, helloDrift, type HelloExpected } from "./drift.js";
 export { drift, hostOf, inspectDrift, mountOf, networkOf, type DockerHost, type DockerInfo, type DockerInspect, type DriftExpected } from "./docker/inspect.js";
-export { type ReleasedOlder, releaseOlder, sweep, type SweepOptions, type Swept } from "./janitor.js";
+export { type ReleasedOlder, type ReleasedUnheld, releaseOlder, releaseUnheld, sweep, type SweepOptions, type Swept, type UnheldHooks } from "./janitor.js";
 export { EPOCH_LABEL, epochOf, epochProblem, IDLE_TTL_LABEL, OWNER_LABEL, OWNER_SERVER_LABEL, ownerFilter, ownerLabels, ownerOf, RUN_HASH_LABEL, RUN_LABEL, runHash, runLabels, runProblem } from "./labels.js";
 export { waitUntil, type WaitOptions } from "./wait.js";
 export {

@@ -68,6 +68,8 @@ services:
       AGENT_MODEL_BASE_URL: ${AGENT_MODEL_BASE_URL:-}
       AGENT_MODEL_API_KEY: ${AGENT_MODEL_API_KEY:-}
     restart: unless-stopped
-    stop_grace_period: 15s
+    # Above the close of the runner beside the server (40 s with the image's 6 s drain: the drain and the loops' stop, or a
+    # browser release's window), which outlasts a signed-in server's stop (27 s).
+    stop_grace_period: 45s
 volumes:
   agentrun-data:

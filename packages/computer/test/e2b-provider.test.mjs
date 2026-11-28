@@ -9,6 +9,8 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createSecureServer } from "node:http2";
+import https from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -305,8 +307,8 @@ test("options.domain names the domain the key goes to, as COMPUTER_E2B_DOMAIN do
 	assert.equal(opts.apiUrl, "https://api.e2b.example.com");
 	const conformance = await e2b.conformance();
 	for (const domain of ["https://e2b.app", "e2b.app/x", "localhost:3000", "E2B.app"]) {
-		await assert.rejects(create({ apiKey: KEY, domain, Sandbox: rec.Sandbox }), /E2B domain must be a host name/);
-		await assert.rejects(conformance.createProvider({ env: { [ENV.live]: "1", [ENV.key]: KEY, [ENV.domain]: domain }, Sandbox: rec.Sandbox }), /E2B domain must be a host name/);
+		await assert.rejects(create({ apiKey: KEY, domain, Sandbox: rec.Sandbox }), /E2B domain \(AGENTRUN_E2B_DOMAIN\) must be a host name/);
+		await assert.rejects(conformance.createProvider({ env: { [ENV.live]: "1", [ENV.key]: KEY, [ENV.domain]: domain }, Sandbox: rec.Sandbox }), /E2B domain \(AGENTRUN_E2B_DOMAIN\) must be a host name/);
 	}
 });
 
@@ -382,6 +384,64 @@ test("the real SDK, given the provider's connection options, takes none of an am
 		assert.equal(config.debug, false);
 		assert.equal(config.sandboxUrl, undefined);
 	});
+});
+
+test("every SDK call is given httpVersion 1.1, create, getInfo, connect, list, setTimeout and kill alike: the SDK never opens HTTP/2", async () => {
+	const calls = [];
+	const startedAt = new Date();
+	const info = (id) => ({ sandboxId: id, templateId: "base", metadata: { "agentrun.computer.max-deadline": new Date(startedAt.getTime() + HOUR).toISOString() }, startedAt, endAt: new Date(startedAt.getTime() + 600_000), state: "running" });
+	const sandbox = (id) => ({ sandboxId: id, files: { write: async () => {} } });
+	const record = (name, answer) => async (...args) => (calls.push([name, ...args]), answer(...args));
+	const Sandbox = {
+		create: record("Sandbox.create", () => sandbox("sbx-made")),
+		connect: record("Sandbox.connect", (id) => sandbox(id)),
+		getInfo: record("Sandbox.getInfo", (id) => info(id)),
+		setTimeout: record("Sandbox.setTimeout", () => {}),
+		kill: record("Sandbox.kill", () => true),
+		list(opts) {
+			calls.push(["Sandbox.list", opts]);
+			let done = false;
+			return { get hasNext() { return !done; }, nextItems: async () => ((done = true), []) };
+		},
+	};
+	const { host } = new E2BProvider({ apiKey: KEY, Sandbox, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const ctx = { timeoutMs: 2_000 };
+	await host.create({ image: "desktop", lifetimeMs: 600_000, labels: {}, egress: false }, ctx);
+	await host.get("sbx-other", ctx);
+	await host.list({ [COMPUTER]: "1" }, ctx);
+	await host.upload("sbx-other", "/tmp/x", new Uint8Array([1]), ctx);
+	await host.extend("sbx-other", new Date(startedAt.getTime() + 1_200_000), ctx);
+	await host.delete("sbx-made", ctx);
+	assert.deepEqual([...new Set(calls.map(([name]) => name))].sort(), ["Sandbox.connect", "Sandbox.create", "Sandbox.getInfo", "Sandbox.kill", "Sandbox.list", "Sandbox.setTimeout"]);
+	for (const [name, ...args] of calls) assert.equal(args.at(-1).httpVersion, "1.1", `${name} is given httpVersion "1.1"`);
+});
+
+test("the real SDK, given the provider's connection options, speaks HTTP/1.1 to a server that offers HTTP/2", async (t) => {
+	const sdk = await import("e2b").catch(() => undefined);
+	if (sdk === undefined) return t.skip("the e2b package is not installed here; it is the host's, as Modal's SDK is");
+	const tls = mkdtempSync(join(tmpdir(), "computer-e2b-tls-"));
+	t.after(() => rmSync(tls, { recursive: true, force: true }));
+	const [key, cert] = [join(tls, "key.pem"), join(tls, "cert.pem")];
+	const openssl = ["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-days", "1", "-subj", "/CN=127.0.0.1", "-keyout", key, "-out", cert];
+	if (spawnSync("openssl", openssl, { stdio: "ignore" }).status !== 0) return t.skip("openssl made no self-signed certificate here");
+	// A server that takes both and prefers HTTP/2, as E2B's does: an h2 client gets h2 by ALPN.
+	const seen = [];
+	const sockets = new Set();
+	const server = createSecureServer({ key: readFileSync(key), cert: readFileSync(cert), allowHTTP1: true }, (req, res) => {
+		// Only the SDK's call: something else on this machine may probe a new loopback listener.
+		if (req.url.startsWith("/sandboxes/sbx-h1")) seen.push(req.httpVersion);
+		res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ code: 404, message: "no such sandbox" }));
+	});
+	server.on("secureConnection", (socket) => sockets.add(socket));
+	await new Promise((ready) => server.listen(0, "127.0.0.1", ready));
+	t.after(() => {
+		for (const socket of sockets) socket.destroy();
+		server.close();
+	});
+	const options = { ...e2b.connectionOptions({ apiKey: KEY, domain: "e2b.app" }, {}), apiUrl: `https://127.0.0.1:${server.address().port}` };
+	// The certificate is this test's own, so the call checks none: the TLS check is read at each connect, this one alone.
+	await withProcessEnv({ NODE_TLS_REJECT_UNAUTHORIZED: "0" }, () => assert.rejects(sdk.Sandbox.getInfo("sbx-h1", options)));
+	assert.deepEqual(seen, ["1.1"]);
 });
 
 test("get reads what E2B gave the sandbox (getInfo's cpuCount and memoryMB) as its resources, and none where getInfo says none", async () => {
@@ -608,6 +668,129 @@ test("prepareImage answers the public box template with no SDK call and no wait 
 		assert.equal(made.ok, false);
 		assert.deepEqual(calls.map(([template]) => template), [BOX_TEMPLATE], `${kind}: Sandbox.create is given the box template`);
 	}
+});
+
+// --- the operator's settings: the clouds that speak E2B's API, and a template of their own ---
+
+const { E2B: E2B_DESCRIPTOR } = await import("../dist/descriptors/e2b.js");
+const PROXY = "http://proxy.example:3128/";
+
+/** E2B's create() options from a server's keys, by its descriptor's names, as serve maps them (computer-keys.ts
+ *  providerOptions): a name the descriptor doesn't declare is never passed on. */
+const optionsOfKeys = (keys) => Object.fromEntries(E2B_DESCRIPTOR.keys.flatMap(({ name, option }) => (typeof keys[name] === "string" && keys[name] !== "" ? [[option, keys[name]]] : [])));
+
+/** createRecorder, its listing recorded too, as ["Sandbox.list", opts]. */
+function callRecorder() {
+	const { calls, Sandbox } = createRecorder();
+	const list = Sandbox.list;
+	Sandbox.list = (opts) => (calls.push(["Sandbox.list", opts]), list(opts));
+	return { calls, Sandbox };
+}
+
+/** `make()` with Node's https global agent holding `proxyEnv`, as a process that installed a proxy has it (env-proxy.ts
+ *  installedProxy reads it there when the provider is made). */
+function withInstalledProxy(proxyEnv, make) {
+	const before = https.globalAgent;
+	https.globalAgent = new https.Agent({ proxyEnv });
+	try {
+		return make();
+	} finally {
+		https.globalAgent = before;
+	}
+}
+
+/** A provider from the server's keys, its create and its listing recorded, under the process's proxy `proxyEnv`. */
+async function fromKeys(keys, proxyEnv = {}, kind) {
+	const { calls, Sandbox } = callRecorder();
+	const provider = withInstalledProxy(proxyEnv, () => new E2BProvider({ ...optionsOfKeys(keys), Sandbox, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS, ...(kind ? { kind } : {}) }));
+	return { calls, provider };
+}
+
+/** Each SDK call's connection options, by the call: the create's template, or "Sandbox.list". */
+const connectionsOf = (calls) => calls.map(([call, opts]) => [call, { domain: opts.domain, apiUrl: opts.apiUrl, proxy: opts.proxy }]);
+
+test("E2B's keys: E2B_API_KEY, required, then AGENTRUN_E2B_DOMAIN, AGENTRUN_E2B_API_URL and AGENTRUN_E2B_TEMPLATE, optional; the template is its imageEnv too", () => {
+	assert.deepEqual(E2B_DESCRIPTOR.keys, [
+		{ name: "E2B_API_KEY", option: "apiKey", required: true },
+		{ name: "AGENTRUN_E2B_DOMAIN", option: "domain", required: false },
+		{ name: "AGENTRUN_E2B_API_URL", option: "apiUrl", required: false },
+		{ name: "AGENTRUN_E2B_TEMPLATE", option: "template", required: false },
+	]);
+	assert.equal(E2B_DESCRIPTOR.imageEnv, "AGENTRUN_E2B_TEMPLATE", "serve reads it as the image every E2B computer starts from, as Daytona's AGENTRUN_DAYTONA_SNAPSHOT");
+});
+
+test("none of the three set: E2B's domain, its API and the box template, as before", async () => {
+	const { calls, provider } = await fromKeys({ E2B_API_KEY: KEY }, { HTTPS_PROXY: PROXY, NO_PROXY: ".e2b.app" });
+	const ready = await provider.prepareImage();
+	assert.deepEqual(ready, { ok: true, value: BOX_TEMPLATE });
+	assert.equal((await provider.create({ ...SPEC, image: ready.value }, { requestId: "r-settings-none" })).ok, false);
+	assert.deepEqual(connectionsOf(calls), [
+		["Sandbox.list", { domain: "e2b.app", apiUrl: "https://api.e2b.app", proxy: undefined }],
+		[BOX_TEMPLATE, { domain: "e2b.app", apiUrl: "https://api.e2b.app", proxy: undefined }],
+	]);
+});
+
+test("AGENTRUN_E2B_DOMAIN: create and list go to that domain's API, and the proxy is decided by that domain", async () => {
+	const keys = { E2B_API_KEY: KEY, AGENTRUN_E2B_DOMAIN: "sb.mtm.sh" };
+	const at = { domain: "sb.mtm.sh", apiUrl: "https://api.sb.mtm.sh" };
+	// NO_PROXY exempting E2B's own domain leaves this one's calls on the proxy; exempting this one, none of them.
+	for (const [noProxy, proxy] of [[".e2b.app", PROXY], [".sb.mtm.sh", undefined]]) {
+		const { calls, provider } = await fromKeys(keys, { HTTPS_PROXY: PROXY, NO_PROXY: noProxy });
+		assert.equal((await provider.create({ ...SPEC, image: BOX_TEMPLATE }, { requestId: "r-settings-domain" })).ok, false);
+		assert.deepEqual(connectionsOf(calls), [["Sandbox.list", { ...at, proxy }], [BOX_TEMPLATE, { ...at, proxy }]], noProxy);
+	}
+	const { calls, provider } = await fromKeys(keys);
+	assert.deepEqual(await provider.list({}), { ok: true, value: [] }, "the listing goes there too, and finds none");
+	assert.deepEqual(connectionsOf(calls), [["Sandbox.list", { ...at, proxy: undefined }]]);
+	await assert.rejects(create({ apiKey: KEY, domain: "https://sb.mtm.sh", Sandbox: recorder().Sandbox }), /the E2B domain \(AGENTRUN_E2B_DOMAIN\) must be a host name such as e2b\.app/);
+});
+
+test("AGENTRUN_E2B_API_URL: create and list go to that API, beside the domain, and the proxy covers its host too", async () => {
+	// SUFY names its API alone; Alibaba Cloud names a regional domain and an API URL (fixtures: nothing is called).
+	const sufy = { E2B_API_KEY: KEY, AGENTRUN_E2B_API_URL: "https://us-south-1-sandbox.sufyapi.com" };
+	const { calls, provider } = await fromKeys(sufy);
+	assert.equal((await provider.create({ ...SPEC, image: BOX_TEMPLATE }, { requestId: "r-settings-api" })).ok, false);
+	const at = { domain: "e2b.app", apiUrl: "https://us-south-1-sandbox.sufyapi.com", proxy: undefined };
+	assert.deepEqual(connectionsOf(calls), [["Sandbox.list", at], [BOX_TEMPLATE, at]]);
+	const alibaba = { E2B_API_KEY: KEY, AGENTRUN_E2B_DOMAIN: "cn-hangzhou.sandbox.aliyuncs.com", AGENTRUN_E2B_API_URL: "https://api.cn-hangzhou.example.test/e2b/" };
+	for (const [noProxy, proxy] of [[".aliyuncs.com", PROXY], [".aliyuncs.com,api.cn-hangzhou.example.test", undefined]]) {
+		const made = await fromKeys(alibaba, { HTTPS_PROXY: PROXY, NO_PROXY: noProxy });
+		await made.provider.list({});
+		assert.deepEqual(connectionsOf(made.calls), [["Sandbox.list", { domain: "cn-hangzhou.sandbox.aliyuncs.com", apiUrl: "https://api.cn-hangzhou.example.test/e2b", proxy }]], noProxy);
+	}
+});
+
+test("AGENTRUN_E2B_API_URL that is not https, or carries a login, a query or a fragment, is refused naming the setting, never echoing a login, and nothing is called", async () => {
+	// A login with no password: a user name alone is refused as a password is.
+	const withLogin = new URL("https://api.sb.mtm.sh");
+	withLogin.username = "operator-login";
+	for (const bad of ["http://api.sb.mtm.sh", withLogin.href, "https://api.sb.mtm.sh/?team=hunter2-not-a-secret", "https://api.sb.mtm.sh/#hunter2-not-a-secret", "api.sb.mtm.sh", "wss://api.sb.mtm.sh"]) {
+		const { calls, Sandbox } = callRecorder();
+		await assert.rejects(create({ ...optionsOfKeys({ E2B_API_KEY: KEY, AGENTRUN_E2B_API_URL: bad }), Sandbox, daemonPath: DAEMON_PATH }), (error) => /^the E2B API URL \(AGENTRUN_E2B_API_URL\) /.test(error.message) && !error.message.includes("hunter2") && !error.message.includes("operator-login") && !error.message.includes(KEY), bad);
+		assert.deepEqual(calls, [], bad);
+	}
+	await assert.rejects(create({ ...optionsOfKeys({ E2B_API_KEY: KEY, AGENTRUN_E2B_API_URL: withLogin.href }), Sandbox: recorder().Sandbox, daemonPath: DAEMON_PATH }), /takes no user or password/, "the login's own refusal, not another");
+});
+
+test("AGENTRUN_E2B_TEMPLATE: prepareImage answers it in place of the box template, for a desktop and a sandbox, and create starts it; a name that is no E2B template is refused naming the setting", async () => {
+	for (const kind of ["desktop", "linux"]) {
+		const { calls, provider } = await fromKeys({ E2B_API_KEY: KEY, AGENTRUN_E2B_TEMPLATE: "agentrun-oss/osworld-ubuntu" }, {}, kind);
+		const ready = await provider.prepareImage();
+		assert.deepEqual(ready, { ok: true, value: "agentrun-oss/osworld-ubuntu" }, kind);
+		assert.equal((await provider.create({ ...SPEC, image: ready.value }, { requestId: `r-settings-template-${kind}` })).ok, false);
+		assert.deepEqual(calls.filter(([call]) => call !== "Sandbox.list").map(([template]) => template), ["agentrun-oss/osworld-ubuntu"], kind);
+	}
+	for (const bad of ["../x", "two words", "-flag"]) {
+		await assert.rejects(create({ apiKey: KEY, template: bad, Sandbox: recorder().Sandbox }), /the E2B template \(AGENTRUN_E2B_TEMPLATE\) is the name or id of an E2B template/, bad);
+	}
+});
+
+test("AGENTRUN_E2B_TEMPLATE saved with blanks around it starts that template, as serve's registryHere and computerSpecOf read it trimmed", async () => {
+	const { calls, provider } = await fromKeys({ E2B_API_KEY: KEY, AGENTRUN_E2B_TEMPLATE: " agentrun-oss/osworld-ubuntu \n" });
+	const ready = await provider.prepareImage();
+	assert.deepEqual(ready, { ok: true, value: "agentrun-oss/osworld-ubuntu" });
+	assert.equal((await provider.create({ ...SPEC, image: ready.value }, { requestId: "r-settings-template-blanks" })).ok, false);
+	assert.deepEqual(calls.filter(([call]) => call !== "Sandbox.list").map(([template]) => template), ["agentrun-oss/osworld-ubuntu"]);
 });
 
 test("E2B's metadata on an Archil computer of the longest agent id, on the box template: what create gives E2B, counted", async () => {
