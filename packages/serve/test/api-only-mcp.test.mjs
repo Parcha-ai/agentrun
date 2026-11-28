@@ -38,6 +38,7 @@ const MCP_ACCOUNTS = { [USER_A]: [ACCOUNT_A] };
 const ACCOUNTS = { gmail: [{ status: "ACTIVE", auth_config: "ac_alice_own", id: ACCOUNT_A, user: USER_A }] };
 const CALL = 'Call mcp__mail__add with {"a":2,"b":3}';
 const SAVE = { api_key_env: KEY_ENV, toolkit: "gmail", tools: ["add"], user_id: "per_run" };
+const PROJECT_KEY_ENV = "AGENTRUN_COMPOSIO_API_KEY";
 
 /** A server (API-only unless `full`) beside a fake Composio whose key is KEY (`fake`: more of its options), and the log. */
 async function setup(t, { full = false, fake = {} } = {}) {
@@ -105,6 +106,47 @@ test("API-only: api_key_env naming another variable is 422 invalid naming COMPOS
   }
   assert.deepEqual(s.composio.calls, [], "nothing sent to Composio");
   assert.deepEqual((await s.token("GET", "/settings/mcp-server-names")).body, { names: [] }, "nothing saved");
+});
+
+test("API-only: a second project's saved key name governs save, run and delete, with no fallback to the legacy key", async (t) => {
+  withEnv(t, { [KEY_ENV]: OTHER_KEY, [PROJECT_KEY_ENV]: KEY });
+  const s = await setup(t);
+  const caps = await s.token("GET", "/capabilities");
+  assert.deepEqual(caps.body.features.mcp_client.composio_key_envs, [KEY_ENV, PROJECT_KEY_ENV]);
+  const saved = await s.token("PUT", "/settings/mcp-servers/mail/composio", { ...SAVE, api_key_env: PROJECT_KEY_ENV });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.ok(s.composio.calls.every((call) => call.keyOk), "the save used the second project's key");
+  assert.equal((await s.server.store.settings.get(composioMadeKey("mail"))).key_env, PROJECT_KEY_ENV);
+  assert.equal((await s.server.store.mcp.server("mail")).sealed, null);
+  const original = await s.server.store.mcp.server("mail");
+  const originalRecord = await s.server.store.settings.get(composioMadeKey("mail"));
+  const beforeSwitch = s.composio.calls.length;
+  const switched = await s.token("PUT", "/settings/mcp-servers/mail/composio", SAVE);
+  assert.equal(switched.status, 422, JSON.stringify(switched.body));
+  assert.deepEqual(switched.body.error.fields.map((field) => [field.field, field.reason]), [["api_key_env", "not_allowed"]]);
+  assert.equal(s.composio.calls.length, beforeSwitch, "a different project under the same name reaches neither project");
+  assert.deepEqual(await s.server.store.mcp.server("mail"), original);
+  assert.deepEqual(await s.server.store.settings.get(composioMadeKey("mail")), originalRecord);
+  const started = await inlineRun(s);
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await follow(s.server.api, started.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
+  const view = (await s.token("GET", `/runs/${started.body.run_id}`)).body;
+  assert.match(String(view.result?.final_answer ?? ""), /The tool said: 5/, JSON.stringify(view));
+  assert.deepEqual([...new Set(s.composio.mcpKeys)], [KEY], "the runner also uses the saved key name");
+
+  delete process.env[PROJECT_KEY_ENV];
+  const from = s.composio.calls.length;
+  const refused = await inlineRun(s, "missing-project-key", { account: false });
+  assert.ok(refused.status >= 400 && refused.status < 500, JSON.stringify(refused.body));
+  assert.match(JSON.stringify(refused.body.error), /AGENTRUN_COMPOSIO_API_KEY/);
+  assert.equal(s.composio.calls.length, from, "no attempt with the legacy key");
+  process.env[PROJECT_KEY_ENV] = KEY;
+  const deleted = await s.token("DELETE", "/settings/mcp-servers/mail");
+  assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
+  assert.equal(deleted.body.composio?.removed, true, JSON.stringify(deleted.body));
+  assert.ok(s.composio.calls.slice(from).every((call) => call.keyOk), "cleanup uses the same project");
+  await s.server.store.flush();
+  for (const value of [KEY, OTHER_KEY]) assert.equal(storeBytes(s.server.data).includes(Buffer.from(value)), false);
 });
 
 test("API-only: api_key_env with COMPOSIO_API_KEY unset or blank is 422 missing naming it; nothing sent", async (t) => {
@@ -286,9 +328,9 @@ const envRecord = (perRun) => (perRun ? { user: "per_run", auth_config: null, ac
 
 /** A row written by hand, not by the preset: `name` at `url` (any origin), auth headers sealing nothing, and a Composio
  *  record bound to it saying its key is COMPOSIO_API_KEY. What a store edited behind the server's back could hold. */
-async function handWritten(store, name, url, { perRun = false } = {}) {
+async function handWritten(store, name, url, { perRun = false, keyEnv = KEY_ENV } = {}) {
   await store.mcp.put({ name, url, auth: "headers", tools: [ADD_TOOL], sealed: null });
-  await store.settings.put(composioMadeKey(name), storedMade(envRecord(perRun), await store.mcp.server(name)));
+  await store.settings.put(composioMadeKey(name), storedMade({ ...envRecord(perRun), key_env: keyEnv }, await store.mcp.server(name)));
   await store.flush?.();
 }
 
@@ -318,8 +360,9 @@ test("a row reading its key from COMPOSIO_API_KEY at an address off Composio's o
   assert.deepEqual(elsewhere.log, [], "the run sent nothing");
 });
 
-test("claim: a row reading its key from COMPOSIO_API_KEY at an address off Composio's origin is refused by name, and that host gets nothing; on Composio's origin it carries the key", async (t) => {
-  withEnv(t, { [KEY_ENV]: KEY });
+for (const keyEnv of [KEY_ENV, PROJECT_KEY_ENV]) {
+test(`claim: ${keyEnv} is refused off Composio's origin and sends the selected project key on origin`, async (t) => {
+  withEnv(t, { [KEY_ENV]: OTHER_KEY, [PROJECT_KEY_ENV]: OTHER_KEY, [keyEnv]: KEY });
   const elsewhere = await startFakeMcp();
   t.after(() => elsewhere.close());
   const sealKey = Buffer.alloc(32, 7);
@@ -329,7 +372,7 @@ test("claim: a row reading its key from COMPOSIO_API_KEY at an address off Compo
     return mcpClaim({ store, claim, grants: ["mcp:mail/add"], sealKey, signal: new AbortController().signal, loopback: true, composioMcpOrigin });
   };
   const { store } = await storeOn(t);
-  await handWritten(store, "mail", elsewhere.url);
+  await handWritten(store, "mail", elsewhere.url, { keyEnv });
   // Composio's origin (here a stand-in) is not the row's: refused, nothing sent.
   await assert.rejects(claimOf(store, "run-1", "https://composio.invalid"), (error) => {
     assert.match(error.message, /mail.*Composio/, error.message);
@@ -342,6 +385,7 @@ test("claim: a row reading its key from COMPOSIO_API_KEY at an address off Compo
   t.after(() => step.release());
   assert.equal(step.credentials.mail?.headers?.["x-api-key"], KEY, "on Composio's origin the key is attached");
 });
+}
 
 test("claim: a run granted no tool of the Composio server gets no entry for it, and nothing it is handed holds the key", async (t) => {
   withEnv(t, { [KEY_ENV]: KEY });
