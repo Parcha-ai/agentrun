@@ -235,13 +235,55 @@ test("a scoped request reads another workspace's row as a missing one, the same 
 test("a scoped request acts on its own run with the run extras, and a run it purged reads to another workspace as a missing one", { timeout: 120_000 }, async (t) => {
   // A runner beside the server, so W1's run ends and may be graded and purged.
   const server = await scopedServer(t, { runner: true });
-  const { run } = await seedW1(server);
-  await until(async () => ["completed", "failed", "cancelled"].includes((await inW1(server, "GET", `/v2/runs/${run}`)).body?.status), 60_000, "W1's run ends");
-  for (const name of ["raiseRunCap", "getRunGraph", "getRunTrace", "pauseRun", "resumeRun", "gradeRun", "startRun"]) {
-    const op = TABLE[name];
-    const answer = await inW1(server, op.method, op.path.replace("{run}", run), op.body === undefined ? {} : { body: op.body });
-    assert.notEqual(answer.status, 403, `${name} is served to W1's own run: ${answer.text}`);
+  const { agent, run } = await seedW1(server);
+  // W1's run with a cap, so a raise reaches the ended run's own refusal (a run with none is refused for having none).
+  const capped = await inW1(server, "POST", `/v2/agents/${agent}/runs`, { body: { input: { content: "Hello." }, max_cost_usd: 1 } });
+  assert.equal(capped.status, 202, capped.text);
+  for (const id of [run, capped.body.run_id]) await until(async () => (await inW1(server, "GET", `/v2/runs/${id}`)).body?.status === "completed", 60_000, "W1's run completes");
+  // Each extra's own answer on W1's ended agentic run, as its handler gives it: a refusal is the run's (its words name why
+  // this run is refused), never the 404 of a run W1 cannot see, and never a 500.
+  const on = (name, id) => inW1(server, TABLE[name].method, TABLE[name].path.replace("{run}", id), TABLE[name].body === undefined ? {} : { body: TABLE[name].body });
+  const raised = await on("raiseRunCap", capped.body.run_id);
+  assert.deepEqual([raised.status, raised.body.error?.code], [409, "not_continuable"], raised.text);
+  assert.match(raised.body.error.message, /^This run is finished\./);
+  const graph = await on("getRunGraph", run);
+  assert.deepEqual([graph.status, graph.body.error?.code], [404, "not_found"], graph.text);
+  assert.match(graph.body.error.message, /is an agentic run; only a workflow run has a graph/);
+  const trace = await on("getRunTrace", run);
+  assert.equal(trace.status, 200, trace.text);
+  assert.equal(trace.body.run_id, run);
+  assert.ok(trace.body.spans.length > 0 && trace.body.spans.every((span) => typeof span.id === "string" && typeof span.kind === "string"), trace.text);
+  for (const name of ["pauseRun", "resumeRun"]) {
+    const refused = await on(name, run);
+    assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.capability], [501, "unsupported_here", "runs.pause"], `${name}: ${refused.text}`);
   }
+  const graded = await on("gradeRun", run);
+  assert.equal(graded.status, 200, graded.text);
+  assert.deepEqual([graded.body.run_id, graded.body.correct], [run, true]);
+  const notHeld = await on("startRun", run);
+  assert.deepEqual([notHeld.status, notHeld.body.error?.code], [404, "not_found"], notHeld.text);
+  assert.match(notHeld.body.error.message, /holds no computer: a run started with hold: true holds one/);
+  // A live workflow run of W1's: W1 pauses it (its first node held on a file the test makes after the pause, so the
+  // second never starts before the pause lands), reads its graph paused, and resumes it to its end.
+  const wait = `Answer once ${join(server.data, "w1-paused")} exists.`;
+  const twoSteps = answerFlow(wait);
+  twoSteps.root.steps.push({ ...twoSteps.root.steps[0], label: "again", instructions: "Answer the question.", as: "again" });
+  const flow = await inW1(server, "POST", "/v2/agents", { body: { definition: { name: "W1 flow", workflow: twoSteps } } });
+  assert.equal(flow.status, 201, flow.text);
+  const live = await inW1(server, "POST", `/v2/agents/${flow.body.agent_id}/runs`, { body: { input: { question: wait } } });
+  assert.equal(live.status, 202, live.text);
+  const liveId = live.body.run_id;
+  await until(async () => (await inW1(server, "GET", `/v2/runs/${liveId}`)).body?.status === "working", 60_000, "W1's workflow is at work");
+  const paused = await on("pauseRun", liveId);
+  assert.deepEqual([paused.status, paused.body.run_id, paused.body.paused], [200, liveId, true], paused.text);
+  writeFileSync(join(server.data, "w1-paused"), "");
+  await until(async () => (await inW1(server, "GET", `/v2/runs/${liveId}`)).body?.status === "paused", 30_000, "W1's workflow reads paused");
+  const pausedGraph = await on("getRunGraph", liveId);
+  assert.equal(pausedGraph.status, 200, pausedGraph.text);
+  assert.deepEqual([pausedGraph.body.run.status, Object.keys(pausedGraph.body.nodes).includes("/root/steps/0")], ["paused", true], pausedGraph.text);
+  const resumed = await on("resumeRun", liveId);
+  assert.deepEqual([resumed.status, resumed.body.run_id, resumed.body.paused], [200, liveId, false], resumed.text);
+  await until(async () => (await inW1(server, "GET", `/v2/runs/${liveId}`)).body?.status === "completed", 60_000, "W1's workflow ends once resumed");
   const archived = await inW1(server, "POST", `/v2/runs/${run}/archive`, { body: {} });
   assert.equal(archived.status, 200, archived.text);
   assert.ok(archived.body.archived_at, "the run reads archived");
@@ -973,4 +1015,19 @@ test("a scoped run is its agent's workspace's through its agent alone: its row k
   assert.equal(await server.store.runs.workspace(run), W1, "it reads as its agent's");
   assert.equal((await inW1(server, "GET", `/v2/runs/${run}`)).status, 200);
   assert.equal(await server.store.agents.workspace(agent), W1);
+});
+
+test("a scoped request starts its own held run: W1's run started with hold: true waits on its computer until W1's start, which answers started, and its agent then runs to its end", { timeout: 120_000 }, async (t) => {
+  // --faux's desktop (made at the claim), its model the held fixture's, which never waits unless a test asks it to.
+  const server = await scopedServer(t, { runner: true, faux: new URL("./fixtures/faux-desktop-held.mjs", import.meta.url).pathname });
+  const desk = await inW1(server, "POST", "/v2/agents", { body: { definition: { version: 1, name: "W1 desk", instructions: "Look at the desktop.", skills: [], tools: [], computer: { kind: "desktop", provider: "faux-desktop" } } } });
+  assert.equal(desk.status, 201, desk.text);
+  const held = await inW1(server, "POST", `/v2/agents/${desk.body.agent_id}/runs`, { body: { input: { content: "Look at the desktop." }, hold: true, hold_minutes: 5 } });
+  assert.equal(held.status, 202, held.text);
+  const id = held.body.run_id;
+  await until(async () => (await inW1(server, "GET", `/v2/runs/${id}`)).body?.computer?.held?.state === "waiting", 60_000, "W1's held run waits on its computer");
+  const started = await inW1(server, TABLE.startRun.method, TABLE.startRun.path.replace("{run}", id), { body: TABLE.startRun.body });
+  assert.deepEqual([started.status, started.body], [200, { held: { state: "started" } }], started.text);
+  // The agent runs to its end; the run keeps its computer (held: ended) until a release or the hold's lapse.
+  await until(async () => (await inW1(server, "GET", `/v2/runs/${id}`)).body?.computer?.held?.state === "ended", 60_000, "W1's started agent runs to its end");
 });
