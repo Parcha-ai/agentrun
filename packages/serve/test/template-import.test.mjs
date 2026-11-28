@@ -366,6 +366,18 @@ test("an App token GitHub refuses (403, no contents read) on the commit or the t
   }
 });
 
+test("an import in a workspace never reads GitHub, so it never mints a token of the server's GitHub App: a workspace is served on an API-only server alone, which takes a package as {files}", { timeout: 60_000 }, async (t) => {
+  const { connectedApiOnly, mintsAsked } = await import("./github-support.mjs");
+  const github = await fauxGitHub(t);
+  const server = await connectedApiOnly(t, { templateImportApi: github.url, runner: false });
+  const before = server.github.requests.length;
+  const scoped = await server.scoped("POST", "/templates/import", { source: `${ID}@main`, dry_run: true });
+  assert.equal(scoped.status, 422, JSON.stringify(scoped.body));
+  assert.deepEqual(scoped.body.error.fields.map((f) => [f.field, f.reason]), [["source", "not_allowed"]]);
+  assert.deepEqual(mintsAsked(server.github, before), [], "no installation token was minted");
+  assert.deepEqual(github.seen.filter((line) => line.includes("/acme/agents/")), [], "the repository was never read");
+});
+
 test("the store keeps each imported package by id, its files as read: a put replaces the one under its id, and a remove says whether one was there", async (t) => {
   const { store } = await storeOn(t);
   const rows = store.importedTemplates;
@@ -373,8 +385,8 @@ test("the store keeps each imported package by id, its files as read: a put repl
   await rows.put({ id: "github:acme/other", source: "github:acme/other", sha: SHA_A, publisher: "acme", files: {} });
   await rows.put({ id: ID, source: `${ID}@v2`, sha: SHA_B, publisher: "acme", files: { "agent.md": "eA==" } });
   assert.deepEqual((await rows.list()).map(({ importedAt, ...row }) => (assert.equal(typeof importedAt, "number"), row)), [
-    { id: "github:acme/agents/templates/kyb", source: `${ID}@v2`, sha: SHA_B, publisher: "acme", files: { "agent.md": "eA==" } },
-    { id: "github:acme/other", source: "github:acme/other", sha: SHA_A, publisher: "acme", files: {} },
+    { id: "github:acme/agents/templates/kyb", source: `${ID}@v2`, sha: SHA_B, publisher: "acme", files: { "agent.md": "eA==" }, workspace: null },
+    { id: "github:acme/other", source: "github:acme/other", sha: SHA_A, publisher: "acme", files: {}, workspace: null },
   ]);
   assert.equal(await rows.remove(ID), true);
   assert.equal(await rows.remove(ID), false);

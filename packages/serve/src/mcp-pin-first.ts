@@ -110,6 +110,7 @@ export function registryListing(store: Parameters<typeof mcpServersOverStore>[0]
 /** A token to list a github_app server's tools with, from the run's App access: its repository, metadata read alone; or
  *  why there is none, in the words its calls would be refused in. */
 async function listingToken(access: GithubAppAccess): Promise<{ token: string } | { unusable: string } | { failed: string }> {
+  if (access.withheld) return { unusable: access.withheld };
   if (!access.target) return { unusable: GITHUB_UNUSABLE.noRepo };
   const minted = await access.mint(access.target, { metadata: "read" });
   if (minted.ok) return { token: minted.token };

@@ -68,12 +68,12 @@ test("a going run with a desktop is listed as its run read; one with no computer
   assert.deepEqual((await server.api("GET", "/computers/running")).body, { runs: [] });
 });
 
-/** A store of run rows by state and revisions by id. */
+/** A store of run rows by state (and workspace, when the filter names one) and revisions by id. */
 const storeOf = (rows, revisions) => ({
-  runs: { list: async ({ state }) => rows.filter((row) => row.state === state) },
+  runs: { list: async ({ state, workspace }) => rows.filter((row) => row.state === state && (workspace === undefined || row.workspace === workspace)) },
   agents: { revision: async (id) => revisions[id] },
 });
-const row = (id, state, revisionId) => ({ id, state, revisionId, agentId: "a" });
+const row = (id, state, revisionId, workspace) => ({ id, state, revisionId, agentId: "a", ...(workspace === undefined ? {} : { workspace }) });
 const DESKTOP = { body: { computer: { kind: "desktop", provider: "e2b" } } };
 const going = (created_at, state = "ready") => ({ status: "working", created_at, computer: { kind: "desktop", provider: "e2b", state } });
 
@@ -84,28 +84,37 @@ test("only going runs whose agent has a computer are read, and the list is newes
   );
   const reads = { r1: going("2026-11-05T09:00:00.000Z"), r2: going("2026-11-05T09:02:00.000Z", "starting"), r3: going("2026-11-05T09:01:00.000Z") };
   const asked = [];
-  const { runs } = await runningComputers(store, async (runId) => { asked.push(runId); return reads[runId]; });
+  const { runs } = await runningComputers(store, async (runId) => { asked.push(runId); return reads[runId]; }, {});
   assert.deepEqual(runs, [reads.r2, reads.r3, reads.r1]);
   assert.deepEqual(asked.sort(), ["r1", "r2", "r3"], "a run with no computer, and an ended one, is never read");
 });
 
+test("a request in a workspace lists its own workspace's runs alone, and never reads another's", async () => {
+  const store = storeOf([row("mine", "running", "desk", "org:one"), row("theirs", "running", "desk", "org:two"), row("nobodys", "running", "desk")], { desk: DESKTOP });
+  const asked = [];
+  const read = async (runId) => { asked.push(runId); return going("2026-11-05T09:00:00.000Z"); };
+  assert.equal((await runningComputers(store, read, { workspace: "org:one" })).runs.length, 1);
+  assert.deepEqual(asked, ["mine"], "another workspace's run, or one of none, is never read");
+  assert.equal((await runningComputers(store, read, {})).runs.length, 3, "unscoped, every workspace's");
+});
+
 test("a sandbox an agent's place stands for counts as its computer", async () => {
   const sandbox = { status: "working", created_at: "2026-11-05T09:00:00.000Z", computer: { kind: "sandbox", provider: "docker", state: "ready" } };
-  const { runs } = await runningComputers(storeOf([row("r1", "running", "boxed")], { boxed: { body: { place: { mode: "sandbox", box: "docker" } } } }), async () => sandbox);
+  const { runs } = await runningComputers(storeOf([row("r1", "running", "boxed")], { boxed: { body: { place: { mode: "sandbox", box: "docker" } } } }), async () => sandbox, {});
   assert.deepEqual(runs, [sandbox]);
 });
 
 test("a run gone, ended or failed for want of its computer between its row and its read is left out", async () => {
   const reads = { over: going("2026-11-05T09:00:00.000Z", "ended"), failed: { ...going("2026-11-05T09:00:00.000Z", "failed"), status: "failed" }, up: going("2026-11-05T09:00:00.000Z") };
   const rows = [row("gone", "running", "desk"), row("over", "running", "desk"), row("failed", "running", "desk"), row("up", "running", "desk")];
-  const { runs } = await runningComputers(storeOf(rows, { desk: DESKTOP }), async (runId) => reads[runId]);
+  const { runs } = await runningComputers(storeOf(rows, { desk: DESKTOP }), async (runId) => reads[runId], {});
   assert.deepEqual(runs, [reads.up]);
 });
 
 test("a run whose row moves from one state to the next while the rows are listed is listed once", async () => {
   // The queued rows are listed, then the run is claimed: it is among the running rows too.
   const rows = [row("r1", "queued", "desk"), row("r1", "running", "desk")];
-  const { runs } = await runningComputers(storeOf(rows, { desk: DESKTOP }), async () => going("2026-11-05T09:00:00.000Z"));
+  const { runs } = await runningComputers(storeOf(rows, { desk: DESKTOP }), async () => going("2026-11-05T09:00:00.000Z"), {});
   assert.equal(runs.length, 1);
 });
 

@@ -168,7 +168,7 @@ export interface components {
     places: {
       modes: ("runner" | "sandbox")[];
       boxes: {
-        id: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
+        id: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel";
         available: boolean;
         state: "ready" | "unavailable";
         reason?: string;
@@ -180,7 +180,7 @@ export interface components {
         mode: "runner";
       } | {
         mode: "sandbox";
-        box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
+        box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel";
       } | null;
       default_reason?: string;
       allow: string[];
@@ -394,7 +394,7 @@ export interface components {
       mode: "runner";
     } | {
       mode: "sandbox";
-      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
+      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel";
     };
     computer?: {
       kind: "none" | "sandbox" | "desktop" | "phone" | "browser";
@@ -649,6 +649,7 @@ export interface components {
       auth: ("none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run")[];
       at_rest: "sealed";
       harnesses: string[];
+      composio_key_envs?: string[];
       composio_per_run: boolean;
     };
     tool_permissions?: boolean;
@@ -1024,7 +1025,7 @@ export interface components {
       mode: "runner";
     } | {
       mode: "sandbox";
-      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
+      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel";
     };
     computer?: {
       kind: "sandbox" | "desktop" | "phone" | "browser";
@@ -1059,6 +1060,7 @@ export interface components {
       kind: "question";
       question: string;
       asked_at: string;
+      expires_at?: string;
     } | {
       kind: "approval";
       id: string;
@@ -1370,6 +1372,7 @@ export interface components {
       kind: "question";
       question: string;
       asked_at: string;
+      expires_at?: string;
     } | {
       kind: "approval";
       id: string;
@@ -3228,7 +3231,7 @@ export interface operations {
       auth: {
         type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
         headers?: string[];
-        api_key_env?: "COMPOSIO_API_KEY";
+        api_key_env?: "COMPOSIO_API_KEY" | "AGENTRUN_COMPOSIO_API_KEY";
       };
       credential: "sealed" | "unreadable" | "expired" | null;
       oauth?: {
@@ -4840,7 +4843,7 @@ export interface operations {
   listComposioToolkits: {
     body: {
       api_key?: string;
-      api_key_env?: "COMPOSIO_API_KEY";
+      api_key_env?: "COMPOSIO_API_KEY" | "AGENTRUN_COMPOSIO_API_KEY";
     };
     answer: {
       toolkits: {
@@ -4853,7 +4856,7 @@ export interface operations {
     body: {
       toolkit: string;
       api_key?: string;
-      api_key_env?: "COMPOSIO_API_KEY";
+      api_key_env?: "COMPOSIO_API_KEY" | "AGENTRUN_COMPOSIO_API_KEY";
     };
     answer: {
       toolkit: string;
@@ -5158,6 +5161,7 @@ export interface operations {
               };
             };
             unjudged?: number;
+            unread?: number;
           }>;
           of?: string[];
           cost_usd?: number | null;
@@ -5188,6 +5192,8 @@ export interface operations {
               value?: string;
             }[];
           }[];
+          unread?: number;
+          undecided?: true;
           stopped?: true;
           released?: number;
           fresh_reads?: number;
@@ -5208,6 +5214,7 @@ export interface operations {
                 agent_right: number;
               };
               unjudged?: number;
+              unread?: number;
             }>;
             of: string[];
             outcomes: {
@@ -5232,6 +5239,7 @@ export interface operations {
               }[];
             }[];
             fresh_reads?: number;
+            unread?: number;
           };
         };
         runs?: string[];
@@ -5319,6 +5327,7 @@ export interface operations {
                 };
               };
               unjudged?: number;
+              unread?: number;
             }>;
             of?: string[];
             cost_usd?: number | null;
@@ -5349,6 +5358,8 @@ export interface operations {
                 value?: string;
               }[];
             }[];
+            unread?: number;
+            undecided?: true;
             stopped?: true;
             released?: number;
             fresh_reads?: number;
@@ -5369,6 +5380,7 @@ export interface operations {
                   agent_right: number;
                 };
                 unjudged?: number;
+                unread?: number;
               }>;
               of: string[];
               outcomes: {
@@ -5393,6 +5405,7 @@ export interface operations {
                 }[];
               }[];
               fresh_reads?: number;
+              unread?: number;
             };
           } | null;
         } | null;
@@ -5438,7 +5451,7 @@ export interface operations {
         auth: {
           type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
           headers?: string[];
-          api_key_env?: "COMPOSIO_API_KEY";
+          api_key_env?: "COMPOSIO_API_KEY" | "AGENTRUN_COMPOSIO_API_KEY";
         };
         credential: "sealed" | "unreadable" | "expired" | null;
         oauth?: {
@@ -6569,7 +6582,7 @@ export interface operations {
         auth: {
           type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
           headers?: string[];
-          api_key_env?: "COMPOSIO_API_KEY";
+          api_key_env?: "COMPOSIO_API_KEY" | "AGENTRUN_COMPOSIO_API_KEY";
         };
         credential: "sealed" | "unreadable" | "expired" | null;
         oauth?: {
@@ -6950,7 +6963,7 @@ export interface operations {
       auth_config_id?: string;
       price_usd?: number;
       api_key?: string;
-      api_key_env?: "COMPOSIO_API_KEY";
+      api_key_env?: "COMPOSIO_API_KEY" | "AGENTRUN_COMPOSIO_API_KEY";
     };
     answer: {
       server: {
@@ -6961,7 +6974,7 @@ export interface operations {
         auth: {
           type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
           headers?: string[];
-          api_key_env?: "COMPOSIO_API_KEY";
+          api_key_env?: "COMPOSIO_API_KEY" | "AGENTRUN_COMPOSIO_API_KEY";
         };
         credential: "sealed" | "unreadable" | "expired" | null;
         oauth?: {
@@ -7110,7 +7123,7 @@ export interface operations {
       auth: {
         type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
         headers?: string[];
-        api_key_env?: "COMPOSIO_API_KEY";
+        api_key_env?: "COMPOSIO_API_KEY" | "AGENTRUN_COMPOSIO_API_KEY";
       };
       credential: "sealed" | "unreadable" | "expired" | null;
       oauth?: {

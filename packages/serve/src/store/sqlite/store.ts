@@ -12,10 +12,10 @@ import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { JOURNAL_FIRST_ID, RunStorage } from "../journal/storage.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
-import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, LEARNING_LEDGER, LEARNING_LEDGER_ADDED, LEARNING_LEDGER_AGENT, LEARNING_LEDGER_BY_HAND, LEARNING_ROWS, LEARNING_SPEND, LEARNING_SPEND_AGENT, LEARNING_SPEND_OF_RUN, ledgerUpgrade, learningRowsUpgrade, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUN_LAUNCH_CENSUS, RUN_LAUNCH_CENSUS_ERASED, RUN_LAUNCH_CENSUS_ERASED_MADE, RUN_LAUNCH_CENSUS_SETTLE, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, splitUpgrade, STORE_META_LEDGER_BACKFILLED, STORE_META_LEDGER_RERECORDED, TRIGGERS_TEMPLATE_ID, WORKSPACE_ADDED, WORKSPACE_INDEXES } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, IMPORTED_TEMPLATES_KEYS, LEARNING_LEDGER, LEARNING_LEDGER_ADDED, LEARNING_LEDGER_AGENT, LEARNING_LEDGER_BY_HAND, LEARNING_ROWS, LEARNING_SPEND, LEARNING_SPEND_AGENT, LEARNING_SPEND_OF_RUN, ledgerUpgrade, learningRowsUpgrade, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUN_LAUNCH_CENSUS, RUN_LAUNCH_CENSUS_ERASED, RUN_LAUNCH_CENSUS_ERASED_MADE, RUN_LAUNCH_CENSUS_SETTLE, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, splitUpgrade, STORE_META_LEDGER_BACKFILLED, STORE_META_LEDGER_RERECORDED, TRIGGER_FIRINGS_HOOKED, TRIGGERS_TEMPLATE_ID, uploadKeysUpgrade, WORKSPACE_ADDED, WORKSPACE_INDEXES } from "../schema.js";
 import {
   ActiveRuns, AgentArchived, AgentDeleting, AgentPurged, CommandTaken, ExternalBodyConflict, Fenced, FiringMoved, RunFinal, RunPurged, RunnerBelowFloor, RunsMadeFromLeft, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, UPLOAD_PREFIX, type AgentRow, type Agents,
-  type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
+  type Claim, type Command, type FiringHooked, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
   type JournalReads, type KeptListing, type LaunchSealedWrite, type RunLabels, type UpdatedRun,
   type ReleasedState, type RunState, type SecureRewriteOptions, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type LearningSpend, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpCredentialMark, type McpPinRow, type McpRemoved, type McpServerRow, type McpServerWrite, type McpTokensMark, type McpOwnersMark,
@@ -118,7 +118,7 @@ type TriggerRecord = {
 type FiringRecord = {
   trigger_id: string; key: string; by: string | null; nominal_at: number | null; status: FiringStatus; at: number; run_id: string | null; reason: string | null;
   error: string | null; count: number | null; attempts: number; retry_at: number | null; payload: string | null; attrs: string | null; notified: number | null;
-  catch_up: number | null; paused: number | null; shown: number | null; waits_on: string | null;
+  catch_up: number | null; paused: number | null; shown: number | null; waits_on: string | null; hooked: string | null;
 };
 /** No audit's shadow run (learn/audit.ts SHADOW_PREFIX "audit."): the prefix compared as it is, which LIKE does not on
  *  SQLite (it folds case). */
@@ -135,13 +135,14 @@ const listingBehind = (now: string) => ({
   sql: `(runs.listing_mark < runs.list_mark OR (runs.listing_live = 1 AND NOT ${heldAt(now)}) OR (runs.listing_until IS NOT NULL AND runs.listing_until <= ${now}))`,
   params: (at: readonly SqliteValue[]): SqliteValue[] => [...at, ...at],
 });
-const FIRING_COLUMNS = "trigger_id, key, by, nominal_at, status, at, run_id, reason, error, count, attempts, retry_at, payload, attrs, notified, catch_up, paused, shown, waits_on";
+const FIRING_COLUMNS = "trigger_id, key, by, nominal_at, status, at, run_id, reason, error, count, attempts, retry_at, payload, attrs, notified, catch_up, paused, shown, waits_on, hooked";
 /** A sent firing's retry_at is its startBy (settle's one exception), never a retry. */
 const firingOf = (r: FiringRecord): FiringRow => ({
   triggerId: r.trigger_id, key: r.key, by: r.by ?? "manual", nominalAt: r.nominal_at ?? r.at, status: r.status, at: r.at, runId: r.run_id, reason: r.reason,
   error: r.error === null ? null : JSON.parse(r.error), count: r.count, attempts: r.attempts, retryAt: r.status === "sent" ? null : r.retry_at,
   startBy: r.status === "sent" ? r.retry_at : null, payload: r.payload,
   attrs: r.attrs === null ? null : JSON.parse(r.attrs), notified: r.notified === 1, catchUp: r.catch_up === 1, paused: r.paused === 1, shown: r.shown !== 0, waitsOn: r.waits_on,
+  hooked: r.hooked === null ? null : JSON.parse(r.hooked),
 });
 /** The trigger's patch as columns: name -> [column, value]. */
 const TRIGGER_PATCH: { [K in keyof TriggerPatch]-?: (value: NonNullable<TriggerPatch[K]> | null) => [string, SqliteValue] } = {
@@ -256,6 +257,17 @@ const triggerOf = (r: TriggerRecord): TriggerRow => ({
   createdAt: r.created_at, updatedAt: r.updated_at, templateId: r.template_id ?? null,
 });
 const json = (value: unknown): string => JSON.stringify(value ?? null);
+
+/** A firing's kept cap after a hand that tells its target's cap `now` (Triggers.hooked): the first hand's, else the lower
+ *  of the kept one and `now`, so it is the lowest any hand has told the host. A cap told after a kept null stays under
+ *  the agent's default that null stood for (`under_default`). */
+function lowestHooked(kept: FiringHooked | null, now: number | null): FiringHooked {
+  if (!kept) return { max_cost_usd: now };
+  if (now === null) return kept;
+  if (kept.max_cost_usd === null) return { max_cost_usd: now, under_default: true };
+  return now < kept.max_cost_usd ? { ...kept, max_cost_usd: now } : kept;
+}
+
 /** A UTF-16 surrogate standing alone (in `u` mode a whole pair is one code point, so only a lone half matches). */
 const LONE_SURROGATE = /[\ud800-\udfff]/u;
 /** A run's labels as its column holds them: keys sorted, so the same labels are the same text; null for none. A key or value
@@ -313,7 +325,11 @@ const intervalOf = (r: ComputerIntervalRecord): ComputerIntervalRow => ({
   memoryMb: orNull(r.memory_mb), diskGb: orNull(r.disk_gb), startedAt: Number(r.started_at), kept: Number(r.kept) === 1, endedAt: orNull(r.ended_at), bookedMs: Number(r.booked_ms),
 });
 const ledgerRowOf = (r: ComputerLedgerRecord): ComputerLedgerRow => ({ provider: r.provider, sessionId: r.session_id, labels: JSON.parse(r.labels), detail: JSON.parse(r.detail), updatedAt: r.updated_at });
-type ImportedTemplateRecord = { id: string; source: string; sha: string; publisher: string; files: string; imported_at: number };
+type ImportedTemplateRecord = { id: string; source: string; sha: string; publisher: string; files: string; imported_at: number; workspace: string | null };
+/** Imported packages by id, those of no workspace first, then by workspace: the same on SQLite and Postgres. */
+const IMPORTED_ORDER = "id, workspace IS NOT NULL, workspace";
+/** A row's `workspace` column held to `workspace`, or to none when it is undefined. */
+const ofWorkspace = (workspace: string | undefined): { sql: string; params: string[] } => (workspace === undefined ? { sql: "workspace IS NULL", params: [] } : { sql: "workspace = ?", params: [workspace] });
 type PairedRecord = { id: string; name: string; hello: string; driver: string; labels: string; pairing_id: string; created_at: number; seen_at: number | null; revoked_at: number | null };
 const pairedOf = (r: PairedRecord): PairedComputerRow => ({ id: r.id, name: r.name, hello: JSON.parse(r.hello), driver: r.driver, labels: JSON.parse(r.labels), pairingId: r.pairing_id, createdAt: r.created_at, seenAt: r.seen_at, revokedAt: r.revoked_at });
 type MintedRecord = { machine: string; kind: string; os: string; arch: string; expires_at: number; revoked_at: number | null; created_at: number; runner: string | null; incarnation: string | null; run: string | null; refused: string | null };
@@ -370,6 +386,10 @@ export const SQLITE_RUNNER_NEEDS: readonly { readonly table: string; readonly co
   { table: "learning_ledger", columns: ["run_id", ...Object.keys(LEARNING_LEDGER_ADDED)], why: "write each run's learning ledger row and spend at its end (learning_ledger, learning_spend)" },
   { table: "learning_spend", columns: ["run_id"], why: "write each run's learning ledger row and spend at its end (learning_ledger, learning_spend)" },
   { table: "learning_saves", columns: ["merge_key"], why: "keep each agent's learning as rows (learning_saves, learning_items, learning_records)" },
+  // Every claim with a seal key reads its run's workspace, its own else its agent's (runner/github-app.ts githubAppAccess,
+  // Runs.workspace), before its checkout and MCP setup. The server adds both at its start (addWorkspaceColumns).
+  { table: "agents", columns: ["workspace"], why: "keep each agent's and run's workspace (agents.workspace, runs.workspace)" },
+  { table: "runs", columns: ["workspace"], why: "keep each agent's and run's workspace (agents.workspace, runs.workspace)" },
 ];
 
 /** What a runner of this build waits for on a file of this version (SQLITE_RUNNER_NEEDS' first missing column's `why`),
@@ -549,6 +569,11 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
       if (role === "runner") throw new StoreAwaitsServer("add each trigger's package mark");
       await connection.write([{ sql: TRIGGERS_TEMPLATE_ID }], { full: true });
     }
+    // Nor what the launch hook told a firing's host (schema.ts TRIGGER_FIRINGS_HOOKED): the server adds the column,
+    // nullable, every firing handed before reading as told nothing. No runner reads firings.
+    if (role === "server" && !(await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('trigger_firings')")).some((column) => column.name === "hooked")) {
+      await connection.write([{ sql: TRIGGER_FIRINGS_HOOKED }], { full: true });
+    }
     // An earlier build of version 13 kept each runner's relay in a table of its own (runner_relays), which the server's
     // open below drops for runners (schema.ts RUNNERS). A runner says it is there, and where its relay answers, through
     // runners alone, so it waits for that server.
@@ -579,6 +604,12 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     // waits for the server that adds the tables.
     if (role === "runner" && (await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('learning_saves')")).length === 0) {
       throw new StoreAwaitsServer("keep each agent's learning as rows (learning_saves, learning_items, learning_records)");
+    }
+    // A claim with a seal key reads its run's workspace, its own else its agent's (runner/github-app.ts, Runs.workspace): a
+    // runner waits for the server that adds both columns (addWorkspaceColumns, below).
+    const keepsWorkspace = async (table: "agents" | "runs") => (await connection.all<{ name: string }>(`SELECT name FROM pragma_table_info('${table}') WHERE name = 'workspace'`)).length > 0;
+    if (role === "runner" && !((await keepsWorkspace("agents")) && (await keepsWorkspace("runs")))) {
+      throw new StoreAwaitsServer("keep each agent's and run's workspace (agents.workspace, runs.workspace)");
     }
     // The per-run viewer table was renamed browser_viewers → computer_viewers (schema.ts). Its rows are ephemeral, so none
     // migrate; the server drops a stale browser_viewers an earlier build of this version left, so none lingers beside it.
@@ -650,6 +681,11 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
       const ledgerMissing = Object.entries(LEARNING_LEDGER_ADDED).filter(([column]) => !ledgerNow.has(column)).map(([, sql]) => ({ sql }));
       if (ledgerMissing.length > 0) await connection.write(ledgerMissing, { full: true });
       await addWorkspaceColumns(connection);
+      // An imported_templates an earlier build of this version made is keyed by its id alone: made again, each row in the
+      // workspace it had, keyed by workspace and id (schema.ts uploadKeysUpgrade). No runner reads it, so none waits.
+      if ((await connection.all<{ pk: number }>("SELECT pk FROM pragma_table_info('imported_templates') WHERE name = 'id'")).some((column) => column.pk > 0)) {
+        await connection.write(uploadKeysUpgrade().map((sql) => ({ sql })), { full: true });
+      }
       await backfillNativeCommandOwners(connection);
       // Here `found` is SCHEMA_VERSION or a version in the window (any other was refused above): each step runs for the
       // versions before the one that first kept what it adds.
@@ -696,14 +732,15 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
 const SQLITE_FLOOR = async (): Promise<number> => SCHEMA_VERSION;
 
 /** An agents, runs or imported_templates table an earlier build of this version made keeps no workspace (schema.ts
- *  WORKSPACE_ADDED): each added where missing, every row unscoped, then their indexes. The server's open runs it, and so
- *  does prepareWorkspaceColumns. */
+ *  WORKSPACE_ADDED): each added where missing, every row unscoped, then their indexes and the imported packages' keys
+ *  (IMPORTED_TEMPLATES_KEYS; the server's open drops the key on the id alone after it, uploadKeysUpgrade). The server's
+ *  open runs it, and so does prepareWorkspaceColumns. */
 async function addWorkspaceColumns(connection: Connection): Promise<void> {
   const missing: { sql: string }[] = [];
   for (const [table, sql] of Object.entries(WORKSPACE_ADDED)) {
     if (!(await connection.all<{ name: string }>(`SELECT name FROM pragma_table_info('${table}')`)).some((column) => column.name === "workspace")) missing.push({ sql });
   }
-  await connection.write([...missing, ...WORKSPACE_INDEXES.map((sql) => ({ sql }))], { full: true });
+  await connection.write([...missing, ...[...WORKSPACE_INDEXES, ...IMPORTED_TEMPLATES_KEYS].map((sql) => ({ sql }))], { full: true });
 }
 
 /** The workspace columns of the store at `file`, added as the server's open adds them (addWorkspaceColumns), for a
@@ -1158,7 +1195,7 @@ class SqliteStore implements Store {
       purge: (agentId) =>
         this.#purging(() => db.transaction(async (tx) => {
           await d.lockRow(tx, "agents", "id", agentId);
-          const agent = await tx.get<{ purged_at: number | null }>("SELECT purged_at FROM agents WHERE id = ?", agentId);
+          const agent = await tx.get<{ purged_at: number | null; workspace: string | null }>("SELECT purged_at, workspace FROM agents WHERE id = ?", agentId);
           if (!agent || agent.purged_at !== null) return false;
           // Each run a tombstone first (Runs.purge): a run started past the delete's listing keeps the agent for the next one.
           const left = await tx.get<{ id: string }>("SELECT id FROM runs WHERE agent_id = ? AND purged_at IS NULL LIMIT 1", agentId);
@@ -1172,15 +1209,17 @@ class SqliteStore implements Store {
           // else owns one, and a server that serves no template route (API-only) could never remove it. Each is held by its
           // id, in order, before it is read: two purges of agents applied from one upload read it in turn, so the later
           // reads the earlier's purge (committed) and removes the upload. Only the package it was applied from goes, by its
-          // sha too: a newer upload of the same name, which another deploy has yet to apply, stays.
+          // sha too: a newer upload of the same name, which another deploy has yet to apply, stays. An upload is its
+          // workspace's (none's for an agent of none): another workspace's of the same name, and its agents, are not read.
           const packageId = (alias: string) => d.jsonText(`${alias}.package`, ["id"]);
+          const workspace = ofWorkspace(agent.workspace ?? undefined);
           const applied = (await tx.all<{ id: string | null; sha: string | null }>(`SELECT DISTINCT ${packageId("r")} AS id, ${d.jsonText("r.package", ["sha"])} AS sha FROM revisions r WHERE r.agent_id = ? AND r.package IS NOT NULL`, agentId))
             .filter((row): row is { id: string; sha: string } => row.id !== null && row.id.startsWith(UPLOAD_PREFIX) && row.sha !== null)
             .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
           for (const { id, sha } of applied) {
             await d.lockKey(tx, `imported_templates:${id}`);
-            const kept = await tx.get<{ id: string }>(`SELECT r.id FROM revisions r JOIN agents a ON a.id = r.agent_id WHERE r.agent_id <> ? AND a.purged_at IS NULL AND ${packageId("r")} = ? LIMIT 1`, agentId, id);
-            if (!kept) await tx.run("DELETE FROM imported_templates WHERE id = ? AND sha = ?", id, sha);
+            const kept = await tx.get<{ id: string }>(`SELECT r.id FROM revisions r JOIN agents a ON a.id = r.agent_id WHERE r.agent_id <> ? AND a.purged_at IS NULL AND a.${workspace.sql} AND ${packageId("r")} = ? LIMIT 1`, agentId, ...workspace.params, id);
+            if (!kept) await tx.run(`DELETE FROM imported_templates WHERE id = ? AND sha = ? AND ${workspace.sql}`, id, sha, ...workspace.params);
           }
           // Each revision's content; its id, kind, parent and time stay, which its runs' tombstones name.
           await tx.run("UPDATE revisions SET body = '{}', skills = NULL, package = NULL, note = NULL, mcp_pin = NULL, monid_pin = NULL WHERE agent_id = ?", agentId);
@@ -1308,6 +1347,16 @@ class SqliteStore implements Store {
       },
       firings: async (triggerId) =>
         (await db.all<FiringRecord>(`SELECT ${FIRING_COLUMNS} FROM trigger_firings WHERE trigger_id = ? AND shown = 1 ORDER BY at DESC, ${d.firingOrder} DESC`, triggerId)).map(firingOf),
+      hooked: async (triggerId, key, now) =>
+        db.transaction(async (tx) => {
+          // Read under the row's lock, so two hands of the firing never both read the cap the other lowers.
+          const row = await tx.get<{ hooked: string | null }>(`SELECT hooked FROM trigger_firings WHERE trigger_id = ? AND key = ?${d.claimOneLock}`, triggerId, key);
+          if (!row) return undefined;
+          const kept: FiringHooked | null = row.hooked ? JSON.parse(row.hooked) : null;
+          const next = lowestHooked(kept, now.max_cost_usd);
+          if (next !== kept) await tx.run("UPDATE trigger_firings SET hooked = ? WHERE trigger_id = ? AND key = ?", json(next), triggerId, key);
+          return next;
+        }),
       settle: async (triggerId, key, change, streak) =>
         db.transaction(async (tx) => {
           const at = now();
@@ -2615,28 +2664,26 @@ class SqliteStore implements Store {
     };
 
     this.importedTemplates = {
-      list: async () => (await db.all<ImportedTemplateRecord>("SELECT id, source, sha, publisher, files, imported_at FROM imported_templates ORDER BY id")).map((row) => ({
-        id: row.id, source: row.source, sha: row.sha, publisher: row.publisher, files: JSON.parse(row.files) as Record<string, string>, importedAt: row.imported_at,
+      list: async () => (await db.all<ImportedTemplateRecord>(`SELECT id, source, sha, publisher, files, imported_at, workspace FROM imported_templates ORDER BY ${IMPORTED_ORDER}`)).map((row) => ({
+        id: row.id, source: row.source, sha: row.sha, publisher: row.publisher, files: JSON.parse(row.files) as Record<string, string>, importedAt: row.imported_at, workspace: row.workspace,
       })),
-      ids: async () => (await db.all<{ id: string }>("SELECT id FROM imported_templates ORDER BY id")).map((row) => row.id),
+      keys: async () => db.all<{ id: string; workspace: string | null }>(`SELECT id, workspace FROM imported_templates ORDER BY ${IMPORTED_ORDER}`),
       put: async ({ id, source, sha, publisher, files }, workspace) => {
-        const replace = "ON CONFLICT (id) DO UPDATE SET source = excluded.source, sha = excluded.sha, publisher = excluded.publisher, files = excluded.files, imported_at = excluded.imported_at";
-        // In one statement: the row is made in the workspace (none, unscoped), or replaced only while it is that workspace's
-        // (none's), so of two imports of one name at once the later one writes nothing (and is refused), whatever each
-        // checked before.
-        const [result] = await db.write([workspace === undefined
-          ? { sql: `INSERT INTO imported_templates (id, source, sha, publisher, files, imported_at) VALUES (?, ?, ?, ?, ?, ?) ${replace} WHERE imported_templates.workspace IS NULL`, params: [id, source, sha, publisher, JSON.stringify(files), now()] }
-          : { sql: `INSERT INTO imported_templates (id, source, sha, publisher, files, imported_at, workspace) VALUES (?, ?, ?, ?, ?, ?, ?) ${replace} WHERE imported_templates.workspace = excluded.workspace`, params: [id, source, sha, publisher, JSON.stringify(files), now(), workspace] }]);
-        return (result?.changes ?? 0) === 1;
+        // In one statement: made in the workspace (none, unscoped), or the one of its id there replaced.
+        const replace = "DO UPDATE SET source = excluded.source, sha = excluded.sha, publisher = excluded.publisher, files = excluded.files, imported_at = excluded.imported_at";
+        await db.write([workspace === undefined
+          ? { sql: `INSERT INTO imported_templates (id, source, sha, publisher, files, imported_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (id) WHERE workspace IS NULL ${replace}`, params: [id, source, sha, publisher, JSON.stringify(files), now()] }
+          : { sql: `INSERT INTO imported_templates (id, source, sha, publisher, files, imported_at, workspace) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (workspace, id) WHERE workspace IS NOT NULL ${replace}`, params: [id, source, sha, publisher, JSON.stringify(files), now(), workspace] }]);
       },
-      stamp: async (id) => {
-        const row = await db.get<{ sha: string; imported_at: number }>("SELECT sha, imported_at FROM imported_templates WHERE id = ?", id);
+      stamp: async (id, workspace) => {
+        const held = ofWorkspace(workspace);
+        const row = await db.get<{ sha: string; imported_at: number }>(`SELECT sha, imported_at FROM imported_templates WHERE id = ? AND ${held.sql}`, id, ...held.params);
         return row ? { sha: row.sha, importedAt: row.imported_at } : undefined;
       },
-      workspaces: async () => new Map((await db.all<{ id: string; workspace: string | null }>("SELECT id, workspace FROM imported_templates")).map((row) => [row.id, row.workspace])),
       remove: async (id, workspace, read) => {
-        const where = ["id = ?", ...(workspace === undefined ? [] : ["workspace = ?"]), ...(read === undefined ? [] : ["sha = ?", "imported_at = ?"])];
-        const params = [id, ...(workspace === undefined ? [] : [workspace]), ...(read === undefined ? [] : [read.sha, read.importedAt])];
+        const held = ofWorkspace(workspace);
+        const where = ["id = ?", held.sql, ...(read === undefined ? [] : ["sha = ?", "imported_at = ?"])];
+        const params = [id, ...held.params, ...(read === undefined ? [] : [read.sha, read.importedAt])];
         const [result] = await db.write([{ sql: `DELETE FROM imported_templates WHERE ${where.join(" AND ")}`, params }]);
         return (result?.changes ?? 0) === 1;
       },

@@ -834,7 +834,9 @@ export type FiringStatus = "due" | "started" | "sent" | "skipped" | "failed" | "
  *  for its key's day. `retryAt`: a due firing's next try; `waitsOn`: what a due firing waits behind for its trigger's
  *  room, a run's id, or a firing's key while the trigger has no run yet (triggers.ts busy).
  *  `startBy`: a firing its launch hook's host took with no run (sent), the time until which the host may still start
- *  its run (triggers.ts handedStart); null on any other. */
+ *  its run (triggers.ts handedStart); null on any other. `hooked`: what the launch hook told the host of the firing's
+ *  run, written at its first hand (Triggers.hooked) and lowered by any later hand that told less: the lowest cap the
+ *  host was told, which that run never passes; null for a firing never handed (or handed by a build that kept none). */
 export interface FiringRow {
   readonly triggerId: string;
   readonly key: string;
@@ -856,6 +858,14 @@ export interface FiringRow {
   readonly paused: boolean;
   readonly shown: boolean;
   readonly waitsOn: string | null;
+  readonly hooked: FiringHooked | null;
+}
+/** What the launch hook told the host of a firing's run (HookFiring): the lowest cap any hand told, null for the agent's
+ *  default when the host starts it. `under_default`: the first hand told null, so the run stays under the agent's default
+ *  as well as under a cap told since. */
+export interface FiringHooked {
+  readonly max_cost_usd: number | null;
+  readonly under_default?: true;
 }
 /** A firing recorded: due (to be driven), or settled at once (skipped, missed, ignored). */
 export interface NewFiring {
@@ -1104,6 +1114,10 @@ export interface Triggers {
   firing(triggerId: string, key: string): Promise<FiringRow | undefined>;
   /** The trigger's history, newest first: its shown firings. */
   firings(triggerId: string): Promise<FiringRow[]>;
+  /** What the launch hook tells the host of firing `key`'s run, given its target's cap `now`: `now` at its first hand,
+   *  else the lower of the kept cap and `now`, kept and answered, so every hand names the lowest cap told so far and a
+   *  raised target never raises it. Undefined when there is no such firing. */
+  hooked(triggerId: string, key: string, now: FiringHooked): Promise<FiringHooked | undefined>;
   /** The firing changed (with its trigger's last_run_id moved to a newer run it names, and `streak`), in one transaction:
    *  undefined when the firing is gone (its trigger deleted), or is no longer the change's `from`. `paused`: this failure
    *  turned the trigger off. */
@@ -1889,26 +1903,26 @@ export interface ImportedTemplateRow {
   readonly files: Readonly<Record<string, string>>;
   /** When it was last imported (stamped by the store). */
   readonly importedAt: number;
+  /** The workspace a scoped request imported it in (workspace-scope.ts), null for none: its id is that workspace's own. */
+  readonly workspace: string | null;
 }
 
+/** The imported packages, each keyed by its workspace and id: one id is a package in each workspace, and one among those
+ *  of none. Each call's `workspace` is the one it reaches (a scoped request's, workspace-scope.ts); absent, none. */
 export interface ImportedTemplates {
-  /** Every imported package, by id. */
+  /** Every imported package of every workspace, by id, those of none first. */
   list(): Promise<ImportedTemplateRow[]>;
-  /** Every imported package's id, sorted, with none of its files read. */
-  ids(): Promise<string[]>;
-  /** Keeps the package under its id, in place of the one there (a re-import at a new SHA replaces it): true. `workspace`:
-   *  the workspace a scoped request imported it in (workspace-scope.ts), written with it; absent, none. The one there is
-   *  replaced only while it is in that same workspace (or none): one of another is kept, nothing is written, and the
-   *  answer is false. */
-  put(row: Omit<ImportedTemplateRow, "importedAt">, workspace?: string): Promise<boolean>;
-  /** One package's sha and import time, with none of its files read: undefined when none has that id. */
-  stamp(id: string): Promise<Pick<ImportedTemplateRow, "sha" | "importedAt"> | undefined>;
-  /** Every imported package's workspace by id (null: none), with none of its files read. */
-  workspaces(): Promise<ReadonlyMap<string, string | null>>;
-  /** Removes the package: false when none had that id. `workspace`: removes it only while it is in that workspace, in
-   *  the one write, so a package of that id another workspace (or none) holds is kept and the answer is false. `read`:
-   *  removes it only while it is still the row a caller read (its sha and import time), in the same write, so an import
-   *  of that id that replaced the row since is kept and the answer is false. */
+  /** Every imported package's id and workspace, in list's order, with none of its files read. */
+  keys(): Promise<Pick<ImportedTemplateRow, "id" | "workspace">[]>;
+  /** Keeps the package under its id in `workspace`, in place of the one of that id there (a re-import at a new SHA
+   *  replaces it). */
+  put(row: Omit<ImportedTemplateRow, "importedAt" | "workspace">, workspace?: string): Promise<void>;
+  /** The sha and import time of the package of that id in `workspace`, with none of its files read: undefined when it
+   *  has none. */
+  stamp(id: string, workspace?: string): Promise<Pick<ImportedTemplateRow, "sha" | "importedAt"> | undefined>;
+  /** Removes the package of that id in `workspace`: false when it has none. `read`: removes it only while it is still the
+   *  row a caller read (its sha and import time), in the same write, so an import of that id that replaced the row since
+   *  is kept and the answer is false. */
   remove(id: string, workspace?: string, read?: Pick<ImportedTemplateRow, "sha" | "importedAt">): Promise<boolean>;
 }
 

@@ -45,7 +45,7 @@ import { MAX_KEY as MAX_RUN_KEY } from "./run-keys.js";
 import { MCP_AUTH_TYPES } from "./mcp-probe.js";
 import { CATALOG_KEY_PATTERN, MCP_SERVER_NAME } from "./tool-names.js";
 import { MAX_PRIVATE_HOSTS } from "./mcp-private-hosts.js";
-import { COMPOSIO_KEY_ENV, COMPOSIO_ORIGIN } from "./composio-made.js";
+import { COMPOSIO_KEY_ENVS, COMPOSIO_ORIGIN } from "./composio-made.js";
 import { COMPOSIO_AUTH_CONFIG_ID, COMPOSIO_USER_ID } from "./composio-preset.js";
 // The predicate of MCP's fields this document marks x-agentrun-secret, registered with the one gate as it loads.
 import "./mcp-secret-writes.js";
@@ -757,7 +757,7 @@ const MCP_TOOLKIT_BODY = {
   toolkit: { type: ["string", "null"], pattern: MCP_SERVER_NAME.source, description: "The toolkit its tools are, as a template names them (`mcp:<toolkit>/<tool>`): a template's MCP need of the server's `source` and this toolkit maps to it at apply. null clears it (not on a composio server, which names its toolkit); on the GitHub App's tokens it is `github` alone. Absent: what it was. The source is what made the server, never sent: `composio` from the Composio preset, `github` on the GitHub App's tokens, else `url`." },
 };
 /** A Composio server's key variable as a read shows it (api_key_env on its save): the name, never the value. */
-const MCP_KEY_ENV_SHOWN = { enum: [COMPOSIO_KEY_ENV], description: "For a Composio server saved with `api_key_env`: the variable of this server's environment its key is read from at each use. The name alone; the server keeps no copy of the value." };
+const MCP_KEY_ENV_SHOWN = { enum: COMPOSIO_KEY_ENVS, description: "For a Composio server saved with `api_key_env`: the variable of this server's environment its key is read from at each use. The name alone; the server keeps no copy of the value." };
 const MCP_SECRET_SHOWN = { $ref: "#/components/schemas/SecretMeta", description: "Its credential as every secret is read (SecretMeta), never a value: named mcp:<server>; source `console` for a pasted bearer token or headers, `sign-in` for an OAuth sign-in, `env` for a Composio key read from the server's environment (`auth.api_key_env`: `set` is whether the variable is set now, changed_at null), null with none; changed_at moves when a new credential is saved or signed in, never on a save that keeps it, a refresh of the tools or a token refresh." };
 const MCP_SERVER_VIEW = {
   type: "object", additionalProperties: false, required: ["name", "url", "source", "toolkit", "auth", "credential", "protocol", "server_info", "tools", "listed_at", "updated_at"],
@@ -807,7 +807,7 @@ const MCP_URL = { type: "string", format: "uri", maxLength: 2048, description: "
 const MCP_NAME = { name: "name", in: "path", required: true, description: "The server's name: lowercase letters, digits and dashes, starting with a letter, at most 32 (no underscores, so `mcp__<server>__<tool>` splits one way). `hands` is reserved for AgentRun's own tools: a PUT under it is 422 input_invalid, field `name`, reason `reserved`.", schema: { type: "string", pattern: MCP_SERVER_NAME.source } };
 const COMPOSIO_KEY = { type: "string", minLength: 1, maxLength: 8192, "x-agentrun-secret": true, description: "The Composio API key, sent only to Composio." };
 /** A Composio save's `api_key_env`: the key named by a variable of the server's environment. A name, not a secret. */
-const COMPOSIO_KEY_ENV_BODY = { enum: [COMPOSIO_KEY_ENV], description: `In place of \`api_key\`: the variable of this server's environment the Composio key is read from, ${COMPOSIO_KEY_ENV} and no other (Composio's address is fixed, so no other secret of the environment is ever sent there). The server keeps the name, never the value: it reads it at each use (this save's calls to Composio, each run's connection, a delete's), as the server and each runner were started with it, so a new value takes effect when they start again. It is a secret the launcher hands each over a pipe, never in a process's environment, and no run is handed it: a run granted a tool of the server is sent it only as the server's MCP header. The value is only ever sent to Composio's origin (\`${COMPOSIO_ORIGIN}\`): a server whose address is anywhere else is refused by name wherever the key would be read (a save, a refresh, a run's start), and nothing is sent. Another name is 422 \`invalid\` under \`api_key_env\`; unset or blank now, 422 \`missing\`; with \`api_key\` too, 422 \`not_allowed\`. A run of a server whose variable is unset is refused before it starts (409 agent_not_runnable), naming it. On an API-only server (AGENTRUN_API_ONLY=1) its token saves one so, and lists the toolkits and their actions so; on any other server the token's is 403, as \`api_key\` is.` };
+const COMPOSIO_KEY_ENV_BODY = { enum: COMPOSIO_KEY_ENVS, description: `In place of \`api_key\`: the variable of this server's environment the Composio key is read from, ${COMPOSIO_KEY_ENVS.join(" or ")} and no other (Composio's address is fixed, so no other secret of the environment is ever sent there). The server keeps the name, never the value: it reads it at each use (this save's calls to Composio, each run's connection, a delete's), as the server and each runner were started with it, so a new value takes effect when they start again. It is a secret the launcher hands each over a pipe, never in a process's environment, and no run is handed it: a run granted a tool of the server is sent it only as the server's MCP header. The value is only ever sent to Composio's origin (\`${COMPOSIO_ORIGIN}\`): a server whose address is anywhere else is refused by name wherever the key would be read (a save, a refresh, a run's start), and nothing is sent. Another name is 422 \`invalid\` under \`api_key_env\`; unset or blank now, 422 \`missing\`; with \`api_key\` too, 422 \`not_allowed\`. Re-saving an existing server with a different allowed key name is 422 \`not_allowed\` under \`api_key_env\`, before Composio is called; use a different server name for another project. A run of a server whose variable is unset is refused before it starts (409 agent_not_runnable), naming it. On an API-only server (AGENTRUN_API_ONLY=1) its token saves one so, and lists the toolkits and their actions so; on any other server the token's is 403, as \`api_key\` is.` };
 const COMPOSIO_TOOLKIT = { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,63}$", description: "The toolkit's slug as Composio names it (`github`, `slack`, `gmail`...)." };
 /** The mark of what a composio trigger adds (composio-triggers.ts). */
 const COMPOSIO_TRIGGERS_MARK = { "x-agentrun-serve": "composiotriggers/1" };
@@ -1963,7 +1963,7 @@ const LEARNING_COST = closed({
       agent_pct: { type: "number", minimum: 0, maximum: 100, description: "The agent's share on the same inputs against the same known answers (the check's `agent_agreed` over `alone`; an answer graded wrong is the agent's miss), in percent to a tenth." },
       cleared: { type: "boolean", description: "The check's joint floor (its `joint`): `agreed` over `alone` reached `agree_min`, as every promotion it decides needs." },
       agreed: { ...COUNT, description: "Of the inputs it answered alone (`alone`), how many were right on every field against each field's known answer." },
-      alone: { ...COUNT, description: "The inputs it answered alone (no hand-back, no failed step)." },
+      alone: { ...COUNT, description: "The inputs it answered alone (no hand-back, no failed step) that could be compared: the check's `alone` less its `unread`." },
       agree_min: { type: "number", minimum: 0, maximum: 1, description: "The agreement bar it passed (the definition's `learning.agree_min`): `agreed` over `alone` at least this. Passing it says the workflow agreed with the agent that often, never that it is as accurate." },
     }), { type: "null" }], description: "The check the serving promotion was decided on: the current champion of the learned workflow the newest served run ran. Null when none serves." },
   }, "What the series shows, over every run it counts, `limit` aside."),
@@ -2005,7 +2005,7 @@ const LEARNING_COST = closed({
 /** PUT /runs/{run_id}/grade and GET /agents/{agent_id}/learning/promotions (learn/promote.ts, runner/promotion.ts). */
 const GRADE = closedWith(GRADE_FIELDS, { expected: { type: "object", description: "The fields a right answer's JSON holds, when the grade gave them." } });
 const REPLAY_SCORE = {
-  n: { ...COUNT, description: "The inputs it was decided on (a replay stopped at a write is none)." },
+  n: { ...COUNT, description: "The inputs it was decided on (a replay stopped at a write is none, and so is an input whose grader's verdict could not be read: the check's `unread`)." },
   agree: { ...COUNT, description: "How many of them the workflow answered alone right on every field against each field's known answer (a grade's expected answer, else the agent's own): the check's `agreed`." },
   agent_acc: { type: "number", minimum: 0, maximum: 1, description: "The agent's accuracy on them against the same known answers: its misses are counted where the workflow's are, on the inputs it answered alone (the check's `alone` - `agent_agreed`; an answer graded wrong is the agent's miss), over `n`." },
   wf_acc: { type: "number", minimum: 0, maximum: 1, description: "The workflow's accuracy on them: the share it answered alone as the agent did, plus the ones it handed back (a hand-back is the agent's answer), over `n`." },
@@ -2025,7 +2025,7 @@ const CHECK_DISAGREEMENT = closedWith({ run: { type: "string" }, input: { type: 
   draft: { type: "string", description: "What it answered instead." },
   escalated: { type: "string", description: "Why it handed the input back." },
   failed: { const: true, description: "A step failed on it, or its run was still at work past the check's deadline, or never created by then." },
-  differs_on: { type: "string", description: "When `grader` compared it: the decision the two answers differ on, in the grader's words, or why its verdict could not be had (\"the comparison could not be read\", \"the cap held the comparison\", or \"the comparison read an earlier answer\" when the agent's run answered again after it was compared). Cut at 1200 characters." },
+  differs_on: { type: "string", description: "When `grader` compared it: the decision the two answers differ on, in the grader's words, or why its verdict could not be had (\"the cap held the comparison\", or \"the comparison read an earlier answer\" when the agent's run answered again after it was compared). Cut at 1200 characters." },
   fields: { type: "array", items: { type: "string" }, description: "The fields it answered wrong, against each one's known answer (`check.fields`): `agree_on`'s paths, else `answer`, the whole answer." },
   expected: { type: "array", items: closedWith({ field: { type: "string", description: "One of `fields`." }, known: { enum: ["grade", "correction", "unknown", "contradicts"], description: "Where its known answer came from; `correction` where the run's owner corrected the agent's answer by message, with no grade's expected answer (the known answer is the agent's as the correction changes it, and the agent's own is wrong); `unknown` where a grade marked the agent's answer wrong without giving the right one; `contradicts` where a grade marked it wrong yet the right answer it gave is the agent's, so there is none." } }, { value: { type: "string", description: "The known answer, as text or JSON: the expected answer a grade gave (with no `agree_on`, the check judges against it written over the agent's answer when both are JSON objects), or for `correction` the owner's correction in their words, cut at 1200 characters; empty once the run it is of was deleted. Left out for `unknown` and `contradicts`." } }), description: "Of `fields`, each one known from a grade or its owner's correction (never the agent's own answer, `agent`), or marked wrong with no right answer: what the recompile is asked to say there." },
 });
@@ -2036,11 +2036,12 @@ const FIELD_COUNT = {
   agent_right: { ...COUNT, description: "How many of them the agent's own answer had right." },
 };
 const UNJUDGED = { type: "integer", minimum: 1, description: "The inputs that carried it with no known answer (the agent's answer graded wrong with none given, and the workflow said another): never right, and the field must be judged on at least `alone_min` of the inputs that carried it. Left out when none." };
+const UNREAD = { type: "integer", minimum: 1, description: "The inputs whose grader's verdict could not be read (a reply that was not the verdict, or a request that failed, each asked twice; or one the run's stop or its deadline cut): counted neither way, never a disagreement. Left out when none." };
 const KNOWN_SOURCES = ["grade", "agent"] as const;
 /** A field's counts by where its known answer came from: its inputs known from a grade, and from the agent's own answer. */
 const FIELD_BY = { grade: closed(FIELD_COUNT, "Its inputs known from a grade."), agent: closed(FIELD_COUNT, "Its inputs known from the agent's own answer.") };
 /** A field's counts by source, as a connected agent's check keeps them between turns. */
-const FIELD_TALLY = { type: "object", additionalProperties: false, properties: { ...FIELD_BY, unjudged: UNJUDGED } };
+const FIELD_TALLY = { type: "object", additionalProperties: false, properties: { ...FIELD_BY, unjudged: UNJUDGED, unread: UNREAD } };
 /** One field's verdict (learn/field-check.ts FieldVerdict). */
 const FIELD_VERDICT = closedWith({
   ...FIELD_COUNT,
@@ -2049,7 +2050,7 @@ const FIELD_VERDICT = closedWith({
   pass: { type: "boolean", description: "Whether it passed: over all its known inputs pooled, at least `agree_min` right; on those known from a grade, at least `agree_min` right and at most 2 points under the agent, one miss always allowed in each; and judged on enough of its inputs (`unjudged`)." },
   reason: { type: "string", description: "Why, in words, with the numbers." },
   by: { type: "object", additionalProperties: false, properties: FIELD_BY, description: "Its counts per source." },
-}, { unjudged: UNJUDGED });
+}, { unjudged: UNJUDGED, unread: UNREAD });
 /** A compiled draft's one check (learn/promote.ts CheckRecord): its bar while it replays, its numbers once decided. */
 const PROMOTION_CHECK = closedWith({
   compile_after: { type: "integer", minimum: 1, description: "The agent definition's `learning.compile_after` when the check began: how many of the agent's newest completed runs it read inputs from." },
@@ -2058,7 +2059,7 @@ const PROMOTION_CHECK = closedWith({
   attempt: { enum: [1, 2], description: "1: the compile's first check. 2: the check of its one recompile, after the first held it; held again, it stops (`stopped`)." },
 }, {
   agree_on: { type: "array", items: { type: "string" }, minItems: 1, description: "The definition's `learning.agree_on` it compared the draft's answer and the agent's on: dotted paths into the answer's JSON object, each resolving in both answers to equal values. Left out when it compared the whole answer." },
-  grader: { type: "string", description: "With no `agree_on`: the model that compared the two answers where they were not equal, asked whether they reach the same decision (one request per input, booked as the check's spend; a reply it could not read, a failed request or one the cap refused counts as differing): the agent's fast model, else, with none set, the agent's own model, as the check's reason says. Left out when no model compared them: with `agree_on`, or when no grader could be routed (the whole answer)." },
+  grader: { type: "string", description: "With no `agree_on`: the model that compared the two answers where they were not equal, asked whether they reach the same decision (one request per input, asked once more on a reply that is not the verdict or a failed request, booked as the check's spend; one the cap refused counts as differing, and a verdict still not read is `unread`, counted neither way): the agent's fast model, else, with none set, the agent's own model, as the check's reason says. Left out when no model compared them: with `agree_on`, or when no grader could be routed (the whole answer)." },
   n: { ...COUNT, description: "The inputs it ran on (a replay stopped at a write is none; one never created, or not ended, by the check's deadline counts, as failed). 0 with nothing to run on: never promoted, it stops (`stopped`) and `reason` says why." },
   agreed: { ...COUNT, description: "How many of them it answered alone right on every field at once, each against its known answer: a grade's expected answer, else the agent's recorded answer (compared on `agree_on` when set; else equal answers, or the same decision by `grader`'s verdict). An input a field has no known answer on is not right." },
   alone: { ...COUNT, description: "How many of them it answered alone. Promoted when `alone`/`n` >= `alone_min`, `agreed`/`alone` >= `agree_min`, and every field of `fields` passes." },
@@ -2071,6 +2072,8 @@ const PROMOTION_CHECK = closedWith({
   unstarted: { ...COUNT, minimum: 1, description: "How many of its replay runs were never created by the check's deadline (the server stopped after reserving them, say), each a `failed` input. Left out when none. Every one: its replay's read is `failed`." },
   skipped_tools: SKIPPED_TOOLS,
   disagreements: { type: "array", items: CHECK_DISAGREEMENT, description: "On a hold: each input it did not agree on, which the agent's next run reads as data in its one recompile." },
+  unread: { ...UNREAD, description: "Of `alone`, the inputs whose grader's verdict could not be read (a reply that was not the verdict, or a request that failed, each asked twice; or one the run's stop or its deadline cut): counted neither right nor wrong, never in `disagreements`, and left out of the joint floor (`agreed` of `alone` - `unread`). Left out when none." },
+  undecided: { const: true, description: "With `unread`, fewer than 2 of the inputs it answered alone could be compared, so it decided nothing of the draft: a hold, `reason` saying \"not decided\" with the counts. A first check's asks the recompile; a recompile's stops (`stopped`), as any hold of it does. Left out when it decided." },
   stopped: { const: true, description: "The recompile's check held it too, or there was nothing to check it on (no input of the agent's it takes, or every input skipped at a write: `n` 0, `reason` starting \"nothing to check it on\", which asks no recompile): nothing compiles again until new evidence after the stop restarts it (a correction merged, or `compile_after` more of the agent's own runs started), as a first compile again: a revise, then one recompile. The agent keeps the runs." },
   released: { type: "integer", minimum: 1, description: "A connected agent's check (`via` sdk): how many of its reserved native turns in a row since the last one checked could not be its baseline and were given back to wait for the next turn the draft takes (see runner/promotion.ts SDK_CHECK_RELEASES for the causes and the hold the fifth writes). Left out when none." },
   fresh_reads: { type: "integer", minimum: 1, description: "A connected agent's check (`via` sdk): how many fresh read-only calls its shadow made where the native turn's recording had no result (the host's opt-in `shadowReadFallback`). Left out when every call was answered from the recording." },
@@ -2085,6 +2088,7 @@ const PROMOTION_CHECK = closedWith({
   }, {
     disagreements: { type: "array", items: CHECK_DISAGREEMENT, description: "Each turn it did not agree on." },
     fresh_reads: { type: "integer", minimum: 1, description: "The fresh read-only calls its shadows made, as `fresh_reads` counts them." },
+    unread: { ...UNREAD, description: "The turns whose grader's verdict could not be read, as `unread` counts them." },
   }), description: "A connected agent's check (`via` sdk) still collecting native turns. A check decides once, on `compile_after` inputs, so this one waits for that many turns, the agent answering each, then decides on all of them. Left out once decided, and on a server replay; a check stopped or set aside before it held them keeps the turns it had." },
 });
 const PROMOTION = closedWith({
@@ -2127,7 +2131,7 @@ const SERVING = closed({
   digest: { ...NULL_STRING, description: "The revision that serves first (the champion: the one promoted last, while its newest record still says promote); null when none does and the agent takes the runs. A champion the cost rule stopped is still named here, with `state` `stopped`: the agent takes its runs." },
   replaying: { ...NULL_STRING, description: "A newer revision whose replay is at work, when there is one: it serves only once its replay promotes it; the champion serves meanwhile." },
   state: { enum: ["serving", "checking", "held", "stopped"], description: "`serving`: a revision serves first. `checking`: its newest revision's check is at work (an older revision that serves keeps serving meanwhile, else the agent takes the runs). `held`: none serves, its newest record holds it (a check's or an audit's hold, or this release's workflow DSL refused it: the agent's next run recompiles it once). `stopped`: none runs first until a new revision lands: the cost rule stopped its champion (GET .../learning/cost `workflows[].state` `needs_revision`: over its newest served runs it cost as much as the agent by hand, and the stop asks for no compile), or none serves and nothing compiles again (a recompile's check held it too, or a second audit hold within `learning.stop_window`, or a check whose every input stopped at a write)." },
-  check: { anyOf: [closed({ n: COUNT, agreed: COUNT, alone: COUNT, attempt: { enum: [1, 2] } }), { type: "null" }], description: "The numbers of the workflow's newest decided check: its inputs, those it agreed on, those it answered alone, which check of its compile it was; null when none was decided." },
+  check: { anyOf: [closed({ n: COUNT, agreed: COUNT, alone: COUNT, attempt: { enum: [1, 2] } }), { type: "null" }], description: "The numbers of the workflow's newest decided check: its inputs, those it agreed on, those it answered alone that could be compared (an input whose grader's verdict could not be read is left out, as the check left it out), which check of its compile it was; null when none was decided." },
   audit: { anyOf: [AUDIT_LINE, { type: "null" }], description: "Its audit line: the serving (else the newest) revision's newest audit rows against the hold bar; null when no revision has a record." },
   audits_off: { ...NULL_STRING, description: "Why none of the agent's runs is audited, e.g. `audits off: send_email can write`: its definition can call a tool that is not read-only (an MCP tool its server lists without `readOnlyHint`, or a built-in other than web_fetch, web_search, pdf_pages and llm, its computer's tools among them), which a shadow run would call a second time. Null when every tool it can call only reads: its served runs are audited." },
   not_auditable: { ...COUNT, description: "Of the serving revision's newest `learning.stop_window` served runs, those a trigger started: never audited (a shadow run gets none of a trigger's context, and could answer where it answers). 0 when none serves." },
@@ -2151,7 +2155,7 @@ const AUDIT_ROW = closedWith({
   digest: { type: "string", description: "The revision that served it." },
   promoted_at: { type: ["string", "null"], format: "date-time", description: "The promotion of that revision the row counts for: its promote record's `at` (GET .../learning/promotions), the one serving when the shadow started or the grade was given. The hold rule counts only the rows of the revision's promotion now, so a revision its owner's replay promotes again after a hold starts on none. Null: none." },
   source: { enum: ["shadow", "grade"], description: "`shadow`: the shadow run's answer compared with the served one. `grade`: an owner's grade of a run the workflow answered alone (PUT /runs/{id}/grade)." },
-  agreed: { type: ["boolean", "null"], description: "Whether the two answers say the same (a grade's: whether it was graded right); null when either answer is missing (a shadow that failed or `parked`, or none was started): no evidence, not counted." },
+  agreed: { type: ["boolean", "null"], description: "Whether the two answers say the same (a grade's: whether it was graded right); null when either answer is missing (a shadow that failed or `parked`, or none was started), or the grader's verdict on them could not be read (asked twice): no evidence, not counted." },
   served_cost: { type: ["number", "null"], minimum: 0, description: "What the served run cost; null when unknown." },
   shadow_cost: { type: ["number", "null"], minimum: 0, description: "What the shadow run cost (the agent's learning cost); null for a grade's row, or when unknown." },
   at: DATE_TIME,
@@ -3352,7 +3356,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/settings/mcp-servers/preview": {
     post: {
       operationId: "previewMcpServer", tags: ["local"], summary: "Connect to a remote MCP server and list its tools, storing nothing",
-      description: `\`{url, auth}\`, or \`{name}\` for a saved server with its sealed credential (422 when it does not open). \`{name, url, auth}\` is an edit of the saved server \`name\`: its address as every read shows it (origin and \`/…\`), sent back unchanged, is previewed at the saved endpoint. ${MCP_CONNECTS} ${MCP_PREVIEW_SCOPE}`,
+      description: `\`{url, auth}\`, or \`{name}\` for a saved server with its sealed credential (422 when it does not open). \`{name, url, auth}\` is an edit of the saved server \`name\`: its address as every read shows it (origin and \`/…\`), sent back unchanged, is previewed at the saved endpoint. On an API-only server (AGENTRUN_API_ONLY=1) the token previews only the body its save takes there, a per_run server at an origin AGENTRUN_API_ONLY_MCP_ORIGINS lists, and any other body, a saved server's name alone included, is 404 not_found before anything reaches the address. ${MCP_CONNECTS} ${MCP_PREVIEW_SCOPE}`,
       requestBody: { required: true, content: { "application/json": { schema: { oneOf: [{ type: "object", additionalProperties: false, required: ["url"], properties: { url: MCP_URL, auth: MCP_AUTH, name: { type: "string", description: "The saved server this is an edit of." } } }, { type: "object", additionalProperties: false, required: ["name"], properties: { name: { type: "string" } } }] } } } },
       responses: { "200": json(MCP_PREVIEW, `What the server offers. ${MCP_PREVIEW_SCOPE}`), ...errors(400, 401, 404, 409, 415, 422, 429, 500), ...MCP_FAILED },
       "x-agentrun-serve": "mcpservers/1",
@@ -4097,7 +4101,12 @@ const PENDING: Json = {
   oneOf: [
     {
       type: "object", additionalProperties: false, required: ["kind", "question", "asked_at"],
-      properties: { kind: { const: "question" }, question: { type: "string", description: "What it asked, at most 2000 characters." }, asked_at: { type: "string", format: "date-time" } },
+      properties: {
+        kind: { const: "question" },
+        question: { type: "string", description: "What it asked, at most 2000 characters." },
+        asked_at: { type: "string", format: "date-time" },
+        expires_at: { type: "string", format: "date-time", description: "When the question expires unanswered, where the backend sets it a deadline (the hosted API does). Absent where none is set, as on this server.", "x-agentrun-serve": "questionexpires/1" },
+      },
       description: "A question the run asked a person (status input_required, state waiting): a message answers it.",
     },
     {
@@ -4875,7 +4884,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     mcp_client: {
       type: "object", additionalProperties: false, required: ["transports", "auth", "at_rest", "harnesses", "composio_per_run"],
-      properties: { transports: { type: "array", items: { const: "streamable-http" } }, auth: { type: "array", items: { enum: [...MCP_AUTH_TYPES] } }, at_rest: { const: "sealed" }, harnesses: { type: "array", items: { type: "string" }, description: "The harnesses whose agents call a saved server's tools, each granted as mcp:<server>/<tool> in definition.tools."}, composio_per_run: { type: "boolean", description: "Whether a per-run Composio server (saved through the Composio preset with `user_id` \"per_run\") takes each run's own Composio account, named in the run's mcp_auth as a ComposioRunBinding. A caller learns it here rather than from the API document.", "x-agentrun-serve": "composioperrun/1" } },
+      properties: { transports: { type: "array", items: { const: "streamable-http" } }, auth: { type: "array", items: { enum: [...MCP_AUTH_TYPES] } }, at_rest: { const: "sealed" }, harnesses: { type: "array", items: { type: "string" }, description: "The harnesses whose agents call a saved server's tools, each granted as mcp:<server>/<tool> in definition.tools."}, composio_key_envs: { type: "array", items: { type: "string" }, description: "The allowed api_key_env names for Composio saves and catalog listings. Supported names only, never credential values or whether each is set. A caller must see its selected name here before saving a server under that project key." }, composio_per_run: { type: "boolean", description: "Whether a per-run Composio server (saved through the Composio preset with `user_id` \"per_run\") takes each run's own Composio account, named in the run's mcp_auth as a ComposioRunBinding. A caller learns it here rather than from the API document.", "x-agentrun-serve": "composioperrun/1" } },
       description: "/settings/mcp-servers: remote MCP servers over Streamable HTTP, previewed and saved with the auth types listed; a credential kept `sealed` under the server's seal key, which always exists.",
       "x-agentrun-serve": "mcpservers/1",
     },

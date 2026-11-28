@@ -138,8 +138,24 @@ test('every package in this tree keeps the boundary rules as it ships, and only 
   assert.deepEqual(carriers, ['run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex']);
 });
 
+test("the run-end allowance admits the Vercel Sandbox provider's label once in the run's end line, nowhere else", async () => {
+  const allow = ALLOWED_MARKS.serve.filter(([file]) => file === 'dist/workspace/run-end-computers.js');
+  const line = 'const VENDOR_ENDS_ITS_OWN = "E2B, Daytona, Vercel Sandbox or the phone harness";\n';
+  const problems = async (text, file = 'dist/workspace/run-end-computers.js') => {
+    const dir = join(scratch, `end${made += 1}`);
+    await mkdir(dirname(join(dir, file)), { recursive: true });
+    await writeFile(join(dir, 'package.json'), JSON.stringify({ name: '@parcha/agentrun-serve' }));
+    await writeFile(join(dir, file), text);
+    return boundaryProblems(dir, { allow });
+  };
+  assert.deepEqual(await problems(line), []);
+  assert.ok((await problems(line + line)).some(p => /2 found, 1 allowed/.test(p)), 'a second mention needs review');
+  assert.ok((await problems(line.replace('Vercel Sandbox', 'Vercel'))).some(p => /names Vercel/.test(p)), 'the bare name is not the label');
+  assert.ok((await problems(line, 'dist/index.js')).some(p => /names Vercel/.test(p)), 'no allowance for another file');
+});
+
 test('the eve integration allowance admits only the exact console label and two handoffs, never fork branding', async () => {
-  const allow = ALLOWED_MARKS.serve;
+  const allow = ALLOWED_MARKS.serve.filter(([file]) => file instanceof RegExp);
   const bundle = 'const labels={eve:"Vercel eve"};\nconst edit="using Vercel eve. Read the current agent";\nconst run="using Vercel eve. Read the current agent";\n';
   const fixture = async (text = bundle, file = 'dist/console/assets/index-hash_123.js', name = '@parcha/agentrun-serve') => {
     const dir = join(scratch, `eve${made += 1}`);

@@ -624,7 +624,7 @@ one off.
 A sandbox agent's `bash` runs in a box, a machine apart from this server. Docker is the default box and the only one offered
 with no setup: a Docker container made for each run, which binds the run's `work/` and nothing else. Every other provider
 whose sandbox can hold the run's folder is a box too: `daytona`, `modal`, `e2b`, `agent37`, `morph`, `cloudflare`, `fly`,
-`boxd` and `groundbox`. Such a box runs on a sandbox computer from that provider, offered once `AGENTRUN_BOXES` lists it
+`boxd`, `groundbox` and `vercel`. Such a box runs on a sandbox computer from that provider, offered once `AGENTRUN_BOXES` lists it
 and the keys its computer provider needs are set (the environment, or Settings → Computers): `AGENTRUN_BOXES=docker,e2b`
 with `E2B_API_KEY` set offers both. A box is a provider that serves a sandbox, takes the run's folder (a bind, an Archil
 mount or a synced folder), starts with no image named and keeps to the allow-list or has no network; Orgo (desktops), the
@@ -1036,7 +1036,7 @@ Settings → Computers. The kind says what the agent is given, and the provider 
 | Kind | What the agent gets | Providers |
 |---|---|---|
 | `none` | The run's folder alone: no computer, and no provider (`{"kind": "none"}`) | |
-| `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b`, `boxd`, `smolcloud`, `groundbox`, `cloudflare` (through a relay Worker you deploy) |
+| `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b`, `boxd`, `smolcloud`, `groundbox`, `vercel`, `cloudflare` (through a relay Worker you deploy) |
 | `desktop` | The computer's tools (`computer_observe`, `computer_act`, `computer_screenshot`), the computer as `codemode`'s `computer`, and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo`, `boxd`, `groundbox`, or [a paired computer](#a-persons-own-computer) by its id |
 | `phone` | A rented Android, through the same computer tools | `phone-harness` |
 | `browser` | A hosted browser (the browser tools) | `browserbase`, `kernel` |
@@ -1112,7 +1112,8 @@ seals it in its store as every saved key under `AGENTRUN_SEAL_KEY`, and register
 key each restart, the old one left on the workspace), `MORPH_API_KEY`, `ORGO_API_KEY`, `PHONE_HARNESS_API_KEY`,
 `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, `KERNEL_API_KEY`, `BOXD_API_KEY` (with `BOXD_ORG` and
 `BOXD_REGION` optional), `SMOLCLOUD_API_KEY`, `GROUNDBOX_API_KEY`, `CLOUDFLARE_RELAY_URL` and `CLOUDFLARE_RELAY_TOKEN` (the relay Worker's,
-`packages/computer/relays/cloudflare`), `FLY_API_TOKEN` and `FLY_APP`, and `RENDER_API_KEY` and `RENDER_WORKSPACE_ID`; Docker takes none.
+`packages/computer/relays/cloudflare`), `FLY_API_TOKEN` and `FLY_APP`, `RENDER_API_KEY` and `RENDER_WORKSPACE_ID`, and `VERCEL_TOKEN` with `VERCEL_TEAM_ID`
+and `VERCEL_PROJECT_ID`; Docker takes none.
 `GET /v2/computers/running` lists every run still going (queued, working, paused or waiting on its person) whose agent
 has a computer, newest first, each as `GET /v2/runs/{run_id}` answers it: its `computer` says the kind and provider,
 `starting`, `ready` or `taken_over` while its owner drives it, and a held run's hold. The runs list carries no
@@ -2812,7 +2813,7 @@ ordinary MCP server with the key sealed as an `x-api-key` header. `POST /v2/sett
 toolkits Composio offers (`{toolkits: [{slug, name}]}`, by name) for the console's toolkit picker;
 `PUT /v2/settings/mcp-servers/{name}/composio` `{api_key, toolkit, tools, user_id?, auth_config_id?, price_usd?}` makes
 and saves the server. In place of `api_key`, `"api_key_env":
-"COMPOSIO_API_KEY"` (in the save and both listings) reads the key from that variable, as the server and each runner were started with it, at each use and keeps no copy: the
+"COMPOSIO_API_KEY"` or `"AGENTRUN_COMPOSIO_API_KEY"` (in the save and both listings) reads the key from that variable, as the server and each runner were started with it, at each use and keeps no copy: the
 way an [API-only](#api-only) server's token saves one and lists the toolkits and their actions, scoped to a workspace or not. That key is only ever sent to Composio's own origin, fixed in
 code, so a server saved so whose address is anywhere else is refused by name and sent nothing. The body names no
 address or headers (`422 not_allowed`): Composio answers the address. When the toolkit needs your account and `user_id`
@@ -3845,7 +3846,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `DELETE /agents/{id}/sign-ins/{key}` | This server's own route (`x-agentrun-serve: "signins/1"`): forgets one of the agent's [saved sign-ins](#saved-sign-ins), at its vendor and here. `409 sign_in_held` while a run holds its save lease, or while a run it was handed is still going. |
 | `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. `file_ids` names [uploaded](#uploads) files, copied into the run's `work/inputs/` before it starts and named in its first message. `labels` (this server's own, `runlabels/1`) is the caller's map of its own strings for the run: at most 16 keys, each 1 to 63 letters, digits, `.`, `_`, `-` or `/` starting with a letter or a digit, each value 1 to 256 characters with no control character; kept as given, served as `labels` on every read of the run (`{}` when none), never read by the server otherwise, so no place for a secret. The agent's runs, newest first; `label` filters them as `GET /runs` does. |
 | `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, `label=<key>:<value>` (`runlabels/1`, split at the first `:`, once per request) keeps the runs holding that label, `source=<name>` (`runsource/1`, once per request) keeps the runs imported from that source (its name as `imported_from.source` holds it: `claude-code`, `codex`, ...) and `source=live` the runs made here, not imported, `from` and `to` (`runwindow/1`, RFC 3339 date-times with their zone, each once) keep the runs started in [from, to), `model=<provider/model>` (`runmodel/1`, once) the runs that sent at least one request to that model (its exact name as their metrics hold it; a run counts from its first finished turn, as its metrics are written each time a turn ends), and `archived=true` lists only archived ones. A failed run's summary carries its `error`, and a waiting run's its `pending`. |
-| `GET /runs/{id}` | The run: its revision, kind, status, state, result, error, `pending` (this server's own, `pending/1`: what a waiting run waits on, by `kind`: `{kind: "question", question, asked_at}` for a question it asked a person; `approval` for a tool call held for a person's approval, with the tool, its arguments and its price; `budget` for a run paused at its cap ([a run paused at its cap](#a-run-paused-at-its-cap)); `{kind: "browser", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner in its browser; or `{kind: "computer", computer: "desktop" \| "phone", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner on its desktop or phone; else null, a stopped turn's included) and cost (`basis` `reported`, `estimate` or `unpriced`, with its model requests' `tokens`: [A run's cost](#a-runs-cost-its-tokens-and-its-basis); $0 before its first model request, a cancelled run's included). |
+| `GET /runs/{id}` | The run: its revision, kind, status, state, result, error, `pending` (this server's own, `pending/1`: what a waiting run waits on, by `kind`: `{kind: "question", question, asked_at}` for a question it asked a person (a backend that sets the question a deadline adds `expires_at`; this server sets none); `approval` for a tool call held for a person's approval, with the tool, its arguments and its price; `budget` for a run paused at its cap ([a run paused at its cap](#a-run-paused-at-its-cap)); `{kind: "browser", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner in its browser; or `{kind: "computer", computer: "desktop" \| "phone", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner on its desktop or phone; else null, a stopped turn's included) and cost (`basis` `reported`, `estimate` or `unpriced`, with its model requests' `tokens`: [A run's cost](#a-runs-cost-its-tokens-and-its-basis); $0 before its first model request, a cancelled run's included). |
 | `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll, and this server's own `limit`, 1 to 500 rows a page, default 500), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). Rows sort by `seq`; the usage row (`Cost so far`), the run's running total, is always the last row, and moves to the end when a row comes after it. Beside the rows, `in_flight`: what a live run waits on now, each model request sent and not answered (from its booking's `runner.request`, stamped `at` when it left) and each tool call not returned, from when it was sent; empty once the run is final. A request sent or answered is a change of the page, as a row is. |
 | `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop or after it completed: a completed run opens again, the same run on its own session and store, takes a place under `--max-runs` (it waits for one when none is free), and completes again. A failed or cancelled run, an archived run and a run of an archived agent are `409 not_continuable` (a run of an agent [being deleted](#deleting-an-agent-another-system-owns), `409 agent_not_runnable`); a workflow run takes none (`501`). The model gets `content`; a host that wraps the person's words in its own text (an earlier report, turn instructions) sends their words alone as `said` (`messagesaid/1`), which the run's [learning](#learning) keeps in place of `content` (at most 4,000 characters, not empty after trimming, else `422 input_invalid` at `said`; `features.messages.said` says a server takes it). |
 | `POST /runs/{id}/stop`, `POST /runs/{id}/cancel` | Stop ends an agentic run's turn and leaves the run `input_required` and idle. Cancel ends a run `cancelled` once its process has exited. |
@@ -4032,16 +4033,21 @@ serves these routes alone:
 - a Composio server's save (a new name, or a server the token saved) and the delete of a server the token saved, for a
   backend that grants its runs Composio tools. The token here never writes a secret, so the save keeps none:
   - a Composio server (`PUT /settings/mcp-servers/{name}/composio`) names its key with
-    `"api_key_env": "COMPOSIO_API_KEY"`, never `api_key` (still `403`). The server keeps the variable's name, never its
+    `"api_key_env": "COMPOSIO_API_KEY"` or `"AGENTRUN_COMPOSIO_API_KEY"`, never `api_key` (still `403`). The server keeps the variable's name, never its
     value, and reads the value it and each runner were started with at each use: the save's calls to Composio, each
-    run's connection and the delete's. A new value takes effect once they start again with it. `COMPOSIO_API_KEY` is
-    the one name taken (`422 invalid` for any other), and it must be set when the server is saved (`422 missing`). A
+    run's connection and the delete's. A new value takes effect once they start again with it. These are the only
+    names taken (`422 invalid` for any other), and the selected variable must be set when the server is saved (`422 missing`). A
     run of a server whose variable is unset is refused before it starts (`409 agent_not_runnable`), naming it; it never
     runs without the server's tools. `toolkit`, `tools`, `auth_config_id`, `price_usd` and `user_id: "per_run"` work as
     they do on the full server;
-  - `COMPOSIO_API_KEY` is a secret, so give it to the server and to each runner. The launcher hands it to each over a
+  - Both project keys are secrets: give each configured key to the server and to each runner. The launcher hands it to each over a
     pipe, so neither process's environment holds it, and no run is handed it: the runner sends it only as the MCP
     header of a Composio server the run is granted a tool of, and a run granted none gets nothing of it;
+  - `GET /capabilities` advertises the supported names in `features.mcp_client.composio_key_envs`. Read it before
+    saving a server for a second project; an older server that omits it does not support the second key. Each saved
+    server records its selected name; re-saving that name with a different project key is `422 not_allowed` before
+    Composio is called. Use separate server names for separate projects; a missing project key never
+    falls back to the other key. Upgrade both the server and every runner before saving servers with the new name.
   - the body names no address and no headers (`url` or `headers` is `422 not_allowed`): Composio answers the server's
     address, and the key read from the variable is only ever sent to Composio's own origin, fixed in code. A server
     whose saved address is anywhere else is refused by name wherever that key would be read (a refresh, a run's start),
@@ -4096,14 +4102,16 @@ serves these routes alone:
 
   The names route above is the listing: there is no list or read of a server's address, auth or tools here. The
   generic save (`PUT /settings/mcp-servers/{name}`) is a `404` unless the operator names the MCP origins it may save at,
-  so by default the token saves no server at an address or with headers of its own. The preview, refresh, sign-in,
-  Composio tool listing and every other MCP settings route stay refused. On the full server the token's `api_key_env`
+  so by default the token saves no server at an address or with headers of its own. The preview is a `404` on the same
+  terms. The refresh, sign-in, Composio tool listing and every other MCP settings route stay refused. On the full server the token's `api_key_env`
   is `403`, as `api_key` is: the owner's session saves a Composio server there either way;
 - a per_run MCP server's save at an origin the operator names: `AGENTRUN_API_ONLY_MCP_ORIGINS`, comma-separated
   http(s) origins (`https://mcp.example.com`), a plain setting. With it, the token's `PUT /settings/mcp-servers/{name}`
-  saves `"auth": {"type": "per_run"}` at a listed origin, and each run hands its own credential in `mcp_auth`. A body
-  that carries a credential, or a save over a server the token did not save or one that seals a credential, is `403`;
-  any other origin or auth type, or a Composio server's name, is `404`. A wildcard, an entry that is not an http(s)
+  saves `"auth": {"type": "per_run"}` at a listed origin, and each run hands its own credential in `mcp_auth`. Its
+  `POST /settings/mcp-servers/preview` lists the tools of the same body before the save; any other preview body, a
+  saved server's name alone included, is `404`. A body that carries a credential is `403`; so is a save over a server
+  the token did not save or one that seals a credential, in words that name the server and say which. Any other origin
+  or auth type, or a Composio server's name, is `404`. A wildcard, an entry that is not an http(s)
   origin alone, or plain http to a host other than a loopback one (127.0.0.0/8, ::1, localhost) stops the start, and a
   loopback origin also needs `AGENTRUN_MCP_ALLOW_LOOPBACK=1`. The list holds past
   the save: a per_run server the token saved at an origin not listed is refused, and nothing is sent to it. Unset, the
@@ -4138,22 +4146,37 @@ as before.
 
 A request in a workspace is served only: the runs' reads and lists (`GET /runs`, `/runs/{id}`, its timeline, files and
 export), a run's message, stop and cancel; the agents' list, read, create, revisions, definition and current revision,
-archive, unarchive and delete, and a run started on one; the templates' list, read, import, apply and delete (a bundled
-package stays `403`); the uploaded files' create, upload, list, read and
-delete (`/files`); and `/capabilities`, `/health` and `/openapi.json`. Every other route is `403 forbidden` with
+archive, unarchive and delete, a run started on one, and its Archil disk (`/agents/{id}/archil`, read and removed); the
+computers this server offers (`GET /computers`, never a paired computer of the operator's) and the runs of the
+workspace's own going on one (`GET /computers/running`); the templates' list, read, import, apply and delete (a bundled
+package stays `403`); the marketplace's list (`/marketplace/templates`, each entry's `here` naming only a package the
+workspace sees); the uploaded files' create, upload, list, read and delete (`/files`); the triggers' list, read,
+firings, create, edit, delete and run now (`/triggers`); and `/capabilities`, `/health` and `/openapi.json`. Every
+other route is `403 forbidden` with
 `details.reason: "not_scoped"`. In it, an agent, run, imported template package or file of another workspace (or of none)
 answers the same `404` as an id no row has, and every list holds the workspace's rows alone, paged within them; bundled
 template packages are every workspace's. What it makes is the workspace's: an agent (made or applied), an imported
-package (an import whose name another workspace holds is `409 name_taken`), a file. A run is its agent's workspace's,
+package (its name is the workspace's own: another workspace imports the same name as its own package), a file. A run is its agent's workspace's,
 whoever started it, so a run a request with no header starts on that agent is the workspace's too. A run's `file_ids`
 take the workspace's files alone: one out of it reads as no file. An `Idempotency-Key` is the workspace's own: the same
-key in another workspace starts afresh. An import with no header of a name a workspace holds is `409 name_taken` too,
-never replacing that workspace's package: the operator deletes it first.
+key in another workspace starts afresh. A trigger is its agent's workspace's: another's answers the same `404` as an id
+no trigger has, and a new one naming another workspace's agent or run is refused in the words an unknown one gets. A
+request in a workspace makes what an apply here makes, a schedule or a feed that starts runs, with the launch hook set;
+any other source or target, or no hook, is `422` and nothing is made. Its edit is `enabled` alone, as above, and its run
+now (`POST /triggers/{id}/fire`) is served only for a trigger that may be on here, so the firing goes to the backend
+through the launch hook. A request with no header reads, imports, applies and deletes the packages of no workspace
+alone: its import of a name a workspace holds is a package of its own, never replacing that workspace's.
 
 Launch disks (`archil_disk` on a run's start) are the backend's to map to its tenants: the server keeps no record of which
 tenant a disk it did not make is for, and a run in a workspace may name any of them. It names no agent's own disk
 (`GET /agents/{id}/archil`) outside its workspace: that reads as a disk Archil does not have (`422` at
 `archil_disk.disk_id`, in the same words).
+
+A computer paired with the server is the operator's own machine, never a workspace's. An agent create or definition edit
+in a workspace that names one as its computer's provider (or its place's box) is `422` at `definition.computer` (or
+`definition.place`), nothing written; a run of an agent in a workspace whose revision names one fails its claim with
+`computer_unavailable`, in the same words. `features.computers` in a workspace's `GET /capabilities` counts no kind a
+paired computer alone offers.
 
 `GET /capabilities` says what this server does in `features.workspaces`: the header's name, `enforced` (true on an
 API-only server alone), `required_for_tokens` (true when `AGENTRUN_WORKSPACE_TOKENS` names a token, so a request of that
@@ -4165,7 +4188,7 @@ the header and serves every row. The backend names the workspace itself: it over
 `agentrun-serve workspace-backfill FILE [--apply]` puts agents made before the backend sent the header in a workspace:
 FILE is `{"<agent id>": "<workspace>"}`. It sets an agent with none, refuses one in another workspace and keeps it, and
 without `--apply` writes nothing and prints what it would do. On SQLite it adds the workspace columns first when a server
-of this build has not yet opened the store. A store behind this build (on Postgres, below migration 0034) is refused with
+of this build has not yet opened the store. A store behind this build (on Postgres, below migration 0036) is refused with
 exit 2 and never migrated: start a server of this build once, then run it again.
 
 Known limits:
@@ -4176,13 +4199,16 @@ Known limits:
 - Publisher trust is the server's. Once any workspace imports from a GitHub publisher with `trust_publisher`, every
   workspace imports from it without, and a dry run's `trusted: true` tells a workspace that some workspace trusted it.
 - `workspace-backfill` maps agents alone. A template package imported before the backend sent the header stays in no
-  workspace: no workspace sees it, an import of its name is `409 name_taken`, and an agent made from it is not applied
-  again in a workspace (its package reads as missing). Delete the package and import it again with the header.
+  workspace: no workspace sees it, and an agent made from it is not applied again in a workspace (its package reads as
+  missing). Import it again with the header; a request with no header deletes the old one.
 - Launch disks are not a workspace's. A disk no agent owns, one another workspace's run named at launch included, is
   served to a run in any workspace that names it. A backend that lets its tenants pick a launch disk keeps their disks
   apart itself; one that maps each tenant's disk at launch, and takes no disk from the caller, needs nothing more.
 - On Postgres, migration 0033 builds its two indexes (`agents_by_workspace`, `runs_by_workspace`) inside the migrate
   transaction, which holds writes to `runs` and `agents` for the build: on a large `runs` table runners wait that long.
+- On Postgres, migration 0036 (each imported package keyed by its workspace) is breaking for runners and raises the
+  floor to 36: drain and stop the runners of earlier builds before this build's server starts, then start this build's
+  runners. On SQLite the server's open re-keys the table in place at version 18, and runners are unaffected.
 
 ### Share host
 
@@ -4242,8 +4268,15 @@ host, and this server starts no run for it:
 ```json
 { "firing_id": "fir_...", "trigger_id": "trg_...", "agent_id": "digest", "revision_id": "rev_...",
   "input": { "content": "Summarize yesterday's issues.\n\n(Started by the schedule ...)" },
-  "fired_at": "2026-06-01T00:10:00Z" }
+  "fired_at": "2026-06-01T00:10:00Z", "max_cost_usd": 0.5 }
 ```
+
+`max_cost_usd` is the trigger's cap, the most the firing's run may cost, so a host that pays for runs can check the
+payer's balance against it before it starts one. The firing keeps the lowest cap any hand of it sent: a retry of the
+hand sends the lower of that and the target's cap by then, and the run the host starts for the firing never runs past
+it. A target lowered after the hand lowers the firing's cap; one raised after, even back to where it was, never raises
+it. A `null` means the agent's default when the host starts the run: the target set no cap when the firing was
+handed. A cap the target gains after that is sent on a retry, and the run takes it under the agent's default.
 
 The POST carries `webhook-id` (the firing's id, the same if it is handed again), `webhook-timestamp` and
 `webhook-signature` as [webhooks](#webhooks) do: check them with any Standard Webhooks library before reading the
@@ -4255,12 +4288,15 @@ The host starts the run with `POST /v2/agents/{agent_id}/runs`, giving the input
 trigger's title and input origin, and the firing reads `started` with it, so the trigger's overlap check and
 `max_active_runs` count it.
 
-The run starts on the trigger's target, as the run this server would start for the firing:
+The run starts on the trigger's target as it stands when the host starts it, as the run this server would start for
+the firing, except for its cap:
 
-- Its cap is the target's `max_cost_usd`, which the host's `max_cost_usd` may lower and never raise. A target capped at
-  0.5 runs at 0.5 when the host sends 10, and at 0.2 when the host sends 0.2. A target with no cap takes the agent's
-  default in its place, which the host's may lower the same way: on an agent with a $5 default, the host's 500 runs at
-  5 and its 1 at 1.
+- Its cap is the lowest `max_cost_usd` the hook sent for the firing or the target's cap when the host starts it,
+  whichever is lower, which the host's `max_cost_usd` may lower and never raise. A firing handed at 0.5 runs at 0.5 when
+  the host sends 10, and at 0.2 when the host sends 0.2 or the target was lowered to 0.2 after the hand; a target raised
+  after the hand still runs at 0.5, and a firing retried at 0.2 still runs at 0.2 after its target is set back to 0.5. A firing handed with `null` takes the agent's default when the host starts it, or the cap
+  the target has gained since when that is lower, which the host's may lower the same way: on an agent with a $5
+  default, the host's 500 runs at 5 and its 1 at 1, and a target capped at 2 after the hand runs at 2.
 - Its effort is the target's when the target sets one, else the host's `effort`, else the agent's.
 - It runs on the agent's current revision and holds no computer: `revision`, `hold` or `hold_minutes` in the host's
   body is refused with 422 `not_allowed`, naming the field.
@@ -5971,7 +6007,7 @@ carries no cost at all, as from a provider that does not price the model. The te
   run needs are read from the store at its claim, opened with the seal key, and are put on that run's environment alone.
   It gets none of the computer providers' account keys ([Sandbox](#sandbox)), not the Archil account key
   (`ARCHIL_API_KEY`), from which the claim mints the run's own mount credential, and not the Composio account key
-  (`COMPOSIO_API_KEY`), which the runner sends only as a granted Composio server's MCP header. A tool key reaches it only when its
+  (`COMPOSIO_API_KEY` and `AGENTRUN_COMPOSIO_API_KEY`), which the runner sends only as a granted Composio server's MCP header. A tool key reaches it only when its
   revision names a tool the key unlocks (`MONID_API_KEY` a monid tool, `BROWSERBASE_API_KEY` and `KERNEL_API_KEY` `browser`; a workflow's
   tools are those its model and call nodes name), and a model key only when its model needs it ([Models](#models)), read
   from the revision at each claim, a resume after a restart included.
