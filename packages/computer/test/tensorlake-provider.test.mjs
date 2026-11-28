@@ -365,6 +365,31 @@ test("timeouts: a labels read with no answer is held to the call's own bound; ge
 	await assert.rejects(host.list({ team: "a" }, { timeoutMs: 10_000, signal: cancel.signal }), (error) => error.code === "aborted" || error.name === "AbortError");
 });
 
+test("a listing is held to its own bound across its pages: each page gets what is left of it, and no page is asked once it has passed (review)", async () => {
+	const rest = fakeRest({ pageSize: 2 });
+	// Each page of the listing answers 150 ms late, or not at all once its call's signal aborts.
+	let asked = 0;
+	const slow = async (url, init = {}) => {
+		if ((init.method ?? "GET") === "GET" && new URL(url).pathname === "/sandboxes") {
+			asked += 1;
+			await new Promise((resolve, reject) => {
+				const timer = setTimeout(resolve, 150);
+				init.signal?.addEventListener("abort", () => (clearTimeout(timer), reject(init.signal.reason)), { once: true });
+			});
+		}
+		return rest.fetch(url, init);
+	};
+	const host = new TensorlakeProvider({ apiKey: KEY, ssh2: { Client: class {} }, fetch: slow, WebSocket: NoSocket, apiUrl: API_URL, timeouts: { pollMs: 1 } }).host;
+	for (const n of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) await madeElsewhere(rest, nameOf({ computer: `computer-0000000000${n.toString(16).padStart(2, "0")}` }), {});
+	assert.equal((await host.list({}, CTX)).length, 10, "five pages of two, given the time");
+	assert.equal(asked, 5);
+	asked = 0;
+	const started = Date.now();
+	await assert.rejects(host.list({}, { timeoutMs: 400 }), (error) => error.code === "timeout", "five 150 ms pages don't fit in 400 ms: a timeout, not a list");
+	assert.ok(Date.now() - started < 2_000, `${Date.now() - started} ms`);
+	assert.ok(asked <= 3, `${asked} pages asked: the third is cut at the bound, and none after it`);
+});
+
 test("delete deletes by id and lets go; a sandbox gone is done (a 404); the provider's release deletes and reads it back as none", async () => {
 	const { rest, host } = restOnly();
 	const { id } = await host.create(request(), CTX);
