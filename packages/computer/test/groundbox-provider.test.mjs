@@ -3,17 +3,18 @@
 // create, get, list, delete, exec, upload and extend, and how it reads the answers back. The adapter's lifecycle is
 // tested once, against its fake host (hosted-provider.test.mjs); Groundbox's own is proven live.
 import assert from "node:assert/strict";
-import { chmodSync, closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, createReadStream, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { fakeCommands, recorder } from "./fake-groundbox.mjs";
+import { refusesHttp } from "./https-refusal.mjs";
 
 const { GroundboxProvider, create } = await import("../dist/groundbox.js");
 const { GROUNDBOX, GROUNDBOX_OWN_IMAGE } = await import("../dist/descriptors/index.js");
 const { checkExecStream, formatExecStream } = await import("../dist/conformance/exec-stream.js");
-const { GROUNDBOX_ENV: ENV, settingsFromEnv, createProvider, createHost, conformanceImage, sweepScope } = await import("../dist/conformance/groundbox.js");
+const { GROUNDBOX_ENV: ENV, settingsFromEnv, createProvider, createDriftedProvider, createHost, conformanceImage, sweepScope } = await import("../dist/conformance/groundbox.js");
 
 const KEY = "gbx_fake_key_0123456789";
 const API = "https://api.example.test/v1";
@@ -301,12 +302,14 @@ test("a socket that goes while the command runs is no end: another attaches from
 	await reading;
 	assert.equal(read, "echo a\necho b\necho end\n");
 	const execId = [...streams.commands.keys()][0];
-	// Each position counts the start's mark (1 byte of stderr) and the output read before the drop: 1 + 7, then 8 + 7.
+	// Each position counts the start's mark (a line of 32 bytes on stderr) and the output read before the drop: 32 + 7, then 39 + 7.
+	const mark = Buffer.byteLength(markOf(streams.opened[0].sent[0].args[4]));
+	assert.equal(mark, 32);
 	assert.deepEqual(
 		streams.opened.slice(1).map(({ sent }) => sent[0]),
 		[
-			{ type: "attach", exec_id: execId, seq: 8, encoding: "base64" },
-			{ type: "attach", exec_id: execId, seq: 15, encoding: "base64" },
+			{ type: "attach", exec_id: execId, seq: mark + 7, encoding: "base64" },
+			{ type: "attach", exec_id: execId, seq: mark + 14, encoding: "base64" },
 		],
 	);
 	// A socket dropped to open another is never closed with 1000, which would end the command.
@@ -338,7 +341,7 @@ test("a stream that cannot be read on because the sandbox is gone fails at once,
 	await assert.rejects(proc.wait(), /no longer keeps 10 bytes of the command's output/);
 });
 
-test("a stream that does not start says why: the sandbox read for a refused upgrade, the stream's own error by its code, the call's bound for one that never opens", async () => {
+test("a stream that does not start says why: the sandbox read for a refused upgrade, the stream's own error by its code, the call's bound for one that never opens", async (t) => {
 	const refused = (route) => {
 		const streams = fakeCommands();
 		streams.refuse(true);
@@ -358,13 +361,13 @@ test("a stream that does not start says why: the sandbox read for a refused upgr
 	const saying = stub((listeners) => listeners.message({ data: JSON.stringify({ type: "error", message: "Sandbox sbx_0123456789ab is paused", code: "conflict" }) }));
 	await assert.rejects(hostOf(() => undefined, saying).host.exec(ID, ["true"], CTX), (error) => error.code === "refused" && /Groundbox ended the command: Sandbox sbx_0123456789ab is paused/.test(error.message));
 	// No `started` within the call's bound (an image with no Node runs no resumable command): the call's timeout. The
-	// bound's timer is unref'd, as a caller's would be, so the test holds the event loop open while it waits.
-	const alive = setInterval(() => {}, 1_000);
-	try {
-		await assert.rejects(hostOf(() => undefined, stub()).host.exec(ID, ["true"], { timeoutMs: 50 }), (error) => error.name === "TimeoutError");
-	} finally {
-		clearInterval(alive);
-	}
+	// bound is 10 minutes, past the test's own timeout, so only the mocked clock can reach it.
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	clockedTimeouts(t);
+	const refusedAtBound = assert.rejects(hostOf(() => undefined, stub()).host.exec(ID, ["true"], { timeoutMs: 600_000 }), (error) => error.name === "TimeoutError");
+	await turn();
+	t.mock.timers.tick(600_000);
+	await firedOnMockedClock(refusedAtBound);
 });
 
 test("kill is the shared pid kill of the sh's recorded pid, as root: the command and every process under it end, wait answers, and its directory goes", async (t) => {
@@ -453,10 +456,40 @@ function scriptedSockets() {
 }
 
 const out = (text, seq) => ({ type: "stdout", data: Buffer.from(text).toString("base64"), seq });
-/** START_SCRIPT's mark (the first byte on stderr, once the command's directory, fifo and pid record are made), with what follows it. */
-const marked = (text = "", seq = 1 + Buffer.byteLength(text)) => ({ type: "stderr", data: Buffer.from(`\n${text}`).toString("base64"), seq });
+const err = (text, seq) => ({ type: "stderr", data: Buffer.from(text).toString("base64"), seq });
+/** START_SCRIPT's mark for the command whose directory is `dir`: one line naming the directory's random hex, put on stderr once its directory, fifo and pid record are made. */
+const markOf = (dir) => `agentrun-ready:${dir.slice(dir.lastIndexOf("-") + 1)}\n`;
+/** The mark as one stderr chunk, with what follows it. */
+const marked = (dir, text = "", seq = Buffer.byteLength(markOf(dir) + text)) => err(markOf(dir) + text, seq);
 /** One turn of the event loop: what a promise or a stream moves on to next has run. No clock. */
 const turn = () => new Promise(setImmediate);
+/**
+ * AbortSignal.timeout on the test's clock. Node's mock timers leave it on the real one, so a call's bound (made with it)
+ * would wait real time; this one fires at the mocked setTimeout's tick. Enable the mock timers first.
+ */
+const clockedTimeouts = (t) =>
+	t.mock.method(AbortSignal, "timeout", (ms) => {
+		const controller = new AbortController();
+		setTimeout(() => controller.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")), ms);
+		return controller.signal;
+	});
+/** The words a bound left on the real clock fails with. */
+const MOCKED_CLOCK = "the stream bound fired on the mocked clock, not real time";
+/**
+ * Waits on `settled` (the refusal at a bound just ticked past) for at most 5 s of real time. A bound still on the real
+ * clock fails here in words, not at the test's timeout. The deadline is a setInterval, which stays real while only
+ * setTimeout is mocked.
+ */
+const firedOnMockedClock = async (settled) => {
+	const started = performance.now();
+	let deadline;
+	try {
+		await Promise.race([settled, new Promise((_, fail) => (deadline = setInterval(() => fail(new Error(`${MOCKED_CLOCK}: no refusal within 5 s of real time`)), 5_000)))]);
+	} finally {
+		clearInterval(deadline);
+	}
+	assert.ok(performance.now() - started < 5_000, MOCKED_CLOCK);
+};
 
 /** What `promise` gives, or a failure naming `what` once `ms` have passed: a process that never ends fails its test. */
 const within = async (promise, what, ms = 10_000) => {
@@ -615,11 +648,11 @@ async function endedCommand() {
 	await turn();
 	const path = streams.opened[0].sent[0].args[4];
 	streams.opened[0].say({ type: "started", exec_id: "ex_0123456789abcdef" });
-	streams.opened[0].say(marked());
+	streams.opened[0].say(marked(path));
 	return { path, proc: await starting };
 }
 
-test("a write and the kill wait for the mark the start's sh puts first on stderr once its directory, fifo and pid record are made: none runs before it, the mark is no output, and a stream that ends with none lets them through", async () => {
+test("a write and the kill wait for the mark the start's sh puts on stderr once its directory, fifo and pid record are made: none runs before it, the mark is no output, and a stream that ends with none lets them through", async () => {
 	const steps = [];
 	const streams = scriptedSockets();
 	const { host } = hostOf((method, path, body) => (method === "POST" && path.endsWith("/exec") ? (steps.push(body.stdin_base64 === undefined ? "kill" : "write"), [200, { exit_code: 0, timed_out: false }]) : undefined), streams);
@@ -636,7 +669,7 @@ test("a write and the kill wait for the mark the start's sh puts first on stderr
 	await turn();
 	assert.deepEqual(steps, [], "a write before the mark waits for it");
 	// The mark and the command's own stderr in one chunk: the mark is taken off, the rest is the command's.
-	socket.say(marked("its own\n"));
+	socket.say(marked(socket.sent[0].args[4], "its own\n"));
 	await wrote;
 	assert.deepEqual(steps, ["write"]);
 	socket.say({ type: "exit", exit_code: 0 });
@@ -656,6 +689,59 @@ test("a write and the kill wait for the mark the start's sh puts first on stderr
 	await killing;
 	assert.deepEqual(steps, ["kill"]);
 	assert.equal(await words, "agentrun: it is already there\n");
+});
+
+test("the mark is one whole line naming the command's own directory: stderr before it (a wrapper's warning, another command's mark) passes through and lets nothing go; a mark split across chunks, or sharing one with output after it, is taken off whole", async () => {
+	const steps = [];
+	const streams = scriptedSockets();
+	const { host } = hostOf((method, path, body) => (method === "POST" && path.endsWith("/exec") ? (steps.push(body.stdin_base64 === undefined ? "kill" : "write"), [200, { exit_code: 0, timed_out: false }]) : undefined), streams);
+	const exec = async () => {
+		steps.length = 0;
+		const starting = host.exec(ID, ["cat"], CTX);
+		const socket = streams.opened.at(-1);
+		await turn();
+		socket.say({ type: "started", exec_id: "ex_0123456789abcdef" });
+		return { socket, mark: markOf(socket.sent[0].args[4]), proc: await starting };
+	};
+
+	// A wrapper's warning first, then the mark split across two chunks, the second carrying the command's own stderr.
+	const one = await exec();
+	const stderr = textOf(one.proc.stderr);
+	const wrote = one.proc.write(Buffer.from("x"));
+	one.socket.say(err("sudo: unable to resolve host sbx\n", 32));
+	await turn();
+	assert.deepEqual(steps, [], "a warning before the mark lets no write go");
+	one.socket.say(err(one.mark.slice(0, 20), 52));
+	await turn();
+	assert.deepEqual(steps, [], "half a mark lets no write go");
+	one.socket.say(err(`${one.mark.slice(20)}its own\n`, 52 + one.mark.length - 20 + 8));
+	await wrote;
+	assert.deepEqual(steps, ["write"]);
+	one.socket.say({ type: "exit", exit_code: 0 });
+	assert.equal(await one.proc.wait(), 0);
+	assert.equal(await stderr, "sudo: unable to resolve host sbx\nits own\n");
+
+	// Another command's mark is no mark of this one's, and passes through; this one's, sharing a chunk with output after it, lets the kill go.
+	const two = await exec();
+	const words = textOf(two.proc.stderr);
+	const killing = two.proc.kill();
+	two.socket.say(err("agentrun-ready:0000000000000000\n", 32));
+	await turn();
+	assert.deepEqual(steps, [], "another command's mark lets no kill go");
+	two.socket.say(err(`${two.mark}after\n`, 32 + two.mark.length + 6));
+	await killing;
+	assert.deepEqual(steps, ["kill"]);
+	two.socket.say({ type: "exit", exit_code: 0 });
+	await two.proc.wait();
+	assert.equal(await words, "agentrun-ready:0000000000000000\nafter\n");
+
+	// A stream that ends partway into what could have been the mark keeps those bytes: they are stderr, whole.
+	const three = await exec();
+	const cut = textOf(three.proc.stderr);
+	three.socket.say(err("agentrun-re", 11));
+	three.socket.say({ type: "exit", exit_code: 1 });
+	assert.equal(await three.proc.wait(), 1);
+	assert.equal(await cut, "agentrun-re");
 });
 
 test("a write never reaches a fifo the tool user planted at the path a command's start names: stdin of a command that ended goes nowhere", async (t) => {
@@ -714,7 +800,7 @@ test("a kill never takes its target from a pid record the tool user planted at a
 	}
 });
 
-/** The start, write and kill scripts as the host sends them: its write and its kill answered here, never run. */
+/** The start, write and kill scripts as the host sends them (its write and its kill answered here, never run), and PID_KILL. */
 async function sentScripts() {
 	const steps = [];
 	const streams = scriptedSockets();
@@ -723,7 +809,7 @@ async function sentScripts() {
 	await turn();
 	const startScript = streams.opened[0].sent[0].args[2];
 	streams.opened[0].say({ type: "started", exec_id: "ex_0123456789abcdef" });
-	streams.opened[0].say(marked());
+	streams.opened[0].say(marked(streams.opened[0].sent[0].args[4]));
 	const proc = await starting;
 	await proc.write(Buffer.from("x"));
 	await proc.kill();
@@ -731,16 +817,33 @@ async function sentScripts() {
 	return { startScript, writeScript, killScript, pidKill };
 }
 
+/**
+ * A directory of the test's under /tmp, gone at its end; bin(name, stand-ins) makes a directory in it of commands
+ * (name: sh lines) to put first on PATH, and answers its path.
+ */
+function scratch(t) {
+	const root = realpathSync(mkdtempSync("/tmp/agentrun-groundbox-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const bin = (name, commands) => {
+		const dir = join(root, name);
+		mkdirSync(dir);
+		for (const [command, body] of Object.entries(commands)) writeFileSync(join(dir, command), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+		return dir;
+	};
+	return { root, bin };
+}
+
+/** Where a command is found on PATH now, before a stand-in of the same name shadows it. */
+const real = (name) => execFileSync("sh", ["-c", `command -v ${name}`], { encoding: "utf8" }).trim();
+
 test("the scripts, run by sh against paths of the test's: the start refuses a path already there; the write and the kill take only a directory the command's user owns with mode 0700, not through a link, and a fifo or record there of that user's", async (t) => {
 	if (!HAS_PROC) return t.skip("needs /proc");
 	const { startScript, writeScript, killScript, pidKill } = await sentScripts();
-	const root = realpathSync(mkdtempSync("/tmp/agentrun-groundbox-"));
-	t.after(() => rmSync(root, { recursive: true, force: true }));
 	// `id` answering another uid stands in for a directory and files of another user's, which this test can't make.
-	mkdirSync(join(root, "bin"));
-	writeFileSync(join(root, "bin", "id"), "#!/bin/sh\necho 4242\n", { mode: 0o755 });
+	const { root, bin } = scratch(t);
+	const others = bin("other-user", { id: "echo 4242" });
 	const sh = (script, args, { input = "", otherUser = false } = {}) =>
-		spawnSync("sh", ["-c", script, "sh", ...args], { input, encoding: "utf8", timeout: 20_000, env: { ...process.env, ...(otherUser ? { PATH: `${join(root, "bin")}:${process.env.PATH}` } : {}) } });
+		spawnSync("sh", ["-c", script, "sh", ...args], { input, encoding: "utf8", timeout: 20_000, env: { ...process.env, ...(otherUser ? { PATH: `${others}:${process.env.PATH}` } : {}) } });
 	let n = 0;
 	const fresh = () => join(root, `c${++n}`);
 
@@ -753,7 +856,7 @@ test("the scripts, run by sh against paths of the test's: the start refuses a pa
 	assert.match(refused.stderr, /^agentrun: .* is already there/);
 	const own = fresh();
 	const ran = sh(startScript, [own, "sh", "-c", 'stat -c "%u %a" "$1"; [ -p "$1/in" ] && [ -s "$1/pid" ] && echo made', "sh", own]);
-	assert.deepEqual([ran.status, ran.stdout, ran.stderr], [0, `${process.getuid()} 700\nmade\n`, "\n"]);
+	assert.deepEqual([ran.status, ran.stdout, ran.stderr], [0, `${process.getuid()} 700\nmade\n`, markOf(own)]);
 	assert.equal(existsSync(own), false, "the start removed its directory");
 
 	/** A directory at a fresh path the way the tool user might leave it, with `file` made in it by make(path). */
@@ -798,6 +901,82 @@ test("the scripts, run by sh against paths of the test's: the start refuses a pa
 	// With nothing at the path (the command ended): the write is exit 3 and the kill exit 0, at once, with no wait.
 	assert.equal(sh(writeScript, [fresh()], { input: "x" }).status, 3);
 	assert.equal(sh(killScript, [fresh(), pidKill]).status, 0);
+});
+
+test("a start whose fifo cannot be opened refuses with exit 126, like its other refusals, and leaves no directory behind", async (t) => {
+	const { startScript } = await sentScripts();
+	const { root, bin } = scratch(t);
+	// A mkfifo that makes a directory where the fifo goes: the open of it for reading and writing fails.
+	const broken = bin("broken-mkfifo", { mkfifo: 'mkdir "$3"' });
+	const dir = join(root, "c1");
+	const ran = spawnSync("sh", ["-c", startScript, "sh", dir, "sh", "-c", "echo ran"], { encoding: "utf8", timeout: 20_000, env: { ...process.env, PATH: `${broken}:${process.env.PATH}` } });
+	assert.deepEqual([ran.status, ran.stdout], [126, ""]);
+	assert.equal(existsSync(dir), false, "the refused start removed its directory");
+});
+
+test("a write whose bytes went in went through, however soon the command ends after: an end after `cat` answers 0; a fifo gone before the write's open answers 3 and leaves nothing; a directory gone before it, or a `cat` that failed, answers 3", async (t) => {
+	if (!HAS_PROC) return t.skip("needs /proc");
+	const { writeScript } = await sentScripts();
+	const { root, bin } = scratch(t);
+	const [cat, stat, rm] = ["cat", "stat", "rm"].map(real);
+	let n = 0;
+	/** A command's own directory as its sh made it, with the fifo held open here (as the command holds it), so a write's open never waits. */
+	const command = () => {
+		const dir = join(root, `c${++n}`);
+		mkdirSync(dir, { mode: 0o700 });
+		const fifo = heldFifo(join(dir, "in"));
+		t.after(fifo.close);
+		return { dir, fifo };
+	};
+	/** The write script against dir, with the stand-ins first on PATH: what ends the command lands inside the script. */
+	const write = (dir, commands) => spawnSync("sh", ["-c", writeScript, "sh", dir], { input: "abc", encoding: "utf8", timeout: 20_000, env: { ...process.env, PATH: `${bin(`b${++n}`, commands)}:${process.env.PATH}` } });
+
+	// The command takes the bytes and exits, and its sh removes the directory, after `cat` and before the write answers: 0.
+	const took = command();
+	const ended = write(took.dir, { cat: `${cat} "$@"; s=$?; ${rm} -rf "$(pwd -P)"; exit $s` });
+	assert.equal(ended.status, 0, ended.stderr);
+	assert.equal(took.fifo.read(), "abc");
+	assert.equal(existsSync(took.dir), false);
+
+	// The fifo went after the checks and before the write's open, which then made a file of its own: 3, and nothing is left.
+	const gone = command();
+	const late = write(gone.dir, { stat: `${stat} "$@"; s=$?; [ "$3" = in ] && ${rm} -f in; exit $s` });
+	assert.equal(late.status, 3, late.stderr);
+	assert.equal(existsSync(gone.dir), false, "the write's own file and the directory are removed");
+	assert.equal(gone.fifo.read(), "");
+
+	// The whole directory went before the write's open, which then failed: 3.
+	const left = command();
+	const failed = write(left.dir, { stat: `${stat} "$@"; s=$?; [ "$3" = in ] && ${rm} -rf "$(pwd -P)"; exit $s` });
+	assert.equal(failed.status, 3, failed.stderr);
+	assert.equal(existsSync(left.dir), false);
+
+	// `cat` failed with the fifo still there (the command went mid-write): 3, never a write that went through.
+	const cut = command();
+	const broke = write(cut.dir, { cat: `${cat} >/dev/null; exit 1` });
+	assert.equal(broke.status, 3, broke.stderr);
+});
+
+test("a write after the command ended and before its sh removed the fifo never waits on the fifo's open: the sh holds it to the end", async (t) => {
+	if (!HAS_PROC) return t.skip("needs /proc");
+	const { startScript, writeScript } = await sentScripts();
+	const { root, bin } = scratch(t);
+	const [reached, gate] = [join(root, "reached"), join(root, "gate")];
+	execFileSync("mkfifo", [reached, gate]);
+	// The sh's rm says it was reached and waits for the gate: the command (true) has ended, and its directory is still there.
+	const held = bin("held-rm", { rm: `echo >"${reached}"; read -r x <"${gate}"; exec ${real("rm")} "$@"` });
+	const dir = join(root, "c1");
+	const start = spawn("sh", ["-c", startScript, "sh", dir, "true"], { stdio: "ignore", env: { ...process.env, PATH: `${held}:${process.env.PATH}` } });
+	const exited = once(start, "close");
+	const at = createReadStream(reached);
+	await once(at, "data");
+	at.destroy();
+	assert.equal(existsSync(join(dir, "in")), true, "the sh is at its rm with the fifo still there");
+	const wrote = spawnSync("sh", ["-c", writeScript, "sh", dir], { input: "late", encoding: "utf8", timeout: 20_000 });
+	writeFileSync(gate, "go\n");
+	assert.equal(wrote.status, 0, `the write ${wrote.status === null ? "waited on the fifo's open" : `exited ${wrote.status}: ${wrote.stderr}`}`);
+	assert.deepEqual(await exited, [0, null]);
+	assert.equal(existsSync(dir), false, "the sh removed its directory");
 });
 
 test("a write is made once its bytes are in the command's fifo, though the command reads them and ends, and its directory goes, before the write answers; a fifo gone before the write opens it takes nothing, and the write leaves no file of its own", async (t) => {
@@ -847,15 +1026,18 @@ test("a write is made once its bytes are in the command's fifo, though the comma
 test("a start that does not hear `started` within its bound ends the command: its socket closes with 1000, so a late `started` leaves nothing running", async (t) => {
 	const streams = fakeCommands();
 	t.after(streams.stopAll);
-	streams.startedAfter(300);
+	streams.holdStarted();
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	clockedTimeouts(t);
 	const { host } = hostOf(() => undefined, streams);
-	// The bound's timer is unref'd, as a caller's would be: the test holds the event loop open while it waits.
-	const alive = setInterval(() => {}, 1_000);
-	try {
-		await assert.rejects(host.exec(ID, ["sleep", "600"], { timeoutMs: 100 }), (error) => error.name === "TimeoutError");
-	} finally {
-		clearInterval(alive);
-	}
+	// A 10-minute bound, past the test's own timeout: only the mocked clock reaches it.
+	const starting = host.exec(ID, ["sleep", "600"], { timeoutMs: 600_000 });
+	const refused = assert.rejects(starting, (error) => error.name === "TimeoutError");
+	await turn();
+	t.mock.timers.tick(600_000);
+	await firedOnMockedClock(refused);
+	// The sandbox's late `started`, said after the bound: the socket is closed, so it reaches nothing.
+	streams.releaseStarted();
 	const [opened] = streams.opened;
 	assert.equal(opened.closed, 1000, "a close that is not 1000 leaves the command running");
 	const [command] = streams.commands.values();
@@ -865,7 +1047,7 @@ test("a start that does not hear `started` within its bound ends the command: it
 
 test("the API URL is https alone, loopback included, so the key never crosses in the clear", () => {
 	for (const apiUrl of ["http://api.groundbox.dev/v1", "http://10.0.0.5:8080/v1", "http://127.0.0.1:8080/v1", "http://[::1]:8080/v1", "http://localhost:8080/v1", "ws://api.groundbox.dev/v1"]) {
-		assert.throws(() => new GroundboxProvider({ apiKey: KEY, apiUrl, daemonPath: "/nonexistent/computerd" }), (error) => /^the Groundbox API URL must be https, so the key never crosses in the clear/.test(error.message) && !error.message.includes(KEY), apiUrl);
+		assert.throws(() => new GroundboxProvider({ apiKey: KEY, apiUrl, daemonPath: "/nonexistent/computerd" }), refusesHttp("the Groundbox API URL", apiUrl, KEY));
 	}
 	assert.doesNotThrow(() => new GroundboxProvider({ apiKey: KEY, apiUrl: "https://api.groundbox.dev/v1", daemonPath: "/nonexistent/computerd" }));
 });
@@ -887,4 +1069,48 @@ test("a peer that takes every attach and then says nothing fails wait() in words
 	assert.ok(outcome instanceof Error, `wait() is ${outcome}`);
 	assert.match(outcome.message, /could not be read on again within 0\.5 s: the command stream said nothing for 0\.1 s after its attach/);
 	assert.equal(streams.opened.length, 2, "no try that would start past the bound");
+});
+
+test("the conformance module hands the caller's onNote to the provider: a release whose run folder was not let go cleanly is said through it", async () => {
+	// A running Archil computer: release lets go of its folder first, through an exec that cannot start here.
+	const labels = { ...LABELS, "agentrun.run": "r1", "agentrun.mount": JSON.stringify({ kind: "archil", disk: "dsk-00000000000baf76", region: "aws-us-east-1", agent: "a1" }) };
+	let deleted = false;
+	const { fetch } = recorder((method, path) => {
+		if (path !== `/v1/sandboxes/${ID}`) return undefined;
+		if (method === "DELETE") {
+			deleted = true;
+			return [200, sandbox({ status: "stopped", stop_reason: "deleted", metadata: labels })];
+		}
+		if (method === "GET") return deleted ? [404, refusal("not_found", `No sandbox ${ID}`)] : [200, sandbox({ metadata: labels })];
+		return undefined;
+	});
+	const notes = [];
+	const provider = await createProvider({
+		env: { [ENV.key]: KEY, [ENV.apiUrl]: API, [ENV.live]: "1" },
+		fetch,
+		webSocket: () => {
+			throw new Error("no command stream here");
+		},
+		timeouts: { pollMs: 1 },
+		onNote: (note) => notes.push(note),
+	});
+	const released = await provider.release({ id: ID, name: NAME }, "delete");
+	assert.equal(released.ok, true, JSON.stringify(released));
+	assert.equal(deleted, true);
+	assert.equal(notes.length, 1, JSON.stringify(notes));
+	assert.equal(notes[0].computer, NAME);
+	assert.match(notes[0].note, /was deleted, and the run's folder was not let go cleanly/);
+});
+
+test("the conformance module's daemon: an option's path over COMPUTER_GROUNDBOX_DAEMON, and the drifted twin uploads the one it built", async () => {
+	const { fetch } = recorder((method, path) => (method === "GET" && path.startsWith("/v1/sandboxes?") ? [200, { data: [], next_cursor: null }] : undefined));
+	const env = { [ENV.key]: KEY, [ENV.apiUrl]: API, [ENV.live]: "1", [ENV.daemon]: "/nonexistent/untangle-env/computerd" };
+	const spec = { image: "alpine:3.20", lifetimeMs: 600_000, network: "none" };
+	const options = { env, fetch, daemonPath: "/nonexistent/untangle-option/computerd", buildDaemon: async () => "/nonexistent/untangle-drift/computerd" };
+	const made = await (await createProvider(options)).create(spec, { requestId: "req-untangle-groundbox-1" });
+	assert.equal(made.ok, false);
+	assert.match(made.error.message, /no daemon binary at \/nonexistent\/untangle-option\/computerd/);
+	const drifted = await (await createDriftedProvider(options)).create(spec, { requestId: "req-untangle-groundbox-2" });
+	assert.equal(drifted.ok, false);
+	assert.match(drifted.error.message, /no daemon binary at \/nonexistent\/untangle-drift\/computerd/);
 });

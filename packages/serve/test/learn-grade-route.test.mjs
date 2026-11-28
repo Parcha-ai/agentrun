@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ended, LEARN, learner, made, started } from "./learn-support.mjs";
+import { putPromotions } from "./learned-workflow-seed-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, follow, serve, withEnv } from "./support.mjs";
 
@@ -27,7 +28,10 @@ test("a person grades an ended run; the agent's promotions read empty until a le
   const labelled = await api("PUT", `/runs/${run}/grade`, { correct: false, label: "Review: the reference MCC is 5812." });
   assert.deepEqual([labelled.status, labelled.body.feedback], [200, null], JSON.stringify(labelled.body));
   meets("/runs/{run_id}/grade", "put", labelled.body);
-  for (const [body, field] of [[{}, "correct"], [{ correct: "yes" }, "correct"], [{ correct: true, expected: "5812" }, "expected"], [{ correct: true, source: "vibes" }, "source"], [{ correct: true, score: 1 }, "score"], [{ correct: true, label: 5 }, "label"], [{ correct: true, label: "x".repeat(4001) }, "label"]]) {
+  // A key named `__proto__`, at any depth of the expected answer, is refused: the one name an object's prototype setter
+  // answers to, never a field a check or an audit reads (learning-setting.ts refuses it in agree_on too).
+  const reserved = [JSON.parse('{"correct":false,"expected":{"__proto__":{"mcc":"5812"}}}'), JSON.parse('{"correct":false,"expected":{"verdict":{"__proto__":"5812"}}}')];
+  for (const [body, field] of [[{}, "correct"], [{ correct: "yes" }, "correct"], [{ correct: true, expected: "5812" }, "expected"], ...reserved.map((one) => [one, "expected"]), [{ correct: true, source: "vibes" }, "source"], [{ correct: true, score: 1 }, "score"], [{ correct: true, label: 5 }, "label"], [{ correct: true, label: "x".repeat(4001) }, "label"]]) {
     const bad = await api("PUT", `/runs/${run}/grade`, body);
     assert.equal(bad.status, 422, JSON.stringify(body));
     assert.ok(bad.body.error.fields.some((one) => one.field === field), JSON.stringify(bad.body.error.fields));
@@ -72,6 +76,14 @@ test("a run's learning read says its grade and the round it opened: none before 
   assert.equal(again.graded.feedback, "correction", "after the round ended, the read still says the grade opened a correction round");
   assert.deepEqual([again.state, again.corrections], ["merged", 1], `the round kept the reviewer's words as a correction: ${JSON.stringify(again)}`);
   meets(again);
+
+  // A refused grade changes nothing: `__proto__` in `expected` (at the top or nested) and a bare `expected` are refused,
+  // and the kept grade reads back whole, its `graded_at` and its round's `feedback` too. A refusal that still wrote would
+  // replace it.
+  for (const body of [JSON.parse('{"correct":false,"expected":{"__proto__":{"answer":42}}}'), JSON.parse('{"correct":true,"expected":{"verdict":{"__proto__":42}}}'), { correct: true, expected: "42" }]) {
+    assert.equal((await api("PUT", `/runs/${run}/grade`, body)).status, 422, JSON.stringify(body));
+  }
+  assert.deepEqual((await api("GET", `/runs/${run}/learning`)).body.graded, again.graded, "a refused grade replaced the kept one");
 });
 
 // Review on #2644 (round 4, security): every text of a promotion record the route returns is cut of the host's secrets as
@@ -82,7 +94,7 @@ test("the promotions list cuts a known secret from every text of a record: its w
   const { api, store } = await serve(t);
   assert.equal((await api("POST", "/agents", agent("promoted"))).status, 201);
   const record = { workflow: `answer-${value}`, digest: "d2", at: "2026-11-14T00:00:00.000Z", decided: "hold", reason: `check of answer-${value}: held, it disagreed on check-${value}`, check: { compile_after: 20, agree_min: 0.9, alone_min: 0.5, attempt: 1, n: 4, agreed: 1, alone: 2, of: ["g-0"], disagreements: [{ run: "g-0", input: `ask ${value}`, agent: "no" }] } };
-  await store.settings.put("learning.promotions.promoted", { v: 1, items: [record] });
+  await putPromotions(store, "promoted", [record]);
   const read = await api("GET", "/agents/promoted/learning/promotions");
   assert.equal(read.status, 200, JSON.stringify(read.body));
   assert.equal(read.body.promotions.length, 1);
@@ -102,7 +114,7 @@ test("the promotions list answers a hold, a promote on its dry run and a replayi
   const dry = { workflow: "answer", digest: "d0", at: "2026-11-13T00:00:00.000Z", decided: "promote", reason: "nothing to replay on: promoted on its passing dry run", check: { ...bar, n: 0, agreed: 0, alone: 0, of: [] } };
   const held = { workflow: "answer", digest: "d1", at: "2026-11-14T00:00:00.000Z", decided: "hold", reason: "it handed back every one of its 6 replayed inputs: it would never answer alone", check: { ...bar, n: 6, agreed: 0, alone: 0, of: ["g-0"], stopped: true } };
   const replaying = { workflow: "answer", digest: "d2", at: "2026-11-14T00:00:01.000Z", decided: "replaying", reason: "its check is replaying", check: bar, runs: ["r-1"], inputs: ["g-0"], replay_id: "rp-1" };
-  await store.settings.put("learning.promotions.switched", { v: 1, items: [dry, held, replaying] });
+  await putPromotions(store, "switched", [dry, held, replaying]);
   const read = await api("GET", "/agents/switched/learning/promotions");
   assert.equal(read.status, 200, JSON.stringify(read.body));
   assert.deepEqual(schemaProblems(doc, schema, read.body), [], JSON.stringify(read.body));

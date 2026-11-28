@@ -21,33 +21,33 @@ const CLAIM = { runId: "run_abc", turn: 2, attempt: 3 };
 const SAID = JSON.stringify({ agentrun_run_id: "run_abc", agentrun_turn: 2, agentrun_attempt: 3 });
 
 test("a claim's model env names its run, turn and attempt by name, never enumerable: a spread or a spawn of it carries none", () => {
-  const env = claimModelEnv({ AGENT_MODEL_BASE_URL: `${GW}/v1` }, {}, undefined, CLAIM);
+  const env = claimModelEnv({ AGENT_MODEL_BASE_URL: `${GW}/v1` }, [], undefined, CLAIM);
   assert.equal(env[REQUEST_METADATA_ENV], SAID);
   assert.equal(Object.keys(env).includes(REQUEST_METADATA_ENV), false);
   assert.equal({ ...env }[REQUEST_METADATA_ENV], undefined);
-  assert.equal(claimModelEnv({}, {}, undefined)[REQUEST_METADATA_ENV], undefined, "no claim, no metadata");
+  assert.equal(claimModelEnv({}, [], undefined)[REQUEST_METADATA_ENV], undefined, "no claim, no metadata");
 });
 
 test("serve's gateway gets the metadata header on either wire and from a CLI's Anthropic endpoint on its origin; a vendor's own endpoint never does", async () => {
-  const gateway = claimModelEnv({ AGENT_MODEL_BASE_URL: `${GW}/v1`, AGENT_MODEL_API_KEY: KEY, AGENT_MODEL: "claude-sonnet-5-5" }, {}, undefined, CLAIM);
+  const gateway = claimModelEnv({ AGENT_MODEL_BASE_URL: `${GW}/v1`, AGENT_MODEL_API_KEY: KEY, AGENT_MODEL: "claude-sonnet-5-5" }, [], undefined, CLAIM);
   const messages = await routeOf(undefined, gateway, "default", PI_WIRES);
   assert.deepEqual([messages.provider.api, messages.provider.headers], ["anthropic-messages", { [SPEND_LOGS_METADATA_HEADER]: SAID }]);
-  const responses = await routeOf(undefined, claimModelEnv({ AGENT_MODEL_BASE_URL: `${GW}/v1`, AGENT_MODEL_API_KEY: KEY, AGENT_MODEL: "openai/gpt-6.1-sol" }, {}, undefined, CLAIM), "default", PI_WIRES);
+  const responses = await routeOf(undefined, claimModelEnv({ AGENT_MODEL_BASE_URL: `${GW}/v1`, AGENT_MODEL_API_KEY: KEY, AGENT_MODEL: "openai/gpt-6.1-sol" }, [], undefined, CLAIM), "default", PI_WIRES);
   assert.deepEqual([responses.provider.api, responses.provider.headers], ["openai-responses", { [SPEND_LOGS_METADATA_HEADER]: SAID }]);
   // claude-agent's endpoint, ANTHROPIC_BASE_URL on the gateway's origin (a host's runs), carries it; Anthropic's own does not.
-  const onGateway = claimModelEnv({ AGENT_MODEL_BASE_URL: `${GW}/v1`, ANTHROPIC_BASE_URL: GW, ANTHROPIC_API_KEY: KEY }, {}, undefined, CLAIM);
+  const onGateway = claimModelEnv({ AGENT_MODEL_BASE_URL: `${GW}/v1`, ANTHROPIC_BASE_URL: GW, ANTHROPIC_API_KEY: KEY }, [], undefined, CLAIM);
   assert.deepEqual(providerFor("anthropic-messages", onGateway, { provider: "anthropic", modelId: "claude-sonnet-5-5" }, "claude-agent").headers, { [SPEND_LOGS_METADATA_HEADER]: SAID });
-  const direct = claimModelEnv({ ANTHROPIC_API_KEY: KEY }, {}, undefined, CLAIM);
+  const direct = claimModelEnv({ ANTHROPIC_API_KEY: KEY }, [], undefined, CLAIM);
   assert.equal(providerFor("anthropic-messages", direct, { provider: "anthropic", modelId: "claude-sonnet-5-5" }, "claude-agent").headers, undefined);
-  const elsewhere = claimModelEnv({ AGENT_MODEL_BASE_URL: `${GW}/v1`, ANTHROPIC_BASE_URL: "https://anthropic.example", ANTHROPIC_API_KEY: KEY }, {}, undefined, CLAIM);
+  const elsewhere = claimModelEnv({ AGENT_MODEL_BASE_URL: `${GW}/v1`, ANTHROPIC_BASE_URL: "https://anthropic.example", ANTHROPIC_API_KEY: KEY }, [], undefined, CLAIM);
   assert.equal(providerFor("anthropic-messages", elsewhere, { provider: "anthropic", modelId: "claude-sonnet-5-5" }, "claude-agent").headers, undefined, "an endpoint off the gateway's origin");
 });
 
 test("pi naming an Anthropic model: on serve's gateway its requests carry the metadata; with no gateway set (ANTHROPIC_BASE_URL alone, any proxy or Anthropic itself) none", async () => {
-  const onGateway = claimModelEnv({ AGENT_MODEL_BASE_URL: `${GW}/v1`, AGENT_MODEL_API_KEY: KEY, AGENT_MODEL: "claude-sonnet-5-5", ANTHROPIC_BASE_URL: GW, ANTHROPIC_API_KEY: KEY }, {}, undefined, CLAIM);
+  const onGateway = claimModelEnv({ AGENT_MODEL_BASE_URL: `${GW}/v1`, AGENT_MODEL_API_KEY: KEY, AGENT_MODEL: "claude-sonnet-5-5", ANTHROPIC_BASE_URL: GW, ANTHROPIC_API_KEY: KEY }, [], undefined, CLAIM);
   const named = await routeOf("anthropic/claude-sonnet-5-5", onGateway, "default", PI_WIRES);
   assert.deepEqual([named.provider.api, named.provider.headers], ["anthropic-messages", { [SPEND_LOGS_METADATA_HEADER]: SAID }]);
-  const alone = await routeOf(undefined, claimModelEnv({ ANTHROPIC_BASE_URL: GW, ANTHROPIC_API_KEY: KEY, AGENT_MODEL: "anthropic/claude-sonnet-5-5" }, {}, undefined, CLAIM), "default", PI_WIRES);
+  const alone = await routeOf(undefined, claimModelEnv({ ANTHROPIC_BASE_URL: GW, ANTHROPIC_API_KEY: KEY, AGENT_MODEL: "anthropic/claude-sonnet-5-5" }, [], undefined, CLAIM), "default", PI_WIRES);
   assert.deepEqual([alone.provider.api, alone.provider.origin, alone.provider.headers], ["anthropic-messages", GW, undefined], "not serve's gateway: no header");
 });
 
@@ -58,8 +58,8 @@ test("a replay's or audit's grader route, made for a claim, names the claim's ru
   const env = { AGENT_MODEL_BASE_URL: `${GW}/v1`, AGENT_MODEL_API_KEY: KEY, AGENT_MODEL: "claude-sonnet-5-5", AGENT_MODEL_FAST: "claude-haiku-5-5" };
   const deps = { store: undefined, sealKey: undefined, env, routeOf };
   const graded = await graderRouteOf({}, true, undefined, {}, cut, () => {}, deps, [cut], CLAIM);
-  assert.deepEqual(graded.provider.headers, { [SPEND_LOGS_METADATA_HEADER]: SAID });
-  assert.equal((await graderRouteOf({}, true, undefined, {}, cut, () => {}, deps)).provider.headers, undefined);
+  assert.deepEqual(graded.route.provider.headers, { [SPEND_LOGS_METADATA_HEADER]: SAID });
+  assert.equal((await graderRouteOf({}, true, undefined, {}, cut, () => {}, deps)).route.provider.headers, undefined);
 });
 
 test("a run through serve's gateway: every model request carries its run id, turn 1 and attempt 1 as LiteLLM's spend-logs metadata", { timeout: 120_000 }, async (t) => {

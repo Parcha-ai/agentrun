@@ -23,10 +23,10 @@
 // custody ends a create it refused at once.
 import type { AttachTarget, BrowserProvider, LeaseRef, ProviderCaps, RemoteFile, ResourceStatus, SessionSpec } from "@parcha/pi-browser";
 import { BrowserFailureError, browserFailure, cdpCall, type CdpSession } from "@parcha/pi-browser";
-import { BROWSER_IMAGE, type BrowserSpec, type ComputerProvider, isBrowserProvider, PROVIDERS, providerFor, releaseOlder, runLabels } from "@parcha/agentrun-computer";
-import { KEY_TABLE, providerOptions } from "./computer-keys.js";
+import { BROWSER_IMAGE, type BrowserSpec, type ComputerProvider, isBrowserProvider, releaseOlder, runLabels } from "@parcha/agentrun-computer";
+import { providerFromEnv } from "./computer-keys.js";
 import { claimBrowser } from "./workspace/computer-for-claim.js";
-import type { ClaimBrowser } from "./workspace/resolve-computer.js";
+import type { BrowserHolds, ClaimBrowser, UnheldOptions, UnheldSessions } from "./workspace/resolve-computer.js";
 
 /** Custody's own refusal of a second saver, in its words: no session was started. */
 const ONE_SAVER = "one session at a time may save to this agent's saved sign-in, and another session is saving to it now. Wait for it to end, or start without saving. No session was started.";
@@ -39,8 +39,6 @@ export interface BrowserComputerOptions {
   readonly signIn?: { readonly name: string; readonly pointer: string };
   /** A headless browser where the provider offers one. */
   readonly headless?: boolean;
-  /** Where a server behind a browser gateway holds the sockets of Browserbase's connect hosts (BROWSERBASE_CONNECT_BASE_URL). */
-  readonly connectBaseUrl?: string;
   readonly sleep?: (ms: number) => Promise<void>;
 }
 
@@ -178,7 +176,12 @@ export function claimBrowserProvider(computer: ClaimBrowser, options: BrowserCom
     },
 
     async findByTag(tag, signal) {
-      const found = (await statused(computer.find(tag, signal))).map((id) => ({ id, tag }));
+      // Each with when its vendor made it, where its listing said (madeAt): pi-browser keeps that time beside a session it
+      // releases for another's tag, which no later lookup lists, so the time it ran is charged from there.
+      const found = (await statused(computer.find(tag, signal))).map((id) => {
+        const madeAt = computer.madeAt?.(id);
+        return madeAt ? { id, tag, madeAt } : { id, tag };
+      });
       // No browser left under a saver's tag: one may have just ended (a create whose reply was lost, found and released
       // by the provider), and the vendor may still be writing the profile back, so its settle time is waited out first.
       if (found.length === 0) {
@@ -193,7 +196,9 @@ export function claimBrowserProvider(computer: ClaimBrowser, options: BrowserCom
 
     async attach(ref, signal): Promise<AttachTarget> {
       signal?.throwIfAborted();
-      const url = rewriteConnectUrl(await statused(computer.url(ref.id)), options.connectBaseUrl);
+      // The provider's connect URL as a driver dials it: one behind a gateway that fronts its sockets (hostEnv) already
+      // gives the gateway's.
+      const url = await statused(computer.url(ref.id));
       // A provider that keeps a session's downloads keeps only what the browser was told to save into its folder, and
       // that lasts as long as the socket that told it: one per session, held until its release. A failure costs the
       // files, not the session.
@@ -242,51 +247,31 @@ export function claimBrowserProvider(computer: ClaimBrowser, options: BrowserCom
   return provider;
 }
 
-/** The plane's vendor as a computer provider of the registry, made with the run's tool keys by the registry's names
- *  (computer-keys.ts providerOptions): the same provider an agent's browser computer is, on the keys the tool plane
- *  resolved it by. */
+/** The plane's vendor as a computer provider of the registry, made with the run's tool keys and the server's own variables
+ *  its descriptor names (computer-keys.ts providerFromEnv): the same provider an agent's browser computer is, on the keys
+ *  the tool plane resolved it by, through the gateway the key checks and sign-ins go through. */
 export async function planeComputer(vendor: string, env: NodeJS.ProcessEnv): Promise<ComputerProvider> {
-  const keys = Object.fromEntries((KEY_TABLE.keys[vendor] ?? []).flatMap((key) => (typeof env[key.name] === "string" && env[key.name] !== "" ? [[key.name, env[key.name] as string]] : [])));
-  const options = providerOptions(vendor, keys);
-  if (!options.ok) throw new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${options.error.message}.`));
-  // The server's own variables the provider's descriptor says it reads (hostEnv: the gateway a server behind one reaches
-  // the vendor through), as the claim's providers get them (workspace/computer-deps.ts): the key checks and the sign-in
-  // creation already go through that gateway, so the browser's sessions do too.
-  const names = PROVIDERS.find((one) => one.id === vendor)?.hostEnv;
-  const hostEnv = names ? { env: Object.fromEntries(names.flatMap((name) => (env[name] === undefined ? [] : [[name, String(env[name])]]))) } : {};
-  return providerFor(vendor as never, { ...(options.options as object), ...hostEnv } as never);
+  const made = await providerFromEnv(vendor, env);
+  if (!made.ok) throw new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${made.error.message}.`));
+  return made.value;
 }
 
 /** The run's browser sessions of a lower claim epoch released, as a computer's are when a claim starts it (the janitor's
  *  releaseOlder): a runner that died after the vendor made a session and before its id was kept left one this claim's
  *  labels would never find. One that ended may have been saving to the run's sign-in, and this process holds no saver
- *  for it, so when any was ended the provider's settle time is waited out before the plane's browser opens a session. */
+ *  for it, so when any was ended the provider's settle time is waited out before the plane's browser opens a session.
+ *  The ones released, by id, each with when the sweep answered (ClaimBrowser.sweptOlder). */
 export async function releaseOlderBrowsers(
   provider: ComputerProvider,
   run: { readonly runId: string; readonly epoch: number },
   { signal, sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)) }: { readonly signal?: AbortSignal; readonly sleep?: (ms: number) => Promise<void> } = {},
-): Promise<void> {
+): Promise<ReadonlyMap<string, string>> {
   const older = await releaseOlder(provider, run.runId, run.epoch, signal ? { signal } : {});
   if (!older.ok) throw new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${older.error.message}.`));
+  const at = new Date().toISOString();
   const settleMs = provider.capabilities().browser?.profiles?.settleMs ?? 0;
   if (settleMs > 0 && older.value.released.length + older.value.detached.length > 0) await sleep(settleMs);
-}
-
-/** A Browserbase connect URL moved onto the credential proxy that fronts its sockets: only `*.browserbase.com` hosts, with
- *  the signing query kept. */
-export function rewriteConnectUrl(connectUrl: string, connectBaseUrl: string | undefined): string {
-  if (!connectBaseUrl) return connectUrl;
-  try {
-    const target = new URL(connectBaseUrl);
-    const url = new URL(connectUrl);
-    if (!/(?:^|\.)browserbase\.com$/i.test(url.hostname)) return connectUrl;
-    url.protocol = target.protocol;
-    url.host = target.host;
-    url.pathname = target.pathname.replace(/\/$/, "") + url.pathname;
-    return url.toString();
-  } catch {
-    return connectUrl;
-  }
+  return new Map(older.value.released.map((ref) => [ref.id, at]));
 }
 
 /** A run's browser over `provider`, a browser computer provider (the plane's vendor, or a test's stand-in), as the claim
@@ -296,6 +281,48 @@ export function planeBrowser(provider: ComputerProvider, run: { readonly runId: 
   if (!isBrowserProvider(provider)) throw new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: the ${provider.id} provider gives no browser.`));
   const spec = { image: BROWSER_IMAGE, lifetimeMs: provider.capabilities().maxLifetimeMs, network: "open" as const, labels: run ? runLabels(run.runId, run.epoch) : {} };
   return claimBrowser(provider, spec).browser;
+}
+
+/** The plane's browser for a run's claim (planeBrowser), over `provider`, the plane's vendor: with `sweep` (the default,
+ *  and only under a claim), the run's sessions of a lower claim epoch released first (releaseOlderBrowsers), and the ones
+ *  it released carried on the browser by id with when it answered (ClaimBrowser.sweptOlder), so the claim's open charges
+ *  an owed one to then. A stand-in vendor (a test's) is opened unswept. */
+export async function openPlaneBrowser(
+  provider: ComputerProvider,
+  run: { readonly runId: string; readonly epoch: number } | undefined,
+  { sweep = true, signal, sleep }: { readonly sweep?: boolean; readonly signal?: AbortSignal; readonly sleep?: (ms: number) => Promise<void> } = {},
+): Promise<ClaimBrowser> {
+  const plane = planeBrowser(provider, run);
+  if (!run || !sweep) return plane;
+  const swept = await releaseOlderBrowsers(provider, run, { ...(signal ? { signal } : {}), ...(sleep ? { sleep } : {}) });
+  return swept.size > 0 ? { ...plane, sweptOlder: swept } : plane;
+}
+
+/** What the run's browser holds as its claim lets the run go, from pi-browser's open-session inventory once its releases
+ *  have drained: every row still there is a session its custody holds (a release that failed, a lost one reconcile takes
+ *  again); its id, or where its create's answer was lost (no id), its tag, any session of which it may hold. `custody`:
+ *  the ids of every session its custody held in this process, released since or not: a session it released itself is
+ *  billed by its own record, never again here, though the vendor may list it as running a moment after its release. */
+export function browserHolds(rows: ReadonlyArray<{ readonly tag: string; readonly resourceId: string | null }>, custody: Iterable<string> = []): BrowserHolds {
+  return {
+    ids: new Set([...custody, ...rows.flatMap((row) => (row.resourceId === null ? [] : [row.resourceId]))]),
+    tags: new Set(rows.filter((row) => row.resourceId === null).map((row) => row.tag)),
+  };
+}
+
+/** At the claim's let-go: every session of the run's labels (its run, this claim's epoch) that what `rows` reads
+ *  (browserHolds, read once the vendor's list answered) does not hold, released (ClaimBrowser.releaseUnheld), with
+ *  `options` recording around each release; undefined for a browser that names no run and epoch. */
+export async function releaseUnheldBrowsers(computer: ClaimBrowser, rows: () => Promise<ReadonlyArray<{ readonly tag: string; readonly resourceId: string | null }>>, custody: Iterable<string> = [], options: UnheldOptions = {}): Promise<UnheldSessions | undefined> {
+  return computer.releaseUnheld?.(async () => browserHolds(await rows(), custody), options);
+}
+
+/** The sessions pi-browser's onRaceReleased tells (a release by `tag` ended them beside its own), as the charge of the
+ *  browsers nothing held takes them (browser-cost.ts unheld): each from when its vendor made it, the time pi-browser kept
+ *  beside it (`madeAt`, so a later process has it too), else this process's listing's (ClaimBrowser.madeAt); null where
+ *  neither says. */
+export function raceReleasedSessions({ tag, ids, madeAt }: { tag: string; ids: readonly string[]; madeAt?: Readonly<Record<string, string>> }, computer: Pick<ClaimBrowser, "madeAt">): UnheldSessions {
+  return { released: ids.map((id) => ({ id, tag, createdAt: madeAt?.[id] ?? computer.madeAt?.(id) ?? null })), failed: [], creating: [] };
 }
 
 /** When the run's process lets the run go: closes the download sockets its browser's sessions hold, released or not (a

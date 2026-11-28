@@ -8,7 +8,7 @@ import { isDeepStrictEqual } from "node:util";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { CAPS, type EntryLike, isMessageRow, type TimelineEvent } from "./timeline/index.js";
 import { runLink } from "./console-links.js";
-import { redacted, redactedAnswer, redactedOutput, withoutLoopback } from "./key-refusal.js";
+import { redacted, redactedAnswer, redactedOutput, redactedOutputWhole, withoutLoopback } from "./key-refusal.js";
 import { structuredAnswer } from "./answer-json.js";
 import { isObject } from "./validate.js";
 import { currentLearning, holdsForOk, type ItemStatus, type Learning, learningView, LEARNING_LABEL, secretsShown, shortOf, type Shown } from "./learning.js";
@@ -52,15 +52,16 @@ import {
   windDownOf,
 } from "./run-view.js";
 import { reflects, type Reflect } from "./reflect-range.js";
+import { absorbedUsdOf, holdsAbsorbed, withoutAbsorbed } from "./run-usage.js";
 import { freeCeilingMessage, overCapMessage, SPEND_CAP_REACHED } from "@parcha/agentrun-kernel/kernel/cap";
 import { booksDecisions, decisionsOverStore, parallelChargedDecisions } from "./store-reads/decisions.js";
 import { type BookedSpend, bookedDecisionsOf, bookedSpend, cliModelWorked, type CostBasis, costBasisOf, costWordsOf, endCostOf, type RunCost, runCostOf, storedBasisOf } from "./runner/metrics.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
-import { laidOf, pathViewOf, roundsOf, runLearningEnd, usedOnly } from "./store-reads/learning.js";
+import { laidOf, pathViewOf, type RunAllIn, runAllInOf, runLearningEnd, runOwnOverStore, usedOnly } from "./store-reads/learning.js";
 import { inReflect, reflectRanges } from "./runner/end-of-run.js";
 import { correctionCount } from "./learn/corrections.js";
-import { forgetServedAnswers, isCliRecord, servedSince, runReflect, runTimeline, wholeAnswerFor, wholeAnswers, withoutFeedbackRounds } from "./store-reads/journal.js";
+import { forgetServedAnswers, isCliRecord, rowCutsOnce, servedSince, runReflect, runTimeline, wholeAnswerFor, wholeAnswers, withoutFeedbackRounds } from "./store-reads/journal.js";
 import { costOfRun, type RunReadState, readRun, runReadState } from "./store-reads/runs.js";
 import { feedbackOf, type KeptEnd, keptEndOf } from "./runner/feedback-round.js";
 import { runCutValues, runErrorWordsOf, underCut } from "./run-cut.js";
@@ -75,14 +76,23 @@ import { type Command, FINAL_STATES, type KeptListing, type RunListing, type Run
 import { LISTING_HELD, LISTING_KEYED } from "./store/schema.js";
 import { createHash } from "node:crypto";
 import type { RecordingView } from "./run-recordings.js";
+import { learningWorkOf, type OwnLearning } from "./learning-work.js";
+import { COMPILE_TIMEOUT_MS } from "./learn/compile.js";
+import { factoryChildren, factoryGithub, factoryLastActivity, factoryObservation, factoryObserved, factorySource, type FactoryActivity, type FactoryObserved } from "./factory-activity.js";
 
 /** What the store-backed view needs beside the store: where its console lives, every secret it never shows (read now, so
  *  one rotated is cut at once), and the agents' saved sign-ins (for the handed-pointer cut). The server passes the same it
  *  passes the file path. */
 export interface ViewDeps {
+  /** Scoped factory lists ask for source/provenance metadata. Ordinary run reads keep their existing shape and cost.
+   *  "kept": all of it but who observes the run now, for a listing (KeptFactory): that is read when it is listed. */
+  readonly factory?: boolean | "kept";
   readonly origin: string;
   readonly serverSecrets: () => string[];
   readonly signIns?: SignInReader;
+  /** The server's seal key, which opens what a run's caller handed it while its launch holds it (run-cut.ts runCutValues);
+   *  undefined when it has none, and a run that holds some is then withheld. */
+  readonly sealKey: Buffer | undefined;
   /** The server's clock (ms), for the claim-lease check that decides a run is live; defaults to Date.now. The server
    *  passes the same clock the store uses, so a test on a moved clock reads a fresh claim as live. */
   readonly now?: () => number;
@@ -90,7 +100,7 @@ export interface ViewDeps {
    *  run's error names a refused key in plain words, as its Timeline's error row does. Default: this process's
    *  environment (the server passes it with the keys a person saved). */
   readonly keyEnv?: () => NodeJS.ProcessEnv;
-  /** Each learned item's status on agent `agentId`'s learning folder's main (learning-routes.ts statusesOf): what a run held
+  /** Each learned item's status at agent `agentId`'s newest learning save (learning-routes.ts statusesOf): what a run held
    *  for its owner's OK reads as it stands there. None: as the merge wrote it. */
   readonly statuses?: (agentId: string) => Promise<ReadonlyMap<string, ItemStatus> | undefined>;
   /** Run `runId`'s screen recordings (run-recordings.ts recordingsOf), the run ended at `endedAt` (null: it has not). Only
@@ -150,10 +160,11 @@ export function forgetServed(store: Store, runId: string): string[] {
 /** A run's answer as served: redactedAnswer's, once per answer and held value set. */
 const servedOnce = (store: Store, runId: string, input: string, values: readonly string[], since: number): string =>
   keptOnce(store, `answer ${runId}`, input, values, since, () => redactedAnswer(input, values));
-/** Whether a run's input is served (store-view's `input`): only when the cut a run's words get (redactedOutput) leaves it
- *  exactly as given, so "Run again" never sends an altered task. Read once per input and held value set. */
+/** Whether a run's input is served (store-view's `input`): only when the cut a run's words get, read whole first
+ *  (redactedOutputWhole: a held value split across two of its fields withholds it), leaves it exactly as given, so "Run
+ *  again" never sends an altered task. Read once per input and held value set. */
 const inputWhole = (store: Store, runId: string, input: Record<string, unknown>, values: readonly string[], since: number): boolean =>
-  keptOnce(store, `input ${runId}`, JSON.stringify(input), values, since, () => isDeepStrictEqual(redactedOutput(input, values), input));
+  keptOnce(store, `input ${runId}`, JSON.stringify(input), values, since, () => isDeepStrictEqual(redactedOutputWhole(input, values), input));
 
 /** A run's whole answer as answerOfRun read it from the rows: its newest final-answer row, never the learning turn's, and
  *  never an earlier turn's: a final answer row before the person's last message belongs to the turn that message
@@ -213,6 +224,7 @@ function pausedOf(runRow: RunRow, entries: readonly { kind?: string; id?: unknow
 /** The run read from the store: the row, its launch, its timeline, its agent's revision count for the version, its
  *  learning end, and the sign-in cut it serves through. Undefined for an unknown run. */
 interface StoreRun {
+  readonly factory?: Omit<FactoryActivity, "controls" | "observation"> & { readonly observation?: FactoryActivity["observation"] };
   readonly native?: Record<string, unknown>;
   readonly sdk?: Record<string, unknown>;
   readonly cli_learning?: Record<string,unknown>;
@@ -282,12 +294,17 @@ interface StoreRun {
   /** The run looks back after its job's end (`row` and `runRow` read as that end): nothing of it is settled until the
    *  look-back's own end is in (poll_after_ms 1000, the timeline not final). */
   readonly lookingBack?: true;
+  /** What its view's learning_work reads of the run's own learning (learning-work.ts learningWorkOf), from the reads above. */
+  readonly ownLearning: OwnLearning;
+  /** While the run is at work: what its absorbed usage lines cost (absorbedOfRecords), read from the same journal records
+   *  as its cost's `usd`, so the run read's `billable_usd` subtracts only time that `usd` holds. Undefined once it ended. */
+  readonly absorbedAtWork?: number | null;
 }
 
 /** A runner holds the run's claim now: it is not in a final state, a runner is named on its row, and its lease has not run
  *  out (claimed_until >= now, the predicate the claimable query's `claimed_until < ?` is the negation of). `now` is the
  *  server's clock, so a test on a moved clock reads a fresh claim as live. */
-function liveOf(runRow: RunRow, now: number): boolean {
+export function liveOf(runRow: RunRow, now: number): boolean {
   return !FINAL_STATES.includes(runRow.state) && runRow.runner !== null && runRow.claimedUntil !== null && runRow.claimedUntil >= now;
 }
 
@@ -326,7 +343,7 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   // reads the figure this read shows. One conditional write (Runs.healCost); a failure is said and the next read tries again.
   if (run?.heal) await healStoredCost(store, runId, run.heal);
   if (!run?.shownEnd || !holdsForOk(run.shownEnd as Learning) || !deps.statuses) return run && { ...run, learningEnd: run.shownEnd, since };
-  // What the learning end held for its owner's OK reads as it stands now on its agent's folder's main (learning.ts
+  // What the learning end held for its owner's OK reads as it stands now at its agent's newest save (learning.ts
   // currentLearning); its record stays as the merge wrote it.
   return { ...run, learningEnd: currentLearning(run.shownEnd, await deps.statuses(run.row.agent)), since };
 }
@@ -351,7 +368,7 @@ const waitingMessage = (command: Command): boolean => command.kind === "steer" &
  *  end: completed (or as its job ended), its answer, its end time, its learning reflecting, while its runner still holds
  *  it. A person's message waiting (not taken yet) makes it a run going on again, as a completed run a message opens again
  *  reads: its end is the message's turn's to write. */
-async function lookingBackOf(stored: RunRow, entries: Awaited<ReturnType<typeof journalRecords>>["entries"], commands: () => Promise<readonly Command[]>): Promise<KeptEnd | undefined> {
+export async function lookingBackOf(stored: RunRow, entries: Awaited<ReturnType<typeof journalRecords>>["entries"], commands: () => Promise<readonly Command[]>): Promise<KeptEnd | undefined> {
   if (stored.state !== "running") return undefined;
   const rows = await commands();
   const kept = keptEndOf(entries, rows);
@@ -380,6 +397,7 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   const commandsNow = async () => (commandRows ??= await store.commands(runId, 0));
   // A run looking back after its job ended is that end, as every reader serves it (lookingBackOf).
   const lookingBack = await lookingBackOf(stored, records.entries, commandsNow);
+  const absorbedAtWork = FINAL_STATES.includes(stored.state) ? undefined : await absorbedOfRecords(store, runId, records);
   const runRow: RunRow = lookingBack ? { ...stored, state: lookingBack.state, summary: lookingBack.summary ?? null, outcome: lookingBack.outcome ?? null, endedAt: lookingBack.endedAt } : stored;
   const row: typeof read = lookingBack ? keptRead(read, runRow) : read;
   const launch = await launchOf(store, runId);
@@ -400,7 +418,9 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // Its final answer whole (store-reads/journal.ts wholeAnswers), as main served a run's answer: a row's cut is no answer's.
   // A run that ended reads settled, and its usage row says its cost ("Cost: …"), never what it has cost so far. One
   // looking back is still going: its look-back's rows come yet.
-  const timelineOptions = { settled: terminal && !lookingBack, ended: terminal && !lookingBack, redact: (text: string) => redacted(text, values) };
+  // A call's arguments, or a web call's output, split across two strings are withheld whole (TimelineOptions.holds).
+  // Each text cut once per held value set (rowCutsOnce): a polled view cuts only what an earlier read had not.
+  const timelineOptions = { settled: terminal && !lookingBack, ended: terminal && !lookingBack, ...rowCutsOnce(store, runId, cut, since) };
   // Rendered from the records read above, so its usage row and the cost's `plan` (bookedSpend over the same entries) are
   // of one read.
   const timeline = withAsks(await wholeAnswers(store, runId, context, await runTimeline(store, runId, context, timelineOptions, records), timelineOptions, wholeAnswerFor(values), since));
@@ -444,6 +464,18 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // A run looking back after its job's end reads reflecting from that end on, a graded one too (its last end's learning
   // is the earlier round's).
   const shownEnd = lookingBack && started && !started.use ? { state: "reflecting" as const, reason: null, detail: said.reflecting, at: iso(lookingBack.endedAt) } : ended ?? under;
+  // Its own learning, as learning_work reads it: a run that learns (a learning start, and no replay or shadow run), its
+  // compile turn going (it looks back), one begun (its job's end kept for an end-of-run step), and, once its end is in,
+  // when that learning ended (its learning end's time, else its end's). While it looks back, its compile turn's bound as
+  // far as the view knows it: the job's end + the turn's timeout (the turn's own start, later, is kept with its children).
+  const learnedAt = !lookingBack && stored.state !== "running" ? Math.max(stored.endedAt ?? 0, ended ? Date.parse(ended.at) || 0 : 0) : 0;
+  const ownLearning: OwnLearning = {
+    learns: started !== undefined && !launch?.replay && !launch?.audit,
+    compiling: lookingBack !== undefined,
+    compiled: records.entries.some((entry) => entry.kind === KINDS.jobEnd),
+    endedAt: learnedAt > 0 ? learnedAt : null,
+    compileBy: lookingBack ? lookingBack.endedAt + COMPILE_TIMEOUT_MS : null,
+  };
   const turns = new Turns();
   turns.note(recordOf(records.entries), records.submissions ?? [], skip, liveRow?.updatedAt ?? deps.now?.() ?? Date.now());
   const working = !lookingBack && live && turns.open > 0;
@@ -561,7 +593,15 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   const endSaidCost = endCost && !lookingBack ? endSaid !== undefined : false;
   const endUnread = !lookingBack && bookedCost !== undefined && !endCost && endSaid === null;
   const heal = lookingBack ? undefined : healOf(endCost, runRow);
-  return { ...(cli_learning ? {cli_learning}:{}), ...(sdk ? {sdk}:{}), ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions, model, windDown, ...(endCost ? { endCost, endSaidCost } : {}), ...(endUnread ? { endUnread } : {}), ...(heal ? { heal } : {}), ...(lookingBack ? { lookingBack: true } : {}) };
+  const factory: StoreRun["factory"] = deps.factory ? {
+    lifecycle_version: await store.runs.changesHead(),
+    ...factorySource(launch, harness),
+    ...(deps.factory === "kept" ? {} : { observation: await factoryObservation(store, launch, live, liveRow?.updatedAt, deps.now ?? Date.now) }),
+    last_activity_at: factoryLastActivity(records),
+    github: unshown ? null : factoryGithub(launch, (text) => withoutLoopback(redacted(text, values))),
+    children: terminal || FINAL_STATES.includes(runRow.state) || unshown ? [] : await factoryChildren(store, runId, records, (text) => withoutLoopback(redacted(text, values))),
+  } : undefined;
+  return { ...(factory ? { factory } : {}), ...(cli_learning ? {cli_learning}:{}), ...(sdk ? {sdk}:{}), ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions, model, windDown, ...(endCost ? { endCost, endSaidCost } : {}), ...(endUnread ? { endUnread } : {}), ...(heal ? { heal } : {}), ...(lookingBack ? { lookingBack: true } : {}), ownLearning, ...(absorbedAtWork === undefined ? {} : { absorbedAtWork }) };
 }
 
 /** Run read `read` (a run still going, as the store holds it) as the end `ended` keeps (its state, summary and end time:
@@ -642,21 +682,74 @@ function costOfView(run: StoreRun): Record<string, unknown> {
  *  learning's as that turn's model requests are (runCostOf). A part of `usd`, never added to it; 0 with none. Null when
  *  one's charge is unknown (charged an unknown amount, cut, or still out) or counted at its hold; while the run is at work
  *  (not ended, stopped or failed), as its `usd` is the view's snapshot and a paid call booked after it would be read here
- *  and not there (an ended run's record no longer moves); for a run a follow-up
- *  opened again (a round past its first), whose job is what it had cost when its first round answered and whose paid
- *  calls the booking can't split by that; and for an imported, native or SDK run, whose `usd` is its import's or its
+ *  and not there (an ended run's record no longer moves); and for an imported, native or SDK run, whose `usd` is its import's or its
  *  harness's own figure, with no booking of its paid tool calls (a native or SDK run never opens the paid-tools session),
- *  and for an unknown run. */
+ *  and for an unknown run. A browser a create race left running that the run never held is in none of it: its time is
+ *  absorbed (run-usage.ts withoutAbsorbed), booked in `usd` and never billed. */
 export async function toolsUsdOverStore(store: Store, runId: string): Promise<number | null> {
+  return (await paidPartsOverStore(store, runId)).tools_usd;
+}
+
+/** Two parts of run `runId`'s `usd` from its journal: `tools_usd` (toolsUsdOverStore) and `absorbed_usd`, what its
+ *  absorbed lines cost (run-usage.ts absorbedUsdOf: the infrastructure's, booked in `usd` and never billed), the part the
+ *  run read's `billable_usd` leaves out. `absorbed_usd` is null only when an absorbed line's cost is unknown (and for an
+ *  unknown run): while the run is at work it is what its journal has absorbed so far, and an imported, native or SDK run
+ *  books no paid call, so it absorbed nothing (0). `tools_usd` is null in both, and while the run is at work. */
+export async function paidPartsOverStore(store: Store, runId: string, atWork?: number | null): Promise<{ tools_usd: number | null; absorbed_usd: number | null }> {
   const runRow = await store.runs.get(runId);
+  if (!runRow) return { tools_usd: null, absorbed_usd: null };
   const launch = await launchOf(store, runId);
-  if (!runRow || !FINAL_STATES.includes(runRow.state) || runRow.importedFrom || launch?.native || launch?.sdk || (await roundsOf(store, runId)).length > 1) return null;
+  if (runRow.importedFrom || launch?.native || launch?.sdk) return { tools_usd: null, absorbed_usd: 0 };
+  const ended = FINAL_STATES.includes(runRow.state);
+  // At work, the view's `usd` is the one this subtracts from: what its own read found absorbed, when the caller has it.
+  if (!ended && atWork !== undefined) return { tools_usd: null, absorbed_usd: atWork };
   const records = await journalRecords(store.readJournal(runId), BACKGROUND_CONTEXT);
-  const turns = reflectRanges(records.submissions ?? [], records.entries);
-  const entries = records.entries.filter((entry) => !inReflect(turns, Number(entry.id))) as unknown as EntryLike[];
+  const entries = jobEntriesOf(records);
+  const absorbed_usd = await absorbedOfRecords(store, runId, records);
+  if (!ended) return { tools_usd: null, absorbed_usd };
   const parallel = booksDecisions(entries) ? parallelChargedDecisions(await decisionsOverStore(store, runId, BACKGROUND_CONTEXT)) : new Set<string>();
-  const words = costWordsOf([bookedSpend(entries, "paid"), ...(parallel.size ? [bookedDecisionsOf(entries, parallel)] : [])]);
-  return words.upper_bound ? null : words.usd;
+  const words = costWordsOf([bookedSpend(withoutAbsorbed(entries), "paid"), ...(parallel.size ? [bookedDecisionsOf(entries, parallel)] : [])]);
+  return { tools_usd: words.upper_bound ? null : words.usd, absorbed_usd };
+}
+
+/** A run's job and follow-up turns (each round's end-of-run turn left out), as its `usd` reads them (learn/ledger.ts
+ *  roundsLooked). */
+function jobEntriesOf(records: Awaited<ReturnType<typeof journalRecords>>): EntryLike[] {
+  const turns = reflectRanges(records.submissions ?? [], records.entries);
+  return records.entries.filter((entry) => !inReflect(turns, Number(entry.id))) as unknown as EntryLike[];
+}
+
+/** What run `runId`'s absorbed usage lines cost (run-usage.ts absorbedUsdOf) over its journal `records`' job entries,
+ *  with its claims' attempts, which name each absorbed line as /usage does (a store that keeps none, a test's, reads as
+ *  none): 0 with none, null while one's cost is unknown. */
+async function absorbedOfRecords(store: Store, runId: string, records: Awaited<ReturnType<typeof journalRecords>>): Promise<number | null> {
+  const entries = jobEntriesOf(records);
+  const attempts = holdsAbsorbed(entries) && store.runAttempts ? await store.runAttempts.forRun(runId) : [];
+  return absorbedUsdOf(entries, attempts);
+}
+
+/** The run read's `cost.billable_usd`: its `usd` less `absorbed` (paidPartsOverStore's `absorbed_usd`), what a caller
+ *  bills. Null only when `usd` is null or an absorbed line's cost is unknown; with nothing absorbed, `usd` itself. */
+export function billableUsdOf(usd: unknown, absorbed: number | null): number | null {
+  if (typeof usd !== "number" || absorbed === null) return null;
+  return absorbed === 0 ? usd : Math.max(0, Math.round((usd - absorbed) * 1e12) / 1e12);
+}
+
+/** Run `runId`'s costs as GET /runs/{id} reads them (server.ts allInViewOf): its path and figures (`all`,
+ *  store-reads/learning.ts runAllInOverStore; undefined for an unknown run) with `own`, the cost its view read, and its
+ *  `tools_usd` and `absorbed_usd` (paidPartsOverStore). The run's own reads (runOwnOverStore: its row, its ledger row) and its journal are in
+ *  one snapshot of the store: a follow-up that opens the run again between the two reads never puts its paid calls
+ *  beside the previous end's `usd` (run-usage.ts reads a run's lines the same way). A served run's share of its
+ *  revision's spend is read after, over the agent's ledger (runAllInOf), so the snapshot, which holds SQLite's one
+ *  connection, never grows with the agent's runs. `atWork`: what the view's own read found absorbed while the run was
+ *  at work (StoreRun.absorbedAtWork), the `absorbed_usd` of a run still at work here, so it is read with `own`; a run
+ *  that ended since reads both from the snapshot. */
+export async function runCostOverStore(store: Store, runId: string, own: number | null, atWork?: number | null): Promise<{ all: RunAllIn | undefined; tools_usd: number | null; absorbed_usd: number | null }> {
+  const read = await store.snapshot(async (snapshot) => {
+    const mine = await runOwnOverStore(snapshot, runId, own);
+    return { mine, ...(mine ? await paidPartsOverStore(snapshot, runId, atWork) : { tools_usd: null, absorbed_usd: null }) };
+  });
+  return { all: read.mine && (await runAllInOf(store, read.mine)), tools_usd: read.tools_usd, absorbed_usd: read.absorbed_usd };
 }
 
 /** How a run's cost was reached (metrics.ts CostBasis): by how its model requests were priced, as its booking says, while
@@ -704,7 +797,7 @@ function healOf(endCost: RunCost | undefined, runRow: RunRow): StoreRun["heal"] 
 }
 
 /** The start sweep's heal of run `runId` (cost-heal.ts): the same rule as its run read's (bookedCostOf, healOf), from its
- *  row, its launch and its journal alone, so a sweep over many runs reads no timeline and no learning folder. True when
+ *  row, its launch and its journal alone, so a sweep over many runs reads no timeline and no learning. True when
  *  it wrote the booking's figure; a failed read or write throws, for the sweep to count. */
 export async function healedOverStore(store: Store, runId: string): Promise<boolean> {
   const heal = await store.snapshot(async (snapshot) => {
@@ -722,6 +815,15 @@ export async function healedOverStore(store: Store, runId: string): Promise<bool
 export async function viewOverStore(store: Store, runId: string, deps: ViewDeps): Promise<Record<string, unknown> | undefined> {
   const run = await storeRunOf(store, runId, deps);
   return run && viewOfRun(store, runId, deps, run);
+}
+
+/** viewOverStore's answer with, while the run is at work, what its absorbed lines cost as that read found them
+ *  (StoreRun.absorbedAtWork), for the run read's cost (runCostOverStore). */
+export async function runViewOverStore(store: Store, runId: string, deps: ViewDeps): Promise<{ view: Record<string, unknown>; absorbedAtWork?: number | null } | undefined> {
+  const run = await storeRunOf(store, runId, deps);
+  if (!run) return undefined;
+  const view = await viewOfRun(store, runId, deps, run);
+  return run.absorbedAtWork === undefined ? { view } : { view, absorbedAtWork: run.absorbedAtWork };
 }
 
 /** GET /runs/{id}'s answer for a run already read (storeRunOf). `read.withheld` is set to whether the answer withholds the
@@ -743,10 +845,11 @@ async function viewOfRun(store: Store, runId: string, deps: ViewDeps, run: Store
   const finalAnswer = row.kind === "workflow" || unshown ? null : answerOf(run.rows) ?? row.summary ?? null;
   // A workflow run's output, as its end kept it; an agentic run's, its final answer's structured part when its agent has
   // an output schema and the answer's json block (answer-json.ts jsonBlockOf) meets it (storeRunOf's `structured`), else none. Served as
-  // runs.ts serves it (servedOutput): each string in it cut of the values the run holds, its shape kept; none while the
-  // run's sign-in can't be read back.
+  // runs.ts serves it (servedOutput): read whole first, so a held value split across two of its fields withholds it as
+  // "[redacted]" (redactedOutputWhole), else each string in it cut of the values the run holds, its shape kept; none
+  // while the run's sign-in can't be read back.
   const ownOutput = row.kind === "workflow" ? output : status === "completed" && structured && "value" in structured ? structured.value : null;
-  const servedOutput = !unshown && ownOutput !== null && ownOutput !== undefined ? redactedOutput(ownOutput, values) : null;
+  const servedOutput = !unshown && ownOutput !== null && ownOutput !== undefined ? redactedOutputWhole(ownOutput, values) : null;
   // A run its cap ended once its cost passed it (spend_cap_reached) keeps the answer it paid for, as main kept it: the
   // response that crossed the cap was answered and billed, so its text is the run's answer, cut as it came.
   // Its answer is the newest answer row, else (a response cut at its length) the newest text it said; never the row's
@@ -786,6 +889,11 @@ async function viewOfRun(store: Store, runId: string, deps: ViewDeps, run: Store
 
   return {
     ...(run.cli_learning && !unshown ? {cli_learning:redactedOutput(run.cli_learning,values)}:{}),
+    ...(run.factory ? { factory: { ...run.factory, controls: {
+      stop: run.factory.control === "managed" && row.kind === "agentic" && status === "working" && state === "working",
+      cancel: run.factory.control === "managed" && !terminal && !FINAL_STATES.includes(runRow.state),
+      approve: run.factory.control === "managed" && !FINAL_STATES.includes(runRow.state) && pending?.kind === "approval",
+    } } } satisfies { factory: Omit<FactoryActivity, "observation"> } : {}),
     ...(run.sdk && !unshown ? {sdk:redactedOutput(run.sdk,values)}:{}),
     ...(run.native && !unshown ? {native:redactedOutput(run.native,values)}:{}),
     run_id: row.id,
@@ -827,6 +935,9 @@ async function viewOfRun(store: Store, runId: string, deps: ViewDeps, run: Store
     budget_refused_calls: run.windDown.refusedCalls,
     // The run an audit's shadow run audits (launch.audit, runner/audit.ts); null for any other run.
     audit_of: launch?.audit?.of ?? null,
+    // The learning work the run started beside its turn (its compile turn, its check's replays, its audit's shadow), what
+    // a caller revokes the run's own key on once the run is terminal and this is not running (learning-work.ts).
+    learning_work: await learningWorkOf(store, runId, run.ownLearning),
     // The path it took and the learned workflow that served it, as its record keeps them: the read the cost per run makes
     // (store-reads/learning.ts pathViewOf).
     ...pathViewOf(runRow, row.kind, launch ? learningStartOf(launch) : undefined),
@@ -861,6 +972,7 @@ export function summaryOfView(view: Record<string, unknown>): Record<string, unk
   return {
     run_id, agent_id, agent_version, console_url, revision, kind, sha, status, state, title,
     ...(view.cli_learning ? {cli_learning:view.cli_learning} : {}),
+    ...(view.factory ? { factory: view.factory, ...(view.computer ? { computer: view.computer } : {}) } : {}),
     ...(view.sdk ? {sdk:view.sdk} : {}),
     ...(view.native ? {native:view.native} : {}),
     ...(effort ? { effort } : {}),
@@ -881,10 +993,11 @@ export function summaryOfView(view: Record<string, unknown>): Record<string, unk
  *  and what outside the run it read (LISTING_HELD, LISTING_KEYED). Undefined for an unknown run. */
 export async function listingOverStore(store: Store, runId: string, deps: ViewDeps): Promise<RunListing | undefined> {
   const cut = secretsDigest(deps.serverSecrets());
-  const run = await storeRunOf(store, runId, deps);
+  // The same read gives what a scoped list shows beside the item (KeptFactory), so that list reads rows alone too.
+  const run = await storeRunOf(store, runId, { ...deps, factory: "kept" });
   if (!run) return undefined;
   const read = { withheld: false };
-  const summary = summaryOfView(await viewOfRun(store, runId, deps, run, read));
+  const { factory: activity, computer: _computer, ...summary } = summaryOfView(await viewOfRun(store, runId, deps, run, read));
   const status = String(summary.status);
   const terminal = TERMINAL.has(status as Status);
   const asks = terminal ? [] : [run.browserAsk?.expires_at, run.computerAsk?.expires_at].map((at) => (typeof at === "string" ? Date.parse(at) : Number.NaN)).filter((at) => Number.isFinite(at));
@@ -897,7 +1010,23 @@ export async function listingOverStore(store: Store, runId: string, deps: ViewDe
     live: run.live,
     until: expiries.length ? Math.min(...expiries) : null,
     flags,
+    factory: { activity, observed: factoryObserved(run.launch) } satisfies Record<keyof KeptFactory, unknown>,
   };
+}
+
+/** What a listing keeps for the Agent Factory (RunListing.factory): the run's factory projection as the build's view gave
+ *  it (`activity`: its watermark of that build's snapshot, its source, controls, last activity, GitHub work and children,
+ *  all of which move only with a write that moves the run's mark), and who the run is observed through (`observed`), which
+ *  a scoped list reads at each request (factory-activity.ts observationOf): a lease renewed writes nothing to the run. */
+export type KeptFactory = { readonly activity: Omit<FactoryActivity, "observation">; readonly observed: FactoryObserved };
+
+/** What `listing` keeps for the Agent Factory, cut again of the server's secrets as `listedItem` cuts its item when they
+ *  moved since its build; undefined for a listing built before one was kept, which a scoped list builds again, once. */
+export function keptFactory(listing: KeptListing, serverSecrets: readonly string[]): KeptFactory | undefined {
+  const kept = listing.factory;
+  if (!isObject(kept) || !isObject(kept.activity) || !isObject(kept.observed)) return undefined;
+  const { activity, observed } = kept as unknown as KeptFactory;
+  return listing.cut === secretsDigest(serverSecrets) ? { activity, observed } : { activity: redactedOutput(activity, [...serverSecrets]) as KeptFactory["activity"], observed };
 }
 
 /** Whether `listing` is cut of the server's secrets as they are now. A list builds any other again before it shows it
@@ -919,8 +1048,10 @@ export function listedItem(listing: KeptListing, origin: string, archivedAt: num
   return listing.cut === secretsDigest(serverSecrets) ? item : (redactedOutput(item, [...serverSecrets]) as Record<string, unknown>);
 }
 
-/** A set of secrets' digest, the same for the same set in any order: what a listing was cut of. */
-const secretsDigest = (values: readonly string[]): string => createHash("sha256").update([...new Set(values)].sort().join("\0")).digest("hex");
+/** A set of secrets' digest, the same for the same set in any order: what a listing was cut of. Of the sorted values'
+ *  JSON, which escapes a lone surrogate and a NUL as written, so no two sets share it: as UTF-8 every lone surrogate is
+ *  the one replacement character, and values joined by a NUL read as one value that holds it. */
+const secretsDigest = (values: readonly string[]): string => createHash("sha256").update(JSON.stringify([...new Set(values)].sort())).digest("hex");
 
 /** A run's facts as its view states them, and none of its words: its kind, revision, agent, status and times, and whether
  *  its output is withheld (`unshown`). What a read that serves its own parts (the graph) needs of the run: read off the
@@ -938,7 +1069,7 @@ export type RunStated = { readonly kind: string; readonly revision: string; read
 
 /** A run's live moment from the store (momentOf), for the one acceptance each act a run takes reads. A run no runner holds
  *  (ended, or running with no live claim) reads live false. */
-export async function momentOverStore(store: Store, runId: string, deps: ViewDeps = { origin: "", serverSecrets: () => [] }): Promise<RunMoment | undefined> {
+export async function momentOverStore(store: Store, runId: string, deps: ViewDeps = { origin: "", serverSecrets: () => [], sealKey: undefined }): Promise<RunMoment | undefined> {
   const run = await storeRunOf(store, runId, deps);
   if (!run) return undefined;
   // What is archived of it: its agent (whose archive holds its runs too, so it is said first: unarchiving the run alone would

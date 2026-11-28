@@ -1,7 +1,8 @@
 // Near the cap, a step that does not fit only because of other steps' holds waits for them to settle instead of being
 // refused (runBooking's line under runCap): first come first served across the run's sessions, never past the cap at any
 // admission, holding nothing while it waits. One that cannot fit even with nothing else in flight is refused at once, its
-// words saying what is spent and what is held apart. A waiter leaves at the run's stop (admitted for nothing), at a park
+// words saying what is spent and what is held apart. A waiter leaves at the run's stop (admitted for nothing; money already
+// owed is booked after it all the same), at a park
 // (refused in its own words), and when nothing it waits on settles for the stall bound.
 import assert from "node:assert/strict";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -106,6 +107,22 @@ test("a step waiting for room leaves at the run's stop, admitted for nothing, an
   const requests = await requestsIn(store, cap.TOOL_SESSION);
   assert.equal(requests.length, 1, "only the first was ever admitted");
   near(tools.heldUsd(), 0, "the waiter held nothing");
+});
+
+test("money already owed is booked after the run's stop (nothing starts with it), while a call that comes beside it is still refused", async () => {
+  const stop = new AbortController();
+  const { store, run } = runOn(0.5, { stopped: stop.signal });
+  const tools = await run.tools(await store.open(cap.TOOL_SESSION));
+  stop.abort(new Error("the run was stopped"));
+  const owed = await tools.admit({ ...fetchCall("last-stretch", 0.05), name: "a computer's time", owed: true, ref: "compute:last" }).then((admitted) => admitted, (error) => error);
+  assert.ok(!(owed instanceof Error), `the owed step was booked: ${owed}`);
+  await tools.settle(owed.id, 0.05);
+  const plain = await tools.admit(fetchCall("late", 0.01)).then(() => "admitted", (error) => error);
+  assert.ok(plain instanceof Error && !(plain instanceof cap.CapRefused), `the call after the stop was refused, unadmitted: ${plain}`);
+  const requests = await requestsIn(store, cap.TOOL_SESSION);
+  assert.deepEqual(requests.map((r) => r.data.ref), ["compute:last"], "only the owed step was written");
+  near(tools.spentUsd(), 0.05, "the owed money is the run's spend");
+  near(tools.heldUsd(), 0, "nothing held after it");
 });
 
 test("a stopped run admits nothing more: a cancelled burst's waiters leave, and the calls that come after the stop are refused, none charged", async () => {

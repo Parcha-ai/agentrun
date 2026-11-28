@@ -106,6 +106,9 @@ export function personHands(options: {
   /** A wait on the person's answer ended with its browser let go (its window, the cap, its session gone): when (ms) and
    *  the timeline row's words, for the Screen tab's ended state (browser-wait-ended.ts). Never throws out. */
   waitEnded?(at: number, why: string): void;
+  /** A take of session `tag` went live (`on`, at `at` ms) or ended, however it ended: for the run read's
+   *  `computer.state` (browser-hold.ts). Never throws out. */
+  held?(tag: string, on: boolean, at: number): void;
   holdMs?: number;
   pollMs?: number;
   /** For tests: the timer functions the person's time is held again by. */
@@ -113,7 +116,7 @@ export function personHands(options: {
   /** For tests: the clock the person's time is measured by. */
   now?: () => number;
   /** The run's held values cut from the ask's words, whole, before they are cut to their bound and written. */
-  redact?: (text: string) => string;
+  redact: (text: string) => string;
   /** The person's time on a session that just ended, `seconds` of it, to hold until a charge books it (browser-cost.ts
    *  carry): the up-front holds go as it ends, the time it took stays counted. */
   carry?(tag: string, seconds: number): void;
@@ -434,7 +437,9 @@ export function personHands(options: {
         started: () => {
           if (ended || live) return;
           live = true;
-          void note(HOST_PHASE, { summary: TAKEN, at: now() });
+          const at = now();
+          options.held?.(tag, true, at);
+          void note(HOST_PHASE, { summary: TAKEN, at });
         },
         // No hold started after all: what was held for it goes, and no row was written for it.
         cancel: () => {
@@ -450,6 +455,7 @@ export function personHands(options: {
           // Ended before it went live (the agent's call still running): the person never had the browser, and no row says
           // they took it, so none says how it came back. An answered ask writes its own row.
           if (!live) return Promise.resolve();
+          options.held?.(tag, false, now());
           // Handed back by the person (the viewer's Hand back): their word that they are done, so the agent's open ask on
           // this session is answered done, as the hand-back route would answer it (first answer wins). Never on any other
           // end (cap, idle, away, released, answered): the person did not say they were done. The answer's own row
@@ -483,7 +489,7 @@ export function personHands(options: {
         const hold = { drop: () => release(ask.sessionTag, user) };
         const at = Date.now();
         // Redacted whole, then cut to their bound: a held value the cut would split never leaves its head in the record.
-        const shown = (text: string) => (options.redact ? options.redact(text) : text).slice(0, MAX_TEXT);
+        const shown = (text: string) => options.redact(text).slice(0, MAX_TEXT);
         const record: PendingAsk = { id, tag: ask.sessionTag, instruction: shown(ask.instruction), completion_condition: shown(ask.completionCondition), asked_at: new Date(at).toISOString(), expires_at: new Date(at + holdMs).toISOString() };
         open.set(id, { tag: ask.sessionTag, expiresAt: at + holdMs, drop: () => hold.drop() });
         watch();

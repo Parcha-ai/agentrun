@@ -43,7 +43,8 @@ A computer with the `ui` group also says its screen and its features:
  "features":{"ui.tree":true,"ui.image":true,"ui.background":true,"ui.foreground":true,"ui.page":{"off":"Safari's automation is off in its Develop menu"},"ui.nav":{"off":"a Mac has no system back, home or app switch"},"apps.background":true}}
 ```
 
-- `protocol`: the version of this protocol the computer speaks. A caller refuses a computer that speaks another.
+- `protocol`: the version of this protocol the computer speaks, `<major>.<minor>`. A caller takes 0.2 or a later 0.x,
+  and refuses 0.1, another major, or another shape ([Versioning](README.md#versioning)).
 - `version`: the daemon's own version, or with daemon `none` the provider's. A provider refuses a daemon of a version
   other than its own (a drifted daemon is never handed out).
 - `os`, `kind`, `arch`: what the computer is (see [`kinds.md`](kinds.md)). `arch` is Go's name: `amd64`, `arm64`.
@@ -160,7 +161,8 @@ batch with nothing run. A batch that fails partway answers how many actions ran.
 that window. A launch that only asks the OS to open the app and answers at once races every caller. An app that shows
 no window within `launchWindowMs` (10 s) fails the launch with kind `timeout`, in words naming the app. An app already
 running with a window answers at once. The core case `apps.launch-window` observes the app right after its launch
-answers.
+answers. A Linux computerd answers `denied`, naming the file, for an app whose desktop file its own user could change,
+and `apps.list` leaves such an app out.
 
 ## The ui group
 

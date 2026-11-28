@@ -10,9 +10,11 @@ import { test } from "node:test";
 import { memorySessionStore } from "@parcha/agentrun-kernel/testing";
 import { BROWSER_CHARGED, browserSpend } from "../dist/browser-cost.js";
 import { mcpGateway } from "../dist/mcp-gateway.js";
+import { keepText } from "../dist/runner/redact.js";
 import { FAUX_ENV } from "../dist/model.js";
 import { FAUX_MONID_ENV, MONID_KEY_ENV } from "../dist/monid.js";
-import { bookedIn, paidRequest, parallelSearchFee } from "../dist/paid-calls.js";
+import { parallelSearchFee } from "@parcha/agentrun-web";
+import { bookedIn, paidRequest } from "../dist/paid-calls.js";
 import { monidForClaim } from "../dist/runner/monid-run.js";
 import { localWorkspace } from "../dist/workspace/index.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
@@ -145,6 +147,7 @@ test("a priced MCP call on the run's one ledger books its owner's price, and a l
   const store = memorySessionStore();
   const paid = await claimOn(store);
   const gateway = mcpGateway({
+    redact: keepText,
     pin: { fake: { url: fake.url, tools: [{ name: "paid", inputSchema: { type: "object" } }], prices: { paid: 0.05 } } },
     credentials: { fake: { url: fake.url, headers: { authorization: `Bearer ${TOKEN}` } } },
     work: () => work,

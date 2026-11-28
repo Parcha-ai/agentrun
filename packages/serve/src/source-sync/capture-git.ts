@@ -2,7 +2,7 @@
 // indirections are never given to Git, even if a task changes them between metadata reads.
 import { createHash } from "node:crypto";
 import { secretsIn } from "../secret-cut.js";
-import { secretShapes } from "../learn/secrets.js";
+import { secretShapes, valueMatcher } from "../learn/secrets.js";
 import { relativeSegments } from "../workspace/paths.js";
 import type { Workspace } from "../workspace/workspace.js";
 import type { ProjectGitCapture, ProjectGitOptions, ProjectInventorySelector } from "./capture-project.js";
@@ -137,9 +137,12 @@ export async function captureGit(work: Workspace, scratch: Workspace, options: P
   const files = [...new Set([...index.keys(), ...text(await git(["ls-files", "--others", "--exclude-standard", "-z"])).split("\0").filter(Boolean).map(pathOf)])].sort();
   const unsafePath = (path: string): boolean => credentialPath(path) || options.secretValues?.some(value => value && path.includes(value)) === true
     || options.exclude.some(item => path === item.path || item.recursive && path.startsWith(`${item.path}/`));
+  // A held value in a form no literal check finds (split by a control character, a terminal sequence, a character that
+  // shows as a box), as the redaction matcher reads it.
+  const heldIn = valueMatcher((options.secretValues ?? []).filter(Boolean));
   const safeBytes = async (body: Uint8Array): Promise<void> => {
     const value = Buffer.from(body).toString("utf8");
-    if (options.secretValues?.some(secret => secret && (value.includes(secret) || value.includes(JSON.stringify(secret).slice(1, -1)))) || secretShapes(value).length || (await secretsIn(value)).length) refuse("Credential-bearing Git history was withheld from the checkpoint.");
+    if (options.secretValues?.some(secret => secret && (value.includes(secret) || value.includes(JSON.stringify(secret).slice(1, -1)))) || heldIn(value) || secretShapes(value).length || (await secretsIn(value)).length) refuse("Credential-bearing Git history was withheld from the checkpoint.");
   };
   // A branch name is output metadata; `bundle ... HEAD` need not contain it in any scanned history object.
   if (branch !== null) await safeBytes(Buffer.from(branch));

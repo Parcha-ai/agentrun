@@ -23,7 +23,8 @@ async function fixture(t, runtime = 'codex') {
     fingerprint: 'discovery-label-only', configuration: [], skills: [], mcp_servers: [], state: 'needs_verification', issues: [],
     capabilities: { launch: true, learning: true, workflows: false, approval: 'native', usage: true } };
   const put = async (path, bytes, policy = false, mode = 0o644) => {
-    await mkdir(dirname(path), { recursive: true }); await writeFile(path, bytes, { mode });
+    // writeFile's mode passes through the umask; the chmod sets the mode the assertions expect on any machine.
+    await mkdir(dirname(path), { recursive: true }); await writeFile(path, bytes, { mode }); await chmod(path, mode);
     if (policy) { target.configuration = target.configuration.filter(x => x.path !== path); target.configuration.push({ path, sha256: sha(bytes) }); }
   };
   // Explicit portable source fixtures: account integrations are disabled at the source, and
@@ -753,4 +754,22 @@ test('consent identity is rechecked on descriptor traversal after initial valida
   });
   await assert.rejects(f.snapshot({ expectedRoots }), error => error.code === 'source_changed');
   assert.equal(swapped, true); assert.equal(replacementRead, false);
+});
+
+test('a held credential split by a control character, a terminal sequence or a box in a source file blocks its export', async t => {
+  const held = ['fixture', 'private', 'split', 'value'].join('-');
+  for (const between of ['\u0000', '\u001b[0m', '\ufffe']) {
+    const f = await fixture(t);
+    await f.put(join(f.project, 'AGENTS.md'), `Project policy ${held.slice(0, 12)}${between}${held.slice(12)} here.`, true);
+    await f.put(join(f.home, '.codex', 'config.toml'), 'model = "gpt-5.5"\n' + trusted(f.project), true);
+    const snapshot = await f.snapshot({ secretValues: [held] });
+    assert.equal(snapshot.complete, false, JSON.stringify(between));
+    assert.ok(snapshot.blockers.some(x => x.code === 'secret_content'), JSON.stringify(between));
+  }
+  // Control: the same policy with no held value in it exports.
+  const f = await fixture(t);
+  await f.put(join(f.project, 'AGENTS.md'), 'Project policy \u001b[0m here.', true);
+  await f.put(join(f.home, '.codex', 'config.toml'), 'model = "gpt-5.5"\n' + trusted(f.project), true);
+  const s = await f.snapshot({ secretValues: [held] });
+  assert.equal(s.complete, true, JSON.stringify(s.blockers));
 });

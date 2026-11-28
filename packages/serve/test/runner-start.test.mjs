@@ -168,9 +168,9 @@ test("bad arguments: the runner exits 2 in runnerArgs' words, and claims nothing
 });
 
 test("Archil settings in the runner's environment that are not whole: the runner exits 2 in words naming what is missing, and claims nothing", async (t) => {
-  const child = runnerChild(t, ["--data", scratch(t, "agentrun-runner-archil-")], { AGENTRUN_ARCHIL_REGION: "aws-us-east-1" });
+  const child = runnerChild(t, ["--data", scratch(t, "agentrun-runner-archil-")], { AGENTRUN_ARCHIL_REGION: "eu-test-9" });
   assert.deepEqual(await child.exited, { code: 2, signal: null });
-  assert.match(child.err.join("\n"), /started with AGENTRUN_ARCHIL_REGION but not AGENTRUN_ARCHIL_S3_URL/);
+  assert.match(child.err.join("\n"), /AGENTRUN_ARCHIL_S3_URL is needed for the region eu-test-9/);
 });
 
 test("the equals form: `runner --data=-odd-dir --loops=2 --name=runner-eq` opens that data directory (a name that starts with a dash) under those loops and that name", async (t) => {
@@ -343,6 +343,28 @@ test("the runner says ready only once its stop signals are handled: a SIGTERM se
   await running;
   assert.equal(closed, true, "the signal closed it");
   assert.equal(process.listenerCount("SIGWINCH"), before, "and its handler is gone");
+});
+
+// A second docker stop, or a double Ctrl-C, while the runner closes: with no handler left Node's default action would end
+// it at once, mid-renewal, before renewal_drain_cut could say so.
+test("a stop signal again while the runner closes neither ends it nor closes it twice: it is said once, and its handlers go with the close", async () => {
+  const before = process.listenerCount("SIGWINCH");
+  let finish;
+  let closes = 0;
+  const said = [];
+  const running = main.runUntilSignalled({ close: () => ((closes += 1), new Promise((resolve) => (finish = resolve))) }, ["SIGWINCH"], () => {}, () => {}, (line) => said.push(line));
+  process.emit("SIGWINCH");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(closes, 1, "the first signal closes it");
+  assert.equal(process.listenerCount("SIGWINCH") - before, 1, "still handled while it closes");
+  process.emit("SIGWINCH");
+  process.emit("SIGWINCH");
+  assert.equal(closes, 1, "never closed twice");
+  assert.equal(said.length, 1, `said once: ${JSON.stringify(said)}`);
+  assert.match(said[0], /already stopping/);
+  finish();
+  await running;
+  assert.equal(process.listenerCount("SIGWINCH"), before, "and its handlers are gone once it closed");
 });
 
 test("the heartbeat check, on an injected clock and file times: younger than twice the renew interval passes, older fails in words", (t) => {

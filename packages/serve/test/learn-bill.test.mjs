@@ -7,13 +7,16 @@
 //   - amortize: a revision's check spend split over its first K served runs (K its check's compile_after), to the
 //     micro-dollar; what a revision that stops, or has not yet served K runs, has not passed on is unattributed;
 //   - over the store: each run's all-in, the series and the invariant (the sum of every run's all-in and the
-//     unattributed remainder is the booked total).
+//     unattributed remainder is the booked total);
+//   - the money rule's by-hand side (runner/workflow-first.ts costLineOf) reads an agent run's all-in as the run view does.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { storeOn } from "./store-helpers.mjs";
+import { putPromotions } from "./learned-workflow-seed-support.mjs";
 
 const { billOf, amortize, costSummary } = await import("../dist/learning-cost.js");
-const { agentCostOverStore, runAllInOverStore } = await import("../dist/store-reads/learning.js");
+const { agentCostOverStore, costStopOverStore, runAllInOverStore } = await import("../dist/store-reads/learning.js");
+const { runCostOverStore, toolsUsdOverStore } = await import("../dist/store-view.js");
 
 const A = "a".repeat(16);
 const B = "b".repeat(16);
@@ -134,10 +137,10 @@ async function ledgerStore(t) {
     if (one.learning_usd) await end(`audit.${one.run_id}`, one.learning_usd, { path: "audit", audit: { of: one.run_id, workflow: "answer", digest: A } }, shadow(one.run_id, A));
   }
   const bar = { compile_after: 3, agree_min: 0.8, alone_min: 0.7, attempt: 1 };
-  await store.settings.put("learning.promotions.agent-1", { v: 1, items: [
+  await putPromotions(store, "agent-1", [
     { workflow: "answer", digest: A, at: PROMOTED, decided: "promote", reason: "checked: promoted", check: { ...bar, n: 2, agreed: 2, alone: 2, of: ["run-01", "run-02"], cost_usd: 0.6 } },
     { workflow: "answer", digest: B, at: at(11), decided: "hold", reason: "held", check: { ...bar, attempt: 2, n: 1, agreed: 0, alone: 1, of: ["run-01"], cost_usd: 0.5, stopped: true } },
-  ] });
+  ]);
   return store;
 }
 
@@ -233,7 +236,7 @@ async function splitStore(t, { replay = 0.3, records, capped = false } = {}) {
   await end("run-08", 3, { path: "agent" });
   const bar = { compile_after: 3, agree_min: 0.8, alone_min: 0.7, attempt: 1 };
   const promote = { workflow: "answer", digest: C, at: promotedAt, decided: "promote", reason: "checked: promoted", check: { ...bar, n: 2, agreed: 2, alone: 2, of: ["run-01", "run-02"] } };
-  await store.settings.put("learning.promotions.agent-1", { v: 1, items: records ?? [promote] });
+  await putPromotions(store, "agent-1", records ?? [promote]);
   return store;
 }
 
@@ -269,6 +272,43 @@ test("A8 (2): C's next K = compile_after served runs each carry (compile + check
   assert.deepEqual(pick("replay-1"), ["replay", 0.3, 0, 0], "a check's spend is on its revision's served runs");
 });
 
+/** `store`, its snapshots watched: each call a snapshot's reader makes on the store it is given (`runs.get`,
+ *  `learning.ledger`, `readJournal`) is noted in `calls`, by name; the store's own calls outside a snapshot are not. */
+function watchingSnapshots(store) {
+  const calls = [];
+  const noting = (target, prefix) => new Proxy(target, {
+    get(on, key) {
+      const value = Reflect.get(on, key, on);
+      if (typeof key !== "string") return value;
+      if (typeof value === "function") return (...args) => (calls.push(`${prefix}${key}`), value.apply(on, args));
+      return prefix === "" && value !== null && typeof value === "object" ? noting(value, `${key}.`) : value;
+    },
+  });
+  const watched = new Proxy(store, { get: (on, key) => (key === "snapshot" ? (read) => on.snapshot((snapshot) => read(noting(snapshot, ""))) : Reflect.get(on, key, on)) });
+  return { watched, calls };
+}
+
+test("GET /runs/{id} of a served run reads its usd and tools_usd in one snapshot and the agent's ledger outside it: the reads in the snapshot are the same whatever the agent's runs, and its figures are as before (#4050 review)", async (t) => {
+  const store = await splitStore(t);
+  const read = async () => {
+    const { watched, calls } = watchingSnapshots(store);
+    return { cost: await runCostOverStore(watched, "run-04", 0.1), calls: calls.sort() };
+  };
+  const few = await read();
+  assert.deepEqual([few.cost.all.path, few.cost.all.usd, few.cost.all.learning_usd, few.cost.all.all_in_usd, few.cost.all.share_usd], ["workflow", 0.1, 0.3, 0.4, 0.3], "a third of $0.30 compile + $0.60 check, as the agent's ledger spreads it");
+  assert.equal(few.cost.tools_usd, await toolsUsdOverStore(store, "run-04"), "tools_usd read in the snapshot");
+  assert.ok(!few.calls.includes("runs.list"), `no list of the agent's runs in the snapshot: ${few.calls.join(", ")}`);
+  // 300 more runs of the agent by hand, after its served ones: run-04's share is the same.
+  for (let at = 0; at < 300; at++) {
+    const id = `hand-${String(at).padStart(3, "0")}`;
+    await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: LEARNS });
+    await store.runs.update(await store.claim(id, "runner-a", { leaseMs: 60_000 }), { state: "ended", costUsd: 1, metrics: { path: "agent" } });
+  }
+  const many = await read();
+  assert.deepEqual(many.cost, few.cost, "the same figures with 300 more runs");
+  assert.deepEqual(many.calls, few.calls, "the same reads in the snapshot with 300 more runs: none of the agent's ledger");
+});
+
 test("A8 (3): a compile whose drafts all failed has no revision to serve: its turn's spend is unattributed on the agent ledger, never on a run", async (t) => {
   const store = await splitStore(t);
   const cost = await agentCostOverStore(store, "agent-1");
@@ -295,7 +335,7 @@ test("A8: a served run whose revision's check cost is unknown reports learning_u
   assert.deepEqual([all["run-07"].learning_usd, all["run-07"].all_in_usd], [0, 0.1], "past the K-th: none of it to carry");
 });
 
-test("A8: with the promotion feed trimmed below the first promotion, the invariant and the baseline hold: an aged-out revision's spend is unattributed, the cutoff is the first served run", async (t) => {
+test("A8: with the promotion feed trimmed below the first promotion, the invariant and the baseline hold: an aged-out revision's spend stays on it at the default K, the cutoff is the first served run", async (t) => {
   const kept = await splitStore(t);
   const wholeCost = await agentCostOverStore(kept, "agent-1");
   const whole = wholeCost.bill;
@@ -307,10 +347,12 @@ test("A8: with the promotion feed trimmed below the first promotion, the invaria
   assert.deepEqual(cost.summary.before, wholeSummary.before, "the agent runs before the first served run, as with the feed whole");
   assert.deepEqual(cost.summary.before, { runs: 3, mean_usd: 1 }, "run-08, by hand after the served runs, is no part of it");
   assert.deepEqual([wholeSummary.takeover, cost.summary.takeover], [{ n: 4, run_id: "run-04" }, { n: 4, run_id: "run-04" }], "from the first served run");
-  assert.deepEqual(cost.bill.revisions.map((one) => one.digest), ["e".repeat(16)]);
-  assert.equal(cost.bill.unattributed_usd, 1.1, "C's compile and check, and run-03's failed compile, carried by no run");
+  // C's spend is its own whatever the feed keeps (learn/ledger.ts summarize): no record names it, so it is spread over
+  // its first COMPILE_AFTER_DEFAULT (20) served runs, the four it served carrying $0.045 each of its $0.90.
+  assert.deepEqual(cost.bill.revisions.map((one) => [one.digest, one.k, one.served, one.attributed_usd, one.unattributed_usd, one.state]), [["e".repeat(16), 20, 0, 0, 0, "stopped"], [C, 20, 4, 0.18, 0.72, "checking"]]);
+  assert.equal(cost.bill.unattributed_usd, 0.92, "what C's four served runs have not carried, and run-03's failed compile");
   const all = await v2Of(store, cost.bill);
-  assert.deepEqual([all["run-04"].learning_usd, all["run-02"].learning_usd], [0, 0]);
+  assert.deepEqual([all["run-04"].learning_usd, all["run-02"].learning_usd], [0.045, 0]);
 });
 
 test("the bill's holds: each at its run of the whole series, placed by the server whatever the runs listed", async (t) => {
@@ -323,10 +365,10 @@ test("the bill's holds: each at its run of the whole series, placed by the serve
 test("the bill's holds say what held each: a hold this release's workflow DSL wrote (neither check nor audit) is `dsl`, never a check's", async (t) => {
   const { DSL_REFUSES } = await import("../dist/runner/promotion.js");
   const store = await ledgerStore(t);
-  const { items } = await store.settings.get("learning.promotions.agent-1");
+  const items = (await store.learning.records("agent-1", "promotion")).map((one) => one.data);
   // At run-12's start (minute 13): the 9th run that does a job.
   const refused = { workflow: "answer", digest: A, at: at(13), decided: "hold", reason: `${DSL_REFUSES}: SCHEMA_UNKNOWN_KEY at root: a key this release does not take`, commit: "c".repeat(40) };
-  await store.settings.put("learning.promotions.agent-1", { v: 1, items: [...items, refused] });
+  await putPromotions(store, "agent-1", [...items, refused]);
   const read = await agentCostOverStore(store, "agent-1");
   assert.deepEqual(read.bill.holds.map((one) => [one.n, one.by]), [[8, "check"], [9, "dsl"]], JSON.stringify(read.bill.holds));
   assert.equal(read.bill.holds[1].reason, refused.reason);
@@ -358,7 +400,7 @@ test("A8 (4): two workflows whose workflow.json is the same text (one digest): e
   for (const [i, workflow] of served.entries()) await end(`run-${String(i + 3).padStart(2, "0")}`, 0.1, { path: "workflow", workflow, workflow_digest: D });
   const bar = { compile_after: 3, agree_min: 0.8, alone_min: 0.7, attempt: 1 };
   const promote = (workflow) => ({ workflow, digest: D, at: promotedAt, decided: "promote", reason: "checked: promoted", check: { ...bar, n: 1, agreed: 1, alone: 1, of: ["run-01"] } });
-  await store.settings.put("learning.promotions.agent-1", { v: 1, items: [promote("answer"), promote("lookup")] });
+  await putPromotions(store, "agent-1", [promote("answer"), promote("lookup")]);
 
   const cost = await agentCostOverStore(store, "agent-1");
   assert.deepEqual(cost.bill.revisions.map((one) => [one.workflow, one.digest, one.compile_usd, one.check_usd, one.spend_usd, one.served, one.attributed_usd, one.unattributed_usd]), [["answer", D, 0.3, 0.3, 0.6, 4, 0.6, 0], ["lookup", D, 0.6, 0.9, 1.5, 4, 1.5, 0]]);
@@ -397,4 +439,95 @@ test("a revision's served count is every run it served (its first K carry its sp
   ], "the workflow revision that ran each run, never the learning folder's commit");
   assert.equal("learned_revision" in cost.runs[0], false, "one revision a run: the workflow's");
   assert.equal(cost.bill.learning_usd, 1.9, "the three replays ($1.10) and the two shadows ($0.80): the booked total less the jobs' own $");
+});
+
+// The money rule (runner/workflow-first.ts costLineOf, overLine) holds a workflow to the agent's by-hand cost: an agent
+// run read as the run view reads it (runAllInOverStore), its compile turn its revision's, never the agent's by hand.
+
+test("money rule: the by-hand mean is the run view's (a compile turn is its revision's), so a workflow priced between it and the compile-laden mean stops serving, on the cost page and at a launch", async (t) => {
+  const clock = { now: Date.parse(at(0)) };
+  const { store } = await storeOn(t, { clock });
+  await store.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Go.", learning: true } });
+  let minute = 0;
+  const end = async (id, cost, metrics, round) => {
+    clock.now = Date.parse(at((minute += 1)));
+    await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: LEARNS });
+    const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
+    await store.runs.update(claim, { state: "ended", costUsd: cost, metrics }, round ? { also: [{ table: "learning_proposals", row: { turn: {}, proposal: round } }] } : undefined);
+  };
+  // Three agent runs, the job $1.00 each; run-02's end compiled C ($0.30 compile turn: its row $1.30).
+  await end("run-01", 1, { path: "agent" });
+  await end("run-02", 1.3, { path: "agent" }, kept({ job: 1, look: 0.3, digest: C }));
+  await end("run-03", 1, { path: "agent" });
+  // COST_WINDOW (10) runs C served at $1.05 each: over the $1.00 by hand, under the $1.10 a compile-laden mean says.
+  for (let i = 1; i <= 10; i++) await end(`served-${String(i).padStart(2, "0")}`, 1.05, { path: "workflow", workflow: "answer", workflow_digest: C, workflow_calls: [{ workflow: "answer", digest: C, caller: "platform", outcome: "answered", usd: 0.5 }] });
+  const hand = await Promise.all(["run-01", "run-02", "run-03"].map((id) => runAllInOverStore(store, id)));
+  assert.deepEqual(hand.map((one) => one.all_in_usd), [1, 1, 1], "the run view: run-02's compile turn is C's");
+  const cost = await agentCostOverStore(store, "agent-1");
+  assert.deepEqual(cost.workflows.map((one) => [one.workflow, one.digest, one.by_hand, one.served, one.state]), [["answer", C, { runs: 3, mean_usd: 1 }, { runs: 10, mean_usd: 1.05 }, "needs_revision"]],
+    "by hand is the run view's mean ($1.00), never $1.10 with run-02's compile turn: C costs more a run than doing the job by hand");
+  assert.equal((await costStopOverStore(store, "agent-1"))("answer", C), true, "a launch's read (no cost page figures) stops it too");
+});
+
+test("money rule, the view's read: past runs it can't read, or 10 served runs and no by-hand cost to hold them to, read as stopped, as a launch then leaves the run to the agent", async (t) => {
+  const clock = { now: Date.parse(at(0)) };
+  const { store } = await storeOn(t, { clock });
+  for (const agent of ["agent-1", "agent-2"]) await store.agents.create({ id: agent, name: "Learns" }, { id: `rev-${agent}`, kind: "agentic", body: { instructions: "Go.", learning: true } });
+  let minute = 0;
+  const end = async (agentId, id, cost, metrics) => {
+    clock.now = Date.parse(at((minute += 1)));
+    await store.runs.create({ id, agentId, revisionId: `rev-${agentId}` }, { body: LEARNS });
+    const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
+    await store.runs.update(claim, { state: "ended", costUsd: cost, metrics });
+  };
+  const SERVED_C = { path: "workflow", workflow: "answer", workflow_digest: C };
+  // agent-1: three runs by hand at $1, then 10 served at $0.50: under the line, it serves; unreadable, it is stopped.
+  for (let i = 1; i <= 3; i++) await end("agent-1", `hand-${i}`, 1, { path: "agent" });
+  for (let i = 1; i <= 10; i++) await end("agent-1", `a1-served-${i}`, 0.5, SERVED_C);
+  assert.equal((await costStopOverStore(store, "agent-1"))("answer", C), false, "under the by-hand cost: it serves");
+  const unreadable = new Proxy(store, { get: (target, key) => (key === "runs" ? { list: async () => { throw new Error("the store is busy"); } } : Reflect.get(target, key)) });
+  assert.equal((await costStopOverStore(unreadable, "agent-1"))("answer", C), true, "past runs it can't read: stopped, never serving");
+  // agent-2: served runs only. Under 10 it serves; at 10 with no by-hand cost it is stopped, as a launch then is.
+  for (let i = 1; i <= 9; i++) await end("agent-2", `a2-served-${i}`, 0.5, SERVED_C);
+  assert.equal((await costStopOverStore(store, "agent-2"))("answer", C), false, "9 served runs: the window has not filled, it serves");
+  await end("agent-2", "a2-served-10", 0.5, SERVED_C);
+  assert.equal((await costStopOverStore(store, "agent-2"))("answer", C), true, "10 served runs and no run by hand: stopped, never serving unchecked");
+});
+
+test("money rule, the cost page: a workflow a launch stops reads needs_revision with why (over_line, or no_by_hand_cost when no run by hand has a priced cost), never serving", async (t) => {
+  const clock = { now: Date.parse(at(0)) };
+  const { store } = await storeOn(t, { clock });
+  const agents = ["over", "none", "unpriced", "under"];
+  for (const agent of agents) await store.agents.create({ id: agent, name: "Learns" }, { id: `rev-${agent}`, kind: "agentic", body: { instructions: "Go.", learning: true } });
+  let minute = 0;
+  const end = async (agentId, id, cost, metrics) => {
+    clock.now = Date.parse(at((minute += 1)));
+    await store.runs.create({ id, agentId, revisionId: `rev-${agentId}` }, { body: LEARNS });
+    const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
+    await store.runs.update(claim, { state: "ended", costUsd: cost, metrics });
+  };
+  const SERVED_C = { path: "workflow", workflow: "answer", workflow_digest: C };
+  // over: by hand at $1, served at $2. none: served only. unpriced: its runs by hand of unknown cost. under: served at $0.50.
+  for (let i = 1; i <= 3; i++) {
+    await end("over", `over-hand-${i}`, 1, { path: "agent" });
+    await end("unpriced", `unpriced-hand-${i}`, null, { path: "agent" });
+    await end("under", `under-hand-${i}`, 1, { path: "agent" });
+  }
+  for (let i = 1; i <= 10; i++) {
+    await end("over", `over-served-${i}`, 2, SERVED_C);
+    await end("none", `none-served-${i}`, 0.5, SERVED_C);
+    await end("unpriced", `unpriced-served-${i}`, 0.5, SERVED_C);
+    await end("under", `under-served-${i}`, 0.5, SERVED_C);
+  }
+  const shown = [];
+  for (const agent of agents) {
+    const [one] = (await agentCostOverStore(store, agent)).workflows;
+    shown.push([agent, one.state, one.reason, one.by_hand, one.unknown_cost_runs, (await costStopOverStore(store, agent))("answer", C)]);
+  }
+  assert.deepEqual(shown, [
+    ["over", "needs_revision", "over_line", { runs: 3, mean_usd: 1 }, 0, true],
+    ["none", "needs_revision", "no_by_hand_cost", null, 0, true],
+    ["unpriced", "needs_revision", "no_by_hand_cost", null, 3, true],
+    ["under", "serving", null, { runs: 3, mean_usd: 1 }, 0, false],
+  ], "the cost page and a launch agree: stopped with why, serving only under a priced by-hand cost");
 });

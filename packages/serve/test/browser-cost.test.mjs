@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { BROWSER_CHARGED, BROWSER_PRICES, browserPrice, browserSpend, priceEnvOf } from "../dist/browser-cost.js";
+import { BROWSER_CHARGED, BROWSER_PRICES, BROWSER_SESSION_OPEN, BROWSER_UNHELD_OWED, browserPrice, browserSpend, priceEnvOf } from "../dist/browser-cost.js";
 import { journalRecords } from "../dist/runner/journal-reader.js";
 import { agent, follow, scratch, serve, toolLedger, withEnv } from "./support.mjs";
 
@@ -24,7 +24,7 @@ const PRICE_ENV = priceEnvOf("browserbase");
  *  taking `readS`, on a `provider` browser at `price`, under `cap` (none: no cap), booked on its one ledger `paid`.
  *  `seen(at, spent, held)` runs at every moment the run can spend, with the ledger's figures: inside each call, before
  *  each model turn and after the release (its ledger steps all written). */
-async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, readS = 3, thinkS = 20, cap, idleS = 180, end = "close", setup = () => {}, pump = false, options = {}, lastTurn = () => {}, after = async () => {}, cutRelease = false, seen = () => {} }) {
+async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, readS = 3, thinkS = 20, cap, idleS = 180, end = "close", setup = () => {}, pump = false, options = {}, lastTurn = () => {}, after = async () => {}, cutRelease = false, seen = () => {}, bind = () => {} }) {
   t.mock.timers.enable({ apis: ["Date"], now: T0 });
   const [{ BACKGROUND_CONTEXT: ctx }, { createModels }, faux, durable, { createBrowserExtension }, { FakeBackend, fakeDriver, fixturePage }] = await Promise.all([
     import("@earendil-works/chord/context"), import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-ai/providers/faux"),
@@ -44,8 +44,11 @@ async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, re
     await new Promise((_, reject) => signal?.addEventListener("abort", () => reject(signal.reason), { once: true }));
   } };
   const releases = [];
+  // What the spend logged, still said.
+  const logged = [];
+  const log = (line) => { logged.push(line); process.stderr.write(`agentrun-serve: ${line}\n`); };
   // A refusal's release, waited for here so its charge is billed at the moment of the refusal.
-  const spend = browserSpend(provider, price, idleS, async (conversation, context) => { releases.push(conversation.id); await browser.release(conversation, "close", context); await browser.drain(harness, context); }, undefined, { paid });
+  const spend = browserSpend(provider, price, idleS, async (conversation, context) => { releases.push(conversation.id); await browser.release(conversation, "close", context); await browser.drain(harness, context); }, log, { paid });
   const browser = createBrowserExtension({ ...options,
     provider: () => (cutRelease ? cutting : backend.provider), driver: fakeDriver(backend), evidence: { file: async () => null },
     prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge,
@@ -70,6 +73,8 @@ async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, re
   spend.watch(harness);
   const policy = { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: idleS, batchTimeoutMs: 60_000 };
   root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } }, init: async (tx, id) => { Object.assign(await tx.doc(browser.docs.Config, id), { label: "run", run: "run-cost", policy }); } });
+  // `bind`: the run's browser, root and context, for a test's own hooks (onSession) to act on.
+  bind({ browser, root, ctx, spend });
   await browser.reconcile(harness, () => true, ctx);
   await (await root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);
   t.mock.timers.tick(5_000);
@@ -87,7 +92,7 @@ async function run(t, { provider = "browserbase", price = BROWSERBASE, reads, re
   const entries = (await harness.commit((tx) => tx.scanEntries({ conversationId: durable.ROOT_CONVERSATION_ID, order: "ascending" }, 500), ctx)).items;
   const booked = entries.filter((entry) => entry.kind === BROWSER_CHARGED).map((entry) => entry.data);
   const results = entries.map((entry) => JSON.stringify(entry)).filter((text) => text.includes("spend_cap_reached"));
-  return { record, booked, spent: paid.spentUsd(), paid, releases, results, backend, stretch: spend.stretch };
+  return { record, booked, spent: paid.spentUsd(), paid, releases, results, backend, stretch: spend.stretch, logged };
 }
 
 const pico = (usd) => Math.round(usd * 1e12) / 1e12;
@@ -104,6 +109,30 @@ test("uncapped: every charge is booked under its call, idle time between calls i
   assert.ok(Math.abs(record.spent.usd - 74 * 0.12 / 3600) < 1e-11, String(record.spent.usd));
   assert.deepEqual(releases, [], "nothing refused");
   assert.equal(pico(paid.spentUsd()), record.spent.usd, "the run's ledger books each charge once");
+  assert.equal(paid.heldUsd(), 0, "no hold is left");
+});
+
+test("a cut release's charge that billed past the release's own time: the release books 0 s and the run's record says by how much the cut went past it; every second booked once", async (t) => {
+  // The cut's charge (tools.ts releaseCut: BrowserExtensionHandle.charge) lands after the vendor answered the release and
+  // before its confirm commits: 7 s past the release's time.
+  const bound = {};
+  const { record, booked, paid, logged } = await run(t, {
+    reads: 1, price: { usdPerHour: 0.12, minimumS: 0 }, bind: (handles) => Object.assign(bound, handles),
+    options: { onSession: async (_row, change) => {
+      if (change !== "released") return;
+      t.mock.timers.tick(7_000);
+      await bound.browser.charge(bound.root, bound.ctx);
+      await bound.spend.ledgerIdle();
+    } },
+  });
+  // 3 s, the last answer's 20 s and 5 s to the release; then the cut's 7 s past it, and the release's own 0 s.
+  assert.deepEqual(booked.map((row) => [row.seconds, row.final, row.overbooked_s ?? null]), [[3, false, null], [25 + 7, false, null], [0, true, 7]], JSON.stringify(booked));
+  const said = logged.filter((line) => line.includes("browser_spend_overbooked"));
+  assert.equal(said.length, 1, `the log says it once: ${JSON.stringify(logged)}`);
+  assert.match(said[0], new RegExp(`browser session ${booked[2].tag} was charged 7 s past its release`));
+  assert.deepEqual([record.spent.seconds, record.spent.final], [35, true], "the session is billed what was charged, never less than 0 more");
+  assert.equal(total(booked), record.spent.usd, "booked is what the session's record bills");
+  assert.equal(pico(paid.spentUsd()), record.spent.usd, "the run's ledger books each second once");
   assert.equal(paid.heldUsd(), 0, "no hold is left");
 });
 
@@ -236,6 +265,135 @@ test("a charge joins the run's spend and moves its holds only once the commit th
   await harness.commit((tx) => spend.onCharge({ ...charge, seconds: 57, usd: 0.0019, final: true }, tx), ctx);
   await spend.ledgerIdle();
   assert.deepEqual([pico(paid.spentUsd()), paid.heldUsd()], [0.002, 0]);
+});
+
+test("a create-race browser's charge is booked under its tag alone: charged again at another time (another release that ended it), the ledger books it once, under the ref the usage reader matches it by", async (t) => {
+  const [{ BACKGROUND_CONTEXT: ctx }, durable, { createModels }] = await Promise.all([import("@earendil-works/chord/context"), import("@earendil-works/pi-durable"), import("@earendil-works/pi-ai/models")]);
+  const inner = await toolLedger(1);
+  const refs = [];
+  const paid = { ...inner, admit: (request) => (request.ref === undefined || refs.push(request.ref), inner.admit(request)), settle: (id, usd, options) => inner.settle(id, usd, options) };
+  const harness = await durable.Harness.open(new durable.MemoryStorage(), { models: createModels(), registry: durable.createRegistry(), onReport: () => {} }, ctx);
+  t.after(() => harness.close(ctx));
+  await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => undefined, undefined, { paid });
+  spend.watch(harness);
+  const charge = { conversationId: 1, tag: "unheld:bb-raced", provider: "browserbase", at: new Date(T0).toISOString(), seconds: 600, usd: 0.02, final: true, state: "priced" };
+  await harness.commit((tx) => spend.onCharge(charge, tx), ctx);
+  await spend.ledgerIdle();
+  await harness.commit((tx) => spend.onCharge({ ...charge, at: new Date(T0 + 5_000).toISOString(), seconds: 605 }, tx), ctx);
+  await spend.ledgerIdle();
+  assert.deepEqual(refs, ["browser:unheld:bb-raced/final", "browser:unheld:bb-raced/final"], "both charges name one booking, by the tag alone");
+  assert.equal(pico(inner.spentUsd()), 0.02, "booked once");
+});
+
+test("a create-race browser an earlier process of the run charged is not charged again by a later one that is told it again (its process ended before pi-browser's own commit): one charge and one timeline record on the root, and the other browser it is told with is charged", async (t) => {
+  const [{ BACKGROUND_CONTEXT: ctx }, durable, { createModels }, { BROWSERS_UNHELD }] = await Promise.all([import("@earendil-works/chord/context"), import("@earendil-works/pi-durable"), import("@earendil-works/pi-ai/models"), import("../dist/timeline/index.js")]);
+  const harness = await durable.Harness.open(new durable.MemoryStorage(), { models: createModels(), registry: durable.createRegistry(), onReport: () => {} }, ctx);
+  t.after(() => harness.close(ctx));
+  await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+  const made = new Date(T0).toISOString();
+  const swept = (ids) => ({ released: ids.map((id) => ({ id, tag: "ar-run-1-1", createdAt: made })), failed: [], creating: [] });
+  // Each a process of the run: its own spend over the run's one journal.
+  const first = browserSpend("browserbase", BROWSERBASE, 180, async () => undefined);
+  await first.unheld(harness, swept(["bb-raced"]), ctx, new Date(T0 + 600_000).toISOString());
+  const next = browserSpend("browserbase", BROWSERBASE, 180, async () => undefined);
+  await next.unheld(harness, swept(["bb-raced", "bb-other"]), ctx, new Date(T0 + 660_000).toISOString());
+  const root = await harness.conversation(durable.ROOT_CONVERSATION_ID, ctx);
+  const entries = (await root.entries({ order: "ascending" }, 500, undefined, ctx)).items;
+  assert.deepEqual(entries.filter((e) => e.kind === BROWSER_CHARGED).map((e) => [e.data.tag, e.data.seconds]), [["unheld:bb-raced", 600], ["unheld:bb-other", 660]], "each charged once, from when it was made");
+  assert.deepEqual(entries.filter((e) => e.kind === BROWSERS_UNHELD).map((e) => e.data.released), [["bb-raced"], ["bb-other"]], "each said once");
+});
+
+/** A run's root over one in-memory journal, each process of the run its own spend over it (browserSpend), its entries
+ *  read back in order; a browser made `AGE_S` before now. */
+async function unheldRoot(t) {
+  const [{ BACKGROUND_CONTEXT: ctx }, durable, { createModels }, { BROWSERS_UNHELD }] = await Promise.all([import("@earendil-works/chord/context"), import("@earendil-works/pi-durable"), import("@earendil-works/pi-ai/models"), import("../dist/timeline/index.js")]);
+  const harness = await durable.Harness.open(new durable.MemoryStorage(), { models: createModels(), registry: durable.createRegistry(), onReport: () => {} }, ctx);
+  t.after(() => harness.close(ctx));
+  await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+  const entries = async () => (await (await harness.conversation(durable.ROOT_CONVERSATION_ID, ctx)).entries({ order: "ascending" }, 500, undefined, ctx)).items;
+  const made = new Date(Date.now() - 600_000).toISOString();
+  const session = (id) => ({ id, tag: "ar-run-1-1", createdAt: made });
+  const spendOf = () => browserSpend("browserbase", BROWSERBASE, 180, async () => undefined, () => {});
+  /** The root's unheld entries, by kind and the browser each names. */
+  const kinds = async () => (await entries()).flatMap((e) => (e.kind === BROWSER_UNHELD_OWED ? [["owed", e.data.id]] : e.kind === BROWSER_CHARGED ? [["charged", e.data.tag]] : e.kind === BROWSERS_UNHELD ? [["said", e.data.released]] : []));
+  return { ctx, harness, entries, made, session, spendOf, kinds, BROWSERS_UNHELD };
+}
+
+test("a let-go records each browser a create race left running before its release is sent and charges and says it in one commit once its release answers, before the next is sent: a later release that never answers leaves the earlier one charged and said, and the later one owed", async (t) => {
+  const { ctx, harness, session, spendOf, kinds, entries } = await unheldRoot(t);
+  const spend = spendOf();
+  const stops = [];
+  await assert.rejects(spend.letGo(harness, async ({ releasing, released }) => {
+    await releasing(session("bb-a"));
+    stops.push("bb-a");
+    await released(session("bb-a"));
+    await releasing(session("bb-b"));
+    stops.push("bb-b");
+    // The process ends here, or the release of bb-b never answers within the let-go's bound.
+    throw new Error("the release window ran out");
+  }, ctx), /the release window ran out/);
+  assert.deepEqual(stops, ["bb-a", "bb-b"]);
+  assert.deepEqual(await kinds(), [["owed", "bb-a"], ["charged", "unheld:bb-a"], ["said", ["bb-a"]], ["owed", "bb-b"]], "bb-a's note is in its charge's commit, before bb-b's release is sent, so a process that ends there leaves it said");
+  const owed = (await entries()).find((e) => e.kind === BROWSER_UNHELD_OWED && e.data.id === "bb-b").data;
+  assert.deepEqual(Object.keys(owed).sort(), ["at", "createdAt", "id", "tag"], "the owed record keeps what books its time: its id, tag, when its vendor made it, and when its release went out");
+});
+
+test("two let-gos of one process that reach the same browser at once (a cut release's and the release it cut) charge it once and say it once, whichever answers first", async (t) => {
+  const { ctx, harness, session, spendOf, kinds } = await unheldRoot(t);
+  const spend = spendOf();
+  // Both send its release before either answers; each then hears it answer.
+  let sent = 0;
+  let bothSent;
+  const both = new Promise((resolve) => (bothSent = resolve));
+  const letGo = () => spend.letGo(harness, async ({ releasing, released }) => {
+    await releasing(session("bb-raced"));
+    if (++sent === 2) bothSent();
+    await both;
+    await released(session("bb-raced"));
+    return { released: [session("bb-raced")], failed: [], creating: [] };
+  }, ctx);
+  await Promise.all([letGo(), letGo()]);
+  const seen = await kinds();
+  assert.deepEqual(seen.filter(([kind]) => kind === "charged"), [["charged", "unheld:bb-raced"]], `charged once: ${JSON.stringify(seen)}`);
+  assert.deepEqual(seen.filter(([kind]) => kind === "said"), [["said", ["bb-raced"]]], "said once");
+});
+
+test("the next claim's open charges a browser an earlier let-go owed and never charged, once: one that stopped to when its release went out, one its vendor says still runs released then and charged to now; a status read that fails leaves it owed for the open after", async (t) => {
+  const { ctx, harness, session, spendOf, kinds, entries } = await unheldRoot(t);
+  const before = spendOf();
+  await assert.rejects(before.letGo(harness, async ({ releasing, released }) => {
+    await releasing(session("bb-a"));
+    await released(session("bb-a"));
+    await releasing(session("bb-stopped"));
+    await releasing(session("bb-running"));
+    await releasing(session("bb-unread"));
+    throw new Error("the process ended");
+  }, ctx));
+  const owedAt = Object.fromEntries((await entries()).filter((e) => e.kind === BROWSER_UNHELD_OWED).map((e) => [e.data.id, e.data.at]));
+  const closed = [];
+  let unreadable = true;
+  const browser = {
+    running: async (id) => {
+      if (id === "bb-unread" && unreadable) throw new Error("the vendor did not answer");
+      return id === "bb-running";
+    },
+    close: async (id) => void closed.push(id),
+  };
+  const opened = Date.now();
+  await spendOf().recoverOwed(harness, browser, ctx);
+  assert.deepEqual(closed, ["bb-running"], "only the one its vendor says still runs is released at the open");
+  const charges = Object.fromEntries((await entries()).filter((e) => e.kind === BROWSER_CHARGED).map((e) => [e.data.tag, e.data]));
+  assert.deepEqual(Object.keys(charges).sort(), ["unheld:bb-a", "unheld:bb-running", "unheld:bb-stopped"], "bb-a stays charged once; bb-unread stays owed");
+  assert.equal(charges["unheld:bb-stopped"].at, owedAt["bb-stopped"], "a stopped one is charged to when its release went out");
+  assert.ok(Date.parse(charges["unheld:bb-running"].at) >= opened, "one still running is charged to its release at the open");
+  for (const tag of ["unheld:bb-stopped", "unheld:bb-running"]) assert.ok(charges[tag].seconds >= 600 && charges[tag].final === true && charges[tag].call === null, JSON.stringify(charges[tag]));
+  assert.deepEqual((await kinds()).filter(([kind]) => kind === "said"), [["said", ["bb-a"]], ["said", ["bb-stopped"]], ["said", ["bb-running"]]], "each one charged is said with its charge");
+  unreadable = false;
+  await spendOf().recoverOwed(harness, browser, ctx);
+  await spendOf().recoverOwed(harness, browser, ctx);
+  assert.deepEqual((await kinds()).filter(([kind]) => kind !== "owed").slice(-2), [["charged", "unheld:bb-unread"], ["said", ["bb-unread"]]], "the open after charges the one it could not read, once");
+  assert.equal((await entries()).filter((e) => e.kind === BROWSER_CHARGED).length, 4, "every owed browser charged once across the opens");
 });
 
 test("a person's time carried for a session stays held until the session's next charge books it, and goes then", async (t) => {
@@ -401,7 +559,7 @@ test("prices by provider: Browserbase, Kernel and local Chrome, each overridden 
   assert.deepEqual([refused.booked, refused.backend.tally().creates], [[], 0]);
 });
 
-test("after a reopen, a kept session's down time is held once: its first call fits where its true exposure does; a session already billed is not held", { skip: "bug (main's runner has it too): the run's ledger keeps a reopened session's reserve at its stretch and down time ($0.039) after the charge that books the down time (browser-cost.ts booked() resets reserve.usd locally only), and the call's hold whole beside that charge, so spent and held reach $0.1071 over the $0.10 cap while the call runs" }, async (t) => {
+test("after a reopen, a kept session's down time is held once: its first call fits where its true exposure does; a session already billed is not held", async (t) => {
   // 15 min down at Browserbase's price ($0.03), with $0.02 spent under a $0.10 cap: the kept session holds a stretch and its
   // down time ($0.039), the call two stretches ($0.018); $0.077 fits. Holding the down time on the call too ($0.048) would not.
   t.mock.timers.enable({ apis: ["Date"], now: T0 + 900_000 });
@@ -440,11 +598,471 @@ test("after a reopen, a kept session's down time is held once: its first call fi
   assert.ok(!JSON.stringify(out).includes("spend_cap_reached"), JSON.stringify(out));
   assert.deepEqual(releases, [], "the kept session was not released");
   assert.ok(Math.abs(held[0] - 0.077) < 1e-6, `spent and held as the call runs: ${held[0]}`);
+  // Its charge booked the down time and the call's 3 s ($0.0301): the reserve is one stretch again on the run's ledger
+  // ($0.009), beside the call's two ($0.018) and the $0.0501 spent, never the down time held beside the charge that booked it.
+  assert.ok(Math.abs(held[1] - 0.0771) < 1e-6, `spent and held once the charge is booked: ${held[1]}`);
   await spend.ledgerIdle();
-  // The browser resets the reserve to one stretch once its charge books the down time; the run's ledger keeps the reserve
-  // step at what it was admitted at, the stretch and the down time, until the session's release lets it go.
-  assert.ok(Math.abs(paidHolds() - base - 0.039) < 1e-9, `after its charge the ledger still holds the reserve as admitted: ${paidHolds() - base}`);
+  assert.ok(Math.abs(paidHolds() - base - 0.009) < 1e-9, `after its charge the ledger holds the reserve at one stretch: ${paidHolds() - base}`);
   for (const figure of [...held, spentNow() + paidHolds() - base]) assert.ok(figure <= cap, `${figure} is over the cap of ${cap}`);
+});
+
+/** Ledger writes that land only when the test lets them, never on a clock: `later()` waits in line until `landUntil(done)`
+ *  lets it go. That lets the oldest waiting write land, one at a time, each only once everything the one before it set off
+ *  has run (a turn of the event loop between them), until `done` settles. A `done` still pending with no write left
+ *  waiting for STALLED_TURNS turns in a row is a hang, and fails as one, by count, never by time. */
+const STALLED_TURNS = 50;
+function heldWrites() {
+  const waiting = [];
+  const later = () => new Promise((resolve) => waiting.push(resolve));
+  async function landUntil(done) {
+    let over = false;
+    done.then(() => (over = true), () => (over = true));
+    for (let idle = 0; !over; ) {
+      await new Promise((resolve) => setImmediate(resolve));
+      if (over) break;
+      const next = waiting.shift();
+      if (next) (next(), (idle = 0));
+      else if ((idle += 1) >= STALLED_TURNS) throw new Error(`stalled: nothing left to land and it has not settled after ${STALLED_TURNS} turns`);
+    }
+    return done;
+  }
+  return { later, landUntil };
+}
+
+test("a kept session's reserve held again at one stretch is asked only once its old one is given back, on a ledger whose give-backs land late", async (t) => {
+  // The reopen above, on a ledger whose settle lands only when the test lets it (a write, landing late): the re-held
+  // reserve must not be asked while the old one (a stretch and 15 min down, $0.039) is still held there, or the ledger
+  // judges the new stretch beside the old one and the charge that booked it (about $0.116 of a $0.10 cap).
+  t.mock.timers.enable({ apis: ["Date"], now: T0 + 900_000 });
+  const inner = await toolLedger(0.1);
+  await inner.spend(0.02);
+  const events = [];
+  const { later, landUntil } = heldWrites();
+  const paid = {
+    admit: (request) => (events.push(["asked", request.id]), inner.admit(request)),
+    settle: async (id, usd, options) => {
+      await later();
+      const out = await inner.settle(id, usd, options);
+      events.push(["landed", id, options?.givenBack === true]);
+      return out;
+    },
+  };
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => {}, undefined, { paid });
+  let listener;
+  spend.watch({ observeCommits: (observer) => ((listener = (publication) => observer.advance(publication)), { detach: () => {} }) });
+  const docs = { Inventory: "inventory", Sessions: "sessions" };
+  await spend.reopened({ snapshot: async (token) => (token === "inventory" ? { rows: { k: { tag: "ar-kept", conversationId: 1 } } } : { sessions: [{ tag: "ar-kept", spent: { chargedThrough: new Date(T0).toISOString() } }] }) }, docs, undefined);
+  await spend.ledgerIdle();
+  const tool = spend.capped({ name: "snapshot", execute: async () => {
+    t.mock.timers.tick(3_000);
+    const entries = [];
+    await spend.onCharge({ conversationId: 1, tag: "ar-kept", provider: "browserbase", at: new Date(Date.now()).toISOString(), seconds: 903, usd: 903 * 0.12 / 3600, final: false, state: "priced" }, { appendEntry: async (_, entry) => void entries.push(entry) }, { callId: "c1" });
+    listener({ seq: 1, changes: entries.map((value) => ({ type: "entry", value })) });
+    await spend.ledgerIdle();
+    return { content: [{ type: "text", text: "seen" }] };
+  } });
+  const out = await landUntil(tool.execute({}, { conversationId: 1, callId: "c1", commit: async () => undefined }, undefined));
+  assert.ok(!JSON.stringify(out).includes("spend_cap_reached"), JSON.stringify(out));
+  await landUntil(spend.ledgerIdle());
+  const reserves = events.filter(([what, id]) => what === "asked" && id.startsWith("browser:this browser session's reserve#")).map(([, id]) => id);
+  assert.equal(reserves.length, 2, `the reopen's reserve, then the one held again: ${JSON.stringify(events)}`);
+  const givenBack = events.findIndex(([what, id, back]) => what === "landed" && id === reserves[0] && back);
+  const askedAgain = events.findIndex(([what, id]) => what === "asked" && id === reserves[1]);
+  assert.ok(givenBack >= 0 && givenBack < askedAgain, `the old reserve is given back before the new one is asked: ${JSON.stringify(events)}`);
+  assert.ok(Math.abs(inner.heldUsd() - 0.009) < 1e-9, `the ledger holds the reserve at one stretch: ${inner.heldUsd()}`);
+});
+
+/** A new session's first charge (3 s at Browserbase, under no call), committed and seen by `spend`'s watch. */
+async function firstCharge(spend) {
+  let listener;
+  spend.watch({ observeCommits: (observer) => ((listener = (publication) => observer.advance(publication)), { detach: () => {} }) });
+  const entries = [];
+  await spend.onCharge({ conversationId: 1, tag: "ar-new", provider: "browserbase", at: new Date(T0).toISOString(), seconds: 3, usd: 3 * 0.12 / 3600, final: false, state: "priced" }, { appendEntry: async (_, entry) => void entries.push(entry) });
+  listener({ seq: 1, changes: entries.map((value) => ({ type: "entry", value })) });
+  await spend.ledgerIdle();
+}
+
+test("capped, a new session's reserve the cap refuses is said and pauses the run in the cap's words; it is never held", async (t) => {
+  // $0.095 spent of a $0.10 cap: the session's first charge (3 s, owed) is booked, and its reserve, one stretch ($0.009),
+  // has no room. Starting a session is a choice, so the reserve is not owed; refused, its next stretch is held nowhere.
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  const paid = await toolLedger(0.1);
+  await paid.spend(0.095);
+  const logs = [];
+  const paused = [];
+  await firstCharge(browserSpend("browserbase", BROWSERBASE, 180, async () => {}, (line) => logs.push(line), { paid, pause: async (refusal) => void paused.push(refusal) }));
+  const said = logs.filter((line) => line.includes("event=browser_reserve_refused"));
+  assert.equal(said.length, 1, JSON.stringify(logs));
+  assert.match(said[0], /ar-new/);
+  assert.match(said[0], /spend_cap_reached/);
+  assert.equal(paused.length, 1, `the run is paused once: ${JSON.stringify(paused)}`);
+  assert.equal(paused[0].code, "spend_cap_reached");
+  assert.match(paused[0].refuse, /spend_cap_reached/);
+  assert.equal(paid.heldUsd(), 0, "no reserve is held");
+  assert.ok(Math.abs(paid.spentUsd() - 0.0951) < 1e-9, `the charge is booked: ${paid.spentUsd()}`);
+});
+
+test("capped, a new session's reserve the cap refused is asked again at the session's next charge: after a raise its next stretch is held", async (t) => {
+  // As above, $0.095 spent of a $0.10 cap refuses the reserve and pauses the run. The owner raises the cap to $1, the run
+  // goes on, and the session is charged again (3 s more, not its last): its next stretch ($0.009) is held from then on.
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  let cap = 0.1;
+  const paid = await toolLedger(() => cap);
+  await paid.spend(0.095);
+  const logs = [];
+  const paused = [];
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => {}, (line) => logs.push(line), { paid, pause: async (refusal) => void paused.push(refusal) });
+  let listener;
+  spend.watch({ observeCommits: (observer) => ((listener = (publication) => observer.advance(publication)), { detach: () => {} }) });
+  const charge = async (at) => {
+    const entries = [];
+    await spend.onCharge({ conversationId: 1, tag: "ar-new", provider: "browserbase", at: new Date(at).toISOString(), seconds: 3, usd: 3 * 0.12 / 3600, final: false, state: "priced" }, { appendEntry: async (_, entry) => void entries.push(entry) });
+    listener({ seq: 1, changes: entries.map((value) => ({ type: "entry", value })) });
+    await spend.ledgerIdle();
+  };
+  await charge(T0);
+  assert.equal(paused.length, 1, `the refused reserve pauses the run: ${JSON.stringify(paused)}`);
+  assert.equal(paid.heldUsd(), 0, "the refused reserve holds nothing");
+  cap = 1;
+  await charge(T0 + 3_000);
+  assert.ok(Math.abs(paid.heldUsd() - 0.009) < 1e-9, `after the raise the session's next stretch is held on the ledger, one stretch: ${paid.heldUsd()}`);
+  assert.equal(paused.length, 1, "the reserve held after the raise pauses nothing");
+});
+
+test("capped, a refused reserve asked again at a charge that lands while a call runs is asked once the call's hold is given back, and the call returns with it held", async (t) => {
+  // As above, but the session's next charge comes under a running call (c1) after the raise: the call holds two
+  // stretches, one of them room for this reserve, so the reserve asked again waits for that hold to be given back, never
+  // judged beside it, and the call returns only once it is held.
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  let cap = 0.1;
+  const inner = await toolLedger(() => cap);
+  await inner.spend(0.095);
+  const events = [];
+  const paid = {
+    admit: (request) => (events.push(["asked", request.id]), inner.admit(request)),
+    settle: async (id, usd, options) => {
+      const out = await inner.settle(id, usd, options);
+      events.push(["landed", id, options?.givenBack === true]);
+      return out;
+    },
+  };
+  const paused = [];
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => {}, () => {}, { paid, pause: async (refusal) => void paused.push(refusal) });
+  let listener;
+  spend.watch({ observeCommits: (observer) => ((listener = (publication) => observer.advance(publication)), { detach: () => {} }) });
+  const charge = async (at, call) => {
+    const entries = [];
+    await spend.onCharge({ conversationId: 1, tag: "ar-new", provider: "browserbase", at: new Date(at).toISOString(), seconds: 3, usd: 3 * 0.12 / 3600, final: false, state: "priced" }, { appendEntry: async (_, entry) => void entries.push(entry) }, call);
+    listener({ seq: 1, changes: entries.map((value) => ({ type: "entry", value })) });
+  };
+  await charge(T0);
+  await spend.ledgerIdle();
+  assert.equal(paused.length, 1, `the refused reserve pauses the run: ${JSON.stringify(paused)}`);
+  assert.equal(inner.heldUsd(), 0, "the refused reserve holds nothing");
+  cap = 1;
+  const reserveAsks = () => events.filter(([what, id]) => what === "asked" && id.startsWith("browser:this browser session's reserve#")).length;
+  let during;
+  const tool = spend.capped({ name: "snapshot", execute: async () => {
+    t.mock.timers.tick(3_000);
+    await charge(Date.now(), { callId: "c1" });
+    during = reserveAsks();
+    return { content: [{ type: "text", text: "seen" }] };
+  } });
+  const out = await tool.execute({}, { conversationId: 1, callId: "c1", commit: async () => undefined }, undefined);
+  assert.ok(!JSON.stringify(out).includes("spend_cap_reached"), JSON.stringify(out));
+  // The moment the call returns is the run's next chance to spend: the session's next stretch is held by then.
+  assert.ok(Math.abs(inner.heldUsd() - 0.009) < 1e-9, `once the call returns its session's next stretch is held, one stretch: ${inner.heldUsd()} (${JSON.stringify(events)})`);
+  await spend.ledgerIdle();
+  assert.equal(during, 1, `while the call runs the reserve is not asked again beside its hold: ${JSON.stringify(events)}`);
+  const reserves = events.filter(([what, id]) => what === "asked" && id.startsWith("browser:this browser session's reserve#")).map(([, id]) => id);
+  assert.equal(reserves.length, 2, `the refused reserve, then the one asked again: ${JSON.stringify(events)}`);
+  const givenBack = events.findIndex(([what, id, back]) => what === "landed" && id.startsWith("c1#") && back);
+  const askedAgain = events.findIndex(([what, id]) => what === "asked" && id === reserves[1]);
+  assert.ok(givenBack >= 0 && givenBack < askedAgain, `the reserve is asked again once the call's hold is given back: ${JSON.stringify(events)}`);
+  assert.ok(Math.abs(inner.heldUsd() - 0.009) < 1e-9, `the ledger holds the reserve at one stretch: ${inner.heldUsd()}`);
+  assert.equal(paused.length, 1, "the reserve held after the raise pauses nothing");
+});
+
+test("capped with room, a new session's reserve is held, and nothing is said or paused", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  const paid = await toolLedger(5);
+  const logs = [];
+  const paused = [];
+  await firstCharge(browserSpend("browserbase", BROWSERBASE, 180, async () => {}, (line) => logs.push(line), { paid, pause: async (refusal) => void paused.push(refusal) }));
+  assert.deepEqual([logs, paused], [[], []]);
+  assert.ok(Math.abs(paid.heldUsd() - 0.009) < 1e-9, `its reserve, one stretch: ${paid.heldUsd()}`);
+});
+
+/** A browser call through `spend`'s cap that opens a new session: its first charge (3 s at Browserbase) is committed under
+ *  the call, and `inside()` runs once that charge is seen, while the call still holds. The call's result. */
+async function callOpening(spend, inside = () => {}) {
+  let listener;
+  spend.watch({ observeCommits: (observer) => ((listener = (publication) => observer.advance(publication)), { detach: () => {} }) });
+  const tool = spend.capped({ name: "snapshot", execute: async () => {
+    const entries = [];
+    await spend.onCharge({ conversationId: 1, tag: "ar-new", provider: "browserbase", at: new Date(Date.now()).toISOString(), seconds: 3, usd: 3 * 0.12 / 3600, final: false, state: "priced" }, { appendEntry: async (_, entry) => void entries.push(entry) }, { callId: "c1" });
+    listener({ seq: 1, changes: entries.map((value) => ({ type: "entry", value })) });
+    await inside();
+    return { content: [{ type: "text", text: "seen" }] };
+  } });
+  return tool.execute({}, { conversationId: 1, callId: "c1", commit: async () => undefined }, undefined);
+}
+
+test("capped, a call that fits with its two stretches opens a new session: its reserve is held in the room the call kept for it, never refused, and nothing pauses", async (t) => {
+  // A $0.025 cap: the call holds two stretches ($0.018), one for its own time and one for the reserve of a session it
+  // opens. Asked beside the call's whole hold, the reserve ($0.009) would make $0.027 and be refused for room the run has.
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  const paid = await toolLedger(0.025);
+  const logs = [];
+  const paused = [];
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => {}, (line) => logs.push(line), { paid, pause: async (refusal) => void paused.push(refusal) });
+  // The call runs on after its session opened, as a call does: until its session's first charge is booked on the ledger.
+  let booked;
+  const charged = new Promise((resolve) => (booked = resolve));
+  const settle = paid.settle.bind(paid);
+  paid.settle = async (id, usd, options) => {
+    const out = await settle(id, usd, options);
+    if (options?.givenBack !== true) booked();
+    return out;
+  };
+  const out = await callOpening(spend, () => charged);
+  await spend.ledgerIdle();
+  assert.ok(!JSON.stringify(out).includes("spend_cap_reached"), JSON.stringify(out));
+  assert.deepEqual([logs, paused], [[], []], "the reserve is not refused, and the run is not paused");
+  assert.ok(Math.abs(paid.heldUsd() - 0.009) < 1e-9, `the session's reserve is held, one stretch: ${paid.heldUsd()}`);
+  assert.ok(Math.abs(paid.spentUsd() - 0.0001) < 1e-9, `the call's charge is booked: ${paid.spentUsd()}`);
+});
+
+test("a new session is never held nowhere: its call's two stretches hold it until the call's hold is given back, and the call returns only once its reserve is held", async (t) => {
+  // A ledger whose asks and settles each land only when the test lets them (writes, landing late), so nothing here leans
+  // on the order of microtasks.
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  const inner = await toolLedger(1);
+  const stretch = 270 * 0.12 / 3600;
+  const { later, landUntil } = heldWrites();
+  const events = [];
+  const paid = {
+    admit: async (request) => {
+      events.push(["asked", request.id]);
+      await later();
+      const out = await inner.admit(request);
+      events.push(["held", request.id, inner.heldUsd()]);
+      return out;
+    },
+    settle: async (id, usd, options) => {
+      await later();
+      const out = await inner.settle(id, usd, options);
+      events.push(["landed", id, options?.givenBack === true, inner.heldUsd()]);
+      return out;
+    },
+  };
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => {}, undefined, { paid });
+  const during = [];
+  await landUntil(callOpening(spend, async () => {
+    await later();
+    during.push(inner.heldUsd());
+  }));
+  // The moment the call returns is the run's next chance to spend (its next request, its next call).
+  const returned = inner.heldUsd();
+  assert.ok(during[0] >= stretch - 1e-12, `while the call runs its own hold covers the session: ${during[0]}`);
+  assert.ok(returned >= stretch - 1e-12 && Math.abs(returned - 0.009) < 1e-9, `once the call returns its session's reserve is held: ${returned} (${JSON.stringify(events)})`);
+  const reserve = events.find(([what, id]) => what === "asked" && id.startsWith("browser:this browser session's reserve#"))?.[1];
+  const givenBack = events.findIndex(([what, id, back]) => what === "landed" && id.startsWith("c1#") && back);
+  const asked = events.findIndex(([what, id]) => what === "asked" && id === reserve);
+  assert.ok(givenBack >= 0 && givenBack < asked, `the reserve is asked once the call's hold is given back, never beside it: ${JSON.stringify(events)}`);
+  assert.deepEqual(events.slice(givenBack + 1, asked).filter(([what]) => what === "asked"), [], `no other step is asked between the two: ${JSON.stringify(events)}`);
+  await landUntil(spend.ledgerIdle());
+});
+
+test("a person's time asked as a call that opened a session gives its hold back waits for the session's reserve: the reserve is held in the room the call kept for it, and the person's time is judged beside it", async (t) => {
+  // A $0.035 cap: the call holds two stretches ($0.018); the person's 15 minutes ($0.03) fit beside the call's charge, not
+  // beside the session's reserve ($0.009) too. Asked between the call's hold given back and the reserve asked, the
+  // person's time would take the room the call kept for the reserve: the reserve refused, the run paused at its cap for
+  // a step the agent never took, and its session held nowhere. Each ask and settle lands only when the test lets it.
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  const inner = await toolLedger(0.035);
+  const { later, landUntil } = heldWrites();
+  const events = [];
+  const logs = [];
+  const paused = [];
+  let spend;
+  let person;
+  const paid = {
+    admit: async (request) => {
+      events.push(["asked", request.id]);
+      await later();
+      try {
+        const out = await inner.admit(request);
+        events.push(["held", request.id]);
+        return out;
+      } catch (error) {
+        events.push(["refused", request.id]);
+        throw error;
+      }
+    },
+    settle: async (id, usd, options) => {
+      await later();
+      const out = await inner.settle(id, usd, options);
+      events.push(["landed", id, options?.givenBack === true]);
+      // The owner takes over the moment the call's hold is given back, before its session's reserve is asked.
+      if (id.startsWith("c1#") && options?.givenBack === true) person = spend.personTime("taking over the browser", 900, { pauses: false, tag: "ar-new", from: Date.now() });
+      return out;
+    },
+  };
+  spend = browserSpend("browserbase", BROWSERBASE, 180, async () => {}, (line) => logs.push(line), { paid, pause: async (refusal) => void paused.push(refusal) });
+  await landUntil(callOpening(spend));
+  const taken = await landUntil(person);
+  await landUntil(spend.ledgerIdle());
+  assert.deepEqual([logs, paused], [[], []], `the session's reserve is not refused, and the run is not paused: ${JSON.stringify(events)}`);
+  assert.ok("refused" in taken, `the person's time has no room beside the reserve: ${JSON.stringify(taken)} (${JSON.stringify(events)})`);
+  assert.match(taken.refused, /^spend_cap_reached: .*the next step, taking over the browser, could cost up to \$0\.03\b/);
+  assert.ok(Math.abs(inner.heldUsd() - 0.009) < 1e-9, `the session's reserve is held, one stretch: ${inner.heldUsd()}`);
+});
+
+// ---- a call that opens a session and then throws ----
+
+/** The run's one ledger `inner` as its writes see it: each admit and settle lands only when the test lets it
+ *  (heldWrites, `landUntil`), and each is logged in `events` (asked, then held or refused; landed, or lost). `charges`
+ *  settles once every charge admitted so far is booked. `losesAt(name)`: the claim is lost at the settle of a step of
+ *  that name, so that settle and every admit and settle after it fail, as a lost claim's writes do. */
+function lateLedger(inner, losesAt = () => false) {
+  const { later, landUntil } = heldWrites();
+  const events = [];
+  const names = new Map();
+  const booked = [];
+  const done = new Map();
+  let lost = false;
+  const paid = {
+    admit: async (request) => {
+      events.push(["asked", request.id]);
+      names.set(request.id, request.name);
+      if (!request.hold) booked.push(new Promise((resolve) => done.set(request.id, resolve)));
+      await later();
+      try {
+        if (lost) throw new Error("the claim was lost");
+        const out = await inner.admit(request);
+        events.push(["held", request.id]);
+        return out;
+      } catch (error) {
+        events.push(["refused", request.id]);
+        done.get(request.id)?.();
+        throw error;
+      }
+    },
+    settle: async (id, usd, options) => {
+      await later();
+      try {
+        if (lost || losesAt(names.get(id))) {
+          lost = true;
+          events.push(["lost", id]);
+          throw new Error("the claim was lost");
+        }
+        const out = await inner.settle(id, usd, options);
+        events.push(["landed", id, options?.givenBack === true]);
+        return out;
+      } finally {
+        done.get(id)?.();
+      }
+    },
+  };
+  return { paid, events, charges: () => Promise.all(booked), landUntil };
+}
+
+/** A browser call through `spend`'s cap that opens a new session and then throws `thrown`: its open is recorded (opening,
+ *  pi-browser's beforeCreate; its records pushed to `opened`), its first charge (`seconds` at Browserbase) is committed
+ *  under the call and seen, and once `ready()` settles the tool throws. The call's result. */
+async function callOpeningThenThrowing(spend, thrown, { seconds = 3, ready = () => {}, opened = [] } = {}) {
+  let listener;
+  spend.watch({ observeCommits: (observer) => ((listener = (publication) => observer.advance(publication)), { detach: () => {} }) });
+  const tool = spend.capped({ name: "snapshot", execute: async () => {
+    await spend.opening({ conversationId: 1, tag: "ar-new", commit: async (write) => write({ appendEntry: async (_, entry) => void opened.push(entry) }) });
+    const entries = [];
+    await spend.onCharge({ conversationId: 1, tag: "ar-new", provider: "browserbase", at: new Date(Date.now()).toISOString(), seconds, usd: seconds * 0.12 / 3600, final: false, state: "priced" }, { appendEntry: async (_, entry) => void entries.push(entry) }, { callId: "c1" });
+    listener({ seq: 1, changes: entries.map((value) => ({ type: "entry", value })) });
+    await ready();
+    throw thrown;
+  } });
+  return tool.execute({}, { conversationId: 1, callId: "c1", commit: async () => undefined }, undefined);
+}
+
+/** The index in `events` of the call's hold given back (or lost with its claim), and of its session's reserve asked. */
+const giveBackThenReserve = (events) => {
+  const call = events.find(([what, id]) => what === "asked" && id.startsWith("c1#"))?.[1];
+  const reserve = events.find(([what, id]) => what === "asked" && id.startsWith("browser:this browser session's reserve#"))?.[1];
+  return {
+    givenBack: events.findIndex(([what, id, back]) => id === call && ((what === "landed" && back) || what === "lost")),
+    asked: events.findIndex(([what, id]) => what === "asked" && id === reserve),
+  };
+};
+
+test("a call that opens a session and then throws rejects with its own error, once its session's reserve is held in the room the call kept for it; the run's pending drains", async (t) => {
+  // A $0.025 cap, as above: the call holds two stretches ($0.018). Its tool opens a session, which is charged 3 s, and then
+  // throws. paidStep gives the call's hold back on that path too, and its callback (landed) then asks the reserve.
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  const inner = await toolLedger(0.025);
+  const { paid, events, charges, landUntil } = lateLedger(inner);
+  const logs = [];
+  const paused = [];
+  const opened = [];
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => {}, (line) => logs.push(line), { paid, pause: async (refusal) => void paused.push(refusal) });
+  const thrown = new Error("the page crashed");
+  await assert.rejects(landUntil(callOpeningThenThrowing(spend, thrown, { opened, ready: charges })), (error) => error === thrown);
+  const returned = inner.heldUsd();
+  assert.equal(opened.length, 1, JSON.stringify(opened));
+  assert.equal(opened[0].kind, BROWSER_SESSION_OPEN);
+  assert.ok(Math.abs(opened[0].data.held_usd - 0.018) < 1e-9, `the session opened under the call's two stretches: ${JSON.stringify(opened[0])}`);
+  const { givenBack, asked } = giveBackThenReserve(events);
+  assert.ok(givenBack >= 0 && givenBack < asked, `the reserve is asked once the call's hold is given back: ${JSON.stringify(events)}`);
+  assert.ok(Math.abs(returned - 0.009) < 1e-9, `once the call rejects its session's reserve is held, one stretch: ${returned} (${JSON.stringify(events)})`);
+  await landUntil(spend.ledgerIdle());
+  assert.deepEqual([logs, paused], [[], []], "the reserve is not refused, and the run is not paused");
+  assert.ok(Math.abs(inner.spentUsd() - 0.0001) < 1e-9, `the call's charge is booked: ${inner.spentUsd()}`);
+});
+
+test("a call that opens a session and then throws, its reserve refused by the cap: it rejects with its own error, the refusal is said and pauses the run once; the run's pending drains", async (t) => {
+  // $0.005 spent of a $0.025 cap: the call fits with its two stretches ($0.023). Its session runs ten minutes ($0.02,
+  // owed) and the tool throws. With the call's hold given back, its reserve ($0.009) has no room: $0.034 of $0.025.
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  const inner = await toolLedger(0.025);
+  await inner.spend(0.005);
+  const { paid, events, charges, landUntil } = lateLedger(inner);
+  const logs = [];
+  const paused = [];
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => {}, (line) => logs.push(line), { paid, pause: async (refusal) => void paused.push(refusal) });
+  const thrown = new Error("the page crashed");
+  await assert.rejects(landUntil(callOpeningThenThrowing(spend, thrown, { seconds: 600, ready: charges })), (error) => error === thrown);
+  const { givenBack, asked } = giveBackThenReserve(events);
+  assert.ok(givenBack >= 0 && givenBack < asked, `the reserve is asked once the call's hold is given back: ${JSON.stringify(events)}`);
+  // Acted on before the call returned: the call waits for its reserves.
+  const said = logs.filter((line) => line.includes("event=browser_reserve_refused"));
+  assert.equal(said.length, 1, JSON.stringify(logs));
+  assert.match(said[0], /ar-new/);
+  assert.match(said[0], /spend_cap_reached/);
+  assert.equal(paused.length, 1, `the run is paused once: ${JSON.stringify(paused)}`);
+  assert.equal(paused[0].code, "spend_cap_reached");
+  await landUntil(spend.ledgerIdle());
+  assert.equal(inner.heldUsd(), 0, "no reserve is held");
+  assert.ok(Math.abs(inner.spentUsd() - 0.025) < 1e-9, `the charge is booked: ${inner.spentUsd()}`);
+});
+
+test("a call that opens a session and then throws as its claim is lost (the give-back's settle fails): it rejects with its own error, not the settle's; the reserve's failed ask is said; the run's pending drains", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  const inner = await toolLedger(0.025);
+  const { paid, events, charges, landUntil } = lateLedger(inner, (name) => name === "this browser call");
+  const logs = [];
+  const paused = [];
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => {}, (line) => logs.push(line), { paid, pause: async (refusal) => void paused.push(refusal) });
+  const thrown = new Error("the page crashed");
+  await assert.rejects(landUntil(callOpeningThenThrowing(spend, thrown, { ready: charges })), (error) => error === thrown);
+  const { givenBack, asked } = giveBackThenReserve(events);
+  assert.ok(givenBack >= 0 && events[givenBack][0] === "lost" && givenBack < asked, `the reserve is asked once the call's give-back failed: ${JSON.stringify(events)}`);
+  const said = logs.filter((line) => line.includes("event=browser_reserve_refused"));
+  assert.equal(said.length, 1, JSON.stringify(logs));
+  assert.match(said[0], /ar-new/);
+  assert.match(said[0], /the claim was lost/);
+  // Not the cap's refusal: nothing a raise would fix, so nothing pauses (the next claim's reopen holds the session).
+  assert.deepEqual(paused, []);
+  await landUntil(spend.ledgerIdle());
 });
 
 // ---- pi 1.5's commit observers detach on a throw (observeCommits) ----
@@ -624,6 +1242,29 @@ test("a real Harness whose store fails: the Session's failed end is logged once,
   assert.equal(lines.filter((line) => line.includes("browser_spend_uncounted")).length, 1, lines.join("\n"));
 });
 
+test("a real Harness over a loop's journal that the loop's stop sealed: a write the seal refuses fails the Session, whose every stored commit reached the count: the count stands, with no line", async (t) => {
+  const [{ BACKGROUND_CONTEXT: ctx }, durable, { createModels }, { Gate, Interrupted }] = await Promise.all([import("@earendil-works/chord/context"), import("@earendil-works/pi-durable"), import("@earendil-works/pi-ai/models"), import("../dist/runner/loop.js")]);
+  const paid = await ledgerFor(t, 5);
+  const lines = [];
+  const gate = new Gate(new durable.MemoryStorage());
+  const harness = await durable.Harness.open(gate.journal, { models: createModels(), registry: durable.createRegistry(), onReport: () => {} }, ctx);
+  const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => undefined, (line) => lines.push(line), { paid });
+  spend.watch(harness);
+  const charge = { conversationId: 1, tag: "ar-run-1", provider: "browserbase", at: new Date(T0).toISOString(), seconds: 3, usd: 0.0001, final: true, state: "priced" };
+  await harness.commit((tx) => spend.onCharge(charge, tx), ctx);
+  await spend.ledgerIdle();
+  // A shutdown's stop seals the journal; a write pi makes after it (a turn's generation the stop cut) is refused.
+  gate.seal(new Interrupted("shutdown"));
+  await harness.commit(async (tx) => { (await tx.doc(durable.AgentDoc, root.id)).thinkingLevel = "high"; }, ctx).catch(() => undefined);
+  const ended = await harness.closed;
+  assert.equal(ended.kind, "failed", "the seal's refusal failed the Session");
+  await new Promise((resolve) => setImmediate(resolve));
+  await spend.ledgerIdle();
+  assert.equal(paid.spentUsd(), 0.0001, "the charge stays booked");
+  assert.deepEqual(lines, [], "no line: every commit the store took reached the count");
+});
+
 /** A run whose first process opened one browser session and ended without letting the run go (the session still live at
  *  the provider, as after a crash): `open()` starts its next process on the same store, booking on the run's one ledger
  *  `paid` (one RunTools here for both: the first process's reserve stays open on it, where a lost claim's would be given
@@ -786,7 +1427,7 @@ test("through the API, live: each browser call's row carries its charge as it ru
   let after = 0;
   const served = [];
   const read = async () => {
-    const { status, body: page } = await api.fresh("GET", `/runs/${runId}/timeline?${new URLSearchParams({ ...(after ? { after: String(after) } : {}), wait_ms: "500" })}`);
+    const { status, body: page } = await api("GET", `/runs/${runId}/timeline?${new URLSearchParams({ ...(after ? { after: String(after) } : {}), wait_ms: "500" })}`);
     assert.equal(status, 200, JSON.stringify(page));
     if (page.reset) view.clear();
     for (const row of page.rows) (view.set(row.id, row), served.push(row));
@@ -976,4 +1617,29 @@ test("a kept session's non-final charge books a person's carried minutes off the
   await spend.ledgerIdle();
   assert.ok(Math.abs(paidHolds() - base) < 1e-12, "nothing left held");
   assert.ok(Math.abs(paid.spentUsd() - 120 * r) < 1e-12, "each charge booked once");
+});
+
+test("the next claim's open charges an owed browser its own sweep of older sessions released to when that sweep answered, never back to when the earlier release went out: the stretch the browser ran after a release that failed is charged", async (t) => {
+  const { ctx, harness, session, spendOf, kinds, entries } = await unheldRoot(t);
+  await assert.rejects(spendOf().letGo(harness, async ({ releasing }) => {
+    await releasing(session("bb-swept"));
+    await releasing(session("bb-gone"));
+    throw new Error("the process ended");
+  }, ctx));
+  const owedAt = Object.fromEntries((await entries()).filter((e) => e.kind === BROWSER_UNHELD_OWED).map((e) => [e.data.id, e.data.at]));
+  const sweptAt = new Date(Date.parse(owedAt["bb-swept"]) + 300_000).toISOString();
+  const asked = [];
+  const browser = {
+    // Both stopped by now: bb-swept by the claim's sweep, bb-gone by its own release.
+    running: async (id) => void asked.push(id) ?? false,
+    close: async () => assert.fail("nothing is running to close"),
+    sweptOlder: new Map([["bb-swept", sweptAt]]),
+  };
+  await spendOf().recoverOwed(harness, browser, ctx);
+  const charges = Object.fromEntries((await entries()).filter((e) => e.kind === BROWSER_CHARGED).map((e) => [e.data.tag, e.data]));
+  assert.equal(charges["unheld:bb-swept"].at, sweptAt, "the swept one ran until the sweep answered");
+  assert.equal(charges["unheld:bb-gone"].at, owedAt["bb-gone"], "one the sweep did not release is charged to its release");
+  assert.ok(charges["unheld:bb-swept"].seconds >= charges["unheld:bb-gone"].seconds + 299, JSON.stringify(charges));
+  assert.deepEqual(asked, ["bb-gone"], "the vendor is asked only about the one the sweep did not release");
+  assert.deepEqual((await kinds()).filter(([kind]) => kind === "said"), [["said", ["bb-swept"]], ["said", ["bb-gone"]]]);
 });

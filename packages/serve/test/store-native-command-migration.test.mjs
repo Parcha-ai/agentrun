@@ -168,7 +168,8 @@ for (const version of [11, 12]) {
     });
     const before = await snapshot();
     const released = version === 11 ? "0011_revision_mcp_pin" : "0012_revision_monid_pin";
-    await assert.rejects(open(), new RegExp(released + "\\.sql with other text.*an applied migration is never edited"));
+    // Both files named: the unpublished one the schema applied, and the released one this build has at that version.
+    await assert.rejects(open(), new RegExp(`applied 00${version}_native_command_owner\\.sql \\(sha256 ${digest.slice(0, 12)}\\) where this build has ${released}\\.sql \\(sha256 [0-9a-f]{12}\\): an applied migration is never edited`));
     assert.deepEqual(await snapshot(), before, "no lineage relabel, data reset, backfill or partial schema upgrade");
     assert.equal((await sql.query("SELECT schema_version FROM store_meta")).rows[0].schema_version, version);
     assert.equal((await sql.query("SELECT count(*)::int n FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='revisions' AND column_name='mcp_pin'")).rows[0].n, version === 11 ? 0 : 1);

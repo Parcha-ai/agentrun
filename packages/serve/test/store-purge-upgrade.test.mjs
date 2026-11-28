@@ -1,6 +1,6 @@
 // When a run or an agent was purged (runs.purged_at, agents.purged_at): SQLite version 13 comes to 14 at its server's
 // open (schema.ts purgeUpgrade), never at a runner's, every row it kept read as not purged, then on to this version
-// (15, diskUpgrade: each run's disk); Postgres 0020 takes 0021 (migrations/0021_purged.sql) the same way.
+// (15, diskUpgrade: each run's disk; 16, ledgerUpgrade: no ledger epoch; 17, its learning rows); Postgres 0020 takes 0021 (migrations/0021_purged.sql) the same way.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,7 +14,7 @@ const { migrate, migrationsIn, openPostgresStore, openSqliteStore, SCHEMA_VERSIO
 const T = Date.parse("2026-11-19T09:00:00.000Z");
 
 test("SQLite: a version 13 store comes to this version at its server's open, never at a runner's: its runs and agents read as not purged", sqliteOnly("the SQLite upgrade"), async (t) => {
-  assert.equal(SCHEMA_VERSION, 15);
+  assert.equal(SCHEMA_VERSION, 18);
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-purge-upgrade-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const file = join(dir, "store.sqlite");
@@ -42,11 +42,11 @@ test("SQLite: a version 13 store comes to this version at its server's open, nev
   };
   const before = read();
   assert.deepEqual(before, { version: 13, runs: false, agents: false });
-  await assert.rejects(openSqliteStore({ file, role: "runner" }), /Start the AgentRun server to bring this store from version 13 to 15 before opening a runner/);
+  await assert.rejects(openSqliteStore({ file, role: "runner" }), new RegExp(`Start the AgentRun server to bring this store from version 13 to ${SCHEMA_VERSION} before opening a runner`));
   assert.deepEqual(read(), before, "a runner's refusal changes nothing");
   const store = await openSqliteStore({ file });
   try {
-    assert.deepEqual(read(), { version: 15, runs: true, agents: true });
+    assert.deepEqual(read(), { version: SCHEMA_VERSION, runs: true, agents: true });
     assert.equal((await store.runs.get("run-old"))?.disk, null, "its launch names no disk: the default disk's");
     assert.deepEqual([(await store.runs.get("run-old"))?.purgedAt, (await store.agents.get("agent-old"))?.purgedAt], [null, null], "the rows it kept are not purged");
     assert.deepEqual((await store.runs.list({ agentId: "agent-old" })).map((run) => run.id), ["run-old"], "and list as before");
@@ -54,7 +54,7 @@ test("SQLite: a version 13 store comes to this version at its server's open, nev
     await store.close();
   }
   await (await openSqliteStore({ file })).close();
-  assert.equal(read().version, 15, "a second open changes nothing");
+  assert.equal(read().version, SCHEMA_VERSION, "a second open changes nothing");
   await (await openSqliteStore({ file, role: "runner" })).close();
 });
 

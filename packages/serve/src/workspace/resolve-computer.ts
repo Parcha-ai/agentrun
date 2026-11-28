@@ -16,9 +16,11 @@
 // provider takes more than one), in the computer package's checkGpu words, and go into the computer's spec.
 //
 // Where the run's shell is follows the mount (shellPlaceOf): in the computer that mounts the folder; with none, Archil's
-// serverless exec in Mode 2 (bash only); in Mode 1 none at all, since the folder is one of this server's own and a
-// command there would run on the server itself. runShellOf reads it off a setting before anything starts (the tool
-// plane shows bash unavailable by it), and the claim's runTools takes the same rule over the computer it started.
+// serverless exec in Mode 2 (bash only), where the server's Archil region has it; in Mode 1 none at all, since the folder
+// is one of this server's own and a command there would run on the server itself, and none in Mode 2 on a region with no
+// serverless exec. runShellOf reads it off a setting before anything starts (the tool plane shows bash unavailable by
+// it), and the claim's runTools takes the same rule over the computer it started.
+import { noExecWords } from "../archil-settings.js";
 import { hostToolDefs, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
 import { type BrowserFeatures, type BrowserFile, type BrowserSessionUsage, type BrowserSpec, type ComputerClient, type ComputerSettingKind, configurationOf, connectOf, type GpuSpec, type Group, type HelloResult, imagesOf, type KindCapabilities, type MountKind, type MountReadBack, type MountSpec, mountsOf, type ProviderEntry, type Result, type SettingKindSpec, syncingClient } from "@parcha/agentrun-computer";
 import { type DockerDaemon, noDockerWords } from "../docker-daemon.js";
@@ -74,6 +76,28 @@ export type LaunchedComputer = {
   release(): Promise<void>;
 };
 
+/** What the run's browser holds as its claim lets the run go: the ids of every session its custody held (still holds, or
+ *  released itself, which a vendor may list as running a moment longer), and the tags of its sessions whose id it does
+ *  not know (a create whose answer was lost), any session of which it may hold. */
+export type BrowserHolds = { readonly ids: ReadonlySet<string>; readonly tags: ReadonlySet<string> };
+
+/** The sessions released that a create race left running and nothing held (ClaimBrowser.releaseUnheld, or a release by a
+ *  session's tag that ended others beside it): each with its tag's label (null where it carries none) and when its vendor
+ *  made it (an ISO time; null where the vendor does not say); each release that failed, in words; and each session left
+ *  to a create of this claim still in flight, by id. */
+/** A released session as a host books it (UnheldSessions' `released`). */
+export type UnheldSession = UnheldSessions["released"][number];
+
+/** What ClaimBrowser.releaseUnheld is called with beside the holds: its abort, and what the host records around each
+ *  release (the janitor's UnheldHooks, each session as UnheldSession). */
+export type UnheldOptions = { readonly signal?: AbortSignal; readonly releasing?: (session: UnheldSession) => Promise<void>; readonly released?: (session: UnheldSession) => Promise<void> };
+
+export type UnheldSessions = {
+  readonly released: ReadonlyArray<{ readonly id: string; readonly tag: string | null; readonly createdAt: string | null }>;
+  readonly failed: readonly string[];
+  readonly creating: readonly string[];
+};
+
 /** A browser computer's provider as the run's browser tool opens its sessions through it: each session one computer of
  *  the provider's, made under the run's labels and the tool's tag (so a create whose answer was lost is found again),
  *  its CDP URL read through the provider's connect at each attach (a secret: it goes only to the driver), and released
@@ -100,10 +124,28 @@ export type ClaimBrowser = {
    *  view's, computer-record.ts browserWatch) until the caller stops it at the session's release, or the claim's release
    *  stops it. Absent: nothing is recorded. */
   readonly record?: (id: string, watch: RecordWatch) => Recording;
+  /** The run's sessions of a lower claim epoch that this claim's sweep released as it opened (the janitor's releaseOlder:
+   *  releaseOlderBrowsers, or a browser computer's releaseOlderClaims), by id, each with when that sweep answered (an ISO
+   *  time): such a session ran until then at the latest. Absent where the sweep released none. */
+  readonly sweptOlder?: ReadonlyMap<string, string>;
   /** The provider's own record of session `id` (BrowserComputerProvider.sessionUsage), read once as it is let go: when it
    *  says the session started and ended, and its proxy bytes, each null where it does not say; undefined for a session it
    *  does not know. Absent where the provider keeps no such record. A failed read throws. */
   readonly usage?: (id: string, signal?: AbortSignal) => Promise<BrowserSessionUsage | undefined>;
+  /** When the claim lets the run go: releases every session made under the run's labels (its run and this claim's epoch)
+   *  that `holds` does not keep (the janitor's releaseUnheld): a create whose reply was lost can leave one nobody holds,
+   *  which a vendor that ends its sessions itself runs to its lifetime otherwise. A session another run's labels, another
+   *  epoch's or no readable epoch carry is never touched. Each released one, with its tag's label and when its vendor made
+   *  it (null where it does not say), and each release that failed, in words. `holds` is read once the vendor's list has
+   *  answered, so a session listed was made after its custody's record (pi-browser's create waits for that record): the
+   *  record holds it. A session whose create this claim still has in flight is held too, and named (creating). A list
+   *  that fails throws its words. Absent where the run's labels name no run and epoch (a browser no claim opened).
+   *  `releasing` runs before each release is sent, with the session as `released` names it (the janitor's UnheldHooks: one
+   *  that throws holds that session back, named in `failed`); `released` once its release answered, before the next is
+   *  sent. */
+  readonly releaseUnheld?: (holds: () => BrowserHolds | Promise<BrowserHolds>, options?: UnheldOptions) => Promise<UnheldSessions>;
+  /** When the vendor's listing said session `id` was made (an ISO time), for one a find listed; null otherwise. */
+  readonly madeAt?: (id: string) => string | null;
   /** The files a session downloaded, kept by the provider: where its features declare downloads. */
   readonly downloads?: {
     list(id: string): Promise<BrowserFile[]>;
@@ -316,10 +358,12 @@ const nothing = async (): Promise<void> => {};
  *   container holding the run's folder alone, never a process of this server; bash only;
  * - "none": none does, in Mode 1: the folder is one of this server's own, and a command there would run on the server
  *   itself, able to read its data and its keys; no bash family at all, the file tools alone (confined to the folder).
+ *   Nor in Mode 2 where the server's Archil region has no serverless exec (`noExec`, that region: archil-settings.ts
+ *   noExecRegionOf), whose every exec answers "Exec is not enabled".
  */
-export function shellPlaceOf(mounts: boolean, mode: 1 | 2): ShellPlace {
+export function shellPlaceOf(mounts: boolean, mode: 1 | 2, noExec: string | undefined): ShellPlace {
   if (mounts) return "computer";
-  return mode === 2 ? "local" : "none";
+  return mode === 2 && noExec === undefined ? "local" : "none";
 }
 
 /** The kind of the run's folder a computer of `kind` on `entry` holds in `mode` (folderKindOf), or undefined for none:
@@ -367,35 +411,49 @@ export function runFolderOf(setting: ComputerSetting, mode: 1 | 2, registry: Pic
  * kind registry before anything starts: what the claim's runTools gives the run once its computer is started. "computer"
  * for a sandbox, or a desktop whose provider mounts the folder and offers files and exec; for kind none, a phone, a
  * browser or a desktop that does not mount, Archil's exec in Mode 2 ("local", bash only) and no shell at all in Mode 1
- * ("none"). A setting this server refuses (an unknown kind or provider, a sandbox that cannot mount the mode's folder)
- * runs nothing: "none". The setting is the agent's as saved; where it has none, the caller gives the server's default.
+ * or on a Mode 2 region with no exec (`noExec`, shellPlaceOf) ("none"). A setting this server refuses (an unknown kind
+ * or provider, a sandbox that cannot mount the mode's folder) runs nothing: "none". The setting is the agent's as
+ * saved; where it has none, the caller gives the server's default.
  */
-export function runShellOf(setting: ComputerSetting, mode: 1 | 2, registry: Pick<KindRegistry, "SETTING_KINDS" | "servingRefusals" | "PROVIDERS">): ShellPlace {
-  if (setting.kind === "none") return shellPlaceOf(false, mode);
+export function runShellOf(setting: ComputerSetting, mode: 1 | 2, registry: Pick<KindRegistry, "SETTING_KINDS" | "servingRefusals" | "PROVIDERS">, noExec: string | undefined): ShellPlace {
+  if (setting.kind === "none") return shellPlaceOf(false, mode, noExec);
   const selected = selectedFor(setting, registry);
   // An agent whose computer runs no programs of its own has no shell anywhere: not its computer's, not Archil's exec.
   if (!selected || noPrograms(setting)) return "none";
   const mounts = folderOf(selected.kind, selected.entry, [selected.configuration], mode) !== undefined;
   if (selected.kind === "sandbox" && !mounts) return "none";
-  return shellPlaceOf(mounts, mode);
+  return shellPlaceOf(mounts, mode, noExec);
 }
 
-/** What a choice of computer leaves out of the shell, in plain words: shown beside it (GET /v2/computers shell_note) and
- *  said by the save's refusal of a tool it leaves out. A computer that mounts the folder leaves nothing out. */
+/** What a choice of no computer leaves out of the shell, in plain words: shown beside it (GET /v2/computers shell_note).
+ *  A computer that mounts the folder leaves nothing out; one that doesn't says so in its own words (APART_SHELL_NOTES). */
 export const SHELL_NOTES: Readonly<Record<Exclude<ShellPlace, "computer">, string>> = Object.freeze({
   local: "No computer: bash runs in a fresh container on the folder's own storage; background commands need a computer.",
   none: "No computer on this server: the agent gets the file tools only, no shell. Pick a computer to run commands.",
+});
+
+/** What a computer that gives the run no shell of its own leaves out (it doesn't mount the run's folder, or runs no
+ *  programs): a computer all the same, so never "no computer". */
+export const APART_SHELL_NOTES: Readonly<Record<Exclude<ShellPlace, "computer">, string>> = Object.freeze({
+  local: "This computer doesn't mount the run's folder: bash runs in a fresh container on the folder's own storage; background commands need a computer that mounts it.",
+  none: "This computer gives the run no shell: the agent gets the file tools only. Pick a computer that mounts the run's folder to run commands.",
 });
 
 /** The host tools a run with its shell at `shell` gets, by name: the kernel registry's own list (hostToolDefs), never a
  *  second one: the file tools always, bash with a shell, the five background tools on a computer. */
 export const hostToolsOf = (shell: ShellPlace): string[] => hostToolDefs({ maxExecS: 600, shell }).map((def) => def.name);
 
+/** The choice of no computer on a Mode 2 server whose Archil region `region` has no serverless exec (shellPlaceOf's
+ *  `noExec`): no shell, why, and the fix, in place of SHELL_NOTES.none. */
+export const noExecShellNote = (region: string): string =>
+  `No computer on this server: the agent gets the file tools only, no shell, since ${noExecWords(region)}. Give it a sandbox computer (a box) to run bash, or leave bash out of its tools.`;
+
 /** A computer choice as an agent's settings show it: where its runs have their shell (runShellOf), the host tools that
  *  gives, and what it leaves out, in words (none for a computer that mounts the folder). */
-export function shellChoiceOf(setting: ComputerSetting, mode: 1 | 2, registry: Pick<KindRegistry, "SETTING_KINDS" | "servingRefusals" | "PROVIDERS">): { shell: ShellPlace; host_tools: string[]; shell_note?: string } {
-  const shell = runShellOf(setting, mode, registry);
-  return { shell, host_tools: hostToolsOf(shell), ...(shell === "computer" ? {} : { shell_note: SHELL_NOTES[shell] }) };
+export function shellChoiceOf(setting: ComputerSetting, mode: 1 | 2, registry: Pick<KindRegistry, "SETTING_KINDS" | "servingRefusals" | "PROVIDERS">, noExec: string | undefined): { shell: ShellPlace; host_tools: string[]; shell_note?: string } {
+  const shell = runShellOf(setting, mode, registry, noExec);
+  const note = (): string => (setting.kind !== "none" ? APART_SHELL_NOTES[shell as Exclude<ShellPlace, "computer">] : shell === "none" && mode === 2 && noExec !== undefined ? noExecShellNote(noExec) : SHELL_NOTES[shell as Exclude<ShellPlace, "computer">]);
+  return { shell, host_tools: hostToolsOf(shell), ...(shell === "computer" ? {} : { shell_note: note() }) };
 }
 
 /** The server's default where an agent has no computer setting: in Mode 1 a sandbox on the first provider that binds a

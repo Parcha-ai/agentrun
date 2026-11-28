@@ -6,11 +6,11 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { describe, test } from "node:test";
 import { openSqliteStore } from "../dist/store/index.js";
 import { signatureOf, waitMarkerOf, Webhooks } from "../dist/webhooks.js";
 import { verify } from "../dist/standard-webhooks.js";
+import { raw } from "./store-target.mjs";
 import { client, follow, scratch, secretWritePath, serve, startRun } from "./support.mjs";
 import {
   askerStore, endedInStore, endNotice, filesIn, nothingPending, hadWebhook, meetsDocument, noticed, noticeId, ofType, onDisk, outboxOf, parkedOnQuestion, receiver, reclaimed,
@@ -28,25 +28,25 @@ secretWritePath(["DELETE"], /^\/settings\/webhook$/);
 /** `count` runs copied from run `template` (its row and its launch, so its view reads as its own), each created and ended
  *  in ONE transaction on a connection of the test's own: the server's reads see none of them, then all of them at once, so
  *  each starts and ends between two of its reads, however it reads. Their ids, oldest first. */
-function startedAndEndedAtOnce(data, template, count) {
-  const db = new DatabaseSync(join(data, "store.sqlite"), { timeout: 10_000 });
+async function startedAndEndedAtOnce(data, template, count) {
+  const db = await raw(join(data, "store.sqlite"), { timeout: 10_000 });
   try {
-    const columns = db.prepare("PRAGMA table_info(runs)").all().map((c) => c.name);
+    const columns = (await db.all("PRAGMA table_info(runs)")).map((c) => c.name);
     const copied = (set) => columns.map((c) => (c in set ? set[c] : c)).join(", ");
     const ids = [];
     const at = Date.now();
-    db.exec("BEGIN IMMEDIATE");
+    await db.exec("BEGIN IMMEDIATE");
     for (let i = 0; i < count; i++) {
       const id = `run-at-once-${String(i).padStart(3, "0")}`;
       ids.push(id);
-      db.prepare(`INSERT INTO runs (${columns.join(", ")}) SELECT ${copied({ id: "?", state: "'queued'", epoch: "0", runner: "NULL", ended_at: "NULL", started_at: "?" })} FROM runs WHERE id = ?`).run(id, at + i, template);
-      db.prepare("INSERT INTO run_launch (run_id, body, sealed, created_at) SELECT ?, body, sealed, created_at FROM run_launch WHERE run_id = ?").run(id, template);
-      db.prepare("UPDATE runs SET state = 'ended', ended_at = ? WHERE id = ?").run(at + count + i, id);
+      await db.run(`INSERT INTO runs (${columns.join(", ")}) SELECT ${copied({ id: "?", state: "'queued'", epoch: "0", runner: "NULL", ended_at: "NULL", started_at: "?" })} FROM runs WHERE id = ?`, id, at + i, template);
+      await db.run("INSERT INTO run_launch (run_id, body, sealed, created_at) SELECT ?, body, sealed, created_at FROM run_launch WHERE run_id = ?", id, template);
+      await db.run("UPDATE runs SET state = 'ended', ended_at = ? WHERE id = ?", at + count + i, id);
     }
-    db.exec("COMMIT");
+    await db.exec("COMMIT");
     return ids;
   } finally {
-    db.close();
+    await db.close();
   }
 }
 
@@ -200,7 +200,7 @@ describe("the outbound webhook: signature, idempotency and custody", { concurren
     // A run the store API wrote, ended: its notice shows the server reads, and its rows are the others' template.
     await endedInStore(writer, "asker", "run-template");
     await hook.when((got) => ofType(got, "run.ended").length === 1, "the run.ended of run run-template", data);
-    const ids = startedAndEndedAtOnce(data, "run-template", 60);
+    const ids = await startedAndEndedAtOnce(data, "run-template", 60);
     const told = (got) => new Set(ofType(got, "run.ended").map((r) => JSON.parse(r.body).data.run_id));
     await hook.when((got) => ids.every((id) => told(got).has(id)), () => `the run.ended of each of the 60 runs (missing: ${ids.filter((id) => !told(hook.got).has(id)).join(", ")})`, data);
     await settled(data);

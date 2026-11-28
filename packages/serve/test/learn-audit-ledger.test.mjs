@@ -4,14 +4,14 @@
 // same input with learning off, marked as the audit of that run (its launch's `audit`, its record's path `audit`), billed
 // to the agent as learning cost, capped at what the served run's cap left (none left: no shadow, a `skipped` row). A
 // shadow never waits on a person: one that would (a raise of that cap, an approval its owner's setting asks) ends at once,
-// a `parked` row, no verdict. Once both ended, a later claim writes one row to audits.jsonl in the agent's git learning
-// folder ({run, shadow_run, workflow, digest, source, agreed, served_cost, shadow_cost, turn, at}, agreed by sameAnswer of
+// a `parked` row, no verdict. Once both ended, a later claim writes one row to the agent's audit records (Store.learning,
+// kind audit: {run, shadow_run, workflow, digest, source, agreed, served_cost, shadow_cost, turn, at}, agreed by sameAnswer of
 // the shadow's answer and the served run's answer `turn` names, the one it gave when the audit began). The hold rule reads those rows: when the last `hold_window` rows of the serving digest hold at least
 // `hold_disagree` disagreements, the workflow stops serving (a hold carrying `audit`) and the agent's next run asks ONE
 // recompile with those rows as data; a second hold within `stop_window` served runs of the first stops it, asks no
 // compile, and says so on the record.
 //   (a) with k = 10, exactly the drawn served runs start a shadow, and the draw is a function of the run id;
-//   (b) an audit row lands in audits.jsonl with both costs;
+//   (b) an audit row lands in the agent's audit records with both costs;
 //   (c) the shadow's cost is the served run's learning cost in the agent's cost series, and the shadow is no row of it;
 //   (d) 3 disagreements in 10 rows hold the workflow and ask exactly one recompile carrying those rows;
 //   (e) a second hold inside stop_window asks no compile and writes the stop message;
@@ -25,7 +25,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
-import { landWorkflows, readmeOf, startAt } from "./learned-workflow-seed-support.mjs";
+import { landWorkflows, readmeOf, startAt, putPromotions } from "./learned-workflow-seed-support.mjs";
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
 const { startRunner } = await import("../dist/runner/runner.js");
@@ -33,13 +33,12 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { readLaunchBody } = await import("../dist/run-launch.js");
 const { promotionsOf } = await import("../dist/learn/promote.js");
-const { learningWorkspace } = await import("../dist/workspace/index.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
+const { learningOf } = await import("../dist/learn/rows.js");
 const { workflowDigest } = await import("../dist/runner/workflow-first.js");
 const { askedForCompile } = await import("../dist/learn/compile.js");
-const { seedOf } = await import("../dist/learning.js");
-const { readAudits, AUDITS_FILE } = await import("../dist/learn/audit.js");
-const { agentCostOverStore, allInOf, shadowSpendOf } = await import("../dist/store-reads/learning.js");
+const { readAudits } = await import("../dist/learn/audit.js");
+const { agentCostOverStore, runAllInOverStore } = await import("../dist/store-reads/learning.js");
 const { runTimeline } = await import("../dist/store-reads/journal.js");
 const { viewOverStore } = await import("../dist/store-view.js");
 
@@ -104,8 +103,9 @@ const FINAL = ["ended", "failed", "stopped"];
  *  workflow's node submits `submit(requestText)` ({answer: 42, sure: true} by default); the agent answers AGENT_SAYS; a
  *  first compile ask is answered with BROKEN_DRAFT, and a revision ask is refused. `says(body)`: the agent's answer to a
  *  request instead (undefined: AGENT_SAYS); `call(body)`: a tool call the agent makes instead of answering; `tools` and
- *  `toolSettings`: the agent's (none by default); `outputSchema`: its definition's output_schema (none by default). */
-async function world(t, { learning, prior = 0, submit, paused = false, env = {}, priced, says, call, tools = [], toolSettings, outputSchema } = {}) {
+ *  `toolSettings`: the agent's (none by default); `outputSchema`: its definition's output_schema (none by default);
+ *  `grader(request)`: a grader request's answer (default: the faux grader's verdict, fixtures/faux-grader.mjs). */
+async function world(t, { learning, prior = 0, submit, paused = false, env = {}, priced, says, call, tools = [], toolSettings, outputSchema, grader } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-audit-ledger-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -115,6 +115,7 @@ async function world(t, { learning, prior = 0, submit, paused = false, env = {},
     // A revision ask is refused, as learn-promote-once's landsRevision: a test lands any revision itself, and a recompile
     // whose drafts failed would be recorded as its stop (runner/learning-end.ts recordDraftFailed, S3b).
     refuse: ({ body }) => (compileAskOf(body).startsWith("One more turn: revise") ? { message: "the test lands any revision itself" } : undefined),
+    ...(grader ? { grader } : {}),
   });
   let runner;
   t.after(async () => {
@@ -147,9 +148,9 @@ async function world(t, { learning, prior = 0, submit, paused = false, env = {},
     await server.runs.create({ id: `prior-${i}`, agentId: "agent-1", revisionId: "rev-1" }, { body: launchOf(`Question ${i}`) });
     await ended(`prior-${i}`);
   }
-  const seed = await landWorkflows(dir, "agent-1", [{ name: "answer", description: "Answers a question as a number", workflow: FIRST }]);
+  const seed = await landWorkflows(server, "agent-1", [{ name: "answer", description: "Answers a question as a number", workflow: FIRST }]);
   // Promoted by its check, as S3a's claim records it: it serves every fitting run first from here.
-  await server.settings.put("learning.promotions.agent-1", { v: 1, items: [{ workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "promote", reason: "checked: promoted", check: { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, agreed: 5, alone: 5, of: [] }, commit: seed }] });
+  await putPromotions(server, "agent-1", [{ workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "promote", reason: "checked: promoted", check: { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, agreed: 5, alone: 5, of: [] }, commit: seed }]);
   /** The shadow runs: those whose launch names the run they audit, whatever their state. */
   const shadows = async () => {
     const out = [];
@@ -161,10 +162,10 @@ async function world(t, { learning, prior = 0, submit, paused = false, env = {},
   };
   const shadowOf = async (id) => (await shadows()).find(({ launch }) => launch.audit.of === id);
   const asks = new Map();
-  /** Runs `id` on `question` at the learning folder's main now, as the server launches it; then, when it started a
+  /** Runs `id` on `question` at the agent's newest save now, as the server launches it; then, when it started a
    *  shadow, waits for that one to end too, so the next claim reads both ended. */
-  /** Makes run `id` on `question` (its launch with `extra` too) at the learning folder's main now, as the server does. */
-  const create = async (id, question, extra) => server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: launchOf(question, startAt((await seedOf(dir, "agent-1")).sha), extra) });
+  /** Makes run `id` on `question` (its launch with `extra` too) at the agent's newest save now, as the server does. */
+  const create = async (id, question, extra) => server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: launchOf(question, startAt((await server.learning.seed("agent-1")).save.id), extra) });
   const start = async (id, question, extra) => {
     const before = gw.requests.length;
     await create(id, question, extra);
@@ -174,14 +175,7 @@ async function world(t, { learning, prior = 0, submit, paused = false, env = {},
     asks.set(id, gw.requests.slice(before).map((request) => compileAskOf(request.body)).filter(Boolean));
     return row;
   };
-  const audits = async () => {
-    const folder = learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" });
-    try {
-      return await readAudits(folder.workspace);
-    } finally {
-      await folder.end();
-    }
-  };
+  const audits = () => readAudits(server.learning, "agent-1");
   const replaysEnded = (count) => until(async () => {
     const all = [];
     for (const row of await server.runs.list({ agentId: "agent-1" })) if ((await server.runs.launch(row.id)).body?.replay) all.push(row);
@@ -190,25 +184,22 @@ async function world(t, { learning, prior = 0, submit, paused = false, env = {},
   return { dir, server, store, gw, logs, create, start, resume, asks, shadows, shadowOf, audits, replaysEnded, ended };
 }
 
-/** Lands `workflow` as the next revision of `answer` on the learning folder's main, as the recompile's merge lands it. */
-async function landRevision(dir, workflow, runId) {
-  const folder = learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" });
-  try {
-    const merged = await learningCommit(folder.workspace, {
-      kind: "merge", runId, reason: "revised answer", graded: {},
-      files: [{ path: "workflows/answer/workflow.json", text: JSON.stringify(workflow) }, { path: "workflows/answer/README.md", text: readmeOf("answer", "Answers a question as a number") }],
-    });
-    assert.equal(merged.ok, true, JSON.stringify(merged));
-  } finally {
-    await folder.end();
-  }
+/** Lands `workflow` as the next revision of `answer` on the agent's learning, as the recompile's merge lands it. */
+async function landRevision(store, workflow, runId) {
+  const merged = await learningCommit(learningOf(store, "agent-1"), {
+    runId, reason: "revised answer",
+    files: [{ path: "workflows/answer/workflow.json", text: JSON.stringify(workflow) }, { path: "workflows/answer/README.md", text: readmeOf("answer", "Answers a question as a number") }],
+  });
+  assert.equal(merged.ok, true, JSON.stringify(merged));
 }
 
 /** The fence of the recompile ask's audit rows alone. */
 const fenceOf = (ask) => /----- begin (\w+): the disagreements -----\n([\s\S]*?)\n----- end \1 -----/.exec(ask)?.[2] ?? "";
 
 test("(a) k = 10 by default: exactly the served runs whose id the draw picks start a shadow, each the audit of its run, learning off, path audit", { timeout: 240_000 }, async (t) => {
-  const w = await world(t, { learning: true });
+  // One run by hand first, at $1: past COST_WINDOW served runs the money rule holds the workflow to a by-hand cost.
+  let priced = 0;
+  const w = await world(t, { learning: true, prior: 1, priced: (model, usage) => (priced++ === 0 ? 1 : ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15) / 1e6) });
   const ids = Array.from({ length: 14 }, (_, i) => `drawn-${i}`);
   const expected = ids.filter((id) => drawn(id, 10));
   // The ids are chosen so the draw picks some and leaves most: the test means something either way.
@@ -220,7 +211,8 @@ test("(a) k = 10 by default: exactly the served runs whose id the draw picks sta
   const shadows = await w.shadows();
   assert.deepEqual(shadows.map(({ launch }) => launch.audit.of).sort(), [...expected].sort(), "a shadow for each drawn run, none other");
   for (const { row, launch } of shadows) {
-    assert.deepEqual(launch.audit, { of: launch.audit.of, workflow: "answer", digest: DIGEST });
+    assert.deepEqual(launch.audit, { of: launch.audit.of, workflow: "answer", digest: DIGEST, deadlineAt: launch.audit.deadlineAt });
+    assert.ok(Number.isFinite(launch.audit.deadlineAt) && launch.audit.deadlineAt > Date.now(), "a learning child's deadline, ahead of now");
     assert.equal(launch.learning, undefined, "the shadow runs with learning off: no seed, no look-back");
     const served = readLaunchBody((await w.server.runs.launch(launch.audit.of)).body);
     assert.deepEqual(launch.input, served.input, "the same input");
@@ -228,7 +220,7 @@ test("(a) k = 10 by default: exactly the served runs whose id the draw picks sta
   }
 });
 
-test("(b, c) an audit row lands in audits.jsonl with both costs, and the shadow's cost is the served run's learning cost in the agent's cost series", { timeout: 240_000 }, async (t) => {
+test("(b, c) an audit row lands in the audit records with both costs, and the shadow's cost is the served run's learning cost in the agent's cost series", { timeout: 240_000 }, async (t) => {
   const w = await world(t, { learning: { audit_every: 1 } });
   const served = await w.start("served-1", "What is six times seven");
   assert.equal(served.metrics?.path, "workflow");
@@ -238,10 +230,10 @@ test("(b, c) an audit row lands in audits.jsonl with both costs, and the shadow'
   await w.start("served-2", "What is seven times six");
   const rows = await w.audits();
   const row = rows.find((one) => one.run === "served-1");
-  assert.ok(row, `${AUDITS_FILE}: ${JSON.stringify(rows)}`);
+  assert.ok(row, `the audit records: ${JSON.stringify(rows)}`);
   const shadowRow = await w.server.runs.get(shadow.id);
   // Counted for the promotion that served it: its promote record's `at`.
-  const promotedAt = (await promotionsOf(w.server.settings, "agent-1"))[0].at;
+  const promotedAt = (await promotionsOf(w.server.learning, "agent-1"))[0].at;
   // `turn`: the served run's answer row the audit compared, its newest when the audit began.
   const answerRow = (await runTimeline(w.server, "served-1", BACKGROUND_CONTEXT, { settled: true })).findLast((one) => one.kind === "final_answer");
   assert.ok(answerRow?.id, "the served run has an answer row");
@@ -281,7 +273,7 @@ test("(d, e) 3 disagreements in the last 10 rows hold the workflow and ask exact
   const rows = (await w.audits()).filter((one) => one.digest === DIGEST);
   assert.equal(rows.length, 10, JSON.stringify(rows));
   assert.deepEqual(rows.filter((one) => one.agreed === false).map((one) => one.run).sort(), ["served-10", "served-8", "served-9"]);
-  const held = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
+  const held = (await promotionsOf(w.server.learning, "agent-1")).at(-1);
   assert.deepEqual([held.digest, held.decided, held.audit.window, held.audit.disagree, held.audit.rows, held.audit.stopped], [DIGEST, "hold", 10, 3, 10, undefined], JSON.stringify(held));
   assert.deepEqual(held.audit.disagreements.map((one) => one.served).sort(), ["served-10", "served-8", "served-9"]);
   for (const one of held.audit.disagreements) {
@@ -292,7 +284,7 @@ test("(d, e) 3 disagreements in the last 10 rows hold the workflow and ask exact
   assert.equal(w.asks.get("run-11").length, 1, "exactly one recompile");
   const [ask] = w.asks.get("run-11");
   assert.ok(ask.startsWith("One more turn: revise your learned workflow `answer`"), ask.slice(0, 200));
-  assert.match(ask, /disagreed with your own answer on 3 of its last 10 audited runs/);
+  assert.match(ask, /disagreed with the known answer \(a grade's where a person gave one, else yours\) on 3 of its last 10 audited runs/);
   const fence = fenceOf(ask);
   assert.ok(fence, ask.slice(0, 3000));
   for (const question of wrong) assert.ok(fence.includes(`${question}?`), question);
@@ -303,13 +295,13 @@ test("(d, e) 3 disagreements in the last 10 rows hold the workflow and ask exact
   assert.deepEqual(w.asks.get("run-12"), []);
 
   // The recompile lands: its one check runs on the agent's last 5 inputs and the 3 disagreeing ones, then promotes it.
-  await landRevision(w.dir, answerFlow(REVISED), "run-11");
+  await landRevision(w.server, answerFlow(REVISED), "run-11");
   const check = await w.start("run-13", "Question 23");
   assert.equal(check.metrics?.path, "agent");
   await w.replaysEnded(8);
   const back = await w.start("served-30", "Question 30");
   assert.deepEqual([back.metrics?.path, back.metrics?.workflow_digest], ["workflow", DIGEST_2], JSON.stringify(back.metrics));
-  const promoted = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
+  const promoted = (await promotionsOf(w.server.learning, "agent-1")).at(-1);
   assert.deepEqual([promoted.digest, promoted.decided, promoted.check.attempt, promoted.check.n], [DIGEST_2, "promote", 2, 8], JSON.stringify(promoted.check));
   for (const one of held.audit.disagreements) assert.ok(promoted.check.of.includes(one.run), `the check ran on ${one.run}, a disagreeing input`);
 
@@ -317,8 +309,8 @@ test("(d, e) 3 disagreements in the last 10 rows hold the workflow and ask exact
   for (const [i, question] of wrongLater.entries()) await w.start(`served-${31 + i}`, question);
   const after = await w.start("run-40", "Question 40");
   assert.equal(after.metrics?.path, "agent", JSON.stringify(after.metrics));
-  const stopped = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
-  assert.deepEqual([stopped.digest, stopped.decided, stopped.audit.stopped, stopped.reason], [DIGEST_2, "hold", true, "stopped: the workflow disagreed with the agent twice"], JSON.stringify(stopped));
+  const stopped = (await promotionsOf(w.server.learning, "agent-1")).at(-1);
+  assert.deepEqual([stopped.digest, stopped.decided, stopped.audit.stopped, stopped.reason], [DIGEST_2, "hold", true, "stopped: the workflow disagreed with the known answer twice"], JSON.stringify(stopped));
   assert.deepEqual(w.asks.get("run-40"), [], "no compile: it stopped");
   const later = await w.start("run-41", "Question 41");
   assert.equal(later.metrics?.path, "agent");
@@ -335,7 +327,7 @@ test("(g) the definition's numbers stand in: audit_every 5 draws at 1/5, and hol
   assert.deepEqual((await w.shadows()).map(({ launch }) => launch.audit.of).sort(), [...picked].sort());
   const next = await w.start("g-next", "Question next");
   assert.equal(next.metrics?.path, "agent", "held on 2 of the last 5 rows");
-  const held = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
+  const held = (await promotionsOf(w.server.learning, "agent-1")).at(-1);
   assert.deepEqual([held.decided, held.audit.window, held.audit.disagree, held.audit.rows], ["hold", 5, 2, 2], JSON.stringify(held));
 });
 
@@ -353,7 +345,7 @@ test("(r2) three shadows that end between two claims are written oldest first: h
   const next = await w.start("batch-next", "Batch next");
   assert.deepEqual((await w.audits()).map((row) => row.run), ["batch-1", "batch-2", "batch-3"], "the batch is appended oldest first");
   assert.equal(next.metrics?.path, "agent", "held: the 2 newest rows disagree");
-  const held = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
+  const held = (await promotionsOf(w.server.learning, "agent-1")).at(-1);
   assert.deepEqual([held.decided, held.audit.rows], ["hold", 2], JSON.stringify(held));
   assert.deepEqual(held.audit.disagreements.map((one) => one.served).sort(), ["batch-2", "batch-3"]);
 });
@@ -365,13 +357,12 @@ test("(r2) the hold is the ledger's: rows committed with 3 disagreements whose h
   const w = await world(t, { learning: { audit_every: 5 }, submit: answers({ wrong: wrong.map((id) => `Question for ${id}`) }) });
   // While `failing`, the hold's write to the promotion records fails: a crash between the ledger's commit and that write.
   let failing = false;
-  for (const method of ["replaceIf", "putIfAbsent"]) {
-    const real = w.store.settings[method].bind(w.store.settings);
-    w.store.settings[method] = async (...args) => {
-      if (failing && JSON.stringify(args).includes('"audit":{"window"')) throw new Error("the settings write failed");
-      return real(...args);
-    };
-  }
+  const real = w.store.learning.changeRecords.bind(w.store.learning);
+  w.store.learning.changeRecords = (agentId, kind, update) => real(agentId, kind, (records) => {
+    const out = update(records);
+    if (failing && kind === "promotion" && JSON.stringify(out).includes('"audit":{"window"')) throw new Error("the promotion write failed");
+    return out;
+  });
   for (const id of wrong) assert.equal((await w.start(id, `Question for ${id}`)).metrics?.path, "workflow", `${id} served`);
   failing = true;
   // This claim commits the third disagreeing row; the hold it makes is never written.
@@ -380,12 +371,12 @@ test("(r2) the hold is the ledger's: rows committed with 3 disagreements whose h
   assert.equal(lost.metrics?.path, "workflow", "still served: its hold was lost");
   const rows = await w.audits();
   assert.deepEqual(rows.filter((row) => row.agreed === false).map((row) => row.run).sort(), [...wrong].sort(), "the ledger holds the 3 disagreements");
-  assert.equal((await promotionsOf(w.server.settings, "agent-1")).at(-1).decided, "promote", "no hold was recorded");
+  assert.equal((await promotionsOf(w.server.learning, "agent-1")).at(-1).decided, "promote", "no hold was recorded");
   // The next claim adds no row (quiet[0] was not drawn), and holds from the ledger alone.
   const next = await w.start(quiet[1], `Question for ${quiet[1]}`);
   assert.equal((await w.audits()).length, rows.length, "this claim added no row");
   assert.equal(next.metrics?.path, "agent", `held from the ledger: ${JSON.stringify(next.metrics)}`);
-  const held = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
+  const held = (await promotionsOf(w.server.learning, "agent-1")).at(-1);
   assert.deepEqual([held.decided, held.audit.disagreements.length], ["hold", 3], JSON.stringify(held));
 });
 
@@ -409,7 +400,6 @@ test("(r2) a run a trigger started (GitHub's) is never audited: drawn by its id,
 test("(r3) a secret straddling char 1,200 of an audited input leaves no 8 characters of it in the ledger, the hold, the promotions read or the recompile prompt", { timeout: 300_000 }, async (t) => {
   const { CHECK_TEXT_MAX, promotionsShown } = await import("../dist/learn/promote.js");
   const { secretsShown } = await import("../dist/learning.js");
-  const { readLearning } = await import("../dist/learn/folder.js");
   const secret = ["Zq81Trb", "N4wX7cV", "2mKp09L", "dHy5aEg", "3UfJxQ"].join("");
   // The input as the hold reads it is the launch's input in JSON: {"content":"<question>?","question":...}; the secret
   // starts 10 characters before the cut.
@@ -422,23 +412,17 @@ test("(r3) a secret straddling char 1,200 of an audited input leaves no 8 charac
   assert.ok(at < CHECK_TEXT_MAX && at + secret.length > CHECK_TEXT_MAX, `the secret straddles the cut: at ${at}`);
   const next = await w.start("leak-next", "Question 99");
   assert.equal(next.metrics?.path, "agent", `held on the one disagreement: ${JSON.stringify(next.metrics)}`);
-  const held = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
+  const held = (await promotionsOf(w.server.learning, "agent-1")).at(-1);
   assert.deepEqual([held.decided, held.audit.disagreements.length], ["hold", 1], JSON.stringify(held));
   assert.ok(held.audit.disagreements[0].input.includes("Leaky"), "the hold quotes the input");
   const [ask] = w.asks.get("leak-next");
   assert.ok(fenceOf(ask ?? "").includes("Leaky"), `the recompile ask quotes it: ${(ask ?? "").slice(0, 300)}`);
-  const folder = learningWorkspace({ mode: "local", data: w.dir, agentId: "agent-1" });
-  let ledger;
-  try {
-    ledger = await readLearning(folder.workspace, async (read) => (read.snapshot?.audits ? read.body(AUDITS_FILE, read.snapshot.audits.oid) : ""));
-  } finally {
-    await folder.end();
-  }
+  const ledger = JSON.stringify(await w.server.learning.records("agent-1", "audit"));
   assert.ok(ledger.includes("leak-1"), ledger);
   const leaks = (text) => Array.from({ length: secret.length - 7 }, (_, i) => secret.slice(i, i + 8)).filter((part) => text.includes(part));
   assert.deepEqual(leaks(ledger), [], "the ledger");
   assert.deepEqual(leaks(JSON.stringify(held)), [], "the hold record");
-  assert.deepEqual(leaks(JSON.stringify(promotionsShown(await promotionsOf(w.server.settings, "agent-1"), secretsShown([secret])))), [], "the promotions read");
+  assert.deepEqual(leaks(JSON.stringify(promotionsShown(await promotionsOf(w.server.learning, "agent-1"), secretsShown([secret])))), [], "the promotions read");
   assert.deepEqual(leaks(ask), [], "the recompile prompt");
 });
 
@@ -452,15 +436,15 @@ test("(r3) an audit hold, then the owner's replay promotes it again: the next cl
   const w = await world(t, { learning: { audit_every: 5, hold_window: 5, hold_disagree: 2 }, submit: answers({ wrong: picked.map((id) => `Question for ${id}`) }) });
   for (const id of picked) assert.equal((await w.start(id, `Question for ${id}`)).metrics?.path, "workflow");
   assert.equal((await w.start(quiet[0], `Question for ${quiet[0]}`)).metrics?.path, "agent", "held on its 2 disagreements");
-  const records = await promotionsOf(w.server.settings, "agent-1");
+  const records = await promotionsOf(w.server.learning, "agent-1");
   const held = records.at(-1);
   assert.deepEqual([held.decided, held.audit.stopped], ["hold", undefined], JSON.stringify(held));
   // The owner's replay of the held digest passes: the record runner/promotion.ts decideCheck writes (a check's promote).
   const promoted = { workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "promote", reason: "checked on 5 of the agent's inputs: promoted", check: { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, agreed: 5, alone: 5, of: [], cost_usd: 0, outcomes: { answered: 5, handed_back: 0, failed: 0, skipped_write: 0 } }, commit: records[0].commit };
-  assert.equal((await recordPromotion(w.server.settings, "agent-1", promoted, (was) => was?.at === held.at)).won, true);
+  assert.equal((await recordPromotion(w.server.learning, "agent-1", promoted, (was) => was?.at === held.at)).won, true);
   const next = await w.start(quiet[1], `Question for ${quiet[1]}`);
   assert.deepEqual([next.metrics?.path, next.metrics?.workflow_digest], ["workflow", DIGEST], `served again: ${JSON.stringify(next.metrics)}\n${w.logs.filter((line) => line.includes("workflow-first")).join("\n")}`);
-  const after = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
+  const after = (await promotionsOf(w.server.learning, "agent-1")).at(-1);
   assert.deepEqual([after.decided, after.check?.n, after.audit], ["promote", 5, undefined], `no hold, no stop: ${JSON.stringify(after)}`);
 });
 
@@ -479,9 +463,29 @@ test("(r3) a shadow that ends after 1,300 newer runs of the agent started still 
   const rows = await w.audits();
   assert.deepEqual(rows.map((row) => [row.run, row.agreed]), [["late-1", false]], JSON.stringify(rows));
   assert.equal(next.metrics?.path, "agent", `held on it: ${JSON.stringify(next.metrics)}`);
-  const held = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
+  const held = (await promotionsOf(w.server.learning, "agent-1")).at(-1);
   assert.deepEqual([held.decided, held.audit.disagreements.map((one) => one.served)], ["hold", ["late-1"]], JSON.stringify(held));
 });
+
+/** An agent's learning records in memory (Store.learning's records, addRecord and changeRecords), one agent's. */
+function memoryRecords() {
+  const kinds = new Map();
+  let seq = 0;
+  const stamp = (one) => ({ ...one, seq: one.seq ?? ++seq, at: one.at ?? Date.now() });
+  return {
+    records: async (_agentId, kind) => structuredClone(kinds.get(kind) ?? []),
+    addRecord: async (_agentId, kind, record) => {
+      const made = stamp({ ...record, seq: undefined });
+      kinds.set(kind, [...(kinds.get(kind) ?? []), made]);
+      return structuredClone(made);
+    },
+    changeRecords: async (_agentId, kind, update) => {
+      const out = update(structuredClone(kinds.get(kind) ?? []));
+      if ("records" in out) kinds.set(kind, out.records.map(stamp));
+      return out.result;
+    },
+  };
+}
 
 /** A store of `served` runs the learned workflow `answer` served at `digest` and a shadow of each (newest first, as the
  *  store lists them), for runner/audit.ts startAudit alone: the agent's revision holds `learning`; `made` the runs created. */
@@ -495,7 +499,9 @@ function servedStore(served, learning, digest) {
   const made = [];
   const launches = new Map();
   const store = {
-    settings: { get: async () => undefined },
+    // The settings a shadow's start writes: the served run's learning work names it first (learning-work.ts).
+    settings: { get: async () => undefined, putIfAbsent: async (_key, value) => value, replaceIf: async () => true },
+    learning: memoryRecords(),
     agents: { revision: async () => ({ id: "rev-1", body: { instructions: "Answer.", tools: [], learning }, mcpPin: null }) },
     runs: {
       list: async ({ state, archived, limit } = {}) => rows.filter((row) => (state === undefined || row.state === state) && (archived === undefined || (row.archivedAt !== null) === archived)).slice(0, limit ?? rows.length),
@@ -517,12 +523,10 @@ test("(r2) the served count reads past the shadows: audit_every 1 over 1,100 ser
   const runId = Array.from({ length: 1000 }, (_, i) => `next-${i}`).find((id) => !drawn(id, 1000));
   const launch = { input: { content: "Next?" }, title: "Next", place: { mode: "runner" }, learning: startAt("0".repeat(40)) };
   const serve = { name: "answer", digest: DIGEST };
-  // A drawn run's started line is written to the agent's learning folder before its shadow is made.
-  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-audit-count-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  // A drawn run's started line is written to the agent's audit records before its shadow is made.
   const claimOf = async (served) => {
     const { store, made } = servedStore(served, learning, DIGEST);
-    await startAudit({ store, agentId: "agent-1", revisionId: "rev-1", context: {}, folder: () => learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" }), shown: async () => ({ text: (text) => text }), log: () => {}, runId, launch }, serve);
+    await startAudit({ store, agentId: "agent-1", revisionId: "rev-1", context: {}, shown: async () => ({ text: (text) => text }), log: () => {}, runId, launch }, serve);
     return { store, made };
   };
   // 900 served: under audit_later_after, every served run is drawn (1 in 1).
@@ -539,15 +543,13 @@ test("a run before the agent's learning reset, or on a named disk, starts no aud
   const learning = { audit_every: 1 };
   const launch = { input: { content: "Next?" }, title: "Next", place: { mode: "runner" }, learning: startAt("0".repeat(40)) };
   const serve = { name: "answer", digest: DIGEST };
-  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-audit-reset-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
   const servedRow = (id, startedAt, disk = null) => ({ id, agentId: "agent-1", state: "ended", runner: null, archivedAt: null, importedFrom: null, outcome: "completed", startedAt, disk, metrics: { path: "workflow", workflow: "answer", workflow_digest: DIGEST } });
   const endOf = async (row, resetAt) => {
     const { store, made, rows } = servedStore(3, learning, DIGEST);
     rows.unshift(row);
     store.settings.get = async (key) => (resetAt !== undefined && key === "learning.reset-at.agent-1" ? { at: resetAt } : undefined);
     store.runs.seededBefore = async () => [];
-    await startAudit({ store, agentId: "agent-1", revisionId: "rev-1", context: {}, folder: () => learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" }), shown: async () => ({ text: (text) => text }), log: () => {}, runId: row.id, launch }, serve);
+    await startAudit({ store, agentId: "agent-1", revisionId: "rev-1", context: {}, shown: async () => ({ text: (text) => text }), log: () => {}, runId: row.id, launch }, serve);
     return made;
   };
   // The reset at 10,000 leaves no served run before it counted, so the rate is 1 in 1.
@@ -588,12 +590,12 @@ test("(r4) a shadow that stops on its cap is `parked`: no verdict, never counted
   assert.equal(next.metrics?.path, "workflow", `not held: ${JSON.stringify(next.metrics)}`);
   const row = (await w.audits()).find((one) => one.run === "tight-1");
   assert.deepEqual([row?.agreed, row?.parked, row?.shadow_run], [null, true, shadow.id], JSON.stringify(row));
-  assert.equal((await promotionsOf(w.server.settings, "agent-1")).at(-1).decided, "promote", "a parked shadow neither holds nor counts");
+  assert.equal((await promotionsOf(w.server.learning, "agent-1")).at(-1).decided, "promote", "a parked shadow neither holds nor counts");
   // The same disagreement with room for its shadow holds at once: the parked one was not counted, not merely agreed.
   await w.start("wide-1", "Wrong question two");
   const after = await w.start("wide-next", "Question 98");
   assert.equal(after.metrics?.path, "agent", `held on the uncapped disagreement: ${JSON.stringify(after.metrics)}`);
-  const held = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
+  const held = (await promotionsOf(w.server.learning, "agent-1")).at(-1);
   assert.deepEqual([held.decided, held.audit.disagreements.map((one) => one.served)], ["hold", ["wide-1"]], JSON.stringify(held));
 });
 
@@ -611,7 +613,7 @@ test("(agree_on) a served answer that differs from its shadow's only in its rati
   assert.equal(next.metrics?.path, "workflow", `not held: ${JSON.stringify(next.metrics)}`);
   const row = (await w.audits()).find((one) => one.run === "same-1");
   assert.equal(row?.agreed, true, JSON.stringify(row));
-  assert.equal((await promotionsOf(w.server.settings, "agent-1")).at(-1).decided, "promote");
+  assert.equal((await promotionsOf(w.server.learning, "agent-1")).at(-1).decided, "promote");
   await w.start("wrong-1", "Wrong question one");
   const after = await w.start("wrong-next", "Question 98");
   assert.equal(after.metrics?.path, "agent", `held on the declared field: ${JSON.stringify(after.metrics)}`);
@@ -647,30 +649,37 @@ test("(agree_on) a revision read that fails when a check starts saves no check: 
   const revision = w.store.agents.revision.bind(w.store.agents);
   let failing = false;
   w.store.agents.revision = (id) => (failing && /loopOfRevision/.test(new Error().stack ?? "") ? Promise.reject(new Error("the store is busy")) : revision(id));
-  await landRevision(w.dir, answerFlow(REVISED), "prior-2");
+  await landRevision(w.server, answerFlow(REVISED), "prior-2");
   failing = true;
   const first = await w.start("run-a", "Question 50");
-  assert.equal((await promotionsOf(w.server.settings, "agent-1")).find((one) => one.digest === DIGEST_2), undefined, "no check saved while the read fails");
+  assert.equal((await promotionsOf(w.server.learning, "agent-1")).find((one) => one.digest === DIGEST_2), undefined, "no check saved while the read fails");
   // promotionGate's catch: a promotion that could not be read leaves the run to its agent.
   assert.equal(first.metrics?.path, "agent", JSON.stringify(first.metrics));
   assert.ok(w.logs.some((line) => line.includes("could not be read") && line.includes("the store is busy")), w.logs.join("\n"));
   failing = false;
   await w.start("run-b", "Question 51");
-  const checking = (await promotionsOf(w.server.settings, "agent-1")).find((one) => one.digest === DIGEST_2 && one.decided === "replaying");
+  const checking = (await promotionsOf(w.server.learning, "agent-1")).find((one) => one.digest === DIGEST_2 && one.decided === "replaying");
   assert.deepEqual(checking?.check?.agree_on, ["answer", "sure"], JSON.stringify(checking));
   await w.replaysEnded(3);
 });
 
-// No agree_on: the whole answer, whatever the output schema says (no field is picked from it: a schema's enum can be an
-// echo of the owner's setting, not the decision). The same rationale-only difference is a disagreement, and it holds.
-test("(agree_on) with an output schema of enum and boolean fields and no agree_on, the audit compares the whole answer: a rationale-only difference disagrees", { timeout: 300_000 }, async (t) => {
+// No agree_on and no fast model: the agent's own model compares the whole answers, whatever the output schema says (no
+// field is picked from it: a schema's enum can be an echo of the owner's setting, not the decision). Its verdict stands:
+// a rationale-only difference it reads as the same decision agrees and nothing holds; read as another decision, it holds.
+test("(agree_on) with an output schema of enum and boolean fields, no agree_on and no fast model, the agent's own model compares the whole answers: its verdict on a rationale-only difference stands", { timeout: 300_000 }, async (t) => {
   const outputSchema = { type: "object", properties: { answer: { enum: [41, 42] }, sure: { type: "boolean" }, why: { type: "string" } } };
-  const w = await world(t, { learning: { audit_every: 1, hold_window: 1, hold_disagree: 1 }, outputSchema, says: () => SHADOW_SAYS, submit: () => ({ answer: 42, sure: true }) });
-  const served = await w.start("same-1", "What is six times seven");
-  assert.equal(served.metrics?.path, "workflow", JSON.stringify(served.metrics));
-  const next = await w.start("same-next", "What is seven times six");
-  assert.equal(next.metrics?.path, "agent", `held on the whole answer: ${JSON.stringify(next.metrics)}`);
-  assert.equal((await w.audits()).find((one) => one.run === "same-1")?.agreed, false);
+  for (const [same, path] of [[true, "workflow"], [false, "agent"]]) {
+    const graded = [];
+    const verdict = JSON.stringify({ same, differs_on: same ? null : "the rationale" });
+    const w = await world(t, { learning: { audit_every: 1, hold_window: 1, hold_disagree: 1 }, outputSchema, says: () => SHADOW_SAYS, grader: ({ body }) => (graded.push(JSON.stringify(body)), verdict), submit: () => ({ answer: 42, sure: true }) });
+    const served = await w.start(`same-${same}`, "What is six times seven");
+    assert.equal(served.metrics?.path, "workflow", JSON.stringify(served.metrics));
+    assert.equal(graded.length, 1, `same ${same}: one request to the agent's own model`);
+    assert.ok(graded[0].includes("six times seven is forty-two"), `same ${same}: the whole answer is compared, its rationale too`);
+    const next = await w.start(`same-${same}-next`, "What is seven times six");
+    assert.equal(next.metrics?.path, path, `same ${same}: ${JSON.stringify(next.metrics)}`);
+    assert.equal((await w.audits()).find((one) => one.run === `same-${same}`)?.agreed, same);
+  }
 });
 
 // Review on #3061 r4 (PRRT_kwDOUmdVMs64SUUv): a shadow never waits on a person. Its agent only reads (web_fetch, a
@@ -701,9 +710,9 @@ test("(r5) an all-read agent whose owner set web_fetch to ask: the shadow ends p
   assert.ok(!rows.some((row) => /^Ran: web_fetch/.test(row.summary ?? "")), `the gate let nothing through: ${JSON.stringify(rows.map((row) => row.summary))}`);
   // The served run's all-in is known (the shadow's cost booked), so a batch's row on it closes (server.ts batch figures).
   assert.equal(typeof shadow.costUsd, "number", `the shadow's cost is booked: ${shadow.costUsd}`);
-  assert.deepEqual(await shadowSpendOf(w.server, "asked-1"), { open: false, usd: shadow.costUsd });
-  const allIn = await allInOf(w.server, await w.server.runs.get("asked-1"));
-  assert.equal(typeof allIn.total_usd, "number", JSON.stringify(allIn));
+  const allIn = await runAllInOverStore(w.server, "asked-1");
+  assert.equal(allIn.shadow_usd, shadow.costUsd, JSON.stringify(allIn));
+  assert.equal(typeof allIn.all_in_usd, "number", JSON.stringify(allIn));
   // Settled at the next claim: `parked`, no verdict, never counted (hold_disagree 1 would hold on one disagreement).
   const next = await w.start("asked-next", "Question 99");
   const row = (await w.audits()).find((one) => one.run === "asked-1");
@@ -731,7 +740,7 @@ test("(r5) the workflow answers 41, the owner follows up and the run answers 42,
   const row = (await w.audits()).find((one) => one.run === "follow-1");
   assert.deepEqual([row?.agreed, row?.turn], [false, first.id], `the audited answer is 41's: ${JSON.stringify(row)}`);
   assert.equal(next.metrics?.path, "agent", `held on the disagreement: ${JSON.stringify(next.metrics)}`);
-  const held = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
+  const held = (await promotionsOf(w.server.learning, "agent-1")).at(-1);
   assert.deepEqual([held.decided, held.audit.disagreements.length], ["hold", 1], JSON.stringify(held));
   assert.deepEqual(JSON.parse(held.audit.disagreements[0].draft), WRONG, "the hold's disagreement shows 41, the answer audited");
   assert.equal(held.audit.disagreements[0].agent, AGENT_SAYS);
@@ -759,56 +768,175 @@ test("(r4) a drawn run whose cap leaves under a run's smallest cap (or a spend n
   const learning = { audit_every: 1 };
   const serve = { name: "answer", digest: DIGEST };
   const launch = { input: { content: "Next?" }, title: "Next", place: { mode: "runner" }, maxCostUsd: 1, learning: startAt("0".repeat(40)) };
-  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-audit-room-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const folder = () => learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" });
+  const learned = memoryRecords();
   const endOf = async (runId, room) => {
     const { store, made, launches } = servedStore(3, learning, DIGEST);
-    await startAudit({ store, agentId: "agent-1", revisionId: "rev-1", context: {}, folder, shown: async () => ({ text: (text) => text }), log: () => {}, runId, launch, room: async () => room }, serve);
+    store.learning = learned;
+    await startAudit({ store, agentId: "agent-1", revisionId: "rev-1", context: {}, shown: async () => ({ text: (text) => text }), log: () => {}, runId, launch, room: async () => room }, serve);
     return { made, launches };
   };
   const fits = await endOf("room-fits", 0.7);
   assert.deepEqual(fits.made, ["audit.room-fits"]);
   assert.equal(fits.launches.get("audit.room-fits").max_cost_usd, 0.7, "the room it was given, never the served launch's $1.00");
   for (const [runId, room] of [["room-short", 0.005], ["room-unknown", null]]) assert.deepEqual((await endOf(runId, room)).made, [], `${runId}: no shadow`);
-  const f = folder();
-  let rows;
-  try {
-    rows = await readAudits(f.workspace);
-  } finally {
-    await f.end();
-  }
+  const rows = await readAudits(learned, "agent-1");
   assert.deepEqual(rows.map((row) => [row.run, row.shadow_run, row.agreed, row.skipped]), [["room-short", null, null, "no allowance"], ["room-unknown", null, null, "no allowance"]], JSON.stringify(rows));
   // Its end again (a follow-up's): the row stands, no second row and no shadow.
   assert.deepEqual((await endOf("room-short", 0.5)).made, [], "once per run");
-  const again = folder();
-  try {
-    assert.equal((await readAudits(again.workspace)).filter((row) => row.run === "room-short").length, 1);
-  } finally {
-    await again.end();
-  }
+  assert.equal((await readAudits(learned, "agent-1")).filter((row) => row.run === "room-short").length, 1);
+});
+
+// Review on #3746 (PRRT_kwDOUmdVMs68K74_): a started line whose digest a purge took since the draw is refused in the append's
+// own transaction (appendLines' held). With no line, settleAudits would never settle a shadow, so none is made. A started
+// line already there (a crash between the line and its shadow) still makes the shadow.
+test("a drawn run whose workflow version a purge took after the draw starts no shadow and keeps no started line; a started line already there still makes its shadow", async (t) => {
+  const { startAudit } = await import("../dist/runner/audit.js");
+  const { addAuditLines, ledgerOf } = await import("../dist/learn/audit.js");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-audit-purged-"));
+  const real = await openSqliteStore({ dataDir: dir, role: "server" });
+  t.after(async () => { await real.close().catch(() => {}); rmSync(dir, { recursive: true, force: true }); });
+  await landWorkflows(real, "agent-1", [{ name: "answer", description: "Answers a question", workflow: FIRST }]);
+  const serve = { name: "answer", digest: DIGEST };
+  const launch = { input: { content: "Next?" }, title: "Next", place: { mode: "runner" }, learning: startAt("0".repeat(40)) };
+  const endOf = async (runId, room) => {
+    const { store, made } = servedStore(3, { audit_every: 1 }, DIGEST);
+    store.learning = real.learning;
+    const logs = [];
+    await startAudit({ store, agentId: "agent-1", revisionId: "rev-1", context: {}, shown: async () => ({ text: (text) => text }), log: (line) => logs.push(line), runId, launch, ...(room ? { room } : {}) }, serve);
+    return { made, logs };
+  };
+  const started = async () => (await ledgerOf(real.learning, "agent-1")).filter((line) => line.source === "started").map((line) => line.run);
+  // A crash after the started line was written, before its shadow: the end again finds the line and makes the shadow.
+  await addAuditLines(real.learning, "agent-1", [{ source: "started", run: "crashed", shadow_run: "audit.crashed", workflow: "answer", digest: DIGEST, promoted_at: null, at: new Date().toISOString() }]);
+  assert.deepEqual((await endOf("crashed")).made, ["audit.crashed"], "a started line already there: its shadow is made now");
+  assert.deepEqual((await endOf("held")).made, ["audit.held"], "while a version holds the digest, a drawn run's line is kept and its shadow made");
+  assert.deepEqual(await started(), ["crashed", "held"]);
+  // The run that wrote the workflow's version is purged after the draw, before the line's append (the cap's room is read between).
+  const purged = await endOf("after-purge", async () => {
+    await real.learning.purgeRun("agent-1", "run-learned-1");
+    return undefined;
+  });
+  assert.deepEqual(purged.made, [], `no shadow: no line would settle it: ${purged.logs.join(" | ")}`);
+  assert.deepEqual(await started(), [], "no started line of the purged digest: the purge took the two before, and the drawn run's was never kept");
+  assert.match(purged.logs.join("\n"), /purged since/, "it says why no shadow was made");
 });
 
 // Review on #3061 r4 (PRRT_kwDOUmdVMs64QkBr): A8's rule, null while unknown, never $0.
 test("(r4) a served run's all-in is unknown while its shadow is queued or running, never $0; once the shadow ended it is served + shadow", async () => {
-  const { allInOf, shadowSpendOf } = await import("../dist/store-reads/learning.js");
-  const served = { id: "served-1", costUsd: 0.2 };
-  const storeWith = (shadow) => ({ learning: { proposal: async () => undefined }, runs: { get: async (id) => (id === "audit.served-1" ? shadow : undefined) } });
-  for (const state of ["queued", "running"]) {
-    const store = storeWith({ id: "audit.served-1", state, costUsd: 0.1 });
-    assert.deepEqual(await allInOf(store, served), { cost_usd: 0.2, learning_usd: null, total_usd: null }, `${state}: unknown, not the served part`);
-    assert.deepEqual(await shadowSpendOf(store, "served-1"), { open: true, usd: null });
-  }
-  assert.deepEqual(await allInOf(storeWith({ id: "audit.served-1", state: "ended", costUsd: 0.25 }), served), { cost_usd: 0.2, learning_usd: 0.25, total_usd: 0.45 });
-  assert.deepEqual(await allInOf(storeWith(undefined), served), { cost_usd: 0.2, learning_usd: 0, total_usd: 0.2 }, "never drawn: nothing beside it");
+  const { figuresOf, record, shadowCostOf, spendByRun } = await import("../dist/learn/ledger.js");
+  const { row } = record({ id: "served-1", agentId: "a", startedAt: 0, costUsd: 0.2, costAtMostUsd: null, metrics: { path: "workflow", workflow: "w", workflow_digest: "d".repeat(16) }, rounds: [] });
+  const allInOf = (shadows, spend = []) => {
+    const figures = figuresOf(row, { compile: 0, shadow: shadowCostOf("served-1", spendByRun(spend).audit, shadows), share: 0 });
+    return { cost_usd: figures.usd, learning_usd: figures.series_learning_usd, total_usd: figures.series_total_usd, all_in_usd: figures.all_in_usd };
+  };
+  assert.deepEqual(allInOf(new Map([["served-1", "open"]])), { cost_usd: 0.2, learning_usd: null, total_usd: null, all_in_usd: null }, "queued or running: unknown, not the served part");
+  // A shadow whose end named no audit is booked on the run its launch audits.
+  const [ended] = record({ id: "audit.served-1", agentId: "a", startedAt: 1, costUsd: 0.25, costAtMostUsd: null, metrics: {}, rounds: [], auditOf: "served-1" }).spend;
+  assert.deepEqual(allInOf(new Map([["served-1", "ended"]]), [ended]), { cost_usd: 0.2, learning_usd: 0.25, total_usd: 0.45, all_in_usd: 0.45 });
+  assert.deepEqual(allInOf(new Map([["served-1", "ended"]]), [{ ...ended, usd: null }]), { cost_usd: 0.2, learning_usd: null, total_usd: null, all_in_usd: null }, "ended at an unknown cost: unknown");
+  assert.deepEqual(allInOf(new Map()), { cost_usd: 0.2, learning_usd: 0, total_usd: 0.2, all_in_usd: 0.2 }, "never drawn: nothing beside it");
 });
 
 test('a moved project refuses an auxiliary audit before starting a shadow and preserves its learning configuration', async t => {
   const { startAudit } = await import('../dist/runner/audit.js');
   const learning = { audit_every: 1 }, f = servedStore(0, learning, DIGEST), logs = [];
-  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'moved-audit-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
   const launch = { input: { content: 'Work.' }, title: 'Work', place: { mode: 'runner' }, learning: startAt('0'.repeat(40)), sourceProject: { version: 1, sourceId: 'a'.repeat(64), baselineRevision: 'rev-1', digest: 'b'.repeat(64), receipt: 'c'.repeat(64) } };
-  await startAudit({ store: f.store, agentId: 'agent-1', revisionId: 'rev-1', context: {}, folder: () => learningWorkspace({ mode: 'local', data: dir, agentId: 'agent-1' }), shown: async () => ({ text: text => text }), log: line => logs.push(line), runId: 'source-run', launch }, { name: 'answer', digest: DIGEST });
+  await startAudit({ store: f.store, agentId: 'agent-1', revisionId: 'rev-1', context: {}, shown: async () => ({ text: text => text }), log: line => logs.push(line), runId: 'source-run', launch }, { name: 'answer', digest: DIGEST });
   assert.deepEqual(f.made, []); assert.match(logs.join('\n'), /project placement/i);
   assert.deepEqual((await f.store.agents.revision('rev-1')).body.learning, learning);
+});
+
+// One ground truth for the check and the audit: a grade's expected answer where the owner gave one, else the agent's
+// answer. The agent says 42 every time and its owner's grades say 43, so the check promotes the revision that says 43,
+// while each shadow (the agent with learning off) still says 42. A served run the owner graded is judged against its
+// grade, never against its shadow; an audit hold's recompile shows the known answer and asks for it.
+const { gradeRow } = await import("../dist/runner/audit.js");
+const { putGrade } = await import("../dist/learn/promote.js");
+const CORRECTED = { answer: 43, sure: true };
+/** Grades run `runId` as PUT /runs/{id}/grade keeps it: the grade, then its audit row (runner/audit.ts gradeRow). */
+const gradeIn = (w) => async (runId, correct, expected) => {
+  const row = await w.server.runs.get(runId);
+  const m = row.metrics ?? {};
+  await putGrade(w.server.learning, "agent-1", { run: runId, correct, ...(expected ? { expected } : {}), source: "eval", at: new Date().toISOString(), path: m.path ?? "agent", ...(typeof m.workflow === "string" ? { workflow: m.workflow, digest: m.workflow_digest } : {}) });
+  if (m.path !== "workflow") return;
+  const deps = { store: w.server, agentId: "agent-1", revisionId: row.revisionId, context: BACKGROUND_CONTEXT, shown: async () => ({ text: (text) => text }), log: () => {} };
+  await gradeRow(deps, row, correct, expected);
+};
+
+test("(known answer) the owner's grades correct the agent and the check promotes the draft that follows them; served runs the owner graded right are no disagreement though their shadows say the agent's old answer: no hold", { timeout: 600_000 }, async (t) => {
+  const w = await world(t, { learning: { compile_after: 5, audit_every: 1, hold_window: 4, hold_disagree: 2 }, prior: 5, submit: (text) => (text.includes("exactly") ? CORRECTED : { answer: 42, sure: true }) });
+  const grade = gradeIn(w);
+  for (let i = 0; i < 5; i++) await grade(`prior-${i}`, false, { answer: 43 });
+  // The revision that follows the corrections lands; its check runs on the 5 graded inputs and promotes it.
+  await landRevision(w.server, answerFlow(REVISED), "prior-4");
+  await w.start("check-1", "Question 50");
+  await w.replaysEnded(5);
+  const first = await w.start("served-1", "Question 51");
+  assert.deepEqual([first.metrics?.path, first.metrics?.workflow_digest], ["workflow", DIGEST_2], JSON.stringify(first.metrics));
+  const promoted = (await promotionsOf(w.server.learning, "agent-1")).findLast((one) => one.digest === DIGEST_2);
+  assert.equal(promoted.decided, "promote", promoted.reason);
+  assert.deepEqual([promoted.check.fields.answer.by.grade.n, promoted.check.fields.answer.workflow_right, promoted.check.agent_agreed], [5, 5, 0], "right against the grades, where the agent was wrong on each");
+  // The owner grades the served answers right: a thumbs-up, and a grade whose expected answer is the served one.
+  await grade("served-1", true);
+  await w.start("served-2", "Question 52");
+  await grade("served-2", true, { answer: 43 });
+  const third = await w.start("served-3", "Question 53");
+  const rows = (await w.audits()).filter((one) => one.digest === DIGEST_2);
+  assert.deepEqual(rows.filter((one) => one.source === "shadow" && one.agreed === false).map((one) => one.run).sort(), ["served-1", "served-2"], "the shadows still say the agent's old answer");
+  assert.deepEqual(rows.filter((one) => one.source === "grade").map((one) => [one.run, one.agreed]), [["served-1", true], ["served-2", true]]);
+  assert.equal((await promotionsOf(w.server.learning, "agent-1")).at(-1).decided, "promote", "not held: a graded run is judged against its grade");
+  assert.deepEqual([third.metrics?.path, third.metrics?.workflow_digest], ["workflow", DIGEST_2], JSON.stringify(third.metrics));
+});
+
+test("(known answer) served runs graded wrong with the right answer given hold the workflow, and its recompile shows that known answer and asks for it, never the agent's answer back", { timeout: 600_000 }, async (t) => {
+  const w = await world(t, { learning: { audit_every: 1, hold_window: 4, hold_disagree: 2 } });
+  const grade = gradeIn(w);
+  await w.start("served-1", "Question 61");
+  await grade("served-1", false, { answer: 44 });
+  await w.start("served-2", "Question 62");
+  await grade("served-2", false, { answer: 44 });
+  const held = await w.start("served-3", "Question 63");
+  assert.equal(held.metrics?.path, "agent", JSON.stringify(held.metrics));
+  assert.equal(w.asks.get("served-3").length, 1, "exactly one recompile");
+  const [ask] = w.asks.get("served-3");
+  assert.doesNotMatch(ask, /changed so it says what you said on these inputs/, "never asks for the agent's answer back");
+  assert.match(ask, /changed so it says the known answer on these inputs/);
+  assert.ok(fenceOf(ask).includes('The known answer (from a grade): {"answer":44}'), fenceOf(ask));
+  const record = (await promotionsOf(w.server.learning, "agent-1")).at(-1);
+  assert.deepEqual([record.decided, record.audit.disagreements.map((one) => [one.served, one.graded, one.expected])], ["hold", [["served-1", true, '{"answer":44}'], ["served-2", true, '{"answer":44}']]], JSON.stringify(record));
+});
+
+// The owner's verdict on a served answer stands: graded right, it agrees, however its expected answer words the rest.
+// The served answer is {"answer":42,"reason":"calculated"} (with the `sure` the workflow's schema asks for), the grade's
+// expected answer {"answer":42,"reason":"checked"}.
+const WORDED = { answer: 42, sure: true, reason: "calculated" };
+test("(known answer) a served answer graded right agrees, though its grade's expected answer words it otherwise: no hold", { timeout: 300_000 }, async (t) => {
+  const w = await world(t, { learning: { audit_every: 1, hold_window: 2, hold_disagree: 1 }, submit: () => WORDED });
+  const grade = gradeIn(w);
+  await w.start("served-1", "Question 71");
+  await grade("served-1", true, { answer: 42, reason: "checked" });
+  const rows = (await w.audits()).filter((one) => one.source === "grade");
+  assert.deepEqual(rows.map((one) => [one.run, one.agreed]), [["served-1", true]]);
+  const next = await w.start("served-2", "Question 72");
+  assert.equal(next.metrics?.path, "workflow", JSON.stringify(next.metrics));
+});
+
+// Graded wrong: on agree_on, only those fields judge the served answer, against the expected answer's values; on the
+// whole answer, it disagrees.
+test("(known answer) a served answer graded wrong: on agree_on, right on its fields agrees and wrong on one disagrees; on the whole answer it disagrees", { timeout: 300_000 }, async (t) => {
+  const on = await world(t, { learning: { audit_every: 1, hold_window: 4, hold_disagree: 4, agree_on: ["answer"] }, submit: () => WORDED });
+  const gradeOn = gradeIn(on);
+  await on.start("served-1", "Question 81");
+  await gradeOn("served-1", false, { answer: 42, reason: "checked" });
+  await on.start("served-2", "Question 82");
+  await gradeOn("served-2", false, { answer: 7 });
+  assert.deepEqual((await on.audits()).filter((one) => one.source === "grade").map((one) => [one.run, one.agreed]), [["served-1", true], ["served-2", false]]);
+  const whole = await world(t, { learning: { audit_every: 1, hold_window: 4, hold_disagree: 4 }, submit: () => WORDED });
+  const gradeWhole = gradeIn(whole);
+  await whole.start("served-1", "Question 91");
+  await gradeWhole("served-1", false, { answer: 42, reason: "checked" });
+  // Marked wrong though its expected answer is the served one: the owner said wrong, so it disagrees.
+  await whole.start("served-2", "Question 92");
+  await gradeWhole("served-2", false, { answer: 42 });
+  assert.deepEqual((await whole.audits()).filter((one) => one.source === "grade").map((one) => [one.run, one.agreed]), [["served-1", false], ["served-2", false]]);
 });

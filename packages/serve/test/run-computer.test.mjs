@@ -20,3 +20,56 @@ test("the run's computer field: none for no computer; the run's own state; taken
   const why = "Phone harness needs PHONE_HARNESS_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/phone-harness/keys)";
   assert.deepEqual(runComputerField(PHONE, { id: "r1", status: "failed", error: { code: "computer_unavailable", message: why } }), { kind: "phone", provider: "phone-harness", state: "failed", why });
 });
+
+test("a stopped run's computer reads released, and a parked run's once its claim let it go, ready while it is kept for the resume", async () => {
+  const { runComputerRead } = await import("../dist/computer-held-routes.js");
+  const { keptKeyOf } = await import("../dist/workspace/computer-kept.js");
+  const NOW = Date.parse("2026-11-24T12:00:00Z");
+  const kept = new Map();
+  /** A store with one run, `state` as its row says, whose agent has a desktop; `kept` its settings' kept rows. */
+  const store = (state) => ({
+    runs: { get: async () => ({ id: "r1", revisionId: "rev-1", state }), launch: async () => ({ body: {} }) },
+    agents: { revision: async () => ({ body: { computer: { kind: "desktop", provider: "faux-desktop" } } }) },
+    settings: { get: async (key) => kept.get(key) },
+    sealedKeys: { clock: async () => NOW },
+  });
+  const stateOf = async (row, status) => (await runComputerRead(store(row), "r1", { status }, { now: () => NOW, entries: async () => [] })).computer?.state;
+  assert.equal(await stateOf("parked", "input_required"), "released", "stopped or asking with no keep: its desktop is gone");
+  kept.set(keptKeyOf("r1"), { provider: "faux-desktop", kind: "desktop", id: "d1", name: "d1", epoch: 1, until: NOW + 60_000 });
+  assert.equal(await stateOf("parked", "input_required"), "ready", "kept for the resume: an answer goes on on the same one");
+  kept.set(keptKeyOf("r1"), { provider: "faux-desktop", kind: "desktop", id: "d1", name: "d1", epoch: 1, until: NOW - 1 });
+  assert.equal(await stateOf("parked", "input_required"), "released", "its keep's time passed");
+  assert.equal(await stateOf("stopped", "input_required"), "released", "a stop lets it go, though the run takes a follow-up");
+  assert.equal(await stateOf("running", "working"), "ready");
+});
+
+test("a parked run's kept desktop reads kept on a server whose clock is a minute ahead of the store's, as its computer view says, until the keep ends on the store's clock", async () => {
+  const { runComputerRead } = await import("../dist/computer-held-routes.js");
+  const { keptKeyOf } = await import("../dist/workspace/computer-kept.js");
+  const { lapsedOf } = await import("../dist/computer-view.js");
+  // The store's clock, the one the park stamped the keep's `until` on; this server's own runs a minute ahead of it.
+  const store = { now: Date.parse("2026-01-15T12:00:00Z") };
+  const serverNow = () => store.now + 60_000;
+  const row = { provider: "faux-desktop", kind: "desktop", id: "d1", name: "d1", epoch: 1, until: store.now + 30_000 };
+  const kept = new Map([[keptKeyOf("r1"), row]]);
+  const over = {
+    runs: { get: async () => ({ id: "r1", revisionId: "rev-1", state: "parked" }), launch: async () => ({ body: {} }) },
+    agents: { revision: async () => ({ body: { computer: { kind: "desktop", provider: "faux-desktop" } } }) },
+    settings: { get: async (key) => kept.get(key) },
+    sealedKeys: { clock: async () => store.now },
+  };
+  const read = async () => (await runComputerRead(over, "r1", { status: "input_required" }, { now: serverNow, entries: async () => [] })).computer;
+  // GET /v2/runs/{id}/computer judges the keep on the store's clock (server.ts: store.sealedKeys.clock, then lapsedOf).
+  const viewSays = async () => lapsedOf("desktop", await over.settings.get(keptKeyOf("r1")), await over.sealedKeys.clock());
+  assert.equal(await viewSays(), undefined, "the computer view: still kept");
+  assert.equal((await read())?.state, "ready", "the run read: still kept 30 s before its keep ends on the store's clock, though this server's clock is past it");
+  assert.equal((await read())?.released, undefined, "never said released while the computer view says kept");
+  // A store clock that can't be read judges no time, as the computer view's says nothing then.
+  const clock = over.sealedKeys.clock;
+  over.sealedKeys.clock = async () => { throw new Error("the store is not answering"); };
+  assert.equal((await read())?.state, "ready", "no store clock: not released on this server's clock");
+  over.sealedKeys.clock = clock;
+  store.now = row.until;
+  assert.ok(await viewSays(), "the computer view: its time passed");
+  assert.equal((await read())?.state, "released", "the run read: released once the keep ends on the store's clock");
+});

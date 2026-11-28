@@ -3,12 +3,13 @@
 // a comment), every other word lands only in a comment or a string it cannot end, the package checks as the server
 // checks one, and each client compiles in its language.
 import assert from "node:assert/strict";
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import ts from "typescript";
 import { suggestionsFor } from "./fixtures/faux-scout.mjs";
@@ -87,6 +88,22 @@ test("a model's words in every field land only in comments and strings they cann
   assert.match(body, /@​someone/);
 });
 
+test("the pull request says where the API key comes from: the console's Settings page, linked at the server's public address", () => {
+  const s = checked(base());
+  const at = { repo: "acme/app", commit: "a".repeat(40), agentId: "agent_1" };
+  const row = (body) => body.split("\n").find((line) => line.startsWith("| `AGENTRUN_API_KEY` |"));
+  assert.equal(
+    row(pullText(s, { ...at, publicUrl: "https://agents.example.test/" }).body),
+    "| `AGENTRUN_API_KEY` | an API key of that server, made in its console under [Settings → AgentRun API keys](https://agents.example.test/#/settings/api-keys) and shown once: keep it in your secrets, never in the repository |",
+  );
+  assert.equal(
+    row(pullText(s, at).body),
+    "| `AGENTRUN_API_KEY` | an API key of that server, made in its console under Settings → AgentRun API keys and shown once: keep it in your secrets, never in the repository |",
+    "with no public address, the page is named and not linked",
+  );
+  assert.match(clientFile(s, "acme/app", at.commit).content, /AGENTRUN_API_KEY\s+an API key of that server \(make one in its console: Settings > AgentRun API keys\)/, "the client file's header says it too");
+});
+
 test("a title that reads as a Python encoding declaration declares nothing: escaped text in a later comment stays a comment", () => {
   const raw = base();
   raw.title = "coding: unicode_escape";
@@ -116,7 +133,8 @@ test("a Python client takes its inputs as one dict: an input named as the client
     let body = "";
     req.on("data", (chunk) => { body += chunk; });
     req.on("end", () => {
-      got.push({ method: req.method, url: req.url, auth: req.headers.authorization, body: body ? JSON.parse(body) : undefined });
+      // The client's requests alone, which carry a key: a probe of a new loopback listener from this machine carries none.
+      if (req.headers.authorization !== undefined) got.push({ method: req.method, url: req.url, auth: req.headers.authorization, body: body ? JSON.parse(body) : undefined });
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify({ run_id: "run_1", status: "completed", result: { output: { category: "billing" } } }));
     });
@@ -128,7 +146,7 @@ test("a Python client takes its inputs as one dict: an input named as the client
   writeFileSync(join(dir, "triage.py"), content);
   const values = Object.fromEntries(names.map((name) => [name, `the caller's ${name}`]));
   const call = (inputs) => promisify(execFile)("python3", ["-I", "-c", "import importlib.util, json, sys\nspec = importlib.util.spec_from_file_location('triage', sys.argv[1])\nmod = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(mod)\nprint(json.dumps(mod.run_ticket_triage(json.loads(sys.argv[2]))))", join(dir, "triage.py"), JSON.stringify(inputs)], {
-    env: { PATH: process.env.PATH, AGENTRUN_URL: `http://127.0.0.1:${server.address().port}`, AGENTRUN_API_KEY: "fake-test-key", AGENTRUN_AGENT_TICKET_TRIAGE: "agent_1" },
+    env: { PATH: process.env.PATH, AGENTRUN_BASE_URL: `http://127.0.0.1:${server.address().port}`, AGENTRUN_API_KEY: "fake-test-key", AGENTRUN_AGENT_TICKET_TRIAGE: "agent_1" },
   });
   const { stdout } = await call(values);
   assert.deepEqual(JSON.parse(stdout), { category: "billing" });
@@ -137,6 +155,206 @@ test("a Python client takes its inputs as one dict: an input named as the client
   // A required input left out is said before anything is sent.
   await assert.rejects(call({ base: "only base" }), (error) => /run_ticket_triage needs key\./.test(error.stderr));
   assert.equal(got.length, 1);
+});
+
+// The one name for a server's address is AGENTRUN_BASE_URL (packages/client, python/, the CLI). The server prints its
+// value ending in /v2 when it starts (print.ts), and those clients take it with or without. A suggested agent's client
+// reads that name and takes every such value, so an app that has the variable for AgentRun's own client sets nothing
+// twice; and what tells a person the value (the pull request, the page of HTTP calls) gives the /v2 form the server prints.
+test("every client reads AGENTRUN_BASE_URL as AgentRun's own clients do: the address with or without /v2, never another name, and never one with a user, a password, a query or a fragment", async (t) => {
+  const got = [];
+  let polls = 0;
+  const server = createServer((req, res) => {
+    // The client's requests alone, by the key they carry: a probe of a new loopback listener from this machine is none.
+    if (req.headers.authorization === "Bearer fake-test-key") got.push(`${req.method} ${req.url}`);
+    req.resume();
+    req.on("end", () => {
+      res.setHeader("content-type", "application/json");
+      // The first answer of a polled call is a run still going, so the client reads the run too.
+      const going = polls > 0 && req.method === "POST";
+      if (going) polls -= 1;
+      res.end(JSON.stringify({ run_id: "run_1", status: going ? "running" : "completed", result: going ? null : { output: { category: "billing" } } }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const dir = mkdtempSync(join(tmpdir(), "suggestions-address-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const s = checked(base());
+  const render = (language, path) => clientFile({ ...s, integration: { ...s.integration, language, path } }, "acme/app", "a".repeat(40)).content;
+  const typed = render("typescript", "src/a.ts");
+  const files = { "typed.mjs": ts.transpileModule(typed, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText, "plain.mjs": render("javascript", "src/a.mjs"), "triage.py": render("python", "app/triage.py") };
+  for (const [name, content] of Object.entries(files)) writeFileSync(join(dir, name), content);
+  const page = render("other", "docs/triage.md");
+  const at = { repo: "acme/app", commit: "a".repeat(40), agentId: "agent_1" };
+  const pull = pullText(s, at).body;
+  for (const [name, content] of [...Object.entries({ typed, page, ...files }), ["the pull request", pull]]) {
+    assert.match(content, /AGENTRUN_BASE_URL/, `${name} names the address`);
+    assert.doesNotMatch(content, /AGENTRUN_URL/, `${name} names it one way`);
+  }
+  // The value a person is given ends in /v2, as the server's banner gives it, and the page's curl adds none.
+  const row = (body) => body.split("\n").find((line) => line.startsWith("| `AGENTRUN_BASE_URL` |"));
+  assert.equal(row(pullText(s, { ...at, publicUrl: "https://agents.example.test/" }).body), "| `AGENTRUN_BASE_URL` | `https://agents.example.test/v2` |");
+  assert.equal(row(pullText(s, { ...at, publicUrl: "https://example.test/agents" }).body), "| `AGENTRUN_BASE_URL` | `https://example.test/agents/v2` |");
+  assert.equal(row(pull), "| `AGENTRUN_BASE_URL` | your AgentRun server's address, ending in `/v2` |");
+  assert.match(page, /curl -sS -X POST "\$AGENTRUN_BASE_URL\/agents\/\$AGENTRUN_AGENT_TICKET_TRIAGE\/runs"/);
+  assert.match(page, /curl -sS "\$AGENTRUN_BASE_URL\/runs\/<run_id>"/);
+  assert.match(page, /`AGENTRUN_BASE_URL` is the AgentRun server's API, ending in `\/v2`, like `https:\/\/agentrun\.example\.com\/v2`/);
+
+  const node = "const [file, input] = process.argv.slice(1); const m = await import(file); console.log(JSON.stringify(await m.runTicketTriage(JSON.parse(input))));";
+  const python = "import importlib.util, json, sys\nspec = importlib.util.spec_from_file_location('triage', sys.argv[1])\nmod = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(mod)\nprint(json.dumps(mod.run_ticket_triage(json.loads(sys.argv[2]))))";
+  const input = JSON.stringify({ subject: "Charged twice", body: "My card was charged twice." });
+  const run = (name, env) => {
+    const file = join(dir, name);
+    const [command, args] = name.endsWith(".py") ? ["python3", ["-I", "-c", python, file, input]] : [process.execPath, ["--input-type=module", "-e", node, pathToFileURL(file).href, input]];
+    return promisify(execFile)(command, args, { env: { PATH: process.env.PATH, AGENTRUN_API_KEY: "fake-test-key", AGENTRUN_AGENT_TICKET_TRIAGE: "agent_1", ...env } });
+  };
+  for (const name of Object.keys(files)) {
+    for (const [address, path] of [["", "/v2"], ["/", "/v2"], ["/v2", "/v2"], ["/v2/", "/v2"], ["/behind/a/proxy", "/behind/a/proxy/v2"], ["/behind/v2//", "/behind/v2"]]) {
+      got.length = 0;
+      const { stdout } = await run(name, { AGENTRUN_BASE_URL: `${origin}${address}` });
+      assert.deepEqual([JSON.parse(stdout), got], [{ category: "billing" }, [`POST ${path}/agents/agent_1/runs`]], `${name} at ${address || "the address alone"}`);
+    }
+    // A run still going is read at the same base until it ends.
+    got.length = 0;
+    polls = 1;
+    await run(name, { AGENTRUN_BASE_URL: `${origin}/v2` });
+    assert.deepEqual(got, ["POST /v2/agents/agent_1/runs", "GET /v2/runs/run_1"], `${name} reads the run`);
+    // With no address, it says the name to set and sends nothing.
+    got.length = 0;
+    await assert.rejects(run(name, {}), (error) => /Set AGENTRUN_BASE_URL, AGENTRUN_API_KEY and AGENTRUN_AGENT_TICKET_TRIAGE to run the ticket-triage agent\./.test(error.stderr), `${name} with no address`);
+    // An address that is no http or https URL is refused by the variable's name, before anything is sent.
+    for (const address of ["agentrun.example.com", "localhost:7340", "ftp://agentrun.example.com", "http://"]) {
+      await assert.rejects(run(name, { AGENTRUN_BASE_URL: address }), (error) => /AGENTRUN_BASE_URL must be an http or https URL, like https:\/\/agentrun\.example\.com\/v2\./.test(error.stderr), `${name} at ${address}`);
+    }
+    // An address with a user, a password, a query or a fragment is refused as the SDK refuses it, before anything is sent,
+    // in words that name its origin alone: fetch's own error would print the whole URL, credentials and query included.
+    for (const address of [`${origin.replace("//", "//agent:not-a-secret@")}/v2`, `${origin}/v2?key=not-a-secret`, `${origin}/v2#not-a-secret`, `${origin}/v2?`]) {
+      await assert.rejects(run(name, { AGENTRUN_BASE_URL: address }), (error) => {
+        assert.ok(error.stderr.includes(`AGENTRUN_BASE_URL takes no user, password, query or fragment, like https://agentrun.example.com/v2: ${origin}`), `${name} at ${address}: ${error.stderr}`);
+        assert.ok(!/not-a-secret|key=/.test(error.stderr), `${name} at ${address} says the password or the query: ${error.stderr}`);
+        return true;
+      });
+    }
+    assert.deepEqual(got, []);
+  }
+});
+
+// The key goes to AGENTRUN_BASE_URL alone, as AgentRun's SDK sends it (packages/client client.ts #follow). Python's
+// urllib copies the authorization header onto a redirect to any host, http included, and a fetch other than Node's may
+// too: so no client follows a redirect, and the server it would lead to sees nothing.
+test("no client follows a redirect: a start or a read answered with one is refused, and the server it names never hears the key", async (t) => {
+  const python = spawnSync("python3", ["--version"]).status === 0;
+  const elsewhere = [];
+  let probed = 0;
+  const other = createServer((req, res) => {
+    // The client's requests alone, by the path the redirect names (its base URL's /v2 after /elsewhere): a probe of a new
+    // loopback listener asks for / alone, and one that follows the redirect it gets reaches /elsewhere/ alone.
+    if (req.url.startsWith("/elsewhere/v2/")) elsewhere.push(`${req.method} ${req.url} ${req.headers.authorization ?? "no key"}`);
+    if (req.url === "/elsewhere/") probed += 1;
+    req.resume();
+    req.on("end", () => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ run_id: "run_1", status: "completed", result: { output: { category: "billing" } } }));
+    });
+  });
+  await new Promise((resolve) => other.listen(0, "127.0.0.1", resolve));
+  t.after(() => other.close());
+  // Which call the server answers with a redirect: the start (POST) or the read (GET).
+  let redirects = "POST";
+  const server = createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      if (req.method === redirects) {
+        res.writeHead(302, { location: `http://127.0.0.1:${other.address().port}/elsewhere${req.url}` });
+        res.end();
+        return;
+      }
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ run_id: "run_1", status: "running", result: null }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const dir = mkdtempSync(join(tmpdir(), "suggestions-redirect-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const s = checked(base());
+  const render = (language, path) => clientFile({ ...s, integration: { ...s.integration, language, path } }, "acme/app", "a".repeat(40)).content;
+  const files = { "typed.mjs": ts.transpileModule(render("typescript", "src/a.ts"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText, "plain.mjs": render("javascript", "src/a.mjs"), "triage.py": render("python", "app/triage.py") };
+  for (const [name, content] of Object.entries(files)) writeFileSync(join(dir, name), content);
+  const node = "const [file, input] = process.argv.slice(1); const m = await import(file); console.log(JSON.stringify(await m.runTicketTriage(JSON.parse(input))));";
+  const py = "import importlib.util, json, sys\nspec = importlib.util.spec_from_file_location('triage', sys.argv[1])\nmod = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(mod)\nprint(json.dumps(mod.run_ticket_triage(json.loads(sys.argv[2]))))";
+  const input = JSON.stringify({ subject: "Charged twice", body: "My card was charged twice." });
+  for (const name of Object.keys(files)) {
+    await t.test(name, { skip: name.endsWith(".py") && !python ? "python3 is absent" : false }, async () => {
+      const file = join(dir, name);
+      const [command, args] = name.endsWith(".py") ? ["python3", ["-I", "-c", py, file, input]] : [process.execPath, ["--input-type=module", "-e", node, pathToFileURL(file).href, input]];
+      for (const method of ["POST", "GET"]) {
+        redirects = method;
+        elsewhere.length = 0;
+        // A probe of every new loopback listener (some machines run one) asks for / and follows the redirect it gets, as
+        // no client may: it reaches /elsewhere/ with no key (when the GET is the call redirected), and is no client's request.
+        probed = 0;
+        await fetch(`http://127.0.0.1:${server.address().port}/`).then((answer) => answer.arrayBuffer());
+        assert.equal(probed, method === "GET" ? 1 : 0, `${name}, ${method} redirected: the probe reached the other server ${probed} times`);
+        const ran = promisify(execFile)(command, args, { env: { PATH: process.env.PATH, AGENTRUN_BASE_URL: `http://127.0.0.1:${server.address().port}/v2`, AGENTRUN_API_KEY: "fake-test-key", AGENTRUN_AGENT_TICKET_TRIAGE: "agent_1" } });
+        await assert.rejects(ran, (error) => {
+          assert.match(error.stderr ?? "", /with a redirect \(HTTP 302\); not followed, so the API key stays with AGENTRUN_BASE_URL/, `${name}, ${method} redirected: ${error.stderr}`);
+          return true;
+        }, `${name} followed the ${method}'s redirect`);
+        assert.deepEqual(elsewhere, [], `${name}, ${method} redirected: the other server heard the client`);
+      }
+    });
+  }
+});
+
+// The client runs inside an app's process, which goes on after the call throws: a redirect's body it never reads would
+// hold its connection open. In this process, so its exit closes nothing for it.
+test("a TS or JS client refused a redirect lets go of its body: the connection a redirect's endless body comes on closes while the app goes on", async (t) => {
+  let redirects = "POST";
+  const closed = [];
+  const server = createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      // The client's calls alone, by their path: a probe of a new loopback listener asks for / alone.
+      if (req.method !== redirects || !req.url.startsWith("/v2/")) {
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ run_id: "run_1", status: "running", result: null }));
+        return;
+      }
+      // A redirect whose body never ends: only the client letting go of it closes the connection.
+      res.writeHead(302, { location: "https://elsewhere.example/" });
+      const drip = setInterval(() => res.write("x".repeat(1024)), 20);
+      res.on("close", () => { clearInterval(drip); closed.push(req.method); });
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const dir = mkdtempSync(join(tmpdir(), "suggestions-redirect-body-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const saved = Object.fromEntries(["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_AGENT_TICKET_TRIAGE"].map((name) => [name, process.env[name]]));
+  t.after(() => { for (const [name, value] of Object.entries(saved)) value === undefined ? delete process.env[name] : (process.env[name] = value); });
+  Object.assign(process.env, { AGENTRUN_BASE_URL: `http://127.0.0.1:${server.address().port}/v2`, AGENTRUN_API_KEY: "fake-test-key", AGENTRUN_AGENT_TICKET_TRIAGE: "agent_1" });
+
+  const s = checked(base());
+  const render = (language, path) => clientFile({ ...s, integration: { ...s.integration, language, path } }, "acme/app", "a".repeat(40)).content;
+  const files = { "typed.mjs": ts.transpileModule(render("typescript", "src/a.ts"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText, "plain.mjs": render("javascript", "src/a.mjs") };
+  for (const [name, content] of Object.entries(files)) {
+    writeFileSync(join(dir, name), content);
+    const { runTicketTriage } = await import(pathToFileURL(join(dir, name)).href);
+    for (const method of ["POST", "GET"]) {
+      redirects = method;
+      closed.length = 0;
+      await assert.rejects(runTicketTriage({ subject: "Charged twice", body: "My card was charged twice." }), /with a redirect \(HTTP 302\); not followed/, `${name}, ${method}`);
+      // The body is let go of before the error: its connection closes within moments, the app still running.
+      const until = Date.now() + 2_000;
+      while (!closed.includes(method) && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.deepEqual(closed, [method], `${name}, ${method}: the redirect's connection stayed open after the call threw`);
+    }
+  }
 });
 
 test("a template placeholder in the model's words is text, never a parameter the package would need", () => {

@@ -38,7 +38,10 @@ export interface HeldMcpTool {
 /** The claim's MCP as the runner holds it: its tools, and its credentials' refresh and release. */
 export interface HeldMcp {
   readonly tools: readonly HeldMcpTool[];
-  fresh(): Promise<void>;
+  /** The servers left out of `tools` for want of the run's credential (mcp-run.ts ClaimMcp.unconnected). */
+  readonly unconnected?: readonly string[];
+  /** ClaimMcp.fresh: the servers still handed no credential. */
+  fresh(): Promise<readonly string[]>;
   release(): Promise<void>;
 }
 
@@ -49,10 +52,12 @@ export interface HeldMcpAsk {
   readonly appendRoot: (entry: unknown) => Promise<void>;
 }
 
-/** What the run's process gives the runner's computerForClaim (workspace/computer-for-claim.ts): its callbacks only. The
- *  run, its epoch, its folder, its mode and its revision are the runner's own reads of the claim. */
+/** What the run's process gives the runner's computerForClaim (workspace/computer-for-claim.ts): its callbacks, and the
+ *  kind its journal says an earlier claim's deny turned off (ComputerForClaimDeps.turnedOff), read there as hadComputer
+ *  is. The run, its epoch, its folder, its mode and its revision are the runner's own reads of the claim. */
 export interface HeldComputerAsk {
   readonly hadComputer: () => Promise<boolean>;
+  readonly turnedOff?: string;
   readonly signal?: AbortSignal;
   readonly say?: (words: string) => void;
   readonly onImageWait?: (making: boolean, image: string) => void;
@@ -67,6 +72,17 @@ export interface Held {
   projectCheckpoint(signal?: AbortSignal): Promise<ProjectCheckpoint>;
   /** The ChatGPT sign-in's reader (chatgpt-plan.ts planReaderOf), for a run whose models reach the plan; else none. */
   plan(): Promise<PlanReader | undefined>;
+  /** Claude Code's login on this machine, for a claim of a run that goes on it (claude-login.ts loginForRun, the
+   *  claim's own harness and place, and no model key of its own): its access token alone, read by the runner at each ask
+   *  and renewed by it when near its end (claude-login-token.ts LoginTokens), which throws in words where there is none
+   *  to hand; `refused(sent)` tells the runner Anthropic refused `sent` (the CLI's 401), so the next ask renews it. Else
+   *  none, and the claim does not go on the login: the one answer to that, since the process can read neither the
+   *  setting's machine id nor the login's folder. A claim that read the login on has the runner read the setting again
+   *  here, at the start, and is refused in fixed words (claude-login-token.ts LOGIN_CHANGED_SINCE_CLAIM, no folder in
+   *  them) when that read names none or another folder, never left to a model key. A claim on a login other than
+   *  AgentRun's own folder is refused at the claim (run-child-host.ts staysInRunner, LOGIN_MACHINE_NEEDS_SERVER_USER),
+   *  before this is asked. */
+  claudeLogin(): Promise<{ token(): Promise<string>; refused(sent: string): Promise<void> } | undefined>;
   /** Whether a browser sign-in handed to the run reads back here (sign-ins-store.ts handedSignInReadsBack). */
   signInReadsBack(): Promise<boolean>;
   /** The run's browser sign-in for vendor `resolution` (sign-ins-store.ts runSignIn). */
@@ -79,8 +95,12 @@ export interface Held {
    *  out and its launch's payload names the pull request. Its mint makes a token of that repository alone, contents
    *  read, whatever the process names; its MCP mints on the runner (mcp). */
   githubAppAccess(): Promise<GithubAppAccessAt | undefined>;
-  /** Every saved model key, for a run whose routes have no revision to scope them by (a subagent's tiers, a grade). */
-  savedModelKeys(): Promise<Record<string, string>>;
+  /** The saved model keys of the models of the claim's subagent tiers (claim-secrets.ts subagentTierKeys asks): an agentic
+   *  run granted the subagent tool gets its routed tiers' keys; a replay's or an audit's grader, its fast tier's key alone
+   *  (none when its revision names agree_on or routes no fast tier: its grader is then the run's own model, on the key
+   *  the run already holds). None to any other run, to one that holds a model key
+   *  of its own, or to a held run its model kept from running. */
+  subagentTierKeys(): Promise<Record<string, string>>;
   /** The model keys the host's models of `tiers` need (claim-secrets.ts tierModelKeys), the plan's reader with them: of
    *  the tiers the claim's learned workflows name, as the runner chose them (learnedFirst), alone. */
   tierModelKeys(tiers: readonly Tier[]): Promise<{ readonly keys: Record<string, string>; readonly plan?: PlanReader }>;
@@ -94,8 +114,10 @@ export interface Held {
    *  claim's own launch, else the server's. A zone's name, never the trigger's row. */
   runZone(): Promise<string>;
   /** The keys saved for the claim's own harness alone (harness-keys.ts openHarnessKeys), by name, opened by the runner:
-   *  none unless that harness is a plan-billed recipe. The process lays them on its adapter's environment alone. */
-  harnessKeys(): Promise<Record<string, string>>;
+   *  none unless that harness is a plan-billed recipe, and none unless they are bound to `digest`, the sha256 of the
+   *  recipe file the process loaded itself (a file swapped since the runner read its table never takes the first's).
+   *  The process lays them on its adapter's environment alone. */
+  harnessKeys(digest: string): Promise<Record<string, string>>;
   /** The host's keys of the decision providers `providers` (claim-secrets.ts hostDecisionKeys): of the providers the
    *  claim's learned workflows' questions name, as the runner chose them (learnedFirst), alone. */
   decisionKeys(providers: readonly string[]): Promise<Record<string, string>>;
@@ -105,9 +127,12 @@ export interface Held {
   /** A change of the claim's computer's hold, committed to the run's journal here: signalled on the runner, whose live
    *  view of the computer tells its open viewer (computer-journal.ts heardComputerHold). */
   computerHold(change: ComputerHoldChange): Promise<void>;
-  /** The MCP credentials run `from` was handed, sealed again for run `id`, a run this one starts (promotion.ts,
-   *  audit.ts): none unless `from` is the claim's own run. */
-  handOn(from: string, id: string): Promise<Uint8Array | undefined>;
+  /** The MCP credentials run `from` was handed, and its own model key when `keyed` (store/seal.ts sealHandedLaunch),
+   *  sealed again for run `id`, a run this one starts (promotion.ts, audit.ts): none unless `from` is the claim's own run. */
+  handOn(from: string, id: string, keyed: boolean): Promise<Uint8Array | undefined>;
+  /** What the replays the claim's own run started on its own key took beside it (learning-work.ts keyedBesideOf), read by
+   *  the runner: its learning_work row and those replays' rows and launches, none of which the run's process reads. */
+  keyedBeside(): Promise<number | null>;
   /** The run's agent's live sign-in pointer for `resolution`, and its forgotten ones (sign-ins-store.ts signInReads): what
    *  its learning end holds to refuse a pointer in what the run learned. */
   signInPeek(resolution: string): Promise<unknown>;
@@ -116,9 +141,6 @@ export interface Held {
   emailAccount(): Promise<OpenedAccount | undefined>;
   /** The server's calendar, opened, for a run whose revision grants calendar_events; else none. */
   calendar(): Promise<SavedCalendar | undefined>;
-  /** A call of the run's agent's learning folder (learn/folder.ts), the runner's own Workspace of it, held to what a
-   *  run's learning does there (run-child-host.ts learningCall). */
-  learning(method: string, args: readonly unknown[]): Promise<unknown>;
   /** The harness `name`'s install for the claim (harness-install.ts installForClaim), run by the runner. */
   install(name: string, signal?: AbortSignal): Promise<void>;
   /** The claim's computer (workspace/computer-for-claim.ts), made and held by the runner. */
@@ -170,32 +192,6 @@ export function heldSignInReads(): { peek(agentId: string, resolution: string): 
     peek: (_agentId, resolution) => at.signInPeek(resolution) as Promise<never>,
     forgotten: (_agentId, resolution) => at.signInForgotten(resolution) as Promise<never>,
   };
-}
-
-/** The agent's learning folder in a run's own process (learn/folder.ts learningWorkspace): each call made by its runner on
- *  the folder of the claim's agent (Held.learning), whatever place this process names. No background program, mount or
- *  attach: a learning folder has none. */
-export function heldLearningFolder(): { readonly workspace: Workspace; end(): Promise<void> } {
-  const at = heldOrThrow("a run's learning folder");
-  const call = (method: string) => (...args: unknown[]) => at.learning(method, args) as Promise<never>;
-  const none = (what: string) => async (): Promise<never> => {
-    throw new Error(`a learning folder has no ${what} in a run's own process`);
-  };
-  const workspace = {
-    read: call("read"),
-    write: call("write"),
-    append: call("append"),
-    stat: call("stat"),
-    list: call("list"),
-    mkdir: call("mkdir"),
-    grep: call("grep"),
-    remove: call("remove"),
-    exec: call("exec"),
-    process: { start: none("background program"), list: none("background program"), output: none("background program"), signal: none("background program"), wait: none("background program") },
-    mountSpec: none("mount"),
-    attach: none("attach"),
-  } as unknown as Workspace;
-  return { workspace, end: async () => {} };
 }
 
 /** A learning run's end-of-run step in a run's own process (learning-end.ts learningEndOfRun): its runner's

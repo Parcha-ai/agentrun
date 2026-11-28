@@ -12,7 +12,9 @@ import type { TranscriptEntry } from './host/process.js';
  * (with `includePartialMessages`), and one `result` per turn. This keeps the
  * text said since the last tool call, writes it with the call that follows it
  * (`{ role: 'assistant', text, toolCalls }`), and writes the rest and a `turn`
- * entry at the result. Text deltas go to the live stream. Subagent messages
+ * entry at the result. Text deltas go to the live stream, and the text of a
+ * message that came whole (no deltas: the CLI's non-streaming retry of a
+ * stalled request) goes there from its blocks. Subagent messages
  * (`parent_tool_use_id` set) are left out.
  *
  * Pure: the drive hands it SDK messages and gets entries back through `sink`,
@@ -68,6 +70,21 @@ export class TranscriptBuilder {
   /** The model's last message was cut at its output limit, and the turn has not ended: the CLI resumes it itself, so the
    *  next text the model says is a message of its own (`text_end` before it). */
   private cutPending = false;
+  /** The streamed message (its `message_start` id), and the ids of the messages whose text streamed: a message the CLI
+   *  got whole (its non-streaming retry of a stalled stream) has no deltas, and its text is said live from its blocks. */
+  private streaming: string | undefined;
+  private readonly streamed = new Set<string>();
+  /** Text deltas no `assistant` text block has claimed yet: how a message with no id reads as streamed. */
+  private unclaimed = false;
+  /** Text was said live since the last message boundary: a whole answer after it is a message of its own. */
+  private saying = false;
+  /** The message whose whole text was said last (`id` its id, if it has one): its next text block is more of that
+   *  message, as a streamed message's blocks are, never a message of its own. With no id, the next whole block before any
+   *  delta, call or cut is taken as more of it: a model's next message in one turn follows a call or a cut. */
+  private whole: { id: string | undefined } | undefined;
+  /** What the stream said live since its message's text was last claimed or cut: a whole retry that begins with it (the
+   *  CLI asking again after the stream stalled) says only the rest, so the stalled part is not said twice. */
+  private partial = '';
 
   constructor(private readonly sink: TranscriptSink) {}
 
@@ -75,22 +92,34 @@ export class TranscriptBuilder {
   observe(m: SdkMessage): TurnEnd | undefined {
     if (m.parent_tool_use_id) return undefined;
     if (m.type === 'stream_event') {
-      const ev = m.event as { type?: string; delta?: { type?: string; text?: string; stop_reason?: string | null } } | undefined;
+      const ev = m.event as { type?: string; message?: { id?: unknown }; delta?: { type?: string; text?: string; stop_reason?: string | null } } | undefined;
+      if (ev?.type === 'message_start') this.streaming = typeof ev.message?.id === 'string' ? ev.message.id : undefined;
       // A message the model's output limit cut: the CLI resumes it in the same turn ("Output token limit hit"), and the
       // message that follows is the model's next one, not more of this one.
       if (ev?.type === 'message_delta' && ev.delta?.stop_reason === 'max_tokens') this.cutPending = true;
       if (ev?.type === 'content_block_delta' && ev.delta?.type === 'text_delta' && ev.delta.text) {
-        if (this.cutPending) this.sink.live({ type: 'text_end' });
+        if (this.cutPending) {
+          this.sink.live({ type: 'text_end' });
+          this.partial = '';
+        }
         this.cutPending = false;
+        if (this.streaming !== undefined) this.streamed.add(this.streaming);
+        this.partial += ev.delta.text;
+        this.unclaimed = true;
+        this.saying = true;
+        this.whole = undefined;
         this.sink.live({ type: 'text', delta: ev.delta.text });
       }
       return undefined;
     }
     if (m.type === 'assistant') {
-      const content = (m.message as { content?: unknown } | undefined)?.content;
+      const message = m.message as { id?: unknown; content?: unknown } | undefined;
+      const content = message?.content;
       for (const block of Array.isArray(content) ? (content as Block[]) : []) {
-        if (block.type === 'text' && block.text) this.said = this.said ? `${this.said}\n\n${block.text}` : block.text;
-        else if (block.type === 'tool_use' && block.id) {
+        if (block.type === 'text' && block.text) {
+          this.said = this.said ? `${this.said}\n\n${block.text}` : block.text;
+          this.sayUnstreamed(typeof message?.id === 'string' ? message.id : undefined, block.text);
+        } else if (block.type === 'tool_use' && block.id) {
           this.asked.set(block.id, { name: bareToolName(block.name ?? 'tool'), input: block.input });
           this.call(block.id, bareToolName(block.name ?? 'tool'));
         }
@@ -120,6 +149,10 @@ export class TranscriptBuilder {
           ? [m.user_message_uuid]
           : undefined;
       this.cutPending = false;
+      this.saying = false;
+      this.unclaimed = false;
+      this.whole = undefined;
+      this.partial = '';
       // The turn's final answer still cut: the CLI's recovery of it was spent.
       const output = (m.usage as { output_tokens?: unknown } | undefined)?.output_tokens;
       const cut = !isError && m.stop_reason === 'max_tokens' ? { stopReason: 'length' as const, ...(typeof output === 'number' ? { outputTokens: output } : {}) } : {};
@@ -166,9 +199,41 @@ export class TranscriptBuilder {
     this.call(id, name);
   }
 
+  /**
+   * A text block of an `assistant` message, said live when none of its text streamed: the CLI asks again without
+   * streaming when a streamed request stalls, and that answer comes whole. A message with an id streamed when a delta
+   * came under its `message_start`; one with none, when the deltas since the last text block say its text exactly (a
+   * streamed block's text is its deltas; a whole retry's runs past them). A whole message's text
+   * blocks are one message live, as a streamed one's are. A whole retry that begins with what its stalled stream already
+   * said goes on from there, as the same message: only the rest is said.
+   */
+  private sayUnstreamed(id: string | undefined, text: string): void {
+    const partial = this.partial;
+    this.partial = '';
+    const streamed = id === undefined ? this.unclaimed && text === partial : this.streamed.has(id);
+    this.unclaimed = false;
+    // A block whose text streamed is said already, and is still this message's: a whole block after it, with no delta
+    // between, is more of it (a retry's first block that says exactly what its stalled stream did, then the rest).
+    if (streamed) {
+      this.whole = { id };
+      return;
+    }
+    const more = this.whole !== undefined && this.whole.id === id;
+    const goesOn = !more && !this.cutPending && partial !== '' && text.startsWith(partial);
+    if (!goesOn && (this.cutPending || (this.saying && !more))) this.sink.live({ type: 'text_end' });
+    this.cutPending = false;
+    this.saying = true;
+    this.whole = { id };
+    const rest = goesOn ? text.slice(partial.length) : text;
+    if (rest) this.sink.live({ type: 'text', delta: rest });
+  }
+
   private call(id: string, name: string): void {
     if (this.written.has(id)) return;
     this.written.add(id);
+    this.saying = false;
+    this.whole = undefined;
+    this.partial = '';
     this.sink.message({ type: 'message', role: 'assistant', text: this.said, toolCalls: [{ id, name }] });
     this.said = '';
     for (const w of this.waiters.get(id) ?? []) w();

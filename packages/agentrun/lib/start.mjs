@@ -2,11 +2,12 @@
 // npx installs the two together and this command always runs the server it was released with. The server's own CLI picks
 // the port and whether to open the browser; this command passes its arguments through.
 import { execFileSync, spawn } from "node:child_process";
-import { closeSync, constants, fchmodSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
+import { closeSync, constants, fchmodSync, mkdirSync, openSync, readFileSync, realpathSync, writeSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { fileURLToPath } from "node:url";
 import { main as cli, NOUNS, words } from "./cli.mjs";
 import { OWN_VERSION } from "./own.mjs";
 import { chosenPublicUrl } from "./public-url.mjs";
@@ -97,12 +98,14 @@ export function failureText({ command, step, error, code = null, signal = null, 
 export const startTimeoutMs = (env) => (/^[1-9]\d*$/.test(env.AGENTRUN_START_TIMEOUT_MS ?? "") ? Number(env.AGENTRUN_START_TIMEOUT_MS) : START_TIMEOUT_MS);
 
 /** The start log, opened afresh in `dataDir` (made first, private, as the server makes it): private, as the server's banner
- *  names its API token, and never through a link. `{ fd }`, or `{ error }` when it can't be kept: a start goes on
- *  without it, and a start that fails says why there is none. */
+ *  names its API token, and never through a link. Each write goes at its end (O_APPEND): a second start on the same
+ *  folder begins it afresh, and a line the first adds later lands after what the second wrote, never over it or past a
+ *  hole of NULs. `{ fd }`, or `{ error }` when it can't be kept: a start goes on without it, and a start that fails says
+ *  why there is none. */
 function openStartLog(dataDir) {
   try {
     mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-    const fd = openSync(join(dataDir, START_LOG), constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
+    const fd = openSync(join(dataDir, START_LOG), constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_APPEND | constants.O_NOFOLLOW, 0o600);
     fchmodSync(fd, 0o600);
     return { fd };
   } catch (error) {
@@ -237,6 +240,31 @@ export const USAGE = `Usage: npx @parcha/agentrun [--port N] [--data DIR] [--no-
        npx @parcha/agentrun import|reset-password|runner|native|learning [--data DIR]   a server command (native: discover/connect an existing project)
        npx @parcha/agentrun <command> [args]   the server's API: agents, runs, triggers, ..., api (npx @parcha/agentrun help)`;
 
+/** A path's real path, or undefined when it is not there. */
+const realOf = (path) => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return undefined;
+  }
+};
+
+/** The installer's command when it is what runs this very copy, else undefined (npx, a global install, a checkout).
+ *  install.sh keeps this package at <root>/lib/<version>/node_modules/@parcha/agentrun and its command at
+ *  <root>/bin/agentrun, which quotes the bin it runs: this copy's, or another's once an upgrade has replaced it. The
+ *  server's refusals then name that command (AGENTRUN_INSTALLED_COMMAND), which the person's login shell has, not npx. */
+export function installedCommand(own = dirname(dirname(fileURLToPath(import.meta.url)))) {
+  const command = join(own, "..", "..", "..", "..", "..", "bin", "agentrun");
+  let text;
+  try {
+    text = readFileSync(command, "utf8");
+  } catch {
+    return undefined;
+  }
+  const bin = realOf(join(own, "bin", "agentrun.mjs"));
+  return [...text.matchAll(/'([^']+)'/g)].some(([, path]) => realOf(path) === bin) ? realOf(command) : undefined;
+}
+
 /** The server's launcher, installed with this package (its dependency), or undefined. */
 export function installedServer(resolve = createRequire(import.meta.url).resolve) {
   try {
@@ -266,7 +294,7 @@ const inCi = (env) => Boolean(env.CI) && env.CI !== "false" && env.CI !== "0";
 
 /** The server's own commands (its CLI's first word), which this command runs on its store: every other first word is
  *  the CLI's, which names a command it has or says it has none. */
-export const SERVER_COMMANDS = ["check-harness", "eval-template", "import", "install-harness", "learning", "native", "remote-bridge", "reset-password", "runner", "scrub", "sign-in-harness", "store-schema", "validate-template"];
+export const SERVER_COMMANDS = ["check-harness", "eval-template", "import", "install-harness", "learning", "native", "remote-bridge", "reset-password", "runner", "scrub", "sign-in-harness", "store-schema", "validate-template", "workspace-backfill"];
 
 /** How many of the server's refusals and ignored deliveries a start says, each route and reason once, before one line
  *  that says the rest are not: under this command the server's log goes nowhere else (its stdout is read here and dropped). */
@@ -299,7 +327,7 @@ const AUTHORIZE_CODES = new Set([
 
 /** A failed sign-in's reason as the terminal says it. An `authorize_<code>` reason comes from the loopback callback's
  *  `?error=`, which any process on the machine can send while a sign-in waits: a code that is not one the authorize step
- *  sends is said as `authorize_other`. The server's line, its tagged code whole, is kept in the start log (signInFailed);
+ *  sends is said as `authorize_other`. The server's line, its tagged code whole, is kept in the start log (SIGN_IN_FAILED);
  *  `agentrun-serve` run on its own logs it. */
 function signInReason(reason) {
   if (reason === undefined) return "no reason given";
@@ -307,11 +335,14 @@ function signInReason(reason) {
   return authorize && !AUTHORIZE_CODES.has(authorize[1]) ? "authorize_other" : reason;
 }
 
-/** Whether `line` is the server's log line of a ChatGPT sign-in that did not finish. */
-const signInFailed = (line) => {
-  const fields = fieldsOf(line);
-  return fields.event === "chatgpt" && fields.chatgpt === "sign_in_failed";
-};
+/** The server's log line of a ChatGPT sign-in that did not finish, in its exact shape (print.ts logLine, its reason a tag):
+ *  a line with those fields among other text, which any writer to the server's stdout could print, is not one. Its time
+ *  is an ISO timestamp (Date.toISOString), ASCII only, so nothing but a time is ever parked where it goes. */
+const SIGN_IN_FAILED = /^at=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z event=chatgpt chatgpt=sign_in_failed reason=[A-Za-z0-9_]{1,60}$/;
+/** How much of the server's lines the start log keeps after the start (the sign-ins' failures): past it, a line says so,
+ *  and the log grows no more however long the server runs. */
+const START_LOG_AFTER_MAX = 64 * 1024;
+const START_LOG_FULL = "agentrun: the start log keeps no more of the server's lines past 64 KiB\n";
 
 /** A teller for one start: given a line of the server's output, what to say of it to the person, or undefined. A refused
  *  request (auth_failed) and a verified webhook delivery its trigger does not take (hook_ignored) are said in words, with
@@ -395,6 +426,10 @@ export async function main(argv, env = process.env) {
   const launcher = installedServer();
   if (launcher === undefined) return console.error(`AgentRun's server (${SERVE_PACKAGE}) is not installed beside this command; run it as npx ${OWN_SPEC}.`), 1;
   const childEnv = { AGENTRUN_LOG: "quiet", ...env, AGENTRUN_NPX_PACKAGE: OWN_SPEC };
+  // The installer's command when it runs this copy, said afresh: one inherited from another start never stands.
+  const installed = installedCommand();
+  if (installed === undefined) delete childEnv.AGENTRUN_INSTALLED_COMMAND;
+  else childEnv.AGENTRUN_INSTALLED_COMMAND = installed;
   // Started by npx, this runs under npm exec and its `sh -c`. A signal to npm alone (a process manager's SIGTERM or
   // SIGKILL) ends npm and leaves this, and the server, with nobody to stop them: this finds that npm now, at its start,
   // and stops the server when it goes. Started any other way, it watches nothing, so a shell's own rules apply (`&`,
@@ -509,13 +544,17 @@ export async function main(argv, env = process.env) {
   let told = false;
   const held = [];
   const teller = tellerOf();
+  // The bytes of the server's lines the start log kept after the start.
+  let keptAfter = 0;
   const tell = (line) => {
     const said = SAID.test(line) ? line : teller(line);
     if (said !== undefined) told ? console.error(said) : held.push(said);
     // Started, the start log keeps the server's line of a ChatGPT sign-in that did not finish: its reason whole, a code
     // the terminal says only as authorize_other included, which nothing else under this command keeps. (Before the start,
-    // every line goes there already.)
-    if (started && signInFailed(line)) toLog(`${line}\n`);
+    // every line goes there already.) At most START_LOG_AFTER_MAX of them.
+    if (!started || !SIGN_IN_FAILED.test(line) || keptAfter > START_LOG_AFTER_MAX) return;
+    keptAfter += Buffer.byteLength(line) + 1;
+    toLog(keptAfter > START_LOG_AFTER_MAX ? START_LOG_FULL : `${line}\n`);
   };
   // A SAID line can come before the "Open " line too (the setup link is printed as the server attaches its owner, before
   // its banner): it is held and said first, in order.

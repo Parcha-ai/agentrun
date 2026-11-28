@@ -28,9 +28,10 @@ resources:
     memory: 2Gi
 
 # How long a stopping pod has before it is killed. The server's runner lets busy runs finish their turn for the drain
-# (--drain-timeout, 6s in the image's command), then gives a loop that does not stop 25 s more: 35 s covers both, as in
-# deploy/compose.yaml. Raise it with a longer drain, or runs wait for their claims to expire before they resume.
-terminationGracePeriodSeconds: 35
+# (--drain-timeout, 6s in the image's command), then gives a loop that does not stop 25 s more, and a browser's release
+# up to 40 s from the SIGTERM: 45 s covers it, as in deploy/compose.yaml. Raise it with a longer drain, or runs wait for
+# their claims to expire before they resume.
+terminationGracePeriodSeconds: 45
 
 # Plain variables, by name.
 # AGENTRUN_PUBLIC_URL: the console's address, for the server's links. Unset: the ingress's (http(s)://<host>/).

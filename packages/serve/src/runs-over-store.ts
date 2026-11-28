@@ -19,21 +19,21 @@ import type { Revision } from "./agent-rows.js";
 import type { MessageOrigin } from "./timeline/index.js";
 import { type AgentEntry, type ExternalRef, externalKey, getAgent, ownedElsewhere } from "./agents-store.js";
 import { CAP_TOLERANCE, money } from "./cap.js";
-import { holdOf } from "./computer-held.js";
+import { heldRefused, holdOf } from "./computer-held.js";
 import { computerOfPlace, settingOfDefinition } from "./computer-setting.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { labelsOf } from "./run-labels.js";
 import { harnessOfBody } from "./harness.js";
 import { uuidv7 } from "./ids.js";
-import { redacted, redactedOutput } from "./key-refusal.js";
+import { redacted, redactedOutput, redactedOutputWhole } from "./key-refusal.js";
 import { chooseWorkflows, learnedSection, type LearningMode, learnsOf, RUN_LEARNING_USE, type Seed, type Shown } from "./learning.js";
 import { thinkingLevel } from "./model.js";
 import { type Place, resolvePlace } from "./place.js";
 import { githubTargetOf } from "./github.js";
 import { type RepoBinding, repoOf } from "./run-repo.js";
-import { type LaunchDisk, launchBody, sourceProjectOf, type RunLaunch } from "./run-launch.js";
+import { type HeldRefusal, type LaunchDisk, launchBody, readLaunchBody, sourceProjectOf, type RunLaunch } from "./run-launch.js";
 import { learningDiskOf } from "./learn/learning-of.js";
-import { modelKeyRequired, serverKeyMissing } from "./run-model-key.js";
+import { keyTargetOf, type ModelKeyTarget, modelKeyRequired, serverKeyMissing } from "./run-model-key.js";
 import { type ApprovalDecision, raiseFollowUpId, type RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
 import { refuseWhileNoRunner } from "./runner/presence.js";
@@ -44,7 +44,7 @@ import { toolingOf } from "./tools.js";
 import { type Plane, planeFor, type ToolSettingsMap } from "./tool-plane.js";
 import { declaredKeys, undeclaredKeys, withCarried } from "./run-keys.js";
 import type { RunTrigger } from "./triggers.js";
-import { clip } from "./web-fetch-direct.js";
+import { clip } from "@parcha/agentrun-web";
 import { isObject, type Json } from "./validate.js";
 
 /** The store slice these writers need: the run rows, its commands, and the origin read a retry makes. */
@@ -184,12 +184,14 @@ export type MessageMode = "steer" | "answer" | "follow_up";
  *  and never a deny of an approval. The mode is the label the v2 answer reports, from the run's moment. `queue`: the steer's
  *  write when it is not this run's own (a trigger's: its firing marked with it, within its bound, store.triggers.message),
  *  which may skip it, in words. A runner applies every message, so while every runner here refused to claim, any message
- *  (a person's or a trigger's) is refused in their words first, as a start is (prepareLaunch, runner/presence.ts). */
+ *  (a person's or a trigger's) is refused in their words first, as a start is (prepareLaunch, runner/presence.ts).
+ *  `said`: the person's own words, when `content` is a host's text around them (POST /runs/{id}/messages `said`): kept on
+ *  the row beside its text, for the run's learning alone (runner/learning-end.ts messagesOf); the run takes `content`. */
 export async function message(
   store: RunsStore & Pick<Store, "agents" | "runners">,
   moment: RunMoment,
   content: string,
-  { requestId, answers = true, origin, queue, launchSealed, beforeSubmit }: { requestId?: string; answers?: boolean; origin?: unknown; queue?: (command: SteerCommand) => Promise<{ skipped: string } | void>; launchSealed?: LaunchSealed; beforeSubmit?: (runId: string, content: string) => Promise<void> | void } = {},
+  { requestId, answers = true, origin, said, queue, launchSealed, beforeSubmit }: { requestId?: string; answers?: boolean; origin?: unknown; said?: string; queue?: (command: SteerCommand) => Promise<{ skipped: string } | void>; launchSealed?: LaunchSealed; beforeSubmit?: (runId: string, content: string) => Promise<void> | void } = {},
 ): Promise<{ mode: MessageMode; messageId: string; skipped?: string }> {
   await refuseWhileNoRunner(store.runners);
   if (moment.importedSource !== undefined) throw importedRefusal(moment);
@@ -197,6 +199,10 @@ export async function message(
   if (isObject(launchBody) && launchBody.cli_learning) throw new ApiError("not_continuable", "Continue in the original CLI session.");
   if (isObject(launchBody) && launchBody.sdk) throw new ApiError("not_continuable", "Backend SDK runs are single-task sessions. Start a new SDK call for another task.");
   if (nativeOf(launchBody)) throw new ApiError("input_invalid", "Native jobs do not support in-session steering or follow-up messages. Start a new native run.");
+  // A held run its model kept from running at its create never runs its agent: a message would be its first turn (taken at
+  // a start, or opening it again once it ended), so it is refused as its start is (computer-held.ts).
+  const heldModel = readLaunchBody(launchBody)?.hold?.refused;
+  if (heldModel) throw heldRefused(heldModel);
   // Archiving closes a run: it, or a run of its archived agent, takes no message, said as archived (never as finished). Another
   // system's agent is archived only by its delete: said so, as every run of it is refused (AgentDeleting).
   const archivedAgent = moment.archived === "agent" ? await store.agents.get(moment.agentId) : null;
@@ -214,7 +220,7 @@ export async function message(
   // approval): the message is then a message like any other, below.
   if (answers && moment.kind === "agentic" && moment.waitingApprovalId !== undefined) {
     const messageId = newMessageId();
-    const declined = await sendCommand(store, moment.id, { kind: "deny", body: { approval: moment.waitingApprovalId, note: content, by: "message" } }, launchSealed ? { launchSealed } : undefined).then(
+    const declined = await sendCommand(store, moment.id, { kind: "deny", body: { approval: moment.waitingApprovalId, note: content, by: "message", ...(said !== undefined ? { said } : {}) } }, launchSealed ? { launchSealed } : undefined).then(
       () => true,
       (error: unknown) => {
         if (error instanceof AnswerTaken) return false;
@@ -234,7 +240,7 @@ export async function message(
   // A message that may not answer (a trigger's): one that would is refused here, past every wait, before it is sent.
   if (mode === "answer" && !answers) throw waitingRefusal();
   const messageId = requestId ?? newMessageId();
-  const body: Record<string, unknown> = { text: content, ...(answers ? {} : { answers: false }), ...(origin !== undefined ? { origin } : {}) };
+  const body: Record<string, unknown> = { text: content, ...(said !== undefined ? { said } : {}), ...(answers ? {} : { answers: false }), ...(origin !== undefined ? { origin } : {}) };
   // A test's seam (ServeOptions.beforeSubmit): every check above read `moment`; the write below is the run's door.
   await beforeSubmit?.(moment.id, content);
   if (queue) {
@@ -434,8 +440,9 @@ export interface StartDeps {
   /** Marks an input refusal as told from a revision (server.ts told). */
   told(error: ApiError): ApiError;
   /** Refuses a revision this host cannot run, by field (server.ts runnable), each tool key the run carries (`carried`, by
-   *  name) read as one the host holds. */
-  runnable(revision: Revision, place: Place, options: { capped: boolean; carried?: readonly string[] }): Promise<void>;
+   *  name) read as one the host holds. `held`: the run holds its computer (hold: true), so a refusal for its model alone
+   *  is returned for its launch instead of thrown (computer-held.ts). */
+  runnable(revision: Revision, place: Place, options: { capped: boolean; carried?: readonly string[]; held?: boolean }): Promise<HeldRefusal | undefined>;
   /** The revision a run starts on, its MCP tools pinned: one that grants an MCP tool and was saved with no pin (before
    *  pins were made at save, or an inline agent's version stored then) is pinned once, at its first run (server.ts
    *  pinFirst); any other as it is. */
@@ -460,8 +467,8 @@ export interface StartDeps {
     hold?(input: { runId: string; agentId: string }): Promise<SourceIOReceipt>;
     place(input: { hold?: SourceIOReceipt; runId: string; agentId: string; revision: Pick<NewRevision, "id" | "kind" | "body">; launch: RunLaunch }): Promise<{ readonly launch: RunLaunch; undo(): Promise<void>; admitted?(): Promise<void> } | undefined>;
   };
-  /** Where a revision naming these tools and no place runs here (server.ts fallbackPlace). */
-  fallbackPlace(kind: "agentic" | "workflow", tools: readonly unknown[]): Place;
+  /** Where a revision naming these tools and no place runs here, in the folder mode of now (server.ts fallbackPlace). */
+  fallbackPlace(kind: "agentic" | "workflow", tools: readonly unknown[]): Promise<Place>;
   /** The Archil disk the run's launch record keeps (server.ts launchDiskOf): the one its body's `archil_disk` names, else
    *  its agent's when it has one now; undefined for neither, or in Mode 1. A disk named in Mode 1 is refused. Absent, no
    *  disk is kept. */
@@ -493,6 +500,9 @@ export interface StartDeps {
   /** The agent's learning seed, read now (learning-run.ts seedFor): the learning commit a run starts from, or a reason it
    *  could not be read. Only read for a run that learns. */
   seedFor?(agentId: string): Promise<{ seed: Seed } | { failed: string }>;
+  /** The agent's runs whose learning round is open now (learning-rounds.ts openRoundsOf), read just before its seed (learningStartFor `rounds`): a run started while one is
+   *  open names them in its learning start (`after`), and its claim reads its seed again once they end. Absent: none. */
+  openRounds?(agentId: string): Promise<readonly string[]>;
   /** What the agent's GitHub triggers bind it to (run-repo.ts bindingOf), read when a person's start names or defaults a
    *  repository. Absent: the agent is bound to none. */
   boundRepos?(agentId: string): Promise<RepoBinding>;
@@ -505,8 +515,9 @@ export interface StartDeps {
 export interface StartOptions {
   readonly trigger?: RunTrigger;
   /** The run's launch secrets, sealed for its id once it has one (the create body's mcp_auth and model_key, server.ts),
-   *  given the launch the start prepared, which the sealer may refuse (a model key where the run's model takes none). */
-  readonly sealed?: (runId: string, launch: RunLaunch, kind: Revision["kind"]) => Uint8Array | null;
+   *  given the launch the start prepared and where its model requests go (run-model-key.ts keyTargetOf), which the sealer
+   *  may refuse (a model key where the run's model takes none). */
+  readonly sealed?: (runId: string, launch: RunLaunch, target: ModelKeyTarget) => Uint8Array | null;
   /** The run's title when its starter names one (a trigger's: "<Source> <name>"), else it is made from its input. */
   readonly title?: string;
   readonly origin?: RunOrigin;
@@ -529,8 +540,9 @@ const noShown: Shown = { text: (text) => text, name: (name) => name, holds: () =
  *  a run never answered by a learned workflow nor asked to draft one (a native run's, an SDK run's with no workflow
  *  binding). `model`: an SDK run's compile model. `disk`: the disk the run's launch names as its own (learn/learning-of.ts
  *  learningDiskOf), null for the default disk: a run on a named disk learns nothing, so it is never started from the
- *  folder seedFor reads (seedFailed `other_disk`: it starts with nothing learned). */
-export async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, { use = false, noWorkflows = false, model, disk }: { use?: boolean; noWorkflows?: boolean; model?: string; disk: string | null }): Promise<NonNullable<RunLaunch["learning"]> | undefined> {
+ *  folder seedFor reads (seedFailed `other_disk`: it starts with nothing learned). `rounds`: a run's start reads its agent's
+ *  open rounds (StartDeps.openRounds) first and names them (`after`). */
+export async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, { use = false, noWorkflows = false, model, disk, rounds = false }: { use?: boolean; noWorkflows?: boolean; model?: string; disk: string | null; rounds?: boolean }): Promise<NonNullable<RunLaunch["learning"]> | undefined> {
   // A run started with `learning: "use"` starts from what its agent learned whatever its revision says, and keeps
   // nothing; the server's learning off still gives it nothing.
   const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && (learnsOf(rbody.learning) || use);
@@ -539,17 +551,31 @@ export async function learningStartFor(deps: StartDeps, entry: AgentEntry, revis
   const own = { ...flows, ...(use ? { use: true as const } : {}), ...(model ? { model } : {}) };
   // Another disk's learning is never read for it: not its corrections, not its workflows.
   if (disk !== null) return { seed: null, section: "", seedFailed: "other_disk", ...own };
+  // `rounds` (a run's start, prepareLaunch): its agent's open rounds (`after`), read BEFORE the seed. A round open at this
+  // read and merged before the seed read is in the seed and named (its claim's wait ends at once); a round not open here
+  // merged already (in the seed) or opens after this start. Read the other way round, a round that merged and ended
+  // between the two reads would be in neither. A read that fails names none: the run starts from the seed read here.
+  const after = rounds && deps.openRounds ? await deps.openRounds(entry.agent.id).catch(() => []) : [];
   const seeded = await deps.seedFor(entry.agent.id);
   // The folder could not be read (main's STOPPED.unreadable), or what it read could not be made into the start (main's
   // copy that threw, STOPPED.notCopied): the run starts with nothing learned, and its learning end says which.
   if (!("seed" in seeded)) return { seed: null, section: "", seedFailed: "unreadable", ...own };
   try {
-    const shown = deps.shown ? deps.shown() : noShown;
-    const workflows = flows.noWorkflows ? [] : chooseWorkflows(seeded.seed, shown).flows.map(({ name }) => name);
-    return { seed: seeded.seed.sha, section: learnedSection(seeded.seed, shown), ...(workflows.length ? { workflows } : {}), ...(seeded.seed.at !== undefined ? { seededAt: seeded.seed.at } : {}), ...own };
+    const start = startOfSeed(seeded.seed, deps.shown ? deps.shown() : noShown, own);
+    return after.length ? { ...start, after: [...after] } : start;
   } catch {
     return { seed: null, section: "", seedFailed: "not_copied", ...own };
   }
+}
+
+/** A run's learning start from seed `seed`, as read: its sha, its # Learned text (learnedSection, cut of `shown`), the
+ *  learned workflows it may be answered by (none for `noWorkflows`) and when it was read, with `own` (what the run's start
+ *  said of its learning: use, noWorkflows, its compile model) kept. The one build of it, at a run's start
+ *  (learningStartFor) and at a claim that reads its seed again (runner/learning-reseed.ts). Throws when the seed cannot be
+ *  made into a start (main's copy that threw). */
+export function startOfSeed(seed: Seed, shown: Shown, own: Pick<NonNullable<RunLaunch["learning"]>, "use" | "noWorkflows" | "model">): NonNullable<RunLaunch["learning"]> {
+  const workflows = own.noWorkflows ? [] : chooseWorkflows(seed, shown).flows.map(({ name }) => name);
+  return { seed: seed.sha, section: learnedSection(seed, shown), ...(workflows.length ? { workflows } : {}), ...(seed.at !== undefined ? { seededAt: seed.at } : {}), ...own };
 }
 
 /** Starts a run of `entry`'s agent from a create body, as POST /agents/{id}/runs starts it: every check the old start made
@@ -575,11 +601,12 @@ export async function startRun(store: Store, deps: StartDeps, entry: AgentEntry,
   if ((entry.revision?.body as {cli_learning?:unknown})?.cli_learning) throw new ApiError("agent_not_runnable", "Start the next prompt in your existing CLI session. AgentRun records its learning; it does not launch this connection.");
   if ((entry.revision?.body as {sdk?:unknown})?.sdk) throw new ApiError("agent_not_runnable", "This agent runs in your backend SDK. Start it through its SDK learning wrapper; AgentRun does not launch its tools or credentials.");
   const { launch, revision } = await prepareLaunch(deps, entry, body, { ...(trigger ? { trigger } : {}), capped, ...(from ? { from } : {}), ...(title !== undefined ? { title } : {}), ...(keys ? { keys } : {}) });
-  keyedOrRefused(deps, launch, revision.kind, sealed);
+  const target = keyTargetOf(launch, revision);
+  keyedOrRefused(deps, target, sealed);
   const runId = (deps.newRunId ?? uuidv7)();
   try {
     const labels = labelsOf(body.labels);
-    return await withHeldFiles(store, deps, runId, entry.agent.id, revision, launch, (launch) => store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, expectedCurrent: entry.agent.currentRevision, ...(origin ? { origin } : {}), ...(labels ? { labels } : {}), ...(firing ? { firing } : {}) }, { body: launchBody(launch), ...(sealed ? { sealed: sealed(runId, launch, revision.kind) } : {}) }));
+    return await withHeldFiles(store, deps, runId, entry.agent.id, revision, launch, (launch) => store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, expectedCurrent: entry.agent.currentRevision, ...(origin ? { origin } : {}), ...(labels ? { labels } : {}), ...(firing ? { firing } : {}) }, { body: launchBody(launch), ...(sealed ? { sealed: sealed(runId, launch, target) } : {}) }));
   } catch (error) {
     if (error instanceof RevisionMoved) throw new ApiError("precondition_failed", "The agent changed while this run was prepared. Start again using its current setup.");
     // Only another writer of the store got here first under the same origin key: its run is the one asked for.
@@ -594,9 +621,10 @@ export async function startRun(store: Store, deps: StartDeps, entry: AgentEntry,
 
 /** A start with no launch secrets (`sealed`: a trigger's firing, a learning batch's row) whose route goes to the model
  *  gateway, on a server that holds no key for it (run-model-key.ts serverKeyMissing): 422 model_key_required, nothing
- *  written, never a failure at its first model call. A start with them (the API's) is the sealer's to check. */
-function keyedOrRefused(deps: StartDeps, launch: RunLaunch, kind: Revision["kind"], sealed: StartOptions["sealed"]): void {
-  if (!sealed && serverKeyMissing(deps.planeEnv(), { kind, model: launch.model, native: Boolean(launch.native) })) throw modelKeyRequired(false);
+ *  written, never a failure at its first model call. A start with them (the API's) is the sealer's to check. `target`:
+ *  the run's (run-model-key.ts keyTargetOf). */
+function keyedOrRefused(deps: StartDeps, target: ModelKeyTarget, sealed: StartOptions["sealed"]): void {
+  if (!sealed && serverKeyMissing(deps.planeEnv(), target)) throw modelKeyRequired(false, deps.planeEnv());
 }
 
 /** Writes run `runId` of agent `agentId` with `write`, its files (launch.files) held for it first (StartDeps.files): a
@@ -753,7 +781,8 @@ async function startInlineOnce(store: Pick<Store, "runs" | "runOfOrigin" | "agen
   // A store revision is the revision the run path reads as a pi Revision (its body is the revision body), as pinnedOf hands
   // one across.
   const { launch } = await prepareLaunch(deps, entry, body, { revision: (storedRevision ?? revision) as unknown as Revision, ...(keys ? { keys } : {}) });
-  keyedOrRefused(deps, launch, (storedRevision ?? revision).kind as Revision["kind"], sealed);
+  const target = keyTargetOf(launch, storedRevision ?? revision);
+  keyedOrRefused(deps, target, sealed);
   const runId = (deps.newRunId ?? uuidv7)();
   const labels = labelsOf(body.labels);
   try {
@@ -761,7 +790,7 @@ async function startInlineOnce(store: Pick<Store, "runs" | "runOfOrigin" | "agen
       agent: { id: entry.agent.id, name: inline.name, description: inline.description, ref },
       revision: { id: revision.id, version: external.version, kind: revision.kind, body: revision.body, skills: revision.skills, ...(revision.note !== undefined ? { note: revision.note } : {}), ...(revision.mcpPin !== undefined ? { mcpPin: revision.mcpPin } : {}), ...(revision.monidPin !== undefined ? { monidPin: revision.monidPin } : {}) },
       run: { id: runId, ...(origin ? { origin } : {}), ...(labels ? { labels } : {}) },
-      launch: { body: launchBody(launch), ...(sealed ? { sealed: sealed(runId, launch, (storedRevision ?? revision).kind as Revision["kind"]) } : {}) },
+      launch: { body: launchBody(launch), ...(sealed ? { sealed: sealed(runId, launch, target) } : {}) },
     }));
   } catch (error) {
     if (error instanceof ExternalBodyConflict) throw bodyConflict(external);
@@ -815,19 +844,21 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // right and before anything is pinned or made for it (runner/presence.ts).
   const refused = await deps.runnersRefused?.();
   if (refused !== undefined) throw new ApiError("runner_refused", refused);
-  const place = resolvePlace(rbody.place as Place | undefined, deps.fallbackPlace(revision.kind, revision.kind === "agentic" ? (rbody.tools ?? []) : []));
-  // Checked as pinned: an earlier revision with no pin is pinned now, once (StartDeps.pinFirst); one that could not be, as
-  // its server could not be listed, is refused with the rest (runnable).
-  await deps.runnable(deps.pinFirst ? await deps.pinFirst(revision) : revision, place, { capped: cap !== undefined, carried });
+  const place = resolvePlace(rbody.place as Place | undefined, await deps.fallbackPlace(revision.kind, revision.kind === "agentic" ? (rbody.tools ?? []) : []));
   // A held computer (computer-held.ts): only one that speaks the protocol, its kind as the claim reads it (the
-  // revision's computer, else its place's).
+  // revision's computer, else its place's). Read before the run's check, which defers a held run's model refusal.
   const hold = holdOf(body, (settingOfDefinition(rbody as { computer?: unknown; place?: unknown })?.computer ?? computerOfPlace(place)).kind);
   if (hold !== undefined && "field" in hold) throw invalid([hold]);
   // A workflow's loop opens no held computer and takes no start or release: its run holds nothing.
   if (hold !== undefined && revision.kind === "workflow") throw invalid([{ field: "hold", reason: "not_an_option", message: "hold is for an agent's run: a workflow run does not hold its computer for its owner." }]);
+  // Checked as pinned: an earlier revision with no pin is pinned now, once (StartDeps.pinFirst); one that could not be, as
+  // its server could not be listed, is refused with the rest (runnable). A held run kept from running by its model alone
+  // is not refused: those words ride its hold, for its start to answer (computer-held.ts).
+  const modelRefused = await deps.runnable(deps.pinFirst ? await deps.pinFirst(revision) : revision, place, { capped: cap !== undefined, carried, held: hold !== undefined });
   // The title shows on the run's page, the runs list and Mission Control: built from its input as shown, each held value
-  // redacted before a long one is cut (a cut key could no longer be found).
-  const shown = redactedOutput(input, deps.serverSecrets());
+  // redacted before a long one is cut (a cut key could no longer be found). Read whole first (redactedOutputWhole): an input
+  // a held value is split across two fields of is "[redacted]", so a workflow's title is made of none of it.
+  const shown = redactedOutputWhole(input, deps.serverSecrets());
   // A starter's title (a trigger's "<Source> <name>") is shown words too: cut as the input is, then as every title is below.
   const title = given !== undefined ? String(redactedOutput(given, deps.serverSecrets())) : revision.kind === "workflow" ? deps.workflowTitle(entry.agent.name || entry.agent.id, isObject(shown) ? shown : {}) : typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
   // Its tools' providers, resolved before the run exists (tool-plane.ts) and kept in its launch body, so a claim reads them
@@ -835,8 +866,9 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // the run carries resolves a tool as one the host holds would.
   const tooling = await toolingOf(revision);
   const plane: Plane = tooling ? planeFor(withCarried(deps.planeEnv(), carried), tooling, deps.toolSettings(), { capped: cap !== undefined, run: true }) : {};
-  // The run's model, resolved once, at start (the runner reads launch.model only).
-  const model = await deps.modelOf(entry, revision);
+  // The run's model, resolved once, at start (the runner reads launch.model only). None for a held run whose model was
+  // refused: resolving it would throw those words, and its claim takes the stand-in on its revision's model (computer-held.ts).
+  const model = modelRefused ? undefined : await deps.modelOf(entry, revision);
   // The run's Archil disk, chosen now and kept in its launch (run-launch.ts archilDisk): the one the body names (a disk per
   // customer), else its agent's when it has one; with neither, its claim makes the agent's.
   const named = isObject(body.archil_disk) && typeof body.archil_disk.disk_id === "string" ? body.archil_disk.disk_id : undefined;
@@ -846,7 +878,9 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // its seed is read now and its # Learned text pinned in the launch for the runner to put in the prompt. A seed that
   // cannot be read starts it with nothing (seed null); the end state is the runner's. Its learning is its disk's: a run on
   // a disk its launch names is never started from the default disk's.
-  const learning = await learningStartFor(deps, entry, revision, rbody, { use: body.learning === RUN_LEARNING_USE, disk: archilDisk ? learningDiskOf({ archilDisk }) : null });
+  // A round of its agent's still open (a follow-up being answered or kept): the run names it (`rounds`), and its claim
+  // reads the seed again once it ends, so a correction that merges a moment after this start is the run's too.
+  const learning = await learningStartFor(deps, entry, revision, rbody, { use: body.learning === RUN_LEARNING_USE, disk: archilDisk ? learningDiskOf({ archilDisk }) : null, rounds: true });
   // The run's effort: its own, else its revision's saved thinking, else the host's AGENT_THINKING (each a thinking level,
   // else none). Nothing set: none, so the run gets no effort note and its harness's own default. Kept in its launch, so
   // its harness's thinking, its guidance and its metrics all read the one value.
@@ -879,7 +913,7 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
     ...(from ? { inputOrigin: from } : {}),
     ...(model ? { model } : {}),
     ...(archilDisk ? { archilDisk } : {}),
-    ...(hold ? { hold } : {}),
+    ...(hold ? { hold: modelRefused ? { ...hold, refused: modelRefused } : hold } : {}),
   };
   return { launch, revision };
 }

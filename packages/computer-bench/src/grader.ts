@@ -79,7 +79,7 @@ export function graderText(input: GraderInput): string {
 		"## Rubric",
 		input.task.rubric?.trim() || "(none: judge by the instruction alone)",
 		"",
-		`## Checks (stage 1: ${input.stage1.toUpperCase()}; ${input.task.sufficient ? "sufficient: they decide alone" : "not sufficient: your verdict decides"})`,
+		`## Checks (stage 1: ${input.stage1.toUpperCase()}; ${input.task.sufficient ? "sufficient: they decide alone" : "not sufficient: your verdict decides a pass, never a failure"})`,
 		checks,
 		"",
 		"## End state: the front app's tree",
@@ -137,22 +137,24 @@ export function wantsGrader(when: GradeWhen, stage1: Stage1, sufficient: boolean
 }
 
 /** How a run counts, from both stages. The rules, once:
+ *  - the grader never turns a failing check into a pass. Checks failing: fail, sufficient or not. A grader pass or
+ *    unknown on it goes to the human queue (a check that fails a right state). The grader reads the agent's own answer,
+ *    so an answer could talk it into a pass; the checks read the computer. An answer check reads the answer too, so on a
+ *    judged task it matches a value (a count, a name), never prose: a regex misses a right answer worded its own way.
  *  - checks sufficient and passing: pass. The grader never flips a structural pass (judges overestimate), but a
  *    grader fail on it goes to the human queue (a check that passes a wrong state).
- *  - checks sufficient and failing: fail. A grader pass goes to the human queue (a check that fails a right state).
- *  - checks not sufficient: the grader's verdict; unknown counts as fail and goes to the human queue.
- *  - no grader where one was needed (never, or it failed): stage 1 decides, and a run with insufficient checks goes to
- *    the human queue. */
+ *  - checks not sufficient and passing: the grader's verdict; unknown counts as fail and goes to the human queue, and
+ *    with no grader (never, or it failed) the pass stands and goes to the human queue. */
 export function combine(stage1: "pass" | "fail", sufficient: boolean, grade: GraderVerdict | undefined): { final: "pass" | "fail"; by: "checks" | "grader"; queue?: string } {
-	if (sufficient) {
-		if (stage1 === "pass") return grade?.verdict === "fail" ? { final: "pass", by: "checks", queue: "the checks pass and the grader fails it" } : { final: "pass", by: "checks" };
+	if (stage1 === "fail") {
 		if (grade?.verdict === "pass") return { final: "fail", by: "checks", queue: "the checks fail and the grader passes it" };
 		if (grade?.verdict === "unknown") return { final: "fail", by: "checks", queue: "the checks fail and the grader can't tell" };
 		return { final: "fail", by: "checks" };
 	}
-	if (!grade) return { final: stage1, by: "checks", queue: "the checks are not sufficient and no grader ran" };
+	if (sufficient) return grade?.verdict === "fail" ? { final: "pass", by: "checks", queue: "the checks pass and the grader fails it" } : { final: "pass", by: "checks" };
+	if (!grade) return { final: "pass", by: "checks", queue: "the checks are not sufficient and no grader ran" };
 	if (grade.verdict === "unknown") return { final: "fail", by: "grader", queue: "the grader can't tell" };
-	return { final: grade.verdict, by: "grader", ...(grade.verdict !== stage1 ? { queue: `the grader says ${grade.verdict} where the checks say ${stage1}` } : {}) };
+	return { final: grade.verdict, by: "grader", ...(grade.verdict === "fail" ? { queue: "the grader says fail where the checks say pass" } : {}) };
 }
 
 export interface MessagesJudgeOptions {

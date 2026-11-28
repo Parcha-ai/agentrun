@@ -10,9 +10,9 @@
 // never under deny. No socket leaves this machine and no real key is used.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, watch } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
 import { asksByDefault, hostToolNames } from "../dist/tool-list.js";
@@ -168,7 +168,7 @@ test("the gate's settings: ask offered where the kernel runs the approved call i
   assert.equal(resolveOnBuiltin("web_search", { ...base, harness: "codex", permission: "ask" }), "firecrawl-keyless", "a CLI's own search cannot wait for a person");
   assert.equal(resolveOnBuiltin("web_search", { ...base, harness: "codex", permission: "ask", pick: "native" }), "unavailable: native search cannot wait for an approval", "native only stays native only");
   assert.equal(resolveOnBuiltin("web_search", { ...base, harness: "codex", permission: "ask", pick: "parallel", parallelKey: true }), "parallel");
-  assert.equal(resolveOnBuiltin("web_search", { ...base, harness: "pi", model: "anthropic/claude-sonnet-5-5", permission: "ask" }), "native", "pi's native search is a tool of the run's, which the gate holds");
+  assert.equal(resolveOnBuiltin("web_search", { ...base, harness: "pi", model: "anthropic/claude-sonnet-5-5", permission: "ask", pick: "native" }), "native", "pi's native search, picked, is a tool of the run's, which the gate holds");
 });
 
 test("a run's gate reads the server's settings at each call: a change reaches the next call, the revision's own stays over it, and an MCP server's wildcard is kept", async (t) => {
@@ -209,8 +209,8 @@ test("capabilities and an agent's tools show each tool's permission, its default
   const after = byName((await api("GET", "/capabilities")).body.tools);
   assert.equal(after[ENRICH], undefined);
   assert.deepEqual([after.web_fetch.permission, after.web_fetch.default_permission, after.read.permission], ["ask", "allow", "deny"]);
-  // Every harness the server has (main's opencode among them), each as before: pi's native, claude-agent's keyless Firecrawl.
-  assert.deepEqual(after.web_search.resolves, { ...after.web_search.resolves, pi: "native", "claude-agent": "firecrawl-keyless" }, "web_search allowed: as before");
+  // Every harness the server has (main's opencode among them), each as before: agentrun's own keyless Firecrawl on auto.
+  assert.deepEqual(after.web_search.resolves, { ...after.web_search.resolves, pi: "firecrawl-keyless", "claude-agent": "firecrawl-keyless" }, "web_search allowed: as before");
 
   const made = await retried(api)("POST", "/agents",agent("set", { tools: ["read", "web_fetch"], tool_settings: { read: { permission: "allow" }, web_fetch: { permission: "deny" }, "mcp:srv/*": { permission: "ask" } } }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
@@ -857,21 +857,41 @@ test("a stop of a parked run withdraws the call: an answer sent before the stop 
 
 test("a stop while an approval waits and a later turn runs withdraws the call and aborts the turn: stopped, idle, pending kind stopped, the turn cut, and a later answer is 409 and never runs the call; a cancel too", { timeout: 150_000 }, async (t) => {
   const dialled = await network(t);
+  // Each slow turn's start and end (fixtures/faux-gate.mjs slow): "started <url>", then "aborted <url>" the moment it was cut.
+  const turns = join(await scratch(t), "turns.txt");
+  withEnv(t, { FAUX_GATE_LOG: turns });
+  const turnLines = async (page) => (await readFile(turns, "utf8").catch(() => "")).split("\n").filter((line) => line.endsWith(` ${page}`));
+  // Until the slow turn on `page` has started: on the log's own change events, never a poll. The watcher closes with the
+  // case, and the wait ends with it, so a turn that never starts fails the case at its timeout and holds nothing open.
+  const turnStarted = (page) => new Promise((resolve, reject) => {
+    const watcher = watch(dirname(turns), () => void check());
+    const done = (settle) => (watcher.close(), t.signal.removeEventListener("abort", cancelled), settle());
+    const cancelled = () => done(() => reject(t.signal.reason ?? new Error(`the slow turn on ${page} never started`)));
+    t.after(() => watcher.close());
+    t.signal.addEventListener("abort", cancelled, { once: true });
+    const check = async () => {
+      try {
+        if ((await turnLines(page)).includes(`started ${page}`)) done(resolve);
+      } catch (error) {
+        done(() => reject(error));
+      }
+    };
+    void check();
+  });
   const server = await serve(t, GATE);
   const answer = await owner(server);
   const { api } = server;
   assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
-  for (const end of ["stop", "cancel"]) {
-    const runId = await fetching(api, `turn-${end}`, "pi");
+  // The stop's run and the cancel's, side by side, each on a page of its own, so each slow turn's end is told apart.
+  await Promise.all(["stop", "cancel"].map(async (end) => {
+    const page = `${PAGE}${end}`;
+    const runId = await fetching(api, `turn-${end}`, "pi", page);
     const approval = (await parked(api, runId)).view.pending.id;
     // The message declines the waiting call, and the gate's resume is the one turn that follows: it streams for 8 s
     // unless it is stopped. The stop or the cancel lands while that turn runs (its message is on the timeline).
     assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "Slowly, please." })).status, 202);
-    for (const end = Date.now() + 30_000; ; await sleep(100)) {
-      const rows = (await api("GET", `/runs/${runId}/timeline`)).body.rows;
-      if (resumeRows(rows).length) break;
-      assert.ok(Date.now() < end, "the gate's resume turn started");
-    }
+    await follow(api, runId, ["working"], { deadlineMs: 30_000, done: (rows) => resumeRows(rows).length > 0 });
+    await turnStarted(page);
     if (end === "stop") {
       const stop = await api("POST", `/runs/${runId}/stop`, {});
       assert.equal(stop.body.stopped, true, JSON.stringify(stop.body));
@@ -889,20 +909,24 @@ test("a stop while an approval waits and a later turn runs withdraws the call an
       assert.deepEqual(reads.filter(([status, , pending]) => status !== "working" && pending !== "stopped"), [], `every read after the stop's 202 says working or stopped: ${JSON.stringify(reads)}`);
       const view = (await api("GET", `/runs/${runId}`)).body;
       assert.deepEqual([view.status, view.state, view.pending], ["input_required", "idle", { kind: "stopped" }], "stopped: idle, pending kind stopped");
-      // Past the turn's 8 s: a turn the stop did not cut would have answered by now.
-      await sleep(10_000);
+      // The stop cut the turn before its end was written: the turn ended aborted, and can never answer.
+      assert.deepEqual(await turnLines(page), [`started ${page}`, `aborted ${page}`], "the stop cut the turn");
       const after = (await api("GET", `/runs/${runId}/timeline`)).body.rows;
       assert.ok(!after.some((row) => (row.text ?? "").includes("Done slowly.")), `the turn was cut, never answered: ${JSON.stringify(after.map((row) => [row.kind, (row.text ?? "").slice(0, 40)]))}`);
     } else {
       assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
       await follow(api, runId, ["cancelled"], { deadlineMs: 30_000 });
-      await sleep(10_000);
+      assert.deepEqual(await turnLines(page), [`started ${page}`, `aborted ${page}`], "the cancel cut the turn");
       const after = (await api("GET", `/runs/${runId}/timeline`)).body.rows;
       assert.ok(!after.some((row) => (row.text ?? "").includes("Done slowly.")), "the turn was cut");
     }
     assert.equal((await answer(runId, approval, { decision: "allow" })).status, 409, `${end}: a later allow`);
-  }
-  await sleep(2_000);
+    // The refused allow resumed nothing: the run still reads as its stop or cancel left it.
+    const still = (await api("GET", `/runs/${runId}`)).body;
+    assert.deepEqual([still.status, end === "stop" ? still.pending : null], end === "stop" ? ["input_required", { kind: "stopped" }] : ["cancelled", null], `${end}: still ended after the later allow`);
+  }));
+  // The runner closes, and every loop it held settles first: a call any of them ran has dialled by then.
+  await server.stop();
   assert.deepEqual(await dialled(), [], "the call never ran");
 });
 

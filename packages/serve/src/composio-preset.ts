@@ -8,20 +8,58 @@
 // (`api_key_env`, COMPOSIO_API_KEY only, a secret the launcher hands the server and each runner over its pipe): the server
 // then keeps the name, seals nothing, and reads the value at each use (composio-made.ts composioKeyFromEnv).
 import { randomBytes } from "node:crypto";
+import { textUpTo } from "./answer-text.js";
 import { COMPOSIO_KEY_ENV, COMPOSIO_ORIGIN, composioKeyFromEnv, type Cleanup, type ComposioMade, type Made, type Thing } from "./composio-made.js";
 import { ApiError, invalid, type InputIssue } from "./errors.js";
 import { priceValid } from "./mcp-probe.js";
 import { MCP_SERVER_NAME } from "./tool-names.js";
 import { isObject, type Json, unknownFields } from "./validate.js";
 
-/** Another Composio than the real one, and its fetch: a test's fake (the same seam as `archilControl`). */
-export type ComposioControl = { readonly baseUrl?: string; readonly fetch?: typeof fetch };
+/** Another Composio than the real one, and its fetch: a test's fake (the same seam as `archilControl`). `listDeadline`:
+ *  the signal that ends the toolkit listing (composioToolkits), a test's own; else LIST_MS from its start. */
+export type ComposioControl = { readonly baseUrl?: string; readonly fetch?: typeof fetch; readonly listDeadline?: () => AbortSignal };
 
 const BASE = COMPOSIO_ORIGIN;
 /** The fields a Composio save takes (composioSave): no `url`, no `headers`. */
 const SAVE_FIELDS = ["api_key", "api_key_env", "toolkit", "tools", "user_id", "auth_config_id", "price_usd"] as const;
 /** The one Composio user a server's actions run as, unless the owner names another. */
 export const COMPOSIO_USER = "agentrun";
+/** The namespace an API token's Composio users are kept in at Composio: its save names `ops`, Composio knows
+ *  `agentrun.token.ops`, which, through this install, only the token's own connect link connects. A fixed prefix,
+ *  never the token's id: tokens rotate, and every token is one identity in the records. No save names a user_id in
+ *  it. */
+export const COMPOSIO_TOKEN_USER_PREFIX = "agentrun.token.";
+/** The Composio user an API token's save names `user` as (composioSave `userAs`). */
+export const composioTokenUser = (user: string): string => COMPOSIO_TOKEN_USER_PREFIX + user;
+/** Whether `user` is in the API token's namespace: the prefix exactly as its saves write it, and a user after it. Every
+ *  listed API token is one principal (api-token.ts), so the prefix is the namespace, not one per token. */
+export const composioTokenNamespaced = (user: string): boolean => user.startsWith(COMPOSIO_TOKEN_USER_PREFIX) && user.length > COMPOSIO_TOKEN_USER_PREFIX.length;
+/** Why a run's Composio binding on an API-only server can't be used: its user is one the owner's servers call as here
+ *  (composio-owners.ts ownersComposioUsers). Never names the user or the server. */
+export const COMPOSIO_OWNERS_USER_WORDS = `it is a Composio user this server's owner calls as here (the preset's default user, its tool-listing user, or the user an MCP server the owner saved calls as), and a run's binding on this API-only server never calls as the owner: name a Composio user of the run's own person`;
+
+/** Whether a connected account Composio answered is `user`'s: only one it names as that user's. One it answers under
+ *  another user (a Composio answering every user's, whatever user_ids asks), or with no user_id, is never. */
+const accountOf = (user: string) => (one: unknown): one is Json => isObject(one) && one.user_id === user;
+
+/** Whether Composio lists the connected account `account` as an ACTIVE one under `user` for `toolkit`: `listed`,
+ *  `unlisted` (none, or one started, expired or turned off: only an ACTIVE account calls as its user), or `unbounded`
+ *  when it lists more ACTIVE ones than the lookup's bound (MAX_PAGES of ACCOUNT_PAGE, as the save's), so it can't be
+ *  checked. Any failure to read throws (asking): the caller refuses, never assumes. `unlisted`, unasked, for a user that
+ *  is no Composio user id (COMPOSIO_USER_ID): a blank one Composio may read as every user. */
+export async function composioListsAccount(ask: Ask, user: string, toolkit: string, account: string): Promise<"listed" | "unlisted" | "unbounded"> {
+  if (!COMPOSIO_USER_ID.test(user)) return "unlisted";
+  let cursor: string | undefined;
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const listed = await ask("checking the run's connected account", "GET", `/api/v3/connected_accounts?user_ids=${encodeURIComponent(user)}&toolkit_slugs=${encodeURIComponent(toolkit)}&statuses=ACTIVE&limit=${ACCOUNT_PAGE}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+    if ((Array.isArray(listed.items) ? listed.items : []).filter(accountOf(user)).some((one) => one.id === account && one.status === "ACTIVE")) return "listed";
+    cursor = text(listed.next_cursor) || undefined;
+    if (!cursor) return "unlisted";
+  }
+  return "unbounded";
+}
+/** The bound composioListsAccount reads to, in words (a function: the bounds are declared below). */
+export const composioAccountBoundWords = (): string => `more than ${MAX_PAGES} pages of connected accounts (${ACCOUNT_PAGE} a page)`;
 /** A Composio toolkit's slug, as a save takes it once trimmed and lower-cased. */
 export const COMPOSIO_TOOLKIT = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const TOOLKIT = COMPOSIO_TOOLKIT;
@@ -31,7 +69,10 @@ export const COMPOSIO_USER_ID = /^[A-Za-z0-9._@:-]{1,128}$/;
 export const COMPOSIO_USER_ID_WORDS = "letters, digits and . _ @ : - (1 to 128)";
 const USER_ID = COMPOSIO_USER_ID;
 /** The `user_id` a save names for a per-run server, reserved for that and never a Composio user: the server keeps no user
- *  and no connected account, and each run names its own (mcp_auth.<server> = {composio_user_id, connected_account_id?}). */
+ *  and no connected account, and each run names its own (mcp_auth.<server> = {composio_user_id, connected_account_id?}).
+ *  The server lends its Composio key to each run's binding, so the API token never binds a user the owner connects here
+ *  (composio-owners.ts): refused at the request (422) and, for a binding sealed before the owner connected it, at the
+ *  claim. A user the owner connected directly at Composio, which no record here names, is not refused. */
 export const COMPOSIO_PER_RUN = "per_run";
 /** A Composio connected account's id, as a run's binding names one: Composio's are `ca_` and a short random id. At least
  *  8 characters in all, so the run's redactors (which hold a value of 8 or more) hold every one. */
@@ -43,22 +84,30 @@ const ADDRESS_ACCOUNT = "connected_account_id";
 export const COMPOSIO_AUTH_CONFIG_ID = /^ac_[A-Za-z0-9_-]{1,64}$/;
 const PAGE = 200;
 const MAX_PAGES = 10;
+/** The connected accounts a lookup asks for a page. Composio documents `limit` on GET /api/v3/connected_accounts with no
+ *  default or maximum; 50 is the page it documents for auth configs, the one such list it bounds. */
+const ACCOUNT_PAGE = 50;
 const MAX_TOOLS = 500;
 /** The longest action slug a save takes: Composio's are far shorter. */
 const MAX_SLUG = 128;
 const WAIT_MS = 20_000;
+/** The most bytes read of any one Composio answer: a page of 200 actions with their descriptions is well under it. */
+const MAX_ANSWER = 4 * 1024 * 1024;
+/** The toolkit listing's one deadline, every page in all. */
+const LIST_MS = 30_000;
 
 export type ComposioTool = { slug: string; name: string; description: string };
 /** A Composio call (asking): its JSON answer, or the refusal in words that name its step. */
 export type Ask = (step: string, method: "GET" | "POST" | "PATCH" | "DELETE", path: string, body?: unknown, missing?: string | InputIssue) => Promise<Json>;
 
 const text = (value: unknown): string => (typeof value === "string" ? value : "");
+
 const issue = (field: string, reason: string, message: string): InputIssue => ({ field, reason, message });
 
 /** A Composio call as `key`: its JSON answer, or an error in words that name `step` and never the key nor a `sealed`
  *  value (a trigger's sealed config), and end with `outcome`, what the failure left (a save's: nothing was saved). A call
  *  with sealed values in play passes on none of Composio's words. Composio's 404 is `missing` when given: the words of a
- *  toolkit it has not, or the refusal on another field. */
+ *  toolkit it has not, or the refusal on another field. An answer over MAX_ANSWER is refused in words, unread. */
 export function asking(control: ComposioControl, key: string, signal: AbortSignal | undefined, outcome = "nothing was saved", sealed: readonly string[] = []): Ask {
   const base = (control.baseUrl ?? BASE).replace(/\/+$/, "");
   const send = control.fetch ?? fetch;
@@ -70,7 +119,7 @@ export function asking(control: ComposioControl, key: string, signal: AbortSigna
   const scrub = (said: string) => forms.reduce((text, form) => text.split(form).join("[the key]"), said).slice(0, 300);
   return async (step, method, path, body, missing) => {
     let res: Response;
-    let raw: string;
+    let raw: string | undefined;
     try {
       // No redirect is followed: it would carry the key to wherever it points.
       res = await send(`${base}${path}`, {
@@ -78,10 +127,11 @@ export function asking(control: ComposioControl, key: string, signal: AbortSigna
         headers: { "x-api-key": key, accept: "application/json", ...(body === undefined ? {} : { "content-type": "application/json" }) },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
-      raw = await res.text();
+      raw = await textUpTo(res, MAX_ANSWER);
     } catch {
       throw new ApiError("upstream_failed", `Composio did not answer while ${step}: ${outcome}.`);
     }
+    if (raw === undefined) throw new ApiError("upstream_failed", `Composio's answer while ${step} was over ${MAX_ANSWER / (1024 * 1024)} MiB: ${outcome}.`);
     let json: unknown;
     try { json = JSON.parse(raw); } catch { /* not JSON: said below */ }
     if (res.ok) {
@@ -99,30 +149,34 @@ export function asking(control: ComposioControl, key: string, signal: AbortSigna
   };
 }
 
-/** The key and toolkit of a body, checked. The key is the body's `api_key`, or, where `keyEnv` is taken (a save), the value
- *  of the variable its `api_key_env` names: COMPOSIO_KEY_ENV only, so no other secret of the server's environment is sent
- *  to Composio. `keyEnv` in the answer: the key came from there. */
-function head(body: unknown, { keyEnv = false }: { keyEnv?: boolean } = {}): { key: string; toolkit: string; rest: Json; keyEnv?: typeof COMPOSIO_KEY_ENV } {
-  if (!isObject(body)) throw invalid([issue("body", "invalid", `The body is {${keyEnv ? "api_key or api_key_env" : "api_key"}, toolkit}.`)]);
+/** The Composio key `body` names, its problems pushed onto `issues`: its `api_key`, or the value of the variable its
+ *  `api_key_env` names: COMPOSIO_KEY_ENV only, so no other secret of the server's environment is sent to Composio.
+ *  `keyEnv` in the answer: the key came from there. */
+function keyOf(body: Json, issues: InputIssue[]): { key: string; keyEnv?: typeof COMPOSIO_KEY_ENV } {
+  if (body.api_key_env === undefined) {
+    const key = typeof body.api_key === "string" ? body.api_key.trim() : "";
+    if (!key || key.length > 8192) issues.push(issue("api_key", "missing", `Send your Composio API key, or api_key_env: "${COMPOSIO_KEY_ENV}" to read it from the server's environment.`));
+    return { key };
+  }
+  if (body.api_key !== undefined) issues.push(issue("api_key_env", "not_allowed", "Send api_key or api_key_env, not both."));
+  else if (body.api_key_env !== COMPOSIO_KEY_ENV) issues.push(issue("api_key_env", "invalid", `api_key_env names the variable the key is read from, and only ${COMPOSIO_KEY_ENV} is taken.`));
+  else {
+    const key = composioKeyFromEnv(COMPOSIO_KEY_ENV) ?? "";
+    if (!key) issues.push(issue("api_key_env", "missing", `${COMPOSIO_KEY_ENV} is not set where AgentRun runs: set it to your Composio API key, then try again.`));
+    return { key, keyEnv: COMPOSIO_KEY_ENV };
+  }
+  return { key: "" };
+}
+
+/** The key (keyOf) and toolkit of a body, checked. */
+function head(body: unknown): { key: string; toolkit: string; rest: Json; keyEnv?: typeof COMPOSIO_KEY_ENV } {
+  if (!isObject(body)) throw invalid([issue("body", "invalid", "The body is {api_key or api_key_env, toolkit}.")]);
   const toolkit = typeof body.toolkit === "string" ? body.toolkit.trim().toLowerCase() : "";
   const issues: InputIssue[] = [];
-  let key = "";
-  let named: typeof COMPOSIO_KEY_ENV | undefined;
-  if (keyEnv && body.api_key_env !== undefined) {
-    if (body.api_key !== undefined) issues.push(issue("api_key_env", "not_allowed", "Send api_key or api_key_env, not both."));
-    else if (body.api_key_env !== COMPOSIO_KEY_ENV) issues.push(issue("api_key_env", "invalid", `api_key_env names the variable the key is read from, and only ${COMPOSIO_KEY_ENV} is taken.`));
-    else {
-      named = COMPOSIO_KEY_ENV;
-      key = composioKeyFromEnv(named) ?? "";
-      if (!key) issues.push(issue("api_key_env", "missing", `${COMPOSIO_KEY_ENV} is not set where AgentRun runs: set it to your Composio API key, then save again.`));
-    }
-  } else {
-    key = typeof body.api_key === "string" ? body.api_key.trim() : "";
-    if (!key || key.length > 8192) issues.push(issue("api_key", "missing", keyEnv ? `Send your Composio API key, or api_key_env: "${COMPOSIO_KEY_ENV}" to read it from the server's environment.` : "Send your Composio API key."));
-  }
+  const { key, keyEnv } = keyOf(body, issues);
   if (!TOOLKIT.test(toolkit)) issues.push(issue("toolkit", "invalid", "Send the toolkit's slug as Composio names it (github, slack, gmail...)."));
   if (issues.length) throw invalid(issues);
-  return { key, toolkit, rest: body, ...(named ? { keyEnv: named } : {}) };
+  return { key, toolkit, rest: body, ...(keyEnv ? { keyEnv } : {}) };
 }
 
 /** Whether a toolkit needs no sign-in. Composio's answer for one toolkit has no `no_auth` field (only its toolkit list
@@ -135,19 +189,35 @@ function needsNoAuth(kit: Json): boolean {
 
 const notFound = (toolkit: string) => `Composio has no toolkit ${toolkit}: use its slug (github, slack, gmail...).`;
 
+/** Every page of the Composio listing at `path` (a query of its own, to which each page's cursor is added), at most `max`:
+ *  what `keep` takes of each item (an item it answers undefined for is dropped), so no page is held past its own read,
+ *  and whether the list ended within them (`complete`). A cursor Composio names a second time ends the list there, not
+ *  complete. */
+async function pages<T>(ask: Ask, step: string, path: string, max: number, keep: (item: unknown) => T | undefined, missing?: string): Promise<{ items: T[]; complete: boolean }> {
+  const items: T[] = [];
+  const seen = new Set<string>();
+  let cursor: string | undefined;
+  for (let page = 0; page < max; page++) {
+    const listed = await ask(step, "GET", `${path}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`, undefined, missing);
+    if (Array.isArray(listed.items)) for (const item of listed.items) {
+      const kept = keep(item);
+      if (kept !== undefined) items.push(kept);
+    }
+    cursor = text(listed.next_cursor) || undefined;
+    if (!cursor) return { items, complete: true };
+    if (seen.has(cursor)) break;
+    seen.add(cursor);
+  }
+  return { items, complete: false };
+}
+
 /** A toolkit's actions, every page (at most MAX_PAGES), at its latest version: without toolkit_versions Composio lists its
  *  base version (00000000_00), which leaves out the actions added since (linear 21 of 48, stripe 33 of 435, live 11-18),
  *  though its MCP servers serve them. `complete`: the list ended within MAX_PAGES. */
 async function toolkitTools(ask: Ask, toolkit: string): Promise<{ tools: ComposioTool[]; complete: boolean }> {
-  const tools: ComposioTool[] = [];
-  let cursor: string | undefined;
-  for (let page = 0; page < MAX_PAGES; page++) {
-    const listed = await ask("listing the toolkit's actions", "GET", `/api/v3/tools?toolkit_slug=${encodeURIComponent(toolkit)}&toolkit_versions=latest&limit=${PAGE}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`, undefined, notFound(toolkit));
-    for (const item of Array.isArray(listed.items) ? listed.items : []) if (isObject(item) && text(item.slug)) tools.push({ slug: text(item.slug), name: text(item.name) || text(item.slug), description: text(item.description) });
-    cursor = text(listed.next_cursor) || undefined;
-    if (!cursor) return { tools, complete: true };
-  }
-  return { tools, complete: false };
+  const toolOf = (item: unknown): ComposioTool | undefined => (isObject(item) && text(item.slug) ? { slug: text(item.slug), name: text(item.name) || text(item.slug), description: text(item.description) } : undefined);
+  const { items: tools, complete } = await pages(ask, "listing the toolkit's actions", `/api/v3/tools?toolkit_slug=${encodeURIComponent(toolkit)}&toolkit_versions=latest&limit=${PAGE}`, MAX_PAGES, toolOf, notFound(toolkit));
+  return { tools, complete };
 }
 
 /** POST /settings/mcp-servers/composio/tools: a toolkit's actions, for the console's picker, and whether it needs no sign-in. */
@@ -164,6 +234,81 @@ const likelySlug = (slug: string, slugs: readonly string[]): string | undefined 
   const want = slug.toUpperCase();
   return slugs.find((s) => s.toUpperCase() === want);
 };
+
+/** A toolkit Composio offers, as the console's toolkit picker shows it: its slug and its name. */
+export type ComposioToolkit = { slug: string; name: string };
+/** The most pages of the toolkit list read (PAGE each): Composio offers about a thousand. */
+const MAX_TOOLKIT_PAGES = 20;
+
+/** POST /settings/mcp-servers/composio/toolkits: the toolkits Composio offers, every page (at most MAX_TOOLKIT_PAGES, all
+ *  within LIST_MS), by name: each one's slug, as a save takes it (a slug outside COMPOSIO_TOOLKIT is left out), and its
+ *  name. Stores nothing. */
+export async function composioToolkits(body: unknown, control: ComposioControl, signal?: AbortSignal): Promise<{ toolkits: ComposioToolkit[] }> {
+  if (!isObject(body)) throw invalid([issue("body", "invalid", "The body is {api_key} or {api_key_env}.")]);
+  const issues = unknownFields(body, ["api_key", "api_key_env"]);
+  const { key } = keyOf(body, issues);
+  if (issues.length) throw invalid(issues);
+  const within = control.listDeadline?.() ?? AbortSignal.timeout(LIST_MS);
+  const ask = asking(control, key, signal ? AbortSignal.any([signal, within]) : within, "no toolkit was listed");
+  const toolkitOf = (item: unknown): ComposioToolkit | undefined => {
+    const slug = isObject(item) ? text(item.slug).trim().toLowerCase() : "";
+    return TOOLKIT.test(slug) ? { slug, name: text((item as Json).name).trim() || slug } : undefined;
+  };
+  const found = new Map<string, ComposioToolkit>();
+  const { items } = await pages(ask, "listing the toolkits", `/api/v3/toolkits?sort_by=alphabetically&limit=${PAGE}`, MAX_TOOLKIT_PAGES, toolkitOf);
+  for (const kit of items) if (!found.has(kit.slug)) found.set(kit.slug, kit);
+  return { toolkits: [...found.values()].sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" }) || a.slug.localeCompare(b.slug)) };
+}
+
+/** Whether a saved Composio server's account is connected, as a refresh last read it at Composio: `connected`, an ACTIVE
+ *  account under its auth config; `pending`, only one its connect link started and not yet finished; `expired`, only an
+ *  expired one; `none`, no account (or only failed or inactive ones); `unknown`, Composio didn't answer. */
+export type ComposioAccountState = "connected" | "pending" | "expired" | "none" | "unknown";
+/** `labels`: each connected account's own label, for the owner to tell which account it is: the alias the owner gave it,
+ *  else the name Composio shows for it (`state.val.displayName`), else the word id Composio gave it. Never its id (which
+ *  a run's binding names), and nothing else of its state, which holds its tokens. */
+export type ComposioAccount = { state: ComposioAccountState; labels?: string[] };
+/** The longest label kept, and the most labels. */
+const MAX_LABEL = 120;
+const MAX_LABELS = 10;
+
+/** `value` as a label: one line of text, cut to MAX_LABEL; none when empty or shaped as an account's id. */
+function accountLabel(value: unknown): string | undefined {
+  const line = typeof value === "string" ? value.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, MAX_LABEL).trim() : "";
+  return line && !COMPOSIO_ACCOUNT_ID.test(line) ? line : undefined;
+}
+
+const labelOf = (account: Json): string | undefined =>
+  accountLabel(account.alias) ?? (isObject(account.state) && isObject(account.state.val) ? accountLabel(account.state.val.displayName) : undefined) ?? accountLabel(account.word_id);
+
+/** The connected accounts of `of.user` for `of.toolkit` under `of.auth_config` (under every config where none is named;
+ *  ACTIVE ones alone with `active`), as Composio lists them now: only those Composio names as that user's. One with no
+ *  user_id (a field Composio's docs say it will stop answering) is never kept, though Composio was asked for this user's
+ *  alone: nothing says whose it is, so the user connects one again. None, unasked, for a user that is no Composio user id
+ *  (COMPOSIO_USER_ID): a blank one Composio may read as every user. */
+export async function accountsUnder(ask: Ask, of: { user: string; toolkit: string; auth_config?: string }, active = false): Promise<Json[]> {
+  if (!COMPOSIO_USER_ID.test(of.user)) return [];
+  const enc = encodeURIComponent;
+  const listed = await ask("checking the connected account", "GET", `/api/v3/connected_accounts?user_ids=${enc(of.user)}&toolkit_slugs=${enc(of.toolkit)}${of.auth_config ? `&auth_config_ids=${enc(of.auth_config)}` : ""}${active ? "&statuses=ACTIVE" : ""}`);
+  return (Array.isArray(listed.items) ? listed.items : []).filter((a): a is Json =>
+    isObject(a) && a.user_id === of.user && (!of.auth_config || (isObject(a.auth_config) && a.auth_config.id === of.auth_config)) && (!active || a.status === "ACTIVE"));
+}
+
+/** The account of a saved Composio server's user for its toolkit, under its auth config (accountsUnder), as Composio
+ *  lists it now: one Composio names as that user's (accountsUnder), which gives its labels too. `unknown`, unasked, for a user that is no one Composio user (empty, which Composio
+ *  reads as every user). */
+export async function composioAccount(ask: Ask, of: { user: string; toolkit: string; auth_config: string }): Promise<ComposioAccount> {
+  if (!COMPOSIO_USER_ID.test(of.user)) return { state: "unknown" };
+  const mine = await accountsUnder(ask, of);
+  const active = mine.filter((a) => a.status === "ACTIVE");
+  if (active.length) {
+    const labels = [...new Set(active.map(labelOf).filter((label): label is string => !!label))].slice(0, MAX_LABELS);
+    return { state: "connected", ...(labels.length ? { labels } : {}) };
+  }
+  if (mine.some((a) => a.status === "INITIATED" || a.status === "INITIALIZING")) return { state: "pending" };
+  if (mine.some((a) => a.status === "EXPIRED")) return { state: "expired" };
+  return { state: "none" };
+}
 
 /** The toolkit's Composio-managed auth config not disabled, the one a save that names none stands on: none, if Composio
  *  has none for it yet. */
@@ -210,27 +355,39 @@ export const composioRunQuery = (binding: { readonly user_id: string; readonly c
  *  toolkit's Composio-managed one, found or made. `save` gets what the server stands on there too (`stands`,
  *  composio-made.ts): the auth config found or made and the account found or started, each marked whether this save made
  *  it, for its delete to remove what was made. The key is the body's `api_key`, or COMPOSIO_API_KEY's value when the body
- *  sends `api_key_env` (head): then `stands.key_env` names it, and the store seals no credential. */
-export async function composioSave<T extends { tools?: readonly { name: string }[] }>(body: unknown, control: ComposioControl, save: (mcp: { url: string; auth: { type: "headers"; headers: Record<string, string> }; prices?: Record<string, number> }, made: { source: "composio"; toolkit: string | null }, stands: ComposioMade) => Promise<T>, name: string, signal?: AbortSignal, savedUrl?: () => Promise<string | undefined>): Promise<{ server: T; connect_url?: string; not_served?: string[] }> {
+ *  sends `api_key_env` (head): then `stands.key_env` names it, and the store seals no credential. `standsOn`: the caller's
+ *  check of the auth config named (before anything is sent) or found (before anything is made against it): an API token's
+ *  save never stands on one a server the owner saved stands on. `accountOn`: the caller's check of an ACTIVE account the
+ *  save found for its user, before anything is made (an API token's save: only one a server the token saved holds); with
+ *  it, a user whose accounts run past the lookup's pages is 403, since they can't all be checked. Each
+ *  refuses by throwing, and the save makes nothing. `userAs`: the Composio user the body's `user_id` (or the default) is
+ *  sent as, in every call, the address and the record (an API token's save: composioTokenUser); per_run is never mapped.
+ *  A user_id in the token's namespace (COMPOSIO_TOKEN_USER_PREFIX) is the server's to add, so no body names one: 422. */
+export async function composioSave<T extends { tools?: readonly { name: string }[] }>(body: unknown, control: ComposioControl, save: (mcp: { url: string; auth: { type: "headers"; headers: Record<string, string> }; prices?: Record<string, number> }, made: { source: "composio"; toolkit: string | null }, stands: ComposioMade) => Promise<T>, name: string, signal?: AbortSignal, savedUrl?: () => Promise<string | undefined>, standsOn?: (authConfig: string) => Promise<void>, accountOn?: (user: string, account: string) => Promise<void>, userAs?: (user: string) => string): Promise<{ server: T; connect_url?: string; not_served?: string[] }> {
   // No address and no headers of the caller's own: Composio makes the server and answers its address, and the key is the
   // one header sent. Any field the save does not take is refused before anything is sent, never ignored.
   if (isObject(body)) {
     const extra = unknownFields(body, SAVE_FIELDS);
     if (extra.length) throw invalid(extra);
   }
-  const { key, toolkit, rest, keyEnv } = head(body, { keyEnv: true });
+  const { key, toolkit, rest, keyEnv } = head(body);
   const tools = Array.isArray(rest.tools) ? rest.tools : [];
-  const user = rest.user_id === undefined ? COMPOSIO_USER : typeof rest.user_id === "string" ? rest.user_id : "";
+  const given = rest.user_id === undefined ? COMPOSIO_USER : typeof rest.user_id === "string" ? rest.user_id : "";
   const price = rest.price_usd;
   const ownConfig = rest.auth_config_id === undefined ? undefined : typeof rest.auth_config_id === "string" ? rest.auth_config_id : "";
   const issues: InputIssue[] = [];
   if (!tools.length || tools.length > MAX_TOOLS || !tools.every((t) => typeof t === "string" && t && t.length <= MAX_SLUG)) issues.push(issue("tools", "invalid", `Send the slugs of the actions to grant: 1 to ${MAX_TOOLS} of them, each at most ${MAX_SLUG} characters.`));
-  if (!USER_ID.test(user)) issues.push(issue("user_id", "invalid", `A user_id is ${COMPOSIO_USER_ID_WORDS}, or "${COMPOSIO_PER_RUN}" for a server each run names its own account for.`));
+  if (!USER_ID.test(given)) issues.push(issue("user_id", "invalid", `A user_id is ${COMPOSIO_USER_ID_WORDS}, or "${COMPOSIO_PER_RUN}" for a server each run names its own account for.`));
+  // In any letter case: Composio may fold a user id's, and then such a user would land in the token's namespace.
+  else if (given.toLowerCase().startsWith(COMPOSIO_TOKEN_USER_PREFIX)) issues.push(issue("user_id", "not_allowed", `A user_id starting "${COMPOSIO_TOKEN_USER_PREFIX}" (in any letter case) is the API token's: its saves are kept at Composio under that prefix, and no save names one. Name another user_id.`));
+  else if (userAs && given !== COMPOSIO_PER_RUN && !USER_ID.test(userAs(given))) issues.push(issue("user_id", "invalid", `This save's user_id is at most ${128 - userAs("").length} characters (${COMPOSIO_USER_ID_WORDS} in all): Composio knows it as ${userAs("<user_id>")}.`));
   if (price !== undefined && !priceValid(price)) issues.push(issue("price_usd", "invalid", "price_usd is what each call of the server's actions costs, in USD: a finite number, 0 or more."));
   if (ownConfig !== undefined && !COMPOSIO_AUTH_CONFIG_ID.test(ownConfig)) issues.push(issue("auth_config_id", "invalid", "An auth_config_id is the id Composio shows for an auth config: ac_ then letters, digits, _ and - (at most 64 after ac_)."));
   if (issues.length) throw invalid(issues);
   // A per-run server: no user, no account, no connect link here; each run names its own (mcp_auth).
-  const perRun = user === COMPOSIO_PER_RUN;
+  const perRun = given === COMPOSIO_PER_RUN;
+  // The user every Composio call, the address and the record name: the given one, or the caller's mapping of it.
+  const user = perRun || !userAs ? given : userAs(given);
   // Every granted action at the one price, saved as the server's prices: each call is held and booked as any priced MCP
   // call (mcp-gateway.ts). None named: the server's prices as they stand, for the actions it still lists (a server saved
   // with none: "not metered").
@@ -244,6 +401,7 @@ export async function composioSave<T extends { tools?: readonly { name: string }
   const madeHere: Removable[] = [];
   let url: string | undefined;
   try {
+    if (ownConfig && standsOn) await standsOn(ownConfig);
     const kit = await ask("reading the toolkit", "GET", `/api/v3/toolkits/${encodeURIComponent(toolkit)}`, undefined, notFound(toolkit));
     // Every slug is one the toolkit lists (at its latest version), before anything is made: Composio makes a server
     // allowing a slug it doesn't have, which then serves nothing under that name. A list longer than MAX_PAGES refuses
@@ -269,6 +427,8 @@ export async function composioSave<T extends { tools?: readonly { name: string }
       const of = isObject(config.toolkit) ? text(config.toolkit.slug).toLowerCase() : "";
       if (of !== toolkit) throw invalid([issue("auth_config_id", "wrong_toolkit", `The auth config ${ownConfig} is ${of ? `the ${of} toolkit's` : "no toolkit's Composio names"}, not ${toolkit}'s: use one of ${toolkit}'s. Nothing was saved.`)]);
       if (config.status === "DISABLED") throw invalid([issue("auth_config_id", "disabled", `The auth config ${ownConfig} is disabled in Composio: enable it there, or use another. Nothing was saved.`)]);
+      // The id checked (standsOn) and recorded is the one sent: Composio answering another (another letter case, say) is refused.
+      if (text(config.id) !== ownConfig) throw invalid([issue("auth_config_id", "not_found", `Composio answers the auth config ${ownConfig} as ${text(config.id) || "one with no id"}: send its id exactly as Composio shows it. Nothing was saved.`)]);
       authConfig = ownConfig;
     } else if (!noAuth) {
       authConfig = await managedConfig(ask, toolkit);
@@ -279,6 +439,34 @@ export async function composioSave<T extends { tools?: readonly { name: string }
         madeConfig = true;
         madeHere.push({ kind: "auth_config", id: authConfig });
       }
+    }
+    // The auth config found, checked by the caller before anything is made against it, as a named one was before anything
+    // was sent (an API token's save: never one a server the owner saved stands on, McpServersOverStore.tokenStandsOn).
+    // One made just now is no other's.
+    if (authConfig && !madeConfig && !ownConfig && standsOn) await standsOn(authConfig);
+    // Only an account under this server's auth config serves it: one ACTIVE under another config (a custom one) doesn't.
+    // Looked for before anything is made, so the caller's check (accountOn) leaves nothing made. It asks Composio for ACTIVE
+    // ones alone, so the bound counts only them, and checks every one, on every page: Composio may serve any of them for
+    // this user and config. Past MAX_PAGES a save with that check is refused, since it can't check them all; one without
+    // it (the owner's) goes on with what it read.
+    let active: Json | undefined;
+    if (authConfig && !perRun) {
+      const actives: Json[] = [];
+      let cursor: string | undefined;
+      for (let page = 0; ; page++) {
+        if (page === MAX_PAGES) {
+          if (accountOn) throw new ApiError("forbidden", `Composio lists more than ${MAX_PAGES} pages of connected accounts for the user_id ${given} under the auth config ${authConfig} (${ACCOUNT_PAGE} a page), so this save can't check that each ACTIVE one is one a server the API token saved connected: an API token's server never stands on one it can't check. Name another user_id. Nothing was saved.`);
+          break;
+        }
+        const listed = await ask("checking the connected account", "GET", `/api/v3/connected_accounts?user_ids=${encodeURIComponent(user)}&toolkit_slugs=${encodeURIComponent(toolkit)}&auth_config_ids=${encodeURIComponent(authConfig)}&statuses=ACTIVE&limit=${ACCOUNT_PAGE}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+        // Only this save's user's (the mapped one): an account Composio answers under another user, or with no user_id, is
+        // never counted.
+        actives.push(...((Array.isArray(listed.items) ? listed.items : []).filter((a) => isObject(a) && a.user_id === user && a.status === "ACTIVE" && isObject(a.auth_config) && a.auth_config.id === authConfig) as Json[]));
+        cursor = text(listed.next_cursor) || undefined;
+        if (!cursor) break;
+      }
+      if (accountOn) for (const one of actives) await accountOn(given, text(one.id));
+      active = actives[0];
     }
     const made = await ask("making the MCP server", "POST", "/api/v3.1/mcp/servers/custom", {
       name: `ar-${name.slice(0, 18)}-${randomBytes(3).toString("hex")}`, toolkits: [toolkit], ...(authConfig ? { auth_config_ids: [authConfig] } : {}), allowed_tools: tools, managed_auth_via_composio: true,
@@ -294,11 +482,8 @@ export async function composioSave<T extends { tools?: readonly { name: string }
     let connect: string | undefined;
     const accounts: Made[] = [];
     if (authConfig && !perRun) {
-      // Only an account under this server's auth config serves it: one ACTIVE under another config (a custom one) doesn't.
-      const listed = await ask("checking the connected account", "GET", `/api/v3/connected_accounts?user_ids=${encodeURIComponent(user)}&toolkit_slugs=${encodeURIComponent(toolkit)}&auth_config_ids=${encodeURIComponent(authConfig)}`);
-      const active = (Array.isArray(listed.items) ? listed.items : []).find((a) => isObject(a) && a.status === "ACTIVE" && isObject(a.auth_config) && a.auth_config.id === authConfig);
       if (active) {
-        if (text((active as Json).id)) accounts.push({ id: text((active as Json).id), made: false });
+        if (text(active.id)) accounts.push({ id: text(active.id), made: false });
       } else {
         // The link starts the connected account it connects (connected_account_id): this save's, removed with the server.
         const link = await ask("making the connect link", "POST", "/api/v3/connected_accounts/link", { auth_config_id: authConfig, user_id: user });
@@ -367,6 +552,12 @@ const DASHBOARD = "https://platform.composio.dev";
 /** The Composio MCP server a saved preset address names (`/v3/mcp/<id>/mcp`, composioAddress): its id, or undefined. */
 export const composioServerId = (address: string): string | undefined => {
   try { return /^\/v3\/mcp\/([^/]+)\/mcp$/.exec(new URL(address).pathname)?.[1]; } catch { return undefined; }
+};
+
+/** The Composio user a saved preset address calls as (its user_id), or undefined: none named, or not a preset address. */
+export const composioAddressUser = (address: string): string | undefined => {
+  if (composioServerId(address) === undefined) return undefined;
+  return new URL(address).searchParams.get(ADDRESS_USER) ?? undefined;
 };
 
 /** A thing at Composio as the words name it; `removed`: as a removal names it (an account its connect link with it). */

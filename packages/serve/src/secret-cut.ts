@@ -12,6 +12,7 @@ secretLintProfiler.setEnabled(false);
 import { keyShaped } from "./secret-name.js";
 import { secretValues } from "./api-token.js";
 import { MIN_SECRET, valueMatcher } from "./learn/secrets.js";
+import { SEPARATOR } from "./redact/match.js";
 import { userInfo } from "node:os";
 import { commandReadPath, type Cut, type CutKind, decodedTimes, type Hit, inputSpan, isPlaceholder, KEY_RUN_MAX, lineBounds, lineCount, type LintFind, RESTORABLE, SCRUB_RULES, type ScrubContext, type ScrubRule, shapeOf, type View, viewsOf } from "./secret-rules.js";
 
@@ -38,8 +39,10 @@ export function secretCut(envs: NodeJS.ProcessEnv | readonly NodeJS.ProcessEnv[]
     // The longest first: a key that holds a shorter one is cut whole.
     .sort((a, b) => b.length - a.length);
   // `text.removed` counts the values it cut, each once however often it was met; `text.probe` cuts the same and counts
-  // nothing (a string never kept); `add` takes more values to cut (the keys secretlint found).
+  // nothing (a string never kept); `add` takes more values to cut (the keys secretlint found); `tally` counts apart the
+  // values cut from its start until its stop is called (what one imported run held), each once.
   const removed = new Set<string>();
+  const tallies = new Set<Set<string>>();
   // One pass a string: every value as it is and as a JSON string holds it (a quote or a backslash in it escaped), in one
   // alternation, the longest first, so the longest value wins where two start at one place. Built again when values
   // are added.
@@ -55,7 +58,11 @@ export function secretCut(envs: NodeJS.ProcessEnv | readonly NodeJS.ProcessEnv[]
   const cut = (value: string, count: boolean) =>
     pattern
       ? value.replace(pattern, (form) => {
-          if (count) removed.add(owner.get(form)!);
+          if (count) {
+            const secret = owner.get(form)!;
+            removed.add(secret);
+            for (const tallied of tallies) tallied.add(secret);
+          }
           return REDACTED;
         })
       : value;
@@ -79,13 +86,29 @@ export function secretCut(envs: NodeJS.ProcessEnv | readonly NodeJS.ProcessEnv[]
     if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([name, inner]) => [text(name), json(inner)]));
     return value;
   };
-  return { text, json, add };
+  /** Counts the distinct values cut from now until the returned stop is called, which answers how many. The stop may
+   *  be called again (a `finally` after the count was read): the same number, and nothing cut after the first call. */
+  const tally = (): (() => number) => {
+    const tallied = new Set<string>();
+    tallies.add(tallied);
+    return () => {
+      tallies.delete(tallied);
+      return tallied.size;
+    };
+  };
+  return { text, json, add, tally };
 }
 
 /** The recommended preset's rules, but its comment filter: a `secretlint-disable` line in what an import reads (a
- *  repository's own config a tool printed, a web page) would switch every rule off for the rest of it. */
+ *  repository's own config a tool printed, a web page) would switch every rule off for the rest of it. The rule ids are
+ *  pinned by test (secretlint-deps.test.mjs), so a bump that empties or changes the set is read before it ships. There is
+ *  no load-time check of its own: the exact @secretlint/core pin and that test stand for it. A consumer that forces
+ *  another core through npm overrides is outside both, and could load no rules and cut nothing. */
 const FILTER_COMMENTS = "@secretlint/secretlint-rule-filter-comments";
 const SECRETLINT = { rules: recommended.filter((rule) => rule.meta.id !== FILTER_COMMENTS).map((rule) => ({ id: rule.meta.id, rule })) };
+/** The ids of the rules the scan runs, in order. Only the ids are exported: the rules' own types come from a secretlint
+ *  types package that serve doesn't depend on. */
+export const SECRETLINT_RULE_IDS: readonly string[] = SECRETLINT.rules.map((rule) => rule.id);
 /** How many passes `secretsIn` has made in this process: for a test that a path makes none. */
 export const secretlintCalls = { count: 0 };
 
@@ -137,6 +160,10 @@ export type ScrubOptions = {
   /** The shell command whose output `text` is, when the caller knows it (a tool call's, ruling LVI): a command that reads
    *  one file alone (`cat ~/.pgpass`) gives `path` when none is given, and an env command's output is a dump. */
   readonly command?: string;
+  /** `text` is lines flattened onto one, every run of blanks made a space (a run's title: runs-over-store.ts
+   *  prepareLaunch): a prompt inside the line opens a command as a line's start would, and an env command's output
+   *  runs on after it to the next prompt (env-dump). */
+  readonly flattened?: boolean;
   /** The homes the caller holds (rulings E, VII): a bare `/home/<user>` with no segment after it, or a Claude project
    *  folder's `-home-<user>-` outside `.claude/projects/`, is cut only for one of these. When not given, this process's
    *  user's home and $HOME. */
@@ -393,13 +420,15 @@ export function processHomes(): string[] {
  *  finds in the view (one pass a view, on first ask). */
 function contextOf(view: View, opts: ScrubOptions): ScrubContext {
   let lint: Promise<LintFind[]> | undefined;
-  return { held: heldOf(opts), source: view.source, homes: opts.homes ?? processHomes(), path: opts.path ?? commandReadPath(opts.command), command: opts.command, lint: () => (lint ??= lintFinds(view.text)), lines: lineBounds(view.text, ...view.decodedStrings, view.strings) };
+  return { held: heldOf(opts), source: view.source, homes: opts.homes ?? processHomes(), path: opts.path ?? commandReadPath(opts.command), command: opts.command, flattened: opts.flattened === true, lint: () => (lint ??= lintFinds(view.text)), lines: lineBounds(view.text, ...view.decodedStrings, view.strings) };
 }
 
 /** Whether a cut text holds nothing the scrub must cut: no known format the format rules still find in any view of any
  *  chunk of it (each marker read as a blank, so a marker is never one), and no held value in any form (valueMatcher:
  *  split by whitespace, partly encoded) in the text as written or in any decoding of it, each marker read as a
- *  character no form holds. The time budget holds here too (a throw). */
+ *  character no form holds and every view keeps (SEPARATOR, read with valueMatcher's `separated`: a NUL would not do,
+ *  as the views drop control characters). A U+FFFF the text brought is read as a NUL first, nothing to the views, so
+ *  only a marker separates. The time budget holds here too (a throw). */
 async function clean(rules: readonly ScrubRule[], out: string, opts: ScrubOptions, run: Run): Promise<boolean> {
   const blanked = out.replace(MARKER, (found) => " ".repeat(found.length));
   const formats = rules.filter((rule) => rule.kind === "format");
@@ -414,9 +443,9 @@ async function clean(rules: readonly ScrubRule[], out: string, opts: ScrubOption
   }
   const held = heldOf(opts);
   if (!held.length) return true;
-  const matches = valueMatcher(held);
-  for (const view of viewsOf(out.replace(MARKER, "\u0000"))) {
-    if (matches(view.source)) return false;
+  const matches = valueMatcher(held, { separated: true });
+  for (const view of viewsOf(out)) {
+    if (matches(view.source.replaceAll(SEPARATOR, "\u0000").replace(MARKER, SEPARATOR))) return false;
     inTime(run);
   }
   return true;

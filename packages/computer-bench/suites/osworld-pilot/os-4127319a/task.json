@@ -1,0 +1,72 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "osworld.4127319a",
+  "version": 1,
+  "title": "Count the lines of every php file in the folder, and show it in the terminal",
+  "split": "heldout",
+  "source": {
+    "suite": "OSWorld-Verified",
+    "id": "os/4127319a-8b79-4410-b58a-7a151e15f3d7",
+    "revision": "0ad41bee56565efe7bb3c3a5ebc67590a1b8276f",
+    "licence": "Apache-2.0 (Copyright 2024 XLANG NLP Lab); the instruction is copied word for word, and setup.sh is OSWorld's (from its file cache) with the changes its header names",
+    "changes": "OSWorld's /home/user is the run's folder, /tmp/computer-bench-<nonce>. OSWorld opened the project folder in the file manager and left the agent to open a terminal; this desktop has no dock or terminal shortcut, so setup opens Xfce's terminal in the project folder, with HOME set to the run's folder. OSWorld read the terminal's text through accessibility; here the terminal's shell runs under `script`, which logs what the terminal shows, and the check applies OSWorld's line rule to that log."
+  },
+  "tags": ["osworld", "os", "terminal"],
+  "needs": {
+    "os": "linux",
+    "kind": "desktop",
+    "capabilities": [
+      { "id": "xfce4-terminal", "kind": "exec", "why": "Xfce's terminal, xdotool, which setup places its window with, `script`, which logs the terminal, and python3, which the check runs.", "argv": ["sh", "-c", "command -v xfce4-terminal && command -v xdotool && command -v script && command -v python3"] }
+    ]
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "OSWorld's setup.sh: project with four php files in three folders, 54 lines in all.",
+      "params": { "argv": ["bash", "-c", "{{file:setup.sh}}"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "process.start",
+      "why": "Open Xfce's terminal in the project folder, with HOME set to the run's folder, its shell running under `script` so the check can read what the terminal shows.",
+      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); export HOME=/tmp/computer-bench-{{nonce}}; cd /tmp/computer-bench-{{nonce}}/project && echo $$ > /tmp/computer-bench-{{nonce}}-terminal.pid && exec xfce4-terminal --disable-server --working-directory=/tmp/computer-bench-{{nonce}}/project -x script -q -f /tmp/computer-bench-{{nonce}}-terminal.log"] }
+    },
+    {
+      "method": "exec.run",
+      "why": "Wait for the terminal's window (20 s at most), make it fill the screen, put the pointer on it and activate it: a window manager gives the keys to the window activated, and with none they go to the window under the pointer.",
+      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); w=$(timeout 20 xdotool search --sync --onlyvisible --class xfce4-terminal | head -n1); [ -n \"$w\" ] || { echo no terminal window in 20 s >&2; exit 1; }; eval $(xdotool getdisplaygeometry --shell); xdotool windowmove $w 0 0 windowsize $w $WIDTH $HEIGHT; xdotool mousemove $((WIDTH / 2)) $((HEIGHT / 2)); xdotool windowactivate $w 2>/dev/null; sleep 1"], "timeoutMs": 30000 }
+    }
+  ],
+  "exec": "deny",
+  "instruction": "Use terminal command to count all the lines of all php files in current directory recursively, show the result on the terminal",
+  "budget": { "steps": 100, "usd": 3, "wall_s": 900 },
+  "checks": [
+    {
+      "id": "terminal",
+      "kind": "exec",
+      "why": "OSWorld's check: a line the terminal shows is 54, the total, alone or followed by 'total' (as wc -l prints it). The terminal showed only a prompt after setup, so an agent that does nothing fails.",
+      "argv": ["python3", "-c", "{{file:check.py}}"],
+      "timeoutMs": 20000,
+      "stdout": { "equals": "The terminal shows the total, 54." }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Close the run's apps by the pids setup kept beside the folder (a desktop may have others open), and delete the run's folder and its siblings.",
+      "params": { "argv": ["sh", "-c", "for f in /tmp/computer-bench-{{nonce}}-*.pid; do [ -f \"$f\" ] && kill -9 \"$(cat \"$f\")\" 2>/dev/null; done; rm -rf /tmp/computer-bench-{{nonce}} /tmp/computer-bench-{{nonce}}-*; true"], "timeoutMs": 20000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "input.actions",
+      "why": "Type a find of the php files piped to wc -l, which ends with ' 54 total', and run it.",
+      "params": {
+        "actions": [
+          { "type": "type", "text": "find . -name '*.php' | xargs wc -l" },
+          { "type": "key", "keys": ["enter"] },
+          { "type": "wait", "ms": 1500 }
+        ]
+      }
+    }
+  ]
+}

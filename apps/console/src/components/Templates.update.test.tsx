@@ -14,7 +14,7 @@ const base: TemplateView = {
   id: "notes/daily", bundled: true, source: null, sha: null, publisher: null, category: null, tags: [],
   name: "notes/daily", display_name: "Daily notes", version: "1.1.0", description: "Writes the day's notes.",
   license: null, author: null, repository: null, output: null, input_schema: null, harness: ["pi"], model: null, effort: null, tools: null, tool_policy: null,
-  computer: null, needs: null, computer_here: null, checkout: null, secrets: [], budget: null, learning: false, approvals_default: "ask", triggers: [], skills: [], evals: [],
+  computer: null, needs: null, computer_here: null, model_tiers_here: { harness: "pi", fast: null, strong: null, note: null }, checkout: null, secrets: [], budget: null, learning: false, approvals_default: "ask", triggers: [], skills: [], evals: [],
   mcp: [],
   parameters: { type: "object", additionalProperties: false, properties: { topic: { type: "string", description: "Topic" } } },
 };
@@ -49,6 +49,15 @@ describe("a template that already made an agent here", () => {
     expect(applyTemplate.mock.calls[0]?.[0]).toBe(base.id);
     expect(applyTemplate.mock.calls[0]?.[1]).toEqual({ parameters: {}, overrides: { approvals: "ask" }, agent_id: "notes-1" });
     expect(go).toHaveBeenCalledWith(agentHash("notes-1"));
+  });
+
+  it("names each agent's id when agents it made share a name, so each Update says which agent it updates", async () => {
+    const host = await mount(client([agentOf("monitor-1", "Market monitor", base.id), agentOf("monitor-2", "Market monitor", base.id), agentOf("solo", "Morning notes", base.id)]));
+    expect(button(host, "Update Market monitor")).toBeUndefined();
+    expect(button(host, "Update Market monitor (monitor-1)")).toBeDefined();
+    expect(button(host, "Update Morning notes"), "a name no other agent has stays as it is").toBeDefined();
+    await act(async () => button(host, "Update Market monitor (monitor-2)")!.click());
+    expect(applyTemplate.mock.calls[0]?.[1]).toMatchObject({ agent_id: "monitor-2" });
   });
 
   it("offers Update for an agent it made however far down the agent list it is, past twenty pages", async () => {

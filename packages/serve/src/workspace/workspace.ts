@@ -1,4 +1,4 @@
-// The Workspace: the one way serve touches a run's files, or an agent's learning folder. One Workspace is scoped to ONE
+// The Workspace: the one way serve touches a run's files. One Workspace is scoped to ONE
 // root folder and takes paths relative to it only (paths.ts). Two backends answer it: Local (a folder on this machine,
 // local.ts) and, next, Archil (the owner's disk through its file API and serverless exec). Nothing on main uses it yet:
 // the writers move onto it in one cutover.
@@ -159,13 +159,19 @@ export const GREP_LINE_MAX = 500;
 /** exec's default cap on stdout, and on stderr, each. */
 export const EXEC_OUTPUT_MAX = 16 * 1024 * 1024;
 
-/** A run's folder, or an agent's learning folder: every path is relative to its root. */
+/** A run's folder: every path is relative to its root. */
 export interface Workspace {
   /** The bytes of file `path`, or `length` of them from `offset` (a range past the end gives what is there). */
   read(path: string, range?: { readonly offset?: number; readonly length?: number }): Promise<Uint8Array>;
   /** File `path` replaced by `data` (a string is UTF-8), atomically and durably; its parent directories made. An
    *  existing file keeps its mode. */
   write(path: string, data: Uint8Array | string): Promise<void>;
+  /** File `path` made with `data` only when nothing is at it, in one step: true when made, false when something (a file,
+   *  a folder, a link) is already there, which is kept and never followed. Its parent directories made. Durable as
+   *  write. The local Workspace links a temporary file in; an attached one moves it without overwrite. A backend that
+   *  cannot make a file without the chance of replacing one (an Archil run disk, Parcha-ai/agentrun#3777) leaves this
+   *  out, so a caller that must never replace refuses there (save-once.ts). */
+  writeNew?(path: string, data: Uint8Array | string): Promise<boolean>;
   /** `data` added at the end of file `path`, durably; the file and its parents made when absent. A backend may split
    *  a large append into several (a disk API that takes a bounded size per call), so a reader during it can see part
    *  of `data` at the end; once it returns, all of it is there, in order. */

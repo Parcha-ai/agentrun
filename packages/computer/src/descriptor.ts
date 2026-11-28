@@ -52,6 +52,21 @@ export interface HostCommand {
 }
 
 /**
+ * Where a provider keeps a secret it makes for itself (its descriptor's `secrets`): one value by each name, shared by
+ * every provider made on the same store, and by every process on it. A server's is sealed in its store.
+ */
+export interface ProviderSecrets {
+	/** The value kept under `name`; undefined for none, and for one that does not open there. */
+	get(name: string): Promise<string | undefined>;
+	/**
+	 * Keeps `value` under `name` unless a value is kept there already, and answers the one kept: of callers racing on one
+	 * name, in this process or another on the same store, every one answers the same value. Undefined when none could be
+	 * kept.
+	 */
+	putIfAbsent(name: string, value: string): Promise<string | undefined>;
+}
+
+/**
  * A provider, declared once. Every field is data but load(), which imports the provider module only when called:
  * reading a descriptor loads no provider and no vendor SDK.
  */
@@ -131,8 +146,19 @@ export interface ProviderDescriptor<Module extends ProviderModule = ProviderModu
 	readonly connect?: "dial" | "either";
 	/** Its computers run on this machine's container engine: a server passes it its local host options (volume, host addresses). */
 	readonly local?: boolean;
+	/**
+	 * Its sandbox is the box a server gives a new agent that names no place and needs a shell (Docker's): one provider at
+	 * most sets it. Where that box is not available, a server gives such an agent no other box in its place.
+	 */
+	readonly defaultBox?: true;
 	/** create() takes a ledger the server keeps for it, as `options[ledger.option]` (the phone harness's sessions). */
 	readonly ledger?: { readonly option: string };
+	/**
+	 * create() takes the server's store of secrets the provider makes for itself (ProviderSecrets: Agent37's SSH key), as
+	 * `options[secrets.option]`: one per server store, sealed at rest, never shown. Without one, a provider keeps what it
+	 * makes for its process alone.
+	 */
+	readonly secrets?: { readonly option: string };
 	/**
 	 * The server's own environment variables its provider reads on this machine, by name (Local Chrome's, where it finds
 	 * Chrome; a cloud browser's, the gateway a server reaches its API through): a server passes their values, and no other
@@ -150,6 +176,14 @@ export interface ProviderDescriptor<Module extends ProviderModule = ProviderModu
 	 * image. No setting kind lists one, and Settings never offers one.
 	 */
 	readonly parked?: readonly ParkedConfiguration[];
+	/**
+	 * Its browsers open a profile the vendor keeps (a Browserbase context, a Kernel profile), which its built providers
+	 * make and delete (profiles.create, profiles.remove) and declare (capabilities().browser.profiles, this same value). A
+	 * server keeps an agent's saved sign-in only at a provider that declares this. settleMs: how long after a saving
+	 * session ends the vendor may still be writing the profile back, which a server waits out before another session saves
+	 * to it. Absent: its browsers keep no profile.
+	 */
+	readonly profiles?: { readonly settleMs: number };
 	/** The provider module, loaded on demand: its create(), its conformance module. */
 	load(): Promise<Module>;
 }
@@ -223,6 +257,7 @@ export function descriptorProblems(value: unknown): string[] {
 	if (d.connect !== undefined && d.connect !== "dial" && d.connect !== "either") problems.push("connect is dial or either");
 	else if ((d.connect === "either") !== (Array.isArray(d.settings) && d.settings.some((setting) => setting?.option === "connect"))) problems.push("connect is either exactly where a setting fills the connect option");
 	if (d.ledger !== undefined && (typeof d.ledger?.option !== "string" || d.ledger.option === "")) problems.push("ledger names the option it fills");
+	if (d.secrets !== undefined && (typeof d.secrets?.option !== "string" || d.secrets.option === "")) problems.push("secrets names the option it fills");
 	if (d.imageEnv !== undefined && (typeof d.imageEnv !== "string" || !/^[A-Z][A-Z0-9_]*$/.test(d.imageEnv))) problems.push("imageEnv is an environment variable name (capital letters, digits and underscores)");
 	if (d.hostEnv !== undefined && (!Array.isArray(d.hostEnv) || d.hostEnv.some((name) => typeof name !== "string" || name === ""))) problems.push("hostEnv is a list of environment variable names");
 	if (d.hostCommand !== undefined) {
@@ -234,6 +269,11 @@ export function descriptorProblems(value: unknown): string[] {
 	if (d.parked !== undefined) {
 		if (!Array.isArray(d.parked) || d.parked.some((one) => typeof one?.image !== "string" || one.image === "" || typeof one.why !== "string" || one.why === "" || typeof one.kind !== "string" || !Array.isArray(one.groups))) problems.push("parked is a list of configurations, each with its image and why it is parked");
 		else if (Array.isArray(d.capabilities) && d.parked.some((one) => d.capabilities!.some((offered) => offered?.image === one.image))) problems.push("a parked image is also offered");
+	}
+	if (d.profiles !== undefined) {
+		const settleMs = (d.profiles as { settleMs?: unknown } | null)?.settleMs;
+		if (typeof settleMs !== "number" || !Number.isInteger(settleMs) || settleMs < 0) problems.push("profiles is { settleMs }, a whole number of milliseconds, 0 or more");
+		else if (!Array.isArray(d.capabilities) || !d.capabilities.some((one) => one?.kind === "browser")) problems.push("profiles is a browser's: no configuration is of kind browser");
 	}
 	return problems;
 }

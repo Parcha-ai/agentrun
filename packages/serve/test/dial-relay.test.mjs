@@ -45,9 +45,10 @@ const TOKEN = `ar_test_${"d".repeat(40)}`;
 const YEAR_MS = 365 * 24 * 3_600_000;
 /** A machine token as the server mints one: art_ and its random part. Never in a log line or an error. */
 const MINTED = /art_[A-Za-z0-9_-]{16,}/;
-/** The fix a runner with no relay names for a dial provider (workspace/attached-computers.ts ONE_PROCESS_FIX). */
-const FIX = "start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)";
-const DIAL_APART = `no run on this server can use Faux dial: its machines dial this server, and its runner runs in a process of its own, with no attach hub to take their socket: ${FIX}`;
+/** The fixes a runner with no relay names for a dial provider (workspace/attached-computers.ts RELAY_FIX, then
+ *  ONE_PROCESS_FIX): the relay this file shows, first. */
+const FIX = "give the runner AGENTRUN_PUBLIC_URL (this server's public address), or start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)";
+const DIAL_APART = `no run on this server can use Faux dial: its machines dial this server, and its runner runs in a process of its own and relays no machine's socket: ${FIX}`;
 /** The hello a minted desktop's machine says, as faux-dial's does. */
 const HELLO = { protocol: "0.2", version: "test", os: "linux", kind: "desktop", arch: "amd64", groups: ["screen", "input.pointer", "input.keys"], screen: { width: 1, height: 1, scale: 1 } };
 /** A mint as a dial provider's create makes one, for a computer of run `run` (its agentrun.run label) where given. */
@@ -183,8 +184,8 @@ after(() => {
  * A machine's dial of `address`'s attach socket with `token`, as agentrun-dial makes it: hello and ping answered, every
  * text frame and the close kept. `opened` settles with true once open, or the refusal's status and words.
  */
-function machine(address, token, { maxPayload = MAX_LINE_BYTES, headers = {} } = {}) {
-  const ws = new WebSocket(`${address.replace(/^http/, "ws")}${ATTACH_PATH}`, ATTACH_SUBPROTOCOL, { headers: { authorization: `Bearer ${token}`, ...headers }, maxPayload, perMessageDeflate: false });
+function machine(address, token, { maxPayload = MAX_LINE_BYTES, headers = {}, bearer = true } = {}) {
+  const ws = new WebSocket(`${address.replace(/^http/, "ws")}${ATTACH_PATH}`, ATTACH_SUBPROTOCOL, { headers: { ...(bearer ? { authorization: `Bearer ${token}` } : {}), ...headers }, maxPayload, perMessageDeflate: false });
   machines.add(ws);
   const texts = [];
   ws.on("error", () => undefined);
@@ -194,7 +195,7 @@ function machine(address, token, { maxPayload = MAX_LINE_BYTES, headers = {} } =
     ws.once("unexpected-response", (_req, res) => {
       let body = "";
       res.on("data", (chunk) => void (body += chunk));
-      res.on("end", () => resolve({ status: res.statusCode, body }));
+      res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, body }));
     });
     ws.once("error", (error) => resolve({ error: error.message }));
   });
@@ -270,21 +271,29 @@ test("a dial whose runner is gone (its relay closed), whose listener does not an
   await until(async () => lines.find((line) => line.includes("machine_relay_refused") && line.includes("m-gone")), Boolean, "the server's refusal line");
   assert.match(lines.find((line) => line.includes("machine_relay_refused") && line.includes("m-gone")), /"a dial for run run-gone \(machine m-gone\): runner runner-gone, which made it, is not running now/, "the server's line says the run too");
 
-  // Not answering: its row names a port nothing listens on (a runner killed with no close).
+  // Not answering: its row names a port where every connection is dropped as it comes (a runner killed with no close).
+  // The port stays bound until the test ends: a port freed here could be taken by the next server this process starts,
+  // whose answer (a 401) would read as a runner that did not take the dial.
   const dead = createServer();
+  dead.on("connection", (socket) => socket.destroy());
   await new Promise((resolve) => dead.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => dead.close(resolve)));
   const port = dead.address().port;
-  await new Promise((resolve) => dead.close(resolve));
   await side.store.runners.put({ runner: "runner-dead", incarnation: "inc-dead", refused: null, host: "127.0.0.1", port });
   const { token: deadToken } = await mintedFor(side.store, "runner-dead", "inc-dead", "m-dead", "run-dead");
   const refusedDead = await Promise.race([machine(address, deadToken).opened, sleep(15_000).then(() => "hung")]);
   assert.equal(refusedDead.status, 503, JSON.stringify(refusedDead));
-  assert.match(refusedDead.body, /^a dial for run run-dead \(machine m-dead\): runner runner-dead, which made it, did not answer at 127\.0\.0\.1:\d+/);
+  // The machine is told one short line: where the server dialed (an internal host and port) and the socket's error stay
+  // in the server's line and on the token's row.
+  assert.equal(refusedDead.body, "a dial for run run-dead (machine m-dead): runner runner-dead, which made it, did not answer");
+  assert.doesNotMatch(`${refusedDead.body}\n${JSON.stringify(refusedDead.headers)}`, new RegExp(`127\\.0\\.0\\.1|:${port}\\b|ECONNREFUSED`));
+  await until(async () => lines.find((line) => line.includes("machine_relay_refused") && line.includes("m-dead")), Boolean, "the server's refusal line");
+  assert.match(lines.find((line) => line.includes("machine_relay_refused") && line.includes("m-dead")), new RegExp(`did not answer at 127\\.0\\.0\\.1:${port}`), "the server's line keeps where it dialed");
   // A machine of no run (its create named none) is named by itself.
   const { token: noRunToken } = await mintedFor(side.store, "runner-dead", "inc-dead", "m-no-run");
   const refusedNoRun = await Promise.race([machine(address, noRunToken).opened, sleep(15_000).then(() => "hung")]);
   assert.equal(refusedNoRun.status, 503, JSON.stringify(refusedNoRun));
-  assert.match(refusedNoRun.body, /^a dial for machine m-no-run: runner runner-dead, which made it, did not answer at /);
+  assert.equal(refusedNoRun.body, "a dial for machine m-no-run: runner runner-dead, which made it, did not answer");
 
   // Restarted: the same runner's name under a new incarnation; the old machine's re-dial is refused, the new one's lands.
   // The earlier process's listener still up (it has not noticed): only its row's incarnation tells the server.
@@ -304,7 +313,7 @@ test("a dial whose runner is gone (its relay closed), whose listener does not an
   const routes = createAttachRoutes({ store: side.store, hub: new AttachHub(), machinesOnly: true, owner: { runner: "runner-dead", incarnation: "inc-dead" } });
   const waited = await fauxComputers().launch(FAUX_DIAL_ENTRY(), { kind: "desktop", keys: {}, run: "run-wait" }, { dial: { url: address, tokens: routes.machineTokens, hub: new AttachHub() } }).then(() => undefined, (error) => error);
   assert.ok(waited instanceof Error, "the launch fails");
-  assert.match(waited.message, /^the faux dial machine faux-dial-[0-9a-f]+'s dial to http:\/\/127\.0\.0\.1:\d+ was refused: HTTP 503: a dial for run run-wait \(machine faux-dial-[0-9a-f]+\): runner runner-dead, which made it, did not answer at /);
+  assert.match(waited.message, /^the faux dial machine faux-dial-[0-9a-f]+'s dial to http:\/\/127\.0\.0\.1:\d+ was refused: HTTP 503: a dial for run run-wait \(machine faux-dial-[0-9a-f]+\): runner runner-dead, which made it, did not answer(?! at)/);
   assert.doesNotMatch(waited.message, MINTED);
 });
 
@@ -393,7 +402,8 @@ test("a runner that answers at an address in one of the server's runners' blocks
   const outside = machine(await serverOn("198.18.0.0/15"), (await mintedFor(store, "runner-pod", "inc-pod", "m-pod-2", "run-pod")).token);
   const refused = await outside.opened;
   assert.equal(refused.status, 503);
-  assert.match(refused.body, /runner runner-pod, which made it, answers at 127\.0\.0\.2, which is not one of this server's runners' hosts/);
+  assert.match(refused.body, /runner runner-pod, which made it, answers at a host this server does not dial \(AGENTRUN_RUNNER_HOSTS\)$/);
+  assert.doesNotMatch(refused.body, /127\.0\.0\.2/, "the machine is not told the runner's host");
   assert.equal(took, 1, "nothing outside the block is dialled");
 });
 
@@ -415,8 +425,10 @@ test("a real dial provider's create on a runner apart ends at once in the server
   const took = Date.now() - started;
   assert.equal(made.ok, false, "the create fails");
   assert.equal(made.error.code, "refused", made.error.message);
-  assert.match(made.error.message, /the server refused a dial for run run-far \(machine computer-[0-9a-f]{12}\): runner runner-far, which made it, answers at runner-far\.example, which is not one of this server's runners' hosts/);
+  assert.match(made.error.message, /the server refused a dial for run run-far \(machine computer-[0-9a-f]{12}\): runner runner-far, which made it, answers at a host this server does not dial \(AGENTRUN_RUNNER_HOSTS\)/);
+  assert.doesNotMatch(made.error.message, /runner-far\.example/, "the create's error, which the run's failure shows, names no internal host");
   assert.doesNotMatch(made.error.message, MINTED);
+  assert.ok(lines.some((line) => line.includes("machine_relay_refused") && line.includes("runner-far.example")), "the server's line keeps the host");
   assert.ok(took < createMs / 3, `the create ended at the server's refusal, not at createMs: ${took} ms`);
   assert.deepEqual(fake.live(), [], "the machine was deleted");
   assert.ok(lines.some((line) => line.includes("machine_relay_refused") && line.includes("run-far")), lines.join("\n"));
@@ -432,13 +444,15 @@ test("the runner's attach listener answers nothing without the server's proof, o
   const key = relayKeyOf(side.seal.key);
   const token = await relay.dial.tokens.mint("m-proof", MINT());
   const to = { tokenSha256: sha256Hex(token), runner: "runner-a", incarnation: relay.incarnation };
-  const tried = async (proof) => {
-    const dial = machine(listener, token, proof === undefined ? {} : { headers: { [LIVE_PROOF_HEADER]: proof } });
+  const tried = async (proof, { bearer = true, headers = {} } = {}) => {
+    const dial = machine(listener, token, { bearer, headers: { ...(proof === undefined ? {} : { [LIVE_PROOF_HEADER]: proof }), ...headers } });
     const opened = await dial.opened;
     if (opened === true) dial.ws.close();
     return opened === true ? 101 : opened.status;
   };
   assert.equal(await tried(undefined), 401, "no proof");
+  // The relay hop names a paired box's token by its hash alone; a machine's token goes as its bearer, as before.
+  assert.equal(await tried(relayProof(key, to, Date.now() - 2_000), { bearer: false, headers: { "x-agentrun-relay-token": sha256Hex(token) } }), 401, "a machine's token named by its hash alone, with a good proof");
   assert.equal(await tried(relayProof(relayKeyOf(randomBytes(32)), to)), 401, "another seal key's proof");
   assert.equal(await tried(relayProof(key, to, Date.now() - RELAY_PROOF_MS - 1_000)), 401, "a proof older than its window");
   assert.equal(await tried(relayProof(key, to, Date.now() + RELAY_PROOF_MS + 1_000)), 401, "a proof from past its window");

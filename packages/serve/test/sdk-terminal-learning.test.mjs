@@ -4,6 +4,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { serve, client } from "./support.mjs";
 import { createSdkLoop } from "../dist/runner/sdk-loop.js";
 import { runEntries } from "../dist/store-reads/journal.js";
+const { heldRedactor } = await import("../dist/runner/redact.js");
 
 for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
   for (const mode of ["expired", "read-error", "command", "expired-off"]) {
@@ -50,7 +51,7 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
       loop = createSdkLoop(launch, { store: observedStore, data: server.data, env: {}, sealKey: Buffer.alloc(32, 7) }, async () => {
         routes++;
         assert.fail("An unreported SDK task cannot dispatch reflection or grading");
-      })({ journal: () => store.journal(claim), flush: () => store.flush(), signal: new AbortController().signal });
+      })({ redact: heldRedactor((text) => text), journal: () => store.journal(claim), flush: () => store.flush(), signal: new AbortController().signal });
       const outcome = await loop.start(claim);
       await stopping;
       assert.equal(outcome.state, mode === "command" ? "stopped" : "failed", JSON.stringify(outcome));

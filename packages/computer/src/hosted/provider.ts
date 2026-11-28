@@ -71,8 +71,9 @@ import { type ComputerError, failFor, ok, type Result } from "../result.js";
 import { daemonWatch, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "../screen-watch.js";
 import { countTested } from "../test-connection.js";
 import { waitUntil } from "../wait.js";
-import { bounded, CALL_SLACK_MS, hostCall, type Opened, openBridge, pause, rootOf, runToExit, seconds, uploadThroughExec, words } from "./process.js";
-import { isWhole, PACKED_NAME, packLabels, unpackLabels } from "./values.js";
+import { bounded, CALL_SLACK_MS, hostCall, type Opened, openBridge, pause, rootOf, runToExit, seconds, untilAborted, uploadThroughExec, words } from "./process.js";
+import { downloadingConnection } from "./download.js";
+import { isPackedKey, isWhole, PACKED_NAME, packLabels, unpackLabels } from "./values.js";
 import { EGRESS_POLICY, EGRESS_PROXY_USER, EGRESS_RELAY, HOSTED_ALLOW, NETWORK_LABEL, networkFormOf, networkOfForm, networkRefusal, throughProxy } from "./network.js";
 import { ARCHIL_GATE, closedSocketsOf, type DaemonExpected, daemonDrift, type HostedCommands, hostedCommands, initFlags, installerOf } from "./scripts.js";
 
@@ -205,9 +206,18 @@ const LISTED_POLL_MS = 150;
 const LISTED_ROUNDS = 2;
 const LISTEN_RETRY_MS = 250;
 const START_POLL_MS = 500;
-/** How much of agentrun-dial's output a dial timeout carries (MachineHost.dialLog): its last lines, cut to these characters. */
+/** How much of agentrun-dial's output a dial failure carries (MachineHost.dialLog): its last lines, cut to these characters. */
 const DIAL_LOG_LINES = 10;
 const DIAL_LOG_CHARS = 800;
+/**
+ * agentrun-dial's exits after which it may be started once more in its machine (MachineHost.redial): its fetch failed
+ * (3), or its init never listened and was ended (5). Neither leaves anything of it running; any other exit is final.
+ */
+const DIAL_AGAIN: ReadonlySet<number> = new Set([3, 5]);
+/** The step by which a dial's wait goes past createMs while agentrun-dial runs and writes, up to twice createMs. */
+const DIAL_STEP_MS = 30_000;
+/** What a dial machine needs, after the cause of a dial failure. */
+const DIAL_NEEDS = "the machine must reach that address, and run agentrun-dial (the box image's entrypoint while AGENTRUN_ATTACH_URL is set, or the provider's own start of it)";
 /**
  * A machine token anywhere in what agentrun-dial wrote, not the tail of a longer word (`restart_…`): a dial timeout's
  * words carry `<token>` in its place.
@@ -516,10 +526,11 @@ export class HostedProvider implements ComputerProvider {
 	 */
 	#dialed(): { attach: string; daemon: string; dial: HostedDial } | { problem: string } {
 		if (this.#dial === undefined) {
-			// No dial: a runner in a process of its own (serve's runner subcommand, the image's server-and-runner). The fix is
-			// the one a paired computer's refusal names (serve's workspace/attached-computers.ts ONE_PROCESS_FIX).
+			// No dial: a runner in a process of its own (serve's runner subcommand, the image's server-and-runner) that relays
+			// no socket. The fixes are the ones a paired computer's refusal names (serve's workspace/attached-computers.ts
+			// RELAY_FIX, then ONE_PROCESS_FIX).
 			return {
-				problem: `${this.#label} machines dial in to this server, and this runner runs in a process of its own, with no attach hub to take their socket: start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)`,
+				problem: `${this.#label} machines dial in to this server, and this runner runs in a process of its own and relays no machine's socket: give the runner AGENTRUN_PUBLIC_URL (this server's public address), or start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)`,
 			};
 		}
 		const url = this.#dial.url;
@@ -698,6 +709,8 @@ export class HostedProvider implements ComputerProvider {
 
 	/** taken: the vendor refused this create's name as one a machine has (exists), so the name's machine is read once more. */
 	async #createOnce(spec: ComputerSpec, name: string, signal?: AbortSignal, taken?: Result<never>): Promise<Result<CreatedComputer>> {
+		// By the request's name alone, never narrowed by this spec's run and epoch (nameAsk): the request's computer made
+		// under another run or epoch is found, and refused as exists by #again, never made twice.
 		const listed = await foundBy(this.host, "the listing by the request's name", byName(name), this.#timeouts, signal);
 		if (!listed.ok) return listed;
 		const found = listed.value.filter((machine) => ours(machine.labels, name));
@@ -759,6 +772,8 @@ export class HostedProvider implements ComputerProvider {
 	 * more than one machine holds the name, the oldest (createdAt, or the lowest id where any has none) is kept, and every
 	 * other is deleted and read back gone, its Archil folder let go first. Every instance picks the same one from the
 	 * same listing. Its value is the machine kept, or undefined when mine holds the name alone (or nothing is listed yet).
+	 * The listing is by the name alone, never narrowed (nameAsk): two creates of one request that ask another run or epoch
+	 * must still see each other's machine, so one is kept and the other answered exists.
 	 */
 	async #converge(name: string, mine: string, signal?: AbortSignal): Promise<Result<Machine | undefined>> {
 		const listed = await foundBy(this.host, "the listing by the request's name", byName(name), this.#timeouts, signal);
@@ -906,7 +921,7 @@ export class HostedProvider implements ComputerProvider {
 		// Never signalled, only raced: an aborted call could leave a machine made whose id never came back. One that lands
 		// after this gave up is deleted by its id; one that fails after it, by its name where it may have made one.
 		const created = await hostCall(this.host, `${this.#label}'s create`, (ctx) => this.host.create(request, { timeoutMs: ctx.timeoutMs }), createMs, signal, (made) =>
-			made.ok ? this.#kill(made.value.id) : mayHaveMade(made.error.code) ? this.#deleteNamed(name) : undefined,
+			made.ok ? this.#kill(made.value.id) : mayHaveMade(made.error.code) ? this.#deleteNamed(name, nameAsk(this.host, spec)) : undefined,
 		);
 		if (!created.ok) {
 			// A machine of this create's that lands after this never dials: its token goes with the create.
@@ -918,7 +933,7 @@ export class HostedProvider implements ComputerProvider {
 			}
 			if (!mayHaveMade(code)) return created;
 			this.#end(name);
-			const swept = await this.#deleteNamed(name);
+			const swept = await this.#deleteNamed(name, nameAsk(this.host, spec));
 			return this.#fail(code, `${this.#label} did not create the machine: ${message}${swept}`);
 		}
 		this.#requests.made(name);
@@ -971,14 +986,15 @@ export class HostedProvider implements ComputerProvider {
 	 * Every machine carrying a name create gave, deleted and read back gone: for a create that may have made one whose
 	 * id never came (mayHaveMade), never after a refusal, where a machine under the name is another's. The
 	 * listing shows a new machine a moment after the vendor makes it, so it is read for the name until one shows or
-	 * listedMs passes, as create's own wait reads it. Best effort, in words.
+	 * listedMs passes, as create's own wait reads it. Best effort, in words. `also`: this create's run and epoch
+	 * (nameAsk), which a machine it made carries in its name.
 	 */
-	async #deleteNamed(name: string): Promise<string> {
+	async #deleteNamed(name: string, also?: Record<string, string>): Promise<string> {
 		const { listedMs, pollMs } = this.#timeouts;
 		const until = Date.now() + listedMs;
 		let found: Machine[];
 		for (let delay = Math.min(LISTED_POLL_MS, pollMs); ; delay = Math.min(delay * 2, pollMs)) {
-			const listed = await foundBy(this.host, "the listing by name", byName(name), this.#timeouts);
+			const listed = await foundBy(this.host, "the listing by name", byName(name), this.#timeouts, undefined, also);
 			if (!listed.ok) return `; a machine named ${name} may be left (${listed.error.message}), which ends at its deadline`;
 			found = listed.value.filter((machine) => ours(machine.labels, name));
 			if (found.length > 0 || Date.now() >= until) break;
@@ -1114,7 +1130,8 @@ export class HostedProvider implements ComputerProvider {
 			if (!init.ok) return init;
 			if (init.value.exitCode !== 0) return this.#fail("refused", `starting the daemon failed (exit ${init.value.exitCode}): ${`${init.value.stdout} ${init.value.stderr}`.trim().slice(0, 500)}`);
 		}
-		const opened = this.#dialing ? await this.#whenDialed(ref, signal) : await this.#openWhenListening(ref, signal);
+		const dialNotes: string[] = [];
+		const opened = this.#dialing ? await this.#whenDialed(ref, dialNotes, signal) : await this.#openWhenListening(ref, signal);
 		if (!opened.ok) {
 			if (opened.error.code === "aborted" || this.#dialing) return opened;
 			const why = await this.#initWords(ref);
@@ -1130,8 +1147,8 @@ export class HostedProvider implements ComputerProvider {
 		} finally {
 			await opened.value.close();
 		}
-		const listed = await this.#waitListed(ref, signal);
-		return listed.ok ? ok([...closed, ...notes, ...listed.value]) : listed;
+		const listed = await this.#waitListed(ref, signal, nameAsk(this.host, spec));
+		return listed.ok ? ok([...closed, ...dialNotes, ...notes, ...listed.value]) : listed;
 	}
 
 	/** What init wrote to its log (child) or the vendor's words of the machine (pid1): the end of it, or nothing. */
@@ -1234,7 +1251,12 @@ export class HostedProvider implements ComputerProvider {
 			return ok(deletedSaid(this.host, ref, this.#label, requestMs, { ...connection, hello: hello.value }));
 		}
 		const opened = await openBridge(this.host, ref.id, { argv: hostedCommands().stdio, name: ref.name, version: VERSION, requestMs, helloMs, ...(signal ? { signal } : {}) });
-		return opened.ok ? ok(deletedSaid(this.host, ref, this.#label, requestMs, opened.value)) : opened;
+		if (!opened.ok) return opened;
+		// A host with download takes a read past one chunk out through it, not the bridge (./download.ts).
+		const download = this.host.download?.bind(this.host);
+		const { execMs, uploadMs } = this.#timeouts;
+		const connection = download === undefined ? opened.value : downloadingConnection(this.host, download, ref.id, opened.value, { execMs, downloadMs: uploadMs });
+		return ok(deletedSaid(this.host, ref, this.#label, requestMs, connection));
 	}
 
 	/** #open, tried again while the bridge finds no daemon listening, until hello or helloMs in all. */
@@ -1254,47 +1276,115 @@ export class HostedProvider implements ComputerProvider {
 	 * refused) fails refused in those words as the read answers. The read, one at a time, bounded by requestMs, the time
 	 * left and the signal, holds no poll of the hub back, and the hub is read once more before a timeout: a socket there
 	 * wins. Create then deletes one that failed.
+	 *
+	 * Where the host reads agentrun-dial's exit (dialExit), it is read too, one at a time, every few polls: one that
+	 * exited before the socket came fails refused at once, its words first. An exit in DIAL_AGAIN starts it once more in
+	 * the same machine (redial), with a note, and the wait goes on, at least half of createMs from then. And one that runs
+	 * and writes is waited for past createMs: its log is read a step (DIAL_STEP_MS, at most a quarter of createMs) before
+	 * the deadline, beside the polls, and again at it, and a log that changed between them moves the deadline a step, up
+	 * to twice createMs. The hub is read once more after those reads, so a socket that came while they ran wins.
 	 */
-	async #whenDialed(ref: ComputerRef, signal?: AbortSignal): Promise<Opened> {
+	async #whenDialed(ref: ComputerRef, notes: string[], signal?: AbortSignal): Promise<Opened> {
 		const { createMs, requestMs } = this.#timeouts;
-		const until = Date.now() + createMs;
-		let reading: Promise<string | undefined> | undefined;
+		const { dialExit, dialLog, redial } = this.host;
+		const began = Date.now();
+		const cap = began + 2 * createMs;
+		const step = Math.min(DIAL_STEP_MS, createMs / 4);
+		let until = began + createMs;
+		// The log's reads for the wait past createMs: a host that cannot say agentrun-dial still runs has none.
+		const readLog =
+			dialExit === undefined || dialLog === undefined
+				? undefined
+				: () => this.#call(`the dial log of ${ref.name}`, (ctx) => dialLog.call(this.host, ref.id, ctx), requestMs, signal).then((read) => (read.ok ? read.value : undefined));
+		let logAt = until - step;
+		// The step's first read, from logAt on: running beside the polls, it holds none of them back.
+		let logged: Promise<string | undefined> | undefined;
+		let refusing: Promise<{ refused: string | undefined }> | undefined;
+		let exiting: Promise<{ exited: number | undefined }> | undefined;
+		let exitAt = began;
+		let first: number | undefined;
 		for (;;) {
 			const opened = await this.#open(ref, signal);
 			if (opened.ok) return opened;
+			if (readLog !== undefined && logged === undefined && Date.now() >= logAt) logged = readLog();
 			const left = until - Date.now();
 			if (left <= 0) {
-				const dialed = this.#dialed();
-				const to = "problem" in dialed ? "this server" : dialed.attach;
-				const through = this.#attachEgress === undefined ? "" : ` through ${this.#attachEgress}`;
-				return this.#fail("timeout", `${ref.name} did not dial ${to}${through} within ${seconds(createMs)}: the machine must reach that address, and run agentrun-dial (the box image's entrypoint while AGENTRUN_ATTACH_URL is set, or the provider's own start of it)${await this.#dialWords(ref, signal)}`);
+				if (logged !== undefined) {
+					const before = await logged;
+					const now = await readLog?.();
+					logged = undefined;
+					if (before !== undefined && now !== undefined && now !== before && until + step <= cap) {
+						until += step;
+						// This read is the next step's first.
+						logged = Promise.resolve(now);
+						continue;
+					}
+				}
+				// A socket that came while the log was read wins.
+				const late = await this.#open(ref, signal);
+				if (late.ok) return late;
+				const said = await this.#dialSaid(ref, signal);
+				return this.#fail("timeout", `${said === undefined ? "" : `${said}; `}${this.#notDialed(ref)} within ${seconds(until - began)}: ${DIAL_NEEDS}`);
 			}
-			const polled = pause(Math.min(this.#startPollMs(), left), signal).then(() => false as const);
-			reading ??= this.#dialRefused(ref.name, Math.min(requestMs, left), signal);
-			const read = await Promise.race([reading, polled]);
-			if (read !== false) {
-				reading = undefined;
-				if (read !== undefined) return this.#fail("refused", `the server refused ${read}`);
+			const polled = pause(Math.min(this.#startPollMs(), left), signal).then(() => ({ polled: true as const }));
+			refusing ??= this.#dialRefused(ref.name, Math.min(requestMs, left), signal).then((refused) => ({ refused }));
+			if (exiting === undefined && dialExit !== undefined && Date.now() >= exitAt) {
+				exiting = this.#call(`agentrun-dial's exit in ${ref.name}`, (ctx) => dialExit.call(this.host, ref.id, ctx), Math.min(requestMs, left), signal).then((read) => ({ exited: read.ok ? read.value : undefined }));
+			}
+			const read = await Promise.race([refusing, polled, ...(exiting === undefined ? [] : [exiting])]);
+			if ("refused" in read) {
+				refusing = undefined;
+				if (read.refused !== undefined) return this.#fail("refused", `the server refused ${read.refused}`);
 				await polled;
+			} else if ("exited" in read) {
+				exiting = undefined;
+				exitAt = Date.now() + this.#startPollMs() * 4;
+				if (read.exited === undefined) await polled;
+				else {
+					// A socket that came as it exited wins.
+					const late = await this.#open(ref, signal);
+					if (late.ok) return late;
+					const said = await this.#dialSaid(ref, signal);
+					const again = first === undefined && DIAL_AGAIN.has(read.exited) && redial !== undefined && !signal?.aborted ? await this.#call(`agentrun-dial's second start in ${ref.name}`, (ctx) => redial.call(this.host, ref.id, ctx), requestMs, signal) : undefined;
+					if (again?.ok) {
+						first = read.exited;
+						notes.push(`agentrun-dial's first start in ${ref.name} exited ${read.exited}${said === undefined ? "" : ` (${said})`}, and it was started once more`);
+						until = Math.min(cap, Math.max(until, Date.now() + createMs / 2));
+						logged = undefined;
+						logAt = until - step;
+						continue;
+					}
+					const restart = again === undefined || again.ok ? "" : `, and starting it once more failed (${again.error.message})`;
+					const before = first === undefined ? "" : `, and its first start exited ${first} before it was started once more`;
+					return this.#fail("refused", `${said === undefined ? "" : `${said}; `}${this.#notDialed(ref)}: agentrun-dial exited ${read.exited}${before}${restart}: ${DIAL_NEEDS}`);
+				}
 			}
 			if (signal?.aborted) return this.#fail("aborted", `create was aborted while it waited for ${ref.name} to dial`);
 		}
 	}
 
+	/** "<name> did not dial <attach URL>[ through <relay>]": a dial failure's words, after its cause. */
+	#notDialed(ref: ComputerRef): string {
+		const dialed = this.#dialed();
+		const to = "problem" in dialed ? "this server" : dialed.attach;
+		const through = this.#attachEgress === undefined ? "" : ` through ${this.#attachEgress}`;
+		return `${ref.name} did not dial ${to}${through}`;
+	}
+
 	/**
-	 * A dial timeout's last words: what the host's dialLog read of agentrun-dial, every machine token replaced by
-	 * `<token>`, its last DIAL_LOG_LINES lines within DIAL_LOG_CHARS characters, or that it never started. Nothing for a
-	 * host without dialLog, or a read that fails, outlasts requestMs or is cut by the create's signal, so a cancel never
-	 * waits on it.
+	 * What a dial failure's words lead with: what the host's dialLog read of agentrun-dial, every machine token replaced
+	 * by `<token>`, its last DIAL_LOG_LINES lines within DIAL_LOG_CHARS characters, or that it never started or wrote
+	 * nothing. undefined for a host without dialLog, or a read that fails, outlasts requestMs or is cut by the create's
+	 * signal, so a cancel never waits on it.
 	 */
-	async #dialWords(ref: ComputerRef, signal?: AbortSignal): Promise<string> {
+	async #dialSaid(ref: ComputerRef, signal?: AbortSignal): Promise<string | undefined> {
 		const { dialLog } = this.host;
-		if (dialLog === undefined) return "";
+		if (dialLog === undefined) return undefined;
 		const read = await this.#call(`the dial log of ${ref.name}`, (ctx) => dialLog.call(this.host, ref.id, ctx), this.#timeouts.requestMs, signal);
-		if (!read.ok) return "";
-		if (read.value === undefined) return "; agentrun-dial never started";
+		if (!read.ok) return undefined;
+		if (read.value === undefined) return "agentrun-dial never started";
 		const lines = read.value.replaceAll(MACHINE_TOKEN, "<token>").split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== "");
-		return lines.length === 0 ? "; agentrun-dial wrote nothing" : `; agentrun-dial said: ${lines.slice(-DIAL_LOG_LINES).join(" | ").slice(-DIAL_LOG_CHARS)}`;
+		return lines.length === 0 ? "agentrun-dial wrote nothing" : `agentrun-dial said: ${lines.slice(-DIAL_LOG_LINES).join(" | ").slice(-DIAL_LOG_CHARS)}`;
 	}
 
 	/**
@@ -1349,14 +1439,14 @@ export class HostedProvider implements ComputerProvider {
 	 * The polls are 150 ms apart at first, the pause doubling up to pollMs, so a vendor slow to list costs a few calls.
 	 * A listing that has not settled by listedMs is no failure alone (#unlisted): the computer is read by its id.
 	 */
-	async #waitListed(ref: ComputerRef, signal?: AbortSignal): Promise<Result<string[]>> {
+	async #waitListed(ref: ComputerRef, signal?: AbortSignal, also?: Record<string, string>): Promise<Result<string[]>> {
 		const { listedMs, listMs, pollMs, listedStableMs } = this.#timeouts;
 		const began = Date.now();
 		const until = began + listedMs;
 		let since: number | undefined;
 		const seen = { polls: 0, shown: 0 };
 		for (let hits = 0, delay = Math.min(LISTED_POLL_MS, pollMs); ; delay = Math.min(delay * 2, pollMs)) {
-			const listed = await listedBy(this.host, "the listing by name", byName(ref.name), listMs, signal);
+			const listed = await listedBy(this.host, "the listing by name", byName(ref.name), listMs, signal, also);
 			if (!listed.ok) return listed;
 			seen.polls += 1;
 			if (listed.value.some((machine) => machine.id === ref.id)) {
@@ -1722,25 +1812,56 @@ export class HostedProvider implements ComputerProvider {
 /** The labels a listing by one computer's name asks for. */
 const byName = (name: string): Record<string, string> => ({ [COMPUTER_LABEL]: "1", [NAME_LABEL]: name });
 
+/**
+ * What a listing by a create's name asks beside byName on a host whose names carry the run and epoch (facts.labels.named):
+ * the spec's run and epoch, where it has both, so the host can look up the whole name. Only asked, never required: a
+ * machine of the name is kept whatever its get says of them (a sandbox before its labels file, read by its name alone).
+ * Only the sweeps for a machine this create made ask it (#waitListed, #deleteNamed): that machine's name is the whole
+ * name. The first check and #converge look for any machine of the request, whatever run or epoch it was made with.
+ */
+function nameAsk(host: MachineHost, spec: ComputerSpec): Record<string, string> | undefined {
+	const run = spec.labels?.[RUN_LABEL];
+	const epoch = spec.labels?.[EPOCH_LABEL];
+	return host.facts.labels?.named && typeof run === "string" && typeof epoch === "string" ? { [RUN_LABEL]: run, [EPOCH_LABEL]: epoch } : undefined;
+}
+
 /** The room of a host that keeps its labels packed (facts.labels.packed), or undefined. */
 function packedRoom(host: MachineHost): NonNullable<HostFacts["labels"]> | undefined {
 	const room = host.facts.labels;
 	return room?.packed ? room : undefined;
 }
 
-/** A machine as the host read it, with a packed host's labels unpacked: none where it holds no packed map (not the adapter's). */
-const unpacked = (host: MachineHost, machine: Machine): Machine => (packedRoom(host) === undefined ? machine : { ...machine, labels: unpackLabels(machine.labels) ?? {} });
+/**
+ * A machine as the host read it, with a packed host's labels unpacked. One that holds no packed map has none (not the
+ * adapter's), or its stored labels on a host whose machines may carry them as given (facts.labels.packed.unpacked).
+ */
+function unpacked(host: MachineHost, machine: Machine): Machine {
+	const room = packedRoom(host);
+	if (room === undefined) return machine;
+	return { ...machine, labels: unpackLabels(machine.labels) ?? (room.packed?.unpacked ? machine.labels : {}) };
+}
 
 /**
  * The host's listing by labels, bounded by ms: only the machines that carry every one of them, since a vendor's listing
  * may answer more (MachineHost.list). A packed host is asked for PACKED_NAME alone, the name's where one is asked, and
- * its machines' labels unpacked.
+ * its machines' labels unpacked. A listing by name on a host whose machines may also carry their labels as given
+ * (facts.labels.packed.unpacked) asks both ways, one after the other within ms together, and answers every machine
+ * either finds: across an upgrade one request can make one machine of each form, and convergence must see both. `also`:
+ * labels a host that doesn't pack them is asked beside these, which only narrow its search (nameAsk): never required of
+ * a machine.
  */
-export async function listedBy(host: MachineHost, what: string, labels: Record<string, string>, ms: number, signal?: AbortSignal): Promise<Result<Machine[]>> {
+export async function listedBy(host: MachineHost, what: string, labels: Record<string, string>, ms: number, signal?: AbortSignal, also?: Record<string, string>): Promise<Result<Machine[]>> {
 	const name = labels[NAME_LABEL];
-	const asked = packedRoom(host) === undefined ? labels : name === undefined ? {} : { [PACKED_NAME]: name };
-	const listed = await hostCall(host, what, (ctx) => host.list(asked, ctx), ms, signal);
-	return listed.ok ? ok(listed.value.map((machine) => unpacked(host, machine)).filter((machine) => carries(machine, labels))) : listed;
+	const room = packedRoom(host);
+	const asks = room === undefined ? [{ ...also, ...labels }] : name === undefined ? [{}] : room.packed?.unpacked ? [{ [PACKED_NAME]: name }, labels] : [{ [PACKED_NAME]: name }];
+	const until = Date.now() + ms;
+	const found = new Map<string, Machine>();
+	for (const asked of asks) {
+		const listed = await hostCall(host, what, (ctx) => host.list(asked, ctx), Math.max(1, until - Date.now()), signal);
+		if (!listed.ok) return listed;
+		for (const machine of listed.value) if (!found.has(machine.id)) found.set(machine.id, unpacked(host, machine));
+	}
+	return ok([...found.values()].filter((machine) => carries(machine, labels)));
 }
 
 /** Whether a machine carries every one of these labels. */
@@ -1749,10 +1870,10 @@ const carries = (machine: Machine, labels: Record<string, string>) => Object.ent
 /**
  * The listing finds, get answers (MachineHost.list): the machines the host's listing by labels names, each read now by
  * readMachine, within requestMs. One the vendor no longer has (not found) is dropped, and so is one whose get carries
- * not every label. A get that fails fails the whole listing.
+ * not every label. A get that fails fails the whole listing. `also`: as listedBy's.
  */
-export async function foundBy(host: MachineHost, what: string, labels: Record<string, string>, { listMs, requestMs }: Pick<HostedTimeouts, "listMs" | "requestMs">, signal?: AbortSignal): Promise<Result<Machine[]>> {
-	const listed = await listedBy(host, what, labels, listMs, signal);
+export async function foundBy(host: MachineHost, what: string, labels: Record<string, string>, { listMs, requestMs }: Pick<HostedTimeouts, "listMs" | "requestMs">, signal?: AbortSignal, also?: Record<string, string>): Promise<Result<Machine[]>> {
+	const listed = await listedBy(host, what, labels, listMs, signal, also);
 	if (!listed.ok) return listed;
 	const reads = await Promise.all(listed.value.map(({ id }) => readMachine(host, id, requestMs, signal)));
 	const found: Machine[] = [];
@@ -1771,22 +1892,6 @@ async function readMachine(host: MachineHost, id: string, ms: number, signal?: A
 	const read = await hostCall(host, `the read of ${id}`, (ctx) => host.get(id, ctx), ms, signal);
 	if (!read.ok) return read.error.code === "not_found" ? ok(undefined) : read;
 	return ok(read.value === undefined ? undefined : unpacked(host, read.value));
-}
-
-/** What reading answers, or undefined once a signal aborts first: a caller that stopped waiting never waits on a read. */
-function untilAborted<T>(reading: Promise<T>, signals: readonly (AbortSignal | undefined)[]): Promise<T | undefined> {
-	const given = signals.filter((signal): signal is AbortSignal => signal !== undefined);
-	if (given.length === 0) return reading;
-	const signal = AbortSignal.any(given);
-	if (signal.aborted) return Promise.resolve(undefined);
-	return new Promise((settle) => {
-		const onAbort = () => settle(undefined);
-		signal.addEventListener("abort", onAbort, { once: true });
-		reading.then((value) => {
-			signal.removeEventListener("abort", onAbort);
-			settle(value);
-		});
-	});
 }
 
 /**
@@ -1918,6 +2023,8 @@ function labelProblem(key: string, value: unknown): string | undefined {
 	if (key === "") return "a label name must be non-empty";
 	if (key === COMPUTER_LABEL || key.startsWith(`${COMPUTER_LABEL}.`)) return `the label ${key} is in the provider's own namespace (${COMPUTER_LABEL})`;
 	if (key === MOUNT_LABEL) return `the label ${key} is the provider's own: it records a computer's mount`;
+	// Labels stored as given (an older server's, a host that doesn't pack) under one of these would read back as a packed map.
+	if (isPackedKey(key)) return `the label ${key} is reserved: ${PACKED_NAME} and ${PACKED_NAME}-<n> (${PACKED_NAME}-0, ${PACKED_NAME}-1 and on) hold a computer's packed labels`;
 	return undefined;
 }
 

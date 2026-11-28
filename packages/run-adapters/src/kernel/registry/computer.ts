@@ -9,6 +9,7 @@
 // that surface's api.ts (computer-surface.generated.ts), so the words a model reads can't drift from what answers them.
 // On a computer with no ui group, observe is a screenshot and act's steps are raw input at its pixels: the surface's
 // fallback, said in its answers.
+import { posix } from "node:path";
 import type { JsonValue } from "../../types.js";
 import type { ToolDef } from "./defs.js";
 import { ACT_STEPS, COMPUTER_TOOL_SCHEMAS } from "./computer-surface.generated.js";
@@ -41,9 +42,56 @@ const OBSERVE = `An app's window as its elements, one line each (@e12 button "Sa
 
 const ACT = `Run steps on an app, each on an element's ref or at a point in the window (refused as stale once the window changed under it). The answer says how each step ran and whether the window changed. The first refused step stops the rest. steps: UiStep[]\n\`\`\`ts\n${ACT_STEPS}\n\`\`\``;
 
-const SCREENSHOT = "The whole screen as an image, or a region of it.";
+const SCREENSHOT_ALONE = "The whole screen as an image, or a region of it.";
+const SCREENSHOT = `${SCREENSHOT_ALONE} With save_as, also saved as a PNG in the run's files.`;
 
-const OP = `One of the computer's ops no other tool runs, as a script's \`computer\` calls it: input.act {actions}, apps.list, apps.open {id, url?, background?}, shell.run {command, cwd?, env?, timeoutMs?}, processes.start {command, cwd?, env?}, files.read {path, encoding?}, files.write {path, data, encoding?}, files.list {path}, files.stat {path}. An op this computer does not offer is refused.`;
+/** save_as's words: the run's files are the run's folder, never the computer's own disk. */
+const SAVE_AS = "A path relative to the run's folder, ending .png (shots/home.png): the screenshot is saved there, in the run's files the user gets. A file saved on the computer itself is not one of them.";
+
+/** computer_screenshot's parameters in a run: the surface's, and save_as, which the run's hands answer, never the
+ *  computer. */
+const SCREENSHOT_PARAMETERS: object = (() => {
+  const schema = COMPUTER_TOOL_SCHEMAS.computer_screenshot as { properties: Record<string, unknown> };
+  return { ...schema, properties: { ...schema.properties, save_as: { type: "string", description: SAVE_AS } } };
+})();
+
+/** computer_screenshot's definition `def` for a run whose agent is not given write: the surface's words and parameters,
+ *  no save_as, which the run's gate refuses there. */
+export const unsavedScreenshot = <T extends { readonly description: string; readonly parameters: object }>(def: T): T =>
+  ({ ...def, description: SCREENSHOT_ALONE, parameters: COMPUTER_TOOL_SCHEMAS.computer_screenshot });
+
+/** `given` as a path in the run's folder a screenshot is saved to (relative, inside it, ending .png), normalized; any
+ *  other is refused in words. Exported so a host's gate holds a save_as as it is saved, not by a reading of its own. */
+export function savePathOf(given: unknown): string {
+  if (typeof given !== "string" || given === "" || posix.isAbsolute(given) || given.includes("\\")) throw new Error(`save_as is a path relative to the run's folder (shots/home.png): not ${JSON.stringify(given)}`);
+  const path = posix.normalize(given);
+  if (path === ".." || path.startsWith("../")) throw new Error(`save_as must stay inside the run's folder: ${JSON.stringify(given)} leaves it`);
+  if (!/\.png$/i.test(path) || path.endsWith("/.png")) throw new Error(`save_as names a .png file: not ${JSON.stringify(given)}`);
+  return path;
+}
+
+/** Each op's arguments, as computer_op's words give them (none: it takes none). */
+const OP_ARGS: Readonly<Record<string, string>> = Object.freeze({
+  "input.act": "{actions}",
+  "apps.open": "{id, url?, background?}",
+  "shell.run": "{command, cwd?, env?, timeoutMs?}",
+  "processes.start": "{command, cwd?, env?}",
+  "files.read": "{path, encoding?}",
+  "files.write": "{path, data, encoding?}",
+  "files.list": "{path}",
+  "files.stat": "{path}",
+});
+
+/** What every offer of a computer's ops says of its screen: leaving bash, read or write out does not keep a script from
+ *  a terminal app, a file manager, or an app opened on a URL or a path; and where write is granted, an app opened on
+ *  neither runs with config the agent can write (an app reads its config from the user's home). */
+export const GUI_REACH = "Input ops on a computer with a terminal app or a GUI file manager, and apps.open with a URL or a path, can do what a shell or the file ops do, whatever bash's, read's or write's setting; where write is granted, apps.open can do what a shell does even with no URL or path, since an app reads its config from the user's home.";
+
+/** computer_op's words for the ops it offers. */
+const opWords = (ops: readonly string[]): string =>
+  `One of the computer's ops no other tool runs, as a script's \`computer\` calls it: ${ops.map((op) => (OP_ARGS[op] ? `${op} ${OP_ARGS[op]}` : op)).join(", ")}. An op this computer does not offer is refused. ${GUI_REACH}`;
+
+const OP = opWords(Object.keys(COMPUTER_OPS));
 
 /** The ops computer_op runs on a computer with `groups`. */
 export function computerOpsFor(groups: readonly string[]): readonly string[] {
@@ -78,15 +126,23 @@ const def = (kind: CapabilityKind, name: (typeof COMPUTER_TOOLS)[number], descri
   replaySafe,
 });
 
-/** computer_op's parameters: the op, and its arguments as a script's `computer` gives them. */
-const OP_PARAMETERS: object = {
+/** computer_op's parameters over `ops`: the op, and its arguments as a script's `computer` gives them. */
+const opParameters = (ops: readonly string[]): object => ({
   type: "object",
   properties: {
-    op: { type: "string", enum: Object.keys(COMPUTER_OPS) },
+    op: { type: "string", enum: [...ops] },
     args: { type: "object", description: "The op's arguments." },
   },
   required: ["op"],
   additionalProperties: false,
+});
+const OP_PARAMETERS = opParameters(Object.keys(COMPUTER_OPS));
+
+/** computer_op's definition `def` for a run whose gate refuses the ops `without` (its agent is not given their tool):
+ *  its words and its op list name only the others. */
+export const withoutOps = <T extends { readonly description: string; readonly parameters: object }>(def: T, without: readonly string[]): T => {
+  const ops = Object.keys(COMPUTER_OPS).filter((op) => !without.includes(op));
+  return { ...def, description: opWords(ops), parameters: opParameters(ops) };
 };
 
 /** The computer's tools in `kind`, under its settings key, for a computer with `groups`. An act or an op changes the
@@ -96,7 +152,8 @@ export function computerToolDefs(kind: CapabilityKind, groups: readonly string[]
     // With apps and no ui group, an observe that names an app opens it first: it changes the screen, so it never runs again.
     def(kind, "computer_observe", OBSERVE, groups.includes("ui") || !groups.includes("apps")),
     def(kind, "computer_act", ACT, false, groups.includes("ui") ? undefined : ACT_WITHOUT_UI),
-    def(kind, "computer_screenshot", SCREENSHOT, true),
+    // A replay takes the screen again and saves it over the same file of the run's: nothing outside the run changes.
+    def(kind, "computer_screenshot", SCREENSHOT, true, SCREENSHOT_PARAMETERS),
     def(kind, COMPUTER_OP_TOOL, OP, false, OP_PARAMETERS),
     handoffDef(kind),
   ]);
@@ -119,6 +176,25 @@ const surfaceExecutor = (kind: CapabilityKind, tool: string, op: string): Execut
     return { text: answer.text, ...(answer.images.length > 0 ? { images: answer.images } : {}), structured: (withoutImageData(answer.value) ?? null) as JsonValue };
   });
 
+/** computer_screenshot's run: the surface's screenshot, and with save_as its PNG written into the run's files through
+ *  the run's hands (whatever disk the computer has), the answer saying where. A bad save_as is refused before the
+ *  computer is asked. */
+const screenshotExecutor = (kind: CapabilityKind): Executor => (args, call) => {
+  const { save_as: given, ...rest } = (args ?? {}) as Record<string, unknown>;
+  if (given === undefined) return surfaceExecutor(kind, "computer_screenshot", "screenshot")(rest, call);
+  return answerOf(call, async () => {
+    const path = savePathOf(given);
+    const port = call.hands.computer;
+    if (!port) throw new Error(needsKindWords("computer_screenshot", kind));
+    const answer = await port.call("screenshot", rest, call.signal);
+    const image = answer.images.find((one) => one.mimeType === "image/png");
+    if (!image) throw new Error("the computer's screenshot is no PNG, so it was not saved");
+    await call.hands.write(path, Buffer.from(image.data, "base64"));
+    const value = withoutImageData(answer.value);
+    return { text: `${answer.text}\nsaved as ${path} in the run's files`, images: answer.images, structured: { ...(value !== null && typeof value === "object" && !Array.isArray(value) ? value : {}), saved: path } as JsonValue };
+  });
+};
+
 /** computer_op's run: `op` with `args` on the hands' computer port. An op a step tool runs is sent to that tool, so each
  *  is held and recorded as that tool's call; any other the port refuses where the computer does not offer it. */
 const opExecutor = (kind: CapabilityKind): Executor => (args, call) => {
@@ -133,7 +209,7 @@ const opExecutor = (kind: CapabilityKind): Executor => (args, call) => {
 export const computerExecutors = (kind: CapabilityKind): Readonly<Record<string, Executor>> => ({
   computer_observe: surfaceExecutor(kind, "computer_observe", "observe"),
   computer_act: surfaceExecutor(kind, "computer_act", "act"),
-  computer_screenshot: surfaceExecutor(kind, "computer_screenshot", "screenshot"),
+  computer_screenshot: screenshotExecutor(kind),
   [COMPUTER_OP_TOOL]: opExecutor(kind),
   [HANDOFF_TOOL]: handoffExecutor(kind),
 });

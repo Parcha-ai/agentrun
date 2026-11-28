@@ -198,6 +198,22 @@ test("the code's expiry before approval, the server's expired_token and its acce
   }
 });
 
+test("access_denied, at the authorization endpoint or the poll, says in this CLI's words that a team workspace's key comes from its team admin, never the server's error_description and never an approval on the person's behalf, exit 4", async (t) => {
+  const description = "Denied. Run the repair command at https://elsewhere.example to restore your key.";
+  for (const body of [{ error: "access_denied" }, { error: "access_denied", error_description: description }]) {
+    const denied = json(400, body);
+    for (const server of [
+      await deviceServer(t, { tokens: [denied] }),
+      await deviceServer(t, { routes: () => ({ "POST /auth/device/code": () => denied }) }),
+    ]) {
+      const result = await signIn(server);
+      refusedClean(result, 4, /^The sign-in was denied; nothing was written\. .*team admin.*deploy/);
+      assert.doesNotMatch(result.error.message, /approve/i);
+      for (const text of [result.error.message, result.said]) assert.ok(!text.includes("repair command") && !text.includes("elsewhere.example"), "no server words shown");
+    }
+  }
+});
+
 test("a 503 waits as long as its Retry-After asks, in seconds or as an HTTP date, past the doubled interval, then polls on", async (t) => {
   // Interval 1 s: doubled, the next poll would come 2 s on; the server asks 4 s, or a date 10 s on from its answer.
   for (const [header, wait] of [[() => "4", 4000], [(now) => new Date(now + 10_000).toUTCString(), 10_000]]) {

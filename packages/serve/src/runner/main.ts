@@ -20,22 +20,24 @@ import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { type HostedDial, PROVIDERS } from "@parcha/agentrun-computer";
 import { type RunnerRelay, startRunnerRelay } from "../dial-relay.js";
+import type { PairedRelay } from "../workspace/attached-computers.js";
 import { freeModelRequestsOf } from "@parcha/agentrun-kernel/kernel/cap";
 import { ArchilSettingsEnvInvalid, archilSettingsFromEnv } from "../archil-settings.js";
 import { dockerPathsForRuns } from "../box-paths.js";
 import { COMPOSIO_KEY_ENV } from "../composio-made.js";
 import { hostCommandRefusals } from "../computers.js";
 import { hostAddressesOnce } from "../docker-host-addresses.js";
+import { closeStoreAfter, renewalDrainFor, stopRenewals } from "../chatgpt-plan.js";
 import { claimInstallsStopped } from "../harness-install.js";
 import { HARNESS_MODULES_ENV, HARNESS_MODULES_SETTING, HARNESS_RECIPES_ENV, HARNESS_RECIPES_SETTING, HARNESS_TABLE_ENV, harnessModulesEnv, harnessModulesOf, harnessRecipesEnv, harnessRecipesOf, harnessTable } from "../harness-table.js";
 import { DEFAULT_PORT, maxRunsOf } from "../host.js";
 import { FAUX_ENV, FAUX_PREFIX, withoutFaux } from "../model.js";
 import { durationMs, runLine } from "../print.js";
 import { bootSealKey } from "../seal-key.js";
-import { handedSecret, SECRET_NAMES, secret } from "../secrets.js";
+import { handedSecret, SECRET_NAMES, secret, withSecrets } from "../secrets.js";
 import { migrationsIn, openStore, RunnerBelowFloor, SchemaVersionUnknown, type Store, StoreAwaitsServer, storePlace, storeTarget } from "../store/index.js";
 import { SCHEMA_VERSION } from "../store/schema.js";
-import { SEAL_KEY_ENV, sealKeyOf } from "../tool-keys.js";
+import { SEAL_KEY_ENV, sealKeyIn } from "../tool-keys.js";
 import { LAUNCH_HOOK_SECRET_ENV } from "../trigger-launch-hook.js";
 import { FAUX_BROWSER_ENV } from "../tools.js";
 import { claimViewOpener } from "../computer-live.js";
@@ -50,6 +52,7 @@ import { type ComputerDeps, computerDepsFrom, type ComputerDepsOptions } from ".
 import { startJanitor } from "../workspace/computer-janitor.js";
 import { projectRunEnded } from "../source-sync/checkpoints.js";
 import { runEndComputers } from "../workspace/run-end-computers.js";
+import { sayLoginRunner } from "../claude-login-token.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { resolveRunnerLoop } from "./harness-loops.js";
 import type { LoopFactory } from "./loop-contract.js";
@@ -57,11 +60,14 @@ import { routeOf } from "./model-route.js";
 import { RUN_PROCESS_MIB, runnerMemory } from "./memory-claim.js";
 import { childLoops, isolationLoops, type RunIsolation, RunIsolationRefused, runIsolationOf } from "./run-child-host.js";
 import { sweepEndedScratch } from "./scratch-sweep.js";
+import { runCensus } from "../run-census.js";
+import type { ServerRunWorkspaceOptions } from "../workspace/server-run-workspace.js";
 import { RUNNER_LOOPS, RUNNER_RENEW_EVERY_MS, runnerName, startRunner, type Runner, type RunnerEvent, type RunnerMemory } from "./runner.js";
 import { keepPresence, type Presence } from "./presence.js";
 import { diskFreeGate } from "./disk-free.js";
 import { checkLines, checkRunnerEnv, type CheckRow } from "./runner-check.js";
 import { metricLine, startRunnerGauge } from "./runner-metrics.js";
+import { reseededLaunchOf, roundWaitMsOf, runnerShown } from "./learning-reseed.js";
 
 export { RUNNER_RENEW_EVERY_MS } from "./runner.js";
 
@@ -81,8 +87,9 @@ export interface RunnerProcessOptions {
   /** This runner's name in the runs it claims, its lines and its heartbeat. Default runner.ts runnerName(). */
   name?: string;
   /** Each claimed run's loop; default the runner's dispatch over the store (runnerLoop), with the computers it composed.
-   *  A factory of the store is given the runner's dial too, where it has a relay (dial-relay.ts). */
-  createLoop?: LoopFactory | ((store: Store, sealKey: Buffer, dial?: HostedDial) => LoopFactory | RunnerParts);
+   *  A factory of the store is given the runner's dial and its paired computers' relay too, where it has a relay
+   *  (dial-relay.ts). */
+  createLoop?: LoopFactory | StoreFactory;
   /** Run the computer janitor (workspace/computer-janitor.ts) over the computers createLoop composed: at the start, then
    *  on its interval. Only the runner subcommand asks for it; a test that does not ask runs none. */
   janitor?: boolean;
@@ -151,8 +158,11 @@ export async function openRunnerStore(dataDir: string, env: NodeJS.ProcessEnv, w
 /** The runner's own secrets, which a run never gets, not even in the runner's in-process environment: the server's
  *  tokens (the token and the token list) and API key, the seal key (the runner holds it as its sealKey), the store's connection (its URL holds a
  *  database password), the launch hook's signing secret (the server's alone), and the Composio account key, which the
- *  runner's claim alone reads (composio-made.ts composioEnvKey) and sends only as a granted Composio server's MCP header. */
-const RUNNER_ONLY = (name: string): boolean => name === "AGENTRUN_TOKEN" || name === "AGENTRUN_TOKENS" || name === "AGENTRUN_API_KEY" || name === SEAL_KEY_ENV || name === LAUNCH_HOOK_SECRET_ENV || name === COMPOSIO_KEY_ENV || name.startsWith("AGENTRUN_STORE_");
+ *  runner's claim alone reads (composio-made.ts composioEnvKey) and sends only as a granted Composio server's MCP header.
+ *  And every OpenTelemetry setting (OTEL_*: OTEL_EXPORTER_OTLP_HEADERS holds a backend's key): a run's process is never
+ *  handed them, in an environment or on its pipe. It posts its trace over its channel and the runner exports it
+ *  (otel/tracer.ts postedTracing, tracePosts), so no harness, tool or computer of a run has them. */
+const RUNNER_ONLY = (name: string): boolean => name === "AGENTRUN_TOKEN" || name === "AGENTRUN_TOKENS" || name === "AGENTRUN_API_KEY" || name === SEAL_KEY_ENV || name === LAUNCH_HOOK_SECRET_ENV || name === COMPOSIO_KEY_ENV || name.startsWith("AGENTRUN_STORE_") || name.startsWith("OTEL_");
 
 /** A run's environment as the runner hands its loops (AdapterSpecDeps.env): this process's, less the runner's own
  *  secrets, with every other secret the launcher's pipe handed it (a model key, a tool key, a box key) readable by name
@@ -175,7 +185,7 @@ export function runEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv 
  *  provider loader in place of the computer package's. Under --faux (the runs' environment names the faux model, as a
  *  --faux server's and a `runner --faux` give it), --faux's computers are beside them, as the server's start check
  *  reads them (server.ts computerReady): a run on the faux desktop is claimed, and its live view opened, the real way. */
-export const runnerComputers = (store: Store, env: KeyEnv, sealKey: Buffer, own: Pick<ComputerDepsOptions, "kinds" | "load" | "dockerPaths" | "hostAddresses" | "hostWhy" | "hub" | "dial"> = {}) =>
+export const runnerComputers = (store: Store, env: KeyEnv, sealKey: Buffer, own: Pick<ComputerDepsOptions, "kinds" | "load" | "dockerPaths" | "hostAddresses" | "hostWhy" | "hub" | "dial" | "pairedRelay"> = {}) =>
   // A runner on another host than its server (AGENTRUN_RUNNER_LIVE_HOST): its viewers answer there (live-reach.ts).
   computerDepsFrom({ env, store, sealKey, openComputerView: claimViewOpener(runnerLiveOf(env, sealKey)), ...(envValue(env, FAUX_ENV) ? { faux: fauxComputers() } : {}), ...own });
 
@@ -194,16 +204,16 @@ export function besideRunEnv(env: NodeJS.ProcessEnv, switches: NodeJS.ProcessEnv
  *  its launch (harness-loops.ts resolveRunnerLoop), with the data directory, the run environment (runEnv), the store's
  *  journal, the seal key and the model route. `booted`: the seal key startRunnerProcess booted against the store (else
  *  this process's, as it was handed or booted). Refused in words with no seal key. */
-export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv = process.env, booted?: Buffer, isolation?: RunIsolation, dial?: HostedDial): RunnerParts {
-  const sealKey = booted ?? sealKeyOf(secret(SEAL_KEY_ENV) ?? env[SEAL_KEY_ENV]);
-  if (!sealKey) throw new RunnerRefused(`A runner needs the server's seal key (${SEAL_KEY_ENV}): start it through the server's launcher, which hands it over.`);
+export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv = process.env, booted?: Buffer, isolation?: RunIsolation, dial?: HostedDial, paired?: PairedRelay): RunnerParts {
+  const sealKey = booted ?? sealKeyIn(secret(SEAL_KEY_ENV) ?? env[SEAL_KEY_ENV], "a runner's secrets", { Refused: RunnerRefused, none: "start the runner through the server's launcher, which hands it over" });
   const runs = runEnv(env);
   // The run's computer at its claim, composed once (runnerComputers): none for the runner's place, a box's computer by the
   // agent's setting, its keys read from the run environment first, then the store's sealed rows; a Docker computer's
   // mounts by where this process's Docker has the data directory (box-paths.ts), read once; a desktop's or a phone's live
   // view opened with it. A machine that dials goes to this runner's own hub, through the server's relay (`dial`, its
-  // relay's: dial-relay.ts); with none, its provider refuses.
-  const computers = runnerComputers(store, runs, sealKey, { dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs), hostWhy: hostCommandRefusals(PROVIDERS, process.env.PATH), ...(dial ? { dial } : {}) });
+  // relay's: dial-relay.ts); with none, its provider refuses. A paired computer is brought onto that same hub for the run
+  // (`paired`, the relay's); with none, it is refused in words.
+  const computers = runnerComputers(store, runs, sealKey, { dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs), hostWhy: hostCommandRefusals(PROVIDERS, process.env.PATH), ...(dial ? { dial } : {}), ...(paired ? { pairedRelay: paired } : {}) });
   const loopback = runnerLoopback(env);
   // The operator's bound on owner-allowed private hosts (mcp-private-hosts.ts), read by every dial this runner and its
   // runs' processes make (they inherit it, runEnv): said at the start when it narrows the owner's list.
@@ -223,7 +233,7 @@ export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv
   };
   // `isolation`: each run a process of its own (run-child-host.ts), as the runner subcommand runs them; none, in this one
   // (a test's runner).
-  const createLoop = isolation ? childLoops({ deps, isolation, log: deps.log }) : createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: resolveRunnerLoop(deps) });
+  const createLoop = isolation ? childLoops({ deps, isolation, log: deps.log }) : createDispatchLoop({ launchOf: reseededLaunchOf({ store, data: deps.data, shown: runnerShown(deps), log: deps.log, waitMs: roundWaitMsOf(deps.env) }), resolve: resolveRunnerLoop(deps) });
   return { createLoop, computers: computers.computerDeps, env: runs };
 }
 
@@ -283,6 +293,14 @@ export function checkRunner(options: { dataDir: string; name: string; now?: () =
   return { ok: false, why: `${name}'s heartbeat is ${Math.round(age / 1000)} s old, past ${(2 * RUNNER_RENEW_EVERY_MS) / 1000} s: its loop has stopped` };
 }
 
+/** A runner's census of each run it ends (run-census.ts runCensus), reading the run's files as the server's file routes
+ *  read them: with the secrets this process was started with readable by name (secrets.ts withSecrets, "own"), as the
+ *  server reads its own. The launcher holds them off `env`, and the Archil account key is one: a Mode 2 run's disk opens
+ *  with it, so a census given `env` alone fails every Mode 2 end, and each writes "unscanned". `makeDisk`: a test's
+ *  Archil disk. */
+export const runnerCensus = (store: Store, dataDir: string, sealKey: Buffer, env: NodeJS.ProcessEnv, makeDisk?: ServerRunWorkspaceOptions["makeDisk"]): ReturnType<typeof runCensus> =>
+  runCensus(store, { data: dataDir, sealKey, env: withSecrets(env, "own"), ...(makeDisk ? { makeDisk } : {}) });
+
 /** Opens the store as a runner and starts claiming runs. */
 export async function startRunnerProcess(options: RunnerProcessOptions): Promise<RunnerProcess> {
   const warn = options.warn ?? ((message: string) => void process.stderr.write(`agentrun-serve runner: ${message}\n`));
@@ -313,25 +331,29 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
     // Its relay (dial-relay.ts), where its environment names the server's public address: a machine that dials the
     // server lands in this runner's hub, through the server. Its log lines are the runner's warnings.
     relay = await startRunnerRelay({ store, sealKey: seal.key, runner: name, presence, env, log: warn });
-    const made = options.createLoop ?? ofStore((opened, sealKey, dial) => runnerLoop(opened, options.dataDir, undefined, sealKey, undefined, dial));
+    const made = options.createLoop ?? ofStore((opened, sealKey, dial, paired) => runnerLoop(opened, options.dataDir, undefined, sealKey, undefined, dial, paired));
     // A factory of the store (marked by ofStore) is given the store; a loop factory is used as is.
-    const parts = isStoreFactory(made) ? made(store, seal.key, relay?.dial) : made;
+    const parts = isStoreFactory(made) ? made(store, seal.key, relay?.dial, relay?.paired) : made;
     const createLoop = typeof parts === "function" ? parts : parts.createLoop;
     // The janitor sweeps with the computers the loop composed, never a second composition. Its lines are the runner's
     // warnings, said where the runner says its others (warn: stderr unless a test gives its own).
     // It sweeps as this runner (its name and its presence's incarnation): a computer kept at a park pinned to another
-    // runner still there is that runner's to end (computer-kept.ts sweepKept).
-    if (options.janitor && typeof parts !== "function") janitor = startJanitor({ store, computers: parts.computers, env: parts.env, log: warn, self: { runner: name, incarnation } });
+    // runner still there is that runner's to end (computer-kept.ts sweepKept). The seal key is the claims' too: it opens
+    // the Archil key a kept computer's mount credential is removed with.
+    if (options.janitor && typeof parts !== "function") janitor = startJanitor({ store, computers: parts.computers, env: parts.env, sealKey: seal.key, log: warn, self: { runner: name, incarnation } });
     // Before it claims: the scratch folders of runs that ended after their runner died (scratch-sweep.ts), said as warnings.
     await sweepEndedScratch(store, options.dataDir, { log: warn });
-    // A run's end lets go of what its earlier claims' computers left, with the same computers (run-end-computers.ts), as
-    // this runner, as the janitor sweeps: a computer kept pinned to another runner still keeping it is that runner's.
-    const runEnded = projectRunEnded(store, typeof parts !== "function" ? runEndComputers({ store, computers: parts.computers, log: warn, self: () => ({ runner: name, incarnation }) }) : undefined);
+    // A run's end lets go of what its earlier claims' computers left, with the same computers (run-end-computers.ts),
+    // and with the janitor's environment and seal key, so a machine kept on Archil it deletes has its mount credential
+    // removed.
+    const runEnded = projectRunEnded(store, typeof parts !== "function" ? runEndComputers({ store, computers: parts.computers, log: warn, env: parts.env, sealKey: seal.key }) : undefined);
     runner = startRunner({
       store,
       createLoop,
       name,
       presence,
+      // Each end counts where in the run's files what its caller handed it sits, as the server reads them.
+      census: runnerCensus(store, options.dataDir, seal.key, env),
       ...(options.loops ? { loops: options.loops } : {}),
       ...(options.drainMs ? { drainMs: options.drainMs } : {}),
       memory,
@@ -358,15 +380,23 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
   const close = () =>
     (closing ??= (async () => {
       floor.stop();
-      // The janitor's sweep is cut and waited for on its own bound, beside the runner's close, never before it.
-      await Promise.all([janitor?.close(), runner.close()]);
-      // Its relay after its runs: a run's release revokes its machine's token through it. Then its word that it is
-      // there: it claims no more.
-      await relayed?.close();
-      await kept.close();
-      // A first-use install its claims started, stopped as they let go: its npm ends before this process can.
-      await claimInstallsStopped();
-      await store.close();
+      // Its claims' readers start no ChatGPT renewal on its store once the close tells it (RUNNER_RENEWALS_SERVED_MS in,
+      // or the drain's end if sooner: a run the drain lets finish may need one); one OpenAI is answering saves its new
+      // pair before the store closes (awaited last, bounded by the window the close hands, at most RENEWAL_DRAIN_MS:
+      // renewalDrainFor, so it ends inside RUNNER_RENEWAL_BOUND_MS, which every shipped grace holds).
+      let renewalsStopped: Promise<void> | undefined;
+      const stopRenewing = (by?: number) => (renewalsStopped ??= stopRenewals(store, renewalDrainFor(by)));
+      // The renewals' drain and the store's close run whatever the steps before them throw (closeStoreAfter).
+      await closeStoreAfter(async () => {
+        // The janitor's sweep is cut and waited for on its own bound, beside the runner's close, never before it.
+        await Promise.all([janitor?.close(), runner.close(stopRenewing)]);
+        // Its relay after its runs: a run's release revokes its machine's token through it. Then its word that it is
+        // there: it claims no more.
+        await relayed?.close();
+        await kept.close();
+        // A first-use install its claims started, stopped as they let go: its npm ends before this process can.
+        await claimInstallsStopped();
+      }, () => stopRenewing(), store);
       held.release();
     })());
   // A floor above this runner closes it at once: it claims nothing from the read that saw the floor on, drains and hands
@@ -418,18 +448,22 @@ function watchFloor(store: Store, known: number, everyMs: number): { readonly ou
 }
 
 const storeFactories = new WeakSet<object>();
-/** Marks `make` as a function of the store (startRunnerProcess gives it the store it opens, and its relay's dial). */
-export function ofStore<Made extends LoopFactory | RunnerParts>(make: (store: Store, sealKey: Buffer, dial?: HostedDial) => Made): (store: Store, sealKey: Buffer, dial?: HostedDial) => Made {
+/** A function of the store: startRunnerProcess gives it the store it opens, and its relay's dial and paired computers'
+ *  relay where it has a relay. */
+type StoreFactory = (store: Store, sealKey: Buffer, dial?: HostedDial, paired?: PairedRelay) => LoopFactory | RunnerParts;
+/** Marks `make` as a function of the store (StoreFactory). */
+export function ofStore<Made extends LoopFactory | RunnerParts>(make: (store: Store, sealKey: Buffer, dial?: HostedDial, paired?: PairedRelay) => Made): (store: Store, sealKey: Buffer, dial?: HostedDial, paired?: PairedRelay) => Made {
   storeFactories.add(make);
   return make;
 }
-const isStoreFactory = (made: LoopFactory | ((store: Store, sealKey: Buffer, dial?: HostedDial) => LoopFactory | RunnerParts)): made is (store: Store, sealKey: Buffer, dial?: HostedDial) => LoopFactory | RunnerParts => storeFactories.has(made);
+const isStoreFactory = (made: LoopFactory | StoreFactory): made is StoreFactory => storeFactories.has(made);
 
 /** How long a runner process lets each busy run finish its turn on SIGTERM, unless --drain-timeout or
  *  AGENTRUN_DRAIN_TIMEOUT says: the image's server drain (its CMD's --drain-timeout 6s), so a runner beside a --no-runner
  *  server drains as the server's own runner would.
- *  BOUND: this drain plus the stuck-loop stop after it (runner.ts runnerCloseBoundMs: the claim's lease less its margin,
- *  30 s - 5 s = 25 s) is 6 + 25 = 31 s, inside deploy/compose.yaml's 35 s stop_grace_period for its runners
+ *  BOUND: the close is this drain plus the stuck-loop stop after it (the claim's lease less its margin, 30 s - 5 s), or
+ *  a computer provider's cleanup bound from the close's start and its margins (30 s + 5 s + 5 s), whichever is longer
+ *  (runner.ts runnerCloseBoundMs): 40 s, inside deploy/compose.yaml's 45 s stop_grace_period for its runners
  *  (runner-beside-flags.test.mjs pins it). Raise this default only with that grace. */
 export const RUNNER_DRAIN_TIMEOUT = "6s";
 /** The environment's drain for a runner process when --drain-timeout gives none. */
@@ -524,21 +558,36 @@ export function runnerArgs(argv: readonly string[]): { dataDir: string; loops?: 
  *  then closes: nothing more claimed, the drain, its runs handed back. Answers the floor's words when that was the stop,
  *  else undefined. `ready` is called once the signals are handled, never before: a line that says the runner is ready (on
  *  a pipe, written at once) may bring a SIGTERM back before the next statement runs, and one that came before the
- *  handlers would end the process unclosed. `outdated`: told the floor's words before the close begins. */
-export async function runUntilSignalled(process: Pick<RunnerProcess, "close"> & Partial<Pick<RunnerProcess, "outdated">>, signals: readonly NodeJS.Signals[] = ["SIGTERM", "SIGINT"], ready: () => void = () => {}, outdated: (why: string) => void = () => {}): Promise<string | undefined> {
-  const why = await new Promise<string | undefined>((resolve) => {
-    const done = (value: string | undefined) => {
-      for (const signal of signals) globalThis.process.off(signal, onSignal);
-      resolve(value);
-    };
-    const onSignal = () => done(undefined);
-    for (const signal of signals) globalThis.process.on(signal, onSignal);
-    void process.outdated?.then(done);
-    ready();
-  });
-  if (why !== undefined) outdated(why);
-  await process.close();
-  return why;
+ *  handlers would end the process unclosed. `outdated`: told the floor's words before the close begins. The handlers stay
+ *  until the close is over: a signal again meanwhile (a second docker stop, a double Ctrl-C) is said once through
+ *  `again` and changes nothing, where Node's default would end the process mid-close, a ChatGPT renewal's save cut. */
+export async function runUntilSignalled(process: Pick<RunnerProcess, "close"> & Partial<Pick<RunnerProcess, "outdated">>, signals: readonly NodeJS.Signals[] = ["SIGTERM", "SIGINT"], ready: () => void = () => {}, outdated: (why: string) => void = () => {}, again: (line: string) => void = (line) => console.error(line)): Promise<string | undefined> {
+  let stopping = false;
+  let said = false;
+  let stop: (value: string | undefined) => void = () => {};
+  const onSignal = () => {
+    if (!stopping) return stop(undefined);
+    if (said) return;
+    said = true;
+    again("agentrun-serve runner: already stopping: it exits once its runs are handed back and its store is closed.");
+  };
+  for (const signal of signals) globalThis.process.on(signal, onSignal);
+  try {
+    const why = await new Promise<string | undefined>((resolve) => {
+      stop = (value) => {
+        if (stopping) return;
+        stopping = true;
+        resolve(value);
+      };
+      void process.outdated?.then(stop);
+      ready();
+    });
+    if (why !== undefined) outdated(why);
+    await process.close();
+    return why;
+  } finally {
+    for (const signal of signals) globalThis.process.off(signal, onSignal);
+  }
 }
 
 /** The runner process's last resort (runnerMain installs it for unhandledRejection and uncaughtException): says what
@@ -561,6 +610,7 @@ function said(name: string, event: RunnerEvent): string | undefined {
   if (event.type === "claimed") return `Runner ${name} claimed ${event.claim.runId} (epoch ${event.claim.epoch})`;
   if (event.type === "released") return `Runner ${name} released ${event.runId} (${event.end})`;
   if (event.type === "started" || event.type === "ended") return runLine(event);
+  if (event.type === "learning-deadline") return `Runner ${name} cancels ${event.runId}: a learning run at its deadline`;
   return troubleLine(name, event);
 }
 
@@ -610,7 +660,7 @@ export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessE
   try {
     holds = runnerHolds(args, env);
     // The Archil settings an operator sets, read by every run's claim here as the server reads them (archil-settings.ts):
-    // one of the region and S3 URL without the other, or a value the server would refuse, stops this start as it stops
+    // one set without the region, or a value the server would refuse, stops this start as it stops
     // the server's.
     archilSettingsFromEnv(env);
   } catch (error) {
@@ -641,6 +691,9 @@ export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessE
   holds = { ...holds, loops: isolationLoops(isolation, holds.loops) };
   let started: RunnerProcess;
   const runnerOf = name ?? runnerName();
+  // Said on the data folder before it claims: whether its runs on Claude Code's login stay in this process, its CLI on
+  // the login's folder (claude-login-token.ts sayLoginRunner), for a runner whose runs are users of their own to read.
+  sayLoginRunner(args.dataDir, runnerOf, isolation.kind === "uid" ? "uid" : "process");
   // The last resort, in this process only (never the library, the server's CLI or the runner beside a server): an error
   // nothing handled is said with its stack, and the process exits 1 at once (lastResort: crashing is the safe failure).
   const fatal = lastResort(runnerOf);
@@ -665,7 +718,7 @@ export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessE
       drainMs: holds.drainMs,
       // Each run a process of its own (`isolation`); its computer, with this runner's relay's dial, held here in the
       // runner, which the run's process asks for it over its channel (run-child-host.ts, held.ts computer).
-      createLoop: ofStore((store, sealKey, dial) => runnerLoop(store, args.dataDir, env, sealKey, isolation, dial)),
+      createLoop: ofStore((store, sealKey, dial, paired) => runnerLoop(store, args.dataDir, env, sealKey, isolation, dial, paired)),
       // Each run's own process weighed beside its harness's run (memory-claim.ts RUN_PROCESS_MIB).
       processMib: RUN_PROCESS_MIB,
       // The runner subcommand ends what a crashed runner of this server left (never under --faux).

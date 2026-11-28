@@ -34,6 +34,9 @@ const abortedOf = (faux) =>
 
 /** The key timeline-key-words.test.mjs holds, which the provider errors above echo. */
 const CUT_KEY = `not-a-secret-${"cut-key-0123456789abcdef"}`;
+/** A made-up body line of a key, 64 base64 characters with "+" at 31 and 55, which redact-plus-literals.test.mjs holds:
+ *  an answer below prints it as code that builds it from string literals joined by "+". */
+export const PLUS_KEY = ["Zq8VbN3xLmT6pR2wYk9HsD", "/", "q7Xk2Lr9", "+", "fJ8mWb3Nc", "/", "hP4sYd6Gv1EzQ", "+", "uKa0Rw7H"].join("");
 
 export default function reply(context, faux) {
   const verdict = graderAnswerOfContext(context);
@@ -105,34 +108,17 @@ function replyTo(context, faux) {
     }
     // A node whose model request a provider refused (401), in pi-ai's words.
     if (canary.includes("Fail with a refused key")) return faux.message("", { stopReason: "error", errorMessage: '401: {"message":"User not found","code":401}' });
-    // A node that says which decision keys its process was handed on their descriptor: names only, never a value.
-    if (canary.includes("Report the decision keys")) {
-      if (answered) return faux.message("Submitted.");
-      return import(new URL("../../dist/decisions.js", import.meta.url).href).then(({ handedKeys }) => faux.message(faux.toolCall("submit", { names: Object.keys(handedKeys(process.env)).sort() }), { stopReason: "toolUse" }));
-    }
     if (canary.includes("Report the canary")) {
       if (answered) return faux.message("Submitted.");
       const gate = /Report the canary once (\S+?) exists\./.exec(canary)?.[1];
       return (async () => {
-        const [{ CANARY: JEV }, { CANARY: PARALLEL }, { readFile }, { readFileSync, readlinkSync }, { spawnSync }] = await Promise.all([import("./faux-jev.mjs"), import("./faux-parallel.mjs"), import("node:fs/promises"), import("node:fs"), import("node:child_process")]);
+        const [{ CANARY: JEV }, { CANARY: PARALLEL }, { readFile }, { spawnSync }] = await Promise.all([import("./faux-jev.mjs"), import("./faux-parallel.mjs"), import("node:fs/promises"), import("node:child_process")]);
         const holds = (text) => typeof text === "string" && (text.includes(JEV) || text.includes(PARALLEL));
         if (gate) await untilExists(gate);
         const environ = await readFile("/proc/self/environ", "utf8").catch(() => "");
-        const fd = process.env.AGENTRUN_SERVE_DECISION_KEY_FD;
-        const sub = spawnSync("sh", ["-c", `${fd ? `[ -e /proc/$$/fd/${fd} ] && echo FD_OPEN; ` : ""}env`], { encoding: "utf8" });
-        // Whether the descriptor is a Unix socket, as the handed one is (one end of a socket pair): Node opens 3 to about
-        // 20 for itself, none a Unix socket, and a closed low number is soon one of them. Here and in a Node program it starts.
-        const handedSocket = (fd) => {
-          try {
-            const inode = /^socket:\[(\d+)\]$/.exec(readlinkSync(`/proc/self/fd/${fd}`))?.[1];
-            return inode !== undefined && readFileSync("/proc/self/net/unix", "utf8").split("\n").some((line) => line.trim().split(/\s+/)[6] === inode);
-          } catch {
-            return false;
-          }
-        };
-        // And a Node program, as a tool's effect would start one: what its environment holds and whether it got the
-        // descriptor.
-        const node = spawnSync(process.execPath, ["-e", `const { readFileSync, readlinkSync } = require("fs"); process.stdout.write(JSON.stringify({ leaked: Object.values(process.env).some((v) => v && (v.includes(${JSON.stringify(JEV)}) || v.includes(${JSON.stringify(PARALLEL)}))), fd_open: ${fd ? `(${handedSocket})(${fd})` : "false"} }))`], { encoding: "utf8" });
+        const sub = spawnSync("sh", ["-c", "env"], { encoding: "utf8" });
+        // And a Node program, as a tool's effect would start one: whether its environment holds a key.
+        const node = spawnSync(process.execPath, ["-e", `process.stdout.write(JSON.stringify({ leaked: Object.values(process.env).some((v) => v && (v.includes(${JSON.stringify(JEV)}) || v.includes(${JSON.stringify(PARALLEL)}))) }))`], { encoding: "utf8" });
         const nodeSaw = JSON.parse(node.stdout || "{}");
         // The env this process gives its tools (ToolHost.env, made by withSecrets from the secrets fd 3 handed over):
         // the module the run preloaded, so the same instance and the same secrets.
@@ -141,11 +127,8 @@ function replyTo(context, faux) {
         return faux.message(faux.toolCall("submit", {
           leaked: Object.values(process.env).some(holds) || holds(environ),
           key_set: process.env.TYPESAFE_API_KEY !== undefined || process.env.PARALLEL_API_KEY !== undefined,
-          fd_open: fd ? handedSocket(fd) : false,
           sub_leaked: holds(sub.stdout),
-          sub_fd_open: sub.stdout.includes("FD_OPEN"),
           node_leaked: nodeSaw.leaked !== false,
-          node_fd_open: nodeSaw.fd_open !== false,
           host_env_leaked: ["TYPESAFE_API_KEY", "PARALLEL_API_KEY"].some((name) => holds(hostEnv[name]) || holds(secrets.secret(name))),
         }), { stopReason: "toolUse" });
       })();
@@ -190,7 +173,7 @@ function replyTo(context, faux) {
   // Searches the web once for what follows "Search the web for ", then answers with the search's answer.
   if (first.includes("Search the web for ")) {
     const query = first.slice(first.indexOf("Search the web for ") + "Search the web for ".length).replace(/\.$/, "");
-    return results === 0 ? faux.message(faux.toolCall("web_search", { query, n: 2 }), { stopReason: "toolUse" }) : faux.message(`Found: ${textOf(context.messages.at(-1))}`);
+    return results === 0 ? faux.message(faux.toolCall("web_search", { objective: query, n: 2 }), { stopReason: "toolUse" }) : faux.message(`Found: ${textOf(context.messages.at(-1))}`);
   }
   // Quotes a key read from a file the test names (so the prompt never holds it): in its thinking, in its text (base64),
   // in a tool call's arguments, then in its answer (timeline-redact-all.test.mjs holds that value as a key).
@@ -284,14 +267,14 @@ function replyTo(context, faux) {
   const topic = /^Research (.+) on the web and write report\.md\.$/s.exec(first)?.[1];
   if (topic) {
     const found = (index) => JSON.parse(textOf(context.messages.filter((m) => m.role === "toolResult")[index]));
-    if (results === 0) return faux.message(faux.toolCall("web_search", { query: topic, n: 2 }), { stopReason: "toolUse" });
+    if (results === 0) return faux.message(faux.toolCall("web_search", { objective: topic, n: 2 }), { stopReason: "toolUse" });
     if (results === 1) return faux.message(faux.toolCall("web_fetch", { url: "http://public.example/" }), { stopReason: "toolUse" });
     if (results === 2) return faux.message(faux.toolCall("write", { path: "report.md", content: `# ${topic}\n\n${found(1).text?.includes("forty-two") ? "The answer is forty-two" : "No answer"} (${found(1).title}, ${found(1).url}).\n` }), { stopReason: "toolUse" });
     return faux.message("Wrote report.md.");
   }
   // Searches the web once for what its first message says, with web_search, then says so.
   const query = /^Search the web for (.+)$/s.exec(first)?.[1];
-  if (query) return results === 0 ? faux.message(faux.toolCall("web_search", { query, n: 3 }), { stopReason: "toolUse" }) : faux.message("Searched.");
+  if (query) return results === 0 ? faux.message(faux.toolCall("web_search", { objective: query, n: 3 }), { stopReason: "toolUse" }) : faux.message("Searched.");
   // A follow-up that browses once more: a snapshot, then what it saw.
   if (browse && users.length > 1 && last === "Browse the example page again.") return answered ? faux.message(`Seen again: ${textOf(context.messages.at(-1))}`) : faux.message(faux.toolCall("snapshot", {}), { stopReason: "toolUse" });
   // "Browse the example page, then ask me once <file> exists.": a snapshot, then, once the test has made that file, an
@@ -370,6 +353,10 @@ function replyTo(context, faux) {
   }
   // A tool name past what the agent store keeps (256 characters): pi answers that no such tool exists.
   if (first.includes("Call a tool with a long name")) return results === 0 ? faux.message(faux.toolCall("t".repeat(300), {}), { stopReason: "toolUse" }) : faux.message("Called it.");
+  // "Take your time, and mark <file> as you start.": the file says the request is out (a run reads working before it is).
+  // The path as given, spaces and all (a temporary directory may have them).
+  const marked = /Take your time, and mark (.+?) as you start\./.exec(last);
+  if (marked) return import("node:fs").then(({ writeFileSync }) => (writeFileSync(marked[1], ""), slow(faux, 60_000, "Done slowly.")));
   if (last.includes("Take your time")) return slow(faux, 60_000, "Done slowly.");
   // Answers only once it is stopped: the answer lands after the stop, the race the server must not read as an answer.
   if (first.includes("Answer when stopped") && users.length === 1) return new Promise((resolve) => faux.signal?.addEventListener("abort", () => resolve(faux.message("Stopped, but here is the answer.")), { once: true }));
@@ -396,6 +383,9 @@ function replyTo(context, faux) {
   if (first.includes("Fail echoing an encoded key")) return faux.message("", { stopReason: "error", errorMessage: `401 {"message":"Key ${Buffer.from(CUT_KEY).toString("base64")} is not valid"}` });
   // An answer that quotes the held key, plainly and base64-encoded (final-answer-redact.test.mjs holds CUT_KEY as a key).
   if (first.includes("Answer quoting the held key.")) return faux.message(`Here it is: ${CUT_KEY} and ${Buffer.from(CUT_KEY).toString("base64")}. The rest stays.`);
+  // An answer that prints PLUS_KEY as string literals joined by "+": in chunks of 16, one a line, or in halves at a "+".
+  if (first.includes("Answer printing the plus key in lines.")) return faux.message(["The body:", "const body =", ...PLUS_KEY.match(/.{16}/g).map((chunk) => `  "${chunk}" +`), '  "";'].join("\n"));
+  if (first.includes("Answer printing the plus key in halves.")) return faux.message(`The body: const body = "${PLUS_KEY.slice(0, 31)}" + "${PLUS_KEY.slice(31)}";`);
   // A long answer (about 50 KB) that quotes the held key near its end.
   if (first.includes("Answer at length quoting the held key.")) return faux.message(`${"word ".repeat(10_000)}near the end ${CUT_KEY} done.`);
   // A workflow's llm call that answers with the held key, and one whose provider echoes it in its error (graph-redact.test.mjs).

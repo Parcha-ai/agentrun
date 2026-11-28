@@ -129,6 +129,11 @@ test("computer keys: a provider that cannot be made, or that throws, is a failed
   const made = await testConnection("modal", { keys: { MODAL_TOKEN_ID: KEY, MODAL_TOKEN_SECRET: SECRET } }, throwing);
   assert.deepEqual([made.ok, made.error.code], [false, "invalid"]);
   assert.match(made.error.message, /^Modal's settings are not valid\. \(the vendor said: the Modal provider refuses \[the key\]\)$/);
+  // A provider whose vendor SDK is not installed (npm install --omit=optional) says the install step alone: no setting
+  // is wrong, and no vendor said anything.
+  const unsdked = { e2b: async () => { throw Object.assign(new Error("E2B needs the e2b package: npm install e2b@2.63.0"), { code: "sdk_missing" }); } };
+  const missing = await testConnection("e2b", { keys: { E2B_API_KEY: KEY } }, unsdked);
+  assert.deepEqual([missing.ok, missing.error.code, missing.error.message], [false, "sdk_missing", "E2B needs the e2b package: npm install e2b@2.63.0"]);
   const exploding = fakeModule(() => { throw new Error(`socket closed near ${KEY}`); });
   const thrown = await testConnection("orgo", { keys: { ORGO_API_KEY: KEY, ORGO_WORKSPACE_ID: "ws-1" } }, { orgo: exploding.create });
   assert.deepEqual([thrown.ok, thrown.error.code], [false, "unreachable"]);
@@ -192,4 +197,16 @@ test("computer keys: keyChoices' failures: a refused key names the key to check;
   assert.deepEqual(denied, { ok: false, error: { code: "denied", message: "Orgo refused the saved key: check ORGO_API_KEY in Settings → Computers. (the vendor said: 401 for [the key])" } });
   const none = await keyChoices("orgo", "ORGO_WORKSPACE_ID", { keys: { ORGO_API_KEY: KEY } }, { orgo: choosingModule({ ok: false, error: { code: "not_found", message: "this Orgo key's account has no workspace: make one at orgo.ai" } }).create });
   assert.deepEqual(none, { ok: false, error: { code: "not_found", message: "this Orgo key's account has no workspace: make one at orgo.ai" } });
+});
+
+test("a key split by a control character, a terminal sequence or a box in a vendor's words is withheld with them", async () => {
+  const [head, rest] = [KEY.slice(0, 9), KEY.slice(9)];
+  for (const between of ["\u0000", "\u001b[0m", "\ufffe"]) {
+    const leaky = fakeModule({ ok: true, value: { detail: `token ${head}${between}${rest} works` } });
+    const ok = await testConnection("kernel", { keys: { KERNEL_API_KEY: KEY } }, { kernel: leaky.create });
+    assert.deepEqual(ok, { ok: true, value: { detail: "[the key]" } }, JSON.stringify(between));
+  }
+  // Control: words with no key in them are kept as they came.
+  const plain = fakeModule({ ok: true, value: { detail: "token \u001b[0mworks" } });
+  assert.deepEqual(await testConnection("kernel", { keys: { KERNEL_API_KEY: KEY } }, { kernel: plain.create }), { ok: true, value: { detail: "token \u001b[0mworks" } });
 });

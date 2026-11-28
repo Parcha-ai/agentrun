@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { parse } from 'yaml';
+import { isAlias, parse, parseDocument } from 'yaml';
 import { checkCover, commandsOf, modelSeconds, plan, pools, readConfig, readSuites, testShards, timingDrift, unitsOf } from './ci-plan.mjs';
 
 const scratch = mkdtempSync(join(tmpdir(), 'ci-plan-'));
@@ -42,7 +42,43 @@ test('the plan puts the longest units first, each on the shard it lengthens leas
   assert.throws(() => plan(units, 0), /a whole number of shards/);
 });
 
-test("a suite's files in one shard take its longest file or their total over its parallelism, whichever is more", () => {
+test("a node --test suite's files in one shard take as long as node schedules them: sorted, its concurrency at a time", () => {
+  const file = (id, seconds) => ({ ...unit(id, seconds, 'serve', 4), slots: 2 });
+  // A 100 s file that sorts first starts at once and the short ones share the other slot; one that sorts last starts when the
+  // short ones have held both slots for 40 s. Each file holds its slot a quarter second past its tests. The
+  // longest-file-or-total-over-parallelism model reads 100 s either way.
+  const short = [1, 2, 3, 4].map((n) => file(`m-${n}`, 20));
+  assert.equal(modelSeconds([file('a-long', 100), ...short]), 2 + 100.25);
+  assert.equal(modelSeconds([...short, file('z-long', 100)]), 2 + 40.5 + 100.25);
+  assert.equal(modelSeconds([...short, file('z-long', 100)].map(({ slots, ...rest }) => rest)), 2 + 100);
+  // Slots are not CPUs: eight 20 s files in eight slots take their total over the suite's parallelism of 4, not 20 s.
+  assert.equal(modelSeconds([1, 2, 3, 4, 5, 6, 7, 8].map((n) => ({ ...file(`c-${n}`, 20), slots: 8 }))), 2 + (8 * 20.25) / 4);
+  // Planned: beside a long file that sorts first the short ones cost nothing; beside one that sorts last they do, so one goes
+  // to the other shard.
+  const others = [unit('x', 60, 'other'), unit('y', 50, 'other')];
+  assert.deepEqual(plan([file('a-long', 100), ...short, ...others], 2).map(ids), [['a-long', 'm-1', 'm-2', 'm-3', 'm-4'], ['x', 'y']]);
+  const late = plan([file('z-long', 100), ...short, ...others], 2);
+  assert.deepEqual(late.map(ids), [['m-1', 'm-2', 'm-3', 'z-long'], ['m-4', 'x', 'y']]);
+  assert.deepEqual(late.map((shard) => shard.seconds), [Math.round(2 + 20.25 + 100.25), Math.round(2 + 20.25 + 2 + 110)]);
+});
+
+test('a suite takes its script\'s --test-concurrency, or node\'s default on the 4-CPU runners where it sets none', () => {
+  const root = repo('slots', {
+    workspaces: { a: ['a', "node --test --test-concurrency=8 'test/*.test.mjs'", ['test/one.test.mjs']], b: ['b', 'node --test test/*.test.mjs', ['test/b.test.mjs']] },
+  });
+  assert.deepEqual(unitsOf(readSuites(root), readConfig(root).timings).map((u) => [u.id, u.slots]), [['file:packages/a/test/one.test.mjs', 8], ['file:packages/b/test/b.test.mjs', 3]]);
+});
+
+test('a suite script\'s --import is carried into every shard command that runs its files', () => {
+  const root = repo('imports', {
+    workspaces: { a: ['@x/a', "node --test --test-concurrency=8 --import=./test/hook.mjs 'test/*.test.mjs'", ['test/one.test.mjs', 'test/two.test.mjs']] },
+  });
+  const suites = readSuites(root);
+  const units = unitsOf(suites, readConfig(root).timings);
+  assert.deepEqual(commandsOf(suites, units.filter((u) => u.id === 'file:packages/a/test/one.test.mjs')).map((c) => c.command), [['npm', 'exec', '-w', '@x/a', '-c', 'node --test --test-concurrency=8 --import=./test/hook.mjs test/one.test.mjs']]);
+});
+
+test("a suite node --test does not schedule takes its longest file or its files' total over its parallelism, whichever is more", () => {
   // One suite of parallelism 4: a 100 s file and four 20 s files fit under the long one; a second suite adds its own time.
   const serve = [unit('long', 100, 'serve', 4), ...[1, 2, 3, 4].map((n) => unit(`short-${n}`, 20, 'serve', 4))];
   assert.equal(modelSeconds(serve), 2 + 100);
@@ -108,10 +144,11 @@ test('each suite is in one pool, and the pool without a list takes every other s
 test('a shard that runs a quarter and a minute over its model warns that ci-timings.json is stale, naming it; one within either does not', () => {
   // any-2 on 11-04: modelled 275 s, its tests ran 398 s, from a timings file a day old.
   assert.match(timingDrift('any-2', 275, 398), /^::warning title=ci-timings\.json is stale::any-2 ran 398 s, modelled 275 s: refresh scripts\/ci-timings\.json from CI's job logs \(node scripts\/ci-timings\.mjs <job log>\.\.\.\)/);
-  assert.equal(timingDrift('any-1', 275, 335), undefined, 'a minute over is noise on a hosted runner');
+  assert.equal(timingDrift('any-1', 275, 335), undefined, 'a minute over is a runner\'s noise');
   assert.equal(timingDrift('any-1', 20, 70), undefined, 'under a minute over, however many times its model');
   assert.equal(timingDrift('any-1', 400, 470), undefined, 'over by a minute but under a quarter');
-  assert.equal(timingDrift('any-1', 275, 100), undefined, 'faster than its model (a Blacksmith runner in the queue)');
+  assert.equal(timingDrift('any-1', 275, 100), undefined, 'faster than its model');
+  assert.equal(timingDrift('any-2', 275, 398, { untimedRunner: true }), undefined, 'on a runner the weights were not measured on');
 });
 
 test('a cover that drops a unit, runs one twice or adds one is refused, naming it', () => {
@@ -136,10 +173,11 @@ test("this repository's shards cover every test file of every suite once, and ci
   assert.deepEqual(leanTests.strategy.matrix.shard, leanShards, 'test-lean runs the lean pool\'s shards');
   for (const key of ['name', 'needs', 'runs-on', 'timeout-minutes', 'steps']) assert.deepEqual(leanTests[key], testJob[key], `test-lean's ${key} is the test job's`);
   assert.deepEqual(leanTests.strategy.matrix.node, testJob.strategy.matrix.node, 'on the same Node');
-  // The lean job waits for the lean pool's shards and no other; verify fails on a red shard of either job.
+  // The lean job waits for the lean pool's shards and no other; verify fails on a red shard of either job, on a red
+  // share of the store's suite on Postgres, and on an import scanner that its source does not rebuild byte for byte.
   assert.deepEqual(workflow.jobs.lean.needs, ['test-lean']);
   const verify = workflow.jobs.verify;
-  assert.deepEqual(verify.needs, ['test', 'test-lean', 'console']);
+  assert.deepEqual(verify.needs, ['test', 'test-lean', 'serve-postgres', 'console', 'import-wasm']);
   const gate = verify.steps.find((step) => step.env);
   for (const job of verify.needs) {
     const name = Object.entries(gate.env).find(([, value]) => value === `\${{ needs.${job}.result }}`)?.[0];
@@ -147,6 +185,10 @@ test("this repository's shards cover every test file of every suite once, and ci
   }
   const lean = workflow.jobs.lean.steps.find((step) => /collect\.mjs/.test(step.run ?? '')).run;
   assert.deepEqual([...lean.matchAll(/lean-sweep-([\w-]+)/g)].map((m) => m[1]), leanShards, 'the lean job reads every lean shard\'s captures');
+  // A lean shard whose files validate no workflow uploads the hook's marker alone (spec/lean/sweep/capture-register.mjs).
+  const upload = testJob.steps.find((step) => step.name === 'Keep the workflows the tests validated, for the lean job').with.path;
+  assert.match(upload, /lean-sweep\/\*\.json$/m, 'a lean shard uploads its captures');
+  assert.match(upload, /lean-sweep\/reached$/m, 'and the capture hook\'s marker');
   // The any pool's shards install poppler for serve's pdf_pages.
   assert.ok(Object.values(shards).some((s) => s.pool === 'any' && s.suites.some((x) => x.name === '@parcha/agentrun-serve')), 'serve is in the any pool');
 });
@@ -159,17 +201,24 @@ test("on a pull request this repository's any pool runs the tests its changes re
   const steps = workflow.jobs.test.steps;
   const shard = steps.find((step) => /ci-shard\.mjs/.test(step.run ?? ''));
   assert.equal(shard.env.CI_AFFECTED_BASE, "${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}", 'the base is set on a pull request only');
+  // The weights are Blacksmith's: a shard on one of GitHub's runners never warns that they are stale.
+  assert.equal(shard.env.CI_SHARD_UNTIMED_RUNNER, "${{ runner.environment == 'github-hosted' && '1' || '' }}");
   // HEAD^1 is in the checkout only with a depth of 2 or more (0 is the whole history).
   const depth = steps.find((step) => /^actions\/checkout@/.test(step.uses ?? '')).with['fetch-depth'];
   assert.match(depth, /github\.event_name == 'pull_request' && startsWith\(matrix\.shard, 'any-'\)\) && '2'/, depth);
 });
 
-test("the build and the test shards run on Blacksmith in the merge queue and on a pull request from this repository's own branch; a fork's pull request and main stay on GitHub's runners", () => {
+test("the build, the test shards and the required Postgres, console and import-wasm jobs run on Blacksmith in the merge queue and on a pull request from this repository's own branch; a fork's pull request and main stay on GitHub's runners", () => {
   const workflow = parse(readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8'));
   const runner = workflow.jobs.build['runs-on'];
   // The expression names the pull request's head repository: a fork's is not this one, so it takes the last arm.
   assert.equal(runner, "${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}");
-  for (const job of ['test', 'test-lean']) assert.equal(workflow.jobs[job]['runs-on'], runner, `${job} runs where the build does`);
+  // The other five write no expression of their own: each is an alias of the build's `&own-runner` anchor.
+  const jobs = parseDocument(readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')).get('jobs');
+  for (const job of ['test', 'test-lean', 'serve-postgres', 'console', 'import-wasm']) {
+    assert.ok(isAlias(jobs.getIn([job, 'runs-on'], true)), `${job} runs where the build does`);
+    assert.equal(workflow.jobs[job]['runs-on'], runner, `${job} resolves to the build's runner`);
+  }
 });
 
 test("the Postgres job's shares hold every test file that opens the store once, none empty, and ci.yml runs each of them", async () => {

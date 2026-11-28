@@ -6,7 +6,7 @@ import type { Client } from "@/lib/client";
 import { type Block, blockSizeOf, blocksOf, gutterFor, jobsOf, level, nearest, PATHS, pathOf, pct, plotted, type Point, rollingMean, runTicks, spread, timesOf, usd, windowOf, yTopOf } from "@/lib/costPerRun";
 import { when } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { counted, handBacksOf, type Marker, MARKER_LETTER, MARKER_WORDS, markersOf, replayLine, WITHHELD_NEXT, withheldWords } from "@/lib/learningLoop";
+import { counted, cutWords, handBacksOf, type Marker, MARKER_LETTER, MARKER_WORDS, markersOf, replayLine, WITHHELD_NEXT, withheldWords } from "@/lib/learningLoop";
 import type { CostRun, LearningCost, Promotion } from "@/lib/v2";
 
 // An agent's cost per run, run after run (GET /v2/agents/{id}/learning/cost): every run's all-in $ (its own cost and what
@@ -99,9 +99,11 @@ export function CostChart({ data, on, width: fixed, promotions = [], execution =
     data.unknown_cost_runs ? `${data.unknown_cost_runs === 1 ? "1 run's" : `${data.unknown_cost_runs} runs'`} cost is not known: left out.` : null,
     // A run whose end could not say which path it took or what it cost: left out, never drawn as the agent's at $0.
     data.unknown_path_runs ? `${data.unknown_path_runs === 1 ? "1 run's" : `${data.unknown_path_runs} runs'`} path and cost are not known: left out.` : null,
-    // A learned workflow the money rule stopped: why it no longer runs first (both sides all-in, learning included), and
-    // what comes next (the stop asks for no new version).
-    ...data.workflows.filter((w) => w.state === "needs_revision" && w.served && w.by_hand).map((w) => `${w.workflow} no longer runs first: ${level(w.served!.mean_usd)} a run all-in over its newest ${w.served!.runs} priced runs, at or over ${level(w.by_hand!.mean_usd)} a run by hand.${w.unknown_cost_runs ? ` ${w.unknown_cost_runs === 1 ? "1 run" : `${w.unknown_cost_runs} runs`} of unknown cost left out.` : ""} The agent takes its runs; a new version runs first again.`),
+    // A learned workflow the money rule stopped: why it no longer runs first (`reason`), and what comes next. Over the
+    // line: both sides all-in, learning included, and a new version runs first again. No by-hand cost to hold it to: no
+    // price is said, and it runs first again once a run by hand has a known cost and it costs less.
+    ...data.workflows.filter((w) => w.state === "needs_revision" && w.reason === "over_line" && w.served && w.by_hand).map((w) => `${w.workflow} no longer runs first: ${level(w.served!.mean_usd)} a run all-in over its newest ${w.served!.runs} priced runs, at or over ${level(w.by_hand!.mean_usd)} a run by hand.${w.unknown_cost_runs ? ` ${w.unknown_cost_runs === 1 ? "1 run" : `${w.unknown_cost_runs} runs`} of unknown cost left out.` : ""} The agent takes its runs; a new version runs first again.`),
+    ...data.workflows.filter((w) => w.state === "needs_revision" && w.reason === "no_by_hand_cost").map((w) => `${w.workflow} doesn't run first: no run by hand has a known cost to hold it to. The agent takes its runs; once one does and the workflow costs less, it runs first again.`),
   ].filter((n): n is string => !!n);
 
   if (points.length < 2) {
@@ -166,7 +168,7 @@ export function CostChart({ data, on, width: fixed, promotions = [], execution =
   const cheaper = s.times_cheaper !== null ? `${timesOf(s.times_cheaper)} cheaper` : null;
   // The headline: the server's own figure, which never flatters learning (before: the agent's own $ a run, learning left
   // out; after the takeover: all-in, learning kept in), and how often the workflow handed the run back since.
-  const backWords = back ? `${pct(back.back, back.ran)} handed back since` : null;
+  const backWords = back ? `${pct(back.back, back.ran)} handed back since${cutWords(back.cut)}` : null;
   // The after side is the runs a learned workflow served (never its replays), said with its count; with none priced yet,
   // the headline says so in words, never a figure.
   const afterWords = s.after ? `${level(s.after.mean_usd)} all-in over ${servedWord(s.after.runs)} after` : s.takeover && s.after_state === "cost_unknown" ? "no served run's cost known yet" : null;
@@ -343,6 +345,8 @@ export function CostChart({ data, on, width: fixed, promotions = [], execution =
 }
 
 const MIX_H = 64;
+/** The runs the strip's share line counts. */
+const LAST_RUNS = 20;
 const MIX_M = { top: 4, bottom: 6 };
 /** Bottom to top: the learned workflow on the baseline, so its share grows from it. */
 const STACK = [...PATHS].reverse();
@@ -368,8 +372,8 @@ function Mix({ runs, width, x, step, plot, takeover }: { runs: readonly CostRun[
   /** A block's whole slots on the axis: from half a run before its first to half a run after its last, inside the plot. */
   const span = (b: Block) => ({ from: clamp(x(b.from) - step / 2), to: clamp(x(b.to) + step / 2) });
   const y = (share: number) => MIX_M.top + height * (1 - share);
-  // What the last words count: the last block; on a strip of more than 20 runs (a run a column), the last 20 runs.
-  const last = size === 1 && jobs.length > 20 ? blocksOf(jobs.slice(-20), 20)[0]! : blocks.at(-1)!;
+  // What the last words count: the last 20 runs (all of them, with fewer), whatever the columns' grouping at this width.
+  const last = blocksOf(jobs.slice(-LAST_RUNS), LAST_RUNS)[0]!;
   const edges = (b: Block) => {
     const { from, to } = span(b);
     // A 2px card gap between columns, when a column is wide enough to give it; a hairline between a strip's runs.
@@ -377,7 +381,7 @@ function Mix({ runs, width, x, step, plot, takeover }: { runs: readonly CostRun[
     return { x0: from + gap, w: Math.max(1, to - from - 2 * gap) };
   };
   const words = (b: Block) => `${runsOf(b)}: ${PATHS.filter((p) => b.counts[p.path]).map((p) => `${p.label.toLowerCase()} ${b.counts[p.path]}`).join(", ")}`;
-  // The last block's share by the learned workflow; before any workflow has finished a run, who did finish it.
+  // The last runs' share by the learned workflow; before any workflow has finished a run, who did finish them.
   const lastShare = blocks.some((b) => b.counts.workflow)
     ? `${pct(last.counts.workflow, last.runs)} by the learned workflow`
     : PATHS.filter((p) => last.counts[p.path]).map((p) => `${pct(last.counts[p.path], last.runs)} ${p.label.toLowerCase()}`).join(", ");

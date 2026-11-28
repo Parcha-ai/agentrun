@@ -317,7 +317,7 @@ for (const harness of ["claude-agent", "codex"]) {
     const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 55_000 });
     const results = toolResults(rows);
     assert.equal(results.length, 1, JSON.stringify(results));
-    assert.match(results[0][0], /\{"provider":"parallel","query":"widgets delaware","results":\[\{"url":"https:\/\/registry\.example\/widgets"/, "Parallel's results");
+    assert.match(results[0][0], /\{"provider":"parallel","objective":"widgets delaware","queries":\["widgets delaware"\],"results":\[\{"url":"https:\/\/registry\.example\/widgets"/, "Parallel's results");
     const sent = (await readFile(calls, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
     assert.deepEqual(sent.map((call) => [call.path, call.authorized, call.queries]), [["/v1/search", true, ["widgets delaware"]]], "on the key the server handed the run");
     assert.deepEqual(paidOf(data, run.body.run_id), [["paid:Parallel's search", 0.001]], "the search's fee, booked once on the run's one ledger, as on pi");
@@ -367,11 +367,11 @@ for (const harness of ["claude-agent", "codex", "opencode"]) {
   });
 }
 
-test("capabilities say which harnesses run each tool: the file tools, bash and the background tools (in a box), ask_person, the web tools, the email tools, calendar_events and the three host tools over a run's own tools on every harness, the rest on pi", async (t) => {
+test("capabilities say which harnesses run each tool: the file tools, bash and the background tools (in a box), ask_person, the web tools, the email tools, calendar_events, the browser and the three host tools over a run's own tools on every harness, the rest on pi", async (t) => {
   const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const tools = Object.fromEntries((await api("GET", "/capabilities")).body.tools.map((tool) => [tool.name, tool.harnesses]));
   const every = ["pi", "claude-agent", "codex", "opencode"];
-  const hosted = ["read", "write", "edit", "bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list", "ask_person", "web_fetch", "web_search", "web_save", "email_search", "email_read", "email_draft", "email_send", "email_file", "calendar_events", "tools_search", "tools_call", "codemode"];
+  const hosted = ["read", "write", "edit", "bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list", "ask_person", "web_fetch", "web_search", "web_save", "email_search", "email_read", "email_draft", "email_send", "email_file", "calendar_events", "browser", "tools_search", "tools_call", "codemode"];
   for (const name of hosted) assert.deepEqual(tools[name], every, name);
   for (const [name, harnesses] of Object.entries(tools)) if (!hosted.includes(name)) assert.deepEqual(harnesses, ["pi"], name);
 });

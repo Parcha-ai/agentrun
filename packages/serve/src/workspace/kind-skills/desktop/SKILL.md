@@ -56,8 +56,8 @@ the new state.
 types for this desktop: its apps, its windows, its screen and input, and, where the desktop has them, its shell
 (`computer.shell.run`) and its files (`computer.files`). The body is an async function: `await` the calls and `return`
 what you need. Each call is a call of its own, asked about and recorded like the tools': a command is held to your
-bash setting, a file written to your write setting, a file read to your read setting. A call that needs a person's OK
-stops the script until they answer.
+bash setting; a file written needs write among your tools, and a file read, listed or looked up needs read, each then
+held to that tool's setting. A call that needs a person's OK stops the script until they answer.
 
 ```js
 const notes = computer.app("com.apple.Notes");
@@ -87,9 +87,18 @@ file from Finder into a Mail message), or anything outside every window.
 
 **Only what you were given.** An agent's computer setting may leave some out: a code-only agent drives the desktop from
 `codemode` alone, with no `computer_observe`, `computer_act` or `computer_screenshot` in its tool list; an agent whose
-exec is off has no `computer.shell`, no `computer.processes` and no bash. Where the desktop has the `apps` group a
+exec is off has no `computer.shell`, no `computer.processes` and no bash; one not given read has no `computer.files`
+read, list or stat, and one not given write no `computer.files.write`; a file, shell or process op whose tool is set to
+deny, or to an ask no one can answer here, is left out the same way. Where the desktop has the `apps` group a
 script opens apps with `computer.apps`, and on a desktop with no ui group the tools open the app they name (below);
 otherwise it uses the desktop's own launcher through the screen. Use what your tool list and codemode's types show.
+
+## The run's folder
+
+Where the run's folder is mounted on the desktop, it is `/workspace`: save there what the run should keep, from a
+script, the terminal or an app's Save dialog. The desktop's terminal opens in the desktop user's home, not in
+`/workspace`, so `cd /workspace` first or give the full path. Where the folder is not mounted, the server says so, and
+what you save on the desktop stays there.
 
 ## How to work: observe, then act by ref, then check
 
@@ -128,7 +137,12 @@ Open an app from a script with `computer.apps.open("mousepad")`, by its id, its 
 the app's window shows in front, and the app stays open. `computer.apps.list()` names the apps the desktop has (the
 text editor, the terminal, Firefox). App ids come from `apps.list`: call it before `apps.open`. With the tools, name the app: `computer_observe` or `computer_act` with
 `app: "org.xfce.mousepad"` opens it, or brings it in front, first. A screenshot with no app in front lists the ids. `computer.shell.run` ends everything its command started when it returns, so an
-app it starts closes at once; `computer.processes.start` keeps a program that is not one of the listed apps.
+app it starts closes at once; `computer.processes.start` keeps a program that is not one of the listed apps. A Linux
+desktop lists and opens no app whose desktop file its own user could change, such as one written with
+`computer.files.write`: `apps.open` of one by its id is refused, naming the file. `computer.apps.open(id, { url })`
+opens a URL with a scheme or an absolute path in the app (on Linux nothing else, and never a url starting with `-`).
+Where write is granted, an app you open, with a url or without one, can do what a shell does: it reads its config from
+the user's home, which you can write, and the path may be a file you wrote.
 
 ## Habits that work
 

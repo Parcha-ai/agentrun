@@ -1,26 +1,16 @@
-// Learning: an agent whose definition says `learning: true` keeps a folder of what it learned, and each of its runs
-// starts from it. The folder is `learning/` in the agent's folder on the disk (files.ts agentFolderOf): plain git with
-// main checked out, reached through its Workspace (learningWorkspace). It holds two things:
+// Learning: an agent whose definition says `learning: true` keeps what it learned, and each of its runs starts from it.
+// It is kept as versioned rows in the store (Store.learning; learn/rows.ts reads and writes them as files):
 //   - corrections.md, its owner's standing corrections (learn/corrections.ts): every run of the agent is served it whole
 //     under `# Learned` (laidLearned), cut of the host's secrets;
 //   - workflows/<name>/, the workflows its runs compiled (learn/compile.ts): a run whose input one fits is answered by it
 //     (runner/workflow-first.ts).
-// Every write to main is one exec of the learning script (learn/folder.ts), which also writes `.agentrun/snapshot.json`,
-// what the routes and a run's seed read: no git runs in this process. When a run of such an agent is made, the server
-// makes the folder if it is absent (the script's init: one empty host commit on main) and reads main's snapshot; the
-// run's launch keeps the commit it started from and its # Learned text, so its runner reads no folder.
-//
-// The host never follows a symbolic link into the folder (learn/folder.ts learningWorkspace, and the script): a link
-// there is refused, and the run starts with nothing learned.
-import { join } from "node:path";
+// When a run of such an agent is made, the server reads its newest save (its first, empty, made when there is none);
+// the run's launch keeps the save it started from and its # Learned text.
 import { CORRECTIONS_FILE, decodedStrings, frontMatter, learnedSecretShapes, type Problem, redactLearned, valueMatcher } from "./learn/index.js";
-import { folderAt, learningInit, type LearningFolder, learningWorkspace, readLearning, type Snapshot } from "./learn/folder.js";
+import { type AgentLearning, type LearningRead, readAt, readOf } from "./learn/rows.js";
 import { agentFolderOf, serialBy } from "./files.js";
 import { withoutLoopbackAddresses } from "./key-refusal.js";
 import { DETAIL_MAX, LIST_DETAIL, said, short, wordsOf } from "./learning-words.js";
-import { purgeGate } from "./purged-workflow.js";
-import type { Store } from "./store/index.js";
-import type { Workspace } from "./workspace/index.js";
 
 export { learnsOf } from "./learning-setting.js";
 
@@ -41,7 +31,7 @@ export function learningOf(env: NodeJS.ProcessEnv, given?: string): LearningMode
  *  is on main, or `dropped` with a reason from the closed list. A learning fault never refuses a run: it starts with
  *  nothing learned, `seed_failed`. */
 export const LEARNING_STATES = ["seeded", "reflecting", "merged", "dropped"] as const;
-export const LEARNING_REASONS = ["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset"] as const;
+export const LEARNING_REASONS = ["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset", "purged_since_seed"] as const;
 /** A run's own `learning` on its start (POST /agents/{agent_id}/runs): it starts from what its agent learned, as a run that
  *  learns does, and keeps nothing (no compile, no correction, at any end), so runs of one agent read one learned state
  *  however many run at once. Its learning ends `dropped`, reason `use`. */
@@ -65,6 +55,8 @@ export type Learning = {
   workflows?: LearnedFile[];
   /** How many lines of its owner's words a merge added to corrections.md. */
   corrections?: number;
+  /** How many of corrections.md's oldest lines the added correction pushed out to keep the file within its cap. */
+  dropped_lines?: number;
   /** The compile turn's record, when the run's end-of-run turn wrote the agent's job as a learned workflow
    *  (learn/compile.ts): the workflow, and each attempt with what the checks refused. */
   compiled?: LearningCompiled;
@@ -141,6 +133,9 @@ export function shortOf<T extends { state: LearningState; reason: LearningReason
 }
 /** The label of the end-of-run turn's timeline rows, and the kind and label of a run's learning row. */
 export const LEARNING_LABEL = "learning";
+/** The most characters a message's `said` holds (POST /runs/{id}/messages): the person's own words beside a host's
+ *  `content`, which the run's learning keeps as one line of corrections.md. */
+export const SAID_MAX = 4_000;
 
 /** A message a trigger sent the run that its owner did not write (a webhook body, a Slack or GitHub event), by its
  *  source: never what the user said. */
@@ -215,68 +210,45 @@ function compactSchema(schema: unknown, schemas: Record<string, unknown>, depth 
   return typeof s.type === "string" ? s.type : Array.isArray(s.type) ? s.type.join("|") : "any";
 }
 
-/** The agent's learning folder: `learning/` in its folder on the disk, which only the host writes. The folder is files.ts
- *  agentFolderOf (server-fs.ts agentDiskDir), so two ids that differ only in case never share one. */
-export const learningRepo = (data: string, agentId: string): string => join(agentFolderOf(data, agentId), "learning");
-
 const queues = new Map<string, Promise<unknown>>();
 
-/** Runs `work` once every call queued before it on the agent's folder has finished: one at a time per agent, in this
- *  process. Everything that touches an agent's folder goes through it, so two runs made at once never both make it. */
-export const withAgentRepo = <T>(data: string, agentId: string, work: () => Promise<T>): Promise<T> => serialBy(queues, learningRepo(data, agentId), work);
+/** Runs `work` once every call queued before it on agent `agentId`'s learning has finished: one at a time per agent, in
+ *  this process. A run's seed read and a reset of the agent's learning (learning-reset.ts) go through it, so a seed is
+ *  read wholly before a reset or wholly after. Keyed by the agent's folder (files.ts agentFolderOf): two ids that
+ *  differ only in case share one queue. */
+export const inLearningQueue = <T>(data: string, agentId: string, work: () => Promise<T>): Promise<T> => serialBy(queues, agentFolderOf(data, agentId), work);
 
-/** Agent `agentId`'s learning folder (learn/folder.ts learningWorkspace), in this server's place: Mode 1's local folder
- *  under `data`. The one point that names the place; its `end()` is called in a finally after every use. */
-export const learningFolderOf = (data: string, agentId: string): LearningFolder => learningWorkspace({ mode: "local", agentId, data });
-
-/** The seed of `snapshot` (undefined: no main yet), each body read by `text`: corrections.md, and each active draft's
- *  README.md and workflow.json. A draft whose README's front matter does not read one way is never read as active. */
-async function seedIn(sha: string | null, snapshot: Snapshot | undefined, text: (path: string, oid: string) => Promise<string>): Promise<Seed> {
-  const corrections = snapshot?.corrections ? await text(CORRECTIONS_FILE, snapshot.corrections.oid) : "";
+/** The seed of a read (its view undefined: no save yet): corrections.md, and each active draft's README.md and
+ *  workflow.json. A draft whose README's front matter does not read one way is never read as active. */
+function seedIn(read: LearningRead): Seed {
+  const corrections = read.text(CORRECTIONS_FILE) ?? "";
   const workflows: LearnedWorkflow[] = [];
-  for (const item of snapshot?.workflows ?? []) {
+  for (const item of read.view?.workflows ?? []) {
     if (item.status !== "active") continue;
-    const readme = item.files.find((file) => file.path.endsWith("/README.md"));
-    const json = item.files.find((file) => file.path.endsWith("/workflow.json"));
-    if (!readme || !json) continue;
-    const front = frontMatter(await text(readme.path, readme.oid));
+    const readme = read.text(item.file);
+    const json = read.text(item.files.find((file) => file.path.endsWith("/workflow.json"))?.path ?? "");
+    if (readme === undefined || json === undefined) continue;
+    const front = frontMatter(readme);
     if (!front) continue;
-    workflows.push({ name: item.name, description: front.get("description") ?? "", workflow: await text(json.path, json.oid) });
+    workflows.push({ name: item.name, description: front.get("description") ?? "", workflow: json });
   }
-  return { sha, corrections, workflows };
+  return { sha: read.view?.main ?? null, corrections, workflows };
 }
 
-/** The seed of a run of agent `agentId` about to be made: main's commit, the folder made first when it is absent (the
- *  learning script's init), what main holds for a run (seedIn), and when it was read (`at`). In the agent's queue, as a
- *  reset is (learning-reset.ts). No git in this process: the folder's own script and file API. */
-export function seedOf(data: string, agentId: string): Promise<Seed> {
-  return withAgentRepo(data, agentId, async () => {
-    const { workspace, end } = learningFolderOf(data, agentId);
-    try {
-      await learningInit(workspace);
-      const seed = await readLearning(workspace, async ({ snapshot, body }) => seedIn(snapshot?.main ?? null, snapshot, body));
-      return { ...seed, at: Date.now() };
-    } finally {
-      await end();
-    }
-  });
+/** The seed of a run of agent `agentId` about to be made: its learning's newest save (its first, empty, made when it has
+ *  none, so every seed names one), what it holds for a run (seedIn), and when it was read (`at`). In the agent's queue, as
+ *  a reset is (learning-reset.ts). */
+export function seedOf(data: string, store: { readonly learning: Pick<AgentLearning["rows"], "seed"> }, agentId: string): Promise<Seed> {
+  return inLearningQueue(data, agentId, async () => ({ ...seedIn(readOf(await store.learning.seed(agentId))), at: Date.now() }));
 }
 
-/** What commit `commit` of the folder holds for a run, as seedOf reads main (one read-only exec of the script), but a
- *  learned workflow a purged run wrote, by `store`'s runs (purged-workflow.ts): no claim lays, checks, replays or serves
- *  it. `store` null: a run's own process, which reads no other run; its runner reads the seed again with its store
- *  (runner/learning-seed.ts). No commit (null) is the empty seed; a commit the folder no longer holds throws. */
-export async function seedAt(ws: Workspace, commit: string | null, store: Pick<Store, "runs"> | null): Promise<Seed> {
-  if (commit === null) return { sha: null, corrections: "", workflows: [] };
-  const at = await folderAt(ws, commit);
-  if (!at) throw new Error(`the learning folder's read at ${commit} is gone`);
-  const purged = store ? (await purgeGate(at.snapshot, store)).workflows : new Map();
-  const seed = await seedIn(commit, at.snapshot, async (_path, oid) => {
-    const bytes = at.blobs.get(oid);
-    if (!bytes) throw new Error(`the learning folder's read at ${commit} holds no blob ${oid}`);
-    return bytes.toString("utf8");
-  });
-  return { ...seed, workflows: seed.workflows.filter(({ name }) => !purged.has(name)) };
+/** What save `save` of the agent's learning holds for a run, as seedOf reads the newest, read now: a purged run's
+ *  workflow is gone from it. No save (null) is the empty seed; a save the agent's learning no longer holds throws. */
+export async function seedAt(learning: AgentLearning, save: string | null): Promise<Seed> {
+  if (save === null) return { sha: null, corrections: "", workflows: [] };
+  const read = await readAt(learning, save);
+  if (!read) throw new Error(`the agent's learning holds no save ${save}`);
+  return seedIn(read);
 }
 
 /** Whether `text` holds a host secret (`shown`): as written, or, read as JSON, in any string it decodes to (its escapes

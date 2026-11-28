@@ -32,12 +32,18 @@ test("the words: what a run started from counted as a person counts it, what it 
   assert.equal(said.checker([{ rule: "a_rule_added_later" }]), "Not kept: it didn't pass the checks (a_rule_added_later).");
   // What the checks refused beside what was kept.
   assert.equal(said.merged([], 1, [{ rule: "secret_shape" }]), "Kept your correction. Not kept: it held something that must not be stored (text that looks like a key or a password).");
-  // A correction left out because corrections.md is full is said in the cap's words, never as a workflow over its cap;
-  // the draft's own problems are said beside it. A read says it again from the stored parts the same way.
-  const full = { rule: "too_large", path: "corrections.md", detail: "corrections.md would hold 2090 bytes; the cap is 2048 bytes" };
-  assert.equal(said.merged([{ name: "answer" }], 0, [full]), "Learned the workflow answer. Not kept: corrections.md would hold 2090 bytes; the cap is 2048 bytes.");
-  assert.equal(said.merged([{ name: "answer" }], 0, [full, { rule: "workflow" }]), "Learned the workflow answer. Not kept: corrections.md would hold 2090 bytes; the cap is 2048 bytes. Not kept: it didn't pass the checks (a workflow that can't run here).");
-  assert.equal(wordsOf({ state: "merged", detail: "x", workflows: [{ file: "workflows/answer/workflow.json", name: "answer" }], problems: [full] }, (text) => text), "Learned the workflow answer. Not kept: corrections.md would hold 2090 bytes; the cap is 2048 bytes.");
+  // A correction left out because its line alone passes corrections.md's cap is said in the cap's words, never as a
+  // workflow over its cap; the draft's own problems are said beside it. A read says it again from the stored parts the
+  // same way.
+  const full = { rule: "too_large", path: "corrections.md", detail: "corrections.md would hold 8290 bytes for this correction alone; the cap is 8192 bytes" };
+  assert.equal(said.merged([{ name: "answer" }], 0, [full]), "Learned the workflow answer. Not kept: corrections.md would hold 8290 bytes for this correction alone; the cap is 8192 bytes.");
+  assert.equal(said.merged([{ name: "answer" }], 0, [full, { rule: "workflow" }]), "Learned the workflow answer. Not kept: corrections.md would hold 8290 bytes for this correction alone; the cap is 8192 bytes. Not kept: it didn't pass the checks (a workflow that can't run here).");
+  assert.equal(wordsOf({ state: "merged", detail: "x", workflows: [{ file: "workflows/answer/workflow.json", name: "answer" }], problems: [full] }, (text) => text), "Learned the workflow answer. Not kept: corrections.md would hold 8290 bytes for this correction alone; the cap is 8192 bytes.");
+  // A kept correction that pushed corrections.md's oldest lines out says how many, and a read says it again.
+  assert.equal(said.merged([], 1, [], 1), "Kept your correction. Dropped the oldest line of corrections.md to make room.");
+  assert.equal(said.merged([{ name: "answer" }], 1, [], 3), "Learned the workflow answer. Kept your correction. Dropped the 3 oldest lines of corrections.md to make room.");
+  assert.equal(said.merged([], 0, [], 2), "", "no correction kept, no line dropped said");
+  assert.equal(wordsOf({ state: "merged", detail: "x", corrections: 1, dropped_lines: 2 }, (text) => text), "Kept your correction. Dropped the 2 oldest lines of corrections.md to make room.");
   const all = [
     said.seeded(0), said.seeded(2, 1), said.reflecting, said.asked, said.askedCompile, said.askedCompileAgain, said.merged([{ name: "a" }]), said.merged([{ name: "a" }, { name: "b", pending: true }], 1), said.merged([{ name: "b", pending: true }]),
     said.empty, said.onlyWorkflow, said.use, said.retiredSince,

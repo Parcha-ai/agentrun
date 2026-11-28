@@ -11,10 +11,10 @@ import { AgentEditPage, AgentsPage } from "@/components/AgentsPage";
 import { ChatGPTRow } from "@/components/ChatGPTSignIn";
 import { ClaudeLoginRow } from "@/components/ClaudeLoginRow";
 import { ModelGatewayRow } from "@/components/ModelGatewayRow";
-import { BuildAgent } from "@/components/BuildAgent";
 import { RunsRequest } from "@/components/RunsRequest";
 import { queryPlaygroundHref } from "@/lib/playgroundRoutes";
 import { AgentRequest, type AgentOperation } from "@/components/AgentRequest";
+import { ApiKeysPage } from "@/components/ApiKeysPage";
 import { KeysPage } from "@/components/KeysPage";
 import { HarnessKeysPage } from "@/components/HarnessKeysPage";
 import { ConnectionProvider, Unreached, useLink, useResumed } from "@/components/Connection";
@@ -25,6 +25,7 @@ import { ToolsPage } from "@/components/ToolsPage";
 import { GitHubPage } from "@/components/GitHubPage";
 import { McpServersPage } from "@/components/McpServersPage";
 import { useSecrets } from "@/lib/secrets";
+import { LocalModelCard } from "@/components/LocalModelCard";
 import { ModelKeyCard } from "@/components/ModelKeyCard";
 import { NoModelBanner } from "@/components/NoModelBanner";
 import { EmailPage } from "@/components/EmailPage";
@@ -35,19 +36,29 @@ import { WorkspacePage } from "@/components/WorkspacePage";
 import { ScheduleNames, type TriggerKnown } from "@/components/ScheduleChip";
 import { SchedulesPage } from "@/components/Schedules";
 import { TemplatesPage } from "@/components/Templates";
+import { FreeShelf } from "@/components/FreeShelf";
 import { SuggestionsPage } from "@/components/SuggestionsPage";
 import { repoOfHash } from "@/lib/suggestions";
+import { freeModels } from "@/lib/freeShelf";
+import { WrappedPage } from "@/components/WrappedPage";
 import { LiveRun } from "@/components/LiveRun";
 import { Race } from "@/components/Race";
+import { RaceStart } from "@/components/RaceStart";
+import { RunSkeleton } from "@/components/Skeleton";
+import { TraceCompare } from "@/components/TraceCompare";
+import { comparedIds } from "@/lib/traceCompare";
 import { MissionControl } from "@/components/MissionControl";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { queryObservedSessionPrompt, queryRunsPrompt } from "@/lib/codingAgentPrompts";
+import { AgentFactoryPage } from "@/components/AgentFactoryPage";
 import { NeedsYouStrip } from "@/components/NeedsYouStrip";
 import { ConnectExistingAgents, NativeConnections } from "@/components/NativeConnections";
 import { StartHere } from "@/components/StartHere";
 import { missionFrom, type MissionView, rangeFrom, type StatsRange } from "@/lib/mission";
 import { Playground, type StartResult, startFailure } from "@/components/Playground";
-import { type Agent, decisionProvider, toolOffers } from "@/lib/agentForm";
+import type { MovedToRunner } from "@/components/RunnerOffer";
+import { type Agent, decisionProvider, editBody, runsWhere, toolOffers } from "@/lib/agentForm";
+import { computerFields } from "@/lib/computers";
 import { RUN_STATUSES, RunsList } from "@/components/RunsList";
 import { type Section, Shell } from "@/components/Shell";
 import { SessionUnread, SignIn } from "@/components/SignIn";
@@ -60,6 +71,7 @@ import { stepsBack, trackHistory } from "@/lib/back";
 import { holdsMove } from "@/lib/useUnsavedChangesGuard";
 import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, problemOf, type RunsFilter } from "@/lib/client";
 import { chatGPTView } from "@/lib/chatgpt";
+import { claudeLoginView, LOGIN_HARNESS, loginServes } from "@/lib/claudeLogin";
 import { createConnection } from "@/lib/connection";
 import type { ChatGPTView } from "@/lib/v2";
 import { appendRuns, keeper, keepersByRun, sendOnce, uuid } from "@/lib/idempotency";
@@ -67,7 +79,7 @@ import { waitingOf } from "@/lib/learning";
 import { asksPerson, FAILED_WINDOW_MS, failureCount, hasOwnRun, mergeNeeds, type Needs, pollSettled, rerunBody } from "@/lib/needs";
 import { placesOf } from "@/lib/place";
 import { type Problem, problem } from "@/lib/problem";
-import { type Template, templateHarness, tryTemplate } from "@/lib/templates";
+import { type Template, templatePick, tryTemplate } from "@/lib/templates";
 import { githubReturnOf } from "@/lib/github";
 import { addOf, signInOf } from "@/lib/mcp";
 import { toolChoices, toolGates } from "@/lib/toolSettings";
@@ -75,30 +87,52 @@ import type { HandBackOutcome, Run, RunStatus } from "@/lib/v2";
 import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 import { cn } from "@/lib/utils";
 
+type AgentEditorLocation = { initialInstructions?: string; settingsSection?: "tools" | "skills" };
+
 /** How often the console reads capabilities again while no model is ready for execution. */
 const MODEL_CHECK_MS = 10_000;
 
 /** `agent`: an agent's page (at `tab`), or with `edit` its editor; null is a new agent's editor. `runsOf`, `status` and
- *  `archived` (for runs): the runs list's filters. `race`: a race's label (lib/race.ts). `settings`: a settings page. */
-type Where = { repo?: string; observation?: string; nativeConnect?: boolean; connectionSource?: "server" | "remote" | "observe"; section: Section; template?: string; install?: string; playgroundAgent?: string; operation?: AgentOperation | "list-runs" | "apply-template"; draft?: string; run?: string; race?: string; trigger?: string | null; kind?: "schedule" | "webhook" | "github" | "composio" | "feed" | "email"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; add?: ReturnType<typeof addOf>; github?: ReturnType<typeof githubReturnOf> };
+ *  `archived` (for runs): the runs list's filters. `race`: a race's label (lib/race.ts); `newRace`: the form that starts
+ *  one. `compare`: the runs a comparison names (lib/traceCompare.ts). `settings`: a settings page. `templateModel`: the
+ *  model a template's Apply screen sets (`?model=`, the Free shelf's Use free), apart from the runs list's `model`. */
+type Where = { year?: number; repo?: string; observation?: string; nativeConnect?: boolean; connectionSource?: "server" | "remote" | "observe"; section: Section; template?: string; templateModel?: string; install?: string; playgroundAgent?: string; operation?: AgentOperation | "list-runs" | "apply-template"; draft?: string; run?: string; race?: string; newRace?: boolean; compare?: string[]; trigger?: string | null; kind?: "schedule" | "webhook" | "github" | "composio" | "feed" | "email"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; runsOf?: string; archived?: boolean; status?: RunStatus; source?: string; from?: string; to?: string; model?: string; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; add?: ReturnType<typeof addOf>; github?: ReturnType<typeof githubReturnOf> };
 /** The page an address opens. Exported for its test. */
-export function route(h: string = location.hash): Where {
+export function route(h: string = location.hash): Where & AgentEditorLocation {
   if (h === "#/dojo") return { section: "dojo" };
+  // A year of the work on this machine (WrappedPage): `?year=` opens another year.
+  const wrapped = h.match(/^#\/wrapped(?:\?(.*))?$/);
+  if (wrapped) { const year = new URLSearchParams(wrapped[1] ?? "").get("year"); return { section: "wrapped", ...(year && /^\d{4}$/.test(year) ? { year: Number(year) } : {}) }; }
   const observed = h.match(/^#\/observations\/([^/?]+)$/);
   if (observed) return { section: "agents", observation: decodeURIComponent(observed[1]) };
+  if (h === "#/factory" || h === "#/factory/") return { section: "factory" };
   let m = h.match(/^#\/runs\/([^/?]+)$/);
   if (m) return { section: "runs", run: decodeURIComponent(m[1]) };
-  // A race: the runs its race:<label> label groups, watched side by side, under Runs.
+  // A race: the runs its race:<label> label groups, watched side by side, under Runs. #/races/new is the form that starts
+  // one. A race this console starts is never labeled `new` (newRaceLabel); one an API caller labeled `new` is not
+  // reachable here, and its runs still list under Runs with that label.
+  if (h === "#/races/new") return { section: "runs", newRace: true };
   m = h.match(/^#\/races\/([^/?]+)$/);
   if (m) return { section: "runs", race: decodeURIComponent(m[1]) };
+  // Two to four runs' Dev tools figures side by side (lib/traceCompare.ts), under Runs: the runs its query names.
+  if (h === "#/compare" || h.startsWith("#/compare?")) return { section: "runs", compare: comparedIds(h.split("?")[1] ?? "") };
   if (h === "#/agents/connect" || h.startsWith("#/agents/connect?")) {
     const source = new URLSearchParams(h.split("?")[1] ?? "").get("source");
     return { section: "agents", nativeConnect: true, ...(source === "remote" || source === "observe" ? { connectionSource: source } : {}) };
   }
-  if (h === "#/agents/new") return { section: "agents", agent: null };
-  // An agent's Tools, on one tool's permission (a start refused for it links here).
-  m = h.match(/^#\/agents\/([^/?]+)\/edit\?(.*)$/);
-  if (m) { const tool = new URLSearchParams(m[2]).get("tool"); return { section: "agents", agent: decodeURIComponent(m[1]), edit: true, ...(tool ? { tool } : {}) }; }
+  if (h === "#/agents/new" || h.startsWith("#/agents/new?")) {
+    const params = new URLSearchParams(h.split("?")[1] ?? "");
+    const edit = params.get("editor") === "true" || params.get("editor") === "";
+    const instructions = params.get("instructions");
+    return { section: "agents", agent: null, ...(edit ? { edit: true, ...(instructions ? { initialInstructions: instructions } : {}) } : {}) };
+  }
+  // Agent settings can open at Tools, or focus one tool's permission. Older /edit links still work.
+  m = h.match(/^#\/agents\/([^/?]+)\/(edit|settings)(?:\?(.*))?$/);
+  if (m) {
+    const params = new URLSearchParams(m[3] ?? ""), tool = params.get("tool");
+    return { section: "agents", agent: decodeURIComponent(m[1]), ...(m[2] === "edit" ? { edit: true } : { tab: "settings" }),
+      ...((params.get("section") === "tools" || params.get("section") === "skills") ? { settingsSection: params.get("section") as "tools" | "skills" } : {}), ...(tool ? { tool } : {}) };
+  }
   m = h.match(/^#\/agents\/([^/?]+)(?:\/([a-z]+))?$/);
   if (m) return { section: "agents", agent: decodeURIComponent(m[1]), ...(m[2] === "edit" ? { edit: true } : m[2] ? { tab: m[2] } : {}) };
   if (h.startsWith("#/agents")) return { section: "agents", archived: /[?&]archived=true\b/.test(h) };
@@ -112,7 +146,9 @@ export function route(h: string = location.hash): Where {
     return { section: "playground", ...(agent ? { playgroundAgent: agent } : {}),
       ...(operation === "create-agent" || operation === "edit-agent" || operation === "list-runs" ? { operation } : {}), ...(draft !== null ? { draft } : {}),
       ...(operation === "list-runs" && RUN_STATUSES.includes(params.get("status") as RunStatus) ? { status: params.get("status") as RunStatus } : {}),
-      ...(operation === "list-runs" && params.get("archived") === "true" ? { archived: true } : {}) };
+      ...(operation === "list-runs" && params.get("archived") === "true" ? { archived: true } : {}),
+      ...(operation === "list-runs" && !agent && SOURCE_NAME.test(params.get("source") ?? "") ? { source: params.get("source")! } : {}),
+      ...(operation === "list-runs" && !agent ? runsWindowOf(params) : {}) };
   }
   // Suggested agents: every scanned repository, or one first (`?repo=owner/name`).
   m = h.match(/^#\/suggestions(?:\?(.*))?$/);
@@ -121,8 +157,11 @@ export function route(h: string = location.hash): Where {
   // A package on GitHub, read before it is installed (its source in `src`, as an "Add from URL" box or a link sends it).
   m = h.match(/^#\/templates\/install\?(.*)$/);
   if (m) return { section: "templates", install: new URLSearchParams(m[1]).get("src") ?? "" };
-  m = h.match(/^#\/templates\/([^/?]+)$/);
-  if (m) return { section: "templates", template: decodeURIComponent(m[1]) };
+  // A template's Apply screen with the agent's model set (`?model=`, the Free shelf's Use free).
+  m = h.match(/^#\/templates\/([^/?]+)(?:\?(.*))?$/);
+  if (m) { const model = new URLSearchParams(m[2] ?? "").get("model"); return { section: "templates", template: decodeURIComponent(m[1]), ...(model ? { templateModel: model } : {}) }; }
+  // The Free shelf: what runs for $0 on this server.
+  if (h === "#/free") return { section: "free" };
   if (h.startsWith("#/templates")) return { section: "templates" };
   // Triggers: the list, a new one of each kind, one trigger, and its editor.
   if (h === "#/triggers/new") return { section: "triggers", trigger: null, kind: "schedule" };
@@ -134,16 +173,16 @@ export function route(h: string = location.hash): Where {
   m = h.match(/^#\/triggers\/([^/?]+)(\/edit)?$/);
   if (m) return { section: "triggers", trigger: decodeURIComponent(m[1]), ...(m[2] ? { edit: true } : {}) };
   if (h.startsWith("#/triggers")) return { section: "triggers" };
-  // Settings, a page per address: #/settings/keys (and #/settings), #/settings/harness-keys, #/settings/tools,
-  // #/settings/email, #/settings/computers, #/settings/workspace, #/settings/webhook and #/settings/slack; a later one is
-  // one more name here.
+  // Settings, a page per address: #/settings/keys (and #/settings), #/settings/harness-keys, #/settings/api-keys,
+  // #/settings/tools, #/settings/email, #/settings/computers, #/settings/workspace, #/settings/webhook and
+  // #/settings/slack; a later one is one more name here.
   // #/settings/mcp, with an OAuth sign-in's outcome when the server sends the browser back there.
   m = h.match(/^#\/settings\/mcp(?:\?(.*))?$/);
   if (m) { const add = addOf(m[1]); return { section: "settings", settings: "mcp", signIn: signInOf(m[1]), ...(add ? { add } : {}) }; }
   // #/settings/github, with what the way back from GitHub said (github=connected, or error&reason=<code>).
   m = h.match(/^#\/settings\/github(?:\?(.*))?$/);
   if (m) { const github = githubReturnOf(m[1]); return { section: "settings", settings: "github", ...(github ? { github } : {}) }; }
-  m = h.match(/^#\/settings(?:\/(keys|harness-keys|tools|email|computers|workspace|webhook|slack|demo))?$/);
+  m = h.match(/^#\/settings(?:\/(keys|harness-keys|api-keys|tools|email|computers|workspace|webhook|slack|demo))?$/);
   if (m) return { section: "settings", settings: (m[1] ?? "keys") as SettingsPage };
   // Mission Control is the first page: the bare address, and the old start page's, land there.
   if (h === "" || h === "#" || h === "#/" || h.startsWith("#/start") || h.startsWith("#/mission")) return { section: "mission" };
@@ -151,15 +190,51 @@ export function route(h: string = location.hash): Where {
   // The runs list's filters live in the address, so a reload keeps them: one agent, one state, the archived runs.
   const q = new URLSearchParams(h.slice("#/runs?".length));
   const agent = q.get("agent"), status = q.get("status") as RunStatus | null;
-  return { section: "runs", ...(agent ? { runsOf: agent } : {}), ...(status && RUN_STATUSES.includes(status) ? { status } : {}), ...(q.get("archived") === "true" ? { archived: true } : {}) };
+  return { section: "runs", ...(agent ? { runsOf: agent } : {}), ...(status && RUN_STATUSES.includes(status) ? { status } : {}), ...(q.get("archived") === "true" ? { archived: true } : {}), ...(!agent && SOURCE_NAME.test(q.get("source") ?? "") ? { source: q.get("source")! } : {}), ...(!agent ? runsWindowOf(q) : {}) };
 }
 
+/** A source's name as GET /v2/runs' `source` takes it (the server's own pattern). */
+const SOURCE_NAME = /^[a-z][a-z0-9-]{0,31}$/;
+/** A model's name as GET /v2/runs' `model` takes it (the server's own pattern): `provider/model`, as a run's metrics name it. */
+const MODEL_NAME = /^[^\u0000-\u001f\u007f]{1,256}$/;
+
+/** GET /v2/runs' window and model from an address: `from` and `to` as instants, `model` as given. A value that is no time
+ *  is left out. */
+function runsWindowOf(q: URLSearchParams): Pick<Where, "from" | "to" | "model"> {
+  const from = runsInstant(q.get("from")), to = runsInstant(q.get("to")), model = q.get("model");
+  return { ...(from ? { from } : {}), ...(to ? { to } : {}), ...(model !== null && MODEL_NAME.test(model) ? { model } : {}) };
+}
+
+/** An address's time as the instant GET /v2/runs takes (an RFC 3339 date-time with its zone). The server reads no time
+ *  zone, so this browser's own stands in where the address names none: a date is its midnight here, a time without a zone
+ *  is a time here. A day or an hour that does not exist (Feb 30, 24:00) is no time. */
+function runsInstant(text: string | null): string | undefined {
+  const m = text?.match(/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?(Z|[+-]\d{2}:\d{2})?)?$/i);
+  if (!m) return undefined;
+  const [y, mo, d, h = 0, mi = 0, s = 0] = m.slice(1, 7).map((n) => (n === undefined ? undefined : Number(n)));
+  const ms = Number((m[7] ?? "").padEnd(3, "0")), zone = m[8];
+  const at = zone ? new Date(Date.UTC(y!, mo! - 1, d!, h, mi, s, ms)) : new Date(y!, mo! - 1, d!, h, mi, s, ms);
+  const parts = zone ? [at.getUTCFullYear(), at.getUTCMonth() + 1, at.getUTCDate(), at.getUTCHours(), at.getUTCMinutes(), at.getUTCSeconds()] : [at.getFullYear(), at.getMonth() + 1, at.getDate(), at.getHours(), at.getMinutes(), at.getSeconds()];
+  if (Number.isNaN(at.getTime()) || parts.join() !== [y, mo, d, h, mi, s].join()) return undefined;
+  if (!zone || zone.toUpperCase() === "Z") return at.toISOString();
+  const [zh, zm] = zone.slice(1).split(":").map(Number);
+  if (zh > 23 || zm > 59) return undefined;
+  return new Date(at.getTime() - (zone[0] === "-" ? -1 : 1) * (zh * 60 + zm) * 60_000).toISOString();
+}
+
+/** The runs list is narrowed past its state and archive: to one source, a window or a model. */
+const runsNarrowed = (f: RunsFilter): boolean => !!(f.source || f.from || f.to || f.model);
+
 /** The runs list's address for these filters. Exported for its test. */
-export function runsHash({ runsOf, status, archived }: { runsOf?: string } & RunsFilter): string {
+export function runsHash({ runsOf, status, archived, source, from, to, model }: { runsOf?: string } & RunsFilter): string {
   const q = new URLSearchParams();
   if (runsOf) q.set("agent", runsOf);
   if (status) q.set("status", status);
   if (archived) q.set("archived", "true");
+  if (source && !runsOf) q.set("source", source);
+  if (from && !runsOf) q.set("from", from);
+  if (to && !runsOf) q.set("to", to);
+  if (model && !runsOf) q.set("model", model);
   return `#/runs${q.size ? `?${q}` : ""}`;
 }
 
@@ -385,7 +460,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
   const [statsRange, setStatsRange] = useState<StatsRange>("30d");
   const observedDays = statsRange === "7d" ? 7 : 30;
   // A race's page (where.race) is under Runs too, but shows no runs list: nothing there reads observations.
-  const observations = useObservations(v2, { active: where.section === "mission" || (where.section === "runs" && !where.run && !where.race && !where.runsOf && !where.archived && !where.status), days: observedDays });
+  const observations = useObservations(v2, { active: where.section === "mission" || (where.section === "runs" && !where.run && !where.race && !where.compare && !where.runsOf && !where.archived && !where.status && !runsNarrowed(where)), days: observedDays });
   const [statsAgent, setStatsAgent] = useState<string | null>(null);
   // Keep the selected identity through refreshes that temporarily clear the connection list.
   const [sessionSelected, setSessionSelected] = useState(false);
@@ -470,16 +545,19 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
   const capsPolling = useRef(false);
   // It answers whether the read landed, for a page that says so (Settings → Tools).
   // Whether the latest capabilities read failed: a row that waits on them (Claude Code's login) then asks as it would
-  // with no capabilities at all, never hidden for the rest of the visit by one failed read.
+  // with no capabilities at all, never hidden for the rest of the visit by one failed read; the race form says so, with
+  // Try again, rather than loading for ever.
   const [capsFailed, setCapsFailed] = useState(false);
-  const readCaps = () => { const n = ++capsAsked.current; return v2.capabilities().then((x) => { if (n === capsAsked.current) { setCaps(x); setCapsFailed(false); } return true; }, () => { if (n === capsAsked.current) setCapsFailed(true); return false; }); };
+  // `fetchCaps` answers what it read, null when the read failed, for a caller that needs them now (the move to the runner).
+  const fetchCaps = () => { const n = ++capsAsked.current; return v2.capabilities().then((x) => { if (n === capsAsked.current) { setCaps(x); setCapsFailed(false); } return x; }, () => { if (n === capsAsked.current) setCapsFailed(true); return null; }); };
+  const readCaps = () => fetchCaps().then((x) => x !== null);
   useEffect(() => { readCaps(); }, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
   // The agents' names, every page of the active ones and of the archived: read at the start, and again each time a runs
   // view, Mission Control or Triggers opens (the list, one agent's runs, a run's page, a trigger's page), so an agent made
   // since, here or elsewhere (a template's apply makes one with its triggers), is named at once, and again when an import
   // at setup ends while this page watches (`refreshed`). Only the newest read lands.
   useEffect(() => {
-    if (namesAsked.current && where.section !== "runs" && where.section !== "mission" && where.section !== "triggers" && namesAfter.current === refreshed) return;
+    if (namesAsked.current && where.section !== "runs" && where.section !== "mission" && where.section !== "factory" && where.section !== "triggers" && namesAfter.current === refreshed) return;
     namesAfter.current = refreshed;
     const n = ++namesAsked.current;
     setNamesRead(false);
@@ -494,10 +572,10 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
       setNamesRead(whole);
     });
   }, [v2, where, refreshed]);
-  const runsFilter: RunsFilter = { status: where.status, archived: where.archived };
+  const runsFilter: RunsFilter = { status: where.status, archived: where.archived, source: where.source, from: where.from, to: where.to, model: where.model };
   useEffect(() => {
     // A race's page reads its own runs (lib/race.ts), and its lanes keep their reads few: no runs list behind it.
-    if (where.section !== "runs" || where.run || where.race) return;
+    if (where.section !== "runs" || where.run || where.race || where.compare) return;
     // Only the newest request lands: a slower answer for all runs never replaces one agent's runs, or the reverse.
     const n = ++asked.current;
     setRuns(null); setError(null);
@@ -510,26 +588,34 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
   const agentName = (id: string) => names[id] ?? agents?.find((a) => a.agent_id === id)?.definition.name ?? (namesRead ? id : "");
   const c = caps as unknown as { harnesses: EditorCaps["harnesses"]; tools?: unknown; features?: { thinking?: string[] }; models?: { default?: string; source?: string; route_prefix?: string | null } } | null;
   // The server lists its tools as objects (name, available, missing).
-  const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: toolOffers(c?.tools), thinking: c?.features?.thinking ?? [], ...(typeof caps?.limits?.free_model_requests === "number" ? { freeRequests: caps.limits.free_model_requests } : {}) };
+  const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: toolOffers(c?.tools), thinking: c?.features?.thinking ?? [], ...(typeof caps?.limits?.free_model_requests === "number" ? { freeRequests: caps.limits.free_model_requests } : {}), places: placesOf(caps), mcp: !!caps?.features?.mcp_client, mcpHarnesses: caps?.features?.mcp_client?.harnesses };
   // The capabilities with a choice of provider (providers/1): Settings → Tools, and an agent's tool settings.
   const choices = toolChoices(c?.tools);
   // Each tool's permission (approvals/1): Settings → Tools, and an agent's tool settings.
   const gates = toolGates(c?.tools);
   // The settings pages this server has: tool keys (their routes), tools (a capability with a choice of provider, or a
   // permission to set), MCP servers, GitHub, computers and the workspace (every server has them), and the webhook (its routes).
-  const settingsOffered: SettingsPage[] = [...(caps?.features?.tool_keys?.routes ? ["keys" as const] : []), ...(caps?.features?.harness_keys?.harnesses.length ? ["harness-keys" as const] : []), ...(choices.length || gates.length ? ["tools" as const] : []), "mcp" as const, "github" as const, "email" as const, "computers" as const, "workspace" as const, ...(caps?.features?.webhooks?.routes ? ["webhook" as const] : []), ...(caps?.features?.slack?.routes ? ["slack" as const] : []), "demo" as const];
+  const settingsOffered: SettingsPage[] = [...(caps?.features?.tool_keys?.routes ? ["keys" as const] : []), ...(caps?.features?.harness_keys?.routes ? ["harness-keys" as const] : []), ...(caps?.features?.api_keys?.routes ? ["api-keys" as const] : []), ...(choices.length || gates.length ? ["tools" as const] : []), "mcp" as const, "github" as const, "email" as const, "computers" as const, "workspace" as const, ...(caps?.features?.webhooks?.routes ? ["webhook" as const] : []), ...(caps?.features?.slack?.routes ? ["slack" as const] : []), "demo" as const];
   // In demo mode Settings is the demo's page alone: the server's own settings are no part of the sample story, and are
   // kept out of what a demo shows.
   const settingsShown: SettingsPage[] = demo ? ["demo"] : settingsOffered;
   const settingsPage: SettingsPage = demo ? "demo" : where.settings ?? "keys";
-  const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", dojo: "#/dojo", mission: "#/", triggers: "#/triggers", templates: "#/templates", suggestions: "#/suggestions", settings: `#/settings/${settingsShown[0] ?? "keys"}` }[s]);
+  const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", dojo: "#/dojo", mission: "#/", factory: "#/factory", triggers: "#/triggers", templates: "#/templates", suggestions: "#/suggestions", free: "#/free", wrapped: "#/wrapped", settings: `#/settings/${settingsShown[0] ?? "keys"}` }[s]);
   // One click on a template makes its agent (once) on the first harness with a model, runs it, and opens the run.
   // Try it keeps its start's key until a start lands: a click after a lost answer is the same start, not a second run.
   const templateKeys = useRef(keeper()).current;
+  // The model a pull here just ended with (`ollama/<tag>`): the first screen's templates run on it, not on the server's
+  // default, which may be another of the Ollama's tools models.
+  const [localModel, setLocalModel] = useState<string | null>(null);
+  // #/free's card, kept up from a pull's start until the person is done with it: the shelf would drop it as soon as a
+  // capabilities read lists a local model, before the card's own read sees the pull end.
+  const [fitHeld, setFitHeld] = useState(false);
+  // A pull's end, on the first screen's card or #/free's: the capabilities read again, and templates run on its tag.
+  const localReady = (tag: string) => { setLocalModel(`ollama/${tag}`); void readCaps(); };
   const tryIt = async (t: Template) => {
-    const harness = templateHarness(editorCaps.harnesses);
-    if (!harness) return "This server has no model to run it on yet.";
-    try { const id = await tryTemplate(v2, t, harness, templateKeys); go(`#/runs/${encodeURIComponent(id)}`); return null; } catch (e) { return problemOf(e); }
+    const on = templatePick(editorCaps.harnesses, localModel);
+    if (!on) return "This server has no model to run it on yet.";
+    try { const id = await tryTemplate(v2, t, on, templateKeys); go(`#/runs/${encodeURIComponent(id)}`); return null; } catch (e) { return problemOf(e); }
   };
   // How many runs came from an import (the start-here panel says so); `imported` is the import in progress.
   const importedRuns = (mission?.analytics.by_source ?? []).filter((g) => g.source !== "live").reduce((n, g) => n + g.runs, 0);
@@ -537,6 +623,9 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [revs, setRevs] = useState<{ revision: string; version: number; current: boolean; note: string | null }[]>([]);
   const [pick, setPick] = useState<string | null>(null);
+  // The revision picked in the Playground ("" for the current one) and its definition, undefined when the page does not
+  // hold it (Playground's onRevision). Another agent starts on its current revision.
+  const [playgroundRevision, setPlaygroundRevision] = useState<{ revision: string; definition?: Record<string, unknown> }>({ revision: "" });
   const pickedAgent = useRef(pick);
   pickedAgent.current = pick;
   const [startError, setStartError] = useState<string | null>(null);
@@ -687,12 +776,20 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
     return refused;
   };
   const revsAsked = useRef(0);
+  /** Reads `agentId`'s revisions, every page: only the newest read lands. */
+  const readRevisions = (agentId: string) => {
+    const n = ++revsAsked.current;
+    allPages((cursor) => v2.listRevisions(agentId, cursor), (p) => p.revisions).then((r) => { if (n === revsAsked.current) setRevs(r); }).catch(() => {});
+  };
   useEffect(() => {
     // The picked agent's revisions only: the old ones go at once, and an answer for an earlier pick is dropped.
-    const n = ++revsAsked.current;
+    ++revsAsked.current;
     setRevs([]);
-    if (pick) allPages((cursor) => v2.listRevisions(pick, cursor), (p) => p.revisions).then((r) => { if (n === revsAsked.current) setRevs(r); }).catch(() => {});
-  }, [v2, pick]);
+    setPlaygroundRevision({ revision: "" });
+    if (pick) readRevisions(pick);
+  }, [v2, pick]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Runs the Playground started: the Claude login is read again after each (claudeSignedIn below).
+  const [runsStarted, setRunsStarted] = useState(0);
   const send = async (agentId: string, body: Parameters<typeof v2.startRun>[1], key: string): Promise<StartResult> => {
     const t0 = performance.now();
     try {
@@ -700,12 +797,39 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
       return { status: r.status, ms: Math.round(performance.now() - t0), body: r.run, runId: r.run.run_id };
     } catch (e) {
       return startFailure(e, Math.round(performance.now() - t0));
+    } finally {
+      setRunsStarted((n) => n + 1);
     }
+  };
+  // The Playground's offer under a run refused in a box while Claude Code's login, which runs agents on the runner only, is
+  // on: the agent read now, saved with the edit its Computer step makes for a runner pick (computerFields), on the
+  // version read, and the agents and the picked agent's revisions read again so the bar, the revision picker and the next
+  // run see it there. An agent the edit leaves as it is (on the runner already: a second click, or a move made elsewhere)
+  // is not saved again. Answers the revision the agent runs now and the box-only tools the move dropped. Which tools run
+  // only in a box is the capabilities' word: taken before they answered, or after their read failed, the move reads them
+  // itself, and when that read fails too it saves nothing and says so.
+  const moveToRunner = async (agentId: string): Promise<MovedToRunner> => {
+    const { agent, etag } = await v2.getAgent(agentId);
+    const tools = agent.definition.tools ?? [];
+    // What the no-computer choice's shell runs on the runner, from the computers list; none where it can't be read.
+    const kinds = await v2.computers().then((r) => r.kinds, () => null);
+    const read = async () => { const caps = await fetchCaps() as unknown as { tools?: unknown } | null; return computerFields({ kind: "none" }, tools, toolOffers(caps?.tools), kinds); };
+    const fields = computerFields({ kind: "none" }, tools, editorCaps.tools, kinds) ?? await read();
+    if (!fields) throw new Error("the server's tools could not be read, so which of them run only in a box is unknown. Try again.");
+    const { unchanged, ...body } = editBody(agent, fields, "Moved to the runner, where Claude Code's login on this machine runs it");
+    if (unchanged) return { revision: agent.revision, saved: false, dropped: [] };
+    const kept = new Set(body.definition.tools ?? []);
+    const dropped = (agent.definition.tools ?? []).filter((tool) => !kept.has(tool));
+    const saved = await v2.updateDefinition(agentId, body, etag);
+    setRetry((n) => n + 1);
+    if (pickedAgent.current === agentId) readRevisions(agentId);
+    return { revision: saved.agent.revision, saved: true, dropped };
   };
   const efforts = ((caps as unknown as { features?: { efforts?: string[] } } | null)?.features?.efforts) ?? [];
   // The server's learning switch: undefined until its capabilities are read, null on a server without learning.
   const learningCap = caps ? ((caps as unknown as { features?: { learning?: "on" | "off" } }).features?.learning ?? null) : undefined;
   editorCaps.learning = learningCap ?? undefined;
+  const fullEditorCaps: EditorCaps = { ...editorCaps, routePrefix: c?.models?.route_prefix, decisionProvider: decisionProvider((caps as unknown as { workflows?: Parameters<typeof decisionProvider>[0] } | null)?.workflows), mcp: !!caps?.features?.mcp_client, mcpHarnesses: caps?.features?.mcp_client?.harnesses };
   // While no managed model is ready, read capabilities again every MODEL_CHECK_MS and when the page returns to view,
   // so execution and learning setup clear once their models are configured. Native connections use their own authentication.
   const modelsReady = caps?.models?.ready;
@@ -733,20 +857,67 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
     v2.chatGPT().then((body) => { if (live) setPlan(chatGPTView(body)); }, () => { if (live) setPlan(null); });
     return () => { live = false; };
   }, [v2, modelsReady]);
+  // Claude Code's login on this machine, read while no model is ready on a server whose routes for it answer
+  // (features.claude_login): once, again on leaving Settings, so a sign-in finished there shows (Settings' own row reads
+  // it while there), and after a run starts. Each read runs `claude auth status` on the server, so a move between other
+  // pages reads nothing. On and signed in, Claude Agent runs on it: for an agent on that harness it is a model, and the
+  // bar goes; an agent on another harness still has none.
+  const claudeLoginRoutes = caps?.features?.claude_login === true;
+  const inSettings = where.section === "settings";
+  const [claudeSignedIn, setClaudeSignedIn] = useState(false);
+  useEffect(() => {
+    if (modelsReady !== false || !claudeLoginRoutes) { setClaudeSignedIn(false); return; }
+    if (inSettings) return;
+    let live = true;
+    v2.claudeLogin().then((body) => { if (live) setClaudeSignedIn(claudeLoginView(body)?.state === "signed_in"); }, () => { if (live) setClaudeSignedIn(false); });
+    return () => { live = false; };
+  }, [v2, modelsReady, claudeLoginRoutes, inSettings, runsStarted]);
   // The first screen's card stays from a sign-in's start until the person is done with OpenAI's words on usage, though the
   // server has its model by then.
   const [planShown, setPlanShown] = useState(false);
+  // The free local model card stays once its pull ends, though the server has its model by then, until the person is done.
+  const [localShown, setLocalShown] = useState(false);
   const onPlan = (v: ChatGPTView) => {
     setPlan(v);
     if (v.state === "pending" || v.state === "signed_in") setPlanShown(true);
     if (v.state === "signed_in") void readCaps();
   };
-  const selectedDefinition = agents?.find((agent) => agent.agent_id === pick)?.definition;
-  const externalPlayground = selectedDefinition?.native || backendSdkOf(selectedDefinition);
+  const selectedAgent = agents?.find((agent) => agent.agent_id === pick);
+  const selectedDefinition = selectedAgent?.definition;
+  // The run the Playground starts is the picked revision's: the "No model" bar reads its definition, the agent's current
+  // one when none is picked. A picked revision the page holds no definition for is not known to run natively, on a
+  // backend SDK or on the login, so the bar stays.
+  const runDefinition: Record<string, unknown> | undefined = playgroundRevision.revision ? playgroundRevision.definition : selectedDefinition;
+  const externalPlayground = runDefinition?.native || backendSdkOf(runDefinition);
+  // The login is a model only for a run on the runner (serve's loginForRun): a run in a sandbox box goes on the model
+  // keys. Where the run goes is its definition's own place, else where the server runs one that names none (runsWhere:
+  // the server's default place for a revision with a shell tool, else the runner). Not known (the server's places not
+  // read yet), the bar stays.
+  const runPlace = runDefinition && selectedAgent ? runsWhere({ kind: selectedAgent.kind, definition: runDefinition as Agent["definition"] }, editorCaps.places)?.place : undefined;
+  // The bar renders only in the Playground. With no agent picked there (no agents yet, or the agents still being read)
+  // there is no run to read, only where a first agent would run: the new-agent form puts it on the server's default
+  // place (newAgentPlace). So the bar goes only when that place is the runner, where a first agent on Claude Agent runs
+  // on the login; on a box, or with the places not read yet, it stays, for every harness. A picked agent's run goes on
+  // the login only for a model the login serves (loginServes): one naming an OpenRouter model still needs its key.
+  const noAgentOnRunner = editorCaps.places?.defaultPlace?.mode === "runner";
+  const onClaudeLogin = claudeSignedIn && caps?.models?.needs !== "model" && (!selectedAgent ? noAgentOnRunner : (runDefinition?.harness === LOGIN_HARNESS && loginServes(runDefinition.model) && runPlace?.mode === "runner"));
   const playgroundTarget = where.operation ? where.playgroundAgent : pick ?? where.playgroundAgent;
+  // The playground's operation, first on its request row: the page's own row, or Start a run's beside its agent.
+  // Under the request row: no model to run on yet, unless the run goes on Claude Code's login (onClaudeLogin).
+  const noModel = !externalPlayground && caps?.models?.ready === false && !onClaudeLogin && <NoModelBanner needs={caps.models.needs} source={caps.models.source} model={caps.models.default} settings={caps.features?.tool_keys?.routes === true && caps.features.tool_keys.at_rest === "sealed"} chatgpt={plan?.state === "signed_out" || plan?.state === "expired"} />;
+  const operationPicker = <>
+    <label className="sr-only" htmlFor="api-operation">API operation</label>
+    <Picker id="api-operation" label="API operation" steady value={where.operation ?? "run"} onChange={(operation) => {
+      const target = playgroundTarget;
+      const params = new URLSearchParams();
+      if (operation !== "run") params.set("operation", operation);
+      if (operation !== "create-agent" && operation !== "apply-template" && target) params.set("agent", target);
+      go(`#/playground${params.size ? `?${params}` : ""}`);
+    }} options={[{ value: "create-agent", label: "POST · Create an agent" }, { value: "apply-template", label: "POST · Apply a template" }, { value: "run", label: "POST · Start a run" }, { value: "list-runs", label: "GET · Query runs" }, { value: "edit-agent", label: "PUT · Edit agent", disabled: !playgroundTarget }]} />
+  </>;
   return (
     <ScheduleNames.Provider value={scheduleNames}>
-    <Shell active={where.section} building={where.section === "agents" && where.agent === null} onBuild={() => go("#/agents/new")} settings={settingsOffered.length > 0} triggers={scheduling} onNavigate={nav} onSignOut={() => {
+    <Shell active={where.section} settings={settingsOffered.length > 0} triggers={scheduling} onNavigate={nav} onSignOut={() => {
       // The card comes back only once the server ended the session: a sign-out that did not reach it says so instead.
       // A sign-out leaves the page as a move does: a page with unsaved changes asks first, and Leave signs out.
       const out = () => void v2.signOut().then(onSignedOut, (e) => setSignOutError(e instanceof ClientError ? e.message : "The sign-out did not reach the server. Try again."));
@@ -769,7 +940,8 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
         ? <Settings active={settingsPage} offered={settingsShown}>
             {settingsPage === "demo" ? <DemoPage on={demo} onChange={setDemo} v2={v2} go={go} />
               : where.settings === "harness-keys" ? <HarnessKeysPage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} />
-              : where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} gates={gates} harnesses={editorCaps.harnesses} mcp={!!caps?.features?.mcp_client} onSaved={readCaps} onOpen={readCaps} />
+              : where.settings === "api-keys" ? <ApiKeysPage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} origin={location.origin} />
+              : where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} gates={gates} harnesses={editorCaps.harnesses} mcp={!!editorCaps.mcp} onSaved={readCaps} onOpen={readCaps} />
               : where.settings === "mcp" ? <McpServersPage v2={v2} signIn={where.signIn} add={where.add} writable={secretsWritable} whyNot={secretsWhyNot} choices={choices} />
               : where.settings === "github" ? <GitHubPage v2={v2} returned={where.github} />
               : where.settings === "email" ? <EmailPage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />
@@ -778,7 +950,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
               : where.settings === "webhook" ? <WebhookPage v2={v2} />
               : where.settings === "slack" ? <SlackPage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />
               : <KeysPage v2={v2} onChange={readCaps} writable={secretsWritable} whyNot={secretsWhyNot} harnesses={editorCaps.harnesses}
-                  plan={<><ChatGPTRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} /><ClaudeLoginRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} available={caps ? caps.features?.claude_login !== false : capsFailed} onChange={() => void readCaps()} /><ModelGatewayRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} /></>} />}
+                  plan={<><ChatGPTRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} source={caps?.models?.source} defaultModel={caps?.models?.default} routePrefix={caps?.models?.route_prefix} onChange={() => void readCaps()} /><ClaudeLoginRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} available={caps ? caps.features?.claude_login !== false : capsFailed} onChange={() => void readCaps()} /><ModelGatewayRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} /></>} />}
           </Settings>
         : where.section === "dojo"
         ? <AgentDojo key={refreshed} v2={v2} server={learningCap} modelAccess={caps?.learning_model} />
@@ -786,56 +958,65 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
         // Source connection and history browsing need no managed model; setup follows an explicit choice to run here.
         ? <div className="flex h-full flex-col">
             <div className="min-h-0 flex-1">
-              <MissionControl observed={observations} agents={missionAgents} agentsError={missionAgentsError} view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
+              <MissionControl yearLink={!demo} observed={observations} agents={missionAgents} agentsError={missionAgentsError} view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
                 actions={<><Button size="icon" aria-label="Refresh Mission Control" disabled={missionReading} onClick={() => { setMissionTry((n) => n + 1); setNeedsTry((n) => n + 1); observations.refresh(); }}><RefreshCw className="size-4" aria-hidden /></Button>{sessionSelected && statsAgent
-                  ? <CodingAgentAction label="Query" prompt={queryObservedSessionPrompt(location.origin, statsAgent, rangeFrom(statsRange))} playgroundHref={observationHash(statsAgent)} playgroundLabel="Connected agent" />
-                  : <CodingAgentAction label="Query" prompt={queryRunsPrompt(location.origin, statsAgent ?? undefined)} playgroundHref={queryPlaygroundHref(statsAgent ?? undefined)} />}<ConnectExistingAgents variant="primary" /></>}
+                  ? <CodingAgentAction label="Ask about this session" prompt={queryObservedSessionPrompt(location.origin, statsAgent, rangeFrom(statsRange))} playgroundHref={observationHash(statsAgent)} playgroundLabel="Connected agent" />
+                  : <CodingAgentAction label="Ask about runs" prompt={queryRunsPrompt(location.origin, statsAgent ?? undefined)} playgroundHref={queryPlaygroundHref(statsAgent ?? undefined)} />}<ConnectExistingAgents variant="primary" /></>}
                 scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: id => { setSessionSelected(!!id && !!observations.data?.sessions.some(session => session.id === id)); setStatsAgent(id); }, refreshing: missionReading && mission !== null }}
                 asking={needs && askingRead ? needs.asking.length : null} failed={needs && failedRead ? failureCount(needs.failed) : null} live={needs && liveRead ? needs.live.length : null}
                 needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} failedAll={mission?.runs.failed} live={needs.live} learning={learningWaits} problem={needsProblem} agentName={agentName} onAnswer={answer} onApprove={approve} onHandBack={handBack} onRunAgain={runAgain} onStop={stop} />}
                 startHere={ownRun === false && !observations.data?.sessions.length ? <StartHere harnesses={editorCaps.harnesses} tools={editorCaps.tools} onTry={tryIt} imported={importedRuns}
                   keySettings={caps?.features?.tool_keys?.routes === true && caps.features.tool_keys.at_rest === "sealed"}
-                  modelSetup={caps && (caps.models.ready === false || planShown) ? <ModelKeyCard v2={v2} needs={caps.models.needs} model={caps.models.default} onSaved={readCaps} writable={secretsWritable} whyNot={secretsWhyNot}
-                    plan={plan} harnesses={editorCaps.harnesses} onPlan={onPlan} onDone={() => setPlanShown(false)} /> : undefined} /> : undefined} />
+                  modelSetup={caps && (caps.models.ready === false || planShown || localShown) ? <>
+                    {(caps.models.ready === false || localShown) && <LocalModelCard v2={v2} onPulling={() => setLocalShown(true)} onReady={(tag) => { setLocalShown(true); localReady(tag); }} onDone={() => setLocalShown(false)} />}
+                    {(caps.models.ready === false || planShown) && <ModelKeyCard v2={v2} needs={caps.models.needs} model={caps.models.default} source={caps.models.source} routePrefix={caps.models.route_prefix} capsRead={caps.models} onSaved={readCaps} writable={secretsWritable} whyNot={secretsWhyNot}
+                    plan={plan} harnesses={editorCaps.harnesses} onPlan={onPlan} onDone={() => setPlanShown(false)} />}
+                  </> : undefined} /> : undefined} />
             </div>
           </div>
+        : where.section === "wrapped"
+        ? <WrappedPage v2={v2} year={where.year} go={go} />
         : where.section === "suggestions"
         ? <SuggestionsPage v2={v2} repo={where.repo} go={go} />
+        : where.section === "factory"
+        ? <AgentFactoryPage v2={v2} agentName={agentName} />
         : where.section === "templates"
-        ? <TemplatesPage key={where.install !== undefined ? `install:${where.install}` : where.template ?? ""} v2={v2} name={where.template} install={where.install} go={go} />
+        ? <TemplatesPage key={where.install !== undefined ? `install:${where.install}` : `${where.template ?? ""}:${where.templateModel ?? ""}`} v2={v2} name={where.template} install={where.install} model={where.templateModel} freeIds={c ? freeModels(c.harnesses).map((m) => m.id) : undefined} go={go} />
+        : where.section === "free"
+        ? <FreeShelf v2={v2} harnesses={editorCaps.harnesses} tools={c?.tools} freeRequests={editorCaps.freeRequests} routePrefix={c?.models?.route_prefix} go={go}
+            fit={<LocalModelCard v2={v2} onPulling={() => setFitHeld(true)} onReady={localReady} onDone={() => setFitHeld(false)} />} fitHeld={fitHeld} localModel={localModel} />
         : where.section === "triggers"
         ? <SchedulesPage v2={v2} view={{ trigger: where.trigger, kind: where.kind, edit: where.edit }} go={go} agentName={agentName} minEvery={caps?.features?.triggers?.min_every_s} failuresToPause={caps?.features?.triggers?.failures_to_pause} publicUrl={caps?.features?.triggers?.public_url} />
         : where.section === "playground"
         ? <section className="flex h-full min-h-0 flex-col">
             <header className={cn(pageToolbarClass, "gap-2 px-5")}><h1 className={pageTitleClass}><Code className="size-4" aria-hidden />API playground</h1></header>
-            <div className="flex flex-wrap items-center gap-3 border-b px-6 py-4">
-              <label className="sr-only" htmlFor="api-operation">API operation</label>
-              <Picker id="api-operation" label="API operation" steady value={where.operation ?? "run"} onChange={(operation) => {
-                const target = playgroundTarget;
-                const params = new URLSearchParams();
-                if (operation !== "run") params.set("operation", operation);
-                if (operation !== "create-agent" && operation !== "apply-template" && target) params.set("agent", target);
-                go(`#/playground${params.size ? `?${params}` : ""}`);
-              }} options={[{ value: "create-agent", label: "POST · Create an agent" }, { value: "apply-template", label: "POST · Apply a template" }, { value: "run", label: "POST · Start a run" }, { value: "list-runs", label: "GET · Query runs" }, { value: "edit-agent", label: "PUT · Edit agent", disabled: !playgroundTarget }]} />
+            {/* Start a run draws this row itself, with its agent beside the operation: one row, not two. */}
+            {(where.operation || !agents) && <div className="flex flex-wrap items-center gap-3 border-b px-5 py-3 md:px-6">
+              {operationPicker}
               <span className="min-w-0 break-all font-mono text-small text-muted-foreground">{where.operation === "apply-template" ? `/v2/templates/${where.template ? encodeURIComponent(where.template) : "{template}"}/apply` : where.operation === "list-runs" ? (where.playgroundAgent ? `/v2/agents/${where.playgroundAgent}/runs` : "/v2/runs") : where.operation === "create-agent" ? "/v2/agents" : where.operation === "edit-agent" ? `/v2/agents/${where.playgroundAgent ?? "{agent_id}"}/definition` : "/v2/agents/{agent_id}/runs"}</span>
-            </div>
-            {where.operation === "apply-template" ? <div className="min-h-0 flex-1 overflow-auto"><TemplatesPage key={where.template ?? ""} v2={v2} name={where.template} go={go} playground draft={where.draft} /></div> : where.operation === "list-runs" ? <RunsRequest key={`list:${where.playgroundAgent ?? ""}:${where.status ?? ""}:${where.archived ?? false}`} v2={v2} origin={location.origin} agentId={where.playgroundAgent} filter={{ status: where.status, archived: where.archived }} /> : where.operation ? <AgentRequest key={`${where.operation}:${where.playgroundAgent ?? ""}:${where.draft ?? ""}`} v2={v2} operation={where.operation} origin={location.origin} agentId={where.playgroundAgent} draft={where.draft} harnesses={editorCaps.harnesses} routePrefix={c?.models?.route_prefix} /> : <>
-              {!externalPlayground && caps?.models?.ready === false && <NoModelBanner needs={caps.models.needs} source={caps.models.source} model={caps.models.default} settings={caps.features?.tool_keys?.routes === true && caps.features.tool_keys.at_rest === "sealed"} chatgpt={plan?.state === "signed_out" || plan?.state === "expired"} />}
+            </div>}
+            {where.operation === "apply-template" ? <div className="min-h-0 flex-1 overflow-auto"><TemplatesPage key={where.template ?? ""} v2={v2} name={where.template} go={go} playground draft={where.draft} freeIds={c ? freeModels(c.harnesses).map((m) => m.id) : undefined} /></div> : where.operation === "list-runs" ? <RunsRequest key={`list:${where.playgroundAgent ?? ""}:${where.status ?? ""}:${where.archived ?? false}:${where.source ?? ""}:${where.from ?? ""}:${where.to ?? ""}:${where.model ?? ""}`} v2={v2} origin={location.origin} agentId={where.playgroundAgent} filter={{ status: where.status, archived: where.archived, source: where.source, from: where.from, to: where.to, model: where.model }} /> : where.operation ? <AgentRequest key={`${where.operation}:${where.playgroundAgent ?? ""}:${where.draft ?? ""}`} v2={v2} operation={where.operation} origin={location.origin} agentId={where.playgroundAgent} draft={where.draft} harnesses={editorCaps.harnesses} routePrefix={c?.models?.route_prefix} /> : <>
+              {!agents && noModel}
               {startError && <div className="m-8 border p-4" role="alert"><p className="text-lead text-destructive-text">The agents could not be read: {startError}</p><Button size="sm" className="mt-3" type="button" onClick={() => setRetry((n) => n + 1)}>Try again</Button></div>}
-              {agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onSend={send} limits={caps?.limits} {...(demo ? { upload: demoUpload } : {})} removeUpload={v2.deleteUpload} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
+              {agents && <Playground lead={operationPicker} notice={noModel} agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onRevision={(revision, definition) => setPlaygroundRevision({ revision, definition })} onSend={send} limits={caps?.limits} {...(demo ? { upload: demoUpload } : {})} removeUpload={v2.deleteUpload} onMoveToRunner={moveToRunner} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
                 live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />}
             </>}
           </section>
         : where.section === "agents"
         ? where.observation ? <ObservedSessionPage v2={v2} sessionId={where.observation} go={go} /> : where.nativeConnect ? <NativeConnections v2={v2} go={go} initialSource={where.connectionSource} />
           : where.agent === undefined ? <AgentsPage key={refreshed} v2={v2} archived={!!where.archived} go={go} learning={learningCap} />
-          : where.agent === null ? <BuildAgent origin={location.origin} v2={v2} />
-          : where.agent !== null && !where.edit ? <AgentPage key={where.agent} v2={v2} agentId={where.agent} tab={where.tab} learning={learningCap} routePrefix={c?.models?.route_prefix} harnesses={editorCaps.harnesses} efforts={efforts} limits={caps?.limits} places={placesOf(caps)} go={go} />
+          : where.agent !== null ? <AgentPage key={where.agent} v2={v2} agentId={where.agent} tab={where.edit ? "settings" : where.tab} learning={learningCap} routePrefix={c?.models?.route_prefix} harnesses={editorCaps.harnesses} efforts={efforts} limits={caps?.limits} places={editorCaps.places} go={go} {...(demo ? { upload: demoUpload } : {})}
+              renderEditor={(onAgent, onEditPromptChange) => <AgentEditPage key={`${where.agent}:${where.edit ? "edit" : "settings"}:${where.settingsSection ?? ""}:${where.tool ?? ""}`} initialStep={where.settingsSection} embedded onAgent={onAgent} onEditPromptChange={onEditPromptChange} v2={v2} choices={choices} gates={gates} focusTool={where.tool} caps={fullEditorCaps} agentId={where.agent!} go={go} />} />
           // A new decision agent's judge names the server's decision provider (agentForm's decisionProvider).
-          : <AgentEditPage key={`${where.agent ?? "new"}:${where.tool ?? ""}`} v2={v2} choices={choices} gates={gates} focusTool={where.tool} caps={{ ...editorCaps, routePrefix: c?.models?.route_prefix, decisionProvider: decisionProvider((caps as unknown as { workflows?: Parameters<typeof decisionProvider>[0] } | null)?.workflows), places: placesOf(caps), mcp: !!caps?.features?.mcp_client, mcpHarnesses: caps?.features?.mcp_client?.harnesses }} agentId={where.agent} go={go} />
+          : <AgentEditPage key={`new:${where.edit ? "legacy-editor" : "editor"}:${where.initialInstructions ?? ""}`} v2={v2} choices={choices} gates={gates} caps={fullEditorCaps} initialInstructions={where.initialInstructions} agentId={null} go={go} />
+        // The form picks its lanes from the harnesses once, so it waits for the capabilities' first read.
+        : where.newRace ? (caps ? <RaceStart v2={v2} harnesses={editorCaps.harnesses} tools={editorCaps.tools} places={editorCaps.places ?? null} go={go} />
+          : capsFailed ? <div className="p-5 md:p-8"><Banner tone="error" actions={<Button size="xs" onClick={() => void readCaps()}>Try again</Button>}>The server's harnesses could not be read, so there is nothing to pick a lane from yet.</Banner></div>
+          : <RunSkeleton />)
         : where.race ? <Race key={where.race} v2={v2} label={where.race} />
+        : where.compare ? <TraceCompare key={where.compare.join(",")} v2={v2} ids={where.compare} />
         : where.run ? <LiveRun key={where.run} v2={v2} runId={where.run} caps={caps} agentName={agentName} />
-        : <RunsList observations={!where.runsOf && !where.archived && !where.status ? observations : undefined} runs={runs} agentName={agentName} agentId={where.runsOf} error={error} onRetry={() => setRunsTry((n) => n + 1)} onOpen={(id) => go(`#/runs/${encodeURIComponent(id)}`)} loadingMore={more}
+        : <RunsList observations={!where.runsOf && !where.archived && !where.status && !runsNarrowed(where) ? observations : undefined} runs={runs} agentName={agentName} agentId={where.runsOf} error={error} onRetry={() => setRunsTry((n) => n + 1)} onOpen={(id) => go(`#/runs/${encodeURIComponent(id)}`)} loadingMore={more}
             filter={runsFilter} onFilter={(f) => go(runsHash({ runsOf: where.runsOf, ...f }))}
             onMore={cursor ? () => { const n = asked.current; setMore(true); (where.runsOf ? v2.listAgentRuns(where.runsOf, 50, cursor, runsFilter) : v2.listRuns(50, cursor, runsFilter)).then((r) => { if (n === asked.current) { setRuns((x) => appendRuns(x ?? [], r.runs)); setCursor(r.next_cursor); setError(null); } }).catch((e) => setError(problem(e, "more runs"))).finally(() => setMore(false)); } : undefined} />}
     </Shell>

@@ -17,7 +17,11 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { call, clientOwnerSession, serve as serveOf, withEnv } from "./support.mjs";
+import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
+import { call, clientOwnerSession, cookieOf, serve as serveOf, withEnv } from "./support.mjs";
+import { freshSchema, onPostgres, PG_URL } from "./store-target.mjs";
+import { Connection } from "../dist/store/sqlite/connection.js";
+import { PgConnection } from "../dist/store/postgres/connection.js";
 
 const { openapiDocument } = await import("../dist/openapi.js");
 const { mcpSourceKey } = await import("../dist/mcp-sources.js");
@@ -27,7 +31,13 @@ await import("../dist/server.js");
 
 const TOKEN = `not-a-secret-${"owner-only-bearer"}`;
 const json = { "content-type": "application/json" };
-const serve = (t) => (withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }), serveOf(t, { accounts: true, openSetup: true }));
+/** A server on the store the suite targets: on Postgres a schema of its own (AGENTRUN_STORE_URL, as a deployment names it),
+ *  so the server, its runner and the test's handle all open it, and a test's hook on PgConnection sees the server's reads. */
+const serve = async (t) => {
+  const schema = onPostgres ? await freshSchema() : undefined;
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), ...(schema ? { AGENTRUN_STORE_URL: PG_URL, AGENTRUN_STORE_SCHEMA: schema } : {}) });
+  return serveOf(t, { accounts: true, openSetup: true });
+};
 
 /** The owner's session, as the console sends a request: its cookie, the server's own origin, JSON. */
 async function asPage(server) {
@@ -173,6 +183,66 @@ test("an owner's save refused because the token changed its own server while the
   assert.equal(removed.status, 204, removed.text);
 });
 
+test("the token's refresh never undoes the owner's save made while it listed: the owner's address stands, and the refresh is refused in words, nothing written", async (t) => {
+  const server = await serve(t);
+  // Once `holding`, the refresh's listing (at `fake`) waits until released, once; the owner's lists at `owners`.
+  let holding = false;
+  let reached;
+  const blocked = new Promise((resolve) => (reached = resolve));
+  let release;
+  const released = new Promise((resolve) => (release = resolve));
+  const fake = await startFakeMcp({ hold: async () => { if (holding) (holding = false, reached(), await released); } });
+  const owners = await startFakeMcp({ name: "owners-mcp" });
+  t.after(() => (release(), fake.close(), owners.close()));
+  const page = await asPage(server);
+  const token = asToken(server);
+  assert.equal((await page("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } })).status, 200);
+  holding = true;
+  const refresh = token("POST", "/settings/mcp-servers/fake/refresh");
+  await blocked;
+  // While the refresh lists the address it read, the owner moves the server (no credential either way: the sealed column
+  // the refresh compares is the same after it).
+  const moved = await page("PUT", "/settings/mcp-servers/fake", { url: owners.url, auth: { type: "none" } });
+  assert.equal(moved.status, 200, moved.text);
+  const owned = await server.store.mcp.server("fake");
+  release();
+  const refreshed = await refresh;
+  assert.equal(refreshed.status, 503, refreshed.text);
+  assert.match(refreshed.json?.error?.message ?? "", /changed while this refresh was made; nothing was saved/);
+  const row = await server.store.mcp.server("fake");
+  assert.equal(row?.url, owners.url, "the owner's address stands");
+  assert.deepEqual([row?.updatedAt, row?.listedAt, row?.serverInfo], [owned.updatedAt, owned.listedAt, owned.serverInfo], "nothing of the refresh was written");
+});
+
+test("the token's refresh never writes back what it read over the owner's save made while it listed, even one at the same address, auth type and credential: the owner's prices stand", async (t) => {
+  const server = await serve(t);
+  // Once `holding`, the refresh's listing waits until released, once.
+  let holding = false;
+  let reached;
+  const blocked = new Promise((resolve) => (reached = resolve));
+  let release;
+  const released = new Promise((resolve) => (release = resolve));
+  const fake = await startFakeMcp({ hold: async () => { if (holding) (holding = false, reached(), await released); } });
+  t.after(() => (release(), fake.close()));
+  const page = await asPage(server);
+  const token = asToken(server);
+  assert.equal((await page("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } })).status, 200);
+  holding = true;
+  const refresh = token("POST", "/settings/mcp-servers/fake/refresh");
+  await blocked;
+  // While the refresh lists, the owner prices a tool: the same address, auth type and (no) credential as the refresh read.
+  const priced = await page("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" }, prices: { add: 0.05 } });
+  assert.equal(priced.status, 200, priced.text);
+  const owned = await server.store.mcp.server("fake");
+  assert.deepEqual(owned.prices, { add: 0.05 });
+  release();
+  const refreshed = await refresh;
+  assert.equal(refreshed.status, 200, `the refresh re-lists onto the owner's save: ${refreshed.text}`);
+  const row = await server.store.mcp.server("fake");
+  assert.deepEqual(row?.prices, { add: 0.05 }, "the owner's prices stand");
+  assert.equal(row?.updatedAt, owned.updatedAt, "the owner's save is the last edit");
+});
+
 test("a secret write's path segment that is not valid percent-encoding is answered as any request is: the token's sign-in start on it is refused, never a crash", async (t) => {
   const server = await serve(t);
   const token = asToken(server);
@@ -230,6 +300,79 @@ test("the owner's save over a server the token saved makes it the owner's: the t
   assert.ok(await savedAuth(page), "still saved");
 });
 
+test("the owner's sign-in on a server the token saved makes it the owner's: its record loses the token's mark as the signed-in row is written, and the token's save over it and its delete are 403", async (t) => {
+  const server = await serve(t);
+  const plain = await startFakeMcp();
+  const as = await startFakeOAuth();
+  const mcp = await startFakeMcp({ token: as.accepts, oauth: as.issuer });
+  t.after(() => Promise.all([plain.close(), as.close(), mcp.close()]));
+  const page = await asPage(server);
+  const token = asToken(server);
+  assert.equal((await token("PUT", "/settings/mcp-servers/docs", { url: plain.url, auth: { type: "none" } })).status, 200);
+  assert.equal((await server.store.settings.get(mcpSourceKey("docs")))?.by, "token");
+  // The owner signs in on it, at the OAuth server's address: start, approve, and the callback with the start's cookie.
+  const started = await page("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
+  assert.equal(started.status, 200, started.text);
+  const asked = await fetch(started.json.authorization_url, { redirect: "manual" });
+  assert.equal(asked.status, 302, await asked.text());
+  const { cookie } = await clientOwnerSession(server);
+  const back = await fetch(asked.headers.get("location"), { redirect: "manual", headers: { cookie: [cookie, cookieOf(started)].filter(Boolean).join("; ") } });
+  assert.match(back.headers.get("location") ?? "", /sign_in=ok/, back.headers.get("location") ?? String(back.status));
+  const row = await server.store.mcp.server("docs");
+  assert.deepEqual([row?.auth, row?.url], ["oauth", mcp.url], "the owner's signed-in row");
+  assert.equal((await server.store.settings.get(mcpSourceKey("docs")))?.by, undefined, "the record no longer says the token saved it");
+  const over = await token("PUT", "/settings/mcp-servers/docs", { url: plain.url, auth: { type: "none" } });
+  assert.equal(over.status, 403, over.text);
+  const removed = await token("DELETE", "/settings/mcp-servers/docs");
+  assert.equal(removed.status, 403, removed.text);
+  assert.equal((await server.store.mcp.server("docs"))?.auth, "oauth", "it stays the owner's");
+});
+
+test("over a server the token saved, its address as reads show it (path hidden) is not taken for the saved one by the owner: a sign-in's start, a save and a preview are 422 on url, and nothing reaches it; the full address given, the owner's sign-in starts", async (t) => {
+  const server = await serve(t);
+  const plain = await startFakeMcp();
+  const as = await startFakeOAuth();
+  const mcp = await startFakeMcp({ token: as.accepts, oauth: as.issuer });
+  t.after(() => Promise.all([plain.close(), as.close(), mcp.close()]));
+  const page = await asPage(server);
+  const token = asToken(server);
+  // The token saves it at an address whose path the token chose, and every read shows only its origin.
+  assert.equal((await token("PUT", "/settings/mcp-servers/docs", { url: plain.url, auth: { type: "none" } })).status, 200);
+  const shown = (await page("GET", "/settings/mcp-servers/docs")).json?.url;
+  assert.equal(shown, `${new URL(plain.url).origin}/…`, "reads show its origin alone");
+  const sent = plain.log.length;
+  for (const [method, path, body] of [
+    ["POST", "/settings/mcp-servers/docs/oauth/start", { url: shown }],
+    ["PUT", "/settings/mcp-servers/docs", { url: shown, auth: { type: "bearer", token: TOKEN } }],
+    ["POST", "/settings/mcp-servers/preview", { name: "docs", url: shown, auth: { type: "bearer", token: TOKEN } }],
+  ]) {
+    const refused = await page(method, path, body);
+    assert.equal(refused.status, 422, `${method} ${path}: ${refused.text}`);
+    assert.deepEqual(refused.json?.error?.fields?.map((issue) => [issue.field, issue.reason]), [["url", "not_an_option"]], refused.text);
+    assert.match(refused.json.error.fields[0].message, /API token.*full URL/, refused.text);
+  }
+  assert.equal(plain.log.length, sent, "the token's address got nothing");
+  assert.deepEqual([(await server.store.mcp.server("docs"))?.auth, (await server.store.settings.get(mcpSourceKey("docs")))?.by], ["none", "token"], "the server is as the token saved it");
+  // The token's own save keeps taking its shown address for its saved one: the token chose it.
+  assert.equal((await token("PUT", "/settings/mcp-servers/docs", { url: shown, auth: { type: "none" } })).status, 200);
+  // The owner names the full address: the sign-in starts there.
+  const started = await page("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
+  assert.equal(started.status, 200, started.text);
+});
+
+test("over a server the token saved, the token's own preview sending back its address as reads show it lists the saved one's tools (200): the token chose that address", async (t) => {
+  const server = await serve(t);
+  const plain = await startFakeMcp();
+  t.after(() => plain.close());
+  const token = asToken(server);
+  assert.equal((await token("PUT", "/settings/mcp-servers/docs", { url: plain.url, auth: { type: "none" } })).status, 200);
+  const shown = `${new URL(plain.url).origin}/…`;
+  const sent = plain.log.length;
+  const previewed = await token("POST", "/settings/mcp-servers/preview", { name: "docs", url: shown, auth: { type: "none" } });
+  assert.equal(previewed.status, 200, previewed.text);
+  assert.ok(plain.log.length > sent, "the preview reached the saved address");
+});
+
 test("a sign-in's start is the owner's alone: the token is refused, and gets no state cookie to finish one with", async (t) => {
   const { fake, token } = await withSavedServer(t);
   const started = await token("POST", "/settings/mcp-servers/fake/oauth/start", { url: fake.url });
@@ -267,4 +410,101 @@ test("every operation the gate can refuse to the token documents that 403, so a 
   const ops = new Map(Object.values(doc.paths).flatMap((item) => Object.values(item).map((op) => [op?.operationId, op])));
   const undocumented = gate.registeredOperations().filter((operation) => !("403" in ops.get(operation).responses));
   assert.deepEqual(undocumented, [], `secret writes whose 403 the document leaves out: ${undocumented.join(", ")}`);
+});
+
+test("an owner's preview at the token's shown address never sends the credential to the address the token chose once the owner has moved the server: a move between the preview's read of the row and of who saved it refuses the preview (412), and that address gets nothing", async (t) => {
+  const server = await serve(t);
+  const chosen = await startFakeMcp();
+  const named = await startFakeMcp();
+  t.after(() => Promise.all([chosen.close(), named.close()]));
+  const page = await asPage(server);
+  const token = asToken(server);
+  // The token saves it at an address it chose; reads show only that address's origin.
+  assert.equal((await token("PUT", "/settings/mcp-servers/docs", { url: chosen.url, auth: { type: "none" } })).status, 200);
+  const shown = (await page("GET", "/settings/mcp-servers/docs")).json?.url;
+  // The owner's own save moves it to an address the owner named (the token's mark dropped with it), landing after the
+  // preview read the row and before it read who saved it.
+  let armed = false;
+  const prototype = onPostgres ? PgConnection.prototype : Connection.prototype;
+  const get = prototype.get;
+  t.mock.method(prototype, "get", async function (sql, ...params) {
+    if (armed && /FROM settings WHERE key/.test(sql) && params[0] === mcpSourceKey("docs")) {
+      armed = false;
+      const moved = await page("PUT", "/settings/mcp-servers/docs", { url: named.url, auth: { type: "none" } });
+      assert.equal(moved.status, 200, moved.text);
+    }
+    return get.call(this, sql, ...params);
+  });
+  const sent = chosen.log.length;
+  armed = true;
+  const preview = await page("POST", "/settings/mcp-servers/preview", { name: "docs", url: shown, auth: { type: "bearer", token: TOKEN } });
+  assert.equal(armed, false, "the owner's move landed inside the preview");
+  assert.deepEqual(chosen.log.slice(sent).filter((one) => one.authorization), [], `the address the token chose got the owner's credential: the preview took the row it read before the owner's move for the owner's (${preview.status})`);
+  assert.equal(preview.status, 412, preview.text);
+  assert.deepEqual([(await server.store.mcp.server("docs"))?.url, (await server.store.settings.get(mcpSourceKey("docs")))?.by], [named.url, undefined], "the server is where the owner moved it, the owner's");
+});
+
+test("the token's first save of a name is the token's from the moment its row is there: an owner's preview at its shown address landing right after the row's write is refused, and the address the token chose gets nothing", async (t) => {
+  const server = await serve(t);
+  const chosen = await startFakeMcp();
+  t.after(() => chosen.close());
+  const page = await asPage(server);
+  const token = asToken(server);
+  // The owner's preview at the address every read shows, landing once the token's first save has written the row and
+  // before its save is answered.
+  let armed = true;
+  let preview;
+  const prototype = onPostgres ? PgConnection.prototype : Connection.prototype;
+  const transaction = prototype.transaction;
+  t.mock.method(prototype, "transaction", async function (...args) {
+    const done = await transaction.apply(this, args);
+    if (armed && (await server.store.mcp.server("docs")) !== undefined) {
+      armed = false;
+      const shown = (await page("GET", "/settings/mcp-servers/docs")).json?.url;
+      preview = await page("POST", "/settings/mcp-servers/preview", { name: "docs", url: shown, auth: { type: "bearer", token: TOKEN } });
+    }
+    return done;
+  });
+  const saved = await token("PUT", "/settings/mcp-servers/docs", { url: chosen.url, auth: { type: "none" } });
+  assert.equal(saved.status, 200, saved.text);
+  assert.equal(armed, false, "the owner's preview landed inside the token's save, after its row was written");
+  assert.deepEqual(chosen.log.filter((one) => one.authorization), [], `the address the token chose got the owner's credential: a preview between the first save's row and its source record took the token's address for one the owner named (${preview.status})`);
+  assert.deepEqual([preview.status, preview.json?.error?.fields?.map((issue) => issue.field)], [422, ["url"]], preview.text);
+  assert.equal((await server.store.settings.get(mcpSourceKey("docs")))?.by, "token", "the server is the token's");
+});
+
+test("an owner's delete of the token's server never strips the mark of the token's save of the name again that lands while it removes: the token's new row stays the token's", async (t) => {
+  const server = await serve(t);
+  const first = await startFakeMcp();
+  const again = await startFakeMcp();
+  t.after(() => Promise.all([first.close(), again.close()]));
+  const page = await asPage(server);
+  const token = asToken(server);
+  const made = await token("PUT", "/settings/mcp-servers/docs", { url: first.url, auth: { type: "none" } });
+  assert.equal(made.status, 200, made.text);
+  const old = await server.store.mcp.server("docs");
+  assert.deepEqual((await server.store.settings.get(mcpSourceKey("docs")))?.of, old.createdAt, "the token's first save recorded its row");
+  // The token's save of the name again, whole (a first save: the row is gone), between the delete's read of the name's
+  // record, which is still the old row's, and the delete's removal of it.
+  let armed = true;
+  let saved;
+  const prototype = onPostgres ? PgConnection.prototype : Connection.prototype;
+  const get = prototype.get;
+  t.mock.method(prototype, "get", async function (sql, ...params) {
+    const value = await get.call(this, sql, ...params);
+    if (armed && sql === "SELECT value FROM settings WHERE key = ?" && params[0] === mcpSourceKey("docs") && (await server.store.mcp.server("docs")) === undefined) {
+      armed = false;
+      saved = await token("PUT", "/settings/mcp-servers/docs", { url: again.url, auth: { type: "none" } });
+    }
+    return value;
+  });
+  const removed = await page("DELETE", "/settings/mcp-servers/docs");
+  assert.equal(removed.status, 204, removed.text);
+  assert.equal(armed, false, "the token's save landed inside the owner's delete, after its row went");
+  assert.equal(saved.status, 200, saved.text);
+  const row = await server.store.mcp.server("docs");
+  const record = await server.store.settings.get(mcpSourceKey("docs"));
+  assert.equal(row?.url, again.url, "the token's new row is the one saved");
+  assert.notEqual(row.createdAt, old.createdAt, "a new row");
+  assert.deepEqual([record?.by, record?.of], ["token", row.createdAt], `the owner's delete stripped the token's new mark: it read the old row's record before the token saved the name again and removed the key after, so the token's new row reads as the owner's (record ${JSON.stringify(record)})`);
 });

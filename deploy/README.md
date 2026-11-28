@@ -94,23 +94,21 @@ runner refuses to claim and every run answers `runner_refused` (packages/serve/R
 Railway's API makes a template only by copying a project, and the copy drops plain values, optional flags and some
 deploy settings. So `template.json` holds only what survives: `PORT` and `RAILWAY_RUN_UID` are written as one-character
 secrets over a one-character alphabet (always `7340` and `0`), and model keys are added in the console, not as variables.
-Railway's default draining time applies, so a redeploy stops the server without the runner's 31 s stop. A run in flight
-then picks up again after the restart.
+The draining time the template's `drainingSeconds` would set is dropped too, and Railway's default is 0 s. So the
+template sets `RAILWAY_DEPLOYMENT_DRAINING_SECONDS` to `45` the same way (`4` and a one-character secret). That lets a
+redeploy wait out the runner's 40 s stop (a browser's release included) and a ChatGPT renewal saving its new pair. If a
+project of the template shows that variable empty, set it to `45` in the service's Variables. Without it, a redeploy that
+cuts a renewal short loses the ChatGPT sign-in, and you sign in again.
 
 ## Fly.io
 
 One Fly Machine with a volume, from [`fly/fly.toml`](fly/fly.toml), set up by one command. Fly gives the Machine no
-Docker, so its agents get file tools and `web_fetch` but no shell, as on Render and Railway. It needs no model key.
+Docker, so its agents get file tools and `web_fetch` but no shell, as on Render and Railway. It needs no model key, and
+Fly needs a card on the organization ([pricing](https://docs.fly.io/about/pricing)).
 
-This setup has not yet run on a real Fly account. It follows Fly's docs and flyctl's source, and its tests run the
-script against a stand-in `fly`. What only a real deploy will show is the volume's owner. A forum answer from Fly
-says a new volume is given to the image's user (uid 1000 here), and the docs don't say. If it is not, the server
-stops before it starts, and `fly logs` has one line: `/data is not writable by uid 1000 ...`.
-
-At Fly's prices on 2026-11-23, in its cheapest regions (`iad` and `ewr`), the Machine (`shared-cpu-1x`, 1 GB) costs
-$6.70 a month and the 10 GB volume $1.50, so $8.20 a month ([pricing](https://docs.fly.io/about/pricing)). The app's
-shared IPv4 address and its IPv6 address are free, and so is the first 10 GB of volume snapshots. Fly needs a card on
-the organization. A personal organization on the Free plan then gets $5 of usage a month.
+This setup has not yet run on a real Fly account; its tests run the script against a stand-in `fly`. If Fly gives the
+new volume to another user than the image's (uid 1000), the server stops before it starts, and `fly logs` has one line:
+`/data is not writable by uid 1000 ...`.
 
 With [flyctl](https://docs.fly.io/flyctl/install) installed and logged in (`fly auth login`), from a clone of this
 repository:
@@ -138,14 +136,10 @@ Open `https://<app name>.fly.dev/` and paste the setup code. To read it again la
 with ChatGPT or add a model key in the console.
 
 Run the script again to upgrade to the release `fly.toml` pins. It keeps the app, the secrets and the volume, and
-deploys in the volume's region (from `fly volumes list --json`). Naming another region stops it, since a Machine there
-would start on a new, empty volume. Each deploy replaces the one Machine in place (`fly.toml` pins the rolling strategy). Keep the app to
-one Machine, because the store is SQLite on its one volume: `fly scale count 2` would start a second server on a new,
-empty volume ([scaling](https://docs.fly.io/launch/scale-count)). Fly warns that one Machine with one volume can lose
-data. It snapshots every volume daily and keeps each snapshot 5 days
-([snapshots](https://docs.fly.io/volumes/snapshots)). 1 GB of memory holds a run or two at once. For more, raise
-`memory` in `fly.toml` and run the script again. `fly.toml` sets `AGENTRUN_RUN_USER=same`, as `render.yaml` does and
-for the same reason.
+deploys in the volume's region; naming another region stops it, since a Machine there would start on a new, empty
+volume. Keep the app to one Machine: the store is SQLite on its one volume, and `fly scale count 2` would start a second
+server on a new, empty volume. Fly snapshots each volume daily ([snapshots](https://docs.fly.io/volumes/snapshots)).
+For more than a run or two at once, raise `memory` in `fly.toml` and run the script again.
 
 ## One command on a server you rent
 
@@ -383,7 +377,8 @@ What each takes, from its environment alone:
 | `COMPOSIO_API_KEY` | optional | optional | The Composio account key a Composio MCP server saved with `api_key_env` reads (server: the save's calls to Composio, a refresh and the delete's; runner: each run's MCP connection to Composio). A secret: the launcher hands it to each process over a pipe, so neither process's environment holds it, and no run is handed it: the runner sends it only as the MCP header of a Composio server the run is granted a tool of. Give the same to both; a new value takes effect when they start again. |
 | `AGENTRUN_LAUNCH_HOOK_URL` | optional | | The host's https address (plain http only to this machine): each trigger firing that would start a run is POSTed there, signed, and the host starts the run through the API ([Launch hook](../packages/serve/README.md#launch-hook)). Set with the secret below, or neither. |
 | `AGENTRUN_LAUNCH_HOOK_SECRET` | optional | | The `whsec_` secret the launch hook signs with. A secret: the server's alone, never a runner's or a run's. |
-| `AGENTRUN_API_ONLY` | optional | | `1` serves the run routes, a deploy's routes (a template's apply, an agent's read, revisions, rollback, archive and delete), the MCP servers' names, a Composio server's save (its key named by `api_key_env`, never in the request; a new name, or over a server the token saved) and the delete of a server the token saved alone, for a server behind its caller's backend: the console, sign-in, setup, other settings, the MCP endpoint, triggers and hooks are `404`, and there are no accounts ([API only](../packages/serve/README.md#api-only)). Unset or `0`, the whole server. |
+| `AGENTRUN_API_ONLY` | optional | | `1` serves the run routes, a deploy's routes (a template's apply, an agent's read, revisions, rollback, archive and delete), a trigger's reads and its turn on or off (`PATCH /triggers/{id}` with `enabled` alone), the MCP servers' names, a Composio server's save (its key named by `api_key_env`, never in the request; a new name, or over a server the token saved) and the delete of a server the token saved alone, for a server behind its caller's backend: the console, sign-in, setup, other settings, the MCP endpoint, the other trigger routes and hooks are `404`, and there are no accounts ([API only](../packages/serve/README.md#api-only)). Unset or `0`, the whole server. |
+| `AGENTRUN_API_ONLY_MCP_ORIGINS` | optional | | With `AGENTRUN_API_ONLY=1`: the MCP origins the token may save a per_run MCP server at. Unset, a per_run server the token saved with API-only off is refused until its origin is listed: list it before upgrading, or re-save it from the owner's session with API-only off. Plain `http://` is taken only for a loopback host (127.0.0.0/8, ::1, localhost); any other entry over http stops the start ([API only](../packages/serve/README.md#api-only)). |
 | `AGENTRUN_RUN_KEYS` | optional | | `1`: a template's apply makes its agent though a tool key it declares is not set here, with a warning, and each run of that agent must bring the key in `keys` (409 without it). Keys the server holds are still used by runs that bring none. No trigger is made whose firings would run that agent without its keys, unless the launch hook starts them ([Per-run tool keys](../packages/serve/README.md#per-run-tool-keys)). Unset or `0`, off. |
 
 The server listens where `--listen` says: above, its container's own address (its hostname), where Docker publishes the
@@ -404,7 +399,8 @@ younger than 20 s, and exits 0 only when both hold: that is a runner's health ch
 ### A runner on a disk of its own
 
 A runner needs no share of the server's disk when the store is Postgres and runs' folders are on Archil (Mode 2: the
-Archil settings saved, or `AGENTRUN_ARCHIL_REGION` and `AGENTRUN_ARCHIL_S3_URL` set on both). Start it with
+Archil settings saved, or `AGENTRUN_ARCHIL_REGION`, and `AGENTRUN_ARCHIL_S3_URL` when the server has it, set on both;
+any runner given the region without the S3 URL claims nothing while the server's S3 URL may be another). Start it with
 `AGENTRUN_STORE_URL`, `AGENTRUN_SEAL_KEY` and a `--data` of its own, a local directory: it holds only the runner's
 heartbeat, its runs' uid slots, their scratch and the harnesses it installs at a claim. It never reads the server's.
 
@@ -442,7 +438,7 @@ opens the store with one connection and closes it.
 | Every run-facing name the server holds | The server says the names (never the values) of its run-facing environment in the store at each start: model, tool and box keys, the Composio account key (`COMPOSIO_API_KEY`, which a claim sends as a granted Composio server's MCP header), each box provider's settings (`DAYTONA_TARGET`, `DAYTONA_ARCHIL_EGRESS`, ...), the Archil settings, the tiers' models (`AGENT_MODEL`, `AGENT_MODEL_FAST`, `AGENT_MODEL_STRONG`), `AGENTRUN_BOX_ALLOW`, a Docker computer's image and size (`AGENTRUN_DOCKER_IMAGE`, `AGENTRUN_BOX_CPUS`, `AGENTRUN_BOX_MEMORY`, `AGENTRUN_BOX_PIDS`), the operator's bound on owners' private hosts (`AGENTRUN_PRIVATE_HOSTS`), how a gateway is sent a model id (`AGENT_MODEL_GATEWAY_IDS`), whether runs may reach an MCP server on loopback (`AGENTRUN_MCP_ALLOW_LOOPBACK`), the harness modules it loads (`AGENTRUN_SERVE_HARNESS_MODULES`, which a runner may hold as `--harness-module`, given to its check too; a server given them as `--harness-module` says nothing of them), and every upstream address (`*_BASE_URL`, `*_API_URL`). The runner must hold each one: a run's claim reads it from the runner's environment. A server older than this release says none, and this part is `skipped`. |
 | Each `*_BASE_URL` / `*_API_URL` on loopback | Something answers a TCP connect there within 2 s: the forwarder beside the runner that the upstream names. |
 | `AGENTRUN_TOKEN`, `AGENTRUN_TOKENS`, `AGENTRUN_API_KEY` | `warn` when set: the server's own secrets, which a runner never needs. Fails nothing. |
-| `start` | What the runner's start refuses before it claims, checked the same way: its run slots (`AGENTRUN_MAX_RUNS`), drain (`AGENTRUN_DRAIN_TIMEOUT`), free-model requests, its Archil settings (the region and an https S3 URL set together), and its runs' isolation (`AGENTRUN_RUN_USER`, and whether the image's helper can switch users here). |
+| `start` | What the runner's start refuses before it claims, checked the same way: its run slots (`AGENTRUN_MAX_RUNS`), drain (`AGENTRUN_DRAIN_TIMEOUT`), free-model requests, its Archil settings (a region, and an https S3 URL for a region serve doesn't know), and its runs' isolation (`AGENTRUN_RUN_USER`, and whether the image's helper can switch users here). |
 
 ```
 ok      AGENTRUN_STORE_URL  the store opens: postgres, schema v23
@@ -484,8 +480,11 @@ build is older than the store: it refuses the store.
 
 On SIGTERM a runner claims nothing more and lets each busy run finish its turn for up to `--drain-timeout` (default 6 s),
 so a model request in flight is not cut and sent again; then it stops the loops left where they can resume and hands
-their runs back. A loop that does not stop is given up 25 s after that, so with the default drain a runner is done
-within 31 s: give it 35 s before a SIGKILL, more with a longer drain. `--drain-timeout 0s` hands every run back at once.
+their runs back. A loop that does not stop is given up 25 s after that. A browser's release, or a lost create's recovery
+under way, is waited for up to a computer provider's cleanup bound (30 s) and 10 s of margins from the SIGTERM, so with
+the default drain a runner is done within 40 s: give it 45 s before a SIGKILL, more with a drain over 15 s. An embedder
+that raises a provider's `cleanupMs` (and the runner's) above the default gives the runner a grace of at least
+`cleanupMs` + 15 s. `--drain-timeout 0s` hands every run back at once.
 
 ## With Docker Compose: a server and two runners
 
@@ -506,8 +505,8 @@ docker compose logs runner-1     # Runner runner-1 ready: ...
 
 The server's port is published on this machine's loopback (`127.0.0.1:7340`); put a reverse proxy with TLS in front of
 it before you publish it anywhere else. Each runner starts once the server is healthy (only the server sets the store
-up), is started again if it exits with an error, and is given 35 s to stop: its drain (6 s by default) and 25 s for a
-stuck loop after it, 31 s in all.
+up), is started again if it exits with an error, and is given 45 s to stop: its drain (6 s by default) and 25 s for a
+stuck loop after it, or a browser's release up to 40 s from the SIGTERM.
 
 **Memory.** Each runner container is limited to 2 GB (`mem_limit`), and a runner budgets its runs from that limit:
 1920 MiB, six claude-agent runs or fifteen pi runs at once, the rest queued. Without a limit, each runner would read

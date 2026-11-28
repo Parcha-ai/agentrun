@@ -97,7 +97,8 @@ describe('backend SDK agents', () => {
         expect(logo).toBeNull();
         expect(host.querySelector('li button svg.lucide-bot')).not.toBeNull();
       }
-      expect(host.textContent).toContain(label);
+      // The icon names the runtime, on hover and for a screen reader, in place of a chip in words.
+      expect(host.querySelector('li button [role="img"]')?.getAttribute('aria-label')).toBe(label);
       const action = host.querySelector('[data-handoff="Run Release backend"]')!;
       expect(action.getAttribute('data-playground')).toBeNull();
       expect(action.getAttribute('data-prompt')).toContain('existing backend');

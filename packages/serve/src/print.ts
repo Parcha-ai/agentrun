@@ -11,18 +11,20 @@ export type TokenSource = "made" | "file" | "env" | "list";
  *  people open (AGENTRUN_PUBLIC_URL), which the base URL and the link use. With `accounts` the page is the owner's
  *  password, so its link holds nothing; with none, the link holds this start's launch code (`launchCode`), never the
  *  token. `tokenIds`: the ids of the tokens the server takes (api-token.ts), named when there is more than one or a list
- *  gave them, never a secret. `apiOnly`: no console to open, so the line says what is served instead. `boxes`: which boxes are ready, in
- *  words (Serve's boxesLine), last. */
-export function banner(o: { url: string; baseUrl: string; data: string; token: string; source: TokenSource; tokenIds?: readonly string[]; listen?: string; publicUrl?: string; accounts?: boolean; apiOnly?: boolean; launchCode?: string; boxes?: string }): string[] {
+ *  gave them, never a secret. `apiOnly`: no console to open, so the line says what is served instead. `shareHost`: the
+ *  same, and its API is under /r/v2. `boxes`: which boxes are ready, in words (Serve's boxesLine), last. */
+export function banner(o: { url: string; baseUrl: string; data: string; token: string; source: TokenSource; tokenIds?: readonly string[]; listen?: string; publicUrl?: string; accounts?: boolean; apiOnly?: boolean; shareHost?: boolean; launchCode?: string; boxes?: string }): string[] {
   const where = o.source === "env" ? "$AGENTRUN_TOKEN" : o.source === "list" ? "<a secret in $AGENTRUN_TOKENS>" : `<in ${join(o.data, ".token")}>`;
   const key = o.source === "made" ? o.token : where;
   return [
     `agentrun-serve on ${o.baseUrl} (agent store in ${o.data}${o.listen ? `, listening on ${o.listen}` : ""})`,
-    `AGENTRUN_BASE_URL=${o.publicUrl ? `${o.publicUrl}/v2` : o.baseUrl}`,
+    `AGENTRUN_BASE_URL=${o.shareHost ? `${o.publicUrl ?? o.url}/r/v2` : o.publicUrl ? `${o.publicUrl}/v2` : o.baseUrl}`,
     `AGENTRUN_API_KEY=${key}`,
     ...(o.tokenIds && (o.tokenIds.length > 1 || o.source === "list") ? [`API tokens taken (ids): ${o.tokenIds.join(", ")}`] : []),
-    o.apiOnly
-      ? "API only (AGENTRUN_API_ONLY=1): the run and deploy routes, the MCP server names, a Composio server's save and a server's delete are served; the console, sign-in, setup, other settings, the MCP endpoint, triggers and hooks are refused."
+    o.shareHost
+      ? `Share host (--share-host): shares at ${o.publicUrl ?? o.url}/r/<id>; uploads to /r/v2/shares take a token and are re-scrubbed; every other address is a 404, and no runner, model key or computer runs here.`
+      : o.apiOnly
+      ? "API only (AGENTRUN_API_ONLY=1): the run and deploy routes, a trigger's reads and its turn on or off, the MCP server names, a Composio server's save, a per_run server's save at an origin AGENTRUN_API_ONLY_MCP_ORIGINS lists and a server's delete are served; the console, sign-in, setup, other settings, the MCP endpoint, the other trigger routes and hooks are refused."
       : o.accounts || o.launchCode === undefined ? `Open ${o.publicUrl ?? o.url}/` : `Open ${o.publicUrl ?? o.url}/?launch=${o.launchCode}`,
     ...(o.boxes ? [o.boxes] : []),
   ];

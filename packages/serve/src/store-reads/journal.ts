@@ -10,7 +10,7 @@ import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { wireName } from "../catalog.js";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { Hearing } from "../heard.js";
-import { redactedAnswer } from "../key-refusal.js";
+import { redacted, redactedAnswer, withheldWhole } from "../key-refusal.js";
 import { LEARNED_NODES_MAX, learnedCallEntries } from "../learned-nodes.js";
 import { type ComputerCallRecord, computerCallsOf, shownName } from "../computer-calls.js";
 import { labelled, type Reflect, reflects } from "../reflect-range.js";
@@ -30,7 +30,7 @@ export async function runEntries(store: Store, runId: string, context: Context):
 }
 
 /** `entries` (a journal read's, conversation by conversation) in log order: by id across every conversation. */
-const inLogOrder = (entries: readonly unknown[]): EntryLike[] => (entries as EntryLike[]).slice().sort((a, b) => Number(a.id ?? 0) - Number(b.id ?? 0));
+export const inLogOrder = (entries: readonly unknown[]): EntryLike[] => (entries as EntryLike[]).slice().sort((a, b) => Number(a.id ?? 0) - Number(b.id ?? 0));
 
 /** Where a run's end-of-run turn is in its journal, as the server's Reflect names it for labelled(): its newest round's
  *  `after`, the entry before its input, and `until`, the run's end entry once written; `earlier`, each earlier round's (a
@@ -453,15 +453,132 @@ const ANSWERS_KEPT = 32;
 const forgetsOf = new WeakMap<Store, number>();
 export const servedSince = (store: Store): number => forgetsOf.get(store.origin) ?? 0;
 
-/** Run `runId`'s answer rows dropped from what the readers of `store` last served (wholeAnswers): a purged or deleted
- *  run's text kept in no memory of this process (store-view.ts forgetServed). Counted (servedSince), so no read begun
- *  before it keeps what it read. The keys it dropped. */
+/** Run `runId`'s answer rows dropped from what the readers of `store` last served (wholeAnswers), and its texts from what
+ *  they last cut (rowCutsOnce): a purged or deleted run's text kept in no memory of this process (store-view.ts
+ *  forgetServed). Counted (servedSince), so no read begun before it keeps what it read. The answer keys it dropped. */
 export function forgetServedAnswers(store: Store, runId: string): string[] {
   forgetsOf.set(store.origin, servedSince(store) + 1);
   const kept = answersServed.get(store.origin);
   const dropped = [...(kept?.keys() ?? [])].filter((key) => key.startsWith(`${runId}\0`));
   for (const key of dropped) kept!.delete(key);
+  forgetCuts(store.origin, runId);
   return dropped;
+}
+
+/** What each store's readers last cut of a run's texts, by run and the digest of its whole cut (run-cut.ts RunCut): every
+ *  held value, in the order the reader was handed them (redacted takes them in that order, so a set read in another
+ *  order is cut again, never served a cut made of another order), and its census mode (its censusDigest, "none", or
+ *  "unreadable"), so a value saved or a census written since is a new set and every text is cut again (the values'
+ *  JSON escapes a lone surrogate as written, so values that differ only in one are two sets). By each text's digest, of
+ *  its UTF-16 units as written (as UTF-8 every lone surrogate is the one replacement character, and two texts that
+ *  differ only in one would share a slot), what the row's redactor made of it (key-refusal.ts
+ *  redacted) or whether it is withheld whole (withheldWhole). A reader that follows a run (a console's live Timeline,
+ *  its view polled) reads its rows once per change, each read renders every row from the journal again, and an entry's
+ *  words never change: so each text is cut once per held value set, not once per read, and a run of n turns costs the
+ *  redactor n turns of work, not n². Kept by digest: no text the run wrote is kept, only what a reader is shown of it,
+ *  and that as a copy of its own (cutCopy): the redactor's output is a V8 slice of the raw text, which would keep the
+ *  whole text (a tool output of megabytes, and any held value in it past the cut's window) alive with it.
+ *
+ *  Bounded in bytes, per store: each kept text costs CUT_ENTRY plus 2 bytes per UTF-16 unit of its slot and of what was
+ *  made of it, and once a store's texts cost more than CUT_BYTES the least recently used go first (the run and value set
+ *  read or written longest ago, its text read or written longest ago first). A text that alone costs more than CUT_BYTES is not kept. At most CUT_SETS run
+ *  and value set pairs a store. So the worst case is CUT_BYTES (32 MiB) of kept cuts per open store, whatever a run
+ *  wrote: a made text is at most redacted's head (SHOWN plus 6 times the longest held value, and 16), most rows far
+ *  less, and a run of 60 web searches keeps about 280 KB. */
+type CutsOf = { readonly sets: Map<string, { readonly texts: Map<string, string | boolean>; bytes: number }>; bytes: number };
+const cutsKept = new WeakMap<Store, CutsOf>();
+const CUT_SETS = 16;
+const CUT_BYTES = 32 * 1024 * 1024;
+/** The bound in force (CUT_BYTES): a test sets a smaller one to see the oldest go. */
+export const cutBudget = { bytes: CUT_BYTES };
+/** What one kept text costs beyond its characters: the Map entry and the boolean or string header, as counted. */
+const CUT_ENTRY = 64;
+const cutCost = (slot: string, made: string | boolean): number => CUT_ENTRY + 2 * (slot.length + (typeof made === "string" ? made.length : 0));
+/** A cut as kept: a string copied into one of its own, unit for unit (lone surrogates as written), so it holds no
+ *  reference to the text it was sliced from; a boolean as it is. */
+const cutCopy = <T extends string | boolean>(made: T): T => (typeof made === "string" ? (Buffer.from(made, "utf16le").toString("utf16le") as T) : made);
+
+/** Run `runId`'s value sets dropped from what the readers of store `origin` last cut (cutsKept). */
+function forgetCuts(origin: Store, runId: string): void {
+  const cuts = cutsKept.get(origin);
+  if (!cuts) return;
+  for (const [set, kept] of [...cuts.sets]) {
+    if (!set.startsWith(`${runId}\0`)) continue;
+    cuts.sets.delete(set);
+    cuts.bytes -= kept.bytes;
+  }
+}
+
+/** A run's cut as a reader holds it (run-cut.ts runCutValues): its held values and the census its files are cut by, or
+ *  "unreadable" (its rows withheld, read under no values). */
+export type RowCut = { readonly values: readonly string[]; readonly censusDigest?: string } | "unreadable";
+
+/** The row redactor (`redact`) and the whole-text check (`holds`) of run `runId`'s rows under its `cut` (run-cut.ts
+ *  runCutValues), as a reader's TimelineOptions takes them: each text cut once per cut, its values in their order and its
+ *  census mode (cutsKept), what was cut kept only while no run's text was forgotten since `since` (servedSince, taken
+ *  before the read began). */
+export function rowCutsOnce(store: Store, runId: string, cut: RowCut, since: number): { redact: (text: string) => string; holds: (text: string) => boolean } {
+  const origin = store.origin;
+  const values = cut === "unreadable" ? [] : cut.values;
+  const mode = cut === "unreadable" ? "unreadable" : (cut.censusDigest ?? "none");
+  const set = `${runId}\0${createHash("sha256").update(JSON.stringify([mode, values])).digest("hex")}`;
+  const once = <T extends string | boolean>(how: string, text: string, cut: () => T): T => {
+    const slot = `${how}\0${createHash("sha256").update(text, "utf16le").digest("base64")}`;
+    const held = cutsKept.get(origin);
+    const heldSet = held?.sets.get(set);
+    const kept = heldSet?.texts.get(slot);
+    if (kept !== undefined) {
+      // Read again: the most recently used, its set and itself.
+      held!.sets.delete(set);
+      held!.sets.set(set, heldSet!);
+      heldSet!.texts.delete(slot);
+      heldSet!.texts.set(slot, kept);
+      return kept as T;
+    }
+    const made = cut();
+    const cost = cutCost(slot, made);
+    if (servedSince(store) !== since || cost > cutBudget.bytes) return made;
+    const keep = cutCopy(made);
+    let cuts = cutsKept.get(origin);
+    if (!cuts) cutsKept.set(origin, (cuts = { sets: new Map(), bytes: 0 }));
+    const texts = cuts.sets.get(set) ?? { texts: new Map<string, string | boolean>(), bytes: 0 };
+    cuts.sets.delete(set);
+    cuts.sets.set(set, texts);
+    texts.texts.set(slot, keep);
+    texts.bytes += cost;
+    cuts.bytes += cost;
+    // The least recently used go first: the set read or written longest ago, its oldest texts (this set is the newest),
+    // a set left empty with them, and a set past CUT_SETS whole.
+    for (const [oldSet, old] of cuts.sets) {
+      if (cuts.bytes <= cutBudget.bytes && cuts.sets.size <= CUT_SETS) break;
+      if (cuts.sets.size > CUT_SETS) {
+        cuts.sets.delete(oldSet);
+        cuts.bytes -= old.bytes;
+        continue;
+      }
+      for (const [oldSlot, oldMade] of old.texts) {
+        if (cuts.bytes <= cutBudget.bytes) break;
+        const freed = cutCost(oldSlot, oldMade);
+        old.texts.delete(oldSlot);
+        old.bytes -= freed;
+        cuts.bytes -= freed;
+      }
+      if (old.texts.size === 0) cuts.sets.delete(oldSet);
+    }
+    return made;
+  };
+  return {
+    redact: (text) => once("redact", text, () => redacted(text, values)),
+    holds: (text) => once("holds", text, () => withheldWhole(text, values)),
+  };
+}
+
+/** What the readers of `store` keep of their cuts now: the bytes counted (cutBudget bounds it), the texts and the sets, and
+ *  each kept text (its set, its slot and what was made of it), so a test can read that nothing a run wrote is kept. */
+export function cutsKeptOf(store: Store): { bytes: number; texts: number; sets: number; kept: { set: string; slot: string; made: string | boolean }[] } {
+  const cuts = cutsKept.get(store.origin);
+  const kept = [...(cuts?.sets ?? [])].flatMap(([set, of]) => [...of.texts].map(([slot, made]) => ({ set, slot, made })));
+  return { bytes: cuts?.bytes ?? 0, texts: kept.length, sets: cuts?.sets.size ?? 0, kept };
 }
 
 /** `rows` (runTimeline's, rendered with `options`) with each final answer whole, as main served a run's answer: the renderer

@@ -3,12 +3,13 @@ import { ProblemCard } from "@/components/Problem";
 import { RunSkeleton } from "@/components/Skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Timeline } from "@/components/Timeline";
-import { Button } from "@/components/ui/button";
-import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { pageBodyClass, pageClass, pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 import { type Client, follow } from "@/lib/client";
 import { costOfCap, runEnded, runTitle } from "@/lib/format";
 import { problem } from "@/lib/problem";
 import { LANE_KEY, LANE_WAIT_MS, laneStats, raceFilter, readRace } from "@/lib/race";
+import { compareHref, MIN_COMPARED } from "@/lib/traceCompare";
 import { cn } from "@/lib/utils";
 import type { Run, TimelineRow } from "@/lib/v2";
 import { latest, pause, TRIES_MS } from "@/lib/viewing";
@@ -64,12 +65,15 @@ export function Race({ v2, label, rereadMs = RACE_REREAD_MS }: { v2: Client; lab
   if (error) return <ProblemCard problem={problem(error, "the race")} onRetry={() => setReads((n) => n + 1)} />;
   if (!read) return <RunSkeleton />;
   return (
-    <div className="flex flex-col">
+    <div className={pageClass}>
       <div className={cn(pageToolbarClass, "gap-3 px-5 md:px-8")}>
         <h1 className={pageTitleClass}>Race</h1>
         <span className="truncate font-mono text-small text-muted-foreground" title={raceFilter(label)}>{label}</span>
         {read.lanes.length > 0 && <span className="caps ml-auto text-label text-muted-foreground">{read.lanes.length} {read.lanes.length === 1 ? "lane" : "lanes"}</span>}
+        {/* The lanes' Dev tools figures side by side (#/compare), in the lanes' order: what each lane's model and harness cost and took. */}
+        {read.lanes.length >= MIN_COMPARED && <a href={compareHref(read.lanes.map((run) => run.run_id))} className={buttonVariants({ size: "sm" })}>Compare in figures</a>}
       </div>
+      <div data-page-body className={pageBodyClass}>
       {read.lanes.length === 0 ? (
         <p role="status" className="px-5 py-8 text-body text-muted-foreground md:px-8">
           No run carries the label <span className="font-mono text-foreground">{raceFilter(label)}</span> yet. A run joins this race when it starts with that label.
@@ -84,6 +88,7 @@ export function Race({ v2, label, rereadMs = RACE_REREAD_MS }: { v2: Client; lab
           {read.atLeast ? "At least " : ""}{read.more} more {read.more === 1 ? "run carries" : "runs carry"} this label; the first four by lane are shown.
         </p>
       )}
+      </div>
     </div>
   );
 }

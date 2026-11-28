@@ -25,7 +25,7 @@ check ids are unique, regexes compile, `exit` only on `exec.run`, a task whose c
 | field | what it is |
 | --- | --- |
 | `id`, `version`, `title`, `split` | `split` is `dev` (tune on it) or `heldout` (report on it, never tune on it) |
-| `needs` | `os`, `kind` (`desktop`, `phone`, `sandbox`, `browser`: serve's kinds), `osVersion` (a prefix of hello's), `groups` the computer must have only when the task can't be done without them (a drag needs `input.pointer`), `apps` and `capabilities` (below). A task never says which tools the agent uses: the agent is given what the computer offers, so one suite compares code-mode, tools and vendor computer-tool agents |
+| `needs` | `os`, `kind` (`desktop`, `phone`, `sandbox`, `browser`: serve's kinds), `osVersion` (a prefix of hello's), `groups` the computer must have only when the task can't be done without them (a drag needs `input.pointer`), `apps` and `capabilities` (below). A task never says which tools the agent uses: the agent is given what the computer offers (its file ops through `read` and `write` among the agent's tools, [Arms](#arms)), so one suite compares code-mode, tools and vendor computer-tool agents |
 | `needs.apps` | the apps the task can't be done without, by bundle id or package. Each entry is required; an entry that is a list is alternatives, any one of which will do (`[["com.google.android.deskclock", "com.android.deskclock", "com.sec.android.app.clockpackage"]]`: one clock, whoever made the phone). Read through `apps.list`, which lists the apps a person can open, so never a system service such as `com.android.systemui` |
 | `needs.capabilities` | probes, each written as a check (not `answer`) whose `id` names what it proves the computer can do (`camera`): `take-selfie`'s reads `dumpsys media.camera` for a camera device. Same for every seed, so no placeholders |
 | `exec` | `allow` (default) or `deny`: the task is done through the UI, so the agent is given no exec or processes group, and the oracle may use only `ui`, `input`, `screen` and `apps` (not `apps.install`), the path the agent must take. `loadTask` names the oracle call that breaks this |
@@ -35,7 +35,7 @@ check ids are unique, regexes compile, `exit` only on `exec.run`, a task whose c
 | `exec` | `allow` (default) or `deny`: a task done through the UI. The agent gets no `exec` or `processes` group and no shell (on serve, its own agent with `computer.exec: false`). Every "In the X app, ..." task says deny |
 | `budget` | `steps` (computer calls, not tool calls: a code-mode script of six calls spends six), `usd`, `wall_s` |
 | `checks` | stage 1 (below) |
-| `sufficient` | default true: the checks decide alone. False: the grader decides, and `rubric` is required |
+| `sufficient` | default true: the checks decide alone. False: the grader decides a run whose checks pass (a failing check still fails it), and `rubric` is required |
 | `source` | a ported task's suite, id, revision, licence and changes |
 
 Placeholders: `{{param}}`, `{{param.field}}`, `{{seed}}`, `{{nonce}}` (6 hex characters from task and seed: put it in
@@ -147,7 +147,8 @@ folder: a run refuses a folder that already holds `results.jsonl`, so a report n
 
 Stage 1 is the checks. When they are sufficient they decide; the grader runs on failures (`--grade auto`, the default)
 to name the failure's locus and catch a check's false negative, or on every run (`always`) to measure false positives.
-When a task's checks are not sufficient, the grader decides.
+When a task's checks are not sufficient, the grader decides a run whose checks pass. The grader never turns a failing
+check into a pass: it reads the agent's own answer, which could talk it into one, while the checks read the computer.
 
 Stage 2 is one grader, with the rules stated once in [templates/grader-prompt.md](templates/grader-prompt.md) and only
 what is task-specific in the task's `rubric.md` ([template](templates/rubric.md)). It is given the instruction, the
@@ -159,9 +160,9 @@ confidence}`. The locus is the earliest decisive error: `planning`, `grounding`,
 | checks | grader | final | queued for a person |
 | --- | --- | --- | --- |
 | sufficient pass | fail | pass | yes |
-| sufficient fail | pass or unknown | fail | yes |
-| not sufficient | pass or fail | the grader's | when it differs from the checks |
-| not sufficient | unknown, or none ran | fail (unknown) or the checks' (none) | yes |
+| fail, sufficient or not | pass or unknown | fail | yes |
+| not sufficient pass | pass or fail | the grader's | when it says fail |
+| not sufficient pass | unknown, or none ran | fail (unknown) or pass (none) | yes |
 
 A person labels a queued run in `labels.jsonl` (`{run, verdict: pass|fail|infra, note}`), and the report applies it.
 The judge is a seam (`Judge`); `messagesJudge` calls an Anthropic Messages endpoint and asks once more when the answer
@@ -197,6 +198,7 @@ arm, the route mix, the passes that ran a program, the failure loci, and what wa
 | [linux-desktop](suites/linux-desktop/README.md) | 10 (5 dev, 5 held out) | Mousepad, xfce4-terminal, Thunar, Firefox, and two tasks across two apps, on a Linux desktop, with or without a window manager; all ten verified live on E2B Desktop for seeds 1-3, and the eight without Thunar on Agent37 |
 | [macosworld](suites/macosworld/PORT.md) | 10 | ported from macOSWorld (CC BY-NC 4.0: by reference, none of its text) |
 | [mobileworld](suites/mobileworld/PORT.md) | 6 | ported from MobileWorld (Apache-2.0): 6 of the 8 of its 201 that port faithfully to an unrooted phone (two have no oracle the cloud phone can confirm) |
+| [osworld-pilot](suites/osworld-pilot/PORT.md) | 15 (all held out) | ported from OSWorld-Verified (Apache-2.0): 10 terminal tasks, a git push, 2 VS Code text tasks in Mousepad and 2 Chrome settings tasks in Firefox, on a Linux desktop (five more were dropped after a live verify, see PORT.md); its `arms.json` is the Sonnet 5.5 against GPT-6.1 Terra pilot on E2B; verify live decides its oracles |
 
 Each suite's README says which tasks are proven only on the fake and which wait on a live run.
 
@@ -206,8 +208,10 @@ Each suite's README says which tasks are proven only on the fake and which wait 
 first is the baseline. On serve, the arm is an agent definition: `harness` and `model` as they are, `effort` as its
 `thinking` level, `computer: {kind, provider?, surface, exec?}` (`kind` from the task, `provider` from
 `options.provider`, `surface` the arm's: "code", the harness's script tool alone; "tools", the per-step computer tools
-alone; and `exec: false` for a task that denies exec), and `options.definition` any other field of the definition as it
-is. Its `computer` may pin more (a provider, say) but never `kind`, `surface` or `exec`: the bench sets those. One agent per bench run, arm, kind and exec: its id is
+alone; and `exec: false` for a task that denies exec), `tools: ["read", "write"]`, which the computer's file ops
+(`computer.files`) need among the agent's tools (serve offers none of them without; the run's own `read` and `write`
+come with them), and `options.definition` any other field of the definition as it is, its `tools` included. Its
+`computer` may pin more (a provider, say) but never `kind`, `surface` or `exec`: the bench sets those. One agent per bench run, arm, kind and exec: its id is
 `<bench>-<arm>-<kind>-<surface>[-ui]`, `-ui` where exec is denied.
 
 ```json
@@ -237,9 +241,12 @@ missing.
    after the agent's end, the run ends as its agent did; released before the start, it ends cancelled.
 4. The agent's steps come from `GET /runs/{run_id}/timeline`: each `tool_use` and its `tool_result` row (the tool's
    name, its input preview, success or failure), and on the tool_result row the computer calls the tool call made
-   (`computer_calls`: method, ok, ms, the error's code, ui.act's steps with their routes and readbacks, its expect, and
-   where serve has them `at` and `words`; `computer_calls_dropped` past serve's bound). Each computer call is a step;
-   each tool call is a turn. No journal route.
+   (`computer_calls`: method, `started_at`, ok, ms, the error's code, ui.act's steps with their routes and readbacks,
+   its expect, and `words` where serve has it; `computer_calls_dropped` past serve's bound). A codemode script's own
+   rows carry none: each computer call it makes is a nested call, with its own rows under the script's call
+   (`parent_tool_use_id`, the same `conversation_id`), and those are the script's steps. A subagent's rows, in a
+   conversation of their own, are not the agent's. Each computer call is a step; each tool call of the model's is a
+   turn. No journal route.
 5. `GET /runs/{run_id}` answers `computer {state, provider, why, held {state, minutes, until, why}}`, `cost {usd,
    so_far_usd}`, `result {final_answer}` once the run completed, and `error {code}`; a platform failure's code is one of
    `computer_unavailable`, `provider_error`, `model_unavailable`, `upstream_error`, `internal`, `runner_lost`. The

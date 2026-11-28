@@ -199,6 +199,33 @@ export function attachedWorkspace(base: Workspace, computer: AttachableComputer,
     }
   };
 
+  /** `bytes` in a temporary file beside the file at `segments`, durable, its path in the computer; removed on a
+   *  failure. computerd replaces a file in place: the bytes go to a temporary file beside it, which a move puts in its
+   *  place. Replacing a file (`mode` its kept mode), the temporary file is its owner's alone (0600), readable and
+   *  writable, while every chunk goes in and while a bind syncs its bytes on the host: a private file's new bytes are
+   *  never readable by others on the way, a read-only file takes every chunk, and a write-only one can still be synced.
+   *  Then a write of no bytes at its end sets the target's mode (computerd opens, sets the mode, then writes), and the
+   *  move puts it in place, so the name never points at bytes a crash could lose. */
+  const tempOf = async (segments: readonly string[], rel: string, bytes: Uint8Array, mode: number | undefined): Promise<string> => {
+    const tempRel = [...segments.slice(0, -1), `.workspace-${randomBytes(8).toString("hex")}.tmp`].join("/");
+    const temp = `${MOUNT_AT}/${tempRel}`;
+    try {
+      let written = 0;
+      for (const [i, part] of chunks(bytes).entries()) {
+        await value(i === 0
+          ? call("files.write", { path: temp, data: base64(part), parents: true, ...(mode === undefined ? {} : { mode: 0o600 }) })
+          : call("files.write", { path: temp, data: base64(part), append: true }), rel);
+        written += part.length;
+      }
+      await synced(tempRel, "file");
+      if (mode !== undefined && mode !== 0o600) await value(call("files.write", { path: temp, data: "", offset: written, mode }), rel);
+    } catch (error) {
+      await call("files.remove", { path: temp }).catch(() => undefined);
+      throw error;
+    }
+    return temp;
+  };
+
   const processes: Processes = {
     start: async (params) => {
       const log = params.log === undefined ? {} : { log: below(params.log, "a log file").abs };
@@ -261,31 +288,36 @@ export function attachedWorkspace(base: Workspace, computer: AttachableComputer,
       const existing = await statOf(abs, rel);
       noLink(existing, rel);
       if (existing !== undefined && existing.type !== "file") throw new WorkspaceError("REFUSED", `${JSON.stringify(rel)} is not a file`, { path: rel });
-      // computerd replaces a file in place: the bytes go to a temporary file beside it, which a move puts in its place.
-      // Replacing a file, the temporary file is its owner's alone (0600), readable and writable, while every chunk goes
-      // in and while a bind syncs its bytes on the host: a private file's new bytes are never readable by others on the
-      // way, a read-only file takes every chunk, and a write-only one can still be synced. Then a write of no bytes at
-      // its end sets the target's mode (computerd opens, sets the mode, then writes), and the move puts it in place, so
-      // the name never points at bytes a crash could lose.
-      const tempRel = [...segments.slice(0, -1), `.workspace-${randomBytes(8).toString("hex")}.tmp`].join("/");
-      const temp = `${MOUNT_AT}/${tempRel}`;
-      const mode = existing === undefined ? undefined : existing.mode & 0o777;
+      const temp = await tempOf(segments, rel, bytes, existing === undefined ? undefined : existing.mode & 0o777);
       try {
-        let written = 0;
-        for (const [i, part] of chunks(bytes).entries()) {
-          await value(i === 0
-            ? call("files.write", { path: temp, data: base64(part), parents: true, ...(mode === undefined ? {} : { mode: 0o600 }) })
-            : call("files.write", { path: temp, data: base64(part), append: true }), rel);
-          written += part.length;
-        }
-        await synced(tempRel, "file");
-        if (mode !== undefined && mode !== 0o600) await value(call("files.write", { path: temp, data: "", offset: written, mode }), rel);
         await value(call("files.move", { from: temp, to: abs, overwrite: true }), rel);
       } catch (error) {
         await call("files.remove", { path: temp }).catch(() => undefined);
         throw error;
       }
       await synced(rel);
+    },
+
+    async writeNew(path, data) {
+      const { rel, abs, segments } = below(path, "a file");
+      const bytes = bytesOf(data);
+      await noLinkOnTheWay(segments, segments.length - 1, rel);
+      // Whatever is at the path (a file, a folder, a link) is kept, and a link there is never followed.
+      if ((await statOf(abs, rel)) !== undefined) return false;
+      const temp = await tempOf(segments, rel, bytes, undefined);
+      // A move without overwrite never replaces (computerd renames with RENAME_NOREPLACE, or links a file where it
+      // cannot): a file that lands at the path after the check answers "exists", and is kept.
+      const moved = await call("files.move", { from: temp, to: abs }).catch(async (error: unknown) => {
+        await call("files.remove", { path: temp }).catch(() => undefined);
+        throw error;
+      });
+      if (!moved.ok) {
+        await call("files.remove", { path: temp }).catch(() => undefined);
+        if (moved.error.code === "exists") return false;
+        await value(Promise.resolve(moved), rel);
+      }
+      await synced(rel);
+      return true;
     },
 
     async append(path, data) {
@@ -356,9 +388,12 @@ export function attachedWorkspace(base: Workspace, computer: AttachableComputer,
     // once, at its end, where a caller (bash) needs the output as it comes and the end of a long one. The process is
     // read as it comes (process.read, each stream from its own offset), every byte given to onOutput and the first
     // maxOutput of each kept; at the deadline or an abort it is sent KILL (computerd's guard then ends everything it
-    // started), and once it ends its guard kills whatever it left, so nothing it started outlives it.
+    // started), and once it ends its guard kills whatever it left, so nothing it started outlives it. `stdin`: the process
+    // starts with its stdin open, and the bytes go by process.write, in chunks, its stdin closed after the last, so they
+    // are never in its argv or the environment it starts with (a checkout's token, pr-checkout.ts, which then puts it in
+    // the environment of its fetch's git calls alone). A program that ends without reading them answers as it ended: a
+    // write it no longer takes is not the call's failure, as a closed pipe's is not.
     async exec(argv: readonly string[], options: ExecOptions): Promise<ExecResult> {
-      if (options.stdin !== undefined) throw new WorkspaceError("REFUSED", "exec with stdin runs on the run's folder, not in a computer: a computer's exec takes no stdin");
       if (options.network !== undefined) throw new WorkspaceError("REFUSED", "a command in a computer has the computer's own network: its exec takes no network of its own, and nothing ran");
       const { timeoutMs, signal } = options;
       if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new WorkspaceError("REFUSED", "exec's timeoutMs is a number above 0");
@@ -366,7 +401,28 @@ export function attachedWorkspace(base: Workspace, computer: AttachableComputer,
       if (!Number.isSafeInteger(cap) || cap < 0) throw new WorkspaceError("REFUSED", "exec's maxOutput is a whole number, 0 or more");
       if (signal?.aborted) throw abortError(signal);
       const { abs, rel } = at(options.cwd ?? "");
-      const { id } = await value(call("process.start", { argv: [...argv], cwd: abs, env: { ...options.env } }), rel);
+      const { stdin } = options;
+      const { id } = await value(call("process.start", { argv: [...argv], cwd: abs, env: { ...options.env }, ...(stdin !== undefined ? { stdin: true } : {}) }), rel);
+      const feed = async (bytes: Uint8Array): Promise<void> => {
+        const parts = chunks(bytes);
+        for (const [i, part] of parts.entries()) {
+          const wrote = await call("process.write", { id, data: base64(part), ...(i === parts.length - 1 ? { close: true } : {}) });
+          if (wrote.ok) continue;
+          // computerd answers invalid once the program closed its stdin or ended (EPIPE, EIO, a closed file, "has ended",
+          // "stdin is closed"): the program answers as it ended. Its catch-all for any other error of the write is
+          // invalid too, answered before it closes the stdin a last write asks to close, so the stdin is closed now (its
+          // answer not read: an ended program's is invalid as well), and a program still reading sees its input end and
+          // answers at once, not at the call's deadline. A write it did not read in time (timeout), a lost connection or
+          // any other failure fails the call, which kills the process (the catch below); after this call's own deadline
+          // or abort, that answer stands instead.
+          if (timedOut || aborted) return;
+          if (wrote.error.code === "invalid") {
+            await call("process.write", { id, close: true }).catch(() => undefined);
+            return;
+          }
+          throw new WorkspaceError(CODES[wrote.error.code] ?? "UNAVAILABLE", `${JSON.stringify(rel === "" ? "." : rel)}: the program's input could not be written: ${wrote.error.message}`, { path: rel });
+        }
+      };
       let timedOut = false;
       let aborted = false;
       let truncated = false;
@@ -399,7 +455,7 @@ export function attachedWorkspace(base: Workspace, computer: AttachableComputer,
       };
       let exit: ProcessExit;
       try {
-        await Promise.all([readAll("stdout"), readAll("stderr")]);
+        await Promise.all([readAll("stdout"), readAll("stderr"), ...(stdin !== undefined ? [feed(stdin)] : [])]);
         exit = await value(call("process.wait", { id, timeoutMs: EXEC_EXIT_WAIT_MS }), rel);
       } catch (error) {
         kill();

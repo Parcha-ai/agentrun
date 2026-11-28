@@ -25,7 +25,7 @@ export const LAYERS = {
   'plug-in': ['packages/run-adapters-claude-agent', 'packages/run-adapters-codex', 'packages/run-adapters-acp', 'packages/computer', 'packages/decisions', 'packages/jev'],
   // Libraries to be folded into the kernel, a plug-in or the server. packages/dsl is the workflow language and its engine.
   subsystem: [
-    'packages/dsl', 'packages/pi-browser', 'packages/import',
+    'packages/dsl', 'packages/pi-browser', 'packages/import', 'packages/web',
   ],
   server: ['packages/serve'],
   surface: ['apps/console', 'packages/agentrun', 'packages/computer-bench'],
@@ -63,6 +63,7 @@ export const EXCEPTIONS = [
   ['packages/run-adapters/src/runner.ts', 'packages/dsl', 1, ...KERNEL_DSL],
   ['packages/run-adapters/src/types.ts', 'packages/dsl', 1, ...KERNEL_DSL],
   ['packages/decisions/package.json', 'packages/dsl', 1, ...PROVIDER_DSL],
+  ['packages/decisions/src/anthropic.ts', 'packages/dsl', 2, ...PROVIDER_DSL],
   ['packages/decisions/src/evidence.ts', 'packages/dsl', 1, ...PROVIDER_DSL],
   ['packages/decisions/src/openrouter.ts', 'packages/dsl', 2, ...PROVIDER_DSL],
   ['packages/decisions/src/parallel.ts', 'packages/dsl', 2, ...PROVIDER_DSL],
@@ -71,9 +72,11 @@ export const EXCEPTIONS = [
   ['apps/console/tsconfig.json', 'packages/dsl', 1, ...CONSOLE_SOURCE],
   ['apps/console/tsconfig.json', 'packages/pi-browser', 1, ...CONSOLE_SOURCE],
   ['apps/console/tsconfig.json', 'packages/serve', 2, ...CONSOLE_SERVE],
+  ['apps/console/tsconfig.json', 'packages/web', 2, ...CONSOLE_SOURCE],
   ['apps/console/vite.config.ts', 'packages/dsl', 1, ...CONSOLE_SOURCE],
   ['apps/console/vite.config.ts', 'packages/pi-browser', 1, ...CONSOLE_SOURCE],
   ['apps/console/vite.config.ts', 'packages/serve', 2, ...CONSOLE_SERVE],
+  ['apps/console/vite.config.ts', 'packages/web', 2, ...CONSOLE_SOURCE],
   ['packages/agentrun/package.json', 'packages/serve', 1, ...LAUNCHER_SERVER],
   ['packages/agentrun/lib/start.mjs', 'packages/serve', 1, ...LAUNCHER_SERVER],
 ];

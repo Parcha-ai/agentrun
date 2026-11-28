@@ -5,10 +5,14 @@
 // by file; any other script ci-shards.json lists under `whole` runs as it is, as one unit. A script of any other shape is
 // refused, so a script that changes shape is looked at here instead of running unseen.
 //
-// `plan(units, n)` assigns units to n shards, longest first, each to the shard it lengthens least, with a shard's time
-// modelled as each suite's longest file or its files' total over the suite's measured parallelism, whichever is more. The
-// weights come from scripts/ci-timings.json (seconds on a GitHub-hosted runner, from CI's own logs: `node
-// scripts/ci-timings.mjs`). A file it does not list weighs its suite's median; nothing is dropped for a missing weight.
+// `plan(units, n)` assigns units to n shards, longest first, each to the shard it lengthens least. A shard's time is modelled
+// per suite as node --test runs it: the files in sorted order, as many at once as its concurrency, each starting when one
+// ends, so a long file that sorts late starts late; and no less than its files' total over its measured parallelism, which
+// is what a suite's CPU-bound files keep up with on the runner's 4 CPUs when they fill its slots (a suite of another
+// runner: its longest file or that total, whichever is more). The
+// weights come from scripts/ci-timings.json (seconds on the Blacksmith runners that run the merge queue's shards and this
+// repository's own pull requests', from CI's own logs: `node scripts/ci-timings.mjs`). GitHub's runners, where main and
+// a fork's pull request run, take the same files in other proportions, so the plan is balanced for Blacksmith. A file it does not list weighs its suite's median; nothing is dropped for a missing weight.
 // The plan is a pure function of the checkout, so every job of a run computes the same one.
 //   node scripts/ci-plan.mjs [--pool <name>]   prints the test shards and their modelled seconds
 import { existsSync, globSync, readdirSync, readFileSync } from 'node:fs';
@@ -25,7 +29,7 @@ export function readConfig(root) {
 }
 
 const FILE = /^[\w./@-]+$/;
-const nodeTest = /^node --test((?: --test-(?:concurrency|timeout)=\d+)*)((?: (?:'[\w./*-]+'|[\w./*-]+))+)$/;
+const nodeTest = /^node --test((?: (?:--test-(?:concurrency|timeout)=\d+|--import=[\w./-]+))*)((?: (?:'[\w./*-]+'|[\w./*-]+))+)$/;
 const VITEST = 'vitest --run';
 
 function listed(command, cwd, what) {
@@ -57,12 +61,13 @@ export function readSuites(root, { config, only } = {}) {
     const shape = nodeTest.exec(text);
     if (shape) {
       const flags = shape[1].trim();
+      const concurrency = Number(/--test-concurrency=(\d+)/.exec(flags)?.[1] ?? NODE_TEST_CONCURRENCY);
       const patterns = shape[2].trim().split(/\s+/).map((pattern) => pattern.replace(/^'|'$/g, ''));
       const files = [...new Set(patterns.flatMap((pattern) => globSync(pattern, { cwd: join(root, cwd) })))].sort();
       if (!files.length) throw new Error(`${name}'s test script, ${JSON.stringify(text)}, matches no file`);
       for (const file of files) if (!FILE.test(file)) throw new Error(`${name}: the test file "${file}" is not a plain path`);
       suites.push({
-        name, workspace, cwd, files, whole: false,
+        name, workspace, cwd, files, whole: false, concurrency,
         run: (some, { timeoutMs } = {}) => {
           const timeout = timeoutMs && !/--test-timeout=/.test(flags) ? [`--test-timeout=${timeoutMs}`] : [];
           return exec(['node --test', ...timeout, ...(flags ? [flags] : []), ...some].join(' '));
@@ -105,11 +110,14 @@ const DEFAULT_FILE_SECONDS = 5;
 const DEFAULT_WHOLE_SECONDS = 60;
 const DEFAULT_TYPECHECK_SECONDS = 10;
 const DEFAULT_PARALLELISM = 2;
+// node --test's own concurrency where a script sets none: the runner's CPUs less one, 3 on the 4-CPU Blacksmith runners the
+// weights are measured on. A constant, not os.availableParallelism(), so every job plans the same shards.
+const NODE_TEST_CONCURRENCY = 3;
 
 /**
  * The units of `suites`: each file of a split suite, each whole suite, and with `typecheck` a type-check of each workspace
- * it names. `{ id, suite, file, seconds, parallelism }`: `id` is unique, `file` is relative to the root (a whole suite and a
- * type-check have none), `seconds` the unit's own time.
+ * it names. `{ id, suite, file, seconds, parallelism, slots }`: `id` is unique, `file` is relative to the root (a whole suite
+ * and a type-check have none), `seconds` the unit's own time, `slots` a node --test suite's concurrency (none for another).
  */
 export function unitsOf(suites, timings, { typecheck = [] } = {}) {
   const units = [];
@@ -121,7 +129,8 @@ export function unitsOf(suites, timings, { typecheck = [] } = {}) {
     const paths = suite.files.map((file) => (suite.cwd === '.' ? file : `${suite.cwd}/${file}`));
     const fallback = median(paths.map((path) => timings.files[path]).filter((seconds) => seconds !== undefined)) ?? DEFAULT_FILE_SECONDS;
     const parallelism = timings.parallelism[suite.name] ?? DEFAULT_PARALLELISM;
-    suite.files.forEach((file, index) => units.push({ id: `file:${paths[index]}`, suite: suite.name, kind: 'file', file, path: paths[index], seconds: timings.files[paths[index]] ?? fallback, parallelism }));
+    const slots = suite.concurrency === undefined ? {} : { slots: suite.concurrency };
+    suite.files.forEach((file, index) => units.push({ id: `file:${paths[index]}`, suite: suite.name, kind: 'file', file, path: paths[index], seconds: timings.files[paths[index]] ?? fallback, parallelism, ...slots }));
   }
   for (const name of typecheck) units.push({ id: `typecheck:${name}`, suite: `typecheck:${name}`, kind: 'typecheck', workspace: name, seconds: timings.typecheck[name] ?? DEFAULT_TYPECHECK_SECONDS, parallelism: 1 });
   return units;
@@ -129,27 +138,58 @@ export function unitsOf(suites, timings, { typecheck = [] } = {}) {
 
 // Each command a shard starts costs a few seconds (npm, the runner's own start) whatever it runs.
 const COMMAND_SECONDS = 2;
-const groupSeconds = (group) => (group.count ? COMMAND_SECONDS + Math.max(group.max, group.sum / Math.min(group.parallelism, group.count)) : 0);
+// Each file node --test runs holds a slot a little longer than its tests take (its process's start and imports), which a
+// file's weight, its tests' total, leaves out. A quarter second is what CI's shards fit: it matters for a shard of hundreds
+// of small files.
+const FILE_SECONDS = 0.25;
+
+/** When the last of `queue` ends, run in its order `slots` at a time, each starting when one ends: node --test's schedule. */
+function makespan(queue, slots) {
+  const ends = new Array(Math.min(slots, queue.length)).fill(0);
+  for (const { seconds } of queue) {
+    let free = 0;
+    for (let i = 1; i < ends.length; i++) if (ends[i] < ends[free]) free = i;
+    ends[free] += seconds;
+  }
+  return Math.max(0, ...ends);
+}
+
+// A suite's units in one shard. node --test sorts the files it is given (a string sort), so the queue is kept in that
+// order; on CI's runners the main suites' longest files sort late in some shards and early in others, which a model of
+// longest-file-or-total-over-parallelism cannot tell apart (it put shards 130 s to 224 s at one modelled 184 s).
+const emptyGroup = (unit) => ({ max: 0, sum: 0, count: 0, parallelism: unit.parallelism, slots: unit.slots, queue: [] });
+function grow(group, unit) {
+  const queue = group.slots === undefined ? group.queue : [...group.queue];
+  if (group.slots !== undefined) {
+    let at = queue.length;
+    while (at > 0 && queue[at - 1].file > unit.file) at--;
+    queue.splice(at, 0, { file: unit.file, seconds: unit.seconds + FILE_SECONDS });
+  }
+  return { ...group, max: Math.max(group.max, unit.seconds), sum: group.sum + unit.seconds, count: group.count + 1, queue };
+}
+const groupSeconds = (group) => {
+  if (!group.count) return 0;
+  if (group.slots !== undefined) return COMMAND_SECONDS + Math.max(makespan(group.queue, group.slots), (group.sum + group.count * FILE_SECONDS) / group.parallelism);
+  return COMMAND_SECONDS + Math.max(group.max, group.sum / Math.min(group.parallelism, group.count));
+};
 
 /**
  * The ::warning line for a shard that ran more than a quarter and more than a minute over its model, else undefined. Its
  * weights are CI's own times, and a file that grows (release-preflight.test.mjs went 152 s to 257 s in a day) makes its
  * shard the run's slowest while the plan still reads balanced; the warning says so in the run that shows it. A minute
- * is a hosted runner's noise; a faster runner (Blacksmith, in the merge queue and on this repository's own pull requests)
- * is never a drift, so the warning comes from main's runs and a fork's.
+ * is a runner's noise. `untimedRunner` is a runner the weights were not measured on (GitHub's, for main and a fork's pull
+ * request): a shard over its model there says nothing about the weights, so it never warns.
  */
-export function timingDrift(name, modelled, seconds) {
-  if (seconds - modelled <= 60 || seconds <= modelled * 1.25) return undefined;
+export function timingDrift(name, modelled, seconds, { untimedRunner = false } = {}) {
+  if (untimedRunner || seconds - modelled <= 60 || seconds <= modelled * 1.25) return undefined;
   return `::warning title=ci-timings.json is stale::${name} ran ${seconds} s, modelled ${modelled} s: refresh scripts/ci-timings.json from CI's job logs (node scripts/ci-timings.mjs <job log>...), and split a test file that alone is near a shard's time`;
 }
 
-/** The modelled seconds of a set of units: per suite, its longest unit or its total over its parallelism, whichever is more. */
+/** The modelled seconds of a set of units, summed over their suites: a node --test suite's files as it schedules them, or
+ *  their total over its parallelism if that is more; another suite's longest unit or that total, whichever is more. */
 export function modelSeconds(units) {
   const groups = new Map();
-  for (const unit of units) {
-    const group = groups.get(unit.suite) ?? { max: 0, sum: 0, count: 0, parallelism: unit.parallelism };
-    groups.set(unit.suite, { ...group, max: Math.max(group.max, unit.seconds), sum: group.sum + unit.seconds, count: group.count + 1 });
-  }
+  for (const unit of units) groups.set(unit.suite, grow(groups.get(unit.suite) ?? emptyGroup(unit), unit));
   return [...groups.values()].reduce((total, group) => total + groupSeconds(group), 0);
 }
 
@@ -166,8 +206,8 @@ export function plan(units, n) {
   for (const unit of order) {
     let best;
     for (const shard of shards) {
-      const group = shard.groups.get(unit.suite) ?? { max: 0, sum: 0, count: 0, parallelism: unit.parallelism };
-      const grown = { ...group, max: Math.max(group.max, unit.seconds), sum: group.sum + unit.seconds, count: group.count + 1 };
+      const group = shard.groups.get(unit.suite) ?? emptyGroup(unit);
+      const grown = grow(group, unit);
       const seconds = shard.seconds - groupSeconds(group) + groupSeconds(grown);
       if (!best || seconds < best.seconds - 1e-9) best = { shard, grown, seconds };
     }

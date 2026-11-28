@@ -12,7 +12,7 @@ services:
     runtime: image
     # The release's published image (ghcr, built by release.yml from the reviewed tag): a deploy pulls it.
     image:
-      url: ghcr.io/parcha-ai/agentrun-server:v0.1.0-beta.56
+      url: ghcr.io/parcha-ai/agentrun-server:v0.1.0-beta.67
     # 2 GB and a 10 GB disk at the least: Claude Code and Codex install themselves on first use onto the disk (the image
     # leaves them out), which fills 1 GB, and 512 MB is short for them.
     plan: 1c-2g
@@ -20,8 +20,10 @@ services:
     healthCheckPath: /v2/health
     # The image's default command: the server and one runner, two processes in this one service, on the one disk. If
     # either exits, the container exits non-zero and Render starts it again. Render waits 30 s after SIGTERM, above the
-    # runner's 6 s drain. maxShutdownDelaySeconds would set it, but Render does not take it for a service with a
-    # persistent disk, as this one is.
+    # runner's 6 s drain, a signed-in server's 27 s stop and the 29 s a ChatGPT renewal its runner sends may take to save
+    # its new pair (the grace test pins them). maxShutdownDelaySeconds would set it, but Render does not take it for a service with a
+    # persistent disk, as this one is. It is under the 40 s the runner's close takes when a browser's release hangs to its
+    # provider's 30 s cleanup bound: such a stop is killed before that release is recorded, and the run resumes at the next start.
     disk:
       name: agentrun-data
       mountPath: /data

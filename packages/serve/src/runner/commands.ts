@@ -43,11 +43,14 @@ function bodyProblem(kind: string, body: Record<string, unknown>): string | unde
       return body.reason === undefined || typeof body.reason === "string" ? undefined : `a ${kind}'s reason is text`;
     case "steer":
       if (!text(body.text)) return "a steer needs its text";
+      // The person's own words beside a host's text (runs-over-store.ts message `said`): text when there.
+      if (body.said !== undefined && !text(body.said)) return "a steer's said is text";
       // A trigger's message names who wrote it, as the Timeline shows it: never a person's.
       return body.origin === undefined || originOf(body.origin) !== undefined ? undefined : "a steer's origin is a message origin (a trigger's, or the server's)";
     case "approve":
     case "deny":
       if (!text(body.approval)) return `${kind === "approve" ? "an approve" : "a deny"} names its approval`;
+      if (kind === "deny" && body.said !== undefined && !text(body.said)) return "a deny's said is text";
       return body.note === undefined || typeof body.note === "string" ? undefined : `${kind === "approve" ? "an approve" : "a deny"}'s note is text`;
     case "raise":
       return typeof body.capUsd === "number" && Number.isFinite(body.capUsd) && body.capUsd > 0

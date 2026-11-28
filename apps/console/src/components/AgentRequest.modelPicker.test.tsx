@@ -3,8 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentRequest } from "./AgentRequest";
 import { AgentEditor, type EditorCaps } from "./AgentEditor";
-import { BuildAgent } from "./BuildAgent";
-import { agentDraftHref, briefAgentDraft } from "@/lib/agentDraft";
+import { briefAgentDraft } from "@/lib/agentDraft";
 import { createClient } from "@/lib/client";
 import type { Agent } from "@/lib/agentForm";
 import { SERVED_AGENT } from "@/test/agent";
@@ -151,15 +150,5 @@ describe("the playground's Edit agent, the Model field", () => {
     await mount({ operation: "edit-agent", agentId: "calc", harnesses }, () => json(agentOn("pi", "anthropic/claude-sonnet-5.5"), 200, '"r1"'));
     expect(valueOf(model()!)).toBe(CUSTOM);
     expect(custom()?.value).toBe("anthropic/claude-sonnet-5.5");
-  });
-});
-
-describe("Build's blank agent", () => {
-  it("still opens the playground's Create an agent", async () => {
-    host = document.body.appendChild(document.createElement("div")); root = createRoot(host);
-    await act(async () => root!.render(createElement(BuildAgent, { origin, v2: { listTemplates: async () => ({ templates: [] }) } })));
-    const href = [...host.querySelectorAll("a")].find((a) => a.textContent === "start from a blank agent")!.getAttribute("href")!;
-    expect(href.startsWith("#/playground?operation=create-agent")).toBe(true);
-    expect(href).toBe(agentDraftHref(briefAgentDraft("")));
   });
 });

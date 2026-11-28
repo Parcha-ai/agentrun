@@ -49,6 +49,18 @@ test('gateway key and model are both required for background compilation', async
   assert.equal((await learningModelOf({ AGENT_MODEL_BASE_URL: gateway.AGENT_MODEL_BASE_URL, AGENT_MODEL_API_KEY: 'fake-test-key' })).ready, false);
 });
 
+test('a managed agent on a keyless gateway server compiles, checks and audits on each run\'s own key; an SDK agent still needs the server\'s', async () => {
+  const { learningModelOf } = await import('../dist/learning-model.js');
+  const gateway = { AGENT_MODEL_BASE_URL: 'http://127.0.0.1:9', AGENT_MODEL: 'openai/gpt-6.1-sol' };
+  const managed = await learningModelOf(gateway, { kind: 'agentic', body: { instructions: 'Answer.' } });
+  assert.deepEqual([managed.location, managed.ready, managed.needs], ['server', true, null], JSON.stringify(managed));
+  assert.match(managed.reason, /^Compiles, checks and audits on each run's own model key \(`model_key`\): this server holds no gateway key of its own\./);
+  assert.match(managed.reason, /`learning_work`/);
+  const sdk = await learningModelOf(gateway, { kind: 'agentic', body: { sdk: { runtime: 'eve' } } });
+  assert.deepEqual([sdk.ready, sdk.needs], [false, 'key']);
+  assert.match(sdk.reason, /tied to no run, so it cannot use a run's own key/);
+});
+
 test('managed Cursor learning uses its installed plan harness and own key, not a server model proxy', async t => {
   const { learningModelOf } = await import('../dist/learning-model.js');
   const { HARNESS_TABLE_ENV } = await import('../dist/harness-table.js');

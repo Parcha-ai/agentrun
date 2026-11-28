@@ -12,8 +12,12 @@ import { captureManagedProject, sourceWorkspace, openRunPlacement } from "../dis
 import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 
 const env = { PATH: "/usr/bin:/bin", LANG: "C", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
+// No auto maintenance in the fixture's repository: from Git 2.47 a commit starts a detached `git maintenance run --auto`,
+// which holds .git/objects/maintenance.lock after the commit returns and drops it later, so a capture's .git inventory
+// could list a file gone by its read ("maintenance.lock" is not there) or differ from its final check. Capture's own Git
+// is told the same (src/source-sync/capture-git.ts).
 async function git(work, ...args) {
-  const answer = await work.exec(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", ...args], { env, timeoutMs: 3000 });
+  const answer = await work.exec(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "-c", "gc.auto=0", "-c", "maintenance.auto=false", ...args], { env, timeoutMs: 3000 });
   assert.equal(answer.code, 0, Buffer.from(answer.stderr).toString()); return Buffer.from(answer.stdout).toString().trim();
 }
 async function fixture(t, backend) {
@@ -155,4 +159,18 @@ test("real local managed capture cleans private scratch and seeds a new run with
   assert.equal(Buffer.from(await next.workspace.read("tracked.txt")).toString(), "changed\n"); assert.equal(await next.workspace.stat("deleted.txt"), undefined);
   assert.equal(await next.workspace.stat("inputs/message.md"), undefined);
   assert.equal((await git(next.workspace, "show", "HEAD:tracked.txt")), "committed");
+});
+
+test("credential-bearing history split by a control character, a terminal sequence or a box refuses the checkpoint", async t => {
+  const held = "fixture-private-history";
+  for (const between of ["\u0000", "\u001b[0m", "\ufffe"]) {
+    const p = await fixture(t, "local"); await repository(p.work);
+    await p.work.write("old.txt", `${held.slice(0, 9)}${between}${held.slice(9)}\n`); await git(p.work, "add", "old.txt"); await git(p.work, "commit", "--quiet", "-m", "Historical content");
+    await p.work.remove("old.txt"); await git(p.work, "add", "old.txt"); await git(p.work, "commit", "--quiet", "-m", "Removed historical content");
+    await assert.rejects(capture(p, { secretValues: [held] }), error => error.code === "prerequisite", JSON.stringify(between));
+  }
+  // Control: history with a coloured line and no held value in it is checkpointed.
+  const p = await fixture(t, "local"); await repository(p.work);
+  await p.work.write("old.txt", "harmless \u001b[0m line\n"); await git(p.work, "add", "old.txt"); await git(p.work, "commit", "--quiet", "-m", "Historical content");
+  await assert.doesNotReject(capture(p, { secretValues: [held] }));
 });

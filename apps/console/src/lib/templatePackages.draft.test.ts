@@ -4,7 +4,7 @@ import type { TemplateView } from "./v2";
 
 const template: TemplateView = { id: "review/kit", bundled: true, source: null, sha: null, publisher: null, category: null, tags: [], name: "review/kit", display_name: "Review kit", version: "2.0.0", description: "Review a pull request.",
   license: null, author: null, repository: null, output: null, input_schema: null, harness: ["pi"], model: null, effort: null, tools: null, tool_policy: null,
-  computer: null, needs: null, computer_here: null, checkout: null, secrets: [], budget: null, learning: false, approvals_default: "ask", triggers: [], skills: [], evals: [],
+  computer: null, needs: null, computer_here: null, model_tiers_here: { harness: "pi", fast: null, strong: null, note: null }, checkout: null, secrets: [], budget: null, learning: false, approvals_default: "ask", triggers: [], skills: [], evals: [],
   parameters: { type: "object", additionalProperties: false, required: ["repo"], properties: { repo: { type: "string", description: "Repository" }, comment: { type: "boolean", description: "Comment", default: true } } },
   mcp: [{ source: "github", toolkit: "github", required: true, reason: null, tools: [{ name: "read", tool: "mcp:github/read", asks: "allow" }] }] };
 const body = { parameters: { repo: "acme/web", comment: false }, grants: ["mcp:github/read"], overrides: { approvals: "ask" as const } };
@@ -23,6 +23,17 @@ describe("a prepared template request", () => {
     }
     expect(readTemplateDraft(params.get("draft")!, template).error).toBeTruthy();
     expect(readTemplateDraft(raw(), withChoice)).toEqual({ body });
+  });
+
+  it("keeps the agent's model (the Free shelf's Use free) and refuses a malformed one, or one beside a choice", () => {
+    const withModel = { ...body, overrides: { ...body.overrides, model: "ollama/qwen3:8b" } };
+    const params = new URLSearchParams(templatePlaygroundHref(template, withModel).split("?")[1]);
+    expect(readTemplateDraft(params.get("draft")!, template)).toEqual({ body: withModel });
+    for (const model of ["", " ollama/qwen3:8b", "ollama/qwen3 8b", "ollama/\u0000x", "x".repeat(201), 7, null, ["ollama/qwen3:8b"]]) {
+      expect(readTemplateDraft(raw({ body: { ...body, overrides: { ...body.overrides, model } } }), template).error).toBeTruthy();
+    }
+    const withChoice: TemplateView = { ...template, model: { tier: "balanced", choices: [{ id: "free", label: "Free model", model: "example/free", harness: "pi", warning: null, note: null, secrets: [] }] } };
+    expect(readTemplateDraft(raw({ body: { ...body, overrides: { ...withModel.overrides, choice: "free" } } }), withChoice).error).toBeTruthy();
   });
 
   it("round trips scalar array parameters and refuses values the line-based form would change", () => {

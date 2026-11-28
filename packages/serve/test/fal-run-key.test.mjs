@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { memorySessionStore } from "@parcha/agentrun-kernel/testing";
 import { mcpGateway } from "../dist/mcp-gateway.js";
+import { keepText } from "../dist/runner/redact.js";
 import { bookedIn } from "../dist/paid-calls.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 
@@ -77,11 +78,12 @@ async function runOn(t, account, { run, url = FAL, entry = { meter: "fal" }, ser
   const paid = { admit: (request) => tools.admit(request), settle: (id, usd, options) => tools.settle(id, usd, options) };
   const pinned = url ?? fake.url;
   const gateway = mcpGateway({
+    redact: keepText,
     pin: { [server]: { url: pinned, tools: Object.keys(account.tools).map((name) => ({ name, inputSchema: { type: "object" } })), ...entry } },
     credentials: { [server]: { url: pinned, headers: { authorization: `Bearer ${TOKEN}` } } },
     work: () => work,
     commit: () => async (change) => change({ appendEntry: async () => undefined }),
-    capped: () => true,
+    capped: true,
     now: () => T0,
     ...(run ? { run } : {}),
     ...(url && url !== fake.url ? { fetch: (input, init) => fetch(String(input instanceof Request ? input.url : input).replace(url, fake.url), init) } : {}),
@@ -172,38 +174,30 @@ test("submit_jobs scopes each request's key, and its entries read back with the 
   }
 });
 
-test("a key at fal's length limit is scoped within it, without two keys colliding", async (t) => {
+test("the longest key a run can send, 111 characters, leaves at fal's 128 and reads back on a resumed run", async (t) => {
   const account = falAccount();
-  const a = await runOn(t, account, { run: RUN_A });
-  const long = (end) => `k${"x".repeat(126)}${end}`;
-  for (const key of [long("1"), long("2"), long("1")]) {
-    const reply = JSON.parse(textOf(await a.call("submit_job", { endpoint_id: IDEOGRAM, input: { prompt: key.at(-1), num_images: 1 }, submission_key: key })));
-    assert.equal(reply.submission_key, key, "the agent reads its own key back");
-  }
-  const [one, two, again] = account.sent("submit_job");
-  assert.ok([one, two].every((key) => KEY_SHAPE.test(key)), `within fal's limit: ${one.length}, ${two.length}`);
-  assert.notEqual(one, two, "keys that differ only past the limit stay apart");
-  assert.equal(again, one, "and stay the same each time");
+  const key = `k${"x".repeat(110)}`;
+  const first = await runOn(t, account, { run: RUN_A });
+  const reply = JSON.parse(textOf(await first.call("submit_job", job("at the limit", key))));
+  assert.equal(reply.submission_key, key, "the agent reads its own key back");
+  const [sent] = account.sent("submit_job");
+  assert.ok(KEY_SHAPE.test(sent) && sent.length === 128, `within fal's limit, at it: ${sent.length}`);
+  const resumed = await runOn(t, account, { run: RUN_A });
+  const found = JSON.parse(textOf(await resumed.call("get_submission", { submission_key: key })));
+  assert.deepEqual([found.status, found.submission_key, found.request_id], ["found", key, "r1"], "a resumed run's read finds the job");
 });
 
-test("a shortened long key never reaches fal as a shorter key the agent could send itself", async (t) => {
+test("a key over 111 characters is refused unsent, in words: fal receives nothing, so a resumed run never loses its job", async (t) => {
   const account = falAccount();
   const a = await runOn(t, account, { run: RUN_A });
-  const long = `k${"y".repeat(127)}`;
-  await a.call("submit_job", { endpoint_id: IDEOGRAM, input: { prompt: "long", num_images: 1 }, submission_key: long });
-  const [sentLong] = account.sent("submit_job");
-  // Every start of the key fal received for the long one, sent as the agent's own key with its own request: any of them
-  // that left as the same key would be replayed as, or refused against, the long key's job.
-  const twins = [...sentLong].map((_, i) => sentLong.slice(0, i + 1)).filter((key) => KEY_SHAPE.test(key));
-  for (const [i, key] of twins.entries()) {
-    const reply = await a.call("submit_job", { endpoint_id: IDEOGRAM, input: { prompt: `twin ${i}`, num_images: 1 }, submission_key: key });
-    assert.equal(reply.isError, undefined, `${key} is its own job: ${textOf(reply)}`);
-    assert.equal(JSON.parse(textOf(reply)).submission_key, key, "the agent reads its own key back");
+  const long = `k${"y".repeat(111)}`;
+  for (const [tool, args] of [["submit_job", job("too long", long)], ["run_model", job("too long", long)], ["submit_jobs", { requests: [{ ...job("fine", "short-1"), index: 0 }, { ...job("too long", long), index: 1 }] }], ["get_submission", { submission_key: long }]]) {
+    const reply = await a.call(tool, args);
+    assert.equal(reply.isError, true, `${tool} refused: ${textOf(reply)}`);
+    assert.ok(textOf(reply).includes("is 112 characters, over the 111 a run can send fal"), `in words, with the lengths: ${textOf(reply)}`);
+    assert.ok(textOf(reply).endsWith("Nothing was sent."), textOf(reply));
   }
-  const sent = account.sent("submit_job");
-  assert.equal(new Set(sent).size, sent.length, "every agent key reached fal as its own key");
-  const found = JSON.parse(textOf(await a.call("get_submission", { submission_key: long })));
-  assert.deepEqual([found.status, found.submission_key, found.request_id], ["found", long, "r1"], "the long key still reads its own job");
+  assert.deepEqual(account.keys, [], "no call reached fal");
 });
 
 test("a server that is not fal's, and an eval's fake fal on loopback, receive the agent's own key", async (t) => {

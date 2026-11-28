@@ -4,8 +4,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { catalogOf, wrappedHome } from "../dist/index.js";
-import { anthropicUsage, at, claudeAnswer, claudeFile, claudeUser, piFile, piMeta, piUser, tempHome, writeJsonl } from "./fixtures.mjs";
+import { catalogOf } from "../dist/index.js";
+import { anthropicUsage, at, claudeAnswer, claudeFile, claudeUser, piFile, piMeta, piUser, tempHome, wrappedHome, writeJsonl } from "./fixtures.mjs";
 
 const WORDS = "Fixture prompt, never reported.";
 const answer = (n, i, usage = anthropicUsage(100, 10, 50, 5), model = "claude-fixture-1") => claudeAnswer({ uuid: `a${n}`, msg: `m${n}`, req: `r${n}`, usage, i, model });
@@ -65,8 +65,10 @@ test("cost is the list price of the requests it can price; the rest are counted,
   const wrapped = await wrappedHome(home, 2026, { catalog: false, price });
   assert.equal(wrapped.cost, 1);
   assert.equal(wrapped.unpricedRequests, 1);
-  assert.deepEqual(wrapped.models.map((m) => [m.model, m.cost]), [["anthropic/claude-fixture-1", 1], ["anthropic/claude-unlisted", 0]]);
-  assert.equal((await wrappedHome(home, 2026, nothing)).unpricedRequests, 2);
+  assert.deepEqual(wrapped.models.map((m) => [m.model, m.cost, m.unpricedRequests]), [["anthropic/claude-fixture-1", 1, 0], ["anthropic/claude-unlisted", 0, 1]], "each model says its own unpriced requests");
+  const unpriced = await wrappedHome(home, 2026, nothing);
+  assert.equal(unpriced.unpricedRequests, 2);
+  assert.deepEqual(unpriced.models.map((m) => m.unpricedRequests), [1, 1]);
 });
 
 test("a price that rejects rejects wrappedHome, and the process lives on", async (t) => {
@@ -103,6 +105,7 @@ test("a request with no usage (pi leaves it off an aborted one) is unpriced, and
   const wrapped = await wrappedHome(home, 2026, { catalog });
   assert.equal(wrapped.requests, 3);
   assert.equal(wrapped.unpricedRequests, 1, "the aborted one: its cost is unknown, the total says so");
+  assert.equal(wrapped.models[0].unpricedRequests, 1, "and its model's row says so too");
   assert.ok(wrapped.cost > 0);
 });
 

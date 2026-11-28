@@ -24,7 +24,7 @@ import * as claude from "@parcha/agentrun-harness-claude";
 import * as codex from "@parcha/agentrun-harness-codex";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import * as pages from "../dist/web-fetch-direct.js";
+import * as pages from "@parcha/agentrun-web";
 import * as save from "../dist/web-save.js";
 import * as hosts from "../dist/host-tools.js";
 import { hostToolNames } from "../dist/tool-list.js";
@@ -36,8 +36,8 @@ import { localWorkspace } from "../dist/workspace/index.js";
 import { bashTool, fileTools, piEnv } from "../dist/workspace/pi-env.js";
 import { hostToolsOf } from "./host-tools-of.mjs";
 import { LEARNED_CLIP, learnedText, learnedWorkflowTool } from "../dist/learned-workflow.js";
-import * as web from "../dist/web-fetch.js";
-import * as search from "../dist/web-search.js";
+const web = { ...(await import("@parcha/agentrun-web")), ...(await import("../dist/web-fetch.js")), ...(await import("./fixtures/serve-web.mjs")) };
+const search = { ...(await import("@parcha/agentrun-web")), ...(await import("../dist/web-search.js")) };
 import { emailError, emailText } from "../dist/email/answer.js";
 import { emailRegistrations } from "../dist/email/tools.js";
 import { calendarError, calendarRegistrations, calendarText } from "../dist/calendar/tools.js";
@@ -83,11 +83,11 @@ test("every host tool's largest result is within the host's result bound, which 
   assert.ok(widest.links.reduce((n, link) => n + JSON.stringify(link).length + 1, 0) > pages.LINKS_CHARS - 200, "the links at theirs, with the text");
   for (const tool of ["web_fetch"]) keep(tool, web.webFetchText(page, tool), web.webFetchText(cjk, tool), web.webFetchText(widest, tool));
 
-  // web_search: every result at its caps; the answer keeps the most relevant that fit.
+  // web_search: the objective, every query and every result at their caps; the answer keeps the most relevant that fit.
   const hit = { url: `https://s.example/${'"'.repeat(pages.URL_MAX)}`, title: '"'.repeat(pages.TITLE_CAP), snippet: '"'.repeat(search.SNIPPET_MAX), published: '"'.repeat(200) };
-  const found = { provider: "native", query: '"'.repeat(search.QUERY_MAX), results: Array.from({ length: search.RESULTS_MAX }, () => hit), text: '"'.repeat(search.ANSWER_MAX) };
+  const found = { provider: "native", objective: '"'.repeat(search.OBJECTIVE_MAX), queries: Array.from({ length: search.QUERIES_MAX }, () => '"'.repeat(search.QUERY_MAX)), results: Array.from({ length: search.RESULTS_MAX }, () => hit), text: '"'.repeat(search.ANSWER_MAX) };
   const wideHit = { url: `https://s.example/${"u".repeat(pages.URL_MAX)}`, title: wide.repeat(pages.TITLE_CAP), snippet: wide.repeat(search.SNIPPET_MAX) };
-  keep("web_search", search.searchText(found), search.searchText({ provider: "native", query: wide.repeat(search.QUERY_MAX), results: Array.from({ length: search.RESULTS_MAX }, () => wideHit), text: wide.repeat(search.ANSWER_MAX) }));
+  keep("web_search", search.searchText(found), search.searchText({ provider: "native", objective: wide.repeat(search.OBJECTIVE_MAX), queries: Array.from({ length: search.QUERIES_MAX }, () => wide.repeat(search.QUERY_MAX)), results: Array.from({ length: search.RESULTS_MAX }, () => wideHit), text: wide.repeat(search.ANSWER_MAX) }));
 
   // The email tools: a search's most messages and a thread's, every field past its cut, in quotes, in three-byte text and in
   // control characters (six characters of JSON each); a draft's and a send's answers; an error's words.

@@ -1,10 +1,18 @@
 // A media file's length in seconds, read from its bytes alone: an ISO file's movie header (mp4, m4a, mov), a WAV's data
-// chunk over its byte rate, an MP3's frame count (Xing, Info or VBRI) or, with none, its frames walked one by one. Pure: no decoder, nothing read past the bytes given. Undefined for anything else, or a file cut short of the
-// header its length is in.
+// chunk over its byte rate, an MP3's frame count (Xing, Info or VBRI) or, with none, its frames walked one by one. Pure:
+// no decoder, nothing read past the bytes given. Undefined for anything else, or a file cut short of the header its
+// length is in. voiceSeconds reads a voice's length from what plays instead, for a file whose sender is billed by it.
 
-const tag = (b: Uint8Array, at: number, text: string): boolean => at >= 0 && b.length >= at + text.length && [...text].every((c, i) => b[at + i] === c.charCodeAt(0));
+/** Whether the bytes at `at` are `text`'s character codes. No allocation: a walk over a 32 MiB file calls it millions
+ *  of times. */
+const tag = (b: Uint8Array, at: number, text: string): boolean => {
+  if (at < 0 || b.length < at + text.length) return false;
+  for (let i = 0; i < text.length; i++) if (b[at + i] !== text.charCodeAt(i)) return false;
+  return true;
+};
 const u32 = (b: Uint8Array, at: number): number => (b[at]! * 0x1000000) + (b[at + 1]! << 16) + (b[at + 2]! << 8) + b[at + 3]!;
 const u32le = (b: Uint8Array, at: number): number => b[at]! + (b[at + 1]! << 8) + (b[at + 2]! << 16) + b[at + 3]! * 0x1000000;
+const u16le = (b: Uint8Array, at: number): number => b[at]! + (b[at + 1]! << 8);
 const length = (seconds: number): number | undefined => (Number.isFinite(seconds) && seconds > 0 ? seconds : undefined);
 
 /** The boxes of an ISO file between `from` and `to`: each one's type and where its body starts and ends. A box that runs
@@ -100,13 +108,17 @@ function walkedSeconds(b: Uint8Array, at: number, end: number): number | undefin
   return length(seconds);
 }
 
+/** Where an MP3's frames may start: past an ID3v2 tag, whose size is four 7-bit bytes, with a 10-byte footer when
+ *  flagged; 0 with none. */
+const id3End = (b: Uint8Array): number => (tag(b, 0, "ID3") && b.length >= 10 ? 10 + ((b[6]! & 0x7f) << 21) + ((b[7]! & 0x7f) << 14) + ((b[8]! & 0x7f) << 7) + (b[9]! & 0x7f) + (b[5]! & 0x10 ? 10 : 0) : 0);
+/** Where an MP3's frames end: before an ID3v1 tag (its last 128 bytes, from "TAG"), else at its end. */
+const id3v1Start = (b: Uint8Array): number => b.length - (tag(b, b.length - 128, "TAG") ? 128 : 0);
+
 /** An MP3's length: its first frame's Xing, Info or VBRI frame count times a frame's samples over its rate; with none,
  *  its frames walked one by one (a variable bitrate needs no header), the first taken only when another follows it. */
 function mp3Seconds(b: Uint8Array): number | undefined {
-  let start = 0;
-  // An ID3v2 tag: its size is four 7-bit bytes, with a 10-byte footer when flagged.
-  if (tag(b, 0, "ID3") && b.length >= 10) start = 10 + ((b[6]! & 0x7f) << 21) + ((b[7]! & 0x7f) << 14) + ((b[8]! & 0x7f) << 7) + (b[9]! & 0x7f) + (b[5]! & 0x10 ? 10 : 0);
-  const end = b.length - (tag(b, b.length - 128, "TAG") ? 128 : 0);
+  const start = id3End(b);
+  const end = id3v1Start(b);
   for (let at = start; at < Math.min(end, start + SYNC_SCAN); at++) {
     const frame = frameAt(b, at);
     if (!frame) continue;
@@ -118,9 +130,75 @@ function mp3Seconds(b: Uint8Array): number | undefined {
   return undefined;
 }
 
+/** Whether `b` is an ISO file (mp4, m4a, mov), by its first box. */
+const isIso = (b: Uint8Array): boolean => ["ftyp", "moov", "mdat", "free", "wide"].some((type) => tag(b, 4, type));
+
 /** The length of the media file `bytes`, in seconds; undefined when it can't be read from them. */
 export function mediaSeconds(bytes: Uint8Array): number | undefined {
-  if (tag(bytes, 4, "ftyp") || tag(bytes, 4, "moov") || tag(bytes, 4, "mdat") || tag(bytes, 4, "free") || tag(bytes, 4, "wide")) return isoSeconds(bytes);
+  if (isIso(bytes)) return isoSeconds(bytes);
   if (tag(bytes, 0, "RIFF") && tag(bytes, 8, "WAVE")) return wavSeconds(bytes);
   return mp3Seconds(bytes);
+}
+
+// A voice's length, for a job billed by it whose sender made the file (a talking head): what a decoder plays, never a
+// length a header states, which the sender could write short.
+
+/** Whether the frame at `at` holds a Xing, Info or VBRI header, which a decoder reads as the file's header and does not
+ *  play. */
+const headerFrame = (b: Uint8Array, at: number, frame: Frame): boolean =>
+  tag(b, at + 4 + frame.side, "Xing") || tag(b, at + 4 + frame.side, "Info") || tag(b, at + 36, "VBRI");
+
+/** An MP3 voice: every audio frame from its first byte to its last, each its samples over its rate, a last frame cut
+ *  short counted whole. Only an ID3v2 tag and the zeros after it may come before the frames, and only an ID3v1 tag after;
+ *  any other byte gives no length. A first frame holding a Xing, Info or VBRI header is skipped, as a decoder skips it,
+ *  and the frame count it states is not read; a later frame is audio whatever it holds. */
+function playedMp3Seconds(b: Uint8Array): number | undefined {
+  let at = id3End(b);
+  while (at < b.length && b[at] === 0) at += 1;
+  const end = id3v1Start(b);
+  if (at >= end) return undefined;
+  let seconds = 0;
+  for (let frame = frameAt(b, at), first = true; at < end; frame = frameAt(b, at), first = false) {
+    if (!frame) return undefined;
+    if (!first || !headerFrame(b, at, frame)) seconds += frame.samples / frame.rate;
+    at += frame.bytes;
+  }
+  return length(seconds);
+}
+
+/** The WAV formats whose bytes play at the sample rate, by format tag, and the bits a sample each takes: integer PCM and
+ *  IEEE float. Not the extensible header (0xFFFE): its GUID names the codec, which may be a compressed one. */
+const PCM_BITS: ReadonlyMap<number, readonly number[]> = new Map([[1, [8, 16, 24, 32]], [3, [32, 64]]]);
+
+/** A WAV voice: every byte after its data chunk's header, to the end of the file (a decoder may play past a data size
+ *  stated short), over its sample rate times its block align, a last frame cut short counted whole. Its one fmt chunk
+ *  (a decoder plays by the first; a second is refused) must come before the data, name integer PCM or IEEE float
+ *  (PCM_BITS) at 1 to 384 kHz, and agree with itself: block align is the channels times the bytes a sample, byte rate
+ *  the sample rate times the block align. Anything else gives no length. */
+function playedWavSeconds(b: Uint8Array): number | undefined {
+  let frame: { rate: number; align: number } | undefined;
+  for (let at = 12; at + 8 <= b.length; ) {
+    const size = u32le(b, at + 4);
+    if (tag(b, at, "fmt ")) {
+      if (frame || size < 16 || at + 24 > b.length) return undefined;
+      const format = u16le(b, at + 8);
+      const channels = u16le(b, at + 10);
+      const rate = u32le(b, at + 12);
+      const byteRate = u32le(b, at + 16);
+      const align = u16le(b, at + 20);
+      const bits = u16le(b, at + 22);
+      if (!PCM_BITS.get(format)?.includes(bits) || channels < 1 || align !== channels * (bits / 8) || byteRate !== rate * align || rate < 1000 || rate > 384_000) return undefined;
+      frame = { rate, align };
+    } else if (tag(b, at, "data")) return frame ? length(Math.ceil((b.length - at - 8) / frame.align) / frame.rate) : undefined;
+    at += 8 + size + (size % 2);
+  }
+  return undefined;
+}
+
+/** The length of the voice `bytes` play, in seconds: an MP3's frames or a PCM WAV's samples (playedMp3Seconds,
+ *  playedWavSeconds). Undefined for anything else, an ISO file included: its only length is its movie header's. */
+export function voiceSeconds(bytes: Uint8Array): number | undefined {
+  if (isIso(bytes)) return undefined;
+  if (tag(bytes, 0, "RIFF") && tag(bytes, 8, "WAVE")) return playedWavSeconds(bytes);
+  return playedMp3Seconds(bytes);
 }

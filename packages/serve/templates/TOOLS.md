@@ -126,6 +126,91 @@ both every call is refused. A keys pin bounds one argument: pin `null` any other
 same fields (HubSpot's `custom_properties` beside `properties`). Fence every other argument that reaches the same place
 the same way: Gmail's `user_id` also picks the sender, so pin it to `[null, "me"]` beside `from_email: null`.
 
+## File
+
+Some answers hold text the model shouldn't read: a payments list carries each customer's description, and a page of
+it can carry an instruction someone typed there. `file` sends a tool's answers to the run's files instead of back as the
+tool's result. Your skill's code reads the files; the tool's result is a summary.
+
+`file: {<tool>: {folder: <folder>, show: [<path>, ...]}}`, beside `pin`, for tools of the same entry:
+
+- `folder`: where each answer goes in the run's files, 1 to 3 segments (`stripe`, `data/pages`). A segment never
+  starts with a dot, so `..` and hidden folders are refused.
+- `show`: at most 8 paths into the answer's JSON, each 1 to 6 segments joined by `.`: a key, an index, or `-1` for
+  the last item (`data.data.-1.id`).
+
+Each answer is written whole, as the server sent it (credentials scrubbed), at `<folder>/<tool>-<time>-<id>.json`
+before the model gets its turn back. The names sort by time. The answer goes through neither the clip nor
+`evidence/mcp/`. The tool's result is three lines: the size and path, the value at each `show` path, and the answer's
+shape (its keys and types to depth 2, each array's length, never a value). The shape names a key only when it reads as
+a plain name, lowercase words joined by `_` (`has_more`) or camelCase (`pageInfo`), any `_` first, at most 32
+characters, and counts the rest. So keys that are data, such as emails and ids (`cus_NffrFeUfNV2Hib`, `txn_1Q0001`),
+aren't shown:
+
+```text
+STRIPE_LIST_BALANCE_TRANSACTIONS answered 61,204 bytes, filed whole at stripe/STRIPE_LIST_BALANCE_TRANSACTIONS-2026-11-30T07-02-11-512Z-1a2b3c4d.json for the skill's code; its values are not shown here (the agent's setting files this tool's answers); only these are:
+{"successful": true, "error": null, "data.has_more": true, "data.data.-1.id": "txn_1Q...", "data.data.-1.created": 1763337600}
+Shape: {"data": {"object": string, "data": [100 objects], "has_more": boolean, "url": string}, "successful": boolean, "error": null}
+```
+
+A `show` path that reaches no scalar shows `null`, and a string is cut at 200 characters. Show only what the model
+needs to go on: the next page's cursor, a done flag, a status. A path that names a free-text field (a description, a
+name, a message body) shows that text to the model and defeats the option. So does a map keyed by a plain word that is
+data, such as a username like `marisol_q`: the shape goes by what a key looks like, and that one looks like a name.
+
+An answer that is an error is filed the same way, and so is a server's protocol error (a JSON-RPC error, an HTTP error).
+The tool's result is the summary marked as an error, with one more line built from the error's structure, never its
+words: `Error: HTTP 429, retry after 2 s.` The line gives the HTTP status, a JSON-RPC code, and a retry time, taken from
+a `retry_after`, `retryAfter`, `retry_after_seconds`, `retry_after_ms` or `retryAfterMs` field of a JSON error or from
+the Retry-After header, or "retry later" for a 429 or 503. With none of these, as for a plain-text error, it says
+`Error: no status or retry time given.` The model can also react through a shown field such as `error.code`. If the file can't be written, the model gets an error and none of the answer, never the answer as a
+fallback. An answer that is not JSON is filed the same way, every path showing `null`.
+
+The setting keeps the answer out of the tool's result, and the tool gate keeps these tools out of the folder: the
+agent's own `read`, `write` and `edit` (claude-agent's `Read`, `Write` and `Edit`, a computer script's file ops, a
+screenshot's `save_as`), `web_save`, `browser_upload`, and a learned workflow's call node that opens a run file
+(`pdf_pages`). A call of one of them whose path is in the folder or under it is refused, with an error naming the setting. The check reads the path as given and as pi's file tools take it (one
+leading `@` dropped), resolving `./`, `..` and every name of the run's folder; a `pdf_pages` path it reads as
+`pdf_pages` opens it, and a screenshot's `save_as` as the screenshot saves it, so `~x/../stripe/pages/a.pdf` is in
+`stripe/pages/` there. It compares each segment as a disk that
+folds names would, so `Stripe/Pages/` and a fullwidth spelling count as `stripe/pages/`, and a zero-width or other
+ignorable character in a name doesn't count. It reads no file, so it doesn't follow links.
+
+A computer that mounts the run's folder holds the filed folder under `/workspace`, and its system reaches a file by
+names no check of the words can follow (`/proc/self/root`, `/proc/self/cwd`, `/dev/fd`). So while a folder is filed,
+a script's file ops there (`files.read`, `files.list`, `files.write` and `files.stat`) must name an absolute path
+inside `/workspace`. Any other path is refused, with an error saying a run with a filed folder keeps a script's file ops
+in `/workspace`: a relative path (the computer is handed the path as written), and a path under the run folder's name
+on the runner's machine (a bind's source folder, a CLI's working folder), which is another folder on the computer. The cost: a script can't read or write the rest of the computer's disk with them (its `Downloads`
+folder, say) while a folder is filed. A computer that doesn't mount the run's folder, or a run with no filed folder, is
+unchanged.
+
+Anything else that opens the run's files is outside the gate:
+
+- `bash`, on the runner or a computer, is not gated by path: a command, a link it makes, or any program the run starts
+  can open the folder, and the summary names the file. Only `bash` set to `deny` stops this. A script's `shell.run`
+  and `processes.start` follow bash's setting, not whether `bash` is among the agent's tools, so leaving `bash` out of
+  the tools doesn't stop them.
+- The computer's screen: input ops on a terminal app or a file manager, and `apps.open` with a path or a `file://` URL.
+  A desktop's scripts reach these even when the model is handed no screen tools (`surface: code`).
+- A link already inside `/workspace`: a script's file op at its path opens what it points to.
+- A harness's own file reads that never ask the host, such as Cursor's.
+- A tool that writes into a fixed folder of its own (`browser_downloads` into `downloads/`), so don't name a filed
+  folder after one.
+
+If the model must not read the answer, set `bash` to `deny`, and give the run no desktop or set the desktop kind to
+`deny`; or run your skill's code where the model can't read its output. Opening a script's file on the computer beneath `/workspace` with
+links refused is planned.
+
+The setting is per tool. File every tool that returns the same data: a retrieve tool beside a filed list tool returns
+the same objects, unfiled.
+
+Apply writes the setting into the agent's own tool settings (`definition.tool_settings["mcp:<server>/<tool>"].file`),
+ticked or not, as it writes a pin. It's the owner's setting: they can change it or remove it. With it removed, the
+tool's answers go to the model whole again, as they do for any tool without it, so a skill that reads the filed pages
+should say what it does when there are none. A stored setting that no longer reads refuses every call of its tool, with
+an error naming the setting and nothing sent, until the owner sets it again or removes it.
+
 ## Ask
 
 - Ticking grants a tool; it doesn't allow it. Apply writes no permission, so a ticked tool follows the server's own

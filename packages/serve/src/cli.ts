@@ -16,7 +16,8 @@ import { banner } from "./print.js";
 import { type ApiToken, parseTokens } from "./api-token.js";
 import type { LearningMode } from "./learning.js";
 import type { Serve, ServeOptions } from "./server.js";
-import { API_ONLY_ENV, RUN_KEYS_ENV, switchFrom } from "./env-switch.js";
+import { API_ONLY_ENV, API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV, SHARE_HOST_ENV, switchFrom, WEB_JEV_OFF_ENV } from "./env-switch.js";
+import { WORKSPACE_TOKENS_ENV, workspaceTokenIds } from "./workspace-scope.js";
 import { harnessModulesOf, harnessRecipesOf } from "./harness-table.js";
 import { hookOrigin, LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV, type LaunchHook, launchHookFrom } from "./trigger-launch-hook.js";
 import { surviveClosedPipes } from "./closed-pipes.js";
@@ -33,15 +34,15 @@ surviveClosedPipes();
 // (env-proxy.ts): for every command, before anything calls out. Neither set, nothing changes.
 installEnvProxy();
 
-const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--faux-github] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--no-runner] [--harness-module MODULE ...] [--harness-recipe FILE ...] [--harness-sign-in]
+const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--faux-github] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--no-runner] [--share-host] [--harness-module MODULE ...] [--harness-recipe FILE ...] [--harness-sign-in]
        agentrun-serve reset-password [--data DIR]
        agentrun-serve validate-template DIR
-       agentrun-serve install-harness goose|cursor [--data DIR]
+       agentrun-serve install-harness goose|cursor|antigravity [--data DIR]
        agentrun-serve install-harness --recipe FILE [--data DIR]
        agentrun-serve sign-in-harness --recipe FILE [--data DIR]
        agentrun-serve check-harness --recipe FILE [--model PROVIDER/MODEL] [--data DIR] [--report FILE] [--cap USD]
        agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL | --on-data DIR] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
-       agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
+       agentrun-serve import [--data DIR] [--from claude-code,codex,pi,opencode,copilot] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
        agentrun-serve learning connect|status|disconnect|retry --project PATH --runtime codex|claude-code [--url URL] [--data DIR] [--no-sync]
        agentrun-serve runner --data DIR [--loops N] [--drain-timeout D] [--name NAME]
        agentrun-serve runner --check --data DIR [--name NAME]
@@ -50,6 +51,7 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
        agentrun-serve store-schema [--data DIR]
        agentrun-serve store-schema --build
        agentrun-serve scrub RUN [--data DIR] [--json]
+       agentrun-serve workspace-backfill FILE [--data DIR] [--apply]
        agentrun-serve native discover|connect --project PATH [--runtime claude-code|codex] [--agent NAME|--profile NAME] [--url URL] [--data DIR] [--no-sync]
 
   --data DIR        the agent store and its runs (default ~/.local/share/agentrun/agents); the token is DIR/.token, mode 0600
@@ -88,11 +90,17 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
                     separated), installed into DIR with agentrun harness install --recipe FILE. Its harness runs once a
                     harness-check of it passed on DIR, through this server's model proxy (a plan-billed one's keys are
                     not saved on a server yet); a recipe the loader refuses, or whose id another harness has, refuses
-                    the start
+                    the start. FILE may be the name of a recipe AgentRun ships (antigravity), unless a file of that
+                    name is in this directory (./NAME names the file)
   --harness-sign-in run a person's runs of a plan-billed recipe with a sign-in on your own sign-in (agentrun harness
                     sign-in), never a schedule's or a trigger's. One owner's own machine alone: the start is refused
                     unless the server listens on loopback with no public address, keeps its store in DIR (no
                     AGENTRUN_STORE_URL), runs its runs beside it as its own user, and takes one API token
+  --share-host      serve shares alone, under /r/ (as AGENTRUN_SHARE_HOST=1): a share's page at /r/<id>, its bundle at
+                    /r/<id>/bundle.json, the API at /r/v2/shares (a token's upload, re-scrubbed and refused on any
+                    value the scrubber finds; its list; its delete; 100 shares a token) and /r/v2/health. Every other
+                    address is a 404; no runner, model key or computer runs, and there is no console or owner. Its share
+                    URLs are on AGENTRUN_PUBLIC_URL, which a start on an address other than loopback needs
   --no-runner       run the server alone, with no runner beside it (default: one runner beside the server); start one or
                     more \`agentrun-serve runner --data DIR\` processes on the same data directory to claim and run runs;
                     each holds at most --loops N runs (default AGENTRUN_MAX_RUNS, else as many pi runs as its host's
@@ -112,14 +120,24 @@ AGENTRUN_PUBLIC_URL, when set, is the address people open (a container's
 published port, or a proxy's URL), and the link printed uses it; with none, Render's RENDER_EXTERNAL_URL is.
 AGENTRUN_FREE_MODEL_REQUESTS (default 60) is the most requests on free models ($0 in the catalog) a run makes, capped
 or not (ChatGPT-plan requests don't count): the next is not sent and the run fails, spend_cap_reached. stdout gets one line per request, per run start and
-end, and per refused credential; AGENTRUN_LOG=quiet leaves out the request lines.
+end, and per refused credential; AGENTRUN_LOG=quiet leaves out the request lines. AGENTRUN_LOG=debug keeps them and
+also writes into a run's log one line per call an ACP agent announces, on a recipe that declares announces: its
+toolCallId, kind and the tool name the recipe's field holds when it names an AgentRun tool ("native" for
+any other call), never its input.
 
 AGENTRUN_TELEMETRY=0 (or DO_NOT_TRACK=1) turns off the anonymous usage counts (docs/telemetry.md): a random id, the
 version, the platform and how many runs as a range, never prompts, files or keys. Off in CI, under a test runner and under --faux too;
 AGENTRUN_TELEMETRY=debug prints each event on stderr and sends none.
 
+AGENTRUN_MARKETPLACE=off stops the console listing marketplace.agentrun.ai's templates beside this server's own (the list
+is read only when a page asks for it, kept 5 minutes); an https address reads that site's list instead. Under --faux it
+is off unless set to an address.
+
 AGENTRUN_API_ONLY=1 serves the run API alone, for a server behind its caller's backend (the routes in api-only.ts; every
-other address is a 404, and there are no accounts).
+other address is a 404, and there are no accounts). AGENTRUN_API_ONLY_MCP_ORIGINS: the MCP origins the token may save a
+per_run MCP server at (README, API only). AGENTRUN_WORKSPACE_TOKENS: the ids of the AGENTRUN_TOKENS tokens whose every
+request carries the AgentRun-Workspace header, which keeps each of the backend's workspaces to its own agents, runs,
+templates and files (README, API only).
 
 AGENTRUN_LAUNCH_HOOK_URL with AGENTRUN_LAUNCH_HOOK_SECRET (a whsec_ secret): each trigger firing that would start a run
 is POSTed to that URL, signed as Standard Webhooks, and the host starts the run through the API; this server starts
@@ -137,15 +155,16 @@ start: set it only on a machine you alone use, since loopback is this machine's 
 process reaches one only with the variable set in its own environment, on its own loopback (its own machine or
 container), never at a server's own port (${DEFAULT_PORT}, or where the server says it listens).
 
-\`agentrun-serve import\` reads the Claude Code, Codex and pi sessions in your own home (~/.claude/projects,
-~/.codex/sessions, ~/.pi/agent/sessions) into the data directory, once: each project directory an agent, with its
-CLAUDE.md or AGENTS.md and its skill folders, and each session a run you can read but not continue. Nothing leaves this
-machine; the values of key-shaped environment variables are cut out of what is written. --dry-run lists what it would
-import; run again, it imports only what it has not. Sessions written in the last 10 minutes wait for the next import;
-What is left out is counted by why; --verbose lists each file. --include-deleted keeps projects whose directory is gone (a
-deleted worktree's); --all keeps those and temporary ones too. Each run keeps what its session used (tokens, requests, tools,
-time at work), priced at the catalog's list prices when its source did not price it. Both end with a summary of every
-session found, those imported before included, and the address to open the console at (--port as the server takes it).
+\`agentrun-serve import\` reads the Claude Code, Codex, pi, OpenCode and Copilot CLI sessions in your own home
+(~/.claude/projects, ~/.codex/sessions, ~/.pi/agent/sessions, ~/.local/share/opencode, ~/.copilot/session-state) into
+the data directory, once: each project directory an agent, with its CLAUDE.md or AGENTS.md and its skill folders, and
+each session a run you can read but not continue. Nothing leaves this machine; the values of key-shaped environment
+variables are cut out of what is written. --dry-run lists what it would import; run again, it imports only what it has
+not. Sessions written in the last 10 minutes wait for the next import. What is left out is counted by why; --verbose
+lists each file. --include-deleted keeps projects whose directory is gone (a deleted worktree's); --all keeps those and
+temporary ones too. Each run keeps what its session used (tokens, requests, tools, time at work), priced at the
+catalog's list prices when its source did not price it. Both end with a summary of every session found, those imported
+before included, and the address to open the console at (--port as the server takes it).
 
 \`agentrun-serve store-schema\` prints, as one line of JSON, the store's schema version and runner floor (the oldest version
 a runner's build must know to run on it) beside the version this build knows, and what this build's server and runner do
@@ -161,6 +180,14 @@ and counts the scrubber's cuts in it by rule and by kind, then says how many cut
 you could restore. It prints counts only, never a value or any piece of one; --json prints the same as JSON. It writes
 nothing. Exit 0 once counted, 1 when the run is withheld (its held values can't be read here: nothing is counted), 2 for
 bad arguments or a run the store does not hold.
+
+\`agentrun-serve workspace-backfill FILE\` puts agents made before an API-only server's backend sent the AgentRun-Workspace
+header in a workspace: FILE is JSON, {"<agent id>": "<workspace>"}. An agent with none is set; one in another workspace is
+refused and kept as it is. It writes nothing without --apply, and prints what it would do. The store is the server's
+(AGENTRUN_STORE_URL's Postgres, else SQLite in --data), the server running or not; on SQLite it adds the workspace
+columns first when no server of this build has opened the store yet. Exit 0 when every agent is set or already there, 1
+when any is refused or missing, 2 for bad arguments, a file that is not that JSON, or a store behind this build (on
+Postgres, below migration 0034), which it never migrates: start a server of this build once.
 
 \`agentrun-serve eval-template DIR\` runs a template package's eval cases (all, or each --case) as real runs of its agent
 and grades each run with the case's graders (templates/README.md, "Running the evals"). By default on a server of its
@@ -237,20 +264,25 @@ if (process.argv[2] === "install-harness") {
     }
   };
   const { values, positionals } = read();
+  if (values.recipe !== undefined && positionals.length) usage("it takes a harness's name or --recipe FILE, not both.");
+  // A recipe AgentRun ships (the ACP package's: Google Antigravity's), by its name, is installed as its file is.
+  const { acpPackage: shipping } = await import("./acp-package.js");
+  const shipped = positionals.length === 1 ? shipping()?.bundledRecipePath?.(positionals[0]!) : undefined;
   // A recipe's harness (harness-recipe.ts): the recipe loaded under its five rules first, so a refused one downloads
-  // nothing; then its release for this platform, as the Goose install does it.
-  if (values.recipe !== undefined) {
-    if (positionals.length) usage("it takes a harness's name or --recipe FILE, not both.");
-    const [{ ArchiveInstallFailed }, { installRecipe, loadRecipe, recipeCheckLine, RecipeRefused }] = await Promise.all([import("./harness-archive.js"), import("./harness-recipe.js")]);
+  // nothing; then its release for this platform, as the Goose install does it. Which recipe resolved is said first.
+  if (values.recipe !== undefined || shipped) {
+    const [{ ArchiveInstallFailed }, { installRecipe, loadRecipe, recipeCheckLine, RecipeRefused, recipeSaid }] = await Promise.all([import("./harness-archive.js"), import("./harness-recipe.js")]);
     const data = resolve(values.data ?? defaultData());
     try {
-      const { recipe, file } = loadRecipe(values.recipe);
-      const said = { downloaded: "the archive is downloaded and its sha256 matches the recipe", unpacked: "unpacked", verified: "the binary's sha256 is checked" } as const;
+      // A shipped recipe by the name given, never by its path: a file of that name in the directory refuses it (resolveRecipe).
+      const { recipe, file, bundled } = loadRecipe(shipped ? positionals[0]! : values.recipe!);
+      console.error(recipeSaid(recipe.label, file, bundled));
+      const said = { downloaded: "the archive is downloaded and its sha256 matches the recipe", unpacked: "unpacked", verified: "its files are checked" } as const;
       const { version, installed, binary, pinnedBy } = await installRecipe(recipe, file, data, { onStep: (step) => console.error(`${recipe.label}: ${said[step]}`) });
-      const held = { recipe: "the recipe's pin", "first-seen": "the first sha256 an earlier install recorded", recorded: "its sha256 recorded now, as the first one; a later binary that differs is refused" }[pinnedBy];
+      const held = { recipe: "the recipe's tree pin", "first-seen": "the tree an earlier install recorded", recorded: "their tree recorded now, as the first one; a later binary or file beside it that differs is refused" }[pinnedBy];
       console.log(installed === "already"
-        ? `${recipe.label} ${version} is installed in ${dirname(binary)} (already: the pinned binary is there, so nothing was downloaded; held to ${held}).`
-        : `${recipe.label} ${version} is installed in ${dirname(binary)} (now; the binary held to ${held}). Check it with: ${recipeCheckLine(file, data)} --model PROVIDER/MODEL`);
+        ? `${recipe.label} ${version} is installed in ${dirname(binary)} (already: the pinned files are there, so nothing was downloaded; held to ${held}).`
+        : `${recipe.label} ${version} is installed in ${dirname(binary)} (now; the binary and every file beside it held to ${held}). Check it with: ${recipeCheckLine(file, data)}${recipe.model.billing === "proxy" ? " --model PROVIDER/MODEL" : ""}`);
       process.exit(0);
     } catch (error) {
       if (!(error instanceof ArchiveInstallFailed) && !(error instanceof RecipeRefused)) throw error;
@@ -260,7 +292,7 @@ if (process.argv[2] === "install-harness") {
   }
   // The owner-installed harnesses (harness-owned.ts), each one's id, label, install and what its install checks.
   const installers = await Promise.all([import("./harness-goose.js").then((m) => m.GOOSE), import("./harness-cursor.js").then((m) => m.CURSOR)]);
-  const names = installers.map((each) => each.id).join(" or ");
+  const names = [...installers.map((each) => each.id), ...(shipping()?.BUNDLED_RECIPES ?? [])].join(" or ");
   if (positionals.length !== 1) usage(`it takes one harness: ${names}.`);
   const chosen = installers.find((each) => each.id === positionals[0]);
   if (!chosen) usage(`it installs ${names}, not ${positionals[0]}: claude-agent and codex install on first use, and pi and opencode come with AgentRun.`);
@@ -362,10 +394,14 @@ if (process.argv[2] === "validate-template") {
 // in the environment or the arguments). Progress on stderr, the summary on stdout, the whole report as JSON to --report.
 // 0: every case passed; 1: one failed; 2: the flags, the package or a case is wrong, and nothing ran. --data is taken and
 // ignored, as validate-template's is: the npx launcher hands every server command one, and an eval's store is a temp one.
-if (process.argv[2] === "eval-template") {
+class EvalTemplateUsage extends Error {}
+
+async function evalTemplateCommand(): Promise<number> {
   const { CaseError, evalTemplate, exitCodeOf, markdownReport, ON_DATA_WITH_SERVER } = await import("./template-eval.js");
   const { PackageError } = await import("./templates.js");
-  const usage = (message: string): never => (console.error(`agentrun-serve eval-template: ${message}\n\n${USAGE}`), process.exit(2));
+  const usage = (message: string): never => {
+    throw new EvalTemplateUsage(`agentrun-serve eval-template: ${message}\n\n${USAGE}`);
+  };
   const read = () => {
     try {
       return parseArgs({ args: process.argv.slice(3), allowPositionals: true, options: { case: { type: "string", multiple: true, default: [] }, runs: { type: "string" }, server: { type: "string" }, "grader-model": { type: "string" }, report: { type: "string" }, faux: { type: "string" }, data: { type: "string" }, "on-data": { type: "string" } } });
@@ -413,280 +449,341 @@ if (process.argv[2] === "eval-template") {
     stop.signal.throwIfAborted();
     if (given.report !== undefined) writeFileSync(resolve(given.report), `${JSON.stringify(report, null, 2)}\n`);
     process.stdout.write(markdownReport(report));
-    process.exit(exitCodeOf(report));
+    return exitCodeOf(report);
   } catch (error) {
     if (stop.signal.aborted) {
       console.error("agentrun-serve eval-template: stopped; no report.");
-      process.exit(130);
+      return 130;
     }
     if (!(error instanceof PackageError || error instanceof CaseError)) throw error;
     console.error(error.message);
-    process.exit(2);
+    return 2;
+  } finally {
+    stop.unhook();
   }
 }
 
-// The runner process (runner/main.ts): beside the server, its own store connection in --data, claiming runs until SIGTERM
-// or SIGINT. Its exit: 2 bad arguments, 3 a store schema it does not know (or one whose runner floor rose above it while it
-// ran: its runs handed back), 1 anything else, 0 closed. `--check` checks its environment by name (runner-check.ts) and its
-// heartbeat; `--check --env` its environment alone (0 complete, 1 a gap).
-if (process.argv[2] === "runner") {
-  const { runnerMain } = await import("./runner/main.js");
-  process.exit(await runnerMain(process.argv.slice(3)));
-}
-
-// The store's schema and runner floor, read-only (store/store-schema.ts), for a deploy's skew check.
-if (process.argv[2] === "store-schema") {
-  const { storeSchemaMain } = await import("./store/store-schema.js");
-  process.exit(await storeSchemaMain(process.argv.slice(3), defaultData(), USAGE));
-}
-
-if (process.argv[2] === "scrub") {
-  const { scrubMain } = await import("./scrub-command.js");
-  process.exit(await scrubMain(process.argv.slice(3), commandUsage));
-}
-
-if (process.argv[2] === "import") {
-  const { importCommand } = await import("./import.js");
-  process.exit(await importCommand(process.argv.slice(3), USAGE));
-}
-
-let values;
-try {
-  ({ values } = parseArgs({
-    // Named, not the default: started by the launcher, this module runs under `node -e`, where the default reads one more.
-    args: process.argv.slice(2),
-    options: {
-      data: { type: "string" },
-      listen: { type: "string" },
-      port: { type: "string" },
-      open: { type: "boolean", default: false },
-      faux: { type: "string" },
-      "faux-browser": { type: "string" },
-      "faux-github": { type: "boolean", default: false },
-      "allow-host": { type: "string", multiple: true, default: [] },
-      "max-runs": { type: "string" },
-      "drain-timeout": { type: "string" },
-      documents: { type: "string" },
-      "allow-code-nodes": { type: "boolean", default: false },
-      learning: { type: "string" },
-      "no-runner": { type: "boolean", default: false },
-      "harness-module": { type: "string", multiple: true, default: [] },
-      "harness-recipe": { type: "string", multiple: true, default: [] },
-      "harness-sign-in": { type: "boolean", default: false },
-      help: { type: "boolean", short: "h", default: false },
-    },
-  }));
-} catch (error) {
-  console.error(`${(error as Error).message}\n\n${USAGE}`);
-  process.exit(2);
-}
-if (values.help) {
-  console.log(USAGE);
-  process.exit(0);
-}
-const port = values.port === undefined ? DEFAULT_PORT : Number(values.port);
-if (!Number.isInteger(port) || port < 0 || port > 65_535) {
-  console.error(`--port takes a port number\n\n${USAGE}`);
-  process.exit(2);
-}
-let publicUrl: string | undefined;
-// Render sets RENDER_EXTERNAL_URL on every web service, so a deploy there is never an open setup.
-const publicName = process.env.AGENTRUN_PUBLIC_URL ? "AGENTRUN_PUBLIC_URL" : process.env.RENDER_EXTERNAL_URL ? "RENDER_EXTERNAL_URL" : undefined;
-if (publicName) {
-  const given = process.env[publicName]!;
-  const parsed = URL.canParse(given) ? new URL(given) : undefined;
-  if (!parsed || !/^https?:$/.test(parsed.protocol)) {
-    console.error(`${publicName} takes an http(s) URL\n\n${USAGE}`);
-    process.exit(2);
-  }
-  publicUrl = parsed.href.replace(/\/+$/, "");
-}
-if (values["faux-browser"] && !values.faux) {
-  console.error(`--faux-browser goes with --faux\n\n${USAGE}`);
-  process.exit(2);
-}
-if (values["faux-github"] && !values.faux) {
-  console.error(`--faux-github goes with --faux\n\n${USAGE}`);
-  process.exit(2);
-}
-const data = values.data ?? defaultData();
-const given = secret("AGENTRUN_TOKEN") || undefined;
-// More tokens, each with an id (api-token.ts), for a rotation with no caller refused; never printed. A list that cannot
-// be read stops here, in words that hold no secret.
-let givenList: ApiToken[] | undefined;
-try {
-  givenList = parseTokens(secret("AGENTRUN_TOKENS"));
-} catch (error) {
-  console.error(`${(error as Error).message}\n\n${USAGE}`);
-  process.exit(2);
-}
-// The stop is listened for before anything starts: a SIGTERM or SIGINT during the start (a platform's redeploy, the
-// moment the banner shows) is kept, never the default end by signal that cuts what the start began. Once the start has
-// what a stop closes, the stop below takes over (stopOnSignals), and a stop asked meanwhile runs it, through the same
-// drain. A second signal a while after the first, still during the start, is a person who wants out now: exit 130.
-let stopping: (() => void) | undefined;
-let askedAt: number | undefined;
-const signalled = () => {
-  if (stopping) return stopping();
-  if (askedAt === undefined) askedAt = Date.now();
-  else if (Date.now() - askedAt >= REPEAT_MS) process.exit(130);
-};
-process.on("SIGINT", signalled);
-process.on("SIGTERM", signalled);
-// AGENTRUN_API_ONLY=1: the run routes alone (api-only.ts), and no owner; a value that is neither on nor off stops here.
-// AGENTRUN_RUN_KEYS=1: each run brings the tool keys this server does not hold (run-keys.ts), read the same way.
-let apiOnly: boolean;
-let runKeys: boolean;
-try {
-  apiOnly = switchFrom(API_ONLY_ENV);
-  runKeys = switchFrom(RUN_KEYS_ENV);
-} catch (error) {
-  console.error(`${(error as Error).message}\n\n${USAGE}`);
-  process.exit(2);
-}
-// The launch hook: the URL from the environment, its secret as the server holds its own (by name, on the launcher's
-// list); half set or malformed stops here, in words that never hold the secret.
-let launchHook: LaunchHook | undefined;
-try {
-  launchHook = launchHookFrom({ url: process.env[LAUNCH_HOOK_URL_ENV], secret: secret(LAUNCH_HOOK_SECRET_ENV) });
-} catch (error) {
-  console.error(`agentrun-serve: ${(error as Error).message}`);
-  process.exit(2);
-}
-const accounts = !apiOnly && process.env.AGENTRUN_ACCOUNTS !== "0";
-// The address first (listen-first.ts): the port bound and named before the rest of the server loads, then answering that
-// the server is warming until it takes the socket over. A port already taken is left to the start's own listen below,
-// which waits for a server it replaces, as it always has: no early line then. The banner's "Open " line still means ready.
-let early: Awaited<ReturnType<typeof listenFirst>>;
-try {
-  early = await listenFirst({ host: values.listen ?? DEFAULT_HOST, port, data, env: process.env });
-} catch (error) {
-  console.error(`agentrun-serve: ${(error as Error).message}`);
-  process.exit(1);
-}
-if (early) console.log(`Starting ${publicUrl ?? urlOf(early, values.listen ?? DEFAULT_HOST)}/ (warming: health says so and the API answers 503 until the server is ready)`);
-const [{ fauxEnvOf, startServe }, { besideRunnerOptions, besideStopping, runnerBeside }, { earlierDataRefusal, startedWith }, { canOpen }] = await Promise.all([import("./server.js"), import("./runner/beside.js"), import("./adapters.js"), import("./host.js")]);
-// How it was started, for the hints that start it again (adapters.ts npxLine): itself and its runs read it.
-Object.assign(process.env, startedWith({ ...(values.port !== undefined ? { port: values.port } : {}), open: values.open === true }));
-let serve: Serve;
-let serveOptions: ServeOptions;
-// The anonymous counts start once the server has (below); a feature used before then, in the start's first moment, is not counted.
-let used: ((event: UsageEventName) => void) | undefined;
-const trustedProxies = (process.env.AGENTRUN_TRUSTED_PROXIES ?? "").split(",").map((entry) => entry.trim()).filter(Boolean);
-try {
-  serve = await startServe(serveOptions = {
-    // The owner lock on a Postgres store lost for good: this server can serve nothing more, so it exits non-zero and its
-    // platform starts it again, rather than answer 503 for as long as it runs.
-    onStoreLost: (error) => {
-      console.error(`agentrun-serve: ${error.message}`);
-      process.exit(1);
-    },
-    onUsage: (event) => used?.(event),
-    data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(early ? { listener: early } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(givenList ? { tokens: givenList } : {}), ...(values.faux ? { faux: values.faux } : {}), ...(values["faux-browser"] ? { fauxBrowser: values["faux-browser"] } : {}), ...(values["faux-github"] ? { fauxGitHub: true } : {}), allowHosts: values["allow-host"],
-    ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
-    // The owner's harness modules: --harness-module, else AGENTRUN_SERVE_HARNESS_MODULES (harness-table.ts).
-    ...(harnessModulesOf(values["harness-module"], process.env).length ? { harnessModules: harnessModulesOf(values["harness-module"], process.env) } : {}),
-    // And its harness recipes: --harness-recipe, else AGENTRUN_SERVE_HARNESS_RECIPES (harness-table.ts).
-    ...(harnessRecipesOf(values["harness-recipe"], process.env).length ? { harnessRecipes: harnessRecipesOf(values["harness-recipe"], process.env) } : {}),
-    // Their runs on the owner's own sign-in, only as the owner says it here (no setting names it) and the start proves.
-    ...(values["harness-sign-in"] ? { harnessSignIn: true } : {}),
-    ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), log: (line) => void process.stdout.write(`${line}\n`),
-    // The public address is the server's with accounts on or off: the Host names it serves, the webhook URLs it gives.
-    ...(publicUrl ? { publicUrl } : {}),
-    ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true } : {}), ...(apiOnly ? { apiOnly } : {}), ...(launchHook ? { launchHook } : {}), ...(runKeys ? { runKeys } : {}),
-    // The proxies whose X-Forwarded-For the sign-in limit reads (comma-separated); none unless set.
-    ...(trustedProxies.length ? { trustedProxies } : {}),
-    // A local install only as its operator says, never inferred: an MCP server on loopback is refused without it.
-    ...(process.env.AGENTRUN_MCP_ALLOW_LOOPBACK === "1" ? { mcpLoopback: true } : {}),
-    // No runner beside this server: a paired computer's socket stays here, where no run reaches it, which the pairing says.
-    ...(values["no-runner"] ? { runnerApart: true } : {}),
-  });
-} catch (error) {
-  // A data directory an earlier version wrote, refused on a start `npx @parcha/agentrun` made: the ways on as that command
-  // (adapters.ts earlierDataRefusal). Any other start keeps the refusal's own words.
-  console.error(`agentrun-serve: ${earlierDataRefusal(error, data, process.env) ?? (error as Error).message}`);
-  process.exit(1);
-}
-// The start launches one runner beside the server on the same data dir (design: "server and runner"): it claims and runs
-// every run, sharing only the store. With --no-runner the server runs alone, so the operator starts one or more separate
-// `agentrun runner --data DIR` processes on the same data directory instead. The runner holds what the server's flags say
-// (besideRunnerOptions): at most --max-runs runs at once, the rest waiting queued, and on the stop each busy run finishes
-// its turn for up to --drain-timeout.
-let runnerProc: Awaited<ReturnType<typeof runnerBeside>> | undefined;
-// Anonymous usage counts (docs/telemetry.md). It hears each run's end from the runner beside the server (with --no-runner it
-// counts no runs), and each use of suggested agents from the server (onUsage).
-const telemetry = startTelemetry({ data: resolve(data), ...(values.faux ? { faux: true } : {}) });
-used = telemetry.used;
-const { loops, loopsTold, drainMs } = besideRunnerOptions(serveOptions, process.env);
-// A stop asked during the server's start starts no runner: nothing is claimed for the stop to cut.
-if (!values["no-runner"] && askedAt === undefined) {
+// Its code is left as the process's exit code and the process ends on its own, never by process.exit: Node's
+// process.exit stops V8's worker threads before the isolate is torn down, so a background compile job waiting for a
+// collection only the main thread runs is never woken, and process.exit waits on that thread forever (about 1 in 160
+// refusals hung so, after writing their words). The isolate's own teardown wakes such a job first.
+if (process.argv[2] === "eval-template") {
   try {
-    // The beside-runner sees the server's test switches (server.ts fauxEnvOf: --faux and its modules), which the CLI hands
-    // the server as options, never through this process's environment: without them a --faux start's runner looks its faux
-    // model up in pi-ai's own catalog and every run fails on its first request. A test switch this process inherited from
-    // its shell is taken out first, as the server's own environment drops it (runner/main.ts besideRunEnv).
-    const { besideRunEnv } = await import("./runner/main.js");
-    // With the computer janitor: what a crashed runner of this server left is ended (never under --faux). With the
-    // server's AttachHub: a paired computer's socket is in this process, so only this runner takes one (--no-runner's
-    // separate runners refuse it in words). Its runs reach an MCP server on loopback only when this server is a local
-    // install (Serve.localInstall).
-    // Each run a process of its own, as a user of its own where the image's helper can switch (run-child-host.ts).
-    runnerProc = await runnerBeside(data, { loops, loopsTold, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true, ownProcesses: true, hub: serve.attachHub, dial: serve.dial, mcpLoopback: serve.localInstall, mcpOwn: serve.own, ollamaHost: serve.ollamaHost, onRunEnded: telemetry.runEnded });
+    process.exitCode = await evalTemplateCommand();
   } catch (error) {
-    // A run isolation the runner cannot give (run-child-host.ts runIsolationOf) is said, and the server serves on with no
-    // runner, as the runner subcommand stays up claiming nothing (runner/main.ts): a platform that restarts a stopped
-    // container would otherwise loop on it.
-    const { RunIsolationRefused } = await import("./runner/run-child-host.js");
-    if (!(error instanceof RunIsolationRefused)) {
-      console.error(`agentrun-serve: the runner could not start: ${(error as Error).message}`);
-      await serve.close();
-      process.exit(1);
-    }
-    console.error(`agentrun-serve: ${error.message}`);
-    // And said in the store, as the runner subcommand says it (presence.ts): while no runner that claims is there, the
-    // server refuses a launch in these words and fails the runs left queued, never queueing one for good.
-    serve.refuseRuns(error.message);
+    if (!(error instanceof EvalTemplateUsage)) throw error;
+    console.error(error.message);
+    process.exitCode = 2;
   }
+} else {
+  // The runner process (runner/main.ts): beside the server, its own store connection in --data, claiming runs until SIGTERM
+  // or SIGINT. Its exit: 2 bad arguments, 3 a store schema it does not know (or one whose runner floor rose above it while it
+  // ran: its runs handed back), 1 anything else, 0 closed. `--check` checks its environment by name (runner-check.ts) and its
+  // heartbeat; `--check --env` its environment alone (0 complete, 1 a gap).
+  if (process.argv[2] === "runner") {
+    const { runnerMain } = await import("./runner/main.js");
+    process.exit(await runnerMain(process.argv.slice(3)));
+  }
+
+  // The store's schema and runner floor, read-only (store/store-schema.ts), for a deploy's skew check.
+  if (process.argv[2] === "store-schema") {
+    const { storeSchemaMain } = await import("./store/store-schema.js");
+    process.exit(await storeSchemaMain(process.argv.slice(3), defaultData(), USAGE));
+  }
+
+  // Agents made before their backend named their workspace, put in one (workspace-backfill.ts); a dry run by default.
+  if (process.argv[2] === "workspace-backfill") {
+    const { workspaceBackfillMain } = await import("./workspace-backfill.js");
+    process.exit(await workspaceBackfillMain(process.argv.slice(3), defaultData(), USAGE));
+  }
+
+  if (process.argv[2] === "scrub") {
+    const { scrubMain } = await import("./scrub-command.js");
+    process.exit(await scrubMain(process.argv.slice(3), commandUsage));
+  }
+
+  if (process.argv[2] === "import") {
+    const { importCommand } = await import("./import.js");
+    process.exit(await importCommand(process.argv.slice(3), USAGE));
+  }
+
+  let values;
+  try {
+    ({ values } = parseArgs({
+      // Named, not the default: started by the launcher, this module runs under `node -e`, where the default reads one more.
+      args: process.argv.slice(2),
+      options: {
+        data: { type: "string" },
+        listen: { type: "string" },
+        port: { type: "string" },
+        open: { type: "boolean", default: false },
+        faux: { type: "string" },
+        "faux-browser": { type: "string" },
+        "faux-github": { type: "boolean", default: false },
+        "allow-host": { type: "string", multiple: true, default: [] },
+        "max-runs": { type: "string" },
+        "drain-timeout": { type: "string" },
+        documents: { type: "string" },
+        "allow-code-nodes": { type: "boolean", default: false },
+        learning: { type: "string" },
+        "no-runner": { type: "boolean", default: false },
+        "share-host": { type: "boolean", default: false },
+        "harness-module": { type: "string", multiple: true, default: [] },
+        "harness-recipe": { type: "string", multiple: true, default: [] },
+        "harness-sign-in": { type: "boolean", default: false },
+        help: { type: "boolean", short: "h", default: false },
+      },
+    }));
+  } catch (error) {
+    console.error(`${(error as Error).message}\n\n${USAGE}`);
+    process.exit(2);
+  }
+  if (values.help) {
+    console.log(USAGE);
+    process.exit(0);
+  }
+  const port = values.port === undefined ? DEFAULT_PORT : Number(values.port);
+  if (!Number.isInteger(port) || port < 0 || port > 65_535) {
+    console.error(`--port takes a port number\n\n${USAGE}`);
+    process.exit(2);
+  }
+  let publicUrl: string | undefined;
+  // Render sets RENDER_EXTERNAL_URL on every web service, so a deploy there is never an open setup.
+  const publicName = process.env.AGENTRUN_PUBLIC_URL ? "AGENTRUN_PUBLIC_URL" : process.env.RENDER_EXTERNAL_URL ? "RENDER_EXTERNAL_URL" : undefined;
+  if (publicName) {
+    const given = process.env[publicName]!;
+    const parsed = URL.canParse(given) ? new URL(given) : undefined;
+    if (!parsed || !/^https?:$/.test(parsed.protocol)) {
+      console.error(`${publicName} takes an http(s) URL\n\n${USAGE}`);
+      process.exit(2);
+    }
+    publicUrl = parsed.href.replace(/\/+$/, "");
+  }
+  if (values["faux-browser"] && !values.faux) {
+    console.error(`--faux-browser goes with --faux\n\n${USAGE}`);
+    process.exit(2);
+  }
+  if (values["faux-github"] && !values.faux) {
+    console.error(`--faux-github goes with --faux\n\n${USAGE}`);
+    process.exit(2);
+  }
+  const data = values.data ?? defaultData();
+  const given = secret("AGENTRUN_TOKEN") || undefined;
+  // More tokens, each with an id (api-token.ts), for a rotation with no caller refused; never printed. A list that cannot
+  // be read stops here, in words that hold no secret.
+  let givenList: ApiToken[] | undefined;
+  try {
+    givenList = parseTokens(secret("AGENTRUN_TOKENS"));
+  } catch (error) {
+    console.error(`${(error as Error).message}\n\n${USAGE}`);
+    process.exit(2);
+  }
+  // The stop is listened for before anything starts: a SIGTERM or SIGINT during the start (a platform's redeploy, the
+  // moment the banner shows) is kept, never the default end by signal that cuts what the start began. Once the start has
+  // what a stop closes, the stop below takes over (stopOnSignals), and a stop asked meanwhile runs it, through the same
+  // drain. A second signal a while after the first, still during the start, is a person who wants out now: exit 130.
+  let stopping: (() => void) | undefined;
+  let askedAt: number | undefined;
+  const signalled = () => {
+    if (stopping) return stopping();
+    if (askedAt === undefined) askedAt = Date.now();
+    else if (Date.now() - askedAt >= REPEAT_MS) process.exit(130);
+  };
+  process.on("SIGINT", signalled);
+  process.on("SIGTERM", signalled);
+  // AGENTRUN_API_ONLY=1: the run routes alone (api-only.ts), and no owner; a value that is neither on nor off stops here.
+  // AGENTRUN_RUN_KEYS=1: each run brings the tool keys this server does not hold (run-keys.ts), read the same way.
+  // AGENTRUN_WEB_JEV_OFF=1: the web tools run without Jev (web-run.ts jevWebOf); read where each run's Web is made, and
+  // only checked here.
+  // AGENTRUN_API_ONLY_MCP_ORIGINS: the MCP origins its token may save a per_run server at (api-only.ts), read with it alone.
+  let apiOnly: boolean;
+  let runKeys: boolean;
+  // --share-host, or AGENTRUN_SHARE_HOST=1: shares under /r/ alone (share-host.ts), with no runner beside the server.
+  let shareHost: boolean;
+  let apiOnlyMcpOrigins: string[];
+  // AGENTRUN_WORKSPACE_TOKENS: the tokens whose every request names its workspace (workspace-scope.ts); the start checks them.
+  const workspaceTokens = workspaceTokenIds(process.env[WORKSPACE_TOKENS_ENV]);
+  try {
+    apiOnly = switchFrom(API_ONLY_ENV);
+    runKeys = switchFrom(RUN_KEYS_ENV);
+    shareHost = values["share-host"] === true || switchFrom(SHARE_HOST_ENV);
+    switchFrom(WEB_JEV_OFF_ENV);
+    apiOnlyMcpOrigins = apiOnly ? apiOnlyMcpOriginsFrom(process.env[API_ONLY_MCP_ORIGINS_ENV]) : [];
+  } catch (error) {
+    console.error(`${(error as Error).message}\n\n${USAGE}`);
+    process.exit(2);
+  }
+  // The launch hook: the URL from the environment, its secret as the server holds its own (by name, on the launcher's
+  // list); half set or malformed stops here, in words that never hold the secret.
+  let launchHook: LaunchHook | undefined;
+  try {
+    launchHook = launchHookFrom({ url: process.env[LAUNCH_HOOK_URL_ENV], secret: secret(LAUNCH_HOOK_SECRET_ENV) });
+  } catch (error) {
+    console.error(`agentrun-serve: ${(error as Error).message}`);
+    process.exit(2);
+  }
+  // Which recipe each --harness-recipe NAME resolved to, said before the start: one AgentRun ships (resolveRecipe), and a
+  // name a file here also holds refuses the start, saying both.
+  if (harnessRecipesOf(values["harness-recipe"], process.env).length) {
+    const { loadRecipe, RecipeRefused, recipeSaid, resolveRecipe } = await import("./harness-recipe.js");
+    for (const given of harnessRecipesOf(values["harness-recipe"], process.env)) {
+      let resolved: { file: string; bundled: boolean };
+      try {
+        resolved = resolveRecipe(given);
+      } catch (error) {
+        if (!(error instanceof RecipeRefused)) throw error;
+        console.error(`agentrun-serve: --harness-recipe ${given}: ${error.message}`);
+        process.exit(2);
+      }
+      // A refused recipe's words are the start's own, as for a file (the harness table loads each).
+      if (resolved.bundled) {
+        let label = given;
+        try {
+          label = loadRecipe(resolved.file).recipe.label;
+        } catch {}
+        console.error(recipeSaid(label, resolved.file, true));
+      }
+    }
+  }
+  const accounts = !apiOnly && !shareHost && process.env.AGENTRUN_ACCOUNTS !== "0";
+  // No runner beside a share host, as --no-runner.
+  const noRunner = values["no-runner"] === true || shareHost;
+  // The address first (listen-first.ts): the port bound and named before the rest of the server loads, then answering that
+  // the server is warming until it takes the socket over. A port already taken is left to the start's own listen below,
+  // which waits for a server it replaces, as it always has: no early line then. The banner's "Open " line still means ready.
+  let early: Awaited<ReturnType<typeof listenFirst>>;
+  try {
+    early = await listenFirst({ host: values.listen ?? DEFAULT_HOST, port, data, env: process.env });
+  } catch (error) {
+    console.error(`agentrun-serve: ${(error as Error).message}`);
+    process.exit(1);
+  }
+  if (early) console.log(`Starting ${publicUrl ?? urlOf(early, values.listen ?? DEFAULT_HOST)}/ (warming: health says so and the API answers 503 until the server is ready)`);
+  const [{ fauxEnvOf, startServe }, { besideRunnerOptions, besideStopping, runnerBeside }, { earlierDataRefusal, startedWith }, { canOpen }] = await Promise.all([import("./server.js"), import("./runner/beside.js"), import("./adapters.js"), import("./host.js")]);
+  // How it was started, for the hints that start it again (adapters.ts npxLine): itself and its runs read it.
+  Object.assign(process.env, startedWith({ ...(values.port !== undefined ? { port: values.port } : {}), open: values.open === true }));
+  let serve: Serve;
+  let serveOptions: ServeOptions;
+  // The anonymous counts start once the server has (below); a feature used before then, in the start's first moment, is not counted.
+  let used: ((event: UsageEventName) => void) | undefined;
+  const trustedProxies = (process.env.AGENTRUN_TRUSTED_PROXIES ?? "").split(",").map((entry) => entry.trim()).filter(Boolean);
+  try {
+    serve = await startServe(serveOptions = {
+      // The owner lock on a Postgres store lost for good: this server can serve nothing more, so it exits non-zero and its
+      // platform starts it again, rather than answer 503 for as long as it runs.
+      onStoreLost: (error) => {
+        console.error(`agentrun-serve: ${error.message}`);
+        process.exit(1);
+      },
+      onUsage: (event) => used?.(event),
+      data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(early ? { listener: early } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(givenList ? { tokens: givenList } : {}), ...(workspaceTokens.length ? { workspaceTokens } : {}), ...(values.faux ? { faux: values.faux } : {}), ...(values["faux-browser"] ? { fauxBrowser: values["faux-browser"] } : {}), ...(values["faux-github"] ? { fauxGitHub: true } : {}), allowHosts: values["allow-host"],
+      ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
+      // The owner's harness modules: --harness-module, else AGENTRUN_SERVE_HARNESS_MODULES (harness-table.ts).
+      ...(harnessModulesOf(values["harness-module"], process.env).length ? { harnessModules: harnessModulesOf(values["harness-module"], process.env) } : {}),
+      // And its harness recipes: --harness-recipe, else AGENTRUN_SERVE_HARNESS_RECIPES (harness-table.ts).
+      ...(harnessRecipesOf(values["harness-recipe"], process.env).length ? { harnessRecipes: harnessRecipesOf(values["harness-recipe"], process.env) } : {}),
+      // Their runs on the owner's own sign-in, only as the owner says it here (no setting names it) and the start proves.
+      ...(values["harness-sign-in"] ? { harnessSignIn: true } : {}),
+      ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), log: (line) => void process.stdout.write(`${line}\n`),
+      // The public address is the server's with accounts on or off: the Host names it serves, the webhook URLs it gives.
+      ...(publicUrl && publicName ? { publicUrl, publicUrlFrom: publicName } : {}),
+      ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true } : {}), ...(apiOnly ? { apiOnly } : {}), ...(shareHost ? { shareHost } : {}), ...(launchHook ? { launchHook } : {}), ...(runKeys ? { runKeys } : {}),
+      ...(apiOnlyMcpOrigins.length ? { apiOnlyMcpOrigins } : {}),
+      // The proxies whose X-Forwarded-For the sign-in limit reads (comma-separated); none unless set.
+      ...(trustedProxies.length ? { trustedProxies } : {}),
+      // A local install only as its operator says, never inferred: an MCP server on loopback is refused without it.
+      ...(process.env.AGENTRUN_MCP_ALLOW_LOOPBACK === "1" ? { mcpLoopback: true } : {}),
+      // No runner beside this server: a paired computer's socket stays here, where no run reaches it, which the pairing says.
+      ...(noRunner ? { runnerApart: true } : {}),
+    });
+  } catch (error) {
+    // A data directory an earlier version wrote, refused on a start `npx @parcha/agentrun` made: the ways on as that command
+    // (adapters.ts earlierDataRefusal). Any other start keeps the refusal's own words.
+    console.error(`agentrun-serve: ${earlierDataRefusal(error, data, process.env) ?? (error as Error).message}`);
+    process.exit(1);
+  }
+  // The start launches one runner beside the server on the same data dir (design: "server and runner"): it claims and runs
+  // every run, sharing only the store. With --no-runner the server runs alone, so the operator starts one or more separate
+  // `agentrun runner --data DIR` processes on the same data directory instead. The runner holds what the server's flags say
+  // (besideRunnerOptions): at most --max-runs runs at once, the rest waiting queued, and on the stop each busy run finishes
+  // its turn for up to --drain-timeout.
+  let runnerProc: Awaited<ReturnType<typeof runnerBeside>> | undefined;
+  // Anonymous usage counts (docs/telemetry.md). It hears each run's end from the runner beside the server (with --no-runner it
+  // counts no runs), and each use of suggested agents from the server (onUsage).
+  const telemetry = startTelemetry({ data: resolve(data), ...(values.faux ? { faux: true } : {}) });
+  used = telemetry.used;
+  const { loops, loopsTold, drainMs } = besideRunnerOptions(serveOptions, process.env);
+  // A stop asked during the server's start starts no runner: nothing is claimed for the stop to cut.
+  if (!noRunner && askedAt === undefined) {
+    try {
+      // The beside-runner sees the server's test switches (server.ts fauxEnvOf: --faux and its modules), which the CLI hands
+      // the server as options, never through this process's environment: without them a --faux start's runner looks its faux
+      // model up in pi-ai's own catalog and every run fails on its first request. A test switch this process inherited from
+      // its shell is taken out first, as the server's own environment drops it (runner/main.ts besideRunEnv).
+      const { besideRunEnv } = await import("./runner/main.js");
+      // With the computer janitor: what a crashed runner of this server left is ended (never under --faux). With the
+      // server's AttachHub and the name and incarnation the server gave it (Serve.beside): a paired computer's socket is in
+      // this process, and this runner's run holds it under a route that names it, so a runner apart (its own process,
+      // relaying through this server) takes it for no other run meanwhile. Its runs reach an MCP server on loopback only
+      // when this server is a local install (Serve.localInstall).
+      // Each run a process of its own, as a user of its own where the image's helper can switch (run-child-host.ts).
+      runnerProc = await runnerBeside(data, { loops, loopsTold, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true, ownProcesses: true, hub: serve.attachHub, beside: serve.beside, dial: serve.dial, mcpLoopback: serve.localInstall, mcpOwn: serve.own, ollamaHost: serve.ollamaHost, onRunEnded: telemetry.runEnded });
+    } catch (error) {
+      // A run isolation the runner cannot give (run-child-host.ts runIsolationOf) is said, and the server serves on with no
+      // runner, as the runner subcommand stays up claiming nothing (runner/main.ts): a platform that restarts a stopped
+      // container would otherwise loop on it.
+      const { RunIsolationRefused } = await import("./runner/run-child-host.js");
+      if (!(error instanceof RunIsolationRefused)) {
+        console.error(`agentrun-serve: the runner could not start: ${(error as Error).message}`);
+        await serve.close();
+        process.exit(1);
+      }
+      console.error(`agentrun-serve: ${error.message}`);
+      // And said in the store, as the runner subcommand says it (presence.ts): while no runner that claims is there, the
+      // server refuses a launch in these words and fails the runs left queued, never queueing one for good.
+      serve.refuseRuns(error.message);
+    }
+  }
+  // A token from the environment is the operator's already, and the stored one is printed by the start that made it only.
+  const source = given ? "env" : givenList ? "list" : serve.tokenMade ? "made" : "file";
+  for (const line of banner({ url: serve.url, baseUrl: serve.baseUrl, data, token: serve.token, source, tokenIds: serve.tokenIds, accounts, ...(apiOnly ? { apiOnly } : {}), ...(shareHost ? { shareHost } : {}), ...(serve.launchCode ? { launchCode: serve.launchCode } : {}), ...(shareHost ? {} : { boxes: serve.boxesLine }), ...(values.listen ? { listen: values.listen } : {}), ...(publicUrl ? { publicUrl } : {}) })) console.log(line);
+  if (launchHook) console.log(`Launch hook (${LAUNCH_HOOK_URL_ENV}): trigger firings go to ${hookOrigin(launchHook)}, whose host starts their runs; this server starts none for them.`);
+  // Open setup (no public address, a loopback listener): the link that sets the password. Any other start printed the
+  // setup link with its code as the code was made (owner.ts).
+  if (serve.setupUrl && serve.setupOpen) console.log(`Set your password: ${serve.setupUrl} (the first visit sets it)`);
+  // The notice of the anonymous counts, once, on stderr: the npx command passes stderr through and keeps stdout to itself.
+  if (telemetry.notice) console.error(telemetry.notice);
+  // The console's page, once the server listens: never its sign-in link, whose token would sit in the opener's arguments
+  // and the browser's history. With no owner yet, the setup page instead, its code filled in when setup takes one: the
+  // first visit sets the password with nothing to look up. That code works once and for 30 minutes, unlike the token, so
+  // the opener's arguments and the browser's history hold nothing that outlasts the setup.
+  // API-only: there is no console, so nothing to open.
+  if (values.open && !apiOnly && !shareHost && canOpen(process.env)) spawn(process.platform === "darwin" ? "open" : "xdg-open", [serve.setupUrl ?? `${publicUrl ?? serve.url}/`], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
+  const record = join(resolve(data), SERVER_FILE);
+  // The record goes only while it is this server's: a server that takes the lock next writes its own, which this stop must
+  // not remove. One stop per press or process-manager stop; a later signal, or a stop past its deadline, stops at once
+  // (stop-signals.ts). The stop is in place before the record is written: a SIGTERM sent the moment the record appears is
+  // a clean stop that removes it, never the default end by signal that leaves it behind.
+  const stop = stopOnSignals({
+    close: () => {
+      removeOwnRecord(record);
+      // A drain that has runs to wait on says so, as a run's own process did on the server's stop.
+      const busy = runnerProc?.runner.held().length ?? 0;
+      if (busy > 0 && drainMs > 0) console.error(`agentrun-serve: stopping: waiting up to ${Math.ceil(drainMs / 1000)} s for ${busy} ${busy === 1 ? "run" : "runs"} to finish ${busy === 1 ? "its turn" : "their turns"}`);
+      // The counts' last write (telemetry.ts) is waited for once the runner has said its last run's end.
+      return Promise.all([(runnerProc?.close() ?? Promise.resolve()).then(() => telemetry.close()), serve.close()]).then(() => undefined);
+    },
+    // The stop's deadline waits out the runner's whole close: its drain, then the stop of the loops left, so a run's end
+    // and release are never cut short (besideStopping).
+    stopping: () => (runnerProc ? besideStopping(serve.stopping(), runnerProc.runner.held().length, drainMs) : serve.stopping()),
+    done: (code) => (removeOwnRecord(record), process.exit(code)),
+    say: (line) => console.error(line),
+  });
+  stopping = stop;
+  // Written whole under a name of its own, then renamed into place: a reader in another process (the npx command, a test
+  // waiting for this server) that finds the record reads all of it, never a file made but not yet filled.
+  writeDurableSync(record, `${JSON.stringify({ base_url: serve.baseUrl, pid: process.pid, ...(serve.tokenFile ? { token_file: serve.tokenFile } : {}) })}\n`);
+  chmodSync(record, 0o600);
+  // A stop asked during the start runs now, as one asked from here on would.
+  if (askedAt !== undefined) stop(askedAt);
 }
-// A token from the environment is the operator's already, and the stored one is printed by the start that made it only.
-const source = given ? "env" : givenList ? "list" : serve.tokenMade ? "made" : "file";
-for (const line of banner({ url: serve.url, baseUrl: serve.baseUrl, data, token: serve.token, source, tokenIds: serve.tokenIds, accounts, ...(apiOnly ? { apiOnly } : {}), ...(serve.launchCode ? { launchCode: serve.launchCode } : {}), boxes: serve.boxesLine, ...(values.listen ? { listen: values.listen } : {}), ...(publicUrl ? { publicUrl } : {}) })) console.log(line);
-if (launchHook) console.log(`Launch hook (${LAUNCH_HOOK_URL_ENV}): trigger firings go to ${hookOrigin(launchHook)}, whose host starts their runs; this server starts none for them.`);
-// Open setup (no public address, a loopback listener): the link that sets the password. Any other start printed the
-// setup link with its code as the code was made (owner.ts).
-if (serve.setupUrl && serve.setupOpen) console.log(`Set your password: ${serve.setupUrl} (the first visit sets it)`);
-// The notice of the anonymous counts, once, on stderr: the npx command passes stderr through and keeps stdout to itself.
-if (telemetry.notice) console.error(telemetry.notice);
-// The console's page, once the server listens: never its sign-in link, whose token would sit in the opener's arguments
-// and the browser's history. With no owner yet, the setup page instead, its code filled in when setup takes one: the
-// first visit sets the password with nothing to look up. That code works once and for 30 minutes, unlike the token, so
-// the opener's arguments and the browser's history hold nothing that outlasts the setup.
-// API-only: there is no console, so nothing to open.
-if (values.open && !apiOnly && canOpen(process.env)) spawn(process.platform === "darwin" ? "open" : "xdg-open", [serve.setupUrl ?? `${publicUrl ?? serve.url}/`], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
-const record = join(resolve(data), SERVER_FILE);
-// The record goes only while it is this server's: a server that takes the lock next writes its own, which this stop must
-// not remove. One stop per press or process-manager stop; a later signal, or a stop past its deadline, stops at once
-// (stop-signals.ts). The stop is in place before the record is written: a SIGTERM sent the moment the record appears is
-// a clean stop that removes it, never the default end by signal that leaves it behind.
-const stop = stopOnSignals({
-  close: () => {
-    removeOwnRecord(record);
-    // A drain that has runs to wait on says so, as a run's own process did on the server's stop.
-    const busy = runnerProc?.runner.held().length ?? 0;
-    if (busy > 0 && drainMs > 0) console.error(`agentrun-serve: stopping: waiting up to ${Math.ceil(drainMs / 1000)} s for ${busy} ${busy === 1 ? "run" : "runs"} to finish ${busy === 1 ? "its turn" : "their turns"}`);
-    // The counts' last write (telemetry.ts) is waited for once the runner has said its last run's end.
-    return Promise.all([(runnerProc?.close() ?? Promise.resolve()).then(() => telemetry.close()), serve.close()]).then(() => undefined);
-  },
-  // The stop's deadline waits out the runner's whole close: its drain, then the stop of the loops left, so a run's end
-  // and release are never cut short (besideStopping).
-  stopping: () => (runnerProc ? besideStopping(serve.stopping(), runnerProc.runner.held().length, drainMs) : serve.stopping()),
-  done: (code) => (removeOwnRecord(record), process.exit(code)),
-  say: (line) => console.error(line),
-});
-stopping = stop;
-// Written whole under a name of its own, then renamed into place: a reader in another process (the npx command, a test
-// waiting for this server) that finds the record reads all of it, never a file made but not yet filled.
-writeDurableSync(record, `${JSON.stringify({ base_url: serve.baseUrl, pid: process.pid, ...(serve.tokenFile ? { token_file: serve.tokenFile } : {}) })}\n`);
-chmodSync(record, 0o600);
-// A stop asked during the start runs now, as one asked from here on would.
-if (askedAt !== undefined) stop(askedAt);

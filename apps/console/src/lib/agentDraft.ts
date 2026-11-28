@@ -1,3 +1,4 @@
+import { type Place, placeOf } from "./place";
 import type { Template } from "./templates";
 
 /** An editable create request, containing only agent configuration. No session or credential is carried between pages. */
@@ -10,11 +11,14 @@ export type AgentCreateDraft = {
     harness: "pi";
     tools: string[];
     skills: [];
+    /** Where it runs, when the create page's Tools step picked it; none, the server's default. */
+    place?: Place;
   };
 };
 
-export function briefAgentDraft(brief: string): AgentCreateDraft {
-  return { definition: { version: 1, name: "New agent", instructions: brief.trim(), harness: "pi", tools: [], skills: [] } };
+/** `picks`: what the create page's Tools step picked, the tools to grant and where it runs; none picked, today's request. */
+export function briefAgentDraft(brief: string, picks: { tools?: readonly string[]; place?: Place } = {}): AgentCreateDraft {
+  return { definition: { version: 1, name: "New agent", instructions: brief.trim(), harness: "pi", tools: [...(picks.tools ?? [])], skills: [], ...(picks.place ? { place: picks.place } : {}) } };
 }
 
 export function templateAgentDraft(template: Template, brief = ""): AgentCreateDraft {
@@ -44,9 +48,12 @@ export function parseAgentDraft(raw: string | null | undefined): AgentCreateDraf
       || (v.description !== undefined && typeof v.description !== "string")
       || !Array.isArray(v.tools) || !v.tools.every((tool) => typeof tool === "string")
       || !Array.isArray(v.skills) || v.skills.length !== 0) return null;
+    const place = placeOf(v.place);
+    if (v.place !== undefined && !place) return null;
     return { definition: {
       version: 1, name: v.name, instructions: v.instructions, harness: "pi", tools: [...v.tools], skills: [],
       ...(typeof v.description === "string" ? { description: v.description } : {}),
+      ...(place ? { place } : {}),
     } };
   } catch { return null; }
 }

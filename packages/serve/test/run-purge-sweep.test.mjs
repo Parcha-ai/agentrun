@@ -6,7 +6,7 @@
 // words naming the sentinel too), an audit hold that disagreed with it, and its kept learning's proposal. Each is read
 // back before the purge (the scan sees each place it looks at). After the purge the sentinel is nowhere:
 //   - in no column of any row of any table the store's schema made, listed from the database itself (SQLite's
-//     sqlite_master, Postgres' information_schema), the settings' rows among them;
+//     sqlite_master, Postgres' information_schema), the settings' and the learning records' rows among them;
 //   - in no file under the server's data directory, the agents' folders among them (the store's own file aside on SQLite:
 //     its rows are read above);
 //   - in no answer of any GET route the OpenAPI document lists whose parameters the test can fill (the purged run's own
@@ -19,7 +19,9 @@ import { lstat, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { shadowRunId } from "../dist/learn/audit.js";
+import { learningCommit } from "../dist/learn/commit.js";
 import { answersPair, recordPromotion } from "../dist/learn/promote.js";
+import { learningOf } from "../dist/learn/rows.js";
 import { openapiDocument } from "../dist/openapi.js";
 import { decideCheck } from "../dist/runner/promotion.js";
 import { dropSchema, freshSchema, onPostgres, PG_URL, raw } from "./store-target.mjs";
@@ -157,35 +159,45 @@ test(`a purged run leaves no copy of what it was given or did (${STORE}): one se
   const graded = await api("PUT", `/runs/${gone}/grade`, { correct: false, expected: { answer: word }, label: `It should say ${word}.` });
   assert.equal(graded.status, 200, JSON.stringify(graded.body));
   await halt();
+  // The check's and the connected agent's revisions, learned by the kept run: a promotion names a digest a version of its
+  // workflow holds (the store writes no record of another).
+  const landed = await learningCommit(learningOf(store, "calc"), { runId: kept.body.run_id, reason: "It learned two workflows.", files: ["flow", "turns"].flatMap((name) => [{ path: `workflows/${name}/README.md`, text: `---\nname: ${name}\ndescription: Answers a question; use when asked\n---\n` }, { path: `workflows/${name}/workflow.json`, text: JSON.stringify({ v: 2, name }) }]) });
+  assert.equal(landed.ok, true, JSON.stringify(landed));
+  const [dCheck, dTurns] = await Promise.all(["flow", "turns"].map(async (name) => (await store.learning.versions("calc", "workflow", name))[0].digest));
 
   // The runs made from it: its audit's shadow run and a replay of its input, each holding its input.
   const shadow = shadowRunId(gone);
   const replay = `replay-of-${gone}`;
   await endedRun(store, "calc", shadow, { input: { content: `Keep ${word} everywhere.` }, title: "Audit", place: { mode: "runner" }, audit: { of: gone, workflow: "flow", digest: "d-audit" } });
-  await endedRun(store, "calc", replay, { input: { content: `Keep ${word} everywhere.` }, title: "Replay", place: { mode: "runner" }, replay: { of: gone, workflow: "flow", digest: "d-check" } });
+  await endedRun(store, "calc", replay, { input: { content: `Keep ${word} everywhere.` }, title: "Replay", place: { mode: "runner" }, replay: { of: gone, workflow: "flow", digest: dCheck } });
   // A workflow check that disagreed with it, decided as a claim decides one (its copy of the input, the agent's answer,
   // the draft's answer, and the grader's words, which its reason quotes); and one input it agreed on, the sibling's.
   const draft = `Draft of ${word}`;
   const agentAnswer = `Kept ${word}.`;
   const bar = { compile_after: 2, agree_min: 0.9, alone_min: 0.5, attempt: 1 };
+  // Its grade's expected answer, the sentinel a key of it and in its value, written over the agent's answer (a JSON
+  // object here): the check judges the draft against that corrected answer whole.
+  const expected = { [word]: `It is ${word}.` };
+  const agentJson = JSON.stringify({ note: agentAnswer });
+  const corrected = JSON.stringify({ note: agentAnswer, ...expected });
   const rows = [
-    { of: gone, input: `Keep ${word} everywhere.`, agent: agentAnswer, outcome: "answered", answer: draft, compared: { same: false, grader: "faux-fast", differs_on: `whether it says ${word}`, pair: answersPair(draft, agentAnswer) } },
+    { of: gone, input: `Keep ${word} everywhere.`, agent: agentJson, outcome: "answered", answer: draft, correct: false, expected, compared: { same: false, grader: "faux-fast", differs_on: `whether it says ${word}`, pair: answersPair(draft, corrected) } },
     { of: kept.body.run_id, input: "What is six times seven?", agent: "The answer is 42.", outcome: "answered", answer: "The answer is 42." },
   ];
-  const decided = await decideCheck({ store, agentId: "calc", log: () => {}, shown: async () => ({ text: (text) => text }) }, "flow", "d-check", bar, { rows, cost: 0.02, outcomes: { answered: 2, handed_back: 0, failed: 0, skipped_write: 0 }, unstarted: 0 }, (was) => was === undefined, {});
+  const decided = await decideCheck({ store, agentId: "calc", log: () => {}, shown: async () => ({ text: (text) => text }) }, "flow", dCheck, bar, { rows, cost: 0.02, outcomes: { answered: 2, handed_back: 0, failed: 0, skipped_write: 0 }, unstarted: 0 }, (was) => was === undefined, {});
   assert.equal(decided.won, true, "the check is decided");
   assert.equal(decided.record.decided, "hold", `it disagreed, so it is held: ${decided.record.reason}`);
   // An audit hold that disagreed with it, as runner/audit.ts applyHold writes one.
-  await recordPromotion(store.settings, "calc", {
+  await recordPromotion(store.learning, "calc", {
     workflow: "flow", digest: "d-audit", at: new Date().toISOString(), decided: "hold", reason: "its audits disagreed with the agent on 1 of 1",
     audit: { window: 1, disagree: 1, rows: 1, disagreements: [{ run: shadow, served: gone, input: `Keep ${word} everywhere.`, agent: agentAnswer, draft }] },
-  }, () => true);
+  }, () => true, { anyDigest: true });
   // A connected agent's check still collecting native turns, which disagreed on it (runner/promotion.ts sdkCheckTurn).
   const collecting = {
-    workflow: "turns", digest: "d-turns", at: new Date().toISOString(), decided: "replaying", via: "sdk", replay_id: "turns-check", reason: "Waiting for the next native turn of the connected agent that it takes.",
-    check: { ...bar, turns: { n: 1, agreed: 0, alone: 1, of: [gone], outcomes: { answered: 1, handed_back: 0, failed: 0, skipped_write: 0 }, disagreements: [{ run: gone, input: `Keep ${word} everywhere.`, agent: agentAnswer, draft }] } },
+    workflow: "turns", digest: dTurns, at: new Date().toISOString(), decided: "replaying", via: "sdk", replay_id: "turns-check", reason: "Waiting for the next native turn of the connected agent that it takes.",
+    check: { ...bar, turns: { n: 1, agreed: 0, alone: 1, agent_agreed: 1, fields: { answer: { agent: { n: 1, workflow_right: 0, agent_right: 1 } } }, of: [gone], outcomes: { answered: 1, handed_back: 0, failed: 0, skipped_write: 0 }, disagreements: [{ run: gone, input: `Keep ${word} everywhere.`, agent: agentAnswer, draft }] } },
   };
-  await recordPromotion(store.settings, "calc", collecting, () => true);
+  await recordPromotion(store.learning, "calc", collecting, () => true);
   // Its kept learning: what its learning turn asked and what it proposed.
   const db = await raw(place);
   try {
@@ -195,7 +207,7 @@ test(`a purged run leaves no copy of what it was given or did (${STORE}): one se
   }
 
   const fill = {
-    agent_id: ["calc"], run_id: [gone, kept.body.run_id, shadow, replay], path: ["kept.md"], name: ["flow"], digest: ["d-check", "d-audit"],
+    agent_id: ["calc"], run_id: [gone, kept.body.run_id, shadow, replay], path: ["kept.md"], name: ["flow"], digest: [dCheck, "d-audit"],
     file: ["audits.jsonl"], replay_id: [], file_id: [], trigger_id: [], provider: [],
   };
   const { paths, unread } = getRoutes(fill);
@@ -205,10 +217,10 @@ test(`a purged run leaves no copy of what it was given or did (${STORE}): one se
   // Before: each place holds it, so each scan below is known to see what it looks at.
   const before = { tables: await inTables(place, word), files: await inFiles(data, word), routes: await inRoutes(api, paths, word) };
   t.diagnostic(`before the purge: ${JSON.stringify(before)}`);
-  for (const where of ["run_launch.body", "learning_proposals.turn", "learning_proposals.proposal", "settings[learning.promotions.calc]", "settings[learning.grades.calc]"]) {
+  for (const where of ["run_launch.body", "learning_proposals.turn", "learning_proposals.proposal", "learning_records.data"]) {
     assert.ok(before.tables.includes(where), `${where} holds it before: ${before.tables.join(", ")}`);
   }
-  assert.ok(before.tables.some((where) => !where.startsWith("settings[") && !["run_launch.body", "learning_proposals.turn", "learning_proposals.proposal"].includes(where)), `its journal holds it before: ${before.tables.join(", ")}`);
+  assert.ok(before.tables.some((where) => !where.startsWith("settings[") && !["run_launch.body", "learning_proposals.turn", "learning_proposals.proposal", "learning_records.data"].includes(where)), `its journal holds it before: ${before.tables.join(", ")}`);
   assert.ok(before.files.some((path) => path.endsWith("/work/kept.md")), `the file it wrote holds it before: ${before.files.join(", ")}`);
   assert.ok(before.routes.some((one) => one.startsWith(`/runs/${gone}/timeline `)), `its timeline holds it before: ${before.routes.join(", ")}`);
   assert.ok(before.routes.some((one) => one.startsWith("/agents/calc/learning/promotions ")), `the promotions read holds it before: ${before.routes.join(", ")}`);
@@ -221,16 +233,17 @@ test(`a purged run leaves no copy of what it was given or did (${STORE}): one se
 
   // What a purge keeps of what it blanked: each record's decision, counts and run ids.
   const { promotions } = (await api("GET", "/agents/calc/learning/promotions")).body;
-  const [check, audit] = ["d-check", "d-audit"].map((digest) => promotions.find((one) => one.digest === digest));
+  const [check, audit] = [dCheck, "d-audit"].map((digest) => promotions.find((one) => one.digest === digest));
   assert.deepEqual([check?.decided, check?.check.n, check?.check.agreed, check?.check.alone, check?.check.of], ["hold", 2, 1, 2, [gone, kept.body.run_id]], `the check's decision and numbers are kept: ${JSON.stringify(check)}`);
-  assert.deepEqual(check.check.disagreements, [{ run: gone, input: "", agent: null, draft: "" }], "its disagreement names the run still, its content blanked");
-  assert.match(check.reason, /reached a different decision from the agent's on 1 of 2;/, "its reason keeps its numbers, the grader's words gone");
+  assert.deepEqual(check.check.disagreements, [{ run: gone, input: "", agent: null, draft: "", fields: ["answer"], expected: [{ field: "answer", known: "grade", value: "" }] }], "its disagreement names the run, the field it had wrong and where its known answer came from still, its content and that answer blanked");
+  assert.deepEqual(Object.keys(check.check.fields), ["answer"], "no field is named from its grade's keys");
+  assert.match(check.reason, /answer: 0 of 1 right against the grades' expected answers \(0\.0%, the bar 90\.0%\).*; 1 of 1 said what the agent said/, "its reason keeps its numbers, the grade's answer and the grader's words gone");
   assert.deepEqual([audit?.decided, audit?.audit.rows, audit?.audit.disagreements], ["hold", 1, [{ run: shadowRunId(gone), served: gone, input: "", agent: null, draft: null }]], `the audit's hold keeps its numbers and run ids: ${JSON.stringify(audit)}`);
-  const turns = promotions.find((one) => one.digest === "d-turns")?.check.turns;
+  const turns = promotions.find((one) => one.digest === dTurns)?.check.turns;
   assert.deepEqual([turns?.n, turns?.agreed, turns?.alone, turns?.of, turns?.disagreements], [1, 0, 1, [gone], [{ run: gone, input: "", agent: null, draft: "" }]], `the turns collected keep their numbers and run ids: ${JSON.stringify(turns)}`);
   // A next turn's write built on the turns read before the purge (sdkCheckTurn, racing it) keeps what the purge blanked.
   const next = { ...collecting, at: new Date().toISOString(), check: { ...collecting.check, turns: { ...collecting.check.turns, n: 2, alone: 2, agreed: 1, of: [kept.body.run_id, gone] } } };
-  const written = await recordPromotion(store.settings, "calc", next, () => true);
+  const written = await recordPromotion(store.learning, "calc", next, () => true);
   assert.deepEqual([written.won, written.record.check.turns.n, written.record.check.turns.disagreements], [true, 2, [{ run: gone, input: "", agent: null, draft: "" }]], `the copy read before the purge is written blanked: ${JSON.stringify(written.record)}`);
   assert.deepEqual(await inTables(place, word), [], "no table holds the sentinel again");
   // The sibling is untouched.

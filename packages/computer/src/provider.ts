@@ -370,7 +370,9 @@ export type ReadBackNotes = string[];
 
 /**
  * What a computer was given, as its vendor's own answer for it says (its get or create answer): the figures the vendor
- * bills by. Each field is absent where the vendor's answer does not say it, never guessed from what was asked.
+ * bills by. Each field is absent where the vendor's answer does not say it, never guessed from what was asked. One
+ * exception: a provider whose vendor reads no size back and bills a computer by its use, up to limits its create set
+ * (Modal), gives those limits, the most the computer's time can bill.
  */
 export interface ComputerResources {
 	cpus?: number;
@@ -415,6 +417,9 @@ export interface ComputerInfo {
 	owner?: ComputerOwner;
 	/** An agent's computer that is detached now: when it was detached, the janitor's idle clock. Absent otherwise. */
 	detachedAt?: Date;
+	/** When the vendor made it, where its listing says (a browser vendor's session list does): what a host that releases
+	 *  one no claim held (releaseUnheld) books its time from. Absent where the listing does not say. */
+	createdAt?: Date;
 }
 
 export interface CallContext {
@@ -534,10 +539,13 @@ export interface ComputerProvider {
 	watch?(ref: ComputerRef, handlers: ScreenWatchHandlers, options?: WatchOptions): Promise<Result<ScreenWatch>>;
 	/**
 	 * Removes what this provider's computers left behind outside the computers themselves (Docker: an egress proxy and its
-	 * volume whose computer is gone or whose deadline has passed), with all of these labels, and returns what it removed,
-	 * by name. Optional; the janitor's sweep calls it after the computers, which release their own parts.
+	 * volume whose computer is not there), with all of these labels, and returns what it removed, by name. Optional; the
+	 * janitor's sweep calls it after the computers, which release their own parts. With `mine`, only a leftover whose
+	 * labels (the computer's spec labels it carries) `mine` answers true for is removed: a host shared by several callers
+	 * has each remove its own alone. `mine` is asked before the provider reads the leftover's computer, so a caller whose
+	 * answer says no create of its own is under way makes that read the last word.
 	 */
-	sweepLeftovers?(context: { labels: Record<string, string>; now: Date; signal?: AbortSignal }): Promise<Result<string[]>>;
+	sweepLeftovers?(context: { labels: Record<string, string>; now: Date; signal?: AbortSignal; mine?: (labels: Record<string, string>) => boolean | Promise<boolean> }): Promise<Result<string[]>>;
 	/**
 	 * One account-level read with the provider's keys (a list by label, the vendor's whoami) that never creates a
 	 * computer, so it never spends: Settings' "test connection". ok with words on what it read, or the error: unauthorized

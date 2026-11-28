@@ -2,7 +2,7 @@
 // the template eval's in-process server (template-eval.ts), which would otherwise leave every run it starts queued.
 import { maxRunsOf } from "../host.js";
 import { durationMs } from "../print.js";
-import { RUNNER_LOOPS, type RunnerEvent, runnerCloseBoundMs } from "./runner.js";
+import { RUNNER_LOOPS, RUNNER_RENEWAL_BOUND_MS, type RunnerEvent, runnerCloseBoundMs } from "./runner.js";
 
 /** How long a busy run may finish its turn when the server stops, unless --drain-timeout says (cli.ts). */
 export const DRAIN_TIMEOUT = "30s";
@@ -21,9 +21,13 @@ export function besideRunnerOptions(serve: { maxRuns?: number; drainTimeout?: st
 
 /** What the CLI's stop waits on (stop-signals.ts StopDeps.stopping) with a runner beside the server: the server's runs
  *  and the runs the runner holds, and the longer of the server's bound and the runner's whole close (its drain, then
- *  the stop of the loops left: runnerCloseBoundMs), so the stop's deadline never cuts a run's end and release short. */
+ *  the stop of the loops left, or a release's window from the close's start: runnerCloseBoundMs), so the stop's deadline
+ *  never cuts a run's end and release short. The runner's ChatGPT renewals stop RUNNER_RENEWALS_SERVED_MS into the close
+ *  at the latest, and drain for the window the close hands from then (stopRenewals for renewalDrainFor: at most
+ *  RENEWAL_DRAIN_MS), so the bound is also at least RUNNER_RENEWAL_BOUND_MS: with a short drain, a renewal may outlast
+ *  the close. */
 export function besideStopping(server: { runs: number; boundMs: number }, held: number, drainMs: number): { runs: number; boundMs: number } {
-  return { runs: server.runs + held, boundMs: Math.max(server.boundMs, runnerCloseBoundMs(drainMs)) };
+  return { runs: server.runs + held, boundMs: Math.max(server.boundMs, runnerCloseBoundMs(drainMs), RUNNER_RENEWAL_BOUND_MS) };
 }
 
 /** A runner beside the server on the same data directory (the CLI start's server-and-runner, and the `runner` subcommand):
@@ -32,11 +36,17 @@ export function besideStopping(server: { runs: number; boundMs: number }, held: 
  *  caller hands its own: the template eval's in-process server, its faux's). `loops` and `drainMs`: the runner's
  *  (RunnerOptions), the CLI start's from the server's flags (besideRunnerOptions). `janitor`: run the computer janitor
  *  too (workspace/computer-janitor.ts), as the CLI's start asks. `hub`: the server's AttachHub (Serve.attachHub), which
- *  holds each paired computer's socket in this process, so a run here takes one. `dial`: the server's (Serve.dial), which
+ *  holds each paired computer's socket in this process, so a run here takes one; with it `beside`, the name and
+ *  incarnation the server gave this runner (Serve.beside), which it runs under and its run's route of a paired box names
+ *  (dial-relay.ts pairedRelayOn over the server's hub), so a runner apart's take for another run is refused while the
+ *  hold lasts and the server keeps the box in its hub. `dial`: the server's (Serve.dial), which
  *  a remote provider's create takes, so a machine that dials the server lands in this process's hub. Returns the runner
  *  and a close() that stops both and closes its store. `loopsTold`: `loops` was given (besideRunnerOptions), so on uid
  *  isolation a number past the helper's slots is refused rather than cut. */
-export async function runnerBeside(dataDir: string, { loops, loopsTold, drainMs, env, janitor, ownProcesses, hub, dial, mcpLoopback, mcpOwn, ollamaHost, evalFakes, harnessInstall, onLine, onRunEnded }: { loops?: number; loopsTold?: boolean; drainMs?: number; env?: NodeJS.ProcessEnv; ollamaHost?: string; janitor?: boolean; ownProcesses?: boolean; hub?: import("@parcha/agentrun-computer").AttachHub; dial?: import("@parcha/agentrun-computer").HostedDial; mcpLoopback?: boolean; mcpOwn?: readonly string[]; evalFakes?: (agentId: string) => import("./adapter-run-spec.js").EvalFakes | undefined; harnessInstall?: import("../harness-install.js").HarnessInstaller; onLine?: (line: string) => void; onRunEnded?: (status: string) => void } = {}): Promise<{ runner: Awaited<ReturnType<typeof import("./runner.js")["startRunner"]>>; close: () => Promise<void> }> {
+export async function runnerBeside(dataDir: string, { loops, loopsTold, drainMs, env, janitor, ownProcesses, hub, beside, dial, mcpLoopback, mcpOwn, ollamaHost, evalFakes, harnessInstall, onLine, onRunEnded }: { loops?: number; loopsTold?: boolean; drainMs?: number; env?: NodeJS.ProcessEnv; ollamaHost?: string; janitor?: boolean; ownProcesses?: boolean; hub?: import("@parcha/agentrun-computer").AttachHub; beside?: { readonly runner: string; readonly incarnation: string }; dial?: import("@parcha/agentrun-computer").HostedDial; mcpLoopback?: boolean; mcpOwn?: readonly string[]; evalFakes?: (agentId: string) => import("./adapter-run-spec.js").EvalFakes | undefined; harnessInstall?: import("../harness-install.js").HarnessInstaller; onLine?: (line: string) => void; onRunEnded?: (status: string) => void } = {}): Promise<{ runner: Awaited<ReturnType<typeof import("./runner.js")["startRunner"]>>; close: () => Promise<void> }> {
+  // A paired box in the server's hub is held under a route naming this runner, which the server must know: never one
+  // without the other.
+  if (hub !== undefined && beside === undefined) throw new Error("a runner beside a server takes the server's hub with the name and incarnation the server gave it (Serve.beside)");
   const { runnerName, startRunner } = await import("./runner.js");
   const { dispatchRunner } = await import("./harness-loops.js");
   const { routeOf } = await import("./model-route.js");
@@ -68,12 +78,17 @@ export async function runnerBeside(dataDir: string, { loops, loopsTold, drainMs,
   const { hostAddressesOnce } = await import("../docker-host-addresses.js");
   const { PROVIDERS } = await import("@parcha/agentrun-computer");
   const { hostCommandRefusals } = await import("../computers.js");
-  const computers = runnerComputers(store, runs, seal.key, { dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs), hostWhy: hostCommandRefusals(PROVIDERS, process.env.PATH), ...(hub ? { hub } : {}), ...(dial ? { dial } : {}) });
+  // A paired box is brought and let go over the server's hub as a runner apart's is over its own (dial-relay.ts
+  // pairedRelayOn): its run's claim takes the box's route under this runner's name and incarnation, a cancel mid-bring
+  // or the run's release (its loop's finally, a cancel or a throw included) drops it, and a sweep drops one whose hold
+  // ended without either.
+  const paired = hub && beside ? (await import("../dial-relay.js")).pairedRelayOn({ store, hub, runner: beside.runner, incarnation: beside.incarnation, log: (line) => console.error(`agentrun-serve runner: ${line}`) }) : undefined;
+  const computers = runnerComputers(store, runs, seal.key, { dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs), hostWhy: hostCommandRefusals(PROVIDERS, process.env.PATH), ...(paired ? { pairedRelay: paired.paired } : {}), ...(dial ? { dial } : {}) });
   // `mcpLoopback`: the server beside it is a local install (Serve.localInstall), so its runs may reach an MCP server on
   // loopback; a runner in its own process does only as its own environment says (main.ts runnerLoopback). `mcpOwn`: that server's own addresses (Serve.own), whose ports a run's
   // loopback read never goes to. A run's log lines (a sweep that failed) go to
-  // stderr with the runner's other lines. `evalFakes`: the template eval's fakes (EvalFakes: a case's web, now, monid and
-  // email), by the agent each of its runs is of; only the eval, in its own process, hands them. `harnessInstall`: what a
+  // stderr with the runner's other lines. `evalFakes`: the template eval's fakes (EvalFakes: a case's web, now, monid,
+  // email and files), by the agent each of its runs is of; only the eval, in its own process, hands them. `harnessInstall`: what a
   // claim's first-use install installs with (the eval's sharedInstaller, which the server beside it takes too).
   const { installForClaim } = await import("../harness-install.js");
   const deps = { env: runs, data: dataDir, journal: (claim: Parameters<typeof store.journal>[0]) => store.journal(claim), store, sealKey: seal.key, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(mcpLoopback ? { mcpLoopback: true } : {}), ...(mcpOwn ? { mcpOwn } : {}), ...(evalFakes ? { evalFakes } : {}), ...(harnessInstall ? { installForClaim: ((entry, dir, pins, given) => installForClaim(entry, dir, pins, { ...given, install: harnessInstall })) satisfies typeof installForClaim } : {}), log: (line: string) => console.error(`agentrun-serve runner: ${line}`) };
@@ -87,6 +102,7 @@ export async function runnerBeside(dataDir: string, { loops, loopsTold, drainMs,
     try {
       isolation = await runIsolationOf(process.env, loopsTold ? loops : undefined, deps.log);
     } catch (error) {
+      paired?.stop();
       await store.close();
       seal.release();
       throw error;
@@ -109,32 +125,55 @@ export async function runnerBeside(dataDir: string, { loops, loopsTold, drainMs,
   // stderr), so a lapse of its claims shows its cause.
   const { runLine } = await import("../print.js");
   const { metricLine, startRunnerGauge } = await import("./runner-metrics.js");
-  const name = runnerName();
+  const name = beside?.runner ?? runnerName();
+  // Said on the data folder before it claims: whether its runs on Claude Code's login stay in this process, its CLI on
+  // the login's folder (claude-login-token.ts sayLoginRunner), for a runner whose runs are users of their own to read.
+  const { sayLoginRunner } = await import("../claude-login-token.js");
+  sayLoginRunner(dataDir, name, isolation?.kind === "uid" ? "uid" : "process");
   const said = (event: RunnerEvent) => {
     for (const { line, error } of besideLines(name, event, { metricLine, troubleLine, runLine })) (onLine ?? (error ? console.error : console.log))(line);
     // The server's anonymous counts (telemetry.ts) hear a run's end: its state alone, never which run or agent.
     if (event.type === "ended") onRunEnded?.(event.status);
   };
-  // A run's end lets go of what its earlier claims' computers left, with the same computers (run-end-computers.ts), as
-  // the runner beside it (read at each end, once it has started): a computer kept pinned to another runner is that one's.
+  // A run's end lets go of what its earlier claims' computers left, with the same computers (run-end-computers.ts).
   const { runEndComputers } = await import("../workspace/run-end-computers.js");
   const { projectRunEnded } = await import("../source-sync/checkpoints.js");
-  const self = () => (runner.incarnation ? { runner: name, incarnation: runner.incarnation } : undefined);
-  const runEnded = projectRunEnded(store, runEndComputers({ store, computers: computers.computerDeps, log: (line) => console.error(`agentrun-serve runner: ${line}`), self }));
-  const runner = startRunner({ store, name, createLoop, memory: runnerMemory(store, undefined, runs, isolation ? RUN_PROCESS_MIB : 0), onEvent: said, runEnded, ...(held !== undefined ? { loops: held } : {}), ...(drainMs !== undefined ? { drainMs } : {}) });
+  const { runCensus } = await import("../run-census.js");
+  const runEnded = projectRunEnded(store, runEndComputers({ store, computers: computers.computerDeps, log: (line) => console.error(`agentrun-serve runner: ${line}`), env: runs, sealKey: seal.key }));
+  const runner = startRunner({ store, name, ...(beside ? { incarnation: beside.incarnation } : {}), createLoop, census: runCensus(store, { data: dataDir, sealKey: seal.key, env: runs }), memory: runnerMemory(store, undefined, runs, isolation ? RUN_PROCESS_MIB : 0), onEvent: said, runEnded, ...(held !== undefined ? { loops: held } : {}), ...(drainMs !== undefined ? { drainMs } : {}) });
   // The computer janitor over the same computers, when the start asks for it: never under --faux. Its lines are the
   // runner's, on stderr (a stderr whose reader closed loses them, never the process: cli.ts).
   const { startJanitor } = await import("../workspace/computer-janitor.js");
   // As the runner beside it (its name and its presence's incarnation): a kept computer pinned to another runner still
-  // there is that runner's to end (computer-kept.ts sweepKept).
-  const swept = janitor ? startJanitor({ store, computers: computers.computerDeps, env: runs, log: (line) => console.error(`agentrun-serve runner: ${line}`), ...(runner.incarnation ? { self: { runner: name, incarnation: runner.incarnation } } : {}) }) : undefined;
+  // there is that runner's to end (computer-kept.ts sweepKept). The seal key is the claims' too: it opens the Archil key a
+  // kept computer's mount credential is removed with.
+  const swept = janitor ? startJanitor({ store, computers: computers.computerDeps, env: runs, sealKey: seal.key, log: (line) => console.error(`agentrun-serve runner: ${line}`), ...(runner.incarnation ? { self: { runner: name, incarnation: runner.incarnation } } : {}) }) : undefined;
   // Its close waits for any first-use install its claims let go of to stop (its npm ended) before it lets go of the data.
   const { claimInstallsStopped } = await import("../harness-install.js");
   // The janitor's sweep is cut and waited for on a bound of its own, beside the runner's close, never before it.
   // Its gauge (runner-metrics.ts): the runs it holds of its loops, and the process's memory (the server's with it), every
   // minute until its close.
   const gauge = startRunnerGauge({ runner: name, held: () => runner.held().length, slots: held ?? RUNNER_LOOPS, write: (line) => (onLine ?? console.log)(line) });
-  return { runner, close: async () => { gauge.stop(); await Promise.all([swept?.close(), runner.close()]); await claimInstallsStopped(); await store.close(); seal.release(); } };
+  // Its close stops the ChatGPT renewals its claims' readers make on its store once the close tells it
+  // (RUNNER_RENEWALS_SERVED_MS in, or the drain's end if sooner: a run the drain lets finish may need one), and drains
+  // the ones out, within the window the close hands, before the store closes: a refresh token OpenAI spent leaves its
+  // new pair saved (chatgpt-plan.ts stopRenewals, renewalDrainFor).
+  const { closeStoreAfter, renewalDrainFor, stopRenewals } = await import("../chatgpt-plan.js");
+  return {
+    runner,
+    close: async () => {
+      gauge.stop();
+      let renewalsStopped: Promise<void> | undefined;
+      const stopRenewing = (by?: number) => (renewalsStopped ??= stopRenewals(store, renewalDrainFor(by)));
+      // The renewals' drain and the store's close run whatever the steps before them throw (closeStoreAfter).
+      await closeStoreAfter(async () => {
+        await Promise.all([swept?.close(), runner.close(stopRenewing)]);
+        paired?.stop();
+        await claimInstallsStopped();
+      }, () => stopRenewing(), store);
+      seal.release();
+    },
+  };
 }
 
 /** The lines runner `name` beside a server says for `event`, in order, each with whether it goes to stderr (`error`): its
@@ -165,7 +204,7 @@ export async function serveWithRunner(options: import("../server.js").ServeOptio
   const serve = await startServe(options);
   // Each run a process of its own, as a user of its own where the image's helper can switch, as the CLI's start runs
   // them (cli.ts): the isolation the server's capabilities say (runIsolationOf over the same helper) is the runner's.
-  const beside = await runnerBeside(options.data, { loops, loopsTold, drainMs, env: besideRunEnv(process.env, fauxEnvOf(options)), ownProcesses: true, hub: serve.attachHub, dial: serve.dial, mcpLoopback: serve.localInstall, mcpOwn: serve.own, ollamaHost: serve.ollamaHost, ...(options.log ? { onLine: options.log } : {}) }).catch(async (error: unknown) => {
+  const beside = await runnerBeside(options.data, { loops, loopsTold, drainMs, env: besideRunEnv(process.env, fauxEnvOf(options)), ownProcesses: true, hub: serve.attachHub, beside: serve.beside, dial: serve.dial, mcpLoopback: serve.localInstall, mcpOwn: serve.own, ollamaHost: serve.ollamaHost, ...(options.log ? { onLine: options.log } : {}) }).catch(async (error: unknown) => {
     await serve.close();
     throw error;
   });

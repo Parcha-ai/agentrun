@@ -20,7 +20,7 @@ export const TOOL_LIST: Readonly<Record<string, ToolRow>> = Object.freeze({
   write: { table: true, askable: true, replay: "never", blurb: "Write files in the run's folder" },
   edit: { table: true, askable: true, replay: "never", blurb: "Edit files in the run's folder" },
   bash: { table: true, askable: true, replay: "never", blurb: "Run shell commands in the sandbox" },
-  ask_person: { table: true, replay: "safe", blurb: "Ask you a question mid-run" },
+  ask_person: { table: true, replay: "safe", blurb: "Lets the agent stop and ask you a question" },
   web_fetch: { table: true, askable: true, replay: "safe", host: true, blurb: "Read a public web page" },
   web_search: { table: true, askable: true, replay: "safe", host: true, blurb: "Search the web" },
   web_save: { table: true, askable: true, replay: "never", host: true, blurb: "Save a public file into the run's folder" },
@@ -59,6 +59,10 @@ export const isTableTool = (name: string): boolean => rowOf(name)?.table === tru
 export const isAskable = (name: string): boolean => rowOf(name)?.askable === true;
 /** Whether a host runs `name` on a harness other than pi: it has a replay class. */
 export const isHostTool = (name: string): boolean => rowOf(name)?.replay !== undefined;
+/** Whether a harness other than pi may be granted `name`: a host tool, or the browser, which has no host row (a call a crash
+ *  cut off is its custody's to reconcile, never replayed) and binds through its own binding (runner/adapter-run-spec.ts
+ *  browserHostTools). */
+export const adapterBinds = (name: string): boolean => isHostTool(name) || name === "browser";
 /** `name`'s replay class as a host runs it, or none. */
 export const replayOf = (name: string): "safe" | "never" | undefined => rowOf(name)?.replay;
 /** The tools a host runs on a harness other than pi, by name. */

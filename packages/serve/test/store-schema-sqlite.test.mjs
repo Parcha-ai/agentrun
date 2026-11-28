@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 const { openSqliteStore, StoreAwaitsServer } = await import("../dist/store/index.js");
-const { SQLITE_RUNNER_NEEDS, STORE_FILE } = await import("../dist/store/sqlite/store.js");
+const { OLDEST_UPGRADED, SQLITE_RUNNER_NEEDS, SQLITE_UPGRADES, STORE_FILE } = await import("../dist/store/sqlite/store.js");
 const { readStoreSchema, storeSchemaReport } = await import("../dist/store/store-schema.js");
 const { SCHEMA_VERSION } = await import("../dist/store/schema.js");
 
@@ -32,13 +32,15 @@ for (const need of SQLITE_RUNNER_NEEDS) {
   test(`a file of this version without ${need.table}.${need.columns.join(", ")}: store-schema says the runner waits, as its open refuses it`, async (t) => {
     const dir = await serverMade(t);
     // An earlier build of this version left the file without the column; without the runners table (its relay was in
-    // runner_relays then), hand_backs or run_attempts, which the server makes at its start.
+    // runner_relays then), hand_backs, run_attempts, the learning ledger or learning_saves, which the server makes at its start.
     const db = new DatabaseSync(join(dir, STORE_FILE));
-    if (need.columns.includes("host") || need.table === "hand_backs" || need.table === "run_attempts") db.exec(`DROP TABLE ${need.table}`);
+    if (need.columns.includes("host") || ["hand_backs", "run_attempts", "learning_ledger", "learning_spend", "learning_saves"].includes(need.table)) db.exec(`DROP TABLE ${need.table}`);
     else for (const column of need.columns) {
       for (const { name } of db.prepare(`SELECT name FROM pragma_index_list('${need.table}')`).all()) {
         if (db.prepare(`SELECT 1 FROM pragma_index_info('${name}') WHERE name = ?`).get(column) && !name.startsWith("sqlite_autoindex")) db.exec(`DROP INDEX "${name}"`);
       }
+      // A trigger that names the column came with it (schema.ts RUN_LAUNCH_CENSUS_ERASED): an earlier build had none.
+      for (const { name } of db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = 'run_launch_census_erased' AND tbl_name = ? AND sql LIKE ?").all(need.table, `%${column}%`)) db.exec(`DROP TRIGGER "${name}"`);
       db.exec(`ALTER TABLE ${need.table} DROP COLUMN ${column}`);
     }
     db.close();
@@ -63,15 +65,46 @@ test("every wait the SQLite runner's open says for a column is on SQLITE_RUNNER_
   assert.deepEqual(said.filter((why) => !listed.has(why)), [], "each is listed");
 });
 
-test("on SQLite, a runner waits only for a version its server upgrades in place (11-14); any other earlier one, and a later one, is refused", () => {
+test("on SQLite, a runner waits only for a version its server upgrades in place (SQLITE_UPGRADES: 11 to the one before this build's); any other earlier one, and a later one, is refused", () => {
   const target = { kind: "sqlite", dataDir: "/data" };
   const verdict = (version) => {
     const report = storeSchemaReport(target, { version, runnerFloor: version }, SCHEMA_VERSION);
     return [report.server, report.runner];
   };
+  assert.deepEqual([...SQLITE_UPGRADES], Array.from({ length: SCHEMA_VERSION - OLDEST_UPGRADED }, (_, i) => OLDEST_UPGRADED + i), "every version from OLDEST_UPGRADED to the one before this build's");
+  assert.deepEqual([OLDEST_UPGRADED, SCHEMA_VERSION], [11, 18], "11 is still upgraded, and 17 (the reopened runs' rows under the split before) is in the window");
   assert.deepEqual(verdict(10), ["refuses", "refused"], "10: no in-place upgrade, so neither waits on it");
-  for (const version of [11, 12, 13, 14]) assert.deepEqual(verdict(version), ["migrates", "waits"], String(version));
+  for (const version of SQLITE_UPGRADES) assert.deepEqual(verdict(version), ["migrates", "waits"], String(version));
   assert.deepEqual(verdict(SCHEMA_VERSION), ["opens", "opens"]);
   assert.deepEqual(verdict(SCHEMA_VERSION + 1), ["refuses", "refused"], "a later server's file");
   assert.deepEqual(verdict(null), ["sets up", "refused"]);
+});
+
+// The steps the last three versions take, in order: a 15 store's ledger keeps each row's epoch, which ledgerUpgrade
+// drops (writing 16); then learningRowsUpgrade makes the learning rows and writes 17; then splitUpgrade writes 18, the
+// mark that reopened runs' rows are recorded again added at the same open (and set by its backfill). A 16 store takes the
+// last two steps, a 17 store the last alone. A runner of this build waits on each until its server has brought it to
+// this version.
+const STEPS = { 15: "the ledger's epoch dropped, then the learning rows made, then the split's mark", 16: "the learning rows made, then the split's mark", 17: "the split's mark" };
+for (const from of [15, 16, 17]) test(`a store at version ${from} comes to ${SCHEMA_VERSION} at its server's open, never at a runner's: ${STEPS[from]}`, async (t) => {
+  assert.equal(SCHEMA_VERSION, 18);
+  const dir = await serverMade(t);
+  const file = join(dir, STORE_FILE);
+  const db = new DatabaseSync(file);
+  if (from <= 16) for (const table of ["learning_records", "learning_items", "learning_saves"]) db.exec(`DROP TABLE ${table}`);
+  if (from === 15) db.exec("ALTER TABLE learning_ledger ADD COLUMN epoch INTEGER");
+  db.exec("ALTER TABLE store_meta DROP COLUMN ledger_rerecorded");
+  db.exec(`UPDATE store_meta SET schema_version = ${from} WHERE singleton = 1`);
+  db.close();
+  assert.deepEqual((await readStoreSchema(dir, sqliteEnv)).runner, "waits");
+  await assert.rejects(openSqliteStore({ dataDir: dir, role: "runner" }), (error) => error instanceof StoreAwaitsServer && error.message.includes(`from version ${from} to ${SCHEMA_VERSION}`));
+  await (await openSqliteStore({ dataDir: dir, role: "server" })).close();
+  const after = new DatabaseSync(file, { readOnly: true });
+  t.after(() => after.close());
+  assert.equal(after.prepare("SELECT schema_version AS v FROM store_meta").get().v, SCHEMA_VERSION, "the split's step ran last: it writes 18 after the rows step's 17");
+  assert.equal(after.prepare("SELECT ledger_rerecorded AS split FROM store_meta").get().split, 1, "the mark added, then set by the open's backfill");
+  const tables = new Set(after.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((row) => row.name));
+  assert.deepEqual(["learning_saves", "learning_items", "learning_records"].filter((table) => !tables.has(table)), [], "the learning rows are made");
+  assert.equal(after.prepare("SELECT COUNT(*) AS n FROM pragma_table_info('learning_ledger') WHERE name = 'epoch'").get().n, 0, "no ledger row keeps an epoch");
+  assert.equal((await readStoreSchema(dir, sqliteEnv)).runner, "opens");
 });

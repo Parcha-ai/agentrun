@@ -35,7 +35,13 @@ async function until(read, done, what, ms = 20_000) {
 }
 
 /** A dial of the attach socket: open with the server's chosen subprotocol, or refused at the upgrade with its status. */
-function dial(wsUrl, headers, protocol = ATTACH_SUBPROTOCOL) {
+async function dial(wsUrl, headers, protocol = ATTACH_SUBPROTOCOL) {
+  const { words: _words, ...answer } = await dialWords(wsUrl, headers, protocol);
+  return answer;
+}
+
+/** dial's answer, and when the upgrade is refused, the words of its body too. */
+function dialWords(wsUrl, headers, protocol = ATTACH_SUBPROTOCOL) {
   const ws = new WebSocket(wsUrl, protocol, { headers });
   ws.on("error", () => undefined);
   return new Promise((resolve) => {
@@ -44,8 +50,13 @@ function dial(wsUrl, headers, protocol = ATTACH_SUBPROTOCOL) {
       ws.terminate();
     });
     ws.once("unexpected-response", (req, res) => {
-      resolve({ open: false, status: res.statusCode });
-      req.destroy();
+      let words = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => void (words += chunk));
+      res.once("end", () => {
+        resolve({ open: false, status: res.statusCode, words });
+        req.destroy();
+      });
     });
   });
 }
@@ -71,7 +82,11 @@ test("pair a computer with a code; it is listed as its hello says, offline once 
   assert.equal(pairing.status, 201, JSON.stringify(pairing.body));
   assert.match(pairing.body.code, /^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/);
   assert.equal((await pairDriver({ address, code: "ZZZZ-ZZZZ", name: NAME })).status, 404, "a wrong code");
-  assert.equal((await pairDriver({ address, code: pairing.body.code, name: NAME, hello: { ...DRIVER_HELLO, protocol: "0.1" } })).status, 422, "another protocol version");
+  assert.equal((await pairDriver({ address, code: pairing.body.code, name: NAME, hello: { ...DRIVER_HELLO, protocol: "1.0" } })).status, 422, "another major protocol version");
+  // 0.1 is before 0.2 replaced apps.ui_tree with ui: refused, the words naming the driver to update.
+  const old = await pairDriver({ address, code: pairing.body.code, name: NAME, hello: { ...DRIVER_HELLO, protocol: "0.1", version: "0.1.4" } });
+  assert.equal(old.status, 422, "a 0.1 driver");
+  assert.equal(old.body.error.fields?.[0]?.message, `${NAME}'s driver 0.1.4 speaks protocol 0.1, and this server 0.2: update the driver on ${NAME}, then pair with the same code`);
   const lacking = await pairDriver({ address, code: pairing.body.code, name: NAME, hello: { ...DRIVER_HELLO, groups: ["screen"] } });
   assert.equal(lacking.status, 422, "a hello that serves no kind");
   assert.equal(lacking.body.error.fields?.[0]?.message, `${NAME}'s driver serves no kind: it says desktop but declares no input.pointer, input.keys: update the driver on ${NAME}`);
@@ -90,7 +105,15 @@ test("pair a computer with a code; it is listed as its hello says, offline once 
   assert.deepEqual(await dial(wsUrl, {}), { open: false, status: 401 }, "no token");
   assert.deepEqual(await dial(wsUrl, { authorization: `Bearer art_${"x".repeat(43)}` }), { open: false, status: 401 }, "a token no computer has");
   assert.deepEqual(await dial(wsUrl, { authorization: `Bearer ${TOKEN}` }), { open: false, status: 401 }, "the server's own token is no computer's");
-  assert.deepEqual(await dial(wsUrl, { authorization: `Bearer ${token}` }, "agentrun.computer.0.1"), { open: false, status: 426 }, "another protocol version");
+  // A refused protocol is a 426 (both drivers stop dialing on it, as on 4426), whose words name the side to update: a
+  // 0.1 driver offers only its own subprotocol, so these are the words it gets; a version of another shape is the
+  // driver's to update too.
+  const update = `update the driver on ${NAME} (the download is on the console's Computers page)`;
+  for (const [other, side] of [["agentrun.computer.0.1", update], ["agentrun.computer.0.2.1", update], ["agentrun.computer.1.0", "the server is older: it is updated by whoever runs it"]]) {
+    assert.deepEqual(await dialWords(wsUrl, { authorization: `Bearer ${token}` }, other), { open: false, status: 426, words: `this server speaks ${ATTACH_SUBPROTOCOL}, and ${NAME}'s driver asked for ${other}: ${side}` }, other);
+  }
+  // A driver a minor ahead is answered with the subprotocol it asked for: a minor step only adds.
+  assert.deepEqual(await dial(wsUrl, { authorization: `Bearer ${token}` }, "agentrun.computer.0.3"), { open: true, protocol: "agentrun.computer.0.3" });
 
   // The driver attaches: the server calls hello, and the computer is listed online as its hello says, and offered as a
   // desktop by its name and os.
@@ -119,6 +142,8 @@ test("pair a computer with a code; it is listed as its hello says, offline once 
     online: true,
     held_by_run: null,
     held_until: null,
+    held_on: null,
+    hold_note: null,
     pairing: pairing.body.id,
   });
   assert.ok(Date.parse(created_at) <= Date.parse(seen_at), `${created_at} ${seen_at}`);

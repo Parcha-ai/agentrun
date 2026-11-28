@@ -13,11 +13,12 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, createModels, getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
-import { type Conversation, defineExtension, defineTool, type Extension, GenerationTask, type Harness, hook, type JsonObject, ProviderDoc, type Registry, type Submission, type ToolExecutionApi, ToolTask, type ToolRegistration } from "@earendil-works/pi-durable";
+import { AgentDoc, AssistantEntry, type Conversation, type Cursor, defineExtension, type EntryRecord, defineTool, type Extension, GenerationTask, type Harness, hook, type JsonObject, ProviderDoc, type Registry, type Submission, type ToolExecutionApi, ToolResultEntry, ToolTask, type ToolRegistration } from "@earendil-works/pi-durable";
 import { anthropicPolicy, withWebSearches } from "@parcha/agentrun-harness-claude";
 import { type AdapterSession, type AgentAdapter, HOST_RESULT_MAX_CHARS, type HostTool, type NestedCalls, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus, type Wire } from "@parcha/agentrun-kernel";
 import { conversationLabel, type ModelProxy, NATIVE_SEARCH_USD, type ProviderPolicy, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { INTERRUPTED_TEXT } from "@parcha/agentrun-kernel/kernel";
+import { boundTo, resultMaxChars, TurnBudget, type TurnRecord } from "@parcha/agentrun-kernel/process";
 import { randomBytes } from "node:crypto";
 import { DEFAULT_HARNESS } from "../../harness.js";
 import { durableWait } from "../../workflow/pi-versions.js";
@@ -26,6 +27,7 @@ import { sessionProvider, type SessionLike, type SessionModelPort, tierProvider 
 import { type CallStatus, KINDS } from "../journal-kinds.js";
 import { CALL_REFUSED } from "../../timeline/index.js";
 import { type ComputerCallRecord, recordingCalls } from "../../computer-calls.js";
+import { type HeldRedact, mustHold } from "../redact.js";
 
 /** What the adapter loop lends pi for one claim: the run's Harness, its registry, and where pi's models go. */
 export interface PiRun {
@@ -84,6 +86,30 @@ function recordingExtension(extension: Extension, keep: NonNullable<PiSessionIO[
   };
 }
 
+/** A pi-native tool (options.tools, an extension's: ask_person, subagent, the browser's) whose calls the session reports
+ *  as piTool reports a host tool's: its start before it runs, its end (an error when it says so or throws) after, with no
+ *  result text. A host tool is never one of these (piTool reports its own), so no call is reported twice. */
+function announcing<T extends ToolRegistration>(tool: T, io: PiSessionIO): T {
+  return {
+    ...tool,
+    execute: async (args: never, api: { readonly callId: string }, context: never) => {
+      io.onEvent({ type: "tool_start", callId: api.callId, name: tool.name, args });
+      let failed = true;
+      try {
+        const result = await tool.execute(args, api as never, context);
+        failed = Boolean((result as { isError?: boolean } | undefined)?.isError);
+        return result;
+      } finally {
+        io.onEvent({ type: "tool_end", callId: api.callId, name: tool.name, isError: failed });
+      }
+    },
+  } as T;
+}
+
+/** `extension` with each of its tools announcing (announcing). */
+const announcingExtension = (extension: Extension, io: PiSessionIO): Extension =>
+  extension.tools?.length ? { ...extension, tools: extension.tools.map((tool) => announcing(tool, io)) as typeof extension.tools } : extension;
+
 export interface PiAdapterOptions {
   readonly run: PiRun;
   /** The provider the session's proxy forwards to: the API it speaks (a wire main's pi speaks, provider.ts: Anthropic's
@@ -101,7 +127,7 @@ export interface PiAdapterOptions {
   readonly fetch?: typeof fetch;
   /** The runner's one redactor, which a provider's error passes through in the session's proxy before pi has it
    *  (ModelProxyOptions.redact; the proxy's own cut of the credential comes first). */
-  readonly redact?: (text: string) => string;
+  readonly redact: HeldRedact;
   /** pi-native extensions the run's root agent carries beside the session's own (the browser's durable extension, as a
    *  pi DurableRun on main installs it): installed in the claim's registry, so their tools run as pi's own tool tasks (a
    *  taskId, a memo, conversations they own) and their own task kinds (a browser.release) under pi's recovery, all in the
@@ -140,6 +166,7 @@ const INPUT_REQUEST = "agentrun:input";
 
 /** pi as an AgentAdapter for one claim's run. */
 export function piAdapter(options: PiAdapterOptions): AgentAdapter {
+  mustHold(options.redact, "A pi adapter");
   return {
     // pi is the default harness: its id is the harness table's, never a literal of its own.
     id: DEFAULT_HARNESS,
@@ -177,8 +204,9 @@ async function openPi(options: PiAdapterOptions, spec: SessionSpec, io: PiSessio
   }
 }
 
-/** A tier's model as its proxy takes it: its route's provider, model, catalog entry, price and fetch (model-route.ts). */
-export type TierModel = Pick<PiAdapterOptions, "provider" | "model" | "like" | "price" | "fetch">;
+/** A tier's model as its proxy takes it: its route's provider, model, catalog entry, price and fetch (model-route.ts), and
+ *  its catalog's context window, which a conversation on the tier holds each tool result to (boundPiResult). */
+export type TierModel = Pick<PiAdapterOptions, "provider" | "model" | "like" | "price" | "fetch"> & { readonly contextWindow?: number };
 
 /** The tier proxies a session holds (openTierProxies): each tier's port for a side request under `label`, and their close. */
 export interface TierProxies {
@@ -192,7 +220,7 @@ export interface TierProxies {
  *  origin, credential, price and fetch, its provider's errors through `redact`. `tools`: the tool names its policy admits
  *  by name on a request of the session's own key (none for a tier's: only side keys reach it). `webSearch`: the session's
  *  own proxy admits its provider's hosted search and prices each search it ran (policyFor, withSearches). */
-async function routeProxy(route: TierModel, hooks: SessionIO["models"], tools: readonly string[], redact?: (text: string) => string, tier?: string, webSearch = false): Promise<ModelProxy> {
+async function routeProxy(route: TierModel, hooks: SessionIO["models"], tools: readonly string[], redact: (text: string) => string, tier?: string, webSearch = false): Promise<ModelProxy> {
   const price = route.price && webSearch ? await withSearches(route.provider.api, route.price) : route.price;
   return startModelProxy({
     // A tier's proxy names its tier on each request (ModelRequest.route), so the run's cap prices it as this route books it.
@@ -206,7 +234,7 @@ async function routeProxy(route: TierModel, hooks: SessionIO["models"], tools: r
     ...(price ? { price: price as never } : {}),
     ...(route.provider.headers ? { headers: route.provider.headers } : {}),
     ...(route.fetch ? { fetch: route.fetch } : {}),
-    ...(redact ? { redact } : {}),
+    redact,
   }, randomBytes(32).toString("base64url"));
 }
 
@@ -216,7 +244,7 @@ async function routeProxy(route: TierModel, hooks: SessionIO["models"], tools: r
  *  keys, AdapterSession.port's `tier`), sent by pi-ai's client of the tier model's own wire (port-models.ts), so a tier
  *  proxy speaks its model's route (model-route.ts routeOf, its translation fetch for a model of neither wire), never the
  *  harness's. One that fails to start closes those started. */
-export async function openTierProxies(tiers: ReadonlyMap<string, TierModel>, hooks: SessionIO["models"], redact?: (text: string) => string, tools: readonly string[] = []): Promise<TierProxies> {
+export async function openTierProxies(tiers: ReadonlyMap<string, TierModel>, hooks: SessionIO["models"], redact: (text: string) => string, tools: readonly string[] = []): Promise<TierProxies> {
   const open = new Map<string, { proxy: ModelProxy; route: TierModel }>();
   const close = async () => {
     for (const { proxy } of open.values()) await proxy.close().catch(() => undefined);
@@ -376,7 +404,46 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   const touched = new Set<string>();
   // A refused nested call's words, by its id (pi's nested result keeps none of a refused call's output).
   const nestedRefusals = new Map<string, string>();
-  const tools = [...spec.tools.filter((tool) => !owned.has(tool.name)).map((tool) => piTool(tool, io, (callId) => (io.gate ? (passed.has(callId) ? 0 : 1) : undefined), touched, nestedRefusals)), ...(options.tools ?? [])];
+  // The context window of the model a conversation runs on, when the host knows it: the session's own model's (the
+  // session's, from its catalog), or a tier's (its route's). None: the host's bound alone holds each result.
+  const tierWindows = new Map(tiers.each.map(([tier, route]) => [tierProvider(tier), route.contextWindow] as const));
+  const windowOf = (ref: { readonly provider: string } | undefined): number | undefined => (ref === undefined || ref.provider === PROVIDER ? spec.contextWindow : tierWindows.get(ref.provider));
+  // Each conversation's turn budget (the kernel's): what its model's window has left for the results of the calls its
+  // last answer made, which those calls share. pi reports each answer's facts (afterResponse); with none yet, the
+  // session's system text, counted, is what the context holds.
+  const turns = new Map<string, TurnBudget>();
+  const turnOf = (conversationId: unknown): TurnBudget => {
+    const key = String(conversationId);
+    let turn = turns.get(key);
+    if (!turn) turns.set(key, (turn = new TurnBudget(spec.system)));
+    return turn;
+  };
+  // A session opened again in a turn (a park, a lost claim) has a budget that has read no answer: before its first call
+  // runs (beforeTool; piTool's execute for a call pi reruns without it) it takes the turn back from the conversation's
+  // own entries (turnRecordsOf), once per conversation, so the calls this process answers split what their answer left
+  // beside the results handed before it. A conversation whose answer this process read (afterResponse) has its turn
+  // already and reads nothing. A read that fails is not the turn: it rejects in plain words (the store's own error is its
+  // cause, never the model's to read) and is not kept, so the next call reads again; the call that met it never runs.
+  const restoring = new Map<string, Promise<void>>();
+  const answered = new Set<string>();
+  const restoreOf = (conversationId: unknown, context: Context): Promise<void> => {
+    const key = String(conversationId);
+    if (answered.has(key)) return Promise.resolve();
+    const known = restoring.get(key);
+    if (known) return known;
+    const restored = (async () => {
+      const conversation = await run.harness.conversation(conversationId as never, context);
+      if (conversation) turnOf(key).restore(await turnRecordsOf((cursor) => conversation.entries({}, TURN_PAGE, cursor as Cursor | undefined, context)));
+    })().catch((error: unknown) => {
+      if (restoring.get(key) === restored) restoring.delete(key);
+      throw new Error(TURN_UNREAD, { cause: error });
+    });
+    restoring.set(key, restored);
+    return restored;
+  };
+  // A call whose turn could not be read before it ran, blocked (beforeTool): its result is these words alone, an error.
+  const unread = new Set<string>();
+  const tools = [...spec.tools.filter((tool) => !owned.has(tool.name)).map((tool) => piTool(tool, io, (callId) => (io.gate ? (passed.has(callId) ? 0 : 1) : undefined), touched, nestedRefusals, windowOf, turnOf, restoreOf)), ...(options.tools ?? []).map((tool) => announcing(tool, io))];
   // A refused call's words (the gate's deny, main's), by call: its result is those words alone, as main gives them.
   const refusals = refusalWords();
   const extension = defineExtension({
@@ -386,6 +453,16 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
       hook(ToolTask, {
         beforeTool: async (call, api, hookContext: Context) => {
           touched.add(call.id);
+          // A call the model made takes its turn back before it runs (restoreOf): a pi-native tool (bash, web_fetch, a
+          // subagent) has no execute of the host's to read it in, and a read after its run could only lose what it did.
+          // A read that fails blocks the call before its intent, so nothing ran and the model may ask again.
+          if (call.parent === undefined) {
+            const failed = await restoreOf(api.conversationId, hookContext).then(() => false, () => true);
+            if (failed) {
+              unread.add(call.id);
+              return { block: TURN_UNREAD };
+            }
+          }
           if (!io.gate) return undefined;
           // A nested call (one a tool made) is marked so: the cap's wrap-up lets it through, as its parent's part.
           const answer = await io.gate({ callId: call.id, tool: call.name, args: (call.arguments ?? {}) as Record<string, unknown>, ...(call.parent === undefined ? {} : { nested: true as const }) }, hookContext);
@@ -407,13 +484,31 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
           });
         },
         // A call the gate refused: its result is main's words alone, an error, never pi's framing of a blocked call (its
-        // diagnostic, which the model reads as "<harness>[error] Tool call blocked: ..."). Every other result is pi's.
-        afterTool: async (call, result) => refusals.resultOf(call.id, result, call.parent !== undefined) as never,
+        // diagnostic, which the model reads as "<harness>[error] Tool call blocked: ..."). Every other result is pi's,
+        // held to the kernel's bound for the conversation's model (boundPiResult): every tool's, a host tool's and a
+        // pi-native one's (web_fetch, web_search, the browser's, a subagent's) alike, as every bridged harness's tool
+        // bridge holds each result. This hook runs on every result pi's tool task writes, so no result reaches the model
+        // around it. A call the model made (not one nested in a tool's) is held to its share of its turn as well.
+        afterTool: async (call, result, api, hookContext: Context) => {
+          const refused = refusals.resultOf(call.id, result, call.parent !== undefined);
+          if (refused) return refused as never;
+          if (unread.delete(call.id) && result.diagnostics?.some((diagnostic) => diagnostic.code === "blocked")) return { output: [{ type: "text", text: TURN_UNREAD }], isError: true } as never;
+          const agent = (await api.snapshot(AgentDoc, api.conversationId, hookContext).catch(() => undefined)) as { readonly model?: { readonly provider: string } } | undefined;
+          // A call pi reran without its beforeTool (its intent stored before a crash) reads its turn here. One that
+          // cannot be read keeps what the tool did, held to the window's bound alone: a run that may have spent is never
+          // replaced by an error the model would answer by running it again.
+          const turn = call.parent === undefined && (await restoreOf(api.conversationId, hookContext).then(() => true, () => false)) ? turnOf(api.conversationId) : undefined;
+          return (await boundPiResult(result, windowOf(agent?.model), turn ? { turn, callId: call.id } : undefined)) as never;
+        },
       }),
       // An answer's cost is the runner's booking of its request, never pi's $0 for a model it has no price for: set on
       // the answer before pi stores it, so the answer, pi.usage and the live timeline carry it; unknown stays unknown.
       hook(GenerationTask, {
         afterResponse: async (message, api, hookContext: Context) => {
+          // The turn's facts, for its calls' results: the input its request held (cached input included), the answer's
+          // output, and the calls it made.
+          turnOf(api.conversationId).open(turnFactsOf(message));
+          answered.add(String(api.conversationId));
           if (!io.bookedCost) return;
           // The conversation that asked, by the id pi sends with each of its requests (its pi.provider document's), as
           // the session's client names it to the proxy (port-models.ts sessionApi).
@@ -428,8 +523,8 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   });
   run.registry.install(extension);
   // The run's pi-native extensions (options.extensions), in the claim's registry beside the session's: each tool's computer
-  // calls recorded on its row (io.keepCalls), as the loop records its host tools'.
-  const native = (options.extensions ?? []).map((each) => (io.keepCalls ? recordingExtension(each, io.keepCalls) : each));
+  // calls recorded on its row (io.keepCalls), as the loop records its host tools', and each call's start and end reported.
+  const native = (options.extensions ?? []).map((each) => announcingExtension(io.keepCalls ? recordingExtension(each, io.keepCalls) : each, io));
   for (const each of native) run.registry.install(each);
   // The root conversation may exist already (the loop's session records live beside it, under it): its agent is set here,
   // the session's model, the run's system text (pi's instructions, its parts as the CLI adapters join them), this
@@ -607,12 +702,116 @@ function piNested(api: ToolExecutionApi, context: Context, touched: ReadonlySet<
   };
 }
 
-/** A host tool as a pi tool: replay-safe or at most once, its answer the host's text and any images it shows, passed
- *  whole within the host's bound (HOST_TOOL_OUTPUT). Each call gets what pi's own tool task gives a tool: the calling
- *  agent's model, resolved in the session's models (its input and input limits, which a file read sizes an image by),
- *  and pi's output stream (the running tool's live slot); and its attempt (`attemptOf`: above 0 for a call the gate did
- *  not pass in this session, pi's rerun after a crash). */
-function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: string) => number | undefined = () => undefined, touched: Set<string> = new Set(), nestedRefusals: ReadonlyMap<string, string> = new Map()) {
+/** An answer's facts for its turn's budget: the input its request held (cached input included), the answer's output, and
+ *  the calls it made (pi's AssistantMessage: its usage, its toolCall parts). */
+function turnFactsOf(message: { readonly usage?: unknown; readonly content?: unknown }): { inputTokens?: number; outputTokens?: number; calls?: number } {
+  const usage = message.usage as { input?: number; output?: number; cacheRead?: number; cacheWrite?: number } | undefined;
+  const held = usage ? (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0) : 0;
+  const calls = Array.isArray(message.content) ? message.content.filter((part) => (part as { type?: string }).type === "toolCall").length : undefined;
+  return { ...(held > 0 ? { inputTokens: held, outputTokens: usage?.output ?? 0 } : {}), ...(calls === undefined ? {} : { calls }) };
+}
+
+/** Entries read a page at a time when a session takes its turn back. */
+const TURN_PAGE = 32;
+
+/** A call's words when its turn could not be read back from its conversation (restoreOf): plain, the store's own error
+ *  kept off the model's transcript, and within RESULT_ALWAYS_WHOLE_CHARS, so no bound cuts them. */
+const TURN_UNREAD = "This call did not run: its turn could not be read back from its conversation, so what the turn has left for its result is unknown. Nothing it would do was done; it may be called again.";
+/** The same for a call pi runs again after a crash (piTool's execute, no beforeTool): this run of it did nothing, but an
+ *  earlier attempt may have taken effect before the crash, so it is never told it is free to call again. */
+const TURN_UNREAD_RESUMED = "This call stopped before running again: it was resuming after a restart, and its turn could not be read back from its conversation. An earlier attempt of it may already have taken effect; check what it did before calling it again.";
+
+/**
+ * A conversation's turn as its entries keep it (newest first, a page at a time from `page`): its last answer's facts and
+ * the length of each result handed since, in the order they were, as TurnBudget.restore takes them. pi writes an
+ * answer's entry before any of its calls runs and a result's entry as afterTool held it, so a stop anywhere in the turn
+ * leaves both. No answer: nothing.
+ */
+export async function turnRecordsOf(page: (cursor: unknown) => Promise<{ readonly items: readonly EntryRecord[]; readonly next?: unknown }>): Promise<TurnRecord[]> {
+  const settled: TurnRecord[] = [];
+  let cursor: unknown;
+  do {
+    const { items, next } = await page(cursor);
+    for (const entry of items) {
+      const [message] = entry.model ?? [];
+      if (AssistantEntry.is(entry) && message) {
+        const { inputTokens, outputTokens, calls } = turnFactsOf(message as never);
+        return [{ open: inputTokens === undefined ? null : { inputTokens, outputTokens: outputTokens ?? 0, ...(calls === undefined ? {} : { calls }) } }, ...settled.reverse()];
+      }
+      if (ToolResultEntry.is(entry) && message && "toolCallId" in message) {
+        const text = (message.content as readonly { type: string; text?: string }[]).map((part) => (part.type === "text" ? (part.text ?? "") : "")).join("");
+        settled.push({ settled: { callId: message.toolCallId, chars: text.length } });
+      }
+    }
+    cursor = next;
+  } while (cursor !== undefined);
+  return [];
+}
+
+/**
+ * `result` with its text held to the kernel's bound for a model of `contextWindow` (boundResult: the window's share, under
+ * HOST_RESULT_MAX_CHARS; none known, that bound alone), as every bridged harness's tool bridge holds a result, and, for a
+ * call the model made (`claim`), to the call's share of what its turn has left (the kernel's TurnBudget): within it,
+ * undefined (the result stands as it is); past it, its text parts as one text cut at the bound with its note, or refused
+ * in words for a window too small for any cut, its images kept after it. Never the oversized text.
+ */
+export async function boundPiResult<R extends { readonly output?: readonly { readonly type: string; readonly text?: string }[]; readonly isError?: boolean }>(result: R, contextWindow: number | undefined, claim?: { readonly turn: TurnBudget; readonly callId: string }): Promise<R | undefined> {
+  const parts = result.output;
+  if (!parts) return undefined;
+  const whole = parts.map((part) => (part.type === "text" ? (part.text ?? "") : "")).join("");
+  const { text, truncated } = boundTo(whole, await maxOf(contextWindow, claim), { error: Boolean(result.isError) });
+  claim?.turn.settle(claim.callId, text.length);
+  if (!truncated) return undefined;
+  return { ...result, output: [{ type: "text", text }, ...parts.filter((part) => part.type !== "text")] } as unknown as R;
+}
+
+/** The most characters a result reaches a model of `contextWindow` with: the window's share (resultMaxChars), and, for a
+ *  call the model made (`claim`), its claim on its turn, the same figure each time it is asked in one turn. */
+async function maxOf(contextWindow: number | undefined, claim?: { readonly turn: TurnBudget; readonly callId: string }): Promise<number> {
+  const max = resultMaxChars(contextWindow === undefined ? undefined : { contextWindow });
+  if (!claim || contextWindow === undefined) return max;
+  await claim.turn.ready();
+  return Math.min(max, claim.turn.claim(claim.callId, contextWindow));
+}
+
+/** The line a tool's live output ends with where boundedProgress stopped passing it on. */
+const progressCutNote = (kept: number): string => `\n[live output cut at ${kept} characters: the rest is not kept, past what this model's context window takes]`;
+
+/**
+ * `forward` passing on at most `max` characters of a tool's live output in all (the kernel's resultMaxChars for the calling
+ * agent's model), the line saying where it stopped counted in them; nothing past that, and nothing at all for a bound too
+ * small for that line. pi keeps what a tool streams in its slot, and the one result it writes without its afterTool hook
+ * (a call cut off its restart limit times: pi-durable's tool task, endCutOff and abort's last attempt, from the slot) is
+ * that text, so this is what holds that result to the bound. A chunk is never cut between the halves of a surrogate pair.
+ */
+export function boundedProgress(forward: (chunk: string) => void, max: number): (chunk: string) => void {
+  const room = max - progressCutNote(max).length;
+  let sent = 0;
+  let stopped = false;
+  return (chunk) => {
+    if (stopped) return;
+    // Only within the room.
+    if (sent + chunk.length <= room) {
+      sent += chunk.length;
+      forward(chunk);
+      return;
+    }
+    stopped = true;
+    if (room <= 0) return;
+    let take = room - sent;
+    if (take > 0 && (chunk.charCodeAt(take - 1) & 0xfc00) === 0xd800 && (chunk.charCodeAt(take) & 0xfc00) === 0xdc00) take -= 1;
+    forward(`${chunk.slice(0, take)}${progressCutNote(sent + take)}`);
+  };
+}
+
+/** A host tool as a pi tool: replay-safe or at most once, its answer the host's text and any images it shows, its text
+ *  held to the kernel's bound for the calling agent's model (boundResult, at `windowOf` its model: the window's share,
+ *  under the host's bound, HOST_TOOL_OUTPUT), as every bridged harness's tool bridge holds it. Each call gets what pi's
+ *  own tool task gives a tool: the calling agent's model, resolved in the session's models (its input and input limits,
+ *  which a file read sizes an image by), and pi's output stream (the running tool's live slot); and its attempt
+ *  (`attemptOf`: above 0 for a call the gate did not pass in this session, pi's rerun after a crash). Exported for the
+ *  test of what its tool streams to pi (test/pi-tool-progress.test.mjs); the session builds it (sessionOn). */
+export function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: string) => number | undefined = () => undefined, touched: Set<string> = new Set(), nestedRefusals: ReadonlyMap<string, string> = new Map(), windowOf: (ref: { readonly provider: string } | undefined) => number | undefined = () => undefined, turnOf?: (conversationId: unknown) => TurnBudget, restoreOf?: (conversationId: unknown, context: Context) => Promise<void>) {
   return defineTool({
     name: tool.name,
     description: tool.description,
@@ -629,19 +828,35 @@ function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: string) => 
       const attempt = attemptOf(api.callId);
       const ref = (await api.agent(toolContext)).model;
       const model = ref === undefined ? undefined : api.models.getModel(ref.provider, ref.modelId);
+      const window = windowOf(ref);
+      // A call the model made claims its share of its turn (a nested call's result goes to the tool that made it).
+      const claim = turnOf && !api.callId.includes("/") ? { turn: turnOf(api.conversationId), callId: api.callId } : undefined;
+      // A first run read its turn in beforeTool (or was blocked there), so a read that fails here is a call pi runs again
+      // after a crash, with no beforeTool: an earlier attempt of it may have acted, and its words say so (TURN_UNREAD_RESUMED).
+      if (claim) await restoreOf?.(api.conversationId, toolContext).catch((error: unknown) => {
+        throw new Error(TURN_UNREAD_RESUMED, { cause: error instanceof Error && error.cause !== undefined ? error.cause : error });
+      });
+      const max = await maxOf(window, claim);
       const answer = await tool.call(args ?? {}, {
         callId: api.callId, signal: toolContext.abortSignal ?? io.signal,
         ...(model ? { model } : {}),
-        output: (chunk: string) => api.output(chunk),
+        // What the tool streams is what pi's slot keeps, and the result pi writes without its hooks (past its restart
+        // limit) is that text: held to the same bound as the answer (boundedProgress).
+        output: boundedProgress((chunk) => api.output(chunk), max),
         ...(attempt === undefined ? {} : { attempt }),
         ...(tool.nests ? { nested: piNested(api, toolContext, touched, nestedRefusals, io.nestedEnded) } : {}),
       });
-      io.onEvent({ type: "tool_end", callId: api.callId, name: tool.name, isError: Boolean(answer.isError), result: answer.text });
+      // The answer's text within the bound for the calling agent's model (its window, when the host knows it), as the
+      // tool bridge holds a bridged harness's; the host's record of the call (its tool_end) carries the same text.
+      const { text, truncated } = boundTo(answer.text, max, { error: Boolean(answer.isError) });
+      io.onEvent({ type: "tool_end", callId: api.callId, name: tool.name, isError: Boolean(answer.isError), result: text, ...(truncated ? { truncated } : {}) });
       const images = (answer.images ?? []).map((image) => ({ type: "image" as const, data: image.data, mimeType: image.mimeType }));
       // A nested call's (its id `<callId>/<key>`) value in the result's details (which the model never reads), recorded
       // with it: what tools_call or a script reads (piNested). A call the model made itself keeps its result as it was.
-      const value = answer.structured !== undefined && api.callId.includes("/") ? { details: { [HOST_VALUE]: answer.structured } } : {};
-      return { output: [{ type: "text" as const, text: answer.text }, ...images], ...(answer.isError ? { isError: true } : {}), ...value } as never;
+      // A nesting tool that ended at a refused nested call (a script stopped there) carries the refusal mark, as the
+      // nested call's result does (refusalWords): its rows read refused, never as a call that ran and failed.
+      const details = { ...(answer.structured !== undefined && api.callId.includes("/") ? { [HOST_VALUE]: answer.structured } : {}), ...(answer.refused && answer.isError ? { [CALL_REFUSED]: true } : {}) };
+      return { output: [{ type: "text" as const, text }, ...images], ...(answer.isError ? { isError: true } : {}), ...(Object.keys(details).length ? { details } : {}) } as never;
     },
   });
 }

@@ -1,3 +1,4 @@
+import { cardTitleOf } from "@/lib/templatePackages";
 import { act, createElement, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -5,8 +6,9 @@ import { route } from "@/App";
 import { TemplatesPage } from "./Templates";
 import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 import { ClientError } from "@/lib/client";
-import type { TemplateView, Trigger } from "@/lib/v2";
+import type { MarketplaceList, TemplateView, Trigger } from "@/lib/v2";
 import { firstPicker, optionsOf, pick, picker, valueOf } from "@/test/picker";
+import { expectPinnedBar } from "@/test/pageFrame";
 
 // The server's templates (GET /v2/templates) and applying one (POST /v2/templates/{name}/apply): the list says what each
 // needs; the Apply screen takes its parameters and the owner's consent, one tick per MCP tool, none ticked until the owner
@@ -31,7 +33,7 @@ const REVIEWER_PARAMS: Record<string, Declared> = {
 const REVIEWER: TemplateView = {
   id: "pr-reviewer", bundled: true, source: null, sha: null, publisher: null,
   name: "pr-reviewer", display_name: "PR reviewer", version: "1.0.0", description: "Reviews a pull request and leaves one review.",
-  license: "MIT", author: null, repository: null, output: null, harness: ["claude-agent"], model: { tier: "balanced" }, effort: null, tools: null, tool_policy: null, computer: null, needs: null, computer_here: null, checkout: null,
+  license: "MIT", author: null, repository: null, output: null, harness: ["claude-agent"], model: { tier: "balanced" }, effort: null, tools: null, tool_policy: null, computer: null, needs: null, computer_here: null, model_tiers_here: { harness: "claude-agent", fast: null, strong: null, note: null }, checkout: null,
   mcp: [{ source: "github", toolkit: "github", required: true, reason: "Reads the pull request and posts the review.", tools: [
     { name: "get_pull_request", tool: "mcp:github/get_pull_request", asks: "allow" },
     { name: "create_review", tool: "mcp:github/create_review", asks: "ask" },
@@ -42,22 +44,41 @@ const REVIEWER: TemplateView = {
 };
 const NOTES: TemplateView = { ...REVIEWER, name: "meeting-notes", display_name: null, version: "0.2.0", description: "Turns a transcript into notes.", mcp: [], parameters: params({}), secrets: [], budget: null, triggers: [], category: null, tags: [] };
 
+/** The marketplace's list as a server that reads none answers it, and as one that read it: PR reviewer is here already
+ *  (the server marks it), Company brief names its source, Vendor outage watch names none. */
+const MARKETPLACE_OFF: MarketplaceList = { url: null, state: "off", read_at: null, problem: "This server reads no marketplace.", templates: [] };
+const SOURCE = `github:Parcha-ai/agentrun-templates/templates/company-brief@${"c".repeat(40)}`;
+const MARKETPLACE: MarketplaceList = {
+  url: "https://marketplace.example", state: "read", read_at: "2026-11-24T00:00:00.000Z",
+  templates: [
+    { name: "pr-reviewer", title: "PR reviewer", tags: [], needs: [], page_url: "https://marketplace.example/templates/pr-reviewer/", here: "pr-reviewer" },
+    { name: "company-brief", title: "Company research brief", summary: "A one-page brief on a company.", category: "research", tags: ["research"], needs: ["Requires web search"], page_url: "https://marketplace.example/templates/company-brief/", source: SOURCE },
+    { name: "vendor-outage-watch", title: "Vendor outage watch", description: "Watches your vendors' status pages.", category: "operations", tags: [], needs: [], page_url: "https://marketplace.example/templates/vendor-outage-watch/" },
+  ],
+};
+
 /** The triggers an inbound-lead apply made, as its answer lists them: its webhook and its weekly schedule. */
 const LEAD_TRIGGERS = [{ trigger_id: "trg_hook", name: "lead-webhook", kind: "webhook", enabled: true }, { trigger_id: "trg_cron", name: "weekly", kind: "schedule", enabled: true }];
 
 // A saved MCP server as the list reads it: its name, and the source and toolkit a need is matched on.
 type Saved = { name: string; source: "composio" | "github" | "url"; toolkit: string | null };
-type Fake = { apply?: (name: string, body: unknown, key: string) => Promise<unknown>; servers?: Saved[]; serversDown?: { now: boolean }; templates?: TemplateView[]; triggers?: Record<string, unknown>; stallTriggers?: boolean; triggersAfter?: Promise<void>; imported?: (source: string, options: { dryRun?: boolean; trustPublisher?: boolean }) => Promise<unknown>; install?: string; playground?: boolean };
+type Fake = { onDelete?: (id: string) => void; apply?: (name: string, body: unknown, key: string) => Promise<unknown>; servers?: Saved[]; serversDown?: { now: boolean }; templates?: TemplateView[]; triggers?: Record<string, unknown>; stallTriggers?: boolean; triggersAfter?: Promise<void>; imported?: (source: string, options: { dryRun?: boolean; trustPublisher?: boolean }) => Promise<unknown>; install?: string; playground?: boolean; marketplace?: () => Promise<MarketplaceList>; templatesDown?: { now: boolean } };
 async function open(name?: string, fake: Fake = {}) {
   const went: string[] = [];
   const sent: { name: string; body: { parameters?: Record<string, unknown>; grants?: string[]; servers?: Record<string, string>; overrides?: Record<string, unknown> }; key: string }[] = [];
   const imports: { source: string; options: { dryRun?: boolean; trustPublisher?: boolean } }[] = [];
   const deleted: string[] = [];
+  const marketplaceReads: number[] = [];
   const v2 = {
+    // The marketplace's list as the server read it: off unless a case gives one, so the page shows this server's alone.
+    listMarketplaceTemplates: async () => { marketplaceReads.push(Date.now()); return fake.marketplace ? fake.marketplace() : MARKETPLACE_OFF; },
     // A bundled package's id is its name, as the server serves it: the fixtures spread one under a new name.
-    listTemplates: async () => ({ templates: (fake.templates ?? [REVIEWER, NOTES]).map((t) => (t.bundled ? { ...t, id: t.name } : t)) }),
+    listTemplates: async () => {
+      if (fake.templatesDown?.now) throw new ClientError(503, "unavailable", "The store is not answering.");
+      return { templates: (fake.templates ?? [REVIEWER, NOTES]).map((t) => (t.bundled ? { ...t, id: t.name } : t)) };
+    },
     importTemplate: async (source: string, options: { dryRun?: boolean; trustPublisher?: boolean } = {}) => { imports.push({ source, options }); return fake.imported!(source, options); },
-    deleteTemplate: async (id: string) => { deleted.push(id); },
+    deleteTemplate: async (id: string) => { deleted.push(id); fake.onDelete?.(id); },
     listMcpServers: async () => {
       if (fake.serversDown?.now) throw new ClientError(503, "unavailable", "The store is not answering.");
       return { servers: (fake.servers ?? [{ name: "github", source: "github", toolkit: "github" }]).map((s) => ({ ...s, url: `https://${s.name}.example/mcp`, auth: { type: "none" }, tools: [], credential: null })) };
@@ -88,10 +109,20 @@ async function open(name?: string, fake: Fake = {}) {
     });
   };
   const tick = (tool: string) => host.querySelector<HTMLInputElement>(`[data-tool="${tool}"] input[type="checkbox"]`);
-  return { host, went, sent, imports, deleted, button, click, type, tick, settle };
+  return { host, went, sent, imports, deleted, marketplaceReads, button, click, type, tick, settle };
 }
 
 describe("the Templates page", () => {
+  it("keeps its bar in view, on the list and on a template's page: what is under it scrolls in one box", async () => {
+    const list = await open();
+    expect(expectPinnedBar(list.host).querySelectorAll("article")).toHaveLength(2);
+    act(() => root!.unmount());
+    // A template's own page (#/templates/<name>), not the API playground's apply.
+    const one = await open(REVIEWER.name, { playground: false });
+    expectPinnedBar(one.host);
+    expect(one.host.querySelector("header nav[aria-label=Breadcrumb]")).not.toBeNull();
+  });
+
   it("lists each template with its name, version, description and what it needs", async () => {
     const t = await open();
     const cards = [...t.host.querySelectorAll("article")];
@@ -104,6 +135,13 @@ describe("the Templates page", () => {
     expect(reviewer).toContain("github");
     expect(reviewer).toContain("1 trigger");
     expect(reviewer).toContain("$0.50 a run");
+    // Its MCP servers are the apps they reach, as icons named for a screen reader, right after its keys.
+    const lines = [...cards[0].querySelectorAll("dl dt")].map((dt) => dt.textContent);
+    expect(lines.slice(0, 2)).toEqual(["Keys", "Apps"]);
+    expect(lines).not.toContain("MCP");
+    const github = cards[0].querySelector<HTMLImageElement>('dl img[data-toolkit="github"]')!;
+    expect(github.alt).toBe("GitHub");
+    expect(github.title).toBe("GitHub");
     // Its category and tags, small beside its name and under its description.
     expect(reviewer).toContain("engineering");
     expect(cards[0].querySelector('[aria-label="Tags"]')!.textContent).toBe("code-review · github");
@@ -114,12 +152,12 @@ describe("the Templates page", () => {
     expect(t.went).toEqual(["#/templates/pr-reviewer"]);
   });
 
-  it("never shows a display name's unfilled ${parameters.x}: the card reads … in its place, and Apply fills it as typed", async () => {
+  it("never shows a display name's unfilled ${parameters.x}: the card reads the name before it, as the marketplace's card does, and Apply reads … until it is typed", async () => {
     const CODE: TemplateView = { ...REVIEWER, name: "code-review", display_name: "Code review: ${parameters.repo}" };
     const list = await open(undefined, { templates: [CODE] });
     const card = list.host.querySelector("article")!;
-    expect(card.querySelector("h2")!.textContent).toBe("Code review: …");
-    expect(card.getAttribute("aria-label")).toBe("Code review: …");
+    expect(card.querySelector("h3")!.textContent).toBe("Code review");
+    expect(card.getAttribute("aria-label")).toBe("Code review");
     expect(list.host.textContent).not.toContain("${");
     act(() => root?.unmount()); document.body.innerHTML = "";
     const apply = await open("code-review", { templates: [CODE], playground: false });
@@ -130,10 +168,43 @@ describe("the Templates page", () => {
     expect(apply.host.textContent).not.toContain("${");
   });
 
+  it("draws a template's harnesses as their icons, each named on hover and for a screen reader, not as ids in words", async () => {
+    const MANY: TemplateView = { ...REVIEWER, harness: ["pi", "claude-agent", "codex"] };
+    const list = await open(undefined, { templates: [MANY] });
+    const row = [...list.host.querySelectorAll("article dl > div")].find((d) => d.querySelector("dt")?.textContent === "Harness")!;
+    expect([...row.querySelectorAll('[role="img"]')].map((i) => [i.getAttribute("aria-label"), i.getAttribute("title")])).toEqual([["Pi", "Pi"], ["Claude", "Claude"], ["Codex", "Codex"]]);
+    expect(row.querySelector("dd")!.textContent).toBe("");
+  });
+
+  it("leads each card with its harness's icon, as an agent's card does: the one it prefers first, named with the others; any harness the plain one", async () => {
+    const MANY: TemplateView = { ...REVIEWER, harness: ["claude-agent", "pi"] };
+    const ANY: TemplateView = { ...REVIEWER, id: "any", name: "any", display_name: "Any", harness: null };
+    const list = await open(undefined, { templates: [MANY, ANY] });
+    const icons = [...list.host.querySelectorAll("article [data-template-icon] [role=\"img\"]")].map((i) => [i.getAttribute("aria-label"), i.getAttribute("data-harness")]);
+    expect(icons).toEqual([["Harness: Claude, Pi", "claude-agent"], ["Any harness", null]]);
+    expect(list.host.querySelector("article .lucide-layout-template"), "no template icon stands in for the harness").toBeNull();
+  });
+
   it("reads a placeholder named like an object's own property (constructor) as … too, and the list still shows", async () => {
-    const ODD: TemplateView = { ...REVIEWER, name: "odd", display_name: "Odd: ${parameters.constructor}", parameters: params({ constructor: { type: "string", description: "x" } }) };
+    const ODD: TemplateView = { ...REVIEWER, id: "odd", name: "odd", display_name: "Odd: ${parameters.constructor}", parameters: params({ constructor: { type: "string", description: "x" } }) };
     const list = await open(undefined, { templates: [ODD, NOTES] });
-    expect([...list.host.querySelectorAll("article h2")].map((h) => h.textContent)).toEqual(["Odd: …", "meeting-notes"]);
+    expect([...list.host.querySelectorAll("article h3")].map((h) => h.textContent)).toEqual(["Odd", "meeting-notes"]);
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const apply = await open("odd", { templates: [ODD], playground: false });
+    expect(apply.host.querySelector("h1")!.textContent).toContain("Odd: …");
+  });
+
+  it("keeps the marketplace's templates beside this server's list when that list fails, and Try again reads this server's", async () => {
+    const down = { now: true };
+    const t = await open(undefined, { playground: false, templatesDown: down, marketplace: async () => MARKETPLACE });
+    const alert = t.host.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("The store is not answering.");
+    expect([...t.host.querySelectorAll("[data-marketplace-template]")].map((c) => c.getAttribute("aria-label"))).toEqual(["Company research brief", "Vendor outage watch"]);
+    down.now = false;
+    await t.click(t.button(/^Try again/));
+    expect(t.host.querySelector('[role="alert"]')).toBeNull();
+    expect([...t.host.querySelectorAll("article:not([data-marketplace-template])")].map((c) => c.getAttribute("aria-label"))).toEqual(["PR reviewer", "meeting-notes"]);
+    expect(t.host.querySelectorAll("[data-marketplace-template]")).toHaveLength(2);
   });
 
   it("has the sections' top bar: the list names it, a template leads back to it, and the playground's page has its own", async () => {
@@ -571,10 +642,10 @@ describe("applying a template", () => {
 
   it("preselects the template's own approvals: Never ask, with what it grants, for one that runs unattended; Ask me for one that asks", async () => {
     const MONITOR: TemplateView = { ...REVIEWER, name: "market-monitor", approvals_default: "never" };
-    const radio = (t: Awaited<ReturnType<typeof open>>, label: RegExp) => [...t.host.querySelectorAll<HTMLInputElement>('fieldset[aria-label="Approvals"] input[type="radio"]')].find((r) => label.test(r.closest("label")?.textContent ?? ""));
+    const radio = (t: Awaited<ReturnType<typeof open>>, label: RegExp) => [...t.host.querySelectorAll<HTMLInputElement>('fieldset[aria-label="Tool approvals"] input[type="radio"]')].find((r) => label.test(r.closest("label")?.textContent ?? ""));
     const never = await open("market-monitor", { templates: [MONITOR] });
     expect(radio(never, /^Never ask/)!.checked).toBe(true);
-    expect(never.host.querySelector('fieldset[aria-label="Approvals"]')!.textContent).toContain("Never ask: every tool this agent has runs without waiting for you.");
+    expect(never.host.querySelector('fieldset[aria-label="Tool approvals"]')!.textContent).toContain("Never ask: every tool this agent has runs without waiting for you.");
     // Switching still sends the choice.
     await never.click(radio(never, /^Ask me/));
     await never.type(never.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
@@ -587,14 +658,14 @@ describe("applying a template", () => {
 
   it("asks by default; Never ask says what it grants and is sent as the agent's approvals", async () => {
     const t = await open("pr-reviewer");
-    const radio = (label: RegExp) => [...t.host.querySelectorAll<HTMLInputElement>('fieldset[aria-label="Approvals"] input[type="radio"]')].find((r) => label.test(r.closest("label")?.textContent ?? ""));
+    const radio = (label: RegExp) => [...t.host.querySelectorAll<HTMLInputElement>('fieldset[aria-label="Tool approvals"] input[type="radio"]')].find((r) => label.test(r.closest("label")?.textContent ?? ""));
     expect(radio(/^Ask me/)!.checked).toBe(true);
     // The Ask note keeps the promise as this server's settings make it: a ticked write asks unless allowed in Settings.
-    expect(radio(/^Ask me/)!.closest("label")!.textContent).toContain("A call that asks waits for your answer: a ticked tool's write unless you allowed it in Settings, and its read unless you turned on Allow reads for its server.");
+    expect(radio(/^Ask me/)!.closest("label")!.textContent).toContain("A tool set to ask waits for your OK before it runs: a ticked tool's write unless you allowed it in Settings, and its read unless you turned on Allow reads for its server.");
     // One plain line beside the Never choice: what a triggered template needs.
     expect(radio(/^Never ask/)!.closest("label")!.textContent).toContain("Runs without asking you, even for writes. Pick this if a trigger starts the agent while you're away.");
     await t.click(radio(/^Never ask/));
-    expect(t.host.querySelector('fieldset[aria-label="Approvals"]')!.textContent).toContain("Never ask: every tool this agent has runs without waiting for you. A tool set to deny, and a template's pins, still hold.");
+    expect(t.host.querySelector('fieldset[aria-label="Tool approvals"]')!.textContent).toContain("Never ask: every tool this agent has runs without waiting for you. A tool set to deny, and a template's pins, still hold.");
     await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
     await t.click(t.button(/^Apply/));
     expect(t.sent[0].body.overrides).toEqual({ approvals: "never" });
@@ -1005,5 +1076,116 @@ describe("applying a template", () => {
     expect(t.host.textContent).toContain("The server denies mcp:github/create_review, so it stays denied.");
     const link = [...t.host.querySelectorAll("a")].find((a) => a.textContent?.includes("Open the agent"));
     expect(link?.getAttribute("href")).toBe("#/agents/pr-reviewer-1");
+  });
+});
+
+describe("the Templates page's marketplace (GRE-4834)", () => {
+  const section = (host: HTMLElement) => host.querySelector<HTMLElement>("[data-marketplace]");
+
+  it("lists the marketplace's templates that are not here after this server's own: one with its source installs through the install page, one with none from its marketplace page", async () => {
+    const t = await open(undefined, { marketplace: async () => MARKETPLACE });
+    expect([...t.host.querySelectorAll("h2")].map((h) => h.textContent)).toEqual(["On this server", "From the marketplace2"]);
+    const market = section(t.host)!;
+    expect([...market.querySelectorAll("article h3")].map((h) => h.textContent)).toEqual(["Company research brief", "Vendor outage watch"]);
+    expect(t.host.querySelectorAll("article")).toHaveLength(4);
+    const brief = market.querySelector<HTMLElement>('[data-marketplace-template="company-brief"]')!;
+    expect(brief.textContent).toContain("A one-page brief on a company.");
+    expect(brief.textContent).toContain("Requires web search");
+    expect(brief.querySelector("a")!.getAttribute("href")).toBe("https://marketplace.example/templates/company-brief/");
+    await t.click([...brief.querySelectorAll("button")].find((b) => b.textContent === "Install"));
+    expect(t.went).toEqual([`#/templates/install?src=${encodeURIComponent(SOURCE)}`]);
+    const watch = market.querySelector<HTMLElement>('[data-marketplace-template="vendor-outage-watch"]')!;
+    expect(watch.textContent).toContain("Watches your vendors' status pages.");
+    const install = [...watch.querySelectorAll("a")].find((a) => a.textContent === "Install from the marketplace")!;
+    expect([install.getAttribute("href"), install.getAttribute("target")]).toEqual(["https://marketplace.example/templates/vendor-outage-watch/", "_blank"]);
+    expect([...market.querySelectorAll("a")].find((a) => a.textContent === "Open the marketplace")?.getAttribute("href")).toBe("https://marketplace.example");
+  });
+
+  it("leads a marketplace card with its harness's icon and lists its harnesses as this server's cards do, when the list says", async () => {
+    const said: MarketplaceList = { ...MARKETPLACE, templates: MARKETPLACE.templates.map((t) => t.name === "company-brief" ? { ...t, harness: ["pi", "claude-agent", "codex"] } : t) };
+    const t = await open(undefined, { marketplace: async () => said });
+    const market = section(t.host)!;
+    const brief = market.querySelector<HTMLElement>('[data-marketplace-template="company-brief"]')!;
+    expect(brief.querySelector("[data-template-icon] [role=\"img\"]")!.getAttribute("aria-label")).toBe("Harness: Pi, Claude, Codex");
+    const row = [...brief.querySelectorAll("dl > div")].find((d) => d.querySelector("dt")?.textContent === "Harness")!;
+    expect([...row.querySelectorAll('[role="img"]')].map((i) => i.getAttribute("aria-label"))).toEqual(["Pi", "Claude", "Codex"]);
+    const watch = market.querySelector<HTMLElement>('[data-marketplace-template="vendor-outage-watch"]')!;
+    expect(watch.querySelector("[data-template-icon] [role=\"img\"]")!.getAttribute("aria-label"), "a list that does not say is not read as any").toBe("Harness not listed");
+    expect(watch.querySelector("dl"), "and has no Harness row").toBeNull();
+  });
+
+  it("a search finds a card by the marketplace's summary it shows, not only by the package's own words", async () => {
+    const said: MarketplaceList = { ...MARKETPLACE, templates: MARKETPLACE.templates.map((t) => t.name === "pr-reviewer" ? { ...t, summary: "Flags risky diffs before they merge." } : t) };
+    const t = await open(undefined, { marketplace: async () => said });
+    await t.type(t.host.querySelector('input[aria-label="Search templates"]'), "risky");
+    await t.settle();
+    expect([...t.host.querySelectorAll("article h3")].map((h) => h.textContent)).toContain(cardTitleOf(REVIEWER));
+  });
+
+  it("removing a template the marketplace lists reads the marketplace again: the template goes back to its section", async () => {
+    const IMPORTED: TemplateView = { ...NOTES, id: "github:acme/kit/company-brief", bundled: false, source: `${SOURCE}`, sha: "a".repeat(40), publisher: "acme", name: "company-brief", display_name: "Company research brief", description: "Imported here." };
+    let current: TemplateView[] = [REVIEWER, IMPORTED];
+    const t = await open(undefined, {
+      get templates() { return current; },
+      onDelete: (id) => { current = current.filter((x) => x.id !== id); },
+      marketplace: async () => ({ ...MARKETPLACE, templates: [{ name: "company-brief", title: "Company research brief", tags: [], needs: [], page_url: "https://marketplace.example/templates/company-brief/", source: SOURCE, ...(current.some((x) => x.id === IMPORTED.id) ? { here: IMPORTED.id } : {}) }] }),
+    });
+    const inMarket = () => section(t.host)?.querySelector('[data-marketplace-template="company-brief"]');
+    expect(inMarket(), "installed here, it is not listed again under the marketplace").toBeFalsy();
+    const reads = t.marketplaceReads.length;
+    await t.click(t.button(/^Remove$/));
+    expect(t.deleted).toEqual([IMPORTED.id]);
+    expect(t.marketplaceReads.length, "the marketplace is read again").toBeGreaterThan(reads);
+    expect(inMarket(), "and the template is back in its section").toBeTruthy();
+  });
+
+  it("one search filters both lists, saying how many it keeps of all", async () => {
+    const t = await open(undefined, { marketplace: async () => MARKETPLACE });
+    await t.type(t.host.querySelector('input[aria-label="Search templates"]'), "brief");
+    await t.settle();
+    expect(t.host.textContent).toContain("None of this server's templates match “brief”.");
+    expect([...t.host.querySelectorAll("article h3")].map((h) => h.textContent)).toEqual(["Company research brief"]);
+    expect(t.host.querySelector("[data-filter-count]")!.textContent).toBe("1 of 4 shown");
+    expect(section(t.host)!.querySelector("h2")!.textContent).toBe("From the marketplace1");
+  });
+
+  it("says when the marketplace could not be read and tries again on asking; a stale list stays shown; a server that reads none shows no section", async () => {
+    let answer: MarketplaceList = { url: "https://marketplace.example", state: "unreachable", read_at: null, problem: "The marketplace answered 503 for its list.", templates: [] };
+    const t = await open(undefined, { marketplace: async () => answer });
+    expect(section(t.host)!.textContent).toContain("The marketplace couldn't be read, so only this server's templates are listed. The marketplace answered 503 for its list.");
+    expect(t.host.querySelectorAll("article")).toHaveLength(2);
+    const reads = t.marketplaceReads.length;
+    answer = { ...MARKETPLACE, state: "stale", problem: "The marketplace answered 503 for its list." };
+    await t.click([...section(t.host)!.querySelectorAll("button")].find((b) => b.textContent === "Try again"));
+    expect(t.marketplaceReads.length).toBe(reads + 1);
+    expect(section(t.host)!.textContent).toContain("The marketplace couldn't be read just now; its templates are as of");
+    expect(section(t.host)!.querySelectorAll("article")).toHaveLength(2);
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const off = await open();
+    expect(section(off.host)).toBeNull();
+    expect(off.host.textContent).not.toContain("marketplace");
+  });
+
+  it("lists what the marketplace lists: the Suggested page's scanner is left out, and a card it lists reads its title and one line as the marketplace's card does; the API playground still lists the scanner", async () => {
+    const SCOUT: TemplateView = { ...NOTES, id: "agent-scout", name: "agent-scout", display_name: "Agent scout", description: "Finds where an agent would work in a repository." };
+    const KYB: TemplateView = { ...NOTES, id: "kyb", name: "kyb", display_name: "KYB due diligence (${parameters.risk_appetite} risk appetite)", description: "Business due diligence on one company, at length." };
+    const listed: MarketplaceList = { ...MARKETPLACE, templates: [...MARKETPLACE.templates, { name: "kyb", title: "KYB due diligence", summary: "Checks who owns and runs a company.", tags: [], needs: [], page_url: "https://marketplace.example/templates/kyb/", here: "kyb" }] };
+    const t = await open(undefined, { templates: [REVIEWER, KYB, SCOUT], marketplace: async () => listed });
+    const here = [...t.host.querySelectorAll("article")].filter((a) => !a.closest("[data-marketplace]"));
+    expect(here.map((a) => a.querySelector("h3")!.textContent)).toEqual(["PR reviewer", "KYB due diligence"]);
+    expect(here[1]!.textContent).toContain("Checks who owns and runs a company.");
+    expect(here[1]!.textContent).not.toContain("at length");
+    expect(here[0]!.textContent, "with no summary there, its description").toContain(REVIEWER.description);
+    expect(t.host.querySelector("[data-filter-count]")?.textContent ?? "").not.toContain("5");
+    expect(t.host.textContent).not.toContain("Agent scout");
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const playground = await open(undefined, { templates: [REVIEWER, KYB, SCOUT], playground: true });
+    expect([...playground.host.querySelectorAll("article h3")].map((h) => h.textContent)).toContain("Agent scout");
+  });
+
+  it("the API playground's list applies this server's templates alone: it reads no marketplace", async () => {
+    const t = await open(undefined, { marketplace: async () => MARKETPLACE, playground: true });
+    expect(t.marketplaceReads).toEqual([]);
+    expect(section(t.host)).toBeNull();
   });
 });

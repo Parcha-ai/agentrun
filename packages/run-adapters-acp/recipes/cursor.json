@@ -6,7 +6,9 @@
   "files": {
     ".config/cursor/cli-config.json":"{\"version\":1,\"permissions\":{\"allow\":[],\"deny\":[\"Write(**)\"]},\"approvalMode\":\"allowlist\"}\n"
   },
+  "instructions": "Your own file-writing tool (Write) is turned off here: every write with it is refused, and asking does not turn it on. To create or change a file, run a shell command that writes it (a heredoc such as cat > name <<'EOF' ... EOF, or a short script); a shell command asks the person first. When Write refuses a write, write the file with a shell command instead: never stop at that refusal or answer without the file. When the person denies a shell command, that is their answer: do not ask again for the same write; stop and say what you could not do.",
   "state": [".config/cursor/acp-sessions"],
+  "mcpConfigs": ["~/.cursor/mcp.json", ".cursor/mcp.json"],
   "credentials": [".config/cursor/auth.json"],
   "refusals": [
     {
@@ -16,6 +18,8 @@
     }
   ],
   "quiet": ["couldn't save your credentials", "EISDIR: illegal operation on a directory, open"],
+  "announces": { "tool": "rawInput.toolName", "server": "rawInput.providerIdentifier", "args": "rawInput.args" },
   "declares": { "load": true, "mcp": "http" },
-  "billing": { "kind": "plan", "maxTurns": 20, "maxToolCalls": 100 }
+  "billing": { "kind": "plan", "maxTurns": 20, "maxToolCalls": 100 },
+  "quirks": { "permissionTie": "title" }
 }

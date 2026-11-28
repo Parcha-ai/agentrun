@@ -28,6 +28,7 @@ const { META_REASON } = await import("../dist/mcp-meta.js");
 const { TOOL_COST, TOOL_UNMETERED } = await import("../dist/timeline/index.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
 const { mcpForClaim } = await import("../dist/runner/mcp-run.js");
+const { heldRedactor, keepText } = await import("../dist/runner/redact.js");
 const { adapterRunGate } = await import("../dist/runner/adapter-run-spec.js");
 const { GITHUB_UNUSABLE } = await import("../dist/runner/mcp-github.js");
 const { UNUSABLE } = await import("../dist/mcp-probe.js");
@@ -98,7 +99,7 @@ async function mcpRun(t, { script, grants, settings = {}, tools = [ADD, PAID], p
   t.after(() => rmSync(work, { recursive: true, force: true }));
   const loop = createAdapterLoop(async (claim, run) => {
     // As a spec builder does: the claim's MCP first (mcpForClaim), before anything the spec would have to let go.
-    const mcp = await mcpForClaim({ loopback: true, claim, store: { mcp: store.mcp, runs: store.runs, agents: store.agents, settings: store.settings, triggerSettings: store.triggerSettings, where: store.where }, sealKey: KEY, grants, harness: run.harness, work: () => work, ...(held ? { hold: (values) => held.push(...values) } : {}), ...(network ? { network } : {}), ...(githubAppAccess ? { githubAppAccess, launchInput, githubMcpOrigin: new URL(fake.url).origin } : {}) });
+    const mcp = await mcpForClaim({ redact: heldRedactor(keepText), loopback: true, claim, store: { mcp: store.mcp, runs: store.runs, agents: store.agents, settings: store.settings, triggerSettings: store.triggerSettings, where: store.where }, sealKey: KEY, grants, harness: run.harness, work: () => work, ...(held ? { hold: (values) => held.push(...values) } : {}), ...(network ? { network } : {}), ...(githubAppAccess ? { githubAppAccess, launchInput, githubMcpOrigin: new URL(fake.url).origin } : {}) });
     if (mcp) opened.push(mcp);
     return {
       ...(await base(claim, run)),
@@ -200,6 +201,22 @@ test("R2: by default an MCP call asks: the run parks on it with nothing sent, it
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.equal(lastResult(run.sent), "9");
   assert.equal(toolCalls(run.fake, "add").length, 1, "run exactly once");
+});
+
+test("R2b: a fal job's card says priced by usage: fal prices it only when it runs, after the allow", async (t) => {
+  const SUBMIT = { name: "submit_job", description: "Submit a fal job.", inputSchema: object({ endpoint_id: { type: "string" }, input: { type: "object" } }) };
+  // The save pins "fake" as fal's (its owner's toolkit), as mcpPinOf does: its jobs are priced only when they run.
+  const falPin = (args) => {
+    const pinned = savePin(args);
+    return pinned && { fake: { ...pinned.fake, meter: "fal" } };
+  };
+  const script = [{ call: "mcp__fake__submit_job", args: { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "a card", num_images: 1 } } }, { sayLastResult: true }];
+  const run = await mcpRun(t, { script, grants: ["mcp:fake/submit_job"], tools: [SUBMIT], pin: falPin });
+  assert.equal(run.row.state, "parked", JSON.stringify(run.row));
+  assert.equal(toolCalls(run.fake).length, 0, "nothing sent while it waits");
+  const [ask] = await asks(run.server);
+  assert.equal(ask.tool, "mcp:fake/submit_job");
+  assert.equal(ask.price, "priced by usage");
 });
 
 test("R3: a denied MCP call is told in words, and nothing is sent", async (t) => {
@@ -538,10 +555,12 @@ test("R16: a per_run server is called with the credential the run was handed, wh
   await assertNowhere(RUN_TOKEN, run, lines);
 });
 
-test("R17: a per_run server's call in a run handed no credential for it is refused unsent, in UNUSABLE.perRunMissing's words", async (t) => {
+test("R17: a per_run server's call in a run handed no credential for it is refused unsent, in UNUSABLE.perRunMissing's words, and the claim names the server (ClaimMcp.unconnected) for its builder to leave out", async (t) => {
   const script = [{ call: "mcp__fake__add", args: { a: 2, b: 3 } }, { sayLastResult: true }];
-  const run = await mcpRun(t, { script, grants: ["mcp:fake/add"], settings: { "mcp:fake/add": { permission: "allow" } }, auth: "per_run", fakeToken: RUN_TOKEN, launchSealed: (url) => sealRunMcpAuth(KEY, "run-1", { other: { headers: { authorization: "Bearer x" }, origin: new URL(url).origin } }) });
+  const opened = [];
+  const run = await mcpRun(t, { script, grants: ["mcp:fake/add"], settings: { "mcp:fake/add": { permission: "allow" } }, auth: "per_run", fakeToken: RUN_TOKEN, opened, launchSealed: (url) => sealRunMcpAuth(KEY, "run-1", { other: { headers: { authorization: "Bearer x" }, origin: new URL(url).origin } }) });
   assert.equal(run.row.state, "ended", JSON.stringify(run.row));
+  assert.deepEqual(opened.map((mcp) => mcp.unconnected), [["fake"]], "named by the claim");
   assert.equal(lastResult(run.sent), `The MCP server fake's credential can't be used right now: ${UNUSABLE.perRunMissing}.`);
   assert.equal(toolCalls(run.fake).length, 0, "nothing sent");
 });

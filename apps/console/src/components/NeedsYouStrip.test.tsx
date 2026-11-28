@@ -8,7 +8,7 @@ import type { BackendSdkBinding } from "@/lib/backendSdk";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const NOW = Date.parse("2026-11-03T16:20:00Z");
-const run = (id: string, agent: string, over: Partial<Run>): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" },
+const run = (id: string, agent: string, over: Partial<Run>): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" }, learning_work: { state: "none", runs: [], ended_at: null, deadline_at: null },
   run_id: id, agent_id: agent, agent_version: 1, revision: "r1", kind: "agentic", status: "completed", state: "idle", title: `Run ${id}`,
   created_at: "2026-11-03T16:08:00Z", ended_at: null, result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null, ...over,
 });
@@ -87,6 +87,20 @@ describe("NeedsYouStrip, the failures", () => {
     expect(h).toContain("Score the lead: Hooli");
     expect(h).toContain("the run hit its $0.50 spend cap");
     expect(h).toContain(">Run again<");
+  });
+  it("keeps a failed group's square, time and button on its first line, so opening its runs moves none of them", () => {
+    const host = mount();
+    const group = [...host.querySelectorAll<HTMLElement>("[data-failed-group]")].find((li) => li.textContent?.includes("2 runs failed"))!;
+    // Top-aligned, never centred on the row: the list of runs grows it downwards only.
+    expect(group.className).toContain("items-start");
+    expect(group.className).not.toContain("items-center");
+    // The square is centred in a line box of the first line's own text size.
+    const mark = group.querySelector("[data-failed-mark]")!;
+    expect(mark.className).toContain("text-lead");
+    expect(mark.querySelector(".bg-destructive")).not.toBeNull();
+    const actions = group.querySelector("[data-failed-actions]")!;
+    expect(actions.textContent).toContain("Run all again");
+    expect(group.querySelector("details")!.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
   it("runs every run of a group again on one click, and drops the group once they started", async () => {
     const again: string[][] = [];

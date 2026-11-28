@@ -17,8 +17,13 @@ import { getSealedKey } from "../dist/server-keys.js";
 import { fakeFactories, KINDS, tools } from "./fixtures/computer-kinds.mjs";
 import { storeOn, T0 } from "./store-helpers.mjs";
 import { hostToolDefs } from "@parcha/agentrun-kernel/kernel";
-import { hostToolsOf, registryHere, resolveComputer, SHELL_NOTES } from "../dist/workspace/resolve-computer.js";
+import { hostToolsOf, registryHere, resolveComputer } from "../dist/workspace/resolve-computer.js";
 import { KEY_TABLE, settingOptions } from "../dist/computer-keys.js";
+
+/** What a computer that gives the run no shell of its own leaves out: a computer all the same, so never "no computer".
+ *  On this server's own disk (Mode 1), and on the owner's (Mode 2). */
+const APART_NONE = "This computer gives the run no shell: the agent gets the file tools only. Pick a computer that mounts the run's folder to run commands.";
+const APART_LOCAL = "This computer doesn't mount the run's folder: bash runs in a fresh container on the folder's own storage; background commands need a computer that mounts it.";
 
 /** A key's changed_at: the store's clock when it was saved. */
 const CHANGED = new Date(T0).toISOString();
@@ -68,7 +73,7 @@ test("Mode 1 (run folders on this machine): a sandbox is Docker's alone; a deskt
   assert.equal(providerOf(view, "sandbox", "daytona").metered, true, "metered as the kind registry says");
   assert.equal(providerOf(view, "sandbox", "daytona").ready, false);
   assert.match(providerOf(view, "sandbox", "daytona").why, /Daytona can't mount this server's run folders/);
-  assert.deepEqual(providerOf(view, "phone", "phone-harness"), { id: "phone-harness", name: "Phone harness", metered: true, secrets: [{ name: "computer:phone-harness:PHONE_HARNESS_API_KEY", set: false, source: null, changed_at: null }], required: ["computer:phone-harness:PHONE_HARNESS_API_KEY"], ready: false, why: "Phone harness needs PHONE_HARNESS_API_KEY saved: save it in Settings → Computers", runs_refused: null, folder: null, network: "the vendor's own network; this server's allow-list doesn't apply", shell: "none", host_tools: ["read", "write", "edit"], shell_note: SHELL_NOTES.none });
+  assert.deepEqual(providerOf(view, "phone", "phone-harness"), { id: "phone-harness", name: "Phone harness", metered: true, secrets: [{ name: "computer:phone-harness:PHONE_HARNESS_API_KEY", set: false, source: null, changed_at: null }], required: ["computer:phone-harness:PHONE_HARNESS_API_KEY"], ready: false, why: "Phone harness needs PHONE_HARNESS_API_KEY saved: save it in Settings → Computers", runs_refused: null, folder: null, network: "the vendor's own network; this server's allow-list doesn't apply", shell: "none", host_tools: ["read", "write", "edit"], shell_note: APART_NONE });
   assert.equal(kindOf(view, "sandbox").offered, true);
   // What this server's allow-list means for each provider, from its descriptor's network and the kind: none for a sandbox
   // of Docker's or of a hosted computer that runs init's egress proxy (Daytona, Modal, E2B), which takes the list; for
@@ -125,6 +130,18 @@ test("Mode 2: a provider that takes the Archil mount and prepares no image holds
   assert.equal(modeRefusal("sandbox", unsynced, "disk"), "Acme can't mount the owner's disk this server keeps run folders on (Acme makes no /workspace yet): set this agent's computer to a sandbox that mounts it, or none (Settings → Computers)");
   assert.equal(modeRefusal("desktop", unsynced, "disk"), undefined, "a desktop that holds no folder runs on Archil's exec");
   for (const kind of ["sandbox", "desktop"]) assert.equal(modeRefusal(kind, e2b, "disk"), undefined, `e2b's ${kind}: it prepares its image`);
+});
+
+test("Mode 1: a sandbox provider that could hold the run's folder on an Archil disk (Mode 2) says to turn Archil on, beside Docker or none; one that couldn't keeps to Docker or none", () => {
+  const entry = (id) => PROVIDERS.find((one) => one.id === id);
+  // No route in the words (a view's why ends at the setting): the console's own place for it, Settings → Workspace.
+  const archil = (label) => `${label} can't mount this server's run folders (they are on its own disk): keep run folders on an Archil disk instead (turn on Archil in Settings → Workspace), or set this agent's computer to sandbox on Docker, or none (Settings → Computers)`;
+  // E2B, Modal and Agent37 mount the Archil disk; Daytona and boxd hold a synced folder on it.
+  for (const id of ["e2b", "modal", "agent37", "daytona", "boxd"]) assert.equal(modeRefusal("sandbox", entry(id), "local"), archil(entry(id).label), id);
+  // smol cloud takes neither (its own disk sits at /workspace): Archil on would not seat its sandbox either.
+  assert.equal(modeRefusal("sandbox", entry("smolcloud"), "local"), "smol cloud can't mount this server's run folders (they are on its own disk): set this agent's computer to sandbox on Docker, or none (Settings → Computers)");
+  assert.equal(modeRefusal("sandbox", entry("docker"), "local"), undefined, "Docker binds the folder");
+  assert.equal(modeRefusal("desktop", entry("e2b"), "local"), undefined, "a desktop holds no folder");
 });
 
 test("Mode 2: Docker's sandbox can't mount the owner's disk; Daytona's holds a synced folder, so it needs only its key; Modal's sandbox and E2B's and Agent37's sandbox and desktop are ready with their keys (their prepareImage answers the box image); a desktop, phone or browser is offered", async (t) => {
@@ -185,7 +202,7 @@ test("a key save takes only the provider's declared names, seals each in the sto
   for (const blank of [" ", "\t\n"]) await assert.rejects(routes.saveKeys("browserbase", { BROWSERBASE_API_KEY: blank }), (error) => error instanceof KeysRefused && error.fields[0].reason === "wrong_type" && /a non-empty string/.test(error.fields[0].message), JSON.stringify(blank));
   assert.deepEqual(await store.sealedKeys.all(), [], "nothing saved when any name is refused");
   const saved = await routes.saveKeys("browserbase", { BROWSERBASE_API_KEY: "good-b1", BROWSERBASE_PROJECT_ID: "good-proj" });
-  assert.deepEqual(saved, { id: "browserbase", name: "Browserbase", metered: true, secrets: [{ name: "computer:browserbase:BROWSERBASE_API_KEY", set: true, source: "console", changed_at: CHANGED }, { name: "computer:browserbase:BROWSERBASE_PROJECT_ID", set: true, source: "console", changed_at: CHANGED }], required: ["computer:browserbase:BROWSERBASE_API_KEY", "computer:browserbase:BROWSERBASE_PROJECT_ID"], ready: true, runs_refused: null, folder: null, network: "the vendor's own network; this server's allow-list doesn't apply", shell: "none", host_tools: ["read", "write", "edit"], shell_note: SHELL_NOTES.none }, "the shared secret shape: set, where from, when changed; never a value; and the shell a browser gives (none: it mounts no folder)");
+  assert.deepEqual(saved, { id: "browserbase", name: "Browserbase", metered: true, secrets: [{ name: "computer:browserbase:BROWSERBASE_API_KEY", set: true, source: "console", changed_at: CHANGED }, { name: "computer:browserbase:BROWSERBASE_PROJECT_ID", set: true, source: "console", changed_at: CHANGED }], required: ["computer:browserbase:BROWSERBASE_API_KEY", "computer:browserbase:BROWSERBASE_PROJECT_ID"], ready: true, runs_refused: null, folder: null, network: "the vendor's own network; this server's allow-list doesn't apply", shell: "none", host_tools: ["read", "write", "edit"], shell_note: APART_NONE }, "the shared secret shape: set, where from, when changed; never a value; and the shell a browser gives (none: it mounts no folder)");
   assert.ok(!JSON.stringify(saved).includes("good-b1"), "never echoed");
   assert.ok(!JSON.stringify(await routes.view()).includes("good-b1"), "nor in the view");
   assert.equal(await getSealedKey(store, sealKey, "BROWSERBASE_API_KEY"), "good-b1", "sealed, and opens with the server's key");
@@ -308,13 +325,13 @@ test("each choice says where its runs have their shell, the host tools that give
   const local = await (await setup(t)).routes.view();
   assert.deepEqual(choice(kindOf(local, "none")), { shell: "none", host_tools: names("none"), shell_note: "No computer on this server: the agent gets the file tools only, no shell. Pick a computer to run commands." });
   assert.deepEqual(choice(providerOf(local, "sandbox", "docker")), { shell: "computer", host_tools: names("computer"), shell_note: undefined });
-  assert.deepEqual(choice(providerOf(local, "desktop", "e2b")), { shell: "none", host_tools: names("none"), shell_note: SHELL_NOTES.none }, "E2B's desktop does not bind this server's folder");
+  assert.deepEqual(choice(providerOf(local, "desktop", "e2b")), { shell: "none", host_tools: names("none"), shell_note: APART_NONE }, "E2B's desktop does not bind this server's folder: a computer all the same, never \"no computer\"");
   assert.deepEqual(choice(providerOf(local, "desktop", "docker")), { shell: "computer", host_tools: names("computer"), shell_note: undefined }, "Docker's desktop binds it");
   // Mode 2: the run folders are on the owner's disk.
   const disk = await (await setup(t, { mode: "disk", kinds: KINDS })).routes.view();
   assert.deepEqual(choice(kindOf(disk, "none")), { shell: "local", host_tools: names("local"), shell_note: "No computer: bash runs in a fresh container on the folder's own storage; background commands need a computer." });
   assert.deepEqual(choice(providerOf(disk, "sandbox", "e2b")), { shell: "computer", host_tools: names("computer"), shell_note: undefined });
-  assert.deepEqual(choice(providerOf(disk, "desktop", "orgo")), { shell: "local", host_tools: names("local"), shell_note: SHELL_NOTES.local }, "Orgo's desktop does not mount the disk");
+  assert.deepEqual(choice(providerOf(disk, "desktop", "orgo")), { shell: "local", host_tools: names("local"), shell_note: APART_LOCAL }, "Orgo's desktop does not mount the disk: a computer all the same, never \"no computer\"");
   assert.deepEqual(choice(providerOf(disk, "desktop", "e2b")), { shell: "computer", host_tools: names("computer"), shell_note: undefined }, "E2B's desktop mounts it");
   for (const view of [local, disk]) {
     for (const kind of view.kinds) {
