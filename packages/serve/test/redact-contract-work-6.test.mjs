@@ -1,6 +1,8 @@
 // redact-contract.test.mjs's work count of the adversarial texts, part 6: the texts whose index is 5 modulo
 // WORK_PARTS (fixtures/redact-work.mjs), each at every size through every reader. The parts run at once.
+// Its name is written out, so scripts/ci-timings.mjs credits its time to this file: redact-contract.test.mjs
+// checks it is workPartName(6).
 import { test } from "node:test";
-import { adversarialWork, workPartName } from "./fixtures/redact-work.mjs";
+import { adversarialWork } from "./fixtures/redact-work.mjs";
 
-test(workPartName(6), (t) => adversarialWork(t, 6));
+test("adversarial texts: the characters the whole pipeline visits are at most WORK per character, at 32 KiB, 128 KiB and 512 KiB, and at most GROWTH more at 512 KiB than at 32 KiB (part 6 of 6: the texts whose index is 5 modulo 6)", (t) => adversarialWork(t, 6));

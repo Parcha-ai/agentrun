@@ -12,7 +12,7 @@ import { readCost, redactedAnswer, redactedCall } from "../dist/key-refusal.js";
 import { marksOf, scanned, shownIn } from "../dist/redact/match.js";
 import { CALL_RESULT_CHARS, scrubUrls } from "../dist/timeline/index.js";
 import { cut } from "../dist/timeline/util.js";
-import { COSTLY, COSTLY_PARTS, fill, PIECE, PY_HEAD, PY_REST, READ_MOST, READING, sparse, VALUE, WORK, wrapped } from "./fixtures/key-refusal-work.mjs";
+import { COSTLY, COSTLY_PARTS, costlyPartName, fill, PIECE, PY_HEAD, PY_REST, READ_MOST, READING, sparse, VALUE, WORK, wrapped } from "./fixtures/key-refusal-work.mjs";
 import { coverTally, uncovered } from "./fixtures/marks-cover.mjs";
 
 const KEY = `not-a-secret-${"openrouter-key"}`;
@@ -383,7 +383,9 @@ test("the texts the reads cost most on: the work count's parts read every text e
   for (const file of files) {
     const k = Number(file.match(/\d+/)[0]);
     const text = readFileSync(new URL(file, import.meta.url), "utf8");
-    assert.deepEqual([...text.matchAll(/costlyWork\(t, (\d+)\)|costlyPartName\((\d+)\)/g)].map((m) => Number(m[1] ?? m[2])), [k, k], file);
+    assert.deepEqual([...text.matchAll(/costlyWork\(t, (\d+)\)/g)].map((m) => Number(m[1])), [k], file);
+    // The name written out is the part's own: scripts/ci-timings.mjs credits a test's time by the name its file declares.
+    assert.deepEqual([...text.matchAll(/(?<![.\w$])test\(("(?:[^"\\\n]|\\.)*")/g)].map((m) => JSON.parse(m[1])), [costlyPartName(k)], file);
   }
   assert.deepEqual(COSTLY_PARTS.flat().sort(), COSTLY.map(([what]) => what).sort());
   assert.ok(COSTLY_PARTS.every((part) => part.length > 0));

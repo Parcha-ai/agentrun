@@ -9,7 +9,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import { addressForms } from "../dist/calendar/address.js";
 import { redactLearned, redactSecrets } from "../dist/learn/secrets.js";
-import { adversarial, BACKSLASH, BOM, CUT_KEY, DENSE, ENTRIES, fill, SHY, short, SIZE, WORK_PARTS, ZWSP } from "./fixtures/redact-work.mjs";
+import { adversarial, BACKSLASH, BOM, CUT_KEY, DENSE, ENTRIES, fill, SHY, short, SIZE, WORK_PARTS, workPartName, ZWSP } from "./fixtures/redact-work.mjs";
 
 /** A held value of 64 characters in no secret's shape. */
 const SPLIT = `${["not-a-secret", "split-key"].join("-")}-${"0123456789abcdef".repeat(3)}`.slice(0, 64);
@@ -1506,7 +1506,9 @@ test("adversarial texts: the work count's parts read every text exactly once, ea
   for (const file of files) {
     const k = Number(file.match(/\d+/)[0]);
     const text = readFileSync(new URL(file, import.meta.url), "utf8");
-    assert.deepEqual([...text.matchAll(/adversarialWork\(t, (\d+)\)|workPartName\((\d+)\)/g)].map((m) => Number(m[1] ?? m[2])), [k, k], file);
+    assert.deepEqual([...text.matchAll(/adversarialWork\(t, (\d+)\)/g)].map((m) => Number(m[1])), [k], file);
+    // The name written out is the part's own: scripts/ci-timings.mjs credits a test's time by the name its file declares.
+    assert.deepEqual([...text.matchAll(/(?<![.\w$])test\(("(?:[^"\\\n]|\\.)*")/g)].map((m) => JSON.parse(m[1])), [workPartName(k)], file);
   }
   const count = adversarial(32 * 1024).length;
   const parts = Array.from({ length: WORK_PARTS }, (_, i) => Array.from({ length: count }, (_, at) => at).filter((at) => at % WORK_PARTS === i));

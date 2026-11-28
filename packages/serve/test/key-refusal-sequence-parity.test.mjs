@@ -14,7 +14,7 @@ import { test } from "node:test";
 import { redactedAnswer, redactedCall } from "../dist/key-refusal.js";
 import { shownIn, VIEW_COUNT } from "../dist/redact/match.js";
 import { coverTally } from "./fixtures/marks-cover.mjs";
-import { ENCODINGS, HEAD, LAYOUTS, matcherReadsPast, partOf, READ_PAST_PARTS, readPastName, REST, VALUE, wrapped } from "./fixtures/padding-shapes.mjs";
+import { ENCODINGS, HEAD, LAYOUTS, matcherReadsPast, partOf, READ_PAST_PARTS, readPastName, readPastPartName, REST, VALUE, wrapped } from "./fixtures/padding-shapes.mjs";
 
 // The check of every padding shape the matcher reads past (fixtures/padding-shapes.mjs) runs in parts, one test file
 // each (key-refusal-sequence-parity-<k>.test.mjs, the shapes of one opener): here, over every shape of each layout, the
@@ -32,7 +32,9 @@ test("every padding shape, in each layout: the parts of the read-past check take
   for (const file of files) {
     const k = Number(file.match(/\d+/)[0]);
     const text = readFileSync(new URL(file, import.meta.url), "utf8");
-    assert.deepEqual([...text.matchAll(/readPastPart(?:Name)?\(layout, (\d+)\)/g)].map((m) => Number(m[1])), [k, k], file);
+    assert.deepEqual([...text.matchAll(/readPastPart\(("[^"]*"), (\d+)\)/g)].map((m) => [JSON.parse(m[1]), Number(m[2])]), LAYOUTS.map(([layout]) => [layout, k]), file);
+    // The name written out is the part's own: scripts/ci-timings.mjs credits a test's time by the name its file declares.
+    assert.deepEqual([...text.matchAll(/(?<![.\w$])test\(("(?:[^"\\\n]|\\.)*")/g)].map((m) => JSON.parse(m[1])), LAYOUTS.map(([layout]) => readPastPartName(layout, k)), file);
   }
   for (const [layout, shapes] of LAYOUTS) {
     const owned = shapes.map(([name]) => [name, READ_PAST_PARTS.filter((opener) => name.startsWith(`${opener}, `)).length]);
