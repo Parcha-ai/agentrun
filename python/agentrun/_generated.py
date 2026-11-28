@@ -1216,6 +1216,8 @@ __all__ = [
     "SetSourceSyncResponseProjectIssuesItem2",
     "SetSourceSyncResponseToolConnectionsItem",
     "SetSourceSyncResponseToolConnectionsItemCandidatesItem",
+    "SetTriggerSecretBody",
+    "SetTriggerSecretResponse",
     "SignIn",
     "SignOutChatGPTResponse",
     "SignOutClaudeLoginResponse",
@@ -9124,7 +9126,7 @@ class FeaturesTriggers(_FeaturesTriggersRequired, total=False):
 
 class FeaturesTriggersWebhook(TypedDict):
     signing: Literal["standard-webhooks/v1"]
-    signatures: list[Literal["standard", "github"]]
+    signatures: list[Literal["standard", "github", "stream"]]
     tolerance_s: int
     max_body_bytes: int
     payload_kept_bytes: int
@@ -10487,7 +10489,7 @@ class _CreateTriggerBodySource4Required(TypedDict):
 
 
 class CreateTriggerBodySource4(_CreateTriggerBodySource4Required, total=False):
-    signature: Literal["standard", "github"]
+    signature: Literal["standard", "github", "stream"]
     accept: list[CreateTriggerBodySource4AcceptItem]
 
 
@@ -10715,7 +10717,7 @@ class _CreateTriggerResponseSource4Required(TypedDict):
 
 
 class CreateTriggerResponseSource4(_CreateTriggerResponseSource4Required, total=False):
-    signature: Literal["standard", "github"]
+    signature: Literal["standard", "github", "stream"]
     accept: list[CreateTriggerResponseSource4AcceptItem]
 
 
@@ -11062,7 +11064,7 @@ class _GetTriggerResponseSource4Required(TypedDict):
 
 
 class GetTriggerResponseSource4(_GetTriggerResponseSource4Required, total=False):
-    signature: Literal["standard", "github"]
+    signature: Literal["standard", "github", "stream"]
     accept: list[GetTriggerResponseSource4AcceptItem]
 
 
@@ -11351,7 +11353,7 @@ class _ListTriggersResponseTriggersItemSource4Required(TypedDict):
 
 
 class ListTriggersResponseTriggersItemSource4(_ListTriggersResponseTriggersItemSource4Required, total=False):
-    signature: Literal["standard", "github"]
+    signature: Literal["standard", "github", "stream"]
     accept: list[ListTriggersResponseTriggersItemSource4AcceptItem]
 
 
@@ -11626,6 +11628,14 @@ class RotateTriggerSecretResponse(_RotateTriggerSecretResponseRequired, total=Fa
     signing_secret: str
 
 
+class SetTriggerSecretBody(TypedDict):
+    secret: str
+
+
+class SetTriggerSecretResponse(TypedDict):
+    secret: SecretMeta
+
+
 class UpdateTriggerBody(TypedDict, total=False):
     name: str
     enabled: bool
@@ -11663,7 +11673,7 @@ class _UpdateTriggerBodySource4Required(TypedDict):
 
 
 class UpdateTriggerBodySource4(_UpdateTriggerBodySource4Required, total=False):
-    signature: Literal["standard", "github"]
+    signature: Literal["standard", "github", "stream"]
     accept: list[UpdateTriggerBodySource4AcceptItem]
 
 
@@ -11890,7 +11900,7 @@ class _UpdateTriggerResponseSource4Required(TypedDict):
 
 
 class UpdateTriggerResponseSource4(_UpdateTriggerResponseSource4Required, total=False):
-    signature: Literal["standard", "github"]
+    signature: Literal["standard", "github", "stream"]
     accept: list[UpdateTriggerResponseSource4AcceptItem]
 
 
@@ -12608,6 +12618,7 @@ OPERATIONS: dict[str, Operation] = {
     "listTriggers": Operation(method="GET", path="/triggers", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "releaseTriggerFiring": Operation(method="POST", path="/triggers/{trigger_id}/firings/{firing_id}/release", path_params=("trigger_id", "firing_id"), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "rotateTriggerSecret": Operation(method="POST", path="/triggers/{trigger_id}/secret", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=True, public_fields=(), tagged=False),
+    "setTriggerSecret": Operation(method="PUT", path="/triggers/{trigger_id}/secret", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=(), tagged=False),
     "updateTrigger": Operation(method="PATCH", path="/triggers/{trigger_id}", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getUsage": Operation(method="GET", path="/usage", path_params=(), multi_segment=(), query=("from", "to", "group_by"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "deleteWebhook": Operation(method="DELETE", path="/settings/webhook", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
@@ -13504,6 +13515,10 @@ class TriggersResource(Group):
     def rotate_secret(self, trigger_id: str, *, timeout: float | None = None) -> RotateTriggerSecretResponse:
         """A webhook trigger's new secret, shown once; the old one signs nothing from now on (POST /triggers/{trigger_id}/secret). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
         return self._call("rotateTriggerSecret", (trigger_id,), None, None, timeout=timeout)
+
+    def set_secret(self, trigger_id: str, body: SetTriggerSecretBody, *, timeout: float | None = None) -> SetTriggerSecretResponse:
+        """Give a stream trigger the secret Stream made; the old one signs nothing from now on (PUT /triggers/{trigger_id}/secret). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
+        return self._call("setTriggerSecret", (trigger_id,), body, None, timeout=timeout)
 
     def update(self, trigger_id: str, body: UpdateTriggerBody, *, timeout: float | None = None) -> UpdateTriggerResponse:
         """Change a trigger, or turn it off and on (PATCH /triggers/{trigger_id})."""

@@ -21,11 +21,14 @@ export const scopedShown = (): boolean => workspaceNow() !== undefined;
 // token may make them, and is shown no value. A trigger's rotation in a workspace is no secret write: it writes none the
 // caller gave, and its answer is the backend's.
 registerSecretWrite("rotateTriggerSecret", () => !scopedShown());
+// Giving a trigger the secret its sender made (Stream's, PUT /triggers/{id}/secret) writes one the caller gave: a secret
+// write everywhere, in a workspace too.
+registerSecretWrite("setTriggerSecret", () => true);
 registerSecretWrite("rotateWebhookSecret", () => true);
 registerSecretWrite("deleteWebhook", () => true);
 // Where the owner finishes each in the console: the trigger's own page (Rotate), and Settings → Webhook (Rotate secret,
 // Remove). The webhook's URL is never in a link: it can be a credential itself (webhooks.ts shownUrl).
-registerSecretPage("rotateTriggerSecret", (_body, { params: [id] }) => (id && /^[A-Za-z0-9_-]{1,128}$/.test(id) ? `/#/triggers/${id}` : "/#/triggers"));
+registerSecretPage(["rotateTriggerSecret", "setTriggerSecret"], (_body, { params: [id] }) => (id && /^[A-Za-z0-9_-]{1,128}$/.test(id) ? `/#/triggers/${id}` : "/#/triggers"));
 registerSecretPage(["rotateWebhookSecret", "deleteWebhook"], "/#/settings/webhook");
 
 /** What the token's answer says of a webhook trigger's secret, made and kept but not shown to it. */
@@ -56,6 +59,11 @@ export const triggerRotated = (id: string, minted: string | undefined, at: strin
  *  record would keep it), so the person gets it from the console. */
 export const templateTriggerSecret = (i: number) => ({ field: `triggers.${i}.secret`, reason: "not_allowed" as const, message: `This webhook trigger's signing secret is not in an apply answer. ${TRIGGER_SECRET_WORDS}` });
 
+/** The warning an apply says of a webhook trigger whose sender makes its secret (Stream's, trigger-signatures.ts
+ *  givenSecret): it was made with none, so it refuses every request until the owner gives it. Not set up here, never a
+ *  secret not shown, so the first answer that shows every minted secret keeps it (templateApplied). */
+export const templateTriggerGivenSecret = (i: number, given: { sender: string; prefix: string }) => ({ field: `triggers.${i}.secret`, reason: "not_set_up_here" as const, message: `${given.sender} makes this trigger's secret: give it on the trigger's page (Set secret), or with PUT /v2/triggers/{id}/secret and the body {"secret": "${given.prefix}..."}. Until then every request to its hook is refused (401).` });
+
 /** The outbound webhook's secret's metadata, named webhook:outbound: set or not, made by this server at a save (source
  *  console), and when. */
 export const webhookSecretMeta = (set: boolean, changedAt: string | null): SecretMeta => secretMeta(secretName("webhook", "outbound"), { set, source: "console", changedAt });
@@ -78,6 +86,8 @@ const mintedField = (adapter: TriggerAdapter | undefined): string | undefined =>
 /** What a trigger's view says of a secret its sealed settings keep but that does not open here (sealed under another seal
  *  key): unset, and why. */
 export const TRIGGER_SECRET_UNOPENED = "Its signing secret does not open under this server's seal key: rotate it in the console.";
+/** The same words for a trigger whose sender makes its secret (Stream's): none is made here, so it is given again. */
+export const givenSecretUnopened = (given: { sender: string }) => `Its signing secret does not open under this server's seal key: give it ${given.sender}'s secret again with Set secret (PUT /v2/triggers/{id}/secret).`;
 
 /** Where a trigger's minted secret stands here: held and open, kept but not opening under this seal key, or none. */
 export type SecretHeld = "set" | "unopened" | "unset";
@@ -90,7 +100,8 @@ export function withTriggerSecret<T extends { id: string; source: { kind: string
   const field = mintedField(adapter);
   if (field === undefined) return view;
   const state = held(adapter!.id, view.id, field);
-  return { ...view, secret: triggerSecretMeta(view.id, state === "set"), ...(state === "unopened" ? { note: TRIGGER_SECRET_UNOPENED } : {}) };
+  const given = adapter!.givenSecret?.(view.source as Parameters<NonNullable<TriggerAdapter["givenSecret"]>>[0]);
+  return { ...view, secret: triggerSecretMeta(view.id, state === "set"), ...(state === "unopened" ? { note: given ? givenSecretUnopened(given) : TRIGGER_SECRET_UNOPENED } : {}) };
 }
 
 /** The words a replayed apply says of each webhook trigger it made: its secret was in the first answer alone. */
@@ -111,6 +122,6 @@ export function templateApplied(body: Record<string, unknown>, minted: ReadonlyM
   // The answer that shows every secret drops the warnings saying it is not shown (templateTriggerSecret's): they would
   // sit right above the secret they say is missing. A token's answer or a replay keeps them.
   const showsAll = shown === "first" && made.every((one) => minted.has(one.trigger_id));
-  const warnings = showsAll && Array.isArray(body.warnings) ? { warnings: (body.warnings as { field?: unknown }[]).filter((w) => !/^triggers\.\d+\.secret$/.test(String(w.field))) } : {};
+  const warnings = showsAll && Array.isArray(body.warnings) ? { warnings: (body.warnings as { field?: unknown; reason?: unknown }[]).filter((w) => !(/^triggers\.\d+\.secret$/.test(String(w.field)) && w.reason === "not_allowed")) } : {};
   return { ...body, ...warnings, webhook_secrets: made.map(said) };
 }

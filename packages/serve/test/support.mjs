@@ -63,7 +63,7 @@ process.env.AGENTRUN_SERVE_FAUX_NO_OLLAMA = "1";
 export const SECRET_WRITE_PATHS = [
   { methods: ["PUT", "DELETE"], path: /^\/settings\/tool-keys\/[^/]+$/ },
   { methods: ["POST"], path: /^\/triggers$/ },
-  { methods: ["POST"], path: /^\/triggers\/[^/]+\/secret$/ },
+  { methods: ["POST", "PUT"], path: /^\/triggers\/[^/]+\/secret$/ },
   { methods: ["PUT"], path: /^\/settings\/webhook$/ },
   // MCP (mcp-secret-writes.ts): a saved server's PUT (a token or headers it carries, or one that drops its credential)
   // and DELETE, a sign-in's start, and the private-network OAuth hosts.

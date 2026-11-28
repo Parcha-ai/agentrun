@@ -30,7 +30,13 @@ export type Scheme = {
   /** What else the payload's tag names, read from the signed body (`json`) so the payload's cut never loses it, each of a
    *  checked shape; none when the body has none. */
   attrsOf?(json: unknown): Record<string, string>;
+  /** When its sender makes the secret and shows it to the person, who gives it to the trigger (Set secret), instead of
+   *  this server minting one for them to paste into the sender: who the sender is, and what its secrets start with.
+   *  Default: minted here. */
+  givenSecret?: GivenSecret;
 };
+/** A secret a sender makes: its name, in words, and the prefix every one of its secrets starts with. */
+export type GivenSecret = { sender: string; prefix: string };
 
 /** An event's name in a header: printable ASCII with no space (`pull_request`, `ping`). */
 const EVENT = /^[\x21-\x7e]{1,200}$/;
@@ -38,6 +44,55 @@ const EVENT = /^[\x21-\x7e]{1,200}$/;
 const ID_ATTR = /^[A-Za-z0-9_.:@-]{1,100}$/;
 const GITHUB_SIGNATURE = /^sha256=([0-9a-f]{64})$/i;
 const githubHmac = (secret: string, body: string | Buffer): Buffer => createHmac("sha256", Buffer.from(secret, "utf8")).update(body).digest();
+
+/** The longest X-Stream-Signature read: room for a few signatures during a rotation, never an unbounded loop. */
+const MAX_STREAM_SIGNATURE_CHARS = 1024;
+const STREAM_TIMESTAMP = /^\d{1,12}$/;
+const STREAM_V1 = /^[0-9a-f]{64}$/i;
+
+/** A Stream signature header's parts: its timestamp and every v1 signature, in hex; fields Stream may add later are
+ *  skipped. Undefined when it is not `t=<Unix seconds>,v1=<hex>[,...]` with one t and at least one v1. */
+function streamParts(header: string): { t: string; v1: string[] } | undefined {
+  if (header.length > MAX_STREAM_SIGNATURE_CHARS) return undefined;
+  let t: string | undefined;
+  const v1: string[] = [];
+  for (const part of header.split(",")) {
+    const at = part.indexOf("=");
+    if (at < 1) return undefined;
+    const [name, value] = [part.slice(0, at).trim(), part.slice(at + 1).trim()];
+    if (name === "t") {
+      if (t !== undefined || !STREAM_TIMESTAMP.test(value)) return undefined;
+      t = value;
+    } else if (name === "v1") {
+      if (!STREAM_V1.test(value)) return undefined;
+      v1.push(value);
+    }
+  }
+  return t !== undefined && v1.length ? { t, v1 } : undefined;
+}
+
+function streamPrecheck(headers: Headers, nowMs: number): string | undefined {
+  const header = headers["x-stream-signature"];
+  if (typeof header !== "string") return "missing_headers";
+  const parts = streamParts(header);
+  if (!parts) return "malformed_headers";
+  if (Math.abs(nowMs / 1000 - Number(parts.t)) > HOOK_TOLERANCE_S) return "stale_timestamp";
+  return undefined;
+}
+
+/** A Stream body's `interaction_id`, when it is one a key and a tag may hold. */
+function interactionIdOf(json: unknown): string | undefined {
+  const id = isObject(json) ? json.interaction_id : undefined;
+  return typeof id === "string" && ID_ATTR.test(id) ? id : undefined;
+}
+
+const jsonOf = (body: Buffer): unknown => {
+  try {
+    return JSON.parse(body.toString("utf8")) as unknown;
+  } catch {
+    return undefined;
+  }
+};
 
 function githubPrecheck(headers: Headers): string | undefined {
   const [signature, delivery, event] = ["x-hub-signature-256", "x-github-delivery", "x-github-event"].map((name) => headers[name]);
@@ -118,11 +173,46 @@ export const SIGNATURE_SCHEMES = {
       return { ...(triggerId ? { trigger_id: triggerId } : {}), ...(userId ? { user_id: userId } : {}) };
     },
   },
+  // Sandbar Stream's (its support article "Set up Stream Webhook", Check the signature): the phone posts each saved
+  // interaction as `{"text", "interaction_id"}` and, with Sign requests on, signs "{t}.{body}" under the UTF-8 bytes of
+  // the whole secret Stream made and showed (its `swh_` prefix included), hex. Stream makes the secret, so the person
+  // gives it to the trigger. The body's interaction_id is signed and Stream's own dedupe id, so it is the key: a note
+  // posted again, under a new t or not, is the same firing. Stream sends one kind of event, so every body's event is
+  // `interaction`, and `where` reads its `text`.
+  stream: {
+    signatureHeader: "x-stream-signature",
+    describe: `\`stream\` takes a Sandbar Stream webhook (Stream iOS's Developer (Webhook) screen, under Other Tools in its settings, with Sign requests on): \`X-Stream-Signature: t=<Unix seconds>,v1=<hex HMAC-SHA256 of "{t}.{body}">\`, keyed by the UTF-8 bytes of the whole signing secret Stream shows, its \`swh_\` prefix included, with t within ${HOOK_TOLERANCE_S} s of this server's clock either way (more than one v1 may come, any one of which may match; other fields are skipped). Stream makes the secret, so a stream trigger is made with none and refuses every request until the person gives it Stream's (PUT /v2/triggers/{trigger_id}/secret with \`{"secret": "swh_..."}\`, the console's Set secret). The firing's key is the signed body's \`interaction_id\`: a note Stream posts again is the same firing. Its event is \`interaction\`, and \`where\` reads the body's \`/text\` (what was said) and \`/interaction_id\`.`,
+    precheck: streamPrecheck,
+    verify(key, headers, body, nowMs) {
+      const early = streamPrecheck(headers, nowMs);
+      if (early) return early;
+      const { t, v1 } = streamParts(headers["x-stream-signature"] as string)!;
+      const expected = createHmac("sha256", Buffer.from(key, "utf8")).update(`${t}.`).update(body).digest();
+      // Each compared all the same (32 bytes each, by the header's check), so a short key costs what a good one does; it fails after.
+      const matched = v1.map((hex) => timingSafeEqual(Buffer.from(hex, "hex"), expected)).some(Boolean);
+      if (Buffer.byteLength(key, "utf8") < MIN_KEY_BYTES) return "short_key";
+      return matched ? undefined : "bad_signature";
+    },
+    firingKeyOf(_headers, body) {
+      const id = interactionIdOf(jsonOf(body));
+      return id ? `stream:${id}` : `sha256:${createHash("sha256").update(body).digest("hex")}`;
+    },
+    eventOf: (_headers, json) => (isObject(json) ? "interaction" : undefined),
+    attrsOf(json): Record<string, string> {
+      const id = interactionIdOf(json);
+      return id ? { interaction_id: id } : {};
+    },
+    givenSecret: { sender: "Stream", prefix: "swh_" },
+  },
 } satisfies Record<string, Scheme>;
 
 export type SchemeName = keyof typeof SIGNATURE_SCHEMES;
 /** The schemes a webhook trigger's `signature` may name: every one but `composio`, a Composio trigger's. */
-export const SCHEME_NAMES: readonly SchemeName[] = ["standard", "github"];
+export const SCHEME_NAMES: readonly SchemeName[] = ["standard", "github", "stream"];
+
+/** The secret a trigger signed under `name` keeps when its sender made it (given with Set secret), or undefined when it
+ *  is minted here. */
+export const givenSecretOf = (name: string): GivenSecret | undefined => (SIGNATURE_SCHEMES as Record<string, Scheme>)[name]?.givenSecret;
 export const DEFAULT_SCHEME: SchemeName = "standard";
 
 /** The webhook scheme a request asks for: the one of SCHEME_NAMES whose signature header it carries. Were two to share a

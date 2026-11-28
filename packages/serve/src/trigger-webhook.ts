@@ -6,7 +6,7 @@
 import { MIN_KEY_BYTES } from "./standard-webhooks.js";
 import { ACCEPT_SCHEMA, acceptOf, acceptRefusal, type Rule } from "./trigger-accept.js";
 import { closedSchema, type Source, type TriggerAdapter, unknownSourceFields } from "./trigger-adapter.js";
-import { DEFAULT_SCHEME, SCHEME_NAMES, SIGNATURE_SCHEMES, schemeOf } from "./trigger-signatures.js";
+import { DEFAULT_SCHEME, givenSecretOf, SCHEME_NAMES, SIGNATURE_SCHEMES, schemeOf } from "./trigger-signatures.js";
 import { isObject } from "./validate.js";
 
 /** The longest of a sender's words a payload's attrs keep (its event, its action). */
@@ -45,9 +45,11 @@ export const webhook: TriggerAdapter = {
   delivery: "push",
   owner: false,
   settings: { scope: "trigger", fields: { secret: { mint: true, minBytes: MIN_KEY_BYTES } } },
+  // A stream trigger's secret is the one Stream made: given with Set secret, never minted here.
+  givenSecret: (source) => givenSecretOf(schemeName(source)),
   describe: `{kind: "webhook", signature?: ${SCHEME_NAMES.map((name) => `"${name}"`).join(" | ")}, accept?: [{event, actions?, where?}]}`,
   fires: "a signed request to /hooks/{trigger_id} (`webhook`) that its `accept` takes",
-  firedBy: "`webhook`: a signed request to /hooks/{trigger_id}, its key from the trigger and what the request's signature covers: its `webhook-id` (`standard`), or the SHA-256 of its body (`github`).",
+  firedBy: "`webhook`: a signed request to /hooks/{trigger_id}, its key from the trigger and what the request's signature covers: its `webhook-id` (`standard`), the SHA-256 of its body (`github`), or its body's `interaction_id` (`stream`).",
   schemas: [
     closedSchema(
       { kind: { const: "webhook" } },

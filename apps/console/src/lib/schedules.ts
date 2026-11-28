@@ -280,7 +280,9 @@ export const hookUrlOf = (t: Pick<Trigger, "id">): string => `${location.origin}
 /** Said beside a URL hookUrlOf built: the server's own public address may differ from the one this page was opened at. */
 export const HOOK_URL_HINT = "This server's address as this page sees it: behind a proxy, use its public address.";
 /** What a webhook's signature check takes, in words. */
-export const SIGNATURE_WORDS: Record<"standard" | "github", string> = { standard: "Standard Webhooks (webhook-signature)", github: "GitHub's (X-Hub-Signature-256)" };
+export const SIGNATURE_WORDS: Record<"standard" | "github" | "stream", string> = { standard: "Standard Webhooks (webhook-signature)", github: "GitHub's (X-Hub-Signature-256)", stream: "Sandbar Stream's (X-Stream-Signature)" };
+/** A stream trigger's secret is the one Stream made: where the person finds it, and what it starts with. */
+export const STREAM_SECRET_WHERE = "In the Stream app on your iPhone, open Developer (Webhook) under Other Tools in its settings, paste this trigger's URL, turn on Sign requests, and copy the secret it shows (it starts swh_).";
 type HookSource = Extract<TriggerSource, { kind: "webhook" }>;
 type GitHubSource = Extract<TriggerSource, { kind: "github" }>;
 /** A filter's rule in words, as its editor names each part (lib/accept.ts). */
@@ -427,7 +429,7 @@ export function bodyOf(d: Draft, capOptional: boolean | CapRule = false): { body
 
 /** A new webhook's fields as typed: how its requests are signed, its filter (none: every signed request fires), then the
  *  run each one starts (as a schedule's). */
-export type WebhookDraft = { name: string; signature: "standard" | "github"; accept: RuleDraft[]; agentId: string; content: string; maxCost: string } & InputDraft;
+export type WebhookDraft = { name: string; signature: "standard" | "github" | "stream"; accept: RuleDraft[]; agentId: string; content: string; maxCost: string } & InputDraft;
 export const emptyWebhook = (): WebhookDraft => ({ name: "", signature: "standard", accept: [], agentId: "", content: "", maxCost: "" });
 
 /** A webhook's source with `rules` as its filter (none: no accept), its kind and signature as `was` has them. */

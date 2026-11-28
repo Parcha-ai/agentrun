@@ -201,7 +201,7 @@ import { LOOPBACK, MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oa
 import { type RunNotice, WEBHOOK_EVENTS, WEBHOOK_FILE, waitMarkerOf, Webhooks } from "./webhooks.js";
 import { SLACK_EVENTS, SlackPosts } from "./slack.js";
 import { appPermissionWarnings } from "./template-github-permissions.js";
-import { scopedShown, templateApplied, templateTriggerSecret, templateWebhookSecrets, triggerMade, triggerRotated, webhookRotated, webhookSaved, withTriggerSecret } from "./trigger-secrets-shown.js";
+import { scopedShown, templateApplied, templateTriggerGivenSecret, templateTriggerSecret, templateWebhookSecrets, triggerMade, triggerRotated, webhookRotated, webhookSaved, withTriggerSecret } from "./trigger-secrets-shown.js";
 import { type SealedSettingsOverStore } from "./sealed-settings-store.js";
 import { type ServerSecrets } from "./server-secrets.js";
 import { openServerSecretsOverStore } from "./server-secrets-store.js";
@@ -937,6 +937,7 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/triggers\/([^/]+)\/firings$/, name: "listTriggerFirings" },
   { method: "POST", pattern: /^\/triggers\/([^/]+)\/firings\/([^/]+)\/release$/, name: "releaseTriggerFiring" },
   { method: "POST", pattern: /^\/triggers\/([^/]+)\/secret$/, name: "rotateTriggerSecret" },
+  { method: "PUT", pattern: /^\/triggers\/([^/]+)\/secret$/, name: "setTriggerSecret" },
   { method: "GET", pattern: /^\/templates$/, name: "listTemplates" },
   { method: "POST", pattern: /^\/templates\/import$/, name: "importTemplate" },
   { method: "GET", pattern: /^\/marketplace\/templates$/, name: "listMarketplaceTemplates" },
@@ -4323,8 +4324,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // Composio was made from that part. Read before the revision is written; neither holds a sealed value.
     const resent = new Map<number, Source>();
     const remade = new Set<number>();
+    // Whether a webhook source's secret is its sender's to give (Stream's), never made here.
+    const givesSecret = (source: unknown) => Boolean(adapters.find((one) => one.id === "webhook")?.givenSecret?.(source as Source));
     for (const [i, trigger] of made.triggers.entries()) {
       const was = unmade(i) ? undefined : hadByName.get(String(trigger.name).trim());
+      // A webhook whose secret moves between one made here and one its sender gives (standard or github to stream, or
+      // back): no PATCH moves it (triggers.ts), so it is made again, as a trigger of another kind is.
+      if (was && isObject(trigger.source) && trigger.source.kind === "webhook" && isObject(was.source) && was.source.kind === "webhook") {
+        if (givesSecret(trigger.source) !== givesSecret(was.source)) remade.add(i);
+        continue;
+      }
       if (!was || !isObject(trigger.source) || trigger.source.kind !== "composio" || !isObject(was.source) || was.source.kind !== "composio") continue;
       try {
         resent.set(i, composioTriggers.resent(was.source as Source, was.id, trigger.source as Source));
@@ -4347,7 +4356,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if (was.templateId === null && kind === wasKind && !remade.has(i)) return [];
       const why = was.templateId !== null
         ? `is another template package's (${was.templateId}), not the ${pkg.name} template's`
-        : `is not the ${pkg.name} template's, and keeping it would mean removing it and making it again: ${kind === wasKind ? "its Composio server, event or config differs from the package's" : `it is a ${wasKind} trigger, and the package's is a ${kind} one`}`;
+        : `is not the ${pkg.name} template's, and keeping it would mean removing it and making it again: ${kind === wasKind ? (kind === "webhook" ? "its secret would move between one this server makes and one its sender gives" : "its Composio server, event or config differs from the package's") : `it is a ${wasKind} trigger, and the package's is a ${kind} one`}`;
       return [{ field: `triggers.${i}.name`, reason: "not_allowed", message: `The agent's trigger ${was.name} ${why}. Nothing was changed: rename or delete that trigger, then apply the template again.` }];
     });
     if (notOurs.length) throw new ApiError("name_taken", notOurs.length === 1 ? notOurs[0]!.message : `${notOurs.length} of the agent's triggers have the names of the ${pkg.name} template's and are not its own. Nothing was changed: rename or delete each, then apply the template again.`, { fields: notOurs });
@@ -4479,8 +4488,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // not the agent's, so nothing is said of it.
     const ticked = saved.map((need) => ({ ...need, tools: need.tools.filter((tool) => grants.includes(mcpToolName(need.server, tool))) }));
     const appShort = await appPermissionWarnings({ name: pkg.name, mcp: ticked }, (server) => metaOf(server, workspace)?.auth === "github_app", () => githubConnect.installationPermissions(stopping.signal));
-    // A webhook trigger's secret is in no apply answer: each one's warning sends the person to the console for it.
-    const hooks = made.triggers.flatMap((trigger, i) => (!hostless.has(i) && isObject(trigger.source) && trigger.source.kind === "webhook" ? [templateTriggerSecret(i)] : []));
+    // A webhook trigger's secret is in no apply answer: each one's warning sends the person to the console for it. One
+    // whose sender makes its secret (Stream's) has none until the owner gives it: its warning says to, and until then its
+    // hook refuses. One an update kept that already holds its sender's secret works as it is, so nothing is said of it.
+    const hooks: InputIssue[] = made.triggers.flatMap((trigger, i): InputIssue[] => {
+      if (hostless.has(i) || !isObject(trigger.source) || trigger.source.kind !== "webhook") return [];
+      const given = adapters.find((one) => one.id === "webhook")?.givenSecret?.(trigger.source as Source);
+      // Made again (its secret moved between one made here and its sender's): a new trigger, so its hook URL is new too.
+      const moved: InputIssue[] = remade.has(i) ? [{ field: `triggers.${i}`, reason: NOT_SET_UP, message: `The trigger ${String(trigger.name).trim()} was made again, since its secret now ${given ? `comes from ${given.sender}` : "is made here"}: its hook URL is new, so point its sender at the new one.` }] : [];
+      if (!given) return [...moved, templateTriggerSecret(i)];
+      const kept = answered.find((one) => one.name === String(trigger.name).trim());
+      const held = kept ? (withSecretOf({ id: kept.trigger_id, source: trigger.source as { kind: string } }) as { secret?: { set?: boolean } }).secret?.set === true : false;
+      return held ? moved : [...moved, templateTriggerGivenSecret(i, given)];
+    });
     // Each github trigger: what it runs on, when made (a note, never a lack); skipped, what to do about it.
     const githubTriggers: InputIssue[] = made.triggers.flatMap((trigger, i) => (!hostless.has(i) && isObject(trigger.source) && trigger.source.kind === "github"
       ? [unconnected.has(i) ? { field: `triggers.${i}`, reason: NOT_SET_UP, message: githubTriggerUnconnected(pkg.name, trigger.source) } : { field: `triggers.${i}`, reason: "not_an_option", message: githubTriggerWords(pkg.name, trigger.source) }]
@@ -7132,8 +7152,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const answer = await idempotent(req, "/triggers", body, async () => {
           const { secret: shown, ...made } = await triggers.create(body);
           secret = shown;
-          // A secret the sender gave is not shown: the trigger answers its metadata, as a read does.
-          return { status: 201, body: shown ? { ...made, note: `Its secret was shown once, in the first answer; POST /v2/triggers/${made.id}/secret makes a new one.` } : withSecretOf(made), headers: { location: `/v2/triggers/${made.id}` } };
+          // A trigger whose sender makes its secret (Stream's) starts with none: it answers its metadata, as a read does,
+          // and says how to give it.
+          const given = shown ? undefined : adapters.find((a) => a.id === made.source.kind)?.givenSecret?.(made.source);
+          const unset = given ? { ...withSecretOf(made), note: `${given.sender} makes this trigger's secret: give it with PUT /v2/triggers/${made.id}/secret ({"secret": "${given.prefix}..."}), the console's Set secret. Until then every request to its hook_url is refused.` } : withSecretOf(made);
+          return { status: 201, body: shown ? { ...made, note: `Its secret was shown once, in the first answer; POST /v2/triggers/${made.id}/secret makes a new one.` } : unset, headers: { location: `/v2/triggers/${made.id}` } };
         });
         const replayed = answer.headers?.["idempotent-replayed"] === "true";
         const { note: _, ...first } = answer.body as Json;
@@ -7200,7 +7223,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const shown = replayed ? "replay" : mayHoldSecrets(req) ? "first" : "token";
         return send(res, answer.status, answer.status === 201 || answer.status === 200 ? templateApplied(answer.body as Json, minted, shown) : answer.body, answer.headers);
       }
-      case "rotateTriggerSecret":
+      case "rotateTriggerSecret": {
         // A secret write: the dispatch's one check let only the owner's session, or a request in a workspace for a trigger
         // of its own, this far (trigger-secrets-shown.ts).
         // It takes no body: the new secret is made here, never given. Any body is refused before it rotates, `{}` too: a
@@ -7208,7 +7231,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (req.headers["transfer-encoding"] !== undefined || Number(req.headers["content-length"] ?? 0) !== 0) {
           throw invalid([{ field: "body", reason: "not_allowed", message: "Rotating a trigger's secret takes no body: send none, and the new secret is made here." }]);
         }
+        // A trigger whose sender makes its secret (Stream's) has none made here: rotate refuses it, naming PUT.
         return send(res, 200, triggerRotated(id, (await triggers.rotate(id)).secret, new Date().toISOString()));
+      }
+      case "setTriggerSecret": {
+        // A secret write, as a rotation is (trigger-secrets-shown.ts): the owner's session alone. A trigger whose sender
+        // makes its secret (Stream's) takes that secret as the body's `secret`, alone; it is sealed and never answered.
+        // One whose secret is made here takes none (triggers.ts give): POST makes a new one. Every refusal comes before
+        // anything is written, so an empty or wrong body never touches the secret the trigger has.
+        const body = await bodyOf(req);
+        const extra = unknownFields(body, ["secret"]);
+        if (extra.length) throw invalid(extra);
+        await triggers.give(id, body.secret);
+        return send(res, 200, triggerRotated(id, undefined, new Date().toISOString()));
+      }
       case "getTrigger":
         return send(res, 200, withSecretOf(await triggers.get(id)));
       case "updateTrigger": {

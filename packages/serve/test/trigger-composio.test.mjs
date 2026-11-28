@@ -93,17 +93,17 @@ test("a webhook trigger takes no composio signature: its create and a change to 
   // The schemes a webhook takes still move between each other.
   const github = await api("PATCH", `/triggers/${standard.body.id}`, { source: { kind: "webhook", signature: "github" } });
   assert.equal(github.status, 200, JSON.stringify(github.body));
-  // Any other name is refused naming the two it may be.
-  assert.match(signatureIssue(await api("POST", "/triggers", hooked("triage", { kind: "webhook", signature: "slack" }))), /standard, github/);
+  // Any other name is refused naming the ones it may be.
+  assert.match(signatureIssue(await api("POST", "/triggers", hooked("triage", { kind: "webhook", signature: "slack" }))), /standard, github, stream/);
 });
 
-test("the secret route takes no secret of the sender's: every webhook trigger's is made here, a body's secret is refused, and the API document's route has no body", { timeout: 60_000 }, async (t) => {
+test("a trigger whose secret is made here takes no secret of the sender's: PUT refuses a standard or github trigger's, POST makes one, and the API document's PUT body is a stream trigger's secret alone", { timeout: 60_000 }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl } = await serve(t);
   await made(api, "triage");
   for (const source of [{ kind: "webhook" }, { kind: "webhook", signature: "github" }]) {
     const trigger = (await api("POST", "/triggers", hooked("triage", source))).body;
-    const given = await api("POST", `/triggers/${trigger.id}/secret`, { secret: OTHER });
+    const given = await api("PUT", `/triggers/${trigger.id}/secret`, { secret: OTHER });
     assert.equal(given.status, 422, JSON.stringify(given.body));
     assert.ok(!JSON.stringify(given.body).includes(OTHER));
     const minted = await api("POST", `/triggers/${trigger.id}/secret`);
@@ -111,9 +111,14 @@ test("the secret route takes no secret of the sender's: every webhook trigger's 
     assert.ok(minted.body.signing_secret, "one is made and shown this once");
   }
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
-  const route = doc.paths["/triggers/{trigger_id}/secret"].post;
-  assert.equal(route.requestBody, undefined, "the route takes no body");
-  assert.doesNotMatch(JSON.stringify(route), /Composio/, "nor says a Composio secret is given there");
+  const path = doc.paths["/triggers/{trigger_id}/secret"];
+  // POST takes no body, as before: an SDK's rotateSecret(id, options) keeps its shape.
+  assert.equal(path.post.requestBody, undefined);
+  // PUT's one body is a stream trigger's: Stream's own secret, required there.
+  assert.equal(path.put.requestBody.required, true);
+  const given = path.put.requestBody.content["application/json"].schema;
+  assert.deepEqual([Object.keys(given.properties), given.properties.secret.pattern, given.properties.secret["x-agentrun-secret"]], [["secret"], "^swh_\\S+$", true]);
+  assert.doesNotMatch(JSON.stringify(path), /Composio/, "nor says a Composio secret is given there");
   assert.doesNotMatch(JSON.stringify(doc), /secret Composio gave/);
 });
 
@@ -155,11 +160,11 @@ test("the secret route refuses any body, an empty JSON object too, in words, bef
   assert.equal(await delivered(next.body.signing_secret), 202);
 });
 
-test("a webhook trigger's signatures are standard and GitHub's: the capabilities, the API document's schema and the refusal name those two", { timeout: 60_000 }, async (t) => {
+test("a webhook trigger's signatures are standard, GitHub's and Stream's: the capabilities, the API document's schema and the refusal name those three", { timeout: 60_000 }, async (t) => {
   const { api, baseUrl } = await serve(t);
-  assert.deepEqual((await api("GET", "/capabilities")).body.features.triggers.webhook.signatures, ["standard", "github"]);
+  assert.deepEqual((await api("GET", "/capabilities")).body.features.triggers.webhook.signatures, ["standard", "github", "stream"]);
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
-  // Every webhook source schema in the document: each one's `signature` names the two.
+  // Every webhook source schema in the document: each one's `signature` names the three.
   const found = [];
   const walk = (node) => {
     if (Array.isArray(node)) return node.forEach(walk);
@@ -169,6 +174,6 @@ test("a webhook trigger's signatures are standard and GitHub's: the capabilities
   };
   walk(doc);
   assert.ok(found.length > 0, "the webhook source's schema is in the document");
-  for (const names of found) assert.deepEqual(names, ["standard", "github"]);
-  assert.deepEqual(doc.components.schemas.Features.properties.triggers.properties.webhook.properties.signatures.items.enum, ["standard", "github"]);
+  for (const names of found) assert.deepEqual(names, ["standard", "github", "stream"]);
+  assert.deepEqual(doc.components.schemas.Features.properties.triggers.properties.webhook.properties.signatures.items.enum, ["standard", "github", "stream"]);
 });

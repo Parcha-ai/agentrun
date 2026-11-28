@@ -5267,6 +5267,12 @@ export const SECRET_ROUTES = [
     "publicFields": []
   },
   {
+    "operationId": "setTriggerSecret",
+    "method": "PUT",
+    "path": "/triggers/{trigger_id}/secret",
+    "publicFields": []
+  },
+  {
     "operationId": "startMcpOAuth",
     "method": "POST",
     "path": "/settings/mcp-servers/{name}/oauth/start",

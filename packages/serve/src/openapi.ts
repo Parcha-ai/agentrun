@@ -1579,6 +1579,7 @@ const HOOK_IGNORED = closed({ ok: { const: "ignored" } }, "Verified, and not an 
  *  day whose firing is no longer kept, `{ok: "duplicate"}`); none for a request with no event, or whose events no
  *  trigger takes. Its firings' `by` names the sources `adapters` give. */
 const hookFiringsOf = (adapters: readonly TriggerAdapter[]) => closed({ firings: { type: "array", items: { oneOf: [{ ...TRIGGER_FIRING, properties: { ...TRIGGER_FIRING.properties, by: firedByOf(adapters) } }, HOOK_DUPLICATE] } } });
+const GIVEN_TRIGGER_SECRET = { type: "string", minLength: 24, maxLength: 512, pattern: "^swh_\\S+$", "x-agentrun-secret": true, description: "The signing secret Sandbar Stream made for its webhook (shown on Stream iOS's Developer (Webhook) screen, under Other Tools in its settings, once Sign requests is on), the whole string as Stream shows it, `swh_` prefix included. Sealed under the seal key and never answered; required for a stream trigger, refused for any other." };
 const TRIGGER_SECRET = { type: "string", pattern: "^whsec_[A-Za-z0-9+/]+={0,2}$", description: "A webhook trigger's signing secret, shown this once: `whsec_` and 32 random bytes in base64, as the Standard Webhooks spec gives it. Never in any GET; kept sealed under the seal key. Sign each request to /hooks/{trigger_id} with it." };
 /** github/1: Connect GitHub, the server's one GitHub App (github-connection.ts). */
 const GITHUB_MARK = { "x-agentrun-serve": "github/1" };
@@ -3884,13 +3885,23 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/triggers/{trigger_id}/secret": {
     post: {
       operationId: "rotateTriggerSecret", tags: ["local"], summary: "A webhook trigger's new secret, shown once; the old one signs nothing from now on",
-      description: "A secret write: the owner's signed-in session (ownerSession), never the token, which is 403 forbidden in words and the secret kept. On an API-only server, a server token's request in a workspace (`AgentRun-Workspace`) rotates a trigger of its own workspace's agents and is shown the new secret, this once: the backend in front of the server decides who sees it. Another workspace's trigger is the 404 a missing one is. 422 for a trigger that is not a webhook's, and for any body, `{}` too, refused before it rotates: the new secret is made here, never given.",
+      description: "A secret write: the owner's signed-in session (ownerSession), never the token, which is 403 forbidden in words and the secret kept. On an API-only server, a server token's request in a workspace (`AgentRun-Workspace`) rotates a trigger of its own workspace's agents and is shown the new secret, this once: the backend in front of the server decides who sees it. Another workspace's trigger is the 404 a missing one is. 422 for a trigger that is not a webhook's, and for any body, `{}` too, refused before it rotates: the new secret is made here, never given. 422 too, under `source.signature`, for a trigger whose sender makes its secret (`stream`): PUT gives that one.",
       parameters: [TRIGGER_ID],
       // No body to mark a field in: the operation is marked whole, a secret write all the same.
       "x-agentrun-secret": true,
       // The owner's password session (secret-writes.ts), or the scoped server token on an API-only server.
       security: [{ ownerSession: [] }, { bearer: [] }],
       responses: { "200": json(closedWith({ secret: TRIGGER_SECRET_META }, { signing_secret: TRIGGER_SECRET }), "The new secret as `signing_secret`, this once, and its metadata."), ...errors(401, 403, 404, 409, 422, 429, 500) },
+      ...TRIGGER_MARK,
+    },
+    put: {
+      operationId: "setTriggerSecret", tags: ["local"], summary: "Give a stream trigger the secret Stream made; the old one signs nothing from now on",
+      description: "A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words. For a webhook trigger whose sender makes its secret (`signature: \"stream\"`): the body is `{\"secret\": \"swh_...\"}`, the whole signing secret Stream shows. It is sealed as a minted secret is, cut from what a run shows, and never answered: the answer is its metadata alone. 422 for a trigger whose secret is made here (POST makes a new one), a trigger that is not a webhook's, a body with any other field, or a secret that is not Stream's form.",
+      parameters: [TRIGGER_ID],
+      requestBody: { required: true, content: { "application/json": { schema: closed({ secret: GIVEN_TRIGGER_SECRET }) } } },
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: { "200": json(closed({ secret: TRIGGER_SECRET_META }), "The secret's metadata: set, and when; never the secret."), ...errors(401, 403, 404, 409, 422, 429, 500) },
       ...TRIGGER_MARK,
     },
   },

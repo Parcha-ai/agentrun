@@ -4,6 +4,7 @@
 // adapter file and one line there.
 import type { InputIssue } from "./errors.js";
 import type { SettingsSpec } from "./sealed-settings-store.js";
+import type { GivenSecret } from "./trigger-signatures.js";
 import { unknownFields } from "./validate.js";
 
 type Json = Record<string, unknown>;
@@ -44,6 +45,11 @@ export type TriggerAdapter = {
   /** What it keeps sealed (sealed-settings-store.ts), for the server or for each trigger: a field it mints (a signing secret)
    *  is made at a trigger's create and at a rotation, shown once, and goes with the trigger. */
   settings?: SettingsSpec;
+  /** When a trigger of `source` keeps a secret its sender made and showed the person (Sandbar Stream's) instead of one
+   *  this server mints: who the sender is and what its secrets start with. Then none is made at its create or after, the
+   *  person gives it (PUT /triggers/{id}/secret with `{secret}`), it is sealed as a minted one is and never answered, and
+   *  every request is refused until it is given. Default (undefined): it mints. */
+  givenSecret?(source: Source): GivenSecret | undefined;
   /** Its shapes as a create's error names them: `{kind: "..."}` with its fields. */
   describe: string;
   /** When it fires, for the OpenAPI document's source description. */
