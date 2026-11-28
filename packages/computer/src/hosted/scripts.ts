@@ -74,16 +74,17 @@ export function installerOf(output: string): string | undefined {
  *  maximum, when given, is the most deadline.extend may move the deadline to; a network form, when given (open, or
  *  allow: and a list), has init start the egress proxy that serves it before it leaves the machine's network
  *  (./network.ts); a ninth argument, when not empty, has init start the desktop's window manager on the display
- *  (--window-manager). */
+ *  (--window-manager); a tenth, when not empty, is the public egress that proxy sends a tunnel to 443 through
+ *  (--public-egress, with a network form alone). */
 const INIT_SCRIPT = [
 	"# agentrun-computer: init",
 	// The display is v, not x: held() assigns x, and runs before the exec that reads it. The network form is n, the
-	// window manager g.
-	"d=$1; t=$2; w=$3; h=$4; r=$5; v=${6-}; m=${7-}; n=${8-}; g=${9-}",
+	// window manager g, the public egress e.
+	"d=$1; t=$2; w=$3; h=$4; r=$5; v=${6-}; m=${7-}; n=${8-}; g=${9-}; e=${10-}",
 	HELD,
 	'held "$d" >&2 || exit 6',
 	ROOT,
-	`exec $p env -i PATH=${PATH} HOME="$h" AGENTRUN_COMPUTERD_SOCKET="$r/computerd.sock" \${v:+DISPLAY="$v"} sh -c 'cd "$HOME" && exec "$@"' sh "$d" init --deadline "$t" --user "$w" --own-network \${m:+--max-deadline "$m"} \${n:+--network "$n"} \${g:+--window-manager}`,
+	`exec $p env -i PATH=${PATH} HOME="$h" AGENTRUN_COMPUTERD_SOCKET="$r/computerd.sock" \${v:+DISPLAY="$v"} sh -c 'cd "$HOME" && exec "$@"' sh "$d" init --deadline "$t" --user "$w" --own-network \${m:+--max-deadline "$m"} \${n:+--network "$n"} \${e:+--public-egress "$e"} \${g:+--window-manager}`,
 ].join("\n");
 
 /** The bridge one connection runs: stdin and stdout to init's socket. As root, to reach a socket in a directory that is
@@ -302,9 +303,10 @@ export function hostedCommands({
 	network = "",
 	workspace = false,
 	windowManager = false,
+	publicEgress = "",
 }: ChildCommandOptions & { atomic?: boolean; waitS?: number; gate?: string; sha256?: string; nonce?: string; sockets?: readonly string[]; rootOnly?: readonly string[]; workspace?: boolean } = {}): HostedCommands {
-	const init = initScriptArgs({ deadline, user, display, maxDeadline, network, windowManager });
-	const initArgs = ["init", ...initFlags({ deadline, user, maxDeadline, network, windowManager })];
+	const init = initScriptArgs({ deadline, user, display, maxDeadline, network, windowManager, publicEgress });
+	const initArgs = ["init", ...initFlags({ deadline, user, maxDeadline, network, windowManager, publicEgress })];
 	const atomicArgs = atomic ? ["1", sha256, nonce] : workspace ? ["", "", ""] : [];
 	return {
 		install: argvOf(INSTALL_SCRIPT, [staging, DAEMON_IN_COMPUTER, WORK, SOCKET_DIR, ...atomicArgs, ...(workspace ? [WORKSPACE, user] : [])]),
@@ -350,14 +352,20 @@ export interface ChildCommandOptions {
 	network?: string;
 	/** Init starts the desktop's window manager on the display (--window-manager): a desktop whose host runs one. */
 	windowManager?: boolean;
+	/**
+	 * The operator's public egress, `<IPv4>:<port>` (./network.ts publicEgressOf), that init's egress proxy sends a
+	 * tunnel to 443 through (--public-egress): given only with a network form, which alone starts that proxy; none, and
+	 * every connection dials the address it was checked at.
+	 */
+	publicEgress?: string;
 }
 
 /**
  * init's flags, as start and a pid1 entrypoint give them: the deadline, the user, --own-network, and the most
- * deadline.extend may move it to, the network form and --window-manager where given. A dial machine's
+ * deadline.extend may move it to, the network form (and the public egress with it) and --window-manager where given. A dial machine's
  * AGENTRUN_INIT_ARGS, space-separated: no value holds a space.
  */
-export function initFlags({ deadline = "", user = TOOL_USER, maxDeadline = "", network = "", windowManager = false }: Omit<ChildCommandOptions, "staging" | "display">): string[] {
+export function initFlags({ deadline = "", user = TOOL_USER, maxDeadline = "", network = "", windowManager = false, publicEgress = "" }: Omit<ChildCommandOptions, "staging" | "display">): string[] {
 	return [
 		"--deadline",
 		deadline,
@@ -366,15 +374,18 @@ export function initFlags({ deadline = "", user = TOOL_USER, maxDeadline = "", n
 		"--own-network",
 		...(maxDeadline === "" ? [] : ["--max-deadline", maxDeadline]),
 		...(network === "" ? [] : ["--network", network]),
+		...(network === "" || publicEgress === "" ? [] : ["--public-egress", publicEgress]),
 		...(windowManager ? ["--window-manager"] : []),
 	];
 }
 
 /** The init script's arguments: the daemon, the deadline, the user, home and the socket's folder, then the display, the
- *  maximum, the network form and the window manager ("1"), each empty when not given, where any of them is. */
-function initScriptArgs({ deadline = "", user = TOOL_USER, display = "", maxDeadline = "", network = "", windowManager = false }: ChildCommandOptions): string[] {
+ *  maximum, the network form, the window manager ("1") and the public egress (with a network form alone), each empty
+ *  when not given, where any of them is. */
+function initScriptArgs({ deadline = "", user = TOOL_USER, display = "", maxDeadline = "", network = "", windowManager = false, publicEgress = "" }: ChildCommandOptions): string[] {
 	const init = [DAEMON_IN_COMPUTER, deadline, user, WORK, SOCKET_DIR];
-	if (windowManager) init.push(display, maxDeadline, network, "1");
+	if (network !== "" && publicEgress !== "") init.push(display, maxDeadline, network, windowManager ? "1" : "", publicEgress);
+	else if (windowManager) init.push(display, maxDeadline, network, "1");
 	else if (network !== "") init.push(display, maxDeadline, network);
 	else if (display !== "" || maxDeadline !== "") init.push(display, maxDeadline);
 	return init;
@@ -385,8 +396,8 @@ function initScriptArgs({ deadline = "", user = TOOL_USER, display = "", maxDead
  * its sha256 printed), init (long-lived) and stdio (one per connection). Each is one string for a shell, `sh -c` with
  * every argument quoted.
  */
-export function childCommands({ staging = "", deadline = "", user = TOOL_USER, display = "", maxDeadline = "", network = "", windowManager = false }: ChildCommandOptions = {}) {
-	const init = initScriptArgs({ deadline, user, display, maxDeadline, network, windowManager });
+export function childCommands({ staging = "", deadline = "", user = TOOL_USER, display = "", maxDeadline = "", network = "", windowManager = false, publicEgress = "" }: ChildCommandOptions = {}) {
+	const init = initScriptArgs({ deadline, user, display, maxDeadline, network, windowManager, publicEgress });
 	return {
 		install: shellCommand(INSTALL_SCRIPT, [staging, DAEMON_IN_COMPUTER, WORK, SOCKET_DIR]),
 		init: shellCommand(INIT_SCRIPT, init),

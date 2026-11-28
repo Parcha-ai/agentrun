@@ -1760,6 +1760,47 @@ test("pid1 under open: the entrypoint gives init --network open after its other 
 	assert.ok(!only(plain.fake).request.command.includes("--network"), "none: no --network");
 });
 
+/** The operator's public egress in these tests: an address in the documentation range. */
+const PUBLIC_EGRESS = "192.0.2.40:8443";
+
+test("publicEgress: init's egress proxy is given it under open and a list, on a child and a pid1 host alike; under none, with no proxy, init is given none; unset or empty, none", async () => {
+	for (const facts of [{}, { daemon: "pid1" }]) {
+		const what = facts.daemon ?? "child";
+		for (const [network, form] of [
+			["open", "open"],
+			[LIST, "allow:example.com,93.184.215.0/24"],
+		]) {
+			const { provider, fake } = setup({ ...OPEN, publicEgress: PUBLIC_EGRESS }, { facts });
+			made(await create(provider, { ...SPEC, network }));
+			const m = only(fake);
+			assert.deepEqual({ network: m.init.network, publicEgress: m.init.publicEgress }, { network: form, publicEgress: PUBLIC_EGRESS }, `${what} ${form}`);
+			if (facts.daemon === "pid1") assert.deepEqual(m.request.command.slice(-4), ["--network", form, "--public-egress", PUBLIC_EGRESS], "after the network form it goes with");
+		}
+		const none = setup({ ...OPEN, publicEgress: PUBLIC_EGRESS }, { facts });
+		made(await create(none.provider));
+		assert.deepEqual({ network: only(none.fake).init.network, publicEgress: only(none.fake).init.publicEgress }, { network: "", publicEgress: "" }, `${what} none: no proxy, so no public egress`);
+		if (facts.daemon === "pid1") assert.ok(!only(none.fake).request.command.includes("--public-egress"), "computerd refuses --public-egress without --network");
+		for (const publicEgress of [undefined, ""]) {
+			const unset = setup({ ...OPEN, ...(publicEgress === undefined ? {} : { publicEgress }) }, { facts });
+			made(await create(unset.provider, { ...SPEC, network: "open" }));
+			assert.deepEqual({ network: only(unset.fake).init.network, publicEgress: only(unset.fake).init.publicEgress }, { network: "open", publicEgress: "" }, `${what} ${JSON.stringify(publicEgress)}: none`);
+		}
+	}
+});
+
+test("publicEgress is read at construction: a malformed one throws in words naming the shape, before any machine is made", () => {
+	for (const publicEgress of ["gate.example:8443", "192.0.2.40", "192.0.2.40:0", "192.0.2.40:65536", "192.0.2.40:08443", "192.0.2.040:8443", "[2001:db8::1]:8443", "192.0.2.40:8443:1", " 192.0.2.40:8443", "192.0.2.40:8443\n"]) {
+		assert.throws(() => setup({ ...OPEN, publicEgress }), /the public egress is <IPv4>:<port>, such as 192\.0\.2\.40:8443, a port from 1 to 65535; not "/, JSON.stringify(publicEgress));
+	}
+	assert.doesNotThrow(() => setup({ ...OPEN, publicEgress: PUBLIC_EGRESS }));
+});
+
+test("initFlags gives --public-egress after the network form it goes with, and never without one", () => {
+	assert.deepEqual(initFlags({ deadline: "t", user: "2510:2510", network: "open", publicEgress: PUBLIC_EGRESS, windowManager: true }), ["--deadline", "t", "--user", "2510:2510", "--own-network", "--network", "open", "--public-egress", PUBLIC_EGRESS, "--window-manager"]);
+	assert.deepEqual(initFlags({ deadline: "t", user: "2510:2510", publicEgress: PUBLIC_EGRESS }), ["--deadline", "t", "--user", "2510:2510", "--own-network"], "no network form, no proxy: computerd refuses one alone");
+	assert.deepEqual(initFlags({ deadline: "t", user: "2510:2510", network: "open" }), ["--deadline", "t", "--user", "2510:2510", "--own-network", "--network", "open"], "unset: as before");
+});
+
 test("Archil under open and under none: the root still gets egress and mounts before init starts, and init gets the network form alone under open", async () => {
 	for (const network of ["none", "open"]) {
 		const { provider, fake } = setup(OPEN, { box: { reached: [] } });

@@ -481,7 +481,9 @@ new HostedProvider(host, { daemonPath, dial: { url: process.env.AGENTRUN_PUBLIC_
     network namespace. On `connect: "exec"` the constructor refuses a desktop in kindRefusal's words, because a
     desktop's sandbox boots from the snapshot and dials, and none has run through the toolbox's session commands. The
     descriptor's desktop configuration selects dial itself. A self-hosted target whose runners let sandboxes reach
-    listed addresses alone needs `DAYTONA_ATTACH_EGRESS`, the operator's relay on that list (above).
+    listed addresses alone needs `DAYTONA_ATTACH_EGRESS`, the operator's relay on that list (above), and for its
+    computers' HTTPS under network `open` or a list, `DAYTONA_PUBLIC_EGRESS`, the operator's gate on that list, which
+    each tunnel to port 443 goes to once the egress proxy's checks pass (`publicEgress`, init's `--public-egress`).
 
   Xvfb and the window manager over the dial were verified live (dial desktop runs 11-18/19: E2B, Fly, Cloudflare,
   Modal), with the client starting the manager. computerd's own start of it ran live on Daytona over dial (11-20):

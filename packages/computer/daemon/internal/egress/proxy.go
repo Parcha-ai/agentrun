@@ -17,7 +17,12 @@ package egress
 //     client gets the final reply (Node's server does both for Docker's proxy);
 //   - a log line holds the host, the port, the address and the class, never a path, a query, a header or a body;
 //   - with a host list, a host off it and any port but 80 and 443 are refused before any lookup, so a name off the list
-//     never leaves the machine; an IP literal is reached only inside a CIDR on the list, of its own family.
+//     never leaves the machine; an IP literal is reached only inside a CIDR on the list, of its own family;
+//   - with a public egress (the operator's <IPv4>:<port>, for a vendor whose machines reach only addresses the operator
+//     allows), a tunnel to port 443 (HTTP CONNECT or SOCKS5 CONNECT) that every check above passed opens TCP to that
+//     address instead of the checked one, and carries the client's bytes unchanged: the TLS a program speaks inside the
+//     tunnel, its ClientHello's server name included, reaches the operator's gate as the program sent it, and the
+//     certificate check stays the program's, end to end. Plain HTTP and every other port dial the checked address.
 // The machine's own addresses (every interface's, read at each dial) are refused as this-host, so a program reaches
 // neither the vendor's agent nor any service of the machine by the network.
 
@@ -59,7 +64,13 @@ type Options struct {
 	Dial func(ctx context.Context, address netip.Addr, port int) (net.Conn, error)
 	// Local is the machine's own addresses at this moment. Default every interface's.
 	Local func() []netip.Addr
+	// PublicEgress is where a tunnel to PublicEgressPort goes once its checks pass, in place of the checked address:
+	// the operator's <IPv4>:<port>. The zero value is none, and every connection dials the address it was checked at.
+	PublicEgress netip.AddrPort
 }
+
+// PublicEgressPort is the one port a public egress carries: HTTPS, whose ClientHello names the host for the gate.
+const PublicEgressPort = 443
 
 // MaxTunnels and MaxConnections are a computer's bounds: Docker's proxy's.
 const (
@@ -286,13 +297,25 @@ func (p *proxy) reach(kind, host string, port int) (net.Conn, *refusal) {
 	}
 	p.logLine(kind, host, port, address.String(), "ok")
 	ctx, cancel := context.WithTimeout(context.Background(), proxyDial)
-	upstream, err := p.Dial(ctx, address, port)
+	var upstream net.Conn
+	var err error
+	if p.throughPublicEgress(kind, port) {
+		upstream, err = p.Dial(ctx, p.PublicEgress.Addr(), int(p.PublicEgress.Port()))
+	} else {
+		upstream, err = p.Dial(ctx, address, port)
+	}
 	cancel()
 	if err != nil {
 		p.release()
 		return nil, &refusal{status: 502, reason: "dial failed", socks: 5}
 	}
 	return &released{Conn: upstream, release: p.release}, nil
+}
+
+// throughPublicEgress is whether a connection whose checks passed opens TCP to the public egress: a tunnel (an HTTP
+// CONNECT or a SOCKS5 CONNECT, whose bytes the proxy carries unread) to PublicEgressPort, when there is one.
+func (p *proxy) throughPublicEgress(kind string, port int) bool {
+	return p.PublicEgress.IsValid() && kind != "http" && port == PublicEgressPort
 }
 
 // released gives its slot back once, at its first close.

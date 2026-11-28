@@ -74,7 +74,7 @@ import { waitUntil } from "../wait.js";
 import { bounded, CALL_SLACK_MS, hostCall, type Opened, openBridge, pause, rootOf, runToExit, seconds, untilAborted, uploadThroughExec, words } from "./process.js";
 import { downloadingConnection } from "./download.js";
 import { isPackedKey, isWhole, PACKED_NAME, packLabels, unpackLabels } from "./values.js";
-import { EGRESS_POLICY, EGRESS_PROXY_USER, EGRESS_RELAY, HOSTED_ALLOW, NETWORK_LABEL, networkFormOf, networkOfForm, networkRefusal, throughProxy } from "./network.js";
+import { EGRESS_POLICY, EGRESS_PROXY_USER, EGRESS_RELAY, HOSTED_ALLOW, NETWORK_LABEL, networkFormOf, networkOfForm, networkRefusal, publicEgressOf, throughProxy } from "./network.js";
 import { ARCHIL_GATE, closedSocketsOf, type DaemonExpected, daemonDrift, type HostedCommands, hostedCommands, initFlags, installerOf } from "./scripts.js";
 
 /** The longest each kind of call may take, and the pauses between polls. */
@@ -150,6 +150,15 @@ export interface HostedOptions {
 	 * the public host through it. Unset or empty, they go to the public host; a host whose machines don't dial ignores it.
 	 */
 	attachEgress?: string;
+	/**
+	 * The operator's public egress, `<IPv4>:<port>` such as 192.0.2.40:8443 (publicEgressOf): for a vendor whose machines
+	 * reach only addresses the operator allows. A computer with a network (open, or a list) has its egress proxy send each
+	 * tunnel to port 443 (HTTP or SOCKS5 CONNECT) there once every check has passed, in place of the checked public
+	 * address, with the program's bytes unchanged, so the operator's gate admits by the ClientHello's server name; init
+	 * takes it as --public-egress. Plain HTTP and every other port dial the checked address. Unset or empty, nothing
+	 * changes; a computer with no network has no proxy and ignores it.
+	 */
+	publicEgress?: string;
 	/** What a host whose facts.connect is "dial" needs: create refuses without it, before any call to the vendor, in words
 	 *  that name serve's one-process start (a runner apart from the server has none). */
 	dial?: HostedDial;
@@ -348,6 +357,7 @@ export class HostedProvider implements ComputerProvider {
 	readonly #onNote: ProviderNote | undefined;
 	readonly #archilEgress: ArchilEgress | undefined;
 	readonly #attachEgress: string | undefined;
+	readonly #publicEgress: string;
 	/** Each create in flight, and the names of the computers this provider ended (create-requests.ts). In memory alone:
 	 *  past it, and past this process, the vendor's listing is what holds. */
 	readonly #requests = new CreateRequests();
@@ -380,6 +390,7 @@ export class HostedProvider implements ComputerProvider {
 			onNote,
 			archilEgress,
 			attachEgress,
+			publicEgress,
 		} = options;
 		const { id, label, capabilities } = host.descriptor;
 		if (kind !== "desktop" && kind !== "linux") throw new Error(`kind is desktop or linux, not ${String(kind)}`);
@@ -393,6 +404,7 @@ export class HostedProvider implements ComputerProvider {
 		this.#onNote = onNote;
 		this.#archilEgress = archilEgress === undefined || archilEgress === "" ? undefined : archilEgressOf(archilEgress);
 		this.#attachEgress = attachEgress === undefined || attachEgress === "" ? undefined : attachEgressOf(attachEgress);
+		this.#publicEgress = publicEgress === undefined || publicEgress === "" ? "" : publicEgressOf(publicEgress);
 		if (!isWhole(maxLifetimeMs) || maxLifetimeMs <= 0 || maxLifetimeMs > host.facts.maxLifetimeMs) {
 			throw new Error(`maxLifetimeMs must be a whole number of ms above 0 and at most ${host.facts.maxLifetimeMs} ms, the longest ${label} keeps a computer`);
 		}
@@ -903,13 +915,14 @@ export class HostedProvider implements ComputerProvider {
 			...(archil && this.host.facts.daemon === "pid1" ? { gate: ARCHIL_GATE } : {}),
 			rootOnly: this.host.facts.rootOnly ?? [],
 			network: formOf(spec.network),
+			publicEgress: this.#publicEgress,
 			// A synced folder's /workspace, the computer's user's, made by install before init.
 			workspace: spec.mount?.kind === "sync",
 			windowManager,
 		});
 		const backstopAt = new Date(now + this.#maxLifetimeMs + BACKSTOP_MARGIN_MS).toISOString();
 		const run = spec.labels?.[RUN_LABEL];
-		const boot = this.#dialing ? await this.#boot(name, backstopAt, { deadline, user, maxDeadline, network: formOf(spec.network), windowManager }, sha256, typeof run === "string" ? run : undefined) : undefined;
+		const boot = this.#dialing ? await this.#boot(name, backstopAt, { deadline, user, maxDeadline, network: formOf(spec.network), windowManager, publicEgress: this.#publicEgress }, sha256, typeof run === "string" ? run : undefined) : undefined;
 		if (boot !== undefined && !boot.ok) return boot;
 		const request: MachineRequest = {
 			name,

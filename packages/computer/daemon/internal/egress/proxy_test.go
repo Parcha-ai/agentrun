@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,6 +35,13 @@ type harness struct {
 }
 
 func newHarness(t *testing.T, allow *Allow, names map[string][]string) *harness {
+	t.Helper()
+	return newHarnessThrough(t, allow, names, netip.AddrPort{})
+}
+
+// newHarnessThrough is newHarness whose proxy has a public egress (none when publicEgress is the zero value): its dials
+// are recorded as every other, by the address and port they were asked for.
+func newHarnessThrough(t *testing.T, allow *Allow, names map[string][]string, publicEgress netip.AddrPort) *harness {
 	t.Helper()
 	upstream, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -110,7 +118,8 @@ func newHarness(t *testing.T, allow *Allow, names map[string][]string) *harness 
 			var d net.Dialer
 			return d.DialContext(ctx, "tcp", upstream.Addr().String())
 		},
-		Local: func() []netip.Addr { return []netip.Addr{netip.MustParseAddr("127.0.0.1"), own} },
+		Local:        func() []netip.Addr { return []netip.Addr{netip.MustParseAddr("127.0.0.1"), own} },
+		PublicEgress: publicEgress,
 	}
 	go func() { _ = Serve(l, options) }()
 	return h
@@ -548,5 +557,176 @@ func TestNetworkOfReadsOpenAndAListBackAsWritten(t *testing.T) {
 		if _, err := NetworkOf(text); err == nil {
 			t.Errorf("NetworkOf(%q): read; want a refusal", text)
 		}
+	}
+}
+
+// gate is a public egress in the documentation range: the operator's address a tunnel to 443 goes to.
+var gate = netip.MustParseAddrPort("192.0.2.40:8443")
+
+// With a public egress, an HTTP CONNECT and a SOCKS5 CONNECT to port 443 whose checks pass open TCP to the gate, not to
+// the checked address, and the client's bytes (here a ClientHello's first bytes and a line) reach it unchanged.
+func TestAPublicEgressCarriesATunnelTo443ToTheGateWithTheClientsBytes(t *testing.T) {
+	h := newHarnessThrough(t, nil, map[string][]string{"example.com": {"93.184.215.14"}}, gate)
+	status, refused, conn := h.connect(t, "example.com:443")
+	if !strings.HasPrefix(status, "200") || refused != "" {
+		t.Fatalf("CONNECT example.com:443: %q refused %q; want 200", status, refused)
+	}
+	hello := "\x16\x03\x01\x00\xa5\x01 server name example.com\n"
+	_, _ = io.WriteString(conn, hello)
+	line, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil || line != "echo "+hello {
+		t.Fatalf("through the tunnel: %q, %v; want the gate to see the client's bytes unchanged", line, err)
+	}
+	conn, err = net.DialTimeout("tcp", h.address, wait)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(wait))
+	_, _ = conn.Write([]byte{5, 1, 0})
+	greeting := make([]byte, 2)
+	if _, err := io.ReadFull(conn, greeting); err != nil || greeting[1] != 0 {
+		t.Fatalf("socks greeting: %v %v", greeting, err)
+	}
+	_, _ = conn.Write(append(append([]byte{5, 1, 0, 3, byte(len("example.com"))}, "example.com"...), 1, 187))
+	reply := make([]byte, 10)
+	if _, err := io.ReadFull(conn, reply); err != nil || reply[1] != 0 {
+		t.Fatalf("socks CONNECT example.com:443: reply %v, %v; want 0", reply, err)
+	}
+	if got := h.dials(); len(got) != 2 || got[0] != gate.String() || got[1] != gate.String() {
+		t.Fatalf("dialled %q; want the gate %s twice, never the checked address", got, gate)
+	}
+}
+
+// With a public egress, a tunnel to any other port and plain HTTP (to port 80, or naming port 443) still dial the
+// address they were checked at: the gate admits by the server name a TLS ClientHello carries, which only a tunnel to
+// 443 sends.
+func TestAPublicEgressNeverCarriesAnotherPortOrPlainHTTP(t *testing.T) {
+	h := newHarnessThrough(t, nil, map[string][]string{"example.com": {"93.184.215.14"}}, gate)
+	for _, target := range []string{"example.com:80", "example.com:8443", "example.com:22"} {
+		if status, refused, _ := h.connect(t, target); !strings.HasPrefix(status, "200") || refused != "" {
+			t.Fatalf("CONNECT %s: %q refused %q; want 200", target, status, refused)
+		}
+	}
+	via, err := url.Parse("http://" + h.address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(via)}, Timeout: wait}
+	for _, target := range []string{"http://example.com/index.html", "http://example.com:443/index.html"} {
+		answer, err := client.Get(target)
+		if err != nil {
+			t.Fatalf("GET %s: %v", target, err)
+		}
+		_ = answer.Body.Close()
+		if answer.StatusCode != 200 {
+			t.Fatalf("GET %s through the proxy: %d; want 200", target, answer.StatusCode)
+		}
+	}
+	want := []string{"93.184.215.14:80", "93.184.215.14:8443", "93.184.215.14:22", "93.184.215.14:80", "93.184.215.14:443"}
+	if got := h.dials(); strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("dialled %q; want %q, the gate never", got, want)
+	}
+}
+
+// With a public egress, every refusal still comes first and nothing refused reaches the gate: a refused class, a name
+// that resolves to a refused address, a name that does not resolve, and with a host list, a name off it (never looked up).
+func TestAPublicEgressNeverCarriesWhatTheChecksRefuse(t *testing.T) {
+	names := map[string][]string{"example.com": {"93.184.215.14"}, "split.example.com": {"93.184.215.14", "10.1.2.3"}}
+	open := newHarnessThrough(t, nil, names, gate)
+	for _, test := range []struct{ target, status, class string }{
+		{"10.0.0.5:443", "403", "private"},
+		{"169.254.169.254:443", "403", "link-local"},
+		{"203.0.114.7:443", "403", "this-host"},
+		{"split.example.com:443", "403", "private"},
+		{"nowhere.example:443", "502", "name not resolved"},
+	} {
+		status, refused, _ := open.connect(t, test.target)
+		if !strings.HasPrefix(status, test.status) || refused != test.class {
+			t.Errorf("CONNECT %s: %q refused %q; want %s refused as %s", test.target, status, refused, test.status, test.class)
+		}
+	}
+	if got := open.dials(); len(got) != 0 {
+		t.Fatalf("dialled %q; want no dial at all", got)
+	}
+	allow, err := ParseAllow("example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := newHarnessThrough(t, &allow, map[string][]string{"example.com": {"93.184.215.14"}, "evil.example": {"93.184.215.16"}}, gate)
+	if status, refused, _ := listed.connect(t, "evil.example:443"); !strings.HasPrefix(status, "403") || refused != "not-listed" {
+		t.Fatalf("CONNECT evil.example:443 off the list: %q refused %q; want 403 not-listed", status, refused)
+	}
+	if got, looked := listed.dials(), listed.lookups(); len(got) != 0 || len(looked) != 0 {
+		t.Fatalf("dialled %q, looked up %q; want neither for a name off the list", got, looked)
+	}
+	if status, _, _ := listed.connect(t, "example.com:443"); !strings.HasPrefix(status, "200") {
+		t.Fatalf("CONNECT example.com:443 on the list: %q; want 200", status)
+	}
+	if got := listed.dials(); len(got) != 1 || got[0] != gate.String() {
+		t.Fatalf("dialled %q; want the gate alone for the listed name", got)
+	}
+}
+
+// The public egress init gives its proxy reads as attach reads its relay: an IPv4 address and a port, no leading zero.
+func TestPublicEgressOfReadsAnIPv4AndAPortAndRefusesTheRest(t *testing.T) {
+	for _, text := range []string{"192.0.2.40:8443", "203.0.113.1:443", "198.51.100.255:65535", "192.0.2.4:1"} {
+		address, err := PublicEgressOf(text)
+		if err != nil || address.String() != text {
+			t.Errorf("PublicEgressOf(%q) = %v, %v; want it back as written", text, address, err)
+		}
+	}
+	for _, text := range []string{"", "192.0.2.40", "gate.example:8443", "192.0.2.40:0", "192.0.2.40:65536", "192.0.2.40:08443", "192.0.2.040:8443", "[2001:db8::1]:8443", "192.0.2.40:8443:1", " 192.0.2.40:8443", "192.0.2.40:8443\n"} {
+		if _, err := PublicEgressOf(text); err == nil || !strings.Contains(err.Error(), "--public-egress is the operator's public egress") {
+			t.Errorf("PublicEgressOf(%q): %v; want a refusal in PublicEgressWords", text, err)
+		}
+	}
+}
+
+// egress-proxy takes the public egress init gives it, once and well formed, and serves it.
+func TestProxyConfigOfTakesThePublicEgressOnceAndWellFormed(t *testing.T) {
+	until := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	config, err := ProxyConfigOf([]string{"--network", "open", "--until", until, "--parent", "7", "--public-egress", "192.0.2.40:8443"})
+	if err != nil || config.PublicEgress != gate || config.Network.Allow != nil || config.Parent != 7 {
+		t.Fatalf("ProxyConfigOf with --public-egress: %+v, %v; want the gate", config, err)
+	}
+	config, err = ProxyConfigOf([]string{"--network", "open", "--until", until, "--parent", "7"})
+	if err != nil || config.PublicEgress.IsValid() {
+		t.Fatalf("ProxyConfigOf without --public-egress: %+v, %v; want none", config, err)
+	}
+	for _, args := range [][]string{
+		{"--network", "open", "--until", until, "--parent", "7", "--public-egress", "gate.example:8443"},
+		{"--network", "open", "--until", until, "--parent", "7", "--public-egress", "192.0.2.40:8443", "--public-egress", "192.0.2.41:8443"},
+		{"--network", "open", "--until", until, "--parent", "7", "--public-egress"},
+	} {
+		if _, err := ProxyConfigOf(args); err == nil || !strings.Contains(err.Error(), "egress-proxy takes") {
+			t.Errorf("ProxyConfigOf(%q): %v; want a refusal", args, err)
+		}
+	}
+}
+
+// A proxy config's arguments are what egress-proxy reads back, the public egress among them when there is one, and its
+// options serve the network's list and that public egress.
+func TestProxyConfigArgsReadBackAndServeThePublicEgress(t *testing.T) {
+	allow, err := ParseAllow("example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	until := time.Now().Add(time.Hour).Truncate(time.Second).UTC()
+	for _, config := range []ProxyConfig{
+		{Network: Network{Allow: &allow}, Until: until, Parent: 7, PublicEgress: gate},
+		{Network: Network{}, Until: until, Parent: 7},
+	} {
+		read, err := ProxyConfigOf(config.Args())
+		if err != nil || read.PublicEgress != config.PublicEgress || read.Parent != 7 || !read.Until.Equal(until) || read.Network.String() != config.Network.String() {
+			t.Fatalf("ProxyConfigOf(%q) = %+v, %v; want %+v back", config.Args(), read, err, config)
+		}
+		served := read.Options(func(string) {})
+		if served.PublicEgress != config.PublicEgress || served.Allow != read.Network.Allow {
+			t.Fatalf("%+v serves %+v; want its list and public egress", read, served)
+		}
+	}
+	if args := (ProxyConfig{Until: until, Parent: 7}).Args(); slices.Contains(args, "--public-egress") {
+		t.Fatalf("Args with no public egress: %q; want no --public-egress", args)
 	}
 }
