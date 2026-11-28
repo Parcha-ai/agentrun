@@ -41,7 +41,11 @@ async function setup(t, { mode = "local", settings, kinds = KINDS, env, unbuilt 
 test("an environment variable with a key's name overrides the saved one: source env, and the test takes its value", async (t) => {
   const { routes, built } = await setup(t, { env: { E2B_API_KEY: "fake-test-key", PATH: "/usr/bin" } });
   const view = await routes.view();
-  assert.deepEqual(providerOf(view, "sandbox", "e2b").secrets, [{ name: "computer:e2b:E2B_API_KEY", set: true, source: "env", changed_at: null }]);
+  // The key, then E2B's three optional operator settings, unset here (its domain, API URL and template).
+  assert.deepEqual(providerOf(view, "sandbox", "e2b").secrets, [
+    { name: "computer:e2b:E2B_API_KEY", set: true, source: "env", changed_at: null },
+    ...["AGENTRUN_E2B_DOMAIN", "AGENTRUN_E2B_API_URL", "AGENTRUN_E2B_TEMPLATE"].map((name) => ({ name: `computer:e2b:${name}`, set: false, source: null, changed_at: null })),
+  ]);
   assert.equal(providerOf(view, "desktop", "e2b").ready, true, "set by the environment, no save needed");
   assert.deepEqual(await routes.test("e2b"), { ok: true, detail: "e2b: 2 computers" });
   assert.deepEqual(built.at(-1), ["e2b", { apiKey: "fake-test-key" }]);

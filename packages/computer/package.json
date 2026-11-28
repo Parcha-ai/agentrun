@@ -13,6 +13,7 @@
     "groundbox",
     "vercel",
     "sprites",
+    "instabox",
     "maritime"
   ],
   "type": "module",
@@ -91,6 +92,10 @@
     "./sprites": {
       "types": "./dist/sprites.d.ts",
       "default": "./dist/sprites.js"
+    },
+    "./instabox": {
+      "types": "./dist/instabox.d.ts",
+      "default": "./dist/instabox.js"
     },
     "./maritime": {
       "types": "./dist/maritime.d.ts",
