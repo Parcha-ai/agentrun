@@ -285,10 +285,10 @@ test("Freestyle's errors are codes in Freestyle's words, never the key", async (
 		assert.equal(error.message.includes(KEY), false);
 	}
 	const fake = fakeFreestyle();
-	const wrong = new FreestyleProvider({ apiKey: "fake-test-key-wrong", fetch: fake.fetch });
+	const wrong = new FreestyleProvider({ apiKey: "fake-test-key", fetch: fake.fetch });
 	const denied = await wrong.host.list({}, CTX).catch((caught) => caught);
 	assert.equal(denied.code, "denied");
-	assert.equal(denied.message.includes("fake-test-key-wrong"), false);
+	assert.equal(denied.message.includes("fake-test-key"), false);
 });
 
 test("check takes a snapshot of the account by id or slug, or a public {owner}/{slug}; Freestyle's base snapshots, another form or a size are refused before any call", () => {
