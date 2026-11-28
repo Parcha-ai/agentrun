@@ -1,4 +1,5 @@
 name: Ways in daily
+run-name: ${{ github.event_name == 'workflow_run' && format('Ways in at {0}', github.event.workflow_run.head_branch) || ' ' }}
 
 # Every way in the README offers, walked on main's tip every day, whatever changed, so a merge that breaks one is caught
 # the same day: the walks that run on a pull request only when it touches their own files, here on main's code (its
