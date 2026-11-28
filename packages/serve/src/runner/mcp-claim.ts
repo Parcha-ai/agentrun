@@ -299,8 +299,9 @@ export async function mcpClaim(given: McpClaimOptions): Promise<McpClaimStep> {
     // after it), kept fresh mid-run, and never stored.
     if (row.auth === "github_app") return await github.open(name, entry), { awaited: true };
     // A per_run server the API token saved, or a workspace's own credential the token sealed, at an origin no longer on
-    // the API-only list: no entry but those words, nothing opened (pinOf refuses the same at the claim).
-    const off = await offApiOnlyMcpOrigins(store, name, row);
+    // the API-only list: no entry but those words, nothing opened (pinOf refuses the same at the claim). Only the auth
+    // types the token saves are read for it, as check() reads them.
+    const off = TOKEN_SAVED_MCP_AUTHS.includes(row.auth) ? await offApiOnlyMcpOrigins(store, name, row) : undefined;
     if (off) offList.add(name);
     else offList.delete(name);
     if (off) return entry({ unopened: off }), { awaited: false };
