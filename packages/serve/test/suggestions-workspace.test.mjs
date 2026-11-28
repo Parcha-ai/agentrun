@@ -205,3 +205,15 @@ test("a run of a workspace's agent with checkout: repository fetches anonymously
   await ended(server, W1, operators.body.run_id);
   assert.equal((await fauxState(server)).minted, before, "no checkout of a workspace's run used the operator's App");
 });
+
+test("on an API-only server with a launch hook, a workspace's scan starts no run of its own: the host starts a workspace's runs, under its metered key", { timeout: 120_000 }, async (t) => {
+  const { hookServer } = await import("./trigger-support.mjs");
+  const { mintSecret } = await import("../dist/standard-webhooks.js");
+  const hook = await hookServer(t);
+  const server = await serve(t, { faux: SCOUT, fauxGitHub: true, publicUrl: "https://agents.example.test", apiOnly: true, launchHook: { url: hook.url, secret: mintSecret() }, tokens: [{ id: "v2", token: SCOPED }, { id: "ops", token: OPERATOR }], workspaceTokens: ["v2"] });
+  const refused = await inW1(server, "POST", "/suggestions/scans", { body: { repo: REPO } });
+  assert.ok(refused.status >= 400 && refused.status < 500, `refused before anything starts: ${refused.text}`);
+  assert.deepEqual((await inW1(server, "GET", "/runs")).body.runs, [], "no run was started");
+  assert.deepEqual((await inW1(server, "GET", "/agents")).body.agents, [], "no scout was applied");
+  assert.equal(hook.got.length, 0, "nothing was handed to the hook");
+});
