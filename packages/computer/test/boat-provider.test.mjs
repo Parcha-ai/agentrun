@@ -102,8 +102,8 @@ test("a create whose Idempotency-Key boat holds for another body is exists; the 
 	const limited = boatOf(undefined, { rateLimited: true }).host;
 	await assert.rejects(limited.create(request(), CTX), (error) => error.code === "limit" && /rate_limited/.test(error.message));
 	const vendor = fakeBoat();
-	const denied = new BoatProvider({ apiKey: "fake-test-key-other", apiUrl: API_URL, fetch: vendor.fetch, ssh2 }).host;
-	await assert.rejects(denied.list({}, CTX), (error) => error.code === "denied" && !error.message.includes("fake-test-key-other"));
+	const denied = new BoatProvider({ apiKey: "not-a-secret", apiUrl: API_URL, fetch: vendor.fetch, ssh2 }).host;
+	await assert.rejects(denied.list({}, CTX), (error) => error.code === "denied" && !error.message.includes("not-a-secret"));
 });
 
 test("get reads a sandbox: provisioning and its kin are starting, ready, idle and running are running, archived is stopped, error and cancelled are gone in boat's words; another state is stopped; an id boat lacks is none", async () => {
@@ -111,13 +111,15 @@ test("get reads a sandbox: provisioning and its kin are starting, ready, idle an
 	const { id } = await host.create(request(), CTX);
 	const { sandbox } = vendor.sandboxes.get(id);
 	assert.deepEqual(await host.get(id, CTX), { id, labels: LABELS, state: "starting", createdAt: new Date(sandbox.createdAt), endsAt: new Date(sandbox.archiveAfter) });
+	// The fake's own reads-until-ready are spent, so each state below reads back as set.
+	vendor.sandboxes.get(id).reads = Number.POSITIVE_INFINITY;
 	const states = { init: "starting", provisioning: "starting", provisioned: "starting", cloning: "starting", ready: "running", idle: "running", running: "running", archiving: "stopped", archived: "stopped", error: "gone", cancelled: "gone", sinking: "stopped" };
 	for (const [state, expected] of Object.entries(states)) {
 		Object.assign(sandbox, { state, error: state === "error" || state === "cancelled" ? "no machine of this type" : null });
 		const read = await host.get(id, CTX);
 		assert.equal(read.state, expected, state);
 		if (state === "error" || state === "cancelled") assert.equal(read.why, `boat reads the sandbox ${state}: no machine of this type`);
-		if (state === "sinking") assert.equal(read.why, "boat reads the state sinking, which this provider does not know");
+		if (state === "sinking") assert.equal(read.why, 'boat reads the state "sinking", which this provider does not know');
 	}
 	assert.equal(await host.get("bx_zzzzzzzz", CTX), undefined);
 	const before = vendor.calls.length;
@@ -149,7 +151,7 @@ test("delete sends boat's confirmation header and reads back as none; an id boat
 	assert.equal(await host.get(id, CTX), undefined);
 	await host.delete(id, CTX);
 	await host.delete("computer-0123456789ab", CTX);
-	const made = await host.create(request({ name: "computer-0123456789ac" }), CTX);
+	const made = await host.create(request({ name: "computer-0123456789ac", labels: { ...LABELS, "agentrun.computer.name": "computer-0123456789ac" } }), CTX);
 	const released = await provider.release({ id: made.id, name: "computer-0123456789ac" }, "delete");
 	assert.equal(released.ok, true, JSON.stringify(released.error));
 	assert.equal(vendor.sandboxes.has(made.id), false);
