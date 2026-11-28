@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: fix
+---
+A run's computer time is now booked on its ledger and held to its spending cap when the run runs in a process of its own, as every runner started by `agentrun serve` or `agentrun runner` runs it. Before, the run's process never handed its ledger to the runner that made its computer, so no meter was made: nothing was held or booked, no `compute_spend_unbooked` line was logged, every `compute_time` usage line read `unpriced` with `booked_seconds` 0, and a run's cap never counted a second of computer time. Now each stretch is booked at the prices in the runner's environment (`AGENTRUN_COMPUTE_USD_PER_*`), the usage lines are priced, and a cap with no room for the next stretch pauses the run with `spend_cap_reached`. A computer let go while the run's spec is still being built had its time dropped without a word; it is now booked once the cap can judge it, and a spec that is never built books nothing and logs one `compute_spend_unbooked` line per priced resource.
