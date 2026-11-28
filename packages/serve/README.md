@@ -3418,6 +3418,10 @@ and `where` reads `/text`. A trigger that wakes only on notes that start with a 
 Stream's phone sends each interaction once, waits 5 s, follows no redirect and does not retry, so the server answers
 before any run starts; a note no rule takes is `200 {"ok": "ignored"}` and stays in Stream.
 
+The bundled `stream-router` template sets this up whole: one Jev route on each note picks your assistant (by the name a
+note starts with), a researcher, a coder or no agent at all, and its apply's warning says to give the trigger Stream's
+secret ([templates](templates/README.md#workflow-packages)).
+
 `accept` makes a trigger take only the events it names, from the delivery alone:
 
 ```json
@@ -3807,7 +3811,9 @@ on the saved Composio server that need maps to, its `config` filled from the par
 warning, as a github trigger is with GitHub not connected. The first package is `code-review`, a code review agent for one GitHub repository;
 `agent-scout` finds where a repository's app needs an agent ([Suggested agents](#suggested-agents)). The format and the
 rules of an apply are in [templates/README.md](https://github.com/Parcha-ai/agentrun/blob/main/packages/serve/templates/README.md);
-`agentrun template validate DIR` checks a folder as the server does.
+`agentrun template validate DIR` checks a folder as the server does. A package's agent is agentic or, when its manifest
+names a workflow file, a workflow revision of that workflow, its parameters filled in its text: `stream-router` is one,
+a Sandbar Stream ring's router ([workflow packages](templates/README.md#workflow-packages)).
 
 `GET /v2/marketplace/templates` lists the templates on [marketplace.agentrun.ai](https://marketplace.agentrun.ai), the
 list the marketplace publishes (`/search.json`), each with `here`, the id of the package on this server that it is

@@ -19,6 +19,7 @@ beforeAll(() => {
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
 const KYB: TemplateView = {
+  workflow: null,
   id: "kyb", bundled: true, source: null, sha: null, publisher: null,
   name: "kyb", display_name: "KYB", version: "1.0.0", description: "Checks a business.", license: "MIT", author: null, repository: null, output: null,
   harness: ["pi"], model: { tier: "balanced" }, effort: null, tools: null, tool_policy: null, computer: null, needs: null, computer_here: null, model_tiers_here: { harness: "pi", fast: null, strong: null, note: null }, checkout: null, mcp: [], input_schema: null,

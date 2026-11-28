@@ -223,7 +223,7 @@ import { mcpNameOf as mcpToolOf, mcpToolName } from "./tool-names.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, RELEASE_WORDS_MAX, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import type { LaunchHook } from "./trigger-launch-hook.js";
 import { PAYLOAD_KEPT_BYTES } from "./trigger-adapter.js";
-import { applyBodyOf, choiceUnrunnable, COMPOSIO_TRIGGER_FIX, composioTriggerSkipped, COMPUTER_FIX, compiled, feedLeftEmpty, feedTriggerEmpty, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, mcpNeedName, mcpSetUp, type McpServed, onServerName, onServers, type Package, packageDetail, packageModel, packageTiers, packageView, pickComputer, readPackages, notSetUpYet, serversFor, type ShellHere, TemplateRegistry, type TemplatesDeps } from "./templates.js";
+import { applyBodyOf, checkWorkflowPackage, choiceUnrunnable, COMPOSIO_TRIGGER_FIX, composioTriggerSkipped, COMPUTER_FIX, compiled, feedLeftEmpty, feedTriggerEmpty, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, mcpNeedName, mcpSetUp, type McpServed, onServerName, onServers, type Package, packageDetail, packageModel, packageTiers, packageView, pickComputer, readPackages, notSetUpYet, serversFor, type ShellHere, TEMPLATES_DIR, TemplateRegistry, type TemplatesDeps, workflowTriggerInputIssues } from "./templates.js";
 import { applyImported, deleteTemplate, dropRemovedUploads, importTemplate, loadImported, type TemplateImportDeps, UPLOAD_PREFIX } from "./template-import.js";
 import { hereOf, Marketplace, marketplaceUrlOf } from "./marketplace.js";
 import { templateInstallLink, templateLink, templatesLink } from "./console-links.js";
@@ -1407,8 +1407,10 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const minFreeMib = minFreeMibOf(process.env);
   if (minFreeMib === undefined) throw new Error("AGENTRUN_MIN_FREE_MB is a number of MiB, 0 or more");
   const minFreeBytes = options.minFreeBytes ?? minFreeMib * 2 ** 20;
-  // The template packages, each checked whole (templates.ts readPackage): a broken one stops the start.
+  // The template packages, each checked whole (templates.ts readPackage, and a workflow package's workflow:
+  // checkWorkflowPackage): a broken one stops the start.
   const templates = readPackages(options.templates);
+  for (const pkg of templates) await checkWorkflowPackage(pkg, join(options.templates ?? TEMPLATES_DIR, pkg.name));
   // One server per data root: the store's owner lock (StoreOwned), then the data root's own (server-lock.ts), both taken
   // when startHolding opens the store; a data directory an earlier version wrote is refused there too
   // (StoreFromEarlierVersion), in words, to start fresh. No oldHomes/oldLayout checks, no migration.
@@ -3875,6 +3877,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   }
 
 
+  /** A workflow revision's own issues, as POST /workflows/validate lists them (workflowIssues: the DSL's checks, the
+   *  durable runner's refusal), refuse its save before anything is written, each at its path under definition.workflow;
+   *  an apply's plan refuses them in the same words (planTemplate). Asked with no tools list: its run binds every tool its
+   *  call nodes name whether `tools` lists it or not (tools.ts grantedTools), so a call node's unlisted tool is validate's
+   *  hint, never a reason to refuse a runnable workflow. Nothing for an agentic revision. */
+  async function refuseWorkflowIssues(revision: NewRevision): Promise<void> {
+    if (revision.kind !== "workflow") return;
+    const { workflowIssues } = await import("./workflow-run.js");
+    const { issues } = await workflowIssues((revision.body as Partial<WorkflowBody>).workflow);
+    if (issues.length) throw invalid(issues.map(({ path, code, message }) => ({ field: `definition.workflow${path}`, reason: "invalid", code, message })));
+  }
+
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks, and
    *  its pins (mcpListingOf, monidPinOf), each carrying from `previous` what its grants did not change. A revision that
    *  names no place is checked where it would run (fallbackPlace). `toolsUnnamed`: a create whose definition names no tools
@@ -3897,15 +3911,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (cliLearningOf(body) || sdkOf(body)) return { warnings: [], stamp: {} };
     const noPlace = await noPlaceOf(revision, toolsUnnamed);
     await loginNow();
-    // A workflow's own issues, as POST /workflows/validate lists them (workflowIssues: the DSL's checks, the durable
-    // runner's refusal), refuse its save before anything is written, each at its path under definition.workflow. Asked
-    // with no tools list: its run binds every tool its call nodes name whether `tools` lists it or not (tools.ts
-    // grantedTools), so a call node's unlisted tool is validate's hint, never a reason to refuse a runnable workflow.
-    if (revision.kind === "workflow") {
-      const { workflowIssues } = await import("./workflow-run.js");
-      const { issues } = await workflowIssues(body.workflow);
-      if (issues.length) throw invalid(issues.map(({ path, code, message }) => ({ field: `definition.workflow${path}`, reason: "invalid", code, message })));
-    }
+    await refuseWorkflowIssues(revision);
     // An agent on a harness that installs on first use starts its install, if it is not in yet: its first run waits for less.
     const harnessId = revision.kind === "agentic" ? harnessOfBody(body) : undefined;
     const install = harnessId !== undefined && Object.hasOwn(installs, harnessId) ? installs[harnessId] : undefined;
@@ -4143,6 +4149,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const { definition: made, skills } = checkDefinitionBody(p.made.agent, { harnesses });
         revision = makeRevision(made, skills ?? {}, undefined);
       }
+      // A workflow package's workflow, its parameters filled, as its save checks it: a parameter can make a workflow its
+      // save refuses (two nodes of one label), and the plan says so first, as the save does.
+      await refuseWorkflowIssues(revision);
       const refused = await noPlaceOf(revision, p.onto ? false : p.toolsUnnamed);
       if (refused) throw invalid([refused]);
     }
@@ -4304,7 +4313,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       return [[i, keptOn ? { ...skip, message: `${skip.message} The agent's trigger ${keptOn.id} of that name ${kept}.` } : skip] as const];
     }));
     const unmade = (i: number) => emptyFeeds.has(i) || hostless.has(i);
-    const refusedTriggers = madeTriggerIssues(made.triggers, options.triggerClock?.now() ?? Date.now(), pkg.inputSchema).filter((issue) => !unmade(Number(/^triggers\.(\d+)\./.exec(issue.field)?.[1])));
+    // A workflow package's triggers start its workflow's runs, so each input is checked against the workflow's own input,
+    // filled as the apply fills it.
+    const flowInputs = pkg.workflow ? await workflowTriggerInputIssues((made.agent.definition as Json).workflow as Json, made.triggers) : [];
+    const refusedTriggers = [...madeTriggerIssues(made.triggers, options.triggerClock?.now() ?? Date.now(), pkg.inputSchema, Boolean(pkg.workflow)), ...flowInputs].filter((issue) => !unmade(Number(/^triggers\.(\d+)\./.exec(issue.field)?.[1])));
     if (refusedTriggers.length) throw invalid(refusedTriggers);
     // POST /agents' and POST /triggers' own body limit: parameters filled in more than once can grow a package past it.
     for (const one of [made.agent, ...made.triggers]) if (Buffer.byteLength(JSON.stringify(one)) > MAX_BODY) throw new ApiError("payload_too_large", `the ${pkg.name} template, its parameters filled in, makes a body over ${MAX_BODY} bytes`, { details: { limit: "max_body_bytes" } });
@@ -5931,7 +5943,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const body = (revision?.body ?? {}) as Json;
         const elsewhere = ownedElsewhere(agent) ? "another system's agent, which that system defines" : body.native ? "a native agent, which its project on its own machine defines" : body.cli_learning ? "a CLI learning agent, which its CLI's sessions define" : body.sdk ? "an SDK agent, which its application's code defines" : undefined;
         if (elsewhere) throw new ApiError("not_exportable", `The agent ${id} is ${elsewhere}: export it from there.`);
-        if (!revision || revision.kind !== "agentic") throw new ApiError("not_exportable", `The agent ${id} ${revision ? "is a workflow, and a template package holds an agent" : "has no revision to export"}.`);
+        if (!revision || revision.kind !== "agentic") throw new ApiError("not_exportable", `The agent ${id} ${revision ? "is a workflow, and an export writes an agentic package only: a workflow template's agent is its template, applied again" : "has no revision to export"}.`);
         // Its triggers: those that start its runs and those that message one of them (each row names the agent it runs as).
         const own = new Set((await store.triggers.list(id)).map((row) => row.id));
         const views = (await triggers.list()).triggers.filter((view) => own.has(view.id)) as unknown as Json[];

@@ -277,9 +277,16 @@ function InstallTemplate({ v2, source, go }: { v2: Client; source: string; go: (
       )}
       <RunInputs t={t} />
       <EvalCases t={t} />
-      <Section title="Instructions" note="What the agent is told, in full: a package from someone else says this to your agent.">
-        <pre className="max-h-[32rem] overflow-auto whitespace-pre-wrap break-words px-4 py-3 font-mono text-small" data-instructions>{read.instructions}</pre>
-      </Section>
+      {read.workflow ? (
+        // A workflow package's agent has no instructions of its own: each node of its workflow carries its own.
+        <Section title="Workflow" note={`What the agent runs (${t.workflow}), in full: each step's instructions are what that step is told.`}>
+          <pre className="max-h-[32rem] overflow-auto whitespace-pre-wrap break-words px-4 py-3 font-mono text-small" data-workflow>{JSON.stringify(read.workflow, null, 2)}</pre>
+        </Section>
+      ) : (
+        <Section title="Instructions" note="What the agent is told, in full: a package from someone else says this to your agent.">
+          <pre className="max-h-[32rem] overflow-auto whitespace-pre-wrap break-words px-4 py-3 font-mono text-small" data-instructions>{read.instructions}</pre>
+        </Section>
+      )}
       {t.output?.json_schema && (
         // Each run is told the answer's schema whole (its output contract), each description in it included.
         <Section title="Output schema" note={`What the agent is told to answer in (${t.output.schema}), in full: its descriptions are instructions too.`}>

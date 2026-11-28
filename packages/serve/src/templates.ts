@@ -28,7 +28,7 @@ import { type FileSetting, fileIssues } from "./filed-tool.js";
 import { BOUND_TOOLS, toolOf } from "./tools.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { MOVE_FIELD } from "./trigger-composio.js";
-import { triggerBodyIssues } from "./triggers.js";
+import { sampleFiredInput, triggerBodyIssues } from "./triggers.js";
 import { definitionBodyIssues, inputIssues, inputSchemaOf, isObject, type Json, MODEL_REF, MODEL_TIER_NAMES, unknownFields } from "./validate.js";
 import { schemaCheck } from "./answer-json.js";
 import { webFixtureOf } from "./web-fake.js";
@@ -54,7 +54,10 @@ export const GRADER_TYPES = ["llm", "regex", "tool_used", "file_exists", "mailbo
  *  `none`, no shell, the file tools alone. Apply takes the first this server meets now (pickComputer). */
 export const COMPUTER_ENTRIES = ["shell", "none"] as const;
 export type ComputerEntry = (typeof COMPUTER_ENTRIES)[number];
-const FIELDS = ["name", "display_name", "version", "description", "license", "author", "repository", "category", "tags", "harness", "model", "effort", "tools", "mcp", "tool_policy", "computer", "needs", "checkout", "parameters", "inputs", "secrets", "budget", "learning", "approvals", "triggers", "output"];
+const FIELDS = ["name", "display_name", "version", "description", "license", "author", "repository", "category", "tags", "harness", "model", "effort", "tools", "mcp", "tool_policy", "computer", "needs", "checkout", "parameters", "inputs", "secrets", "budget", "learning", "approvals", "triggers", "output", "workflow"];
+/** The manifest fields only an agentic package has: a workflow package's agent is its workflow, whose nodes carry their
+ *  own tiers, tools, input and output (a workflow revision keeps none of these: validate.ts definitionIssues). */
+const AGENTIC_FIELDS = ["harness", "model", "effort", "tools", "mcp", "tool_policy", "computer", "needs", "checkout", "inputs", "output", "learning"] as const;
 /** What a package is for, shown on a marketplace page and the console's list: display only, never applied. */
 export const CATEGORIES = ["engineering", "security", "sales", "marketing", "research", "finance", "operations", "compliance", "personal"] as const;
 const TAG = /^[a-z0-9-]{1,32}$/;
@@ -90,6 +93,8 @@ const FORMAT_SAMPLES: Record<string, string> = { uri: "https://example.com", ema
 /** A scalar's sample: its first choice, else one of its format, else one of its type. */
 const sampleOf = (spec: { type?: unknown; enum?: unknown; format?: unknown }): unknown => (Array.isArray(spec.enum) ? spec.enum[0] : FORMAT_SAMPLES[spec.format as string] ?? SAMPLES[spec.type as ScalarType]);
 /** A composio trigger's fields this server sets when it makes the trigger on Composio (composio-triggers.ts). */
+/** A value for each parameter, as the validator compiles a package with: its default, else a sample of its type. */
+const samplesOf = (fields: Record<string, Json>): Json => Object.fromEntries(Object.entries(fields).map(([key, spec]) => [key, spec.default ?? (spec.type === "array" ? [sampleOf(spec.items as Json)] : sampleOf(spec))]));
 const COMPOSIO_SET = ["instance_id", "hook", MOVE_FIELD] as const;
 
 /** An agent id in the shape an apply gives a trigger's target, for that check. */
@@ -235,6 +240,12 @@ export type Package = {
   output?: { schema: string };
   /** The output schema's JSON, parsed (GET /v2/templates shows it). */
   outputSchema?: Json;
+  /** The file in the package that holds its agent's workflow (manifest `workflow`): with it, the package makes a workflow
+   *  revision, and its body, skills, evals and agentic fields are refused. */
+  workflowFile?: string;
+  /** That workflow, parsed, placeholders unfilled: apply fills each `${parameters.<name>}` in its text. */
+  workflow?: Json;
+  /** The agent's instructions: agent.md's body. Empty for a workflow package, whose nodes carry their own. */
   instructions: string;
   /** Skill files by path under the agent's skills folder (`review/SKILL.md`), each rule beside each SKILL.md. */
   skills: Record<string, string>;
@@ -697,6 +708,27 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
   const manifest = front(MANIFEST);
   const f = manifest?.data ?? {};
   for (const issue of unknownFields(f, FIELDS)) bad(MANIFEST, `no field ${issue.field}: the fields are ${FIELDS.join(", ")}`);
+  // A workflow package: agent.md names the JSON file holding its agent's workflow, and apply makes a workflow revision of
+  // it. A workflow revision keeps no instructions, model, tools, input or output schema of its own (its nodes carry
+  // theirs), so what only an agentic package has is refused, each in words, and so are a body, skills and eval cases.
+  const flowPackage = f.workflow !== undefined;
+  let workflow: Json | undefined;
+  if (flowPackage) {
+    for (const field of AGENTIC_FIELDS) if (f[field] !== undefined) bad(MANIFEST, `${field} is an agentic package's: a workflow package's agent is its workflow, whose nodes carry their own tiers, tools, input and output. Leave ${field} out`);
+    if (kind("skills") === "dir") bad("skills/", "a workflow package has no skills: its workflow's nodes carry their own instructions");
+    if (kind("rules") === "dir") bad("rules/", "a workflow package has no rules: its workflow's nodes carry their own instructions");
+    if (kind("evals") === "dir") bad("evals/", "a workflow package has no eval cases: they run an agentic package's agent");
+    if (!inside(f.workflow) || !(f.workflow as string).endsWith(".json")) bad(MANIFEST, "workflow is a JSON file in the package, holding the agent's workflow");
+    else {
+      try {
+        const parsed: unknown = JSON.parse(text(f.workflow as string));
+        if (!isObject(parsed)) throw new Error();
+        workflow = parsed;
+      } catch {
+        bad(f.workflow as string, "is not a JSON object");
+      }
+    }
+  }
   if (f.display_name !== undefined && (typeof f.display_name !== "string" || !f.display_name.trim())) bad(MANIFEST, "display_name is the agent's name, text (it may hold ${parameters.<name>})");
   if (typeof f.name !== "string" || !NAME.test(f.name) || f.name.length > 64 || f.name !== name) bad(MANIFEST, `name is the folder's name, ${JSON.stringify(name)}: lowercase letters, digits and dashes, at most 64`);
   if (typeof f.version === "number") bad(MANIFEST, `version is ${f.version}, a number: a package's version is SemVer text ("1.2.3"), kept as package.version, never as definition.version, which is the agent's revision number`);
@@ -854,8 +886,10 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
     }
   }
   const instructions = manifest?.body.trim() ?? "";
-  if (manifest && !instructions) bad(MANIFEST, "its body is empty: the body is the agent's instructions");
-  for (const value of strings([instructions, triggers, f.display_name, mcp.map((need) => need.pin)])) {
+  if (manifest && flowPackage && instructions) bad(MANIFEST, "its body is the agent's instructions, and a workflow package's agent has none: its workflow's nodes carry their own. Leave the body empty");
+  else if (manifest && !flowPackage && !instructions) bad(MANIFEST, "its body is empty: the body is the agent's instructions");
+  // A placeholder in the workflow's text is filled as one in the instructions is (compiled), so it names a parameter too.
+  for (const value of strings([instructions, triggers, f.display_name, mcp.map((need) => need.pin), workflow])) {
     for (const [, used] of value.matchAll(PLACEHOLDER)) if (!Object.hasOwn(fields, used!)) bad(MANIFEST, `\${parameters.${used}} names no parameter`);
   }
   // A placeholder fills text a run reads, a schedule's time (its cron and timezone, read as the schedule at apply), a
@@ -1004,12 +1038,13 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
     ...(harness ? { harness } : {}), ...(isObject(f.model) ? { model: { ...(f.model as NonNullable<Package["model"]>), ...(choices ? { choices } : {}) } } : {}), ...(typeof f.effort === "string" ? { effort: f.effort } : {}),
     ...(tools ? { tools } : {}), mcp, ...(computer ? { computer } : {}), ...(needs ? { needs } : {}), ...(toolPolicy ? { toolPolicy } : {}), ...(f.checkout === "pull_request" || f.checkout === "repository" ? { checkout: f.checkout } : {}), parameters, ...(inputSchema ? { inputSchema } : {}), secrets, ...(isObject(f.budget) ? { budget: { per_run_usd: f.budget.per_run_usd as number, ...(f.budget.max_requests !== undefined ? { max_requests: f.budget.max_requests as number } : {}) } } : {}), ...(f.learning !== undefined ? { learning: learningSettingOf(f.learning as LearningSetting) } : {}), ...(f.approvals === "ask" || f.approvals === "never" ? { approvals: f.approvals } : {}),
     triggers: triggers as Json[], ...(isObject(f.output) ? { output: { schema: f.output.schema as string } } : {}), ...(isObject(outputSchema) ? { outputSchema } : {}), instructions, skills, ...(ruleNames.length ? { rules: ruleNames.sort() } : {}), evals,
+    ...(workflow ? { workflowFile: f.workflow as string, workflow } : {}),
   };
   // What an apply makes, made here with each parameter's default, else a sample of its type, and checked as POST
   // /v2/agents and POST /v2/triggers check their bodies (all but the agent the trigger names, which an apply makes). A
   // trigger's times are read as of the epoch, so its form is checked here and a date that has passed is the apply's
   // refusal, never a server's start.
-  const samples = Object.fromEntries(Object.entries(fields).map(([key, spec]) => [key, spec.default ?? (spec.type === "array" ? [sampleOf(spec.items as Json)] : sampleOf(spec))]));
+  const samples = samplesOf(fields);
   const declared = Object.fromEntries(MODEL_TIER_NAMES.flatMap((tier) => (p.model?.[tier] ? [[tier, p.model[tier]!]] : [])));
   // Every MCP tool ticked, each served under its toolkit's name: the widest agent an apply can make, so each tool the
   // package lists is checked as a grant.
@@ -1046,27 +1081,77 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
     const trigger = at ? made.triggers[Number(at[1])] : undefined;
     return !!trigger && feedLeftEmpty(trigger);
   };
-  for (const issue of madeTriggerIssues(made.triggers, 0, p.inputSchema)) if (!saidEnabled(issue.field) && !skippedAtApply(issue.field) && (["wrong_type", "not_allowed", "missing"].includes(issue.reason) || !sampled(issue.field))) bad(MANIFEST, `${issue.field.replace(/^triggers\.(\d+)\./, "triggers[$1].")}: ${issue.message}`);
+  for (const issue of madeTriggerIssues(made.triggers, 0, p.inputSchema, Boolean(p.workflow))) if (!saidEnabled(issue.field) && !skippedAtApply(issue.field) && (["wrong_type", "not_allowed", "missing"].includes(issue.reason) || !sampled(issue.field))) bad(MANIFEST, `${issue.field.replace(/^triggers\.(\d+)\./, "triggers[$1].")}: ${issue.message}`);
   if (problems.length) throw new PackageError(dir, [...new Set(problems)]);
   return p;
 }
 
 /** What is wrong with the trigger bodies an apply makes (compiled's `triggers`), as POST /v2/triggers checks a body, all
  *  but the agent each names (the one the apply makes), as of `now`, each field under `triggers.<i>`. A trigger's input is
- *  its runs' input, and a package's agent is agentic, so each input is checked against the package's input schema in
- *  force too (`inputSchema`, its `inputs` compiled: inputSchemaOf). The validator runs it as of the epoch (a time's form
- *  only); an apply runs it before it makes anything. */
-export function madeTriggerIssues(made: Json[], now: number, inputSchema?: Json): InputIssue[] {
+ *  its runs' input, so an agentic package's is checked against the package's input schema in force too (`inputSchema`,
+ *  its `inputs` compiled: inputSchemaOf); a workflow package's (`workflow`) against its workflow's own input, which the
+ *  DSL checks (workflowTriggerInputIssues). The validator runs it as of the epoch (a time's form only); an apply runs it
+ *  before it makes anything. */
+export function madeTriggerIssues(made: Json[], now: number, inputSchema?: Json, workflow = false): InputIssue[] {
   const schema = inputSchemaOf(inputSchema);
   return made.flatMap((trigger, i) => {
     const issues = triggerBodyIssues(TRIGGER_ADAPTERS, { ...trigger, target: { ...(trigger.target as Json), agent_id: SAMPLE_AGENT } }, now);
     const input = isObject(trigger.target) ? trigger.target.input : undefined;
-    if (isObject(input)) issues.push(...inputIssues(input, schema, "target.input"));
+    if (isObject(input) && !workflow) issues.push(...inputIssues(input, schema, "target.input"));
     return issues.map((issue) => ({ ...issue, field: `triggers.${i}.${issue.field}` }));
   });
 }
 
 /** Every package in `dir`: each folder in it, by name. One that does not check throws, so a broken one never serves. */
+/** Each trigger whose input a workflow does not take, as the DSL checks a run's input before its first node (each under
+ *  `triggers.<i>.target.input`): a workflow package's triggers start its workflow's runs. The input checked is the one a
+ *  firing gives its run (triggers.ts firedInput: the content followed by a pushed source's payload and the line saying
+ *  what fired it), never the trigger's own alone, which no run is given. */
+export async function workflowTriggerInputIssues(workflow: Json, made: readonly Json[]): Promise<InputIssue[]> {
+  const { validateWorkflow } = await import("@parcha/agentrun-dsl");
+  return made.flatMap((trigger, i) => {
+    if (!isObject(trigger.target) || !isObject(trigger.target.input) || !isObject(trigger.source) || typeof trigger.source.kind !== "string") return [];
+    const input = sampleFiredInput(TRIGGER_ADAPTERS, trigger as never);
+    const checked = validateWorkflow(workflow as never, { executeCode: false, input });
+    if (checked.ok) return [];
+    const why = checked.issues.map((issue) => `${issue.message}${issue.path ? ` (at ${issue.path})` : ""}`).join("; ");
+    return [{ field: `triggers.${i}.target.input`, reason: "invalid" as const, message: `the workflow does not take it: ${why}` }];
+  });
+}
+
+/** What a workflow package's workflow and triggers would be refused at apply, checked as the validator checks the rest
+ *  (readPackage) but asynchronously, since the DSL loads on use: its workflow compiled with each parameter's default or a
+ *  sample, checked as a save checks a workflow revision (workflow-run.ts workflowIssues: the DSL's checks and the durable
+ *  runner's refusal), each at its path in the workflow's file; then each trigger's input against the workflow's input.
+ *  None for an agentic package. */
+export async function workflowPackageProblems(p: Package): Promise<string[]> {
+  if (!p.workflow) return [];
+  const made = compiled(p, samplesOf(fieldsOf(p.parameters)), { mcp: [], defaultTools: [], grants: [] });
+  const workflow = (made.agent.definition as Json).workflow as Json;
+  const { workflowIssues } = await import("./workflow-run.js");
+  const { issues } = await workflowIssues(workflow);
+  if (issues.length) return issues.map(({ path, message }) => `${p.workflowFile}${path}: ${message}`);
+  // A trigger whose input takes a parameter with no default holds a sample here, never the owner's value: what hangs on
+  // the value (a length, a pattern, a choice) is the apply's, which checks the input again with the value given. So only
+  // a trigger whose input this check knows whole is refused here.
+  const fields = fieldsOf(p.parameters);
+  const sampled = (i: number) => {
+    const target = p.triggers[i]?.target;
+    return strings(isObject(target) ? target.input : undefined).some((text) => [...text.matchAll(PLACEHOLDER)].some((m) => Object.hasOwn(fields, m[1]!) && fields[m[1]!]!.default === undefined));
+  };
+  return (await workflowTriggerInputIssues(workflow, made.triggers))
+    .filter((issue) => !sampled(Number(/^triggers\.(\d+)\./.exec(issue.field)?.[1])))
+    .map((issue) => `${MANIFEST}: ${issue.field.replace(/^triggers\.(\d+)\./, "triggers[$1].")}: ${issue.message}`);
+}
+
+/** readPackage's refusal for what workflowPackageProblems finds: every place that reads a package to keep or apply it
+ *  (a server's start, an import, `template validate`) checks a workflow package's workflow too. */
+export async function checkWorkflowPackage(p: Package, where: string): Promise<Package> {
+  const problems = await workflowPackageProblems(p);
+  if (problems.length) throw new PackageError(where, problems);
+  return p;
+}
+
 export function readPackages(dir: string = TEMPLATES_DIR): Package[] {
   return readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => readPackage(join(dir, entry.name))).sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -1079,6 +1164,8 @@ export function packageView(p: Package) {
     name: p.name, display_name: p.displayName ?? null, version: p.version, description: p.description, license: p.license ?? null, author: p.author ?? null, repository: p.repository ?? null,
     category: p.category ?? null, tags: p.tags,
     output: p.output ? { schema: p.output.schema, json_schema: p.outputSchema ?? null } : null,
+    // A workflow package's file: its agent is that workflow (the read answers it whole, as `workflow`).
+    workflow: p.workflowFile ?? null,
     harness: p.harness ?? null, model: modelView(p.model), effort: p.effort ?? null, tools: p.tools ?? null, tool_policy: p.toolPolicy ?? null, computer: p.computer ?? null, needs: p.needs ?? null, checkout: p.checkout ?? null,
     mcp: p.mcp.map(({ source, toolkit, tools, required, reason, allow, pin, file }) => ({ source, toolkit, required, reason: reason ?? null, tools: tools.map((name) => ({ name, tool: mcpToolName(toolkit, name), asks: allow.includes(name) ? "allow" : "ask", ...(Object.hasOwn(pin, name) ? { pin: pin[name]! } : {}), ...(file && Object.hasOwn(file, name) ? { file: file[name]! } : {}) })) })), parameters: p.parameters, input_schema: p.inputSchema ?? null, secrets: p.secrets,
     budget: p.budget ?? null, learning: p.learning ?? false, approvals_default: p.approvals ?? "ask", triggers: p.triggers, skills: Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length)), evals: p.evals,
@@ -1097,7 +1184,7 @@ function modelView(model: Package["model"]) {
  *  the answer's schema beside each SKILL.md among them), so a person reads what a package would tell their agent before
  *  it is applied. */
 export function packageDetail<Pick, Tiers>(p: Package, computerHere: (p: Package) => Pick, tiersHere: (p: Package) => Tiers) {
-  return { template: { ...packageView(p), computer_here: computerHere(p), model_tiers_here: tiersHere(p) }, instructions: p.instructions, skill_files: { ...p.skills } };
+  return { template: { ...packageView(p), computer_here: computerHere(p), model_tiers_here: tiersHere(p) }, instructions: p.instructions, skill_files: { ...p.skills }, workflow: p.workflow ?? null };
 }
 
 /** The workspace the request being served reaches imported packages in (workspace-scope.ts): null for none. */
@@ -1184,7 +1271,8 @@ export function applyBodyOf(p: Package, body: Json): { parameters: Json; grants:
   if (isObject(overrides)) {
     issues.push(...unknownFields(overrides, ["model", "choice", "approvals"]).map((i) => ({ ...i, field: `overrides.${i.field}`, message: "An apply overrides the model (one of its own, or one of the package's choices) and the approvals alone." })));
     if (overrides.approvals !== undefined && !(APPROVALS as readonly unknown[]).includes(overrides.approvals)) issues.push({ field: "overrides.approvals", reason: "not_an_option", message: `overrides.approvals is one of ${APPROVALS.join(", ")}: never runs the agent unattended, while a deny still refuses` });
-    if (overrides.model !== undefined && !(typeof overrides.model === "string" && MODEL_REF.test(overrides.model))) issues.push({ field: "overrides.model", reason: "bad_format", message: 'overrides.model is "provider/model-id"' });
+    if (overrides.model !== undefined && p.workflow) issues.push({ field: "overrides.model", reason: "not_allowed", message: `The ${p.name} template's agent is a workflow: its model nodes run on this host's model for their tiers, so an apply takes no model.` });
+    else if (overrides.model !== undefined && !(typeof overrides.model === "string" && MODEL_REF.test(overrides.model))) issues.push({ field: "overrides.model", reason: "bad_format", message: 'overrides.model is "provider/model-id"' });
     // A choice is the package's model and harness together; a model of the owner's own says something else: never both.
     if (overrides.choice !== undefined && overrides.model !== undefined) issues.push({ field: "overrides.choice", reason: "not_allowed", message: "overrides.choice and overrides.model say different things: send one, a choice of the package's by its id or a model of your own." });
     else if (overrides.choice !== undefined && !choice) issues.push({ field: "overrides.choice", reason: "not_an_option", message: choices.length ? `overrides.choice is one of ${choices.map((one) => one.id).join(", ")}: the package's model choices, by id.` : `The package ${p.name} offers no model choices: leave overrides.choice out.` });
@@ -1373,6 +1461,17 @@ export function compiled(p: Package, parameters: Json, chosen: { harness?: strin
   // A tool's file setting, written as the package states it, ticked or not (it holds once the tool is granted later), as
   // a pin is: the tool's result is a summary of each answer, never the answer.
   for (const { server, file } of chosen.mcp) for (const [tool, setting] of Object.entries(file ?? {})) settings[mcpToolName(server, tool)] = { ...settings[mcpToolName(server, tool)], file: { folder: setting.folder, show: [...setting.show] } };
+  // A workflow package's agent is its workflow, each placeholder in its text filled as the instructions' are: a workflow
+  // revision keeps no instructions, model, skills or tools of its own (its nodes carry theirs, and its run binds the tools
+  // they name: tools.ts grantedTools), so its definition is the workflow, the budget and the approvals alone.
+  if (p.workflow) {
+    const definition = {
+      name: p.displayName ? filled(p.displayName, parameters) : p.name, description: p.description, workflow: filled(p.workflow, parameters),
+      ...(p.budget?.per_run_usd ? { max_cost_usd: p.budget.per_run_usd } : {}), ...(p.budget?.max_requests ? { max_requests: p.budget.max_requests } : {}),
+      ...(chosen.approvals === "never" ? { approvals: "never" } : {}),
+    };
+    return { agent: { definition, skills: {} }, triggers: p.triggers.map((trigger) => triggerFilled(trigger, parameters)), unpinned: [] };
+  }
   const definition = {
     name: p.displayName ? filled(p.displayName, parameters) : p.name, description: p.description, instructions: filled(p.instructions, parameters),
     ...(chosen.harness ? { harness: chosen.harness } : {}), ...(chosen.model ? { model: chosen.model } : {}), ...(chosen.modelTiers && Object.keys(chosen.modelTiers).length ? { model_tiers: chosen.modelTiers } : {}), ...(p.effort ? { thinking: p.effort } : {}),

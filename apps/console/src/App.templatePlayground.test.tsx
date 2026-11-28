@@ -12,6 +12,7 @@ let root: Root | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; vi.unstubAllGlobals(); location.hash = ""; });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const template: TemplateView = {
+  workflow: null,
   id: "review-kit", bundled: true, source: null, sha: null, publisher: null, category: null, tags: [],
   name: "review-kit", display_name: "Review kit", version: "1.2.0", description: "Review changes with the package's checked skills.",
   license: null, author: null, repository: null, output: null, input_schema: null, harness: ["pi"], model: null, effort: null, tools: null, tool_policy: null,

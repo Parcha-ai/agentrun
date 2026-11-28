@@ -14,6 +14,7 @@ import type { EmailAccount, TemplateView } from "@/lib/v2";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root | undefined;
 const base: TemplateView = {
+  workflow: null,
   id: "notes/daily", bundled: true, source: null, sha: null, publisher: null, category: null, tags: [],
   name: "notes/daily", display_name: "Daily notes", version: "1.0.0", description: "Writes the day's notes.",
   license: null, author: null, repository: null, output: null, input_schema: null, harness: ["pi"], model: null, effort: null, tools: null, tool_policy: null,

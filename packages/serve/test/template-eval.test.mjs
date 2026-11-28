@@ -47,7 +47,7 @@ const graderOf = (run, file) => run.graders.find((g) => g.grader === file);
 
 test("every shipped package's cases load, and each case's fake MCP servers serve their fixtures", { timeout: 120_000 }, async () => {
   const packages = readPackages(TEMPLATES_DIR);
-  assert.deepEqual(packages.map((p) => p.name), ["agent-scout", "code-review", "code-review-composio", "inbound-lead", "kyb", "market-monitor", "release-notes"]);
+  assert.deepEqual(packages.map((p) => p.name), ["agent-scout", "code-review", "code-review-composio", "inbound-lead", "kyb", "market-monitor", "release-notes", "stream-router"]);
   for (const p of packages) {
     const { cases } = readCases(join(TEMPLATES_DIR, p.name));
     assert.deepEqual(cases.map((c) => c.name), p.evals, `${p.name}: every case reads`);
@@ -1243,7 +1243,8 @@ test("an answer that is one JSON object and nothing else is its json block: for 
 });
 
 test("the output check agrees with ajv on the shipped packages' output schemas", () => {
-  for (const p of readPackages(TEMPLATES_DIR)) {
+  // A workflow package's answer is its workflow's output, which the DSL checks: the agentic packages' schemas here.
+  for (const p of readPackages(TEMPLATES_DIR).filter((one) => !one.workflow)) {
     // One ajv per package: two packages may answer in one schema (code-review and code-review-composio share its $id).
     const check = new Ajv2020({ strict: false, allErrors: true, validateFormats: false }).compile(p.outputSchema);
     for (const value of [{}, [], null, "x", { findings: [] }]) {
@@ -1260,6 +1261,11 @@ test("no case carries a schema grader: a package's output schema is held by the 
   assert.deepEqual(outputVerdict(pkg, { output: null, final_answer: "x", output_error: "the answer has no fenced json block" }), { grader: "output", type: "output", cost_usd: null, pass: false, reason: "the answer misses answer.schema.json: the answer has no fenced json block" });
   assert.equal(outputVerdict({ ...pkg, output: undefined, outputSchema: undefined }, { output: null }), undefined, "a package with no output schema has no output check");
   for (const p of readPackages(TEMPLATES_DIR)) {
+    // A workflow package's answer is its workflow's output: the workflow declares its schema, and it has no eval cases.
+    if (p.workflow) {
+      assert.ok(p.workflow.output?.schemaId && p.workflow.schemas?.[p.workflow.output.schemaId], `${p.name}'s workflow declares its output schema`);
+      continue;
+    }
     assert.ok(p.output, `${p.name} declares its output schema`);
     for (const one of readCases(join(TEMPLATES_DIR, p.name)).cases) assert.ok(!one.graders.some((g) => g.type === "schema"), `${p.name}/${one.name}`);
   }

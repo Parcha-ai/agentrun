@@ -373,15 +373,16 @@ if (process.argv[2] === "check-harness") {
 // A template package folder checked by the one validator the server runs on the packages it ships (templates.ts): what
 // it holds as one JSON line and 0, or each problem and 1. Nothing in the package runs.
 if (process.argv[2] === "validate-template") {
-  const { PackageError, readPackage } = await import("./templates.js");
+  const { checkWorkflowPackage, PackageError, readPackage } = await import("./templates.js");
   const { positionals } = parseArgs({ args: process.argv.slice(3), options: { data: { type: "string" } }, allowPositionals: true });
   if (positionals.length !== 1) {
     console.error(`agentrun-serve validate-template takes one folder.\n\n${USAGE}`);
     process.exit(2);
   }
   try {
-    const { name, version, skills, evals } = readPackage(resolve(positionals[0]!));
-    console.log(JSON.stringify({ valid: true, name, version, skills: Object.keys(skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.split("/")[0]), evals }));
+    const dir = resolve(positionals[0]!);
+    const { name, version, skills, evals, workflowFile } = await checkWorkflowPackage(readPackage(dir), dir);
+    console.log(JSON.stringify({ valid: true, name, version, skills: Object.keys(skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.split("/")[0]), evals, ...(workflowFile ? { workflow: workflowFile } : {}) }));
     process.exit(0);
   } catch (error) {
     if (!(error instanceof PackageError)) throw error;

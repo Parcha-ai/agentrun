@@ -12,3 +12,9 @@ describe("needsOf: a template's budget", () => {
     expect(needsOf(view({ per_run_usd: 0.5 }))).toEqual([["Budget", "$0.50 a run"]]);
   });
 });
+
+describe("needsOf: a workflow template", () => {
+  it("says it runs a workflow, each step on this server's model for its tier, and names no model", () => {
+    expect(needsOf({ ...view({ per_run_usd: 1 }), workflow: "router.workflow.json" } as View)).toEqual([["Budget", "$1.00 a run"], ["Workflow", "router.workflow.json, each step on this server's model for its tier"]]);
+  });
+});

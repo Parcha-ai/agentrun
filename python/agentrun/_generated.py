@@ -9772,6 +9772,7 @@ class GetTemplateResponse(TypedDict):
     template: GetTemplateResponseTemplate
     instructions: str
     skill_files: dict[str, str]
+    workflow: dict[str, Any] | None
     console_url: str
 
 
@@ -9789,6 +9790,7 @@ class GetTemplateResponseTemplate(TypedDict):
     author: GetTemplateResponseTemplateAuthor | None
     repository: str | None
     output: GetTemplateResponseTemplateOutput | None
+    workflow: str | None
     harness: list[str] | None
     model: GetTemplateResponseTemplateModel | None
     effort: str | None
@@ -9929,6 +9931,7 @@ class ImportTemplateResponse(TypedDict):
     template: ImportTemplateResponseTemplate
     instructions: str
     skill_files: dict[str, str]
+    workflow: dict[str, Any] | None
     publisher_trusted: bool
     stored: bool
     replaced: str | None
@@ -9949,6 +9952,7 @@ class ImportTemplateResponseTemplate(TypedDict):
     author: ImportTemplateResponseTemplateAuthor | None
     repository: str | None
     output: ImportTemplateResponseTemplateOutput | None
+    workflow: str | None
     harness: list[str] | None
     model: ImportTemplateResponseTemplateModel | None
     effort: str | None
@@ -10090,6 +10094,7 @@ class ListTemplatesResponseTemplatesItem(TypedDict):
     author: ListTemplatesResponseTemplatesItemAuthor | None
     repository: str | None
     output: ListTemplatesResponseTemplatesItemOutput | None
+    workflow: str | None
     harness: list[str] | None
     model: ListTemplatesResponseTemplatesItemModel | None
     effort: str | None

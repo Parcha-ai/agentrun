@@ -10,7 +10,7 @@ import { type Store, UPLOAD_PREFIX } from "./store/index.js";
 import { fetchPackageFiles, type GithubReach, type GithubSource, hiddenPath, ImportRefused, IMPORT_LIMITS, parseSource, resolveSha } from "./template-source.js";
 import { manifestOf } from "./manifest.js";
 import { workspaceNow } from "./workspace-scope.js";
-import { MANIFEST, memoryFiles, type Package, PackageError, readPackage, type TemplateRegistry } from "./templates.js";
+import { checkWorkflowPackage, MANIFEST, memoryFiles, type Package, PackageError, readPackage, type TemplateRegistry } from "./templates.js";
 import { isObject, type Json, unknownFields } from "./validate.js";
 
 /** The settings key that holds the GitHub accounts this server's owner trusts as publishers, lower-cased. */
@@ -132,13 +132,18 @@ export function importedPackage(id: string, origin: { source: string; sha: strin
   return { ...read, id, origin };
 }
 
+/** importedPackage, a workflow package's workflow checked too (checkWorkflowPackage, which loads the DSL): what every
+ *  import, upload and load of a kept package serves. */
+const checkedImport = (id: string, origin: { source: string; sha: string; publisher: string }, files: ReadonlyMap<string, Buffer>): Promise<Package> =>
+  checkWorkflowPackage(importedPackage(id, origin, files), `${id}@${origin.sha}`);
+
 /** The packages the store keeps, put in the registry beside the bundled ones, each in its workspace; one this build no
  *  longer takes is left out, said through `skipped`, never a stop of the start. */
 export async function loadImported(deps: Pick<TemplateImportDeps, "registry" | "store">, skipped: (id: string, why: string) => void): Promise<void> {
   for (const row of await deps.store.importedTemplates.list()) {
     try {
       const files = new Map(Object.entries(row.files).map(([path, data]) => [path, Buffer.from(data, "base64")]));
-      deps.registry.put(importedPackage(row.id, { source: row.source, sha: row.sha, publisher: row.publisher }, files), row.workspace);
+      deps.registry.put(await checkedImport(row.id, { source: row.source, sha: row.sha, publisher: row.publisher }, files), row.workspace);
     } catch (error) {
       skipped(row.id, error instanceof PackageError ? error.problems.join("; ") : (error as Error).message);
     }
@@ -215,7 +220,7 @@ async function uploadTemplate(deps: TemplateImportDeps, raw: unknown, dryRun: bo
     files = uploadFiles(raw);
     const name = manifestOf(files.get(MANIFEST)?.toString("utf8") ?? "")?.name;
     const id = `${UPLOAD_PREFIX}${typeof name === "string" ? name : ""}`;
-    pkg = importedPackage(id, { source: id, sha: uploadSha(files), publisher: "" }, files);
+    pkg = await checkedImport(id, { source: id, sha: uploadSha(files), publisher: "" }, files);
   } catch (error) {
     refusalOf(error);
   }
@@ -240,7 +245,7 @@ export async function importTemplate(deps: TemplateImportDeps, raw: unknown, sig
     const reach = await deps.reach(read);
     const sha = await resolveSha(source, reach, read);
     files = await fetchPackageFiles(source, sha, reach, read);
-    pkg = importedPackage(source.id, { source: source.source, sha, publisher: source.owner }, files);
+    pkg = await checkedImport(source.id, { source: source.source, sha, publisher: source.owner }, files);
   } catch (error) {
     refusalOf(error);
   }
@@ -295,7 +300,7 @@ async function keptAndApplied<T>(
   origin: { source: string; sha: string; publisher: string },
   files: ReadonlyMap<string, Buffer>,
 ): Promise<T> {
-  const pkg = importedPackage(id, origin, files);
+  const pkg = await checkedImport(id, origin, files);
   const templates = deps.store.importedTemplates;
   const workspace = workspaceNow();
   const row = async () => (await templates.list()).find((one) => one.id === pkg.id && one.workspace === (workspace ?? null));

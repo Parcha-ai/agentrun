@@ -69,8 +69,10 @@ export function asksNothingPaid(t: TemplateView): boolean {
  *  server's free models, a choice that needs no key. A subagent call runs on the model the server keeps for its tier
  *  (`model_tiers_here`: the package's `fast` and `strong` where this server runs them on the harness apply picks, never
  *  through a gateway), which "Use free" keeps, else the host's for the tier, which the console can't read: both must be
- *  kept, and free on that harness. */
+ *  kept, and free on that harness. Never a workflow package: "Use free" swaps the agent's model, and a workflow agent
+ *  takes none (apply refuses `overrides.model`), its nodes running on the server's models for their tiers. */
 export function runsFree(t: TemplateView, harnesses: readonly HarnessInfo[] | undefined): boolean {
+  if (t.workflow) return false;
   if (!asksNothingPaid(t)) return false;
   const free = new Set(freeModels(harnesses).map((m) => m.id));
   if ((t.tools ?? []).includes("subagent")) {
@@ -88,8 +90,9 @@ export const applyHarness = (t: TemplateView): string => t.model_tiers_here.harn
 
 /** The free model "Use free" applies a template on: the free default of the harness apply will make its agent on
  *  (applyHarness), so the agent runs what it is given. Null where that harness has none: another harness's free model
- *  would make an agent that can't run it. */
+ *  would make an agent that can't run it. Null for a workflow package too, which takes no model. */
 export function freeModelFor(t: TemplateView, harnesses: readonly HarnessInfo[] | undefined): string | null {
+  if (t.workflow) return null;
   return freeDefault(harnesses, applyHarness(t));
 }
 

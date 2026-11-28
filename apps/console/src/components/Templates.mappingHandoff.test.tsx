@@ -9,6 +9,7 @@ import { pick, picker, valueOf } from "@/test/picker";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const template: TemplateView = {
+  workflow: null,
   id: "github:acme/agents/templates/review", name: "review", display_name: "Review", version: "1.0.0", description: "Review changes.",
   bundled: false, source: "github:acme/agents/templates/review@main", sha: "0123456789abcdef0123456789abcdef01234567", publisher: "acme",
   category: null, tags: [], license: null, author: null, repository: null, output: null, input_schema: null,

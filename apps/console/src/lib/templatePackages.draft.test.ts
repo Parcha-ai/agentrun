@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readTemplateDraft, templatePlaygroundHref } from "./templatePackages";
 import type { TemplateView } from "./v2";
 
-const template: TemplateView = { id: "review/kit", bundled: true, source: null, sha: null, publisher: null, category: null, tags: [], name: "review/kit", display_name: "Review kit", version: "2.0.0", description: "Review a pull request.",
+const template: TemplateView = { workflow: null, id: "review/kit", bundled: true, source: null, sha: null, publisher: null, category: null, tags: [], name: "review/kit", display_name: "Review kit", version: "2.0.0", description: "Review a pull request.",
   license: null, author: null, repository: null, output: null, input_schema: null, harness: ["pi"], model: null, effort: null, tools: null, tool_policy: null,
   computer: null, needs: null, computer_here: null, model_tiers_here: { harness: "pi", fast: null, strong: null, note: null }, checkout: null, secrets: [], budget: null, learning: false, approvals_default: "ask", triggers: [], skills: [], evals: [],
   parameters: { type: "object", additionalProperties: false, required: ["repo"], properties: { repo: { type: "string", description: "Repository" }, comment: { type: "boolean", description: "Comment", default: true } } },

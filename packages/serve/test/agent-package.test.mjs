@@ -118,6 +118,12 @@ test("every bundled template, applied and exported, is the template's own packag
   for (const template of readPackages()) {
     const id = made[template.name];
     const exported = await api("GET", `/agents/${id}/package`);
+    // A workflow template's agent is a workflow revision, which an export does not write (409 not_exportable, as the
+    // route documents): the rest of this test is an agentic package's.
+    if (template.workflow) {
+      assert.deepEqual([exported.status, exported.body.error?.code], [409, "not_exportable"], template.name);
+      continue;
+    }
     assert.equal(exported.status, 200, `${template.name}: ${JSON.stringify(exported.body)}`);
     check("/agents/{agent_id}/package", "get", "200", exported.body);
     const answer = exported.body;
@@ -181,6 +187,9 @@ test("round trip: each export applied on another server and exported there is th
   const a = await serve(t, { mcpStandIns: true });
   await saveStandIns(a.api, fakes);
   const made = await applyEvery(a.api);
+  // An export writes an agentic package only (a workflow template's agent is refused, 409: the test above), so the round
+  // trip is each agentic template's.
+  for (const pkg of readPackages()) if (pkg.workflow) delete made[pkg.name];
   // An agent no template made: its skill, typed input, budget and a schedule.
   const skill = "---\nname: digest\ndescription: How the weekly digest is written.\n---\nOne line per change, newest first.\n";
   const own = await a.api("POST", "/agents", {

@@ -1664,6 +1664,7 @@ const TEMPLATE = closed({
   author: { type: ["object", "null"], additionalProperties: false, required: ["name"], properties: { name: { type: "string" }, email: { type: "string" }, url: { type: "string" } }, description: "Who made the package; null when it names no one." },
   repository: NULLABLE_STRING,
   output: { type: ["object", "null"], additionalProperties: false, required: ["schema", "json_schema"], properties: { schema: { type: "string", description: "The schema's file in the package; it ships beside each SKILL.md." }, json_schema: { type: ["object", "null"], description: "The JSON Schema the agent's answer meets (its last fenced json block, or the whole answer when it is one JSON object)." } }, description: "The shape of the agent's answer; null when the package names none." },
+  workflow: { type: ["string", "null"], description: "A workflow package's file holding its agent's workflow (the manifest's `workflow`): apply makes a workflow revision of it, each `${parameters.<name>}` in its text filled, with no instructions, model, tools, skills, input or output schema of its own (its nodes carry theirs, so `harness`, `model`, `tools`, `output` and `input_schema` are null). A read answers the workflow whole. Null: an agentic package.", "x-agentrun-serve": "template-workflow/1" },
   harness: { type: ["array", "null"], items: { type: "string" }, description: "The harnesses it runs on, in the order it prefers them: apply takes the first this server runs. Null: any, the server's default." },
   model: {
     type: ["object", "null"], additionalProperties: false, required: ["tier"],
@@ -1759,6 +1760,7 @@ const TEMPLATE_WHOLE = {
   template: { ...TEMPLATE, description: "The package, as GET /templates lists it." },
   instructions: { type: "string", description: "The agent's instructions in full (agent.md's body), placeholders unfilled: what a third party's package would tell the agent." },
   skill_files: { type: "object", additionalProperties: { type: "string" }, description: "Every skill file the agent would be given, by path under its skills folder (`<skill>/SKILL.md`, the rules and the answer's schema beside each), in full." },
+  workflow: { type: ["object", "null"], description: "A workflow package's workflow in full (its file, `template.workflow`), placeholders unfilled: what its agent would run, each node's instructions among it. Its `instructions` are then empty. Null: an agentic package.", "x-agentrun-serve": "template-workflow/1" },
 };
 const TEMPLATE_READ = closed({
   ...TEMPLATE_WHOLE,

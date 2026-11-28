@@ -105,6 +105,14 @@ describe("runsFree", () => {
     expect(runsFree(template({ ...tagged, ...here({ kind: "sandbox", provider: "docker" }, "the docker sandbox"), tools: ["read", "bash", "web_fetch"] }), harnesses)).toBe(true);
     expect(runsFree(template({ ...tagged, ...here({ kind: "none" }, null) }), harnesses)).toBe(true);
   });
+  // "Use free" swaps the agent's model, and a workflow package takes none (apply refuses overrides.model): its nodes run on
+  // the server's models for their tiers, so its tag can't make it free.
+  it("never a workflow package, even tagged free: it has no model to swap", () => {
+    const flow = template({ tags: ["free"], harness: null, workflow: "router.workflow.json" });
+    expect(runsFree(flow, harnesses)).toBe(false);
+    expect(freeModelFor(flow, harnesses)).toBeNull();
+    expect(runsFree(template({ tags: ["free"], harness: null, workflow: null }), harnesses)).toBe(true);
+  });
   // Neither shows in a package's `secrets`: apply asks for Monid's key only where the server holds none, and a subagent's
   // tier runs on the package's model for it, else the host's (AGENT_MODEL_FAST, AGENT_MODEL_STRONG), which "Use free"
   // leaves as they are.

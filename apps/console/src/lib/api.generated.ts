@@ -4110,6 +4110,7 @@ export interface operations {
           schema: string;
           json_schema: Record<string, unknown> | null;
         } | null;
+        workflow: string | null;
         harness: string[] | null;
         model: {
           tier: "fast" | "balanced" | "strong";
@@ -4186,6 +4187,7 @@ export interface operations {
       };
       instructions: string;
       skill_files: Record<string, string>;
+      workflow: Record<string, unknown> | null;
       console_url: string;
     };
   };
@@ -4701,6 +4703,7 @@ export interface operations {
           schema: string;
           json_schema: Record<string, unknown> | null;
         } | null;
+        workflow: string | null;
         harness: string[] | null;
         model: {
           tier: "fast" | "balanced" | "strong";
@@ -4777,6 +4780,7 @@ export interface operations {
       };
       instructions: string;
       skill_files: Record<string, string>;
+      workflow: Record<string, unknown> | null;
       publisher_trusted: boolean;
       stored: boolean;
       replaced: string | null;
@@ -5685,6 +5689,7 @@ export interface operations {
           schema: string;
           json_schema: Record<string, unknown> | null;
         } | null;
+        workflow: string | null;
         harness: string[] | null;
         model: {
           tier: "fast" | "balanced" | "strong";
