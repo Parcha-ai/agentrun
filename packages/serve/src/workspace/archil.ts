@@ -106,6 +106,9 @@ class FolderNotMade extends Error {
   }
 }
 
+/** What a write or an append to a link an exec made fails with, naming no path. */
+const LINK_IN_THE_WAY = "a symbolic link an exec made is in the way: Archil's file API neither writes one nor writes through it";
+
 /** A call Archil refused 409 for the whole of the workspace's wait (queueMs): another client held the folder, a
  *  computer's mount of it (Archil's write delegation) or an exec (its checkout). `words` name no path: Archil's own
  *  message names the disk key, so only its status and code are kept there; the message keeps all of it. */
@@ -202,7 +205,8 @@ class ArchilWorkspace implements Workspace {
   }
 
   /** `call`, again while another client holds the path checked out (409), for up to queueMs; a hold that outlasts it
-   *  fails FolderHeld. A 409 because a file is on the way to `rel` is not waited on. */
+   *  fails FolderHeld. A 409 because a file is on the way to `rel`, or a link an exec made is at it, is no hold: it is
+   *  thrown at once. */
   async #settle<T>(rel: string, call: () => Promise<T>): Promise<T> {
     const deadline = Date.now() + this.#queueMs;
     for (let first = true; ; first = false) {
@@ -210,8 +214,8 @@ class ArchilWorkspace implements Workspace {
         return await call();
       } catch (error) {
         if (statusOf(error) !== 409) throw error;
+        if (first && ((await this.#fileOnTheWay(rel).catch(() => undefined)) !== undefined || (await this.#isLink(rel)))) throw error;
         if (Date.now() >= deadline) throw new FolderHeld(this.#queueMs, error);
-        if (first && (await this.#fileOnTheWay(rel).catch(() => undefined)) !== undefined) throw error;
         await pause(200);
       }
     }
@@ -297,6 +301,12 @@ class ArchilWorkspace implements Workspace {
     return undefined;
   }
 
+  /** Whether `rel` is a link an exec made: the file API lists one as a file and answers a read of it 501. */
+  async #isLink(rel: string): Promise<boolean> {
+    if (rel === "") return false;
+    return this.#disk.getRange(this.#key(rel), "bytes=0-0").then(() => false, (error: unknown) => statusOf(error) === 501);
+  }
+
   /** Why a write, an append or a mkdir of `rel` failed, in the port's words: the disk's code for it is not documented,
    *  so on a refusal what is there is looked at. */
   async #writeFailed(error: unknown, rel: string, making: "file" | "dir", what: string): Promise<WorkspaceError> {
@@ -308,6 +318,9 @@ class ArchilWorkspace implements Workspace {
       const kind = await this.#kind(rel).catch(() => undefined);
       if (kind === "file" && making === "dir") return new WorkspaceError("EXISTS", `${show(rel)} is a file, in the way`, { path: rel, cause: error });
       if (kind === "dir" && making === "file") return new WorkspaceError("REFUSED", `${show(rel)} is a directory`, { path: rel, cause: error });
+      if (kind === "file" && making === "file" && (await this.#isLink(rel))) {
+        return new WorkspaceError("EXISTS", `${show(rel)} is a symbolic link (an exec made it), in the way: Archil's file API does not write one (Archil: ${describe(error)})`, { path: rel, cause: error, words: LINK_IN_THE_WAY });
+      }
     }
     return failed(error, rel, what);
   }
@@ -621,7 +634,14 @@ class ArchilWorkspace implements Workspace {
       }
       if (files.length > 0) {
         const errors = await this.#settle(rel, () => this.#disk.deleteObjects(files));
-        if (errors.length > 0) throw new WorkspaceError("UNAVAILABLE", `${errors.length} of ${files.length} files under ${show(rel)} were not removed: ${errors[0]!.key}: ${errors[0]!.code ?? ""} ${errors[0]!.message ?? ""}`.trim(), { path: rel });
+        // The bulk answer lists a key's refusal with no status, so each refused key is deleted again alone, where a hold
+        // answers 409 and is waited on as any other (FolderHeld past the wait).
+        for (const refused of errors) {
+          await this.#settle(rel, () => this.#disk.deleteObject(refused.key)).catch((error: unknown) => {
+            if (error instanceof FolderHeld) throw error;
+            throw new WorkspaceError("UNAVAILABLE", `${errors.length} of ${files.length} files under ${show(rel)} were not removed: ${refused.key}: ${refused.code ?? ""} ${refused.message ?? ""}`.trim(), { path: rel, cause: error });
+          });
+        }
       }
       // Folders in the reverse of the order they were found (every folder after its parent), so each is empty when it goes.
       for (const folder of folders.reverse()) await this.#settle(rel, () => this.#disk.deleteObject(folder));

@@ -73,3 +73,50 @@ test("web_save into a held folder answers the hold's words, not a full or read-o
   assert.match(saved.error, HELD, saved.error);
   assert.doesNotMatch(saved.error, /full or read-only/, saved.error);
 });
+
+test("a write or an append to a link an exec made is refused in the way at once, never called held", async () => {
+  const disk = new FakeArchilDisk();
+  const workspace = archilWorkspace(disk, ROOT, { queueMs: QUEUE_MS });
+  await workspace.write("a.txt", "the target");
+  disk.links.set(`${ROOT}/lnk`, "a.txt");
+  for (const [what, call, op] of [
+    ["write", () => workspace.write("lnk", "x"), "putObject"],
+    ["append", () => workspace.append("lnk", "x"), "appendObject"],
+  ]) {
+    const error = await call().then(() => assert.fail(`${what} landed on the link`), (e) => e);
+    assert.equal(error.name, "WorkspaceError", `${what}: ${error}`);
+    assert.equal(error.code, "EXISTS", `${what}: ${error.message}`);
+    assert.match(error.message, /symbolic link/, what);
+    assert.match(error.message, /blocks the path/, `${what} keeps Archil's own words`);
+    const words = workspaceErrorWords(error);
+    assert.doesNotMatch(words, /held by another client/, what);
+    assert.match(words, /symbolic link/, what);
+    assert.equal(disk.calls.filter((c) => c.op === op && c.key === `${ROOT}/lnk`).length, 1, `${what}: a link in the way is not waited on as a hold`);
+  }
+  assert.equal(new TextDecoder().decode(await workspace.read("a.txt")), "the target", "nothing reached through the link");
+});
+
+test("a recursive remove of a held folder, whose bulk delete lists each file refused, fails in the hold's words", async () => {
+  const disk = new FakeArchilDisk();
+  const workspace = archilWorkspace(disk, ROOT, { queueMs: QUEUE_MS });
+  await workspace.write("tree/one.txt", "1");
+  await workspace.write("tree/deep/two.txt", "2");
+  disk.delegate(ROOT);
+  const error = await rejectsHeld(() => workspace.remove("tree", { recursive: true }), "recursive remove");
+  assert.equal(error.path, "tree");
+});
+
+test("a bulk delete's refusal that is no hold keeps its own words", async () => {
+  const disk = new FakeArchilDisk();
+  const workspace = archilWorkspace(disk, ROOT, { queueMs: QUEUE_MS });
+  await workspace.write("tree/one.txt", "1");
+  const deleteObject = disk.deleteObject.bind(disk);
+  disk.deleteObject = async (key) => {
+    if (key.endsWith("one.txt")) throw Object.assign(new Error("403 AccessDenied: not yours"), { status: 403, code: "AccessDenied" });
+    return deleteObject(key);
+  };
+  const error = await workspace.remove("tree", { recursive: true }).then(() => assert.fail("removed"), (e) => e);
+  assert.equal(error.code, "UNAVAILABLE", error.message);
+  assert.match(error.message, /AccessDenied/);
+  assert.doesNotMatch(workspaceErrorWords(error), /held by another client/);
+});
