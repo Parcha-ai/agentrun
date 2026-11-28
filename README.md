@@ -600,7 +600,8 @@ the domain made by the platform; agents get file tools and `web_fetch`, no shell
 
 **Self-host on Northflank.** A template you paste into Northflank and run: one 1 vCPU / 2 GB service from the release's
 image on a 10 GB volume, with the token and seal key made by Northflank and its own HTTPS domain; agents get file tools
-and `web_fetch`, no shell. About $25 a month, on Pay as you go. The template and its steps:
+and `web_fetch`, no shell. About $25 a month, on Pay as you go. Not walked on a real account yet: it is built from
+Northflank's docs and checked by tests. The template and its steps:
 [deploy/README.md](deploy/README.md#on-northflank).
 
 <details>

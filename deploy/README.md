@@ -276,6 +276,10 @@ the 1 vCPU / 2 GB plan (`nf-compute-100-2`) with a 10 GB volume at `/data`. Its 
 port 7340, which Northflank serves at the service's own Northflank domain over HTTPS. Northflank gives the service no
 Docker, so its agents get file tools and `web_fetch` but no shell, as on Render. No model key is needed.
 
+Not walked on a real account yet. The template follows Northflank's template docs (spec v1.2) and passes this
+repository's tests (`packages/serve/test/northflank-template.test.mjs`), but no run on Northflank has confirmed it.
+If a run fails, open an issue with the step and the error Northflank shows.
+
 It costs about $25.17 a month: $24.00 for the plan and $1.17 for the volume ($0.11657 per GiB-month), at Northflank's
 prices on 2026-11-23 (its pricing page). That is more than the $20 a month of resources the
 free Sandbox tier covers, so the team needs Pay as you go, with a card.
