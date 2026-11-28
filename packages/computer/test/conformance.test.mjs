@@ -370,6 +370,25 @@ test("a module's conformanceImage() is the run's image unless --image names one,
 	assert.equal(Object.hasOwn(JSON.parse(plain.text()), "notes"), false, "no notes, no field");
 });
 
+test("a module's conformanceClock is the run's clock, which its cases read and wait on, unless the CLI's caller gives one; one with no now() and sleep(ms) is refused", async () => {
+	const seen = [];
+	const read = pass("health.clock", { run: async (t) => {
+		await t.clock.sleep(45_000);
+		seen.push(t.clock.now());
+	} });
+	const { START } = await import("./fixtures/clocked-provider.mjs");
+	assert.equal(await main(["--provider", "./fixtures/clocked-provider.mjs"], { stdout: sink(), cwd: HERE, cases: [read] }), 0);
+	assert.deepEqual(seen, [START + 45_000], "the module's clock, moved on by the case's wait");
+	const given = { now: () => 7, sleep: async () => {} };
+	assert.equal(await main(["--provider", "./fixtures/clocked-provider.mjs"], { stdout: sink(), cwd: HERE, cases: [read], clock: given }), 0);
+	assert.equal(seen.at(-1), 7, "the caller's clock wins");
+	await main(["--provider", "./fixtures/fake-provider.mjs"], { stdout: sink(), cwd: HERE, cases: [pass("health.clock", { run: async (t) => seen.push(t.clock.now()) })] });
+	assert.ok(Math.abs(seen.at(-1) - Date.now()) < 60_000, "a module with none: the wall clock");
+	const err = sink();
+	assert.equal(await main(["--provider", "./fixtures/bad-clock-provider.mjs"], { stdout: sink(), stderr: err, cwd: HERE, cases: [read] }), 2);
+	assert.match(err.text(), /bad-clock-provider\.mjs: conformanceClock is not a clock: it has no now\(\) and sleep\(ms\)/);
+});
+
 test("what a provider says through its onNote option, the CLI gives it, and puts in the report's providerNotes", async () => {
 	const out = sink();
 	assert.equal(await main(["--provider", "./fixtures/release-note-provider.mjs", "--json"], { stdout: out, cwd: HERE, cases: [pass("health.ping")] }), 0);
