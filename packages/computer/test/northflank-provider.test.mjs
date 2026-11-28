@@ -433,3 +433,19 @@ test("the provider's source reads no environment and holds no project, team or s
 	assert.doesNotMatch(source, /process\.env/);
 	assert.doesNotMatch(source, /projectId\s*=\s*"|teamId\s*=\s*"/, "no default project or team");
 });
+
+test("NF_API_TOKEN alone is no key: the provider never falls back to it (another account's on an operator's host) and calls nothing", () => {
+	const before = process.env.NF_API_TOKEN;
+	process.env.NF_API_TOKEN = "fake-test-key-nf";
+	try {
+		const vendor = fakeNorthflank();
+		for (const token of [undefined, ""]) {
+			assert.throws(() => new NorthflankProvider({ token, projectId: PROJECT, fetch: vendor.fetch, webSocket: vendor.webSocket }), /options\.token, a Northflank API token, is required/);
+		}
+		assert.deepEqual([vendor.calls, vendor.sockets], [[], []], "no REST call and no socket");
+	} finally {
+		if (before === undefined) delete process.env.NF_API_TOKEN;
+		else process.env.NF_API_TOKEN = before;
+	}
+	assert.doesNotMatch(readFileSync(new URL("../dist/northflank.js", import.meta.url), "utf8"), /NF_API_TOKEN/);
+});

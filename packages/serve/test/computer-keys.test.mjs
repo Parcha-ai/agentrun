@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { PROVIDERS } from "@parcha/agentrun-computer";
-import { COMPUTER_KEY_NAMES, KEY_TABLE, keyChoices, keyTableOf, providerOptions, testConnection } from "../dist/computer-keys.js";
+import { COMPUTER_KEY_NAMES, KEY_TABLE, keyChoices, keyTableOf, providerFromEnv, providerOptions, testConnection } from "../dist/computer-keys.js";
 
 const KEY = "fake-test-key-0001";
 const SECRET = "fake-test-key-secret-0002";
@@ -214,4 +214,22 @@ test("a key split by a control character, a terminal sequence or a box in a vend
   // Control: words with no key in them are kept as they came.
   const plain = fakeModule({ ok: true, value: { detail: "token \u001b[0mworks" } });
   assert.deepEqual(await testConnection("kernel", { keys: { KERNEL_API_KEY: KEY } }, { kernel: plain.create }), { ok: true, value: { detail: "token \u001b[0mworks" } });
+});
+
+test("computer keys: Northflank's token is NORTHFLANK_API_TOKEN alone; NF_API_TOKEN (an operator host's own account) is no key, and nothing is called", async () => {
+  assert.deepEqual(KEY_TABLE.keys.northflank.filter(({ option }) => option === "token").map(({ name }) => name), ["NORTHFLANK_API_TOKEN"]);
+  assert.ok(!COMPUTER_KEY_NAMES.includes("NF_API_TOKEN"), "no descriptor names NF_API_TOKEN");
+  const fetched = [];
+  const fetch = async (url) => {
+    fetched.push(String(url));
+    throw new Error("no call is made");
+  };
+  const project = { NORTHFLANK_COMPUTER_PROJECT_ID: "my-project" };
+  const refused = await providerFromEnv("northflank", { ...project, NF_API_TOKEN: KEY }, { fetch });
+  assert.deepEqual(refused, { ok: false, error: { code: "missing_key", message: "Northflank needs NORTHFLANK_API_TOKEN saved: save it in Settings → Computers (PUT /v2/computers/northflank/keys)" } });
+  assert.deepEqual(fetched, [], "no call without its own key");
+  // Control: under its own name the same value makes the provider, still calling nothing.
+  const made = await providerFromEnv("northflank", { ...project, NORTHFLANK_API_TOKEN: KEY }, { fetch });
+  assert.equal(made.ok, true, JSON.stringify(made.error));
+  assert.deepEqual(fetched, []);
 });
