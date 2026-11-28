@@ -96,14 +96,14 @@ async function setup(t, { hold = { minutes: 1 } } = {}) {
    * computer is a desktop on `client` (with the person's hold `personHold`, when given), held for `minutes` when the run
    * was created with a hold.
    */
-  const start = async ({ client = fakeClient(), minutes = 1, personHold, tool } = {}) => {
+  const start = async ({ client = fakeClient(), minutes = 1, personHold, tool, projectCheckpoint } = {}) => {
     const looks = [];
     const used = tool ?? { name: "look", replaySafe: true, run: async () => (looks.push(Date.now()), "a grey screen") };
     const spec = piAdapterSpec({ script: [{ call: used.name }, { say: "done" }], tools: { [used.name]: used }, hooks: quiet });
     const store = await openSqliteStore({ dataDir: dir, role: "runner" });
     stores.push(store);
     const computer = { kind: "desktop", client, ...(personHold ? { hold: personHold } : {}) };
-    runners.push(startRunner({ store, createLoop: createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1", computer, ...(hold ? { held: { minutes } } : {}) })), name: "runner-a", ...TIMING }));
+    runners.push(startRunner({ store, createLoop: createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1", computer, ...(hold ? { held: { minutes } } : {}), ...(projectCheckpoint ? { projectCheckpoint } : {}) })), name: "runner-a", ...TIMING }));
     return { client, looks };
   };
   const phases = async () => (await runTimeline(server, "run-1", ctx)).map((one) => one.summary).filter(Boolean);
@@ -229,6 +229,45 @@ test("the channel: a run that holds nothing takes the owner's calls while its ag
   assert.deepEqual([late.status, late.code], [409, "computer_not_live"]);
   assert.match(late.message, /not up now: the run is ended/);
   assert.equal(await world.field(), undefined, "a run that holds nothing has no held field");
+});
+
+test("a cancel cuts an owner's call still running on the computer: the run's end, its project checkpoint among it, never waits out the call's time", async (t) => {
+  const world = await setup(t, { hold: false });
+  let letGo;
+  const working = new Promise((resolve) => (letGo = resolve));
+  const tool = { name: "work", replaySafe: true, run: async () => (await working, "done working") };
+  const client = fakeClient();
+  const answer = client.call;
+  let cut;
+  // exec.run runs until its signal aborts, as a command given ten minutes does.
+  client.call = (method, params, options) => {
+    if (method !== "exec.run") return answer(method, params);
+    client.calls.push({ method, params });
+    return new Promise((resolve) => options.signal.addEventListener("abort", () => {
+      cut = options.signal.reason;
+      resolve({ ok: false, error: { code: "aborted", message: "the command was cut" } });
+    }, { once: true }));
+  };
+  const project = { version: 1, sourceId: "src-1", runId: "run-1", epoch: 1 };
+  const captured = [];
+  const projectCheckpoint = {
+    capture: async () => (captured.push(Date.now()), { ...project, status: "discarded", reason: "auxiliary_project_changes_not_applied" }),
+    uncertain: () => ({ ...project, status: "uncertain", reason: "project_not_settled" }),
+  };
+  await world.start({ client, tool, projectCheckpoint });
+  await until(async () => (await world.row()).state === "running", "the run is claimed");
+
+  const asked = world.route("callRunComputer", { method: "exec.run", params: { argv: ["sleep", "600"], timeoutMs: 600_000 } });
+  await until(() => client.calls.some((one) => one.method === "exec.run"), "the call reached the computer");
+  await sendCommand(world.server, "run-1", { kind: "cancel" });
+  letGo();
+  const ended = await until(async () => { const row = await world.row(); return row.state === "stopped" && row; }, "the cancelled run ends without waiting out the call");
+  assert.equal(ended.outcome, "cancelled");
+  assert.match(String(cut?.message ?? cut), /the run ended/, "the call was cut by the run's end");
+  assert.equal(captured.length, 1, "the project checkpoint was captured once the call was cut");
+  const late = await world.route("callRunComputer", { method: "exec.run", params: { argv: ["true"], timeoutMs: 1_000 } });
+  assert.equal(late.status, 409, "a call after the end is refused");
+  assert.deepEqual(await asked, { answer: { ok: false, error: { code: "aborted", message: "the run ended before the call did" } } }, "the owner reads that the run's end cut the call, not that it ran out of time");
 });
 
 test("the agent's computer calls are kept on its tool call's result row: methods, routes and outcomes, never a typed value", async (t) => {

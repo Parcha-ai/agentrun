@@ -33,4 +33,5 @@ test("the API document states the call's time as the channel runs it", () => {
   assert.ok(description.includes(`${CALL_MAX_MS / 60_000} minutes`), description);
   assert.match(description, /exec\.run and process\.wait/);
   assert.match(description, /process\.start/);
+  assert.match(description, /still running when the run ends is cut then and answers `\{ok: false, error: \{code: "aborted"\}\}`/);
 });

@@ -1197,6 +1197,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** The current pass's spec's release, until it is called (closeSession). */
   let releaseNow: AdapterRunSpec["release"];
   const projectWork = new ProjectDrain();
+  /** Aborted when the run's end begins (writeEnd), after a stop that kept the computer has waited out its hold: an owner's
+   *  channel call still running is cut then, so the end, a project checkpoint's drain among it, never waits out a call's
+   *  own time, and a call that comes after it is refused. */
+  const callsEnd = new AbortController();
   const projectCall = <T>(call: () => Promise<T>, strict = !!specNow?.projectCheckpoint): Promise<T> => strict ? projectWork.run(call) : call();
   /** The current pass ended in a park that keeps its computer (keepAtPark), for this cause, until its release reads it. */
   let parkedNow: ParkCause | undefined;
@@ -1510,7 +1514,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   const channelCommand = async (command: Command): Promise<CommandOutcome> => {
     await Promise.race([ready, (finished ?? new Promise<never>(() => {})).then(() => undefined, () => undefined)]);
     const [theGate, pass, theHeld] = [gate, channelNow, heldNow];
-    if (!theGate || theGate.sealed || projectWork.closed) return { refused: "The run's computer is not up now: the run is starting, parking or ending." };
+    if (!theGate || theGate.sealed || projectWork.closed || callsEnd.signal.aborted) return { refused: "The run's computer is not up now: the run is starting, parking or ending." };
     if (!pass) return { refused: specNow?.computer ? "The run's computer is not up now: the run is starting, parking or ending." : "This run has no computer that takes protocol calls: none, or a browser." };
     const refusal = theHeld?.refusesCall();
     if (refusal) return { refused: refusal };
@@ -1521,7 +1525,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       theHeld?.callStarted();
       let done: Awaited<ReturnType<typeof runChannelCall>>;
       try {
-        done = await projectCall(() => runChannelCall(pass.computer, call, AbortSignal.any([deps.signal, AbortSignal.timeout(callBudgetMs(call))]), now));
+        done = await projectCall(() => runChannelCall(pass.computer, call, AbortSignal.any([deps.signal, AbortSignal.timeout(callBudgetMs(call))]), now, callsEnd.signal));
       } finally {
         theHeld?.callEnded(now());
       }
@@ -4519,6 +4523,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         take = [...take, later.commandId];
       }
     }
+    callsEnd.abort(new Error("the run ended before the call did"));
     // The end is the run's release: nothing of this claim lands after it, so the tool host is let go first (its writes in
     // their own commits, the end's patch reading the cost they book), and its requests' bookings come first.
     await releaseHost(on);
