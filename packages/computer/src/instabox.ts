@@ -5,7 +5,8 @@
 // init's start, the stdio bridge) goes over SSH through the shared SshExec (./hosted/ssh-exec.ts) to InstaBox's gateway,
 // logged in with an SSH token the REST API mints per machine (D ssh-tokens: the token is the username, no key needed).
 // The token rides in the username, so the gateway's host key is pinned to the sha256 the token's answer names
-// (hostKeyFingerprint), and a host posing as the gateway reads no token. The SSH user is the machine's own, `user` (uid
+// (hostKeyFingerprint), and a host posing as the gateway reads no token: the pin is required twice, by the token answer's
+// check and by the SshExec (pinned), so a login with no pin opens no connection. The SSH user is the machine's own, `user` (uid
 // 1000), with passwordless sudo (D templates), which the adapter's scripts take for root. The REST exec takes its stdin
 // once and kills at 10 minutes (D exec), so it is not used; the file API writes as the machine's user, not root (D files),
 // so this host has no upload and the daemon goes through exec. The labels are packed into the machine's metadata, whose
@@ -27,7 +28,7 @@ import { BACKSTOP_MARGIN_MS, type HostCall, HostError, type HostFacts, type Mach
 import { orThrow, pause } from "./hosted/process.js";
 import { HostedProvider, type HostedOptions } from "./hosted/provider.js";
 import { allPages, httpsBase, jsonOf, type Rest, type RestInit, rest } from "./hosted/rest.js";
-import { type Ssh2Module, SshExec, SshTunnelError, type SshTunnel } from "./hosted/ssh-exec.js";
+import { HOST_KEY_PIN, type Ssh2Module, SshExec, SshTunnelError, type SshTunnel } from "./hosted/ssh-exec.js";
 import { DOMAIN, dateOf } from "./hosted/values.js";
 import type { ComputerSpec, Refusal } from "./provider.js";
 import { type ComputerErrorCode, ok } from "./result.js";
@@ -86,8 +87,6 @@ const BUSY_MS = 1_000;
 const MACHINE_ID = /^m_[a-z0-9]{1,64}$/;
 /** An SSH token (O SSHToken.token: ibssh_ and base32): the username, nothing a shell or ssh2 reads otherwise. */
 const TOKEN = /^ibssh_[a-z0-9]{1,128}$/;
-/** OpenSSH's sha256 fingerprint: SHA256: and 43 characters of unpadded base64. */
-const FINGERPRINT = /^SHA256:[A-Za-z0-9+/]{43}$/;
 /** A template id, a snapshot's name, or a snapshot's id (sn_...): what a create's image names (D create). */
 const IMAGE = /^[a-z0-9][a-z0-9_-]{0,62}$/;
 /** The sizes InstaBox offers, each plan a range of them (D sizes): 2 GiB per vCPU. */
@@ -199,6 +198,7 @@ class InstaboxHost implements MachineHost {
 		// The username is the machine's token alone, the gateway's key pinned: the API key never goes over SSH.
 		this.#ssh = new SshExec({
 			ssh2: options.ssh2,
+			pinned: true,
 			loginOf: (id) => {
 				const login = this.#held.get(id);
 				if (login === undefined) throw new HostError("denied", `no SSH token for ${id}`);
@@ -367,7 +367,7 @@ class InstaboxHost implements MachineHost {
 		if (typeof token !== "string" || !TOKEN.test(token)) throw new HostError("vendor", `${where} answered no SSH token of InstaBox's form (ibssh_...)`);
 		if (typeof host !== "string" || !(DOMAIN.test(host) || isIP(host) !== 0)) throw new HostError("vendor", `${where} answered a gateway that is no host name: ${show(host)}`);
 		if (typeof port !== "number" || !Number.isSafeInteger(port) || port < 1 || port > 65_535) throw new HostError("vendor", `${where} answered a gateway port that is no TCP port: ${show(port)}`);
-		if (typeof fingerprint !== "string" || !FINGERPRINT.test(fingerprint)) throw new HostError("vendor", `${where} answered no host key fingerprint (SHA256:...) to pin the gateway by: ${show(fingerprint)}`);
+		if (typeof fingerprint !== "string" || !HOST_KEY_PIN.test(fingerprint)) throw new HostError("vendor", `${where} answered no host key fingerprint (SHA256:...) to pin the gateway by: ${show(fingerprint)}`);
 		return { token, host, port, fingerprint };
 	}
 

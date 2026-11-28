@@ -5,7 +5,7 @@
 // only the slice it uses (Ssh2Module) and imports nothing at load.
 import { createHash, createPrivateKey, type KeyObject, randomBytes } from "node:crypto";
 import { Duplex, PassThrough } from "node:stream";
-import type { HostCall, MachineProcess } from "../host.js";
+import { type HostCall, HostError, type MachineProcess } from "../host.js";
 import { boundOf, redact } from "./process.js";
 import { PID_WRAPPER, pidKill, pidStderr, shellLine } from "./scripts.js";
 import { sshString } from "./ssh-key.js";
@@ -156,6 +156,9 @@ export interface SshLogin {
 /** OpenSSH's sha256 fingerprint of a host key's wire blob. */
 const fingerprintOf = (key: Buffer): string => `SHA256:${createHash("sha256").update(key).digest("base64").replace(/=+$/, "")}`;
 
+/** A host key pin's form, OpenSSH's sha256 fingerprint: SHA256: and 43 characters of unpadded base64. */
+export const HOST_KEY_PIN = /^SHA256:[A-Za-z0-9+/]{43}$/;
+
 export interface SshExecOptions {
 	/** The host's own ssh2 package, or anything with the same slice. */
 	ssh2: Ssh2Module;
@@ -168,6 +171,11 @@ export interface SshExecOptions {
 	 * or past: a refused login fails at once.
 	 */
 	deniedUntil?: (id: string) => number;
+	/**
+	 * Every login must carry hostKey of HOST_KEY_PIN's form: one without is refused (vendor) before its tunnel opens, so
+	 * its credential never leaves. For a host whose login is itself a credential (InstaBox's token as the username).
+	 */
+	pinned?: boolean;
 }
 
 /** The pause between two logins an sshd refused, while deniedUntil says the key may still reach it. */
@@ -179,17 +187,19 @@ export class SshExec {
 	readonly #loginOf: (id: string) => SshLogin;
 	readonly #tunnelOf: SshTunnelOf;
 	readonly #deniedUntil: ((id: string) => number) | undefined;
+	readonly #pinned: boolean;
 	/**
 	 * The SSH connections to each machine, opening, open, or done and still held, until each ends: one, and a second
 	 * past CHANNELS_PER_CONNECTION channels. A done one takes no new channel; closeAll ends them all.
 	 */
 	readonly #links = new Map<string, Link[]>();
 
-	constructor({ ssh2, loginOf, tunnelOf, deniedUntil }: SshExecOptions) {
+	constructor({ ssh2, loginOf, tunnelOf, deniedUntil, pinned = false }: SshExecOptions) {
 		this.#ssh2 = ssh2;
 		this.#loginOf = loginOf;
 		this.#tunnelOf = tunnelOf;
 		this.#deniedUntil = deniedUntil;
+		this.#pinned = pinned;
 	}
 
 	/** Ends every connection to machine id, channels and all: the vendor calls it once the machine is deleted. */
@@ -232,10 +242,15 @@ export class SshExec {
 	}
 
 	/**
-	 * One tunnel and one SSH handshake over it. On a failure, or once stop aborts before the handshake is done, the
-	 * WebSocket (opening or open), the stream and the client are dropped.
+	 * One tunnel and one SSH handshake over it, the login had first: a pinned exec's login with no pin opens no tunnel.
+	 * On a failure, or once stop aborts before the handshake is done, the WebSocket (opening or open), the stream and the
+	 * client are dropped.
 	 */
 	async #handshake(id: string, timeoutMs: number, stop: AbortSignal): Promise<Ssh2Client> {
+		const { username, privateKey, password, hostKey } = this.#loginOf(id);
+		if (this.#pinned && !(typeof hostKey === "string" && HOST_KEY_PIN.test(hostKey))) {
+			throw new HostError("vendor", `the SSH login to ${id} names no host key (SHA256:...) to pin its sshd by, and this host pins every login: no connection was made`);
+		}
 		const { duplex, opened, host } = this.#tunnelOf(id);
 		const client = new this.#ssh2.Client();
 		const givenUp = () => new SshTunnelError(`the SSH tunnel to ${host} was given up on`);
@@ -250,7 +265,6 @@ export class SshExec {
 			quit(givenUp());
 		};
 		stop.addEventListener("abort", drop, { once: true });
-		const { username, privateKey, password, hostKey } = this.#loginOf(id);
 		try {
 			await Promise.race([opened, quitted]);
 			await Promise.race([
