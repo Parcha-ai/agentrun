@@ -85,8 +85,9 @@ function sandboxOverArchil(disk, scratch, mounts, computer) {
  *  no computer, so nothing mounts the run's folder. `region`: the server's Archil region (aws-us-east-1 by default).
  *  `body`: more of the revision's body (its `checkout`); `launch`: more of the run's launch (its input, inputOrigin or
  *  repo); `deps`: more of the claim's deps (githubWeb). `processes`: the computer's process calls run for real in its
- *  folder (realProcesses), as a sandbox's own exec runs them. */
-export async function mode2Run(t, { harness, disk, learns = false, mcp, computer = true, region = ARCHIL_SETTINGS.region, body = {}, launch: given = {}, deps: more = {}, processes = false }) {
+ *  folder (realProcesses), as a sandbox's own exec runs them. `revision`: more of the revision's row (its monidPin); `env`:
+ *  more of the runner's environment (a monid key). */
+export async function mode2Run(t, { harness, disk, learns = false, mcp, computer = true, region = ARCHIL_SETTINGS.region, body = {}, launch: given = {}, deps: more = {}, processes = false, revision = {}, env: moreEnv = {} }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mode2-skills-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -103,7 +104,7 @@ export async function mode2Run(t, { harness, disk, learns = false, mcp, computer
   });
   await server.agents.create(
     { id: AGENT, name: "Agent" },
-    { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read", "write", ...(mcp?.grants ?? [])], skills: { "cite/SKILL.md": "0".repeat(64) }, ...(computer ? { computer: { kind: "sandbox", provider: "e2b" } } : {}), ...(harness ? { harness } : {}), ...(learns ? { learning: true } : {}), ...(mcp?.toolSettings ? { toolSettings: mcp.toolSettings } : {}), ...body }, skills: { "cite/SKILL.md": SKILL }, ...(mcp?.pin ? { mcpPin: mcp.pin } : {}) },
+    { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read", "write", ...(mcp?.grants ?? [])], skills: { "cite/SKILL.md": "0".repeat(64) }, ...(computer ? { computer: { kind: "sandbox", provider: "e2b" } } : {}), ...(harness ? { harness } : {}), ...(learns ? { learning: true } : {}), ...(mcp?.toolSettings ? { toolSettings: mcp.toolSettings } : {}), ...body }, skills: { "cite/SKILL.md": SKILL }, ...(mcp?.pin ? { mcpPin: mcp.pin } : {}), ...revision },
   );
   await mcp?.before?.(server);
   const learning = learns ? { seed: (await server.learning.seed(AGENT)).save.id, section: "" } : undefined;
@@ -116,7 +117,7 @@ export async function mode2Run(t, { harness, disk, learns = false, mcp, computer
   await server.flush?.();
   const scratch = join(dir, "computer");
   mkdirSync(scratch);
-  const env = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [STAND_IN] }) };
+  const env = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [STAND_IN] }), ...moreEnv };
   const mounts = [];
   const said = [];
   const fake =processes ? realProcesses(fakeComputer(scratch), scratch) : fakeComputer(scratch);
