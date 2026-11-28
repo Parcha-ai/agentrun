@@ -106,6 +106,20 @@ class FolderNotMade extends Error {
   }
 }
 
+/** A call Archil refused 409 for the whole of the workspace's wait (queueMs): another client held the folder, a
+ *  computer's mount of it (Archil's write delegation) or an exec (its checkout). `words` name no path: Archil's own
+ *  message names the disk key, so only its status and code are kept there; the message keeps all of it. */
+class FolderHeld extends Error {
+  readonly status = 409;
+  readonly words: string;
+  constructor(waitedMs: number, cause: unknown) {
+    super(describe(cause), { cause });
+    const code = (cause as { code?: unknown } | null)?.code;
+    const waited = waitedMs >= 1000 ? `${Math.round(waitedMs / 100) / 10} s` : `${waitedMs} ms`;
+    this.words = `the folder is held by another client (a computer's mount of it, or a command running in it) and was not let go in ${waited} (Archil: 409${typeof code === "string" && /^\w{1,40}$/.test(code) ? ` ${code}` : ""})`;
+  }
+}
+
 /** A disk API failure as a WorkspaceError, Archil's words kept. A disk that is not there is UNAVAILABLE, never a file or
  *  folder that is not there: no caller takes it for an empty folder. */
 function failed(error: unknown, path: string, what: string): WorkspaceError {
@@ -114,6 +128,7 @@ function failed(error: unknown, path: string, what: string): WorkspaceError {
   const status = statusOf(error);
   const at = { path, cause: error };
   if (error instanceof ArchilDiskMissing) return new WorkspaceError("UNAVAILABLE", `${what} ${show(path)}: ${error.message}`, at);
+  if (error instanceof FolderHeld) return new WorkspaceError("UNAVAILABLE", `${what} ${show(path)}: ${error.words}: ${error.message}`, { ...at, words: error.words });
   if (status === 404) return new WorkspaceError("NOT_FOUND", `${show(path)} is not there (${what}; Archil: ${describe(error)})`, at);
   if (status === 413 || (error as { code?: unknown })?.code === "EntityTooLarge") return new WorkspaceError("TOO_LARGE", `${what} ${show(path)}: more than the disk takes in one call`, at);
   if (status === 401 || status === 403) return new WorkspaceError("UNAVAILABLE", `${what} ${show(path)}: Archil refused the key: ${describe(error)}`, at);
@@ -186,15 +201,16 @@ class ArchilWorkspace implements Workspace {
     return segments;
   }
 
-  /** `call`, again while another client holds the path checked out (409), for up to queueMs. A 409 because a file is
-   *  on the way to `rel` is not waited on. */
+  /** `call`, again while another client holds the path checked out (409), for up to queueMs; a hold that outlasts it
+   *  fails FolderHeld. A 409 because a file is on the way to `rel` is not waited on. */
   async #settle<T>(rel: string, call: () => Promise<T>): Promise<T> {
     const deadline = Date.now() + this.#queueMs;
     for (let first = true; ; first = false) {
       try {
         return await call();
       } catch (error) {
-        if (statusOf(error) !== 409 || Date.now() >= deadline) throw error;
+        if (statusOf(error) !== 409) throw error;
+        if (Date.now() >= deadline) throw new FolderHeld(this.#queueMs, error);
         if (first && (await this.#fileOnTheWay(rel).catch(() => undefined)) !== undefined) throw error;
         await pause(200);
       }
@@ -371,7 +387,7 @@ class ArchilWorkspace implements Workspace {
       if (chunks === 1) {
         // A refusal (4xx) applied nothing; any other failure may have come after the bytes were committed.
         if (refused) throw why;
-        throw new WorkspaceError(why.code, `the append to ${show(rel)} may also have landed: unknown, re-read the file before retrying: ${why.message}`, { path: rel, cause: error });
+        throw new WorkspaceError(why.code, `the append to ${show(rel)} may also have landed: unknown, re-read the file before retrying: ${why.message}`, { path: rel, cause: error, words: why.words });
       }
       // Part of it may be on the disk. Only what is known is said: the size read back, or else what was acknowledged, with
       // the failed chunk's outcome unknown unless it was refused (as one chunk's refusal applied nothing). A chunk may
@@ -382,7 +398,7 @@ class ArchilWorkspace implements Workspace {
         : refused
           ? `${landed} of ${bytes.length} bytes were appended (the chunk that failed was refused, so none of it landed)`
           : `at least ${landed} of ${bytes.length} bytes were appended; the failed chunk may also have landed: unknown, re-read the file before retrying`;
-      throw new WorkspaceError(why.code, `${known} to ${show(rel)} before it failed: ${why.message}`, { path: rel, cause: error });
+      throw new WorkspaceError(why.code, `${known} to ${show(rel)} before it failed: ${why.message}`, { path: rel, cause: error, words: why.words });
     }
   }
 
