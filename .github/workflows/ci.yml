@@ -453,7 +453,7 @@ jobs:
   runas:
     # The run helper's own Go tests (packages/serve/runas), the unprivileged ones and, as root, the privileged ones, on
     # real files. A job of its own beside image-custody, which they used to run before its image build: they need Go and
-    # sudo, not the image. It runs when image-custody does (.github/actions/serve-paths).
+    # sudo, not the image. It runs when image-custody does (.github/actions/changed-paths).
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -463,7 +463,10 @@ jobs:
           fetch-depth: 2
       - name: Does this change reach the server, its runner, its launcher or its image?
         id: paths
-        uses: ./.github/actions/serve-paths
+        uses: ./.github/actions/changed-paths
+        with:
+          paths: packages/serve/ .github/workflows/ci.yml
+          what: server, runner, launcher or image
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         if: steps.paths.outputs.run == 'true'
         with:
@@ -499,7 +502,10 @@ jobs:
           fetch-depth: 2
       - name: Does this change reach the server, its runner, its launcher or its image?
         id: paths
-        uses: ./.github/actions/serve-paths
+        uses: ./.github/actions/changed-paths
+        with:
+          paths: packages/serve/ .github/workflows/ci.yml
+          what: server, runner, launcher or image
       # Docker's classic image store, so the image built next is loaded as built, its layers not compressed and unpacked
       # again (about 54 s on the containerd store). The step prints the store and fails unless the switch took.
       - name: Docker on its classic image store
@@ -697,23 +703,10 @@ jobs:
           fetch-depth: 2
       - name: Does this change reach the receipts spec?
         id: paths
-        env:
-          EVENT: ${{ github.event_name }}
-          GROUP_BASE: ${{ github.event.merge_group.base_sha }}
-          PUSH_BASE: ${{ github.event.before }}
-        run: |
-          case "$EVENT" in
-            pull_request) base=HEAD^1 ;;
-            merge_group) base="$GROUP_BASE" ;;
-            *) base="$PUSH_BASE" ;;
-          esac
-          # A base this clone cannot reach (a new branch, a force push) checks the spec.
-          if [ "$base" != HEAD^1 ] && ! git fetch --no-tags --depth=1 origin "$base" 2>/dev/null; then
-            echo "run=true" >> "$GITHUB_OUTPUT"; echo "base $base unreachable: checked"; exit 0
-          fi
-          changed=$(git diff --name-only --no-renames "$base" HEAD -- spec/receipts/ scripts/spec/ .github/actions/receipts-spec/)
-          echo "${changed:-no receipts spec path changed}"
-          if [ -n "$changed" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; else echo "run=false" >> "$GITHUB_OUTPUT"; fi
+        uses: ./.github/actions/changed-paths
+        with:
+          paths: spec/receipts/ scripts/spec/ .github/actions/receipts-spec/
+          what: receipts spec
       - if: steps.paths.outputs.run == 'true'
         uses: ./.github/actions/receipts-spec
       - name: Keep the TLC logs and counterexample traces

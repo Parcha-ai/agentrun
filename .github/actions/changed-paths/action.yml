@@ -1,0 +1,42 @@
+name: Does this change reach these paths?
+description: >
+  Whether a change touches any of the given paths, for jobs that run only when it does (image-custody and runas on the
+  server's paths, receipts-spec on the spec's). Needs a checkout of fetch-depth 2: the merge commit and its first parent,
+  the base branch's tip, whose diff is what a pull request changes. A base the clone cannot reach (a new branch, a force
+  push) counts as reaching them.
+inputs:
+  paths:
+    description: "The paths to check, separated by spaces (git pathspecs)"
+    required: true
+  what:
+    description: "What the paths are, for the log line when none changed"
+    required: true
+outputs:
+  run:
+    description: "'true' when the change reaches the paths, else 'false'"
+    value: ${{ steps.paths.outputs.run }}
+runs:
+  using: composite
+  steps:
+    - id: paths
+      shell: bash
+      env:
+        EVENT: ${{ github.event_name }}
+        GROUP_BASE: ${{ github.event.merge_group.base_sha }}
+        PUSH_BASE: ${{ github.event.before }}
+        PATHS: ${{ inputs.paths }}
+        WHAT: ${{ inputs.what }}
+      run: |
+        case "$EVENT" in
+          pull_request) base=HEAD^1 ;;
+          merge_group) base="$GROUP_BASE" ;;
+          *) base="$PUSH_BASE" ;;
+        esac
+        # A base this clone cannot reach (a new branch, a force push) runs the job.
+        if [ "$base" != HEAD^1 ] && ! git fetch --no-tags --depth=1 origin "$base" 2>/dev/null; then
+          echo "run=true" >> "$GITHUB_OUTPUT"; echo "base $base unreachable: checked"; exit 0
+        fi
+        read -r -a specs <<< "$PATHS"
+        changed=$(git diff --name-only --no-renames "$base" HEAD -- "${specs[@]}" .github/actions/changed-paths/)
+        echo "${changed:-no $WHAT path changed}"
+        if [ -n "$changed" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; else echo "run=false" >> "$GITHUB_OUTPUT"; fi
