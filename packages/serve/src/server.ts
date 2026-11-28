@@ -785,6 +785,11 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/agents\/([^/]+)\/home\/files\/(.+)$/, name: "readHomeFile" },
   { method: "PUT", pattern: /^\/agents\/([^/]+)\/home\/files\/(.+)$/, name: "writeHomeFile" },
   { method: "DELETE", pattern: /^\/agents\/([^/]+)\/home\/files\/(.+)$/, name: "deleteHomeFile" },
+  // The contract's packed home and a run's kill: never served here (openapi.ts NOT_SERVED), so each answers 501 naming its
+  // capability (UNSUPPORTED), as quotes do, before any lookup.
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/home$/, name: "exportHome", capability: "home.export" },
+  { method: "PUT", pattern: /^\/agents\/([^/]+)\/home$/, name: "importHome", capability: "home.import" },
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/kill$/, name: "killRun", capability: "runs.kill" },
   { method: "GET", pattern: /^\/runs$/, name: "listAllRuns" },
   { method: "POST", pattern: /^\/runs$/, name: "createInlineRun" },
   { method: "GET", pattern: /^\/runs\/([^/]+)$/, name: "getRun" },

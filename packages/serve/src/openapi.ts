@@ -5,8 +5,8 @@ import { NATIVE_BINDING, NATIVE_RUN, NATIVE_PATHS } from "./native/schema.js";
 // The OpenAPI document this server serves at GET /v2/openapi.json: the agentrun.v2/0 contract as vendored in
 // src/openapi/agentrun-v2.openapi.json (its source is in its info), with this server's marks. The contract's operations are
 // not changed: an operation answered 501 here carries `x-agentrun-serve-unsupported` with the reason, one this server does
-// not serve at all (NOT_SERVED) is left out of the document, and this server's own routes are added as operations marked
-// `x-agentrun-serve` (true, or the addition that made it, as `stats/1`), listed in `info.x-agentrun-serve`.
+// not serve at all (NOT_SERVED, also answered 501) is left out of the document, and this server's own routes are added as
+// operations marked `x-agentrun-serve` (true, or the addition that made it, as `stats/1`), listed in `info.x-agentrun-serve`.
 import { readFileSync } from "node:fs";
 import { CALL_RESULT_CHARS, CALLS_PAGE_ROWS, TRIGGER_SOURCES } from "./timeline/index.js";
 import { EMAIL_SCOPES, PASSWORD_MAX, SCOPED_TOOLS, SEND_CAP } from "./email/names.js";
@@ -139,11 +139,16 @@ const MODEL_PARAMETER: Json = {
 /** Why each capability this server turns off answers 501, by the route's capability. */
 export const UNSUPPORTED: Readonly<Record<string, string>> = {
   quotes: "This server has no billing, so it gives no quotes.",
+  "home.export": "This server packs no home: an agent's home is read file by file, with GET /agents/{id}/home/files.",
+  "home.import": "This server takes no packed home: an agent's home is written file by file, with PUT /agents/{id}/home/files/{path}.",
+  "runs.kill": "This server does not kill and restart a run: POST /runs/{id}/stop ends its turn, and POST /runs/{id}/cancel ends the run.",
 };
 
 /** The contract's operations this server does not serve, and never will as they are: a home's packed export and import
  *  (its files are read and written one by one, under /agents/{id}/home/files) and a run's kill (stop and cancel end a
- *  run). They are left out of the served document, so no client is generated for them, and their paths answer 404.
+ *  run). They are left out of the served document, so no client is generated for them. Their paths answer as the
+ *  contract answers a feature a backend does not offer: 501 unsupported_here naming the capability (UNSUPPORTED), after
+ *  the token and before any lookup, so an agent or run that is here and one that is not get the same answer.
  *  Capabilities say each is off (home.export, home.import, runs.kill). */
 export const NOT_SERVED: readonly string[] = ["exportHome", "importHome", "killRun"];
 

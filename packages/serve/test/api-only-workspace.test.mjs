@@ -214,6 +214,9 @@ test("every operation of WORKSPACE_ROUTES is a route of the server, and the tabl
   assert.equal(servedScoped(ROUTES, "DELETE", "/v2/agents/a1/learning"), "not_scoped");
   assert.equal(servedScoped(ROUTES, "GET", "/v2/usage"), "not_scoped");
   assert.equal(servedScoped(ROUTES, "GET", "/v2/runs/r1/computer/live/v/x"), "not_scoped");
+  // The contract's packed home and a run's kill, which this server answers 501 (api.test.mjs), are routes, and refused to
+  // a scoped request as quotes are.
+  for (const [method, path] of [["GET", "/v2/agents/a1/home"], ["PUT", "/v2/agents/a1/home"], ["POST", "/v2/runs/r1/kill"], ["POST", "/v2/quotes"]]) assert.equal(servedScoped(ROUTES, method, path), "not_scoped", `${method} ${path}`);
   assert.equal(servedScoped(ROUTES, "GET", "/v2/nothing-here"), "none");
   assert.equal(servedScoped(ROUTES, "GET", "/"), "none");
 });
@@ -640,7 +643,7 @@ test("a listed token without the header is 403; the header off an API-only serve
     assert.deepEqual([answer.status, answer.body.error?.code], [400, "bad_request"], `${JSON.stringify(workspace)}: ${answer.text}`);
   }
   assert.equal((await send(server, "GET", "/v2/runs", { workspace: "x".repeat(128) })).status, 200, "128 characters is a name");
-  for (const [method, path] of [["DELETE", "/v2/agents/a1/learning"], ["GET", "/v2/usage"], ["GET", "/v2/runs/r1/usage"], ["POST", "/v2/runs/r1/approvals/ap1"], ["PUT", `${homeFiles("a1")}/notes.md`], ["POST", "/v2/settings/webhook/secret"], ["POST", "/v2/runs"]]) {
+  for (const [method, path] of [["DELETE", "/v2/agents/a1/learning"], ["GET", "/v2/usage"], ["GET", "/v2/runs/r1/usage"], ["POST", "/v2/runs/r1/approvals/ap1"], ["PUT", `${homeFiles("a1")}/notes.md`], ["GET", "/v2/agents/a1/home"], ["PUT", "/v2/agents/a1/home"], ["POST", "/v2/runs/r1/kill"], ["POST", "/v2/settings/webhook/secret"], ["POST", "/v2/runs"]]) {
     const answer = await inW1(server, method, path, method === "GET" || method === "DELETE" ? {} : { body: {} });
     assert.deepEqual([answer.status, answer.body.error?.code, answer.body.error?.details?.reason], [403, "forbidden", "not_scoped"], `${method} ${path}: ${answer.text}`);
   }
