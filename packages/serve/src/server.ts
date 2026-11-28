@@ -3877,6 +3877,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   }
 
 
+  /** A workflow revision's own issues, as POST /workflows/validate lists them (workflowIssues: the DSL's checks, the
+   *  durable runner's refusal), refuse its save before anything is written, each at its path under definition.workflow;
+   *  an apply's plan refuses them in the same words (planTemplate). Asked with no tools list: its run binds every tool its
+   *  call nodes name whether `tools` lists it or not (tools.ts grantedTools), so a call node's unlisted tool is validate's
+   *  hint, never a reason to refuse a runnable workflow. Nothing for an agentic revision. */
+  async function refuseWorkflowIssues(revision: NewRevision): Promise<void> {
+    if (revision.kind !== "workflow") return;
+    const { workflowIssues } = await import("./workflow-run.js");
+    const { issues } = await workflowIssues((revision.body as Partial<WorkflowBody>).workflow);
+    if (issues.length) throw invalid(issues.map(({ path, code, message }) => ({ field: `definition.workflow${path}`, reason: "invalid", code, message })));
+  }
+
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks, and
    *  its pins (mcpListingOf, monidPinOf), each carrying from `previous` what its grants did not change. A revision that
    *  names no place is checked where it would run (fallbackPlace). `toolsUnnamed`: a create whose definition names no tools
@@ -3899,15 +3911,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (cliLearningOf(body) || sdkOf(body)) return { warnings: [], stamp: {} };
     const noPlace = await noPlaceOf(revision, toolsUnnamed);
     await loginNow();
-    // A workflow's own issues, as POST /workflows/validate lists them (workflowIssues: the DSL's checks, the durable
-    // runner's refusal), refuse its save before anything is written, each at its path under definition.workflow. Asked
-    // with no tools list: its run binds every tool its call nodes name whether `tools` lists it or not (tools.ts
-    // grantedTools), so a call node's unlisted tool is validate's hint, never a reason to refuse a runnable workflow.
-    if (revision.kind === "workflow") {
-      const { workflowIssues } = await import("./workflow-run.js");
-      const { issues } = await workflowIssues(body.workflow);
-      if (issues.length) throw invalid(issues.map(({ path, code, message }) => ({ field: `definition.workflow${path}`, reason: "invalid", code, message })));
-    }
+    await refuseWorkflowIssues(revision);
     // An agent on a harness that installs on first use starts its install, if it is not in yet: its first run waits for less.
     const harnessId = revision.kind === "agentic" ? harnessOfBody(body) : undefined;
     const install = harnessId !== undefined && Object.hasOwn(installs, harnessId) ? installs[harnessId] : undefined;
@@ -4145,6 +4149,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const { definition: made, skills } = checkDefinitionBody(p.made.agent, { harnesses });
         revision = makeRevision(made, skills ?? {}, undefined);
       }
+      // A workflow package's workflow, its parameters filled, as its save checks it: a parameter can make a workflow its
+      // save refuses (two nodes of one label), and the plan says so first, as the save does.
+      await refuseWorkflowIssues(revision);
       const refused = await noPlaceOf(revision, p.onto ? false : p.toolsUnnamed);
       if (refused) throw invalid([refused]);
     }

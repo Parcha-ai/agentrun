@@ -217,3 +217,20 @@ test("the bundled stream-router: apply makes its workflow agent and a stream tri
   assert.equal(again.body.warnings.find((w) => w.field === "triggers.0.secret"), undefined, JSON.stringify(again.body.warnings));
   assert.equal((await server.api("GET", `/triggers/${id}`)).body.secret.set, true);
 });
+
+test("an apply's preview (dry_run) refuses the workflow its apply refuses: the stream-router's assistant named as another of its nodes is (Researcher), two nodes of one label, refused by both in the same words, nothing made", { timeout: 120_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), TYPESAFE_API_KEY: CANARY });
+  const server = await serve(t, { fauxJev: FAUX_JEV });
+  const owner = asOwner(server);
+  const body = { parameters: { assistant: "Researcher" } };
+  const plan = await owner("POST", "/templates/stream-router/apply", { ...body, dry_run: true });
+  const applied = await owner("POST", "/templates/stream-router/apply", body);
+  assert.equal(applied.status, 422, JSON.stringify(applied.body));
+  assert.match(JSON.stringify(applied.body.error), /Researcher/, "the apply's refusal names the label twice used");
+  const words = ({ request_id: _, ...error } = {}) => error;
+  assert.deepEqual([plan.status, words(plan.body.error)], [applied.status, words(applied.body.error)], "the preview refuses as the apply does, never a plan the apply then refuses");
+  assert.equal((await server.api("GET", "/agents")).body.agents.length, 0, "nothing was made");
+  const kai = await owner("POST", "/templates/stream-router/apply", { parameters: { assistant: "Kai" }, dry_run: true });
+  assert.equal(kai.status, 200, JSON.stringify(kai.body));
+  assert.ok(kai.body.plan, "a name no other node has is planned as before");
+});
