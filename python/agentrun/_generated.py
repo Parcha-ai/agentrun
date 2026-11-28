@@ -3794,10 +3794,14 @@ class RunSummaryReview(TypedDict):
     at: str
 
 
-class RunSummaryPending1(TypedDict):
+class _RunSummaryPending1Required(TypedDict):
     kind: Literal["question"]
     question: str
     asked_at: str
+
+
+class RunSummaryPending1(_RunSummaryPending1Required, total=False):
+    expires_at: str
 
 
 class _RunSummaryPending2Required(TypedDict):
@@ -6195,10 +6199,14 @@ class RunReview(TypedDict):
     at: str
 
 
-class RunPending1(TypedDict):
+class _RunPending1Required(TypedDict):
     kind: Literal["question"]
     question: str
     asked_at: str
+
+
+class RunPending1(_RunPending1Required, total=False):
+    expires_at: str
 
 
 class _RunPending2Required(TypedDict):
