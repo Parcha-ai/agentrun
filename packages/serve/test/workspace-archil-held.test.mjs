@@ -36,7 +36,7 @@ const rejectsHeld = async (call, what) => {
   assert.match(words, HELD, what);
   assert.match(words, /409 OperationAborted/, `${what}'s words carry Archil's code`);
   assert.doesNotMatch(words, /full or read-only/, what);
-  assert.doesNotMatch(words, /acme|agents\/|a\.txt|b\.txt|kept/, `${what}'s words name no path`);
+  assert.doesNotMatch(words, /acme|agents\/|a\.txt|b\.txt|kept|lnk/, `${what}'s words name no path`);
   return error;
 };
 
@@ -119,4 +119,20 @@ test("a bulk delete's refusal that is no hold keeps its own words", async () => 
   assert.equal(error.code, "UNAVAILABLE", error.message);
   assert.match(error.message, /AccessDenied/);
   assert.doesNotMatch(workspaceErrorWords(error), /held by another client/);
+});
+
+test("a remove of a link in a held folder waits for the hold as any remove does: it lands once the hold is let go, and past the wait it fails in the hold's words", async () => {
+  const disk = new FakeArchilDisk();
+  const workspace = archilWorkspace(disk, ROOT, { queueMs: QUEUE_MS });
+  await workspace.write("a.txt", "the target");
+  disk.links.set(`${ROOT}/lnk`, "a.txt");
+  disk.links.set(`${ROOT}/kept`, "a.txt");
+  const release = disk.delegate(ROOT);
+  setTimeout(release, 50);
+  await workspace.remove("lnk");
+  assert.equal(disk.links.has(`${ROOT}/lnk`), false, "the link is gone");
+  assert.equal(new TextDecoder().decode(await workspace.read("a.txt")), "the target", "its target is kept");
+  disk.delegate(ROOT);
+  await rejectsHeld(() => workspace.remove("kept"), "remove of a link");
+  assert.equal(disk.links.has(`${ROOT}/kept`), true);
 });

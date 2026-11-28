@@ -205,16 +205,16 @@ class ArchilWorkspace implements Workspace {
   }
 
   /** `call`, again while another client holds the path checked out (409), for up to queueMs; a hold that outlasts it
-   *  fails FolderHeld. A 409 because a file is on the way to `rel`, or a link an exec made is at it, is no hold: it is
-   *  thrown at once. */
-  async #settle<T>(rel: string, call: () => Promise<T>): Promise<T> {
+   *  fails FolderHeld. A 409 because a file is on the way to `rel` is no hold, and neither is one for a put (`put`) to a
+   *  link an exec made at `rel`: each is thrown at once. A delete of a link is allowed, so its 409 is a hold. */
+  async #settle<T>(rel: string, call: () => Promise<T>, put = false): Promise<T> {
     const deadline = Date.now() + this.#queueMs;
     for (let first = true; ; first = false) {
       try {
         return await call();
       } catch (error) {
         if (statusOf(error) !== 409) throw error;
-        if (first && ((await this.#fileOnTheWay(rel).catch(() => undefined)) !== undefined || (await this.#isLink(rel)))) throw error;
+        if (first && ((await this.#fileOnTheWay(rel).catch(() => undefined)) !== undefined || (put && (await this.#isLink(rel))))) throw error;
         if (Date.now() >= deadline) throw new FolderHeld(this.#queueMs, error);
         await pause(200);
       }
@@ -222,9 +222,9 @@ class ArchilWorkspace implements Workspace {
   }
 
   /** A mutating call made after this workspace's execs are done. */
-  async #write<T>(rel: string, call: () => Promise<T>): Promise<T> {
+  async #write<T>(rel: string, call: () => Promise<T>, put = false): Promise<T> {
     await this.#execs;
-    return this.#settle(rel, call);
+    return this.#settle(rel, call, put);
   }
 
   /** Relative path of disk key `key` under the root ("" for the root, or for a folder above or beside it). */
@@ -245,7 +245,7 @@ class ArchilWorkspace implements Workspace {
    *  expert run's `.agents/skills/` on a fresh run folder), so on a 404 each folder above `key` that is not there is
    *  made, from the highest down, and `put` is made once more. A folder already there is left as it is. */
   async #put<T>(key: string, put: () => Promise<T>, inExec = false): Promise<T> {
-    const call = <U>(rel: string, fn: () => Promise<U>): Promise<U> => (inExec ? this.#settle(rel, fn) : this.#write(rel, fn));
+    const call = <U>(rel: string, fn: () => Promise<U>): Promise<U> => (inExec ? this.#settle(rel, fn, true) : this.#write(rel, fn, true));
     try {
       return await call(this.#relOf(key), put);
     } catch (error) {
