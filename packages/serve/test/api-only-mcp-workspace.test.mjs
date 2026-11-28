@@ -159,6 +159,34 @@ test("a scoped preview reaches the operator's MCP origins alone: an address ther
   assert.deepEqual(JSON.stringify(bare(theirs)), JSON.stringify(bare(unknown)).replaceAll("never-saved", "contextforge"), "W1's server by name reads as one never saved");
 });
 
+test("a workspace's own server at an origin taken off the operator's MCP origins is previewed and refreshed by name as a new save there is refused: the refused route's 404, its saved credential never opened and nothing sent; listed again, both reach it", async (t) => {
+  const s = await setup(t);
+  for (const [name, auth] of [["contextforge", { type: "headers", headers: { authorization: `Bearer ${RUN}` } }], ["bare", { type: "bearer", token: RUN }], ["each-run", perRun(s.one.fake.url).auth]]) {
+    assert.equal((await s.w1("PUT", `/settings/mcp-servers/${name}`, { url: s.one.fake.url, auth })).status, 200, name);
+  }
+  // The server restarted with the first gateway's origin dropped.
+  await s.server.stop();
+  const dropped = await setup(t, { data: s.server.data, apiOnlyMcpOrigins: [s.two.origin] });
+  const w1 = (method, path, body) => dropped.server.api(method, path, body, { authorization: `Bearer ${SCOPED}`, "agentrun-workspace": W1 });
+  const sent = s.one.sent.length;
+  const reached = s.one.fake.log.length;
+  for (const name of ["contextforge", "bare", "each-run"]) {
+    for (const [what, answer] of [["preview", await w1("POST", "/settings/mcp-servers/preview", { name })], ["preview at its address", await w1("POST", "/settings/mcp-servers/preview", { name, url: s.one.fake.url })], ["refresh", await w1("POST", `/settings/mcp-servers/${name}/refresh`)]]) {
+      assert.equal(answer.status, 404, `${name} ${what}: ${JSON.stringify(answer.body)}`);
+      assert.match(answer.body.error.message, /is not served here/, `${name} ${what}`);
+    }
+  }
+  assert.equal(s.one.sent.length, sent, "no credential reached the dropped origin");
+  assert.equal(s.one.fake.log.length, reached, "nothing reached it");
+
+  await dropped.server.stop();
+  const listed = await setup(t, { data: s.server.data, apiOnlyMcpOrigins: [s.one.origin, s.two.origin] });
+  const again = (method, path, body) => listed.server.api(method, path, body, { authorization: `Bearer ${SCOPED}`, "agentrun-workspace": W1 });
+  const refreshed = await again("POST", "/settings/mcp-servers/contextforge/refresh");
+  assert.equal(refreshed.status, 200, JSON.stringify(refreshed.body));
+  assert.ok(s.one.sent.slice(sent).includes(`Bearer ${RUN}`), "listed again: its refresh sends its own credential");
+});
+
 test("a workspace saves its own server's credential (headers or a bearer token) at the operator's MCP origins: sealed at its row key, never shown; another workspace reads it as never saved; the unscoped token's credential save is still the secret-write refusal (403); an address off the origins is the refused route's 404, nothing sent", async (t) => {
   const s = await setup(t);
   for (const auth of [{ type: "headers", headers: { authorization: `Bearer ${RUN}` } }, { type: "bearer", token: RUN }]) {
@@ -305,6 +333,21 @@ test("a workspace's agent calls its own server of the name, another workspace's 
   assert.equal(calls(s.two), 1, "the shared server got W2's call alone");
 });
 
+for (const shared of [false, true]) {
+  test(`a run the unscoped token starts on a workspace's agent is handed mcp_auth for the server that agent calls, the workspace's own (${shared ? "beside a shared one of the name at another origin" : "saved there alone"}), sealed for its origin`, async (t) => {
+    const s = await setup(t);
+    const calls = (gw) => gw.fake.log.filter((entry) => entry.method === "tools/call" && entry.tool === "add").length;
+    assert.equal((await s.w1("PUT", PATH, perRun(s.one.fake.url))).status, 200);
+    if (shared) assert.equal((await s.ops("PUT", PATH, perRun(s.two.fake.url))).status, 200);
+    const agent = await agentAdd(s.w1, `ws-ops-${shared}`);
+    assert.equal(agent.status, 201, JSON.stringify(agent.body));
+    await runAdd(s.ops, agent.body.agent_id);
+    assert.equal(calls(s.one), 1, "the run called W1's own server");
+    assert.ok(s.one.sent.includes(`Bearer ${RUN}`), "with the token the run was handed");
+    assert.equal(calls(s.two), 0, "never the shared one");
+  });
+}
+
 test("the row key binds the credential: a workspace's server is sealed at <workspace>/<name>, so its sealed value copied to another workspace's row, or to the shared row of the name, does not open", async (t) => {
   const { store } = await storeOn(t);
   const view = mcpView(store, requestNames);
@@ -353,13 +396,14 @@ const ADD_TOOL = { name: "add", title: "Add", description: "Add two numbers.", i
 const PER_RUN = { api_key_env: KEY_ENV, toolkit: "gmail", tools: ["add"], user_id: "per_run" };
 
 /** An API-only server beside a fake Composio whose key is the install's (COMPOSIO_API_KEY), the scoped token's
- *  `w1`/`w2` senders, and a Composio user of each with an account (u_1, u_2) and the owner's (OWNER). */
-async function composioSetup(t) {
+ *  `w1`/`w2` senders, and a Composio user of each with an account (u_1, u_2) and the owner's (OWNER). `configs`: the
+ *  toolkit's auth configs Composio has before any save (none: the first save makes the managed one). */
+async function composioSetup(t, { configs = [{ id: MANAGED, is_composio_managed: true, status: "ENABLED" }] } = {}) {
   withEnv(t, { [KEY_ENV]: COMPOSIO_KEY });
   const composio = await startFakeComposio({
     apiKey: COMPOSIO_KEY,
     toolkits: { gmail: { no_auth: false, tools: [{ slug: "add", name: "Add", description: "Add two numbers." }] } },
-    authConfigs: { gmail: [{ id: MANAGED, is_composio_managed: true, status: "ENABLED" }] },
+    authConfigs: { gmail: configs },
     accounts: { gmail: [{ status: "ACTIVE", auth_config: MANAGED, id: "ca_u1_gmail", user: "u_1" }, { status: "ACTIVE", auth_config: MANAGED, id: "ca_u2_gmail", user: "u_2" }, { status: "ACTIVE", auth_config: MANAGED, id: "ca_owner_gmail", user: OWNER }] },
     mcpAccounts: { u_1: ["ca_u1_gmail"], u_2: ["ca_u2_gmail"], [OWNER]: ["ca_owner_gmail"] },
   });
@@ -416,6 +460,27 @@ test("a workspace's Composio save is its own server, its key the install's (api_
   assert.ok([200, 204].includes(deleted.status), JSON.stringify(deleted.body));
   assert.equal(await server.store.mcp.server(mcpRowKey("mail", W2)), undefined);
   assert.ok(await server.store.mcp.server(mcpRowKey("mail", W1)), "W2's delete of its own left W1's");
+});
+
+test("a workspace's delete removes at Composio only what no workspace's server stands on: W1's save makes the toolkit's managed auth config, W2's save stands on it, W1's delete leaves it for W2 and never names W2's server; W2's delete, the last, removes it", async (t) => {
+  const s = await composioSetup(t, { configs: [] });
+  const { composio, server, w1, w2 } = s;
+  assert.equal((await w1("PUT", "/settings/mcp-servers/mail/composio", PER_RUN)).status, 200);
+  const made = (await server.store.settings.get(composioMadeKey(mcpRowKey("mail", W1)))).auth_config;
+  assert.equal(made.made, true, "W1's save made the managed auth config");
+  assert.equal((await w2("PUT", "/settings/mcp-servers/mail/composio", PER_RUN)).status, 200);
+  assert.equal((await server.store.settings.get(composioMadeKey(mcpRowKey("mail", W2)))).auth_config.id, made.id, "W2's stands on it");
+
+  const configDeletes = () => composio.calls.filter((call) => call.method === "DELETE" && call.path.endsWith(`/auth_configs/${made.id}`)).length;
+  const gone = await w1("DELETE", "/settings/mcp-servers/mail");
+  assert.ok([200, 204].includes(gone.status), JSON.stringify(gone.body));
+  assert.equal(configDeletes(), 0, "W1's delete sent no delete of the config W2 stands on");
+  assert.ok(!JSON.stringify(gone.body ?? null).includes(W2), "W1's answer names nothing of W2's");
+  assert.equal((await server.store.settings.get(composioMadeKey(mcpRowKey("mail", W2)))).auth_config.made, true, "W2's record owns it now");
+
+  const last = await w2("DELETE", "/settings/mcp-servers/mail");
+  assert.ok([200, 204].includes(last.status), JSON.stringify(last.body));
+  assert.equal(configDeletes(), 1, "the last server's delete removes it");
 });
 
 test("a workspace's Composio save is per_run on the toolkit's own auth config: a user_id of its own or an auth_config_id is 422 not_allowed, nothing sent to Composio", async (t) => {

@@ -40,7 +40,7 @@ import { inWorkspace, outOfScope, outsideWorkspace, scopedSlot, slotPath, WORKSP
 import { mcpRowKey, mcpRowWorkspace, mcpView, requestNames } from "./mcp-workspace.js";
 import { API_ONLY_ENV, API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV } from "./env-switch.js";
 import { pricesInForce } from "./prices.js";
-import { composioOutsideNamespaceServers, holdApiOnlyMcpOrigins, offApiOnlyMcpServers } from "./mcp-api-only-origins.js";
+import { composioOutsideNamespaceServers, holdApiOnlyMcpOrigins, offApiOnlyMcpOrigins, offApiOnlyMcpServers } from "./mcp-api-only-origins.js";
 import { declaredKeys, keysOwed, keysOwedRefusal, type RunKeys, runKeysOf, runKeysTriggerSkipped, undeclaredKeys, withCarried } from "./run-keys.js";
 import { capacityOverStore, capacityWindowOf } from "./capacity.js";
 import { carriedFields } from "./answer-json.js";
@@ -1651,7 +1651,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // The registry as the request being served reaches it (mcp-workspace.ts): a scoped request's workspace servers alone, by
   // their names; an unscoped one's (and this server's own work's) the shared servers alone.
   const mcpStore = mcpView(store, requestNames);
+  /** Whether `name` is, to a request in a workspace on an API-only server, its own saved server at an origin since taken off
+   *  the operator's MCP origins (offApiOnlyMcpOrigins: per_run, or a credential the token sealed): its preview or refresh
+   *  is the refused route's 404, as a new save there is, before its credential is opened or anything reaches the address. */
+  const scopedOffApiOnlyOrigins = async (name: unknown): Promise<boolean> => {
+    if (!options.apiOnly || workspaceNow() === undefined || typeof name !== "string") return false;
+    const row = await getMcpServer(mcpStore, name);
+    return row !== undefined && (await offApiOnlyMcpOrigins(mcpStore, name, row)) !== undefined;
+  };
   const mcpServers = mcpServersOverStore(mcpStore, own(withSecrets(base, "own")), VERSION);
+  // A Composio cleanup reads every workspace's records before it removes a thing there (McpServersOverStore.registry).
+  mcpServers.registry = store;
   if (options.githubMcpOrigin) mcpServers.appOrigin = options.githubMcpOrigin;
   if (options.composioMcpOrigin) mcpServers.composioOrigin = options.composioMcpOrigin;
   if (options.composioControl) mcpServers.composioControl = options.composioControl;
@@ -4525,18 +4535,22 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  go the same way: each a tool key name to its value as text, else 422 by name, never with the value; whether the
    *  run's revision reads each is its start's check (prepareLaunch), by name alone. `by`: who hands them (handedBy). A
    *  per-run Composio binding is sealed with it, and the token's binding of a Composio user the owner connects here
-   *  (composio-owners.ts, read at this check) is 422 at its composio_user_id, nothing written. */
-  function handedLaunchSecrets(body: Json, by: "token" | "owner"): { body: Json; handed: () => Promise<Handed> } {
+   *  (composio-owners.ts, read at this check) is 422 at its composio_user_id, nothing written. `handed(workspace)`: the
+   *  run's workspace (its agent's: null for none), whose servers its claim reads (mcp-workspace.ts runMcp), so each entry
+   *  is checked against the server the run calls by that name, whoever starts it; omitted, the request's. */
+  function handedLaunchSecrets(body: Json, by: "token" | "owner"): { body: Json; handed: (workspace?: string | null) => Promise<Handed> } {
     if (body.mcp_auth === undefined && body.model_key === undefined && body.keys === undefined) return { body, handed: async () => ({}) };
     const { mcp_auth, model_key, keys: given, ...rest } = body;
-    const handed = async (): Promise<Handed> => {
+    const handed = async (workspace?: string | null): Promise<Handed> => {
+      const target = workspace === undefined ? workspaceNow() : (workspace ?? undefined);
+      if (target !== workspaceNow()) return target === undefined ? outsideWorkspace(() => handed()) : inWorkspace(target, () => handed());
       const issues: InputIssue[] = [];
       const mcp = mcp_auth === undefined ? undefined : mcpAuthOf(mcp_auth, issues);
       const auth: Record<string, RunMcpAuth[string]> = {};
       let owners: Set<string> | undefined;
       for (const [server, entry] of Object.entries(mcp ?? {})) {
-        // The server a run in the request's workspace calls by this name, as its claim reads it (mcp-workspace.ts): the
-        // workspace's own, else the shared one, each read and checked in its own reach.
+        // The server a run in the workspace calls by this name, as its claim reads it (mcp-workspace.ts): the workspace's
+        // own, else the shared one, each read and checked in its own reach.
         const own = workspaceNow() !== undefined && (await getMcpServer(mcpStore, server)) !== undefined;
         const reading = <T,>(work: () => Promise<T>): Promise<T> => (own ? work() : outsideWorkspace(work));
         const row = await reading(() => getMcpServer(mcpStore, server));
@@ -4640,6 +4654,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   async function createRun(req: IncomingMessage, agentId: string) {
     const entry = await needRunnableAgent(agentId);
     const { body, handed } = handedLaunchSecrets(await bodyOf(req), handedBy(req));
+    // Its mcp_auth checked against the servers its agent's runs call: the agent's workspace's, whoever starts it.
+    const runIn = (await store.agents.workspace(agentId)) ?? null;
     // The host's run for a firing the launch hook handed it: the firing's own run, under the firing's key (a second start
     // answers that run), started by the trigger's target policy as a firing here starts one (its cap, which the host's may
     // lower, its effort when it sets one, its previous result, its trigger, origin and title), with the host's body and
@@ -4652,7 +4668,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const { trigger_firing: given, ...rest } = body;
       // The firing's room is checked and held as drive's is while its run is written; the firing is started with the run.
       const run = await triggers.handedStart(given, agentId, async (firing) => {
-        const secrets = await handed();
+        const secrets = await handed(runIn);
         const seal = startSeal(secrets);
         // What the server writes of the start (its input, which the run's title is read from) is cut of what it hands.
         const cut = cutHanded(rest, handedSecretValues(secrets));
@@ -4668,7 +4684,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const headers: Record<string, string> = { location: `/v2/runs/${first.runId}`, "idempotent-replayed": "true" };
         return { status: 202, body: await viewOverStore(store, first.runId, viewDepsFor(linkOrigin(req))), headers };
       }
-      const secrets = await handed();
+      const secrets = await handed(runIn);
       const seal = startSeal(secrets);
       // What the server writes of the start (its input, which the run's title is read from) is cut of what it hands; the
       // idempotency fingerprint stays the body's as sent.
@@ -4725,7 +4741,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const headers: Record<string, string> = { location: `/v2/runs/${first.runId}`, "idempotent-replayed": "true" };
         return { status: 202, body: await viewOverStore(store, first.runId, viewDepsFor(linkOrigin(req))), headers };
       }
-      const secrets = await handed();
+      // An inline agent already stored is in its own workspace: its runs call that workspace's servers.
+      const secrets = await handed(mapped ? ((await store.agents.workspace(mapped.id)) ?? null) : undefined);
       const seal = startSeal(secrets);
       // What the server writes of the start (its input, which the run's title is read from) is cut of what it hands.
       const started = await startInline(store, startDeps, inline, cutHanded(run, handedSecretValues(secrets)), { ...(origin ? { origin } : {}), ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets) });
@@ -5986,7 +6003,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (run.kind === "workflow") throw unsupported("messages.steer_workflow_runs", "A workflow run takes no messages here: its workflow runs to its end, or a cancel ends it.");
         const { body, handed } = handedLaunchSecrets(await bodyOf(req), handedBy(req));
         const answer = await idempotent(req, `/runs/${id}/messages`, body, async () => {
-          const secrets = await handed();
+          // Checked against the servers the run calls: its workspace's (its own, else its agent's), whoever sends it.
+          const secrets = await handed((await store.runs.workspace(run.id)) ?? null);
           const seal = await messageSeal(run, secrets);
           const extra = unknownFields(body, ["content", "said"]);
           if (extra.length) throw invalid(extra);
@@ -6611,7 +6629,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // In a workspace on an API-only server: its own server by name, or an address at the operator's MCP origins alone
         // (api-only.ts apiOnlyMcpPreview); anything else is the refused route's 404, before anything reaches it.
         const body = await bodyOf(req);
-        if (options.apiOnly && workspaceNow() !== undefined && !apiOnlyMcpPreview(body, apiOnlyMcpOrigins)) throw new ApiError("not_found", apiOnlyRefusal(`/v2${path}`));
+        // Its own server by name, at an origin taken off the list since its save: refused as a new save there is.
+        if (options.apiOnly && workspaceNow() !== undefined && (!apiOnlyMcpPreview(body, apiOnlyMcpOrigins) || (isObject(body) && (await scopedOffApiOnlyOrigins(body.name))))) throw new ApiError("not_found", apiOnlyRefusal(`/v2${path}`));
         return send(res, 200, await mcpServers.preview(body, stopping.signal, req.headers.authorization !== undefined && !mayHoldSecrets(req)));
       }
       case "saveMcpServer": {
@@ -6700,6 +6719,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "deleteComposioSubscription":
         return send(res, 200, await composioTriggers.forget(id), { "cache-control": "no-store" });
       case "refreshMcpServer": {
+        // A workspace's own server at an origin taken off the operator's MCP origins: refused before it is listed again.
+        if (await scopedOffApiOnlyOrigins(id)) throw new ApiError("not_found", apiOnlyRefusal(`/v2${path}`));
         const refreshed = await mcpServers.refresh(id, stopping.signal);
         await refreshMcpMeta();
         return send(res, 200, refreshed);

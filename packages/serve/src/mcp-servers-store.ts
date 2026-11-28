@@ -141,6 +141,10 @@ export class McpServersOverStore {
   /** Where Composio is for a refresh's account check (checkAccount): the real one, or a test's fake through the server's
    *  seam. */
   composioControl: ComposioControl = {};
+  /** The whole registry, every workspace's rows and their records by row key (the server's own store, set by the server
+   *  beside the request's view it serves from): what a Composio cleanup reads before it removes a thing at Composio, so a
+   *  server another workspace saved keeps what it stands on. Unset, the registry this one is made over. */
+  registry?: Pick<McpServersStore, "mcp" | "settings">;
   private readonly sealKey: Buffer;
   private readonly signIns: McpSignIns;
   /** The callbacks under way, which close() waits out before the server lets its data go. */
@@ -449,7 +453,7 @@ export class McpServersOverStore {
         // have made it is let go first, so neither this record nor theirs, nor what they hand on, ever removes it. One the
         // token names it only uses: its naming lets go no other server's claim (an owner's server that made it still
         // removes it at its delete, or hands it on as any shared one), and its own record says it made none.
-        const listed = (await this.composioRecords()).filter(([other]) => other !== name);
+        const listed = (await this.composioRecords()).filter(([other]) => other !== this.rowKeyOf(name));
         const released = stands.auth_config?.named && !byToken ? releasedOf(stands.auth_config.id, listed) : [];
         await this.handOver(listed, released);
         const others = listed.map(([other, record, at]): [string, ComposioMade, number] => [other, released.find(([one]) => one === other)?.[1] ?? record, at]);
@@ -461,7 +465,7 @@ export class McpServersOverStore {
         if (was && before) {
           const done = droppedOf(before, record, others.map(([other, mine]): [string, ComposioMade] => [other, mine]));
           await this.handOver(others, done.handover);
-          left = done.cleanup;
+          left = await this.shownCleanup(done.cleanup);
         }
       } else if (moved) {
         // Moved off Composio: what its save made there goes as a delete's does (cleanupOf), the MCP server first, unless the
@@ -470,10 +474,10 @@ export class McpServersOverStore {
         await this.store.settings.remove(composioMadeKey(name));
         // Only for a caller in the Composio turn (`dropped`, with its `guard`), so no preset save still at Composio is counted out.
         if (before && leftMcp && dropped) {
-          const others = (await this.composioRecords()).filter(([other]) => other !== name);
+          const others = (await this.composioRecords()).filter(([other]) => other !== this.rowKeyOf(name));
           const done = cleanupOf(before, others.map(([other, record]): [string, ComposioMade] => [other, record]));
           await this.handOver(others, done.handover);
-          left = done.cleanup;
+          left = await this.shownCleanup(done.cleanup);
         }
       }
       if (was && (leftMcp || left?.remove.length || left?.kept.length)) {
@@ -629,10 +633,10 @@ export class McpServersOverStore {
     let cleanup: Cleanup | undefined;
     if (stands) {
       await drop(composioMadeKey(name));
-      const others = (await this.composioRecords()).filter(([other]) => other !== name);
+      const others = (await this.composioRecords()).filter(([other]) => other !== this.rowKeyOf(name));
       const done = cleanupOf(stands, others.map(([other, record]): [string, ComposioMade] => [other, record]));
       await this.handOver(others, done.handover);
-      cleanup = done.cleanup;
+      cleanup = await this.shownCleanup(done.cleanup);
     }
     await this.store.flush();
     const open = removed?.opened;
@@ -648,19 +652,36 @@ export class McpServersOverStore {
     return row !== undefined && row.auth === "headers" && (await this.sourceOf(row)).source === "composio";
   }
 
-  /** Writes each record a cleanup passes a thing to (composio-made.ts `handover`), for its own row of `others`. */
+  /** Writes each record a cleanup passes a thing to (composio-made.ts `handover`), for its own row of `others`, by row key:
+   *  another workspace's server's too. */
   private async handOver(others: readonly [string, ComposioMade, number][], handover: readonly [string, ComposioMade][]): Promise<void> {
+    const registry = this.registry ?? this.store;
     for (const [other, record] of handover) {
       const of = others.find(([n]) => n === other)?.[2];
-      if (of !== undefined) await this.store.settings.put(composioMadeKey(other), storedMade(record, { createdAt: of }));
+      if (of !== undefined) await registry.settings.put(composioMadeKey(other), storedMade(record, { createdAt: of }));
     }
   }
 
-  /** The saved servers' records of what they stand on at Composio (composio-made.ts), each read for its own row: name,
-   *  record and the row's created_at. */
+  /** The row key the request's `name` is kept under (mcp-workspace.ts McpView.rowKey): the name itself outside a view. */
+  private rowKeyOf(name: string): string {
+    return (this.store.mcp as { rowKey?(name: string): string }).rowKey?.(name) ?? name;
+  }
+
+  /** A cleanup as the request is told it: a thing another server keeps is named by that server's name when the request
+   *  reaches the server, else as another saved server's, never by another workspace's row. */
+  private async shownCleanup(cleanup: Cleanup): Promise<Cleanup> {
+    if (!cleanup.kept.some((thing) => thing.by !== undefined)) return cleanup;
+    const reached = new Map((await listMcpServers(this.store)).map((row) => [row.sealedAs ?? row.name, row.name]));
+    return { ...cleanup, kept: cleanup.kept.map((thing) => (thing.by === undefined ? thing : { ...thing, by: reached.get(thing.by) ?? "another saved server" })) };
+  }
+
+  /** Every saved server's record of what it stands on at Composio (composio-made.ts), each read for its own row, across
+   *  every workspace (`registry`): row key, record and the row's created_at. A request's view alone would let one
+   *  workspace's delete remove what another's server stands on. */
   private async composioRecords(): Promise<[string, ComposioMade, number][]> {
-    const rows = await listMcpServers(this.store);
-    const read = await Promise.all(rows.map(async (row) => [row.name, recordedMade(await this.store.settings.get(composioMadeKey(row.name)), row.createdAt), row.createdAt] as const));
+    const registry = this.registry ?? this.store;
+    const rows = await listMcpServers(registry);
+    const read = await Promise.all(rows.map(async (row) => [row.name, recordedMade(await registry.settings.get(composioMadeKey(row.name)), row.createdAt), row.createdAt] as const));
     return read.filter((entry): entry is readonly [string, ComposioMade, number] => entry[1] !== undefined).map(([name, record, at]) => [name, record, at]);
   }
 
