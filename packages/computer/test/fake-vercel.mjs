@@ -19,14 +19,17 @@ const refuse = (status, code, message) => json(status, { error: { code, message 
 
 /**
  * The fake. split(bytes) cuts each log line's bytes into the body's chunks (default: one chunk a line); dropAfter ends
- * the first log stream with an error after that many lines, as a dropped connection does; pageSize is the listing's.
+ * the first log stream with an error after that many lines, as a dropped connection does; cutAfter ends it cleanly
+ * after that many lines while the command runs on, as a proxy that closes early does; onStatus(record) runs before
+ * each command read answers; statusFails makes every command read answer 503; pageSize is the listing's.
  */
-export function fakeVercel({ backend, split = (bytes) => [bytes], dropAfter, pageSize = 2 } = {}) {
+export function fakeVercel({ backend, split = (bytes) => [bytes], dropAfter, cutAfter, onStatus, statusFails = false, pageSize = 2 } = {}) {
 	const sandboxes = new Map();
 	const commands = new Map();
 	const calls = [];
 	let next = 0;
 	let drops = dropAfter === undefined ? 0 : 1;
+	let cuts = cutAfter === undefined ? 0 : 1;
 
 	/** A command's record: its lines from the start, and whoever waits for the next one. */
 	const recordOf = () => {
@@ -62,12 +65,14 @@ export function fakeVercel({ backend, split = (bytes) => [bytes], dropAfter, pag
 	/** The log stream from the start, until the command ends; a signal that aborts errors it, as a dropped fetch does. */
 	const logs = (record, signal) => {
 		const drop = drops-- > 0 ? dropAfter : Number.POSITIVE_INFINITY;
+		const cut = cuts-- > 0 ? cutAfter : Number.POSITIVE_INFINITY;
 		const encoder = new TextEncoder();
 		return ReadableStream.from(
 			(async function* () {
 				for (let at = 0; ; ) {
 					while (at < record.lines.length) {
 						if (at === drop) throw new Error("the connection dropped");
+						if (at === cut) return;
 						yield* split(encoder.encode(`${JSON.stringify(record.lines[at++])}\n`));
 					}
 					if (record.exitCode !== null) return;
@@ -137,6 +142,10 @@ export function fakeVercel({ backend, split = (bytes) => [bytes], dropAfter, pag
 			}
 			const record = commands.get(cmd[2]);
 			if (record === undefined) return refuse(404, "not_found", "Command not found");
+			if (method === "GET" && cmd[3] === undefined) {
+				if (statusFails) return refuse(503, "internal_server_error", "Service unavailable");
+				onStatus?.(record);
+			}
 			const command = { id: cmd[2], name: record.argv[0], args: record.argv.slice(1), cwd: "/", sessionId: cmd[1], exitCode: record.exitCode, startedAt: 0 };
 			if (method === "GET" && cmd[3] === undefined) return json(200, { command });
 			if (method === "GET" && cmd[3] === "/logs") return new Response(logs(record, init.signal), { status: 200, headers: { "content-type": "application/x-ndjson" } });

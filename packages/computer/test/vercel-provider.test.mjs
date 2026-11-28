@@ -197,6 +197,48 @@ test("a log stream that drops is read again from the start, the text already giv
 	assert.equal(vendor.calls.filter((call) => call.path.endsWith("/logs")).length, 2);
 });
 
+test("a log stream that ends before the command's last write, which the command read then finds exited, still gives that write: byte-exact, in order, once", async () => {
+	let wrote = false;
+	// The first stream closes cleanly after one line; the command writes its last output and exits before its read answers.
+	const onStatus = (record) => {
+		if (wrote) return;
+		wrote = true;
+		record.out("stdout", "last é😀\n");
+		record.out("stderr", "bye");
+		record.exit(0);
+	};
+	const { vendor, host } = vercelOf({ cutAfter: 1, onStatus });
+	await host.create(request(), CTX);
+	const proc = await host.exec(NAME, ["sh", "-c", "work"], CTX);
+	const record = vendor.command([...vendor.commands.keys()][0]);
+	record.out("stdout", "first ");
+	record.out("stdout", "second ");
+	assert.deepEqual([await textOf(proc.stdout), await textOf(proc.stderr), await proc.wait()], ["first second last é😀\n", "bye", 0]);
+	assert.equal(wrote, true);
+});
+
+test("a command read that keeps failing while the log stream stays readable ends the exec with the read's failure after READ_TRIES, in bounded time", async (t) => {
+	const { vendor, host } = vercelOf({ statusFails: true });
+	await host.create(request(), CTX);
+	t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+	const proc = await host.exec(NAME, ["true"], CTX);
+	const record = vendor.command([...vendor.commands.keys()][0]);
+	record.out("stdout", "done\n");
+	record.exit(0);
+	let settled;
+	proc.wait().then((code) => (settled = code), (error) => (settled = error));
+	const out = textOf(proc.stdout).catch((error) => error);
+	for (let at = 0; at < 300 && settled === undefined; at++) {
+		for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setImmediate(resolve));
+		t.mock.timers.tick(1_000);
+	}
+	assert.ok(settled instanceof Error, `the exec ends within 300 s of failed reads, not ${String(settled)}`);
+	assert.match(settled.message, /503/);
+	const reads = vendor.calls.filter((call) => call.method === "GET" && /\/cmd\/[^/]+$/.test(call.path));
+	assert.equal(reads.length, 3 * 10, "READ_TRIES reads, each sent 3 times");
+	await out;
+});
+
 test("an error line on the log stream ends the command in Vercel's words", async () => {
 	const { vendor, host } = vercelOf();
 	await host.create(request(), CTX);
