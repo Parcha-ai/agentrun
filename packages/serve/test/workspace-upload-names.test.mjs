@@ -13,7 +13,8 @@ import { storeOn } from "./store-helpers.mjs";
 import { scratch, serve, withEnv } from "./support.mjs";
 import { fakeClock, hookServer, until } from "./trigger-support.mjs";
 
-const { migrate, migrationsIn, openPostgresStore, openSqliteStore } = await import("../dist/store/index.js");
+const { migrate, migrationsIn, openPostgresStore, openSqliteStore, runnerFloorOf, runnerOn } = await import("../dist/store/index.js");
+const { refuseBelowFloor } = await import("../dist/store/postgres/migrate.js");
 const { SCHEMA_VERSION } = await import("../dist/store/schema.js");
 const { mintSecret } = await import("../dist/standard-webhooks.js");
 const { deleteTemplate, dropRemovedUploads, importTemplate, loadImported, templateNames } = await import("../dist/template-import.js");
@@ -255,8 +256,13 @@ test("Postgres migration 0035 keys each imported package in the workspace it had
   await put("upload:plans", "b", null);
   await put("github:acme/notes", "c", B);
   const step = migrationsIn().find((m) => m.version === 35);
-  assert.equal(step.breaking, true, "it drops the key on the id alone, which a server of the build before names in its writes");
+  assert.equal(step.breaking, false, "no runner reads or writes imported_templates, so it leaves the runner floor");
   await migrate(sql, schema, Date.now());
+  // A runner of the build before (it knows 34) opens the migrated schema, as its open reads it: ahead of it, under its floor.
+  const state = await runnerFloorOf(sql, schema);
+  assert.deepEqual(state, { version: 35, runnerFloor: 34 });
+  assert.equal(runnerOn(state, 34), "opens", "a runner that knows 34");
+  assert.doesNotThrow(() => refuseBelowFloor(schema, state, 34));
   const store = await openPostgresStore({ url: PG_URL, schema });
   t.after(() => store.close());
   assert.equal((await store.schemaState()).version, 35);
@@ -275,23 +281,28 @@ test("Postgres migration 0035 keys each imported package in the workspace it had
   await assert.rejects(sql.query("INSERT INTO imported_templates (id, source, sha, publisher, files, imported_at, workspace) VALUES ($1, $1, $2, '', '{}', 2, $3)", [ID, "h".repeat(64), A]), /duplicate key/);
 });
 
-test("SQLite version 19 keys each imported package in the workspace it had: a server's open brings a store of 18 up, its rows each in their workspace", sqliteOnly("the SQLite store's upgrade"), async (t) => {
+test("SQLite keeps version 18: a server's open keys each imported package in the workspace it had, in place, and a runner of the build before opens the store before and after", sqliteOnly("the SQLite store's upgrade"), async (t) => {
   const file = join(await scratch(t), "store.sqlite");
   await (await openSqliteStore({ file })).close();
-  // A store of version 18: imported_templates keyed by its id alone, three rows in it.
+  // A store an earlier build of version 18 made: imported_templates keyed by its id alone, two rows in it.
   const raw = new DatabaseSync(file);
   raw.exec(`DROP TABLE imported_templates;
-    CREATE TABLE imported_templates (id TEXT PRIMARY KEY, source TEXT NOT NULL, sha TEXT NOT NULL, publisher TEXT NOT NULL, files TEXT NOT NULL CHECK (json_valid(files)), imported_at INTEGER NOT NULL, workspace TEXT) STRICT;
-    UPDATE store_meta SET schema_version = 18 WHERE singleton = 1;`);
+    CREATE TABLE imported_templates (id TEXT PRIMARY KEY, source TEXT NOT NULL, sha TEXT NOT NULL, publisher TEXT NOT NULL, files TEXT NOT NULL CHECK (json_valid(files)), imported_at INTEGER NOT NULL, workspace TEXT) STRICT;`);
   const put = raw.prepare("INSERT INTO imported_templates (id, source, sha, publisher, files, imported_at, workspace) VALUES (?, ?, ?, '', '{}', 1, ?)");
   put.run(ID, ID, "a".repeat(64), A);
   put.run("upload:plans", "upload:plans", "b".repeat(64), null);
   raw.close();
-  await assert.rejects(openSqliteStore({ file, role: "runner" }), (error) => error.name === "StoreAwaitsServer", "a runner waits for the server's upgrade");
+  // A runner opens only its own version, and needs nothing of imported_templates (SQLITE_RUNNER_NEEDS): one of this build
+  // opens the store as the earlier build left it, and one of the build before (version 18) the store as this server leaves it.
+  assert.equal(SCHEMA_VERSION, 18, "the version a runner of the build before knows");
+  await (await openSqliteStore({ file, role: "runner" })).close();
   const store = await openSqliteStore({ file });
   t.after(() => store.close());
-  assert.equal((await store.schemaState()).version, SCHEMA_VERSION);
-  assert.equal(SCHEMA_VERSION, 19);
+  const read = new DatabaseSync(file, { readOnly: true });
+  t.after(() => read.close());
+  assert.equal(read.prepare("SELECT schema_version AS v FROM store_meta").get().v, 18, "the version stays");
+  assert.equal(read.prepare("SELECT pk FROM pragma_table_info('imported_templates') WHERE name = 'id'").get().pk, 0, "no key on the id alone");
+  await (await openSqliteStore({ file, role: "runner" })).close();
   assert.deepEqual((await store.importedTemplates.list()).map((row) => [row.workspace, row.id, row.sha[0]]), [[A, ID, "a"], [null, "upload:plans", "b"]]);
   await store.importedTemplates.put({ id: ID, source: ID, sha: "c".repeat(64), publisher: "", files: {} }, B);
   await store.importedTemplates.put({ id: ID, source: ID, sha: "d".repeat(64), publisher: "", files: {} });

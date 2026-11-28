@@ -308,20 +308,21 @@ test("the learning rows' migration (0032) is breaking for runners: a schema migr
   assert.equal(runnerOn(state, ROWS), "opens", "this build's runner opens it");
 });
 
-// The ledger's re-record mark (0034) and the imported packages' workspace keys (0035) are breaking for runners, the
-// workspace columns (0033) additive: the floor this build's Postgres store holds is 0035, and a runner that knows only
-// 0034 is refused.
-test("the reopened-run ledger mark (0034) and the upload keys (0035) are breaking, the workspace columns (0033) additive: this build's floor is 35", () => {
+// The ledger's re-record mark (0034) is breaking for runners, the workspace columns (0033) before it and the imported
+// packages' workspace keys (0035, which no runner reads or writes) after it additive: the floor this build's Postgres
+// store holds is 0034, so a runner that knows only 0033 is refused and one that knows 0034 opens a schema at 35.
+test("the reopened-run ledger mark (0034) is breaking, the workspace columns (0033) and the upload keys (0035) additive: this build's floor is 34", () => {
   const all = migrationsIn();
   const byName = (name) => all.find((m) => m.name === name);
   assert.deepEqual([byName("workspace")?.version, byName("workspace")?.breaking], [33, false], "0033_workspace.sql, additive");
   assert.deepEqual([byName("learning_ledger_rerecorded")?.version, byName("learning_ledger_rerecorded")?.breaking], [34, true], "0034_learning_ledger_rerecorded.sql, -- runners: breaking");
-  assert.deepEqual([byName("imported_templates_by_workspace")?.version, byName("imported_templates_by_workspace")?.breaking], [35, true], "0035_imported_templates_by_workspace.sql, -- runners: breaking");
+  assert.deepEqual([byName("imported_templates_by_workspace")?.version, byName("imported_templates_by_workspace")?.breaking], [35, false], "0035_imported_templates_by_workspace.sql, additive");
   const latest = Math.max(...all.map((m) => m.version));
   assert.equal(latest, 35);
   const state = { version: latest, runnerFloor: floorAt(latest) };
-  assert.equal(state.runnerFloor, 35);
-  assert.equal(runnerOn(state, 34), "refused", "a runner before the upload keys");
+  assert.equal(state.runnerFloor, 34);
+  assert.equal(runnerOn(state, 33), "refused", "a runner that knows the workspace columns only");
+  assert.equal(runnerOn(state, 34), "opens", "a runner of the build before the upload keys opens a schema at 35");
   assert.equal(runnerOn(state, 35), "opens", "this build's runner opens it");
 });
 
