@@ -1,7 +1,7 @@
 ---
 description: A rename with no change in behaviour; the review reports nothing.
 runs: 3
-max_cost_usd: 0.10
+max_cost_usd: 0.30
 ---
 Review this diff. Its head is 3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f; there is no checkout, the diff is the whole change.
 
