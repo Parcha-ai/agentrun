@@ -37,7 +37,7 @@ import { laidOf, layLearningSeed } from "./learning-seed.js";
 import { learningEndOfRun, spentBesideOf } from "./learning-end.js";
 import { type ModelRef, ollamaTagsOf, type PinnedModel, providerModels, runModels, type Tier } from "../model.js";
 import { OLLAMA_PROVIDER } from "../ollama-provider.js";
-import { firstMessage, inputMessage, messageText } from "../run-manifest.js";
+import { firstMessage, inputMessage, messageText, opensFiles } from "../run-manifest.js";
 import { learningStartOf, personStarted, seedFailed, type RunLaunch } from "../run-launch.js";
 import { readsFiles, systemOf } from "../skills.js";
 import { DATA_ENV } from "../server-fs.js";
@@ -831,7 +831,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   };
 
   // A typed input's other fields follow its content as one json block (inputMessage).
-  const input = await firstMessage(inputMessage(launch.input), ws.workspace);
+  // An agent with no tool that reads files is told its files are out of its reach (opensFiles).
+  const input = await firstMessage(inputMessage(launch.input), ws.workspace, undefined, opensFiles(revision.kind, granted, entry.promises?.tool_gate));
 
   // The run's end-of-run step, when it learns, the same as the pi spec's: the compile turn and the owner's correction over
   // the run's store, its draft checked against the seed in the agent's learning rows.

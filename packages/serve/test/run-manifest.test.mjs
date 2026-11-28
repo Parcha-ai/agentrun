@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { mkdir, readdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { filesLine, FIRST_MESSAGE_BYTES, firstMessage, inputFiles, MANIFEST_ENTRIES, sizeOf } from "../dist/run-manifest.js";
+import { filesLine, FIRST_MESSAGE_BYTES, firstMessage, inputFiles, MANIFEST_ENTRIES, opensFiles, sizeOf } from "../dist/run-manifest.js";
 import { uploadTestHooks } from "../dist/uploads.js";
 import { localWorkspace } from "../dist/workspace/index.js";
 import { agent, follow, runDir, scratch, serve } from "./support.mjs";
@@ -111,6 +111,15 @@ for (const harness of ["claude-agent", "codex"]) {
   });
 }
 
+test("which runs can open their files: an agent granted read or bash; an ACP agent, with tools of its own; a workflow, whose nodes name theirs", () => {
+  for (const tools of [["read"], ["bash"], ["web_search", "read"]]) assert.equal(opensFiles("agentic", tools), true, tools.join());
+  for (const tools of [[], undefined, ["web_search", "write", "edit"]]) assert.equal(opensFiles("agentic", tools), false, String(tools));
+  assert.equal(opensFiles("agentic", [], "every_call"), false, "pi, codex, claude-agent: the host's tools alone");
+  assert.equal(opensFiles("agentic", [], "config"), false, "goose: its own tools off");
+  assert.equal(opensFiles("agentic", [], "permission"), true, "an ACP agent reads with its own tools");
+  assert.equal(opensFiles("workflow", []), true);
+});
+
 test("the line names at most MANIFEST_ENTRIES files, then counts the rest; sizes read as a person reads them; each name quoted, so no name breaks the line", () => {
   const files = Array.from({ length: MANIFEST_ENTRIES + 5 }, (_, i) => ({ path: `inputs/f${String(i).padStart(2, "0")}.txt`, size: i }));
   const line = filesLine("Files for this run", files);
@@ -155,7 +164,7 @@ test("a name can neither forge an entry nor reorder the line: a quote and a comm
   const { api } = server;
   const forged = 'x", y.txt (2 B), z.txt';
   const ids = [await upload(server, "a\u202eb.txt", Buffer.from("rtl")), await upload(server, forged, Buffer.from("q")), await upload(server, "c\u200bd\u2066.txt", Buffer.from("zw"))];
-  assert.equal((await api("POST", "/agents", agent("quoter"))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("quoter", { tools: ["read"] }))).status, 201);
   const { said } = await run(api, "quoter", "Look.", ids);
   assert.deepEqual(said, [String.raw`Look.
 

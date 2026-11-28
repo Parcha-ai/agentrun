@@ -3,6 +3,8 @@
 // harness: it rides in the first message itself, which runs.ts sends to the run's door. Bounded: at most
 // MANIFEST_ENTRIES files, then how many more, and never past what the door takes in one message (FIRST_MESSAGE_BYTES):
 // a message that fits at the run's creation still fits with its line.
+import type { InputIssue } from "./errors.js";
+import { READING_TOOLS, readsFiles } from "./skills.js";
 import { INPUTS_DIR, MESSAGE_FILE } from "./uploads.js";
 import { type Entry, type Workspace, workspaceAt } from "./workspace/index.js";
 
@@ -15,6 +17,27 @@ export function messageText(input: unknown): string {
   const { content } = input as Record<string, unknown>;
   return typeof content === "string" ? content : "";
 }
+
+/** Whether a run of a revision of `kind` granted `tools`, on a harness whose calls `toolGate` holds (its promises'
+ *  tool_gate; none, a native harness's `every_call`), can open the files given to it. A harness that runs only the host's
+ *  tools (`every_call` or `config`: pi, codex, claude-agent, whose own built-ins are off; goose) reads them with a tool it
+ *  is granted that reads the run's work/ (skills.ts READING_TOOLS: read, bash), and with none has no way to open them. An
+ *  ACP agent's own tools (`permission`) read files of their own; a workflow's nodes name their own tools. */
+export const opensFiles = (kind: string, tools: readonly unknown[] | undefined, toolGate?: string): boolean =>
+  kind !== "agentic" || toolGate === "permission" || readsFiles((tools ?? []).filter((tool): tool is string => typeof tool === "string"));
+
+/** The line's label for a run whose agent has no tool that reads files (opensFiles false): the files are named, as they
+ *  are its inputs, and the model is told it cannot open them, so it never says it will read one and then asks for it. */
+export const UNREAD_FILES = "Files attached to this run, but this agent has no tool that reads files";
+
+/** What a start with `file_ids` answers in `warnings` when its agent has no tool that reads files: the run still starts
+ *  (its files are copied in, and named in its first message), but its model can only see their names. */
+export const unreadFilesWarning = (): InputIssue => ({
+  field: "file_ids",
+  reason: "no_file_tool",
+  message: `These files are attached, but this agent has no tool that reads files (${READING_TOOLS.join(", ")}): its model is told their names and can't open them.`,
+  fix: "Add read to the agent's tools (or bash where its place has a shell), then start the run again.",
+});
 
 /** The most files the line names; the rest are counted. */
 export const MANIFEST_ENTRIES = 20;
@@ -98,11 +121,13 @@ export function inputMessage(input: unknown): string {
 
 /** The run's first message: `content`, then, after a blank line, the files given to it, when it has any: as many named
  *  as keep the message within `budget` (FIRST_MESSAGE_BYTES), else only how many, else no line at all, so the line never
- *  turns a message the run took into one its door refuses. */
-export async function firstMessage(content: string, work: Workspace | string, budget = FIRST_MESSAGE_BYTES): Promise<string> {
+ *  turns a message the run took into one its door refuses. `readable` false (opensFiles: its agent has no tool that reads
+ *  files): the line says they are attached but out of its reach (UNREAD_FILES). */
+export async function firstMessage(content: string, work: Workspace | string, budget = FIRST_MESSAGE_BYTES, readable = true): Promise<string> {
   const files = await inputFiles(work);
+  const label = readable ? "Files for this run" : UNREAD_FILES;
   for (let entries = Math.min(files.length, MANIFEST_ENTRIES); entries >= 0 && files.length > 0; entries--) {
-    const message = `${content}\n\n${filesLine("Files for this run", files, entries)}`;
+    const message = `${content}\n\n${filesLine(label, files, entries)}`;
     if (sentBytes(message) <= budget) return message;
   }
   return content;
