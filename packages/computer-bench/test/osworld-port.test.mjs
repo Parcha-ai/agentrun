@@ -69,7 +69,7 @@ test("a port that now refuses a task removes its folder from an earlier port, in
 	const unsummed = await portFixture({});
 	assert.ok(unsummed.find((one) => one.uuid.startsWith("1273e544")).reasons);
 	// A port of another domain leaves the calc folder alone.
-	writeSuite(unsummed, out, ["chrome"]);
+	writeSuite(unsummed, out, ["gimp"]);
 	assert.ok(ids(out).includes("osworld-verified.libreoffice-calc.1273e544"));
 	// A port of the calc domain removes it; the chrome folder, not written by this port, stays as it was.
 	const written = writeSuite(unsummed, out, ["libreoffice_calc"]);

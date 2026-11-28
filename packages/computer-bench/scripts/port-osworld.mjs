@@ -373,8 +373,11 @@ export function portTask(domain, task, context) {
 	if (Buffer.byteLength(osworldJson) > MAX_INLINE_BYTES) return { reasons: [`osworld.json is ${Buffer.byteLength(osworldJson)} bytes, past the ${MAX_INLINE_BYTES} one argv word may hold`], unsummed: [] };
 	const files = { "task.json": `${JSON.stringify(taskSpec(domain, task, classified), null, 2)}\n`, "osworld.json": osworldJson };
 	if (classified.infeasible) files["rubric.md"] = INFEASIBLE_RUBRIC;
-	return { folder: `${dashed(domain)}-${String(task.id).slice(0, 8)}`, files, unsummed: [] };
+	return { folder: folderOf(domain, task.id), files, unsummed: [] };
 }
+
+/** A task's folder in the suite: `<domain>-<uuid8>`. */
+const folderOf = (domain, uuid) => `${dashed(domain)}-${String(uuid).slice(0, 8)}`;
 
 /** The checkout's tasks, in test_nogdrive.json's order: [{domain, task}]. */
 export function readTasks(osworld) {
@@ -438,11 +441,21 @@ ${refused.map((one) => `| \`${one.domain}/${one.uuid}\` | ${cell(one.reasons.joi
 `;
 }
 
-/** Writes the domains' portable tasks into out (each folder made fresh), then PORT.md over every task. */
+/**
+ * Writes the domains' portable tasks into out (each folder made fresh) and removes the folder of each of their refused
+ * tasks, which an earlier port may have written; a domain not written is left as it is. Then PORT.md over every task.
+ */
 export function writeSuite(results, out, domains = []) {
 	mkdirSync(out, { recursive: true });
+	const portable = new Set(results.filter((one) => one.folder).map((one) => one.folder));
 	for (const one of results) {
-		if (!one.folder || (domains.length > 0 && !domains.includes(one.domain))) continue;
+		if (domains.length > 0 && !domains.includes(one.domain)) continue;
+		if (!one.folder) {
+			// A refused task whose uuid8 a portable one shares leaves that one's folder alone.
+			const stale = folderOf(one.domain, one.uuid);
+			if (!portable.has(stale)) rmSync(join(out, stale), { recursive: true, force: true });
+			continue;
+		}
 		const dir = join(out, one.folder);
 		rmSync(dir, { recursive: true, force: true });
 		mkdirSync(dir, { recursive: true });
