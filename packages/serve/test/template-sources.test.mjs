@@ -346,7 +346,7 @@ test("a need whose toolkit is its source's name (github/github) is named once wh
   assert.equal(warning?.message, "No saved MCP server is github, so the agent was made without its tools (list_notes, send_note).", JSON.stringify(skipped.body.warnings));
   const planned = await api("POST", "/templates/notes-digest/apply", { parameters: { to: "me" }, dry_run: true });
   assert.equal(planned.status, 200, JSON.stringify(planned.body));
-  assert.doesNotMatch(JSON.stringify(planned.body), /github github/);
+  assert.deepEqual(planned.body.plan.unmatched_mcp, [{ source: "github", toolkit: "github", required: false }], JSON.stringify(planned.body.plan));
   const picked = await api("POST", "/templates/notes-digest/apply", { parameters: { to: "me" }, servers: { github: "nowhere" } });
   assert.equal(picked.status, 422, JSON.stringify(picked.body));
   assert.equal(picked.body.error.fields.find((f) => f.field === "servers.github")?.message, "nowhere is not a saved MCP server that is github: none is saved here.");
