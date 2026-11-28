@@ -5,7 +5,7 @@
 // step's least fits the cap; a step's least is its whole input bound at the cache-write price ($3.75 a million) and a
 // 1,024-token answer ($15 a million). The answers' usage is a desktop run's on Sonnet (3,146 tokens written to the cache
 // at first, then 1,300 more each step, 40 out), so the run spends about $0.04 in all. So:
-//  - through a gateway (OpenRouter, which counts nothing): the first request is bounded by its bytes, 10,445 tokens, most
+//  - through a gateway (OpenRouter, which counts nothing): the first request is bounded by its bytes, 10,703 tokens, most
 //    of them the computer's tools' and codemode's definitions, the computer's types among them, and the desktop skill's
 //    line in the system prompt, and the server's files note (the faux desktop mounts no folder), so it needs $0.055. Each later request carries the one before it, so it is bounded by
 //    what that one billed and the bytes it adds, its screenshot at the 1,366 tokens it bills (1,744 over the last bill,
