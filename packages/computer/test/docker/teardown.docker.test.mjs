@@ -141,8 +141,9 @@ describe("a test file that is cut off leaves no container or volume it made", { 
 		return { containers: lines.filter((line) => line.startsWith("c ")).map((line) => line.slice(2)), volumes: lines.filter((line) => line.startsWith("v ")).map((line) => line.slice(2)) };
 	};
 
-	/** Runs `file` as `node --test` does, cuts it off once one of its containers exists, and answers what is left. */
-	async function cutOff(file, how) {
+	/** Runs `file` as `node --test` does, cuts it off once one of its containers exists and it has logged at least `logged`
+	 *  container names, and answers what is left and the names logged at the cut-off. */
+	async function cutOff(file, how, logged = 1) {
 		const log = join(dir, `${file}-${how}.log`);
 		const early = how === "early";
 		const bin = mkdtempSync(join(dir, `${file}-${how}-bin-`));
@@ -162,12 +163,14 @@ describe("a test file that is cut off leaves no container or volume it made", { 
 		const bound = Date.now() + 240_000;
 		let seen = false;
 		let notYet = false;
+		let atCut = [];
 		while (!finished && Date.now() < bound) {
 			const names = namesIn(log).containers;
 			// Early: cut off as soon as a name is logged, while the slowed `docker run` has not made its container yet.
-			if (early ? names.length > 0 : names.some(exists)) {
+			if (early ? names.length > 0 : names.length >= logged && names.some(exists)) {
 				seen = true;
 				notYet = !names.some(exists);
+				atCut = names;
 				break;
 			}
 			await sleep(200);
@@ -186,7 +189,7 @@ describe("a test file that is cut off leaves no container or volume it made", { 
 		const gone = () => made.containers.every((name) => !exists(name)) && made.volumes.every((name) => !volumeExists(name));
 		for (const until = Date.now() + 30_000; !gone() && Date.now() < until; ) await sleep(500);
 		// A file that exits by itself may be over before a look finds its container: what it logged it made.
-		return { notYet, seen: seen || (how === "crash" && made.containers.length > 0), exit, made, left: { containers: made.containers.filter(exists), volumes: made.volumes.filter(volumeExists) } };
+		return { notYet, seen: seen || (how === "crash" && made.containers.length > 0), atCut, exit, made, left: { containers: made.containers.filter(exists), volumes: made.volumes.filter(volumeExists) } };
 	}
 
 	for (const file of FILES) {
@@ -201,10 +204,12 @@ describe("a test file that is cut off leaves no container or volume it made", { 
 	}
 
 	// The epoch file makes five computers at once. On a loaded host each docker rm takes seconds, and five of them one after
-	// another outlast the window a single one fits in (CI run 46102077735 left three of the five).
-	it(`epoch: with each docker rm slowed by ${RM_SECONDS} s, after SIGTERM to node --test none of its containers remains`, async () => {
-		const { seen, exit, made, left } = await cutOff("epoch", "slow-rm");
-		assert.equal(seen, true, `epoch made no container that existed within the bound (exit ${JSON.stringify(exit)}); it names ${JSON.stringify(made)}`);
+	// another outlast the window a single one fits in (CI run 46102077735 left three of the five). The cut waits for all
+	// five names: cut off after fewer, the file never starts the rest, and that many slowed removals in a row fit the window.
+	it(`epoch: with each docker rm slowed by ${RM_SECONDS} s, after SIGTERM to node --test none of its five containers remains`, async () => {
+		const { seen, atCut, exit, made, left } = await cutOff("epoch", "slow-rm", 5);
+		assert.equal(seen, true, `epoch did not log five container names, one of them made, within the bound (exit ${JSON.stringify(exit)}); it names ${JSON.stringify(made)}`);
+		assert.equal(atCut.length, 5, `epoch had logged ${JSON.stringify(atCut)} at the cut-off, not its five computers`);
 		assert.notEqual(exit, undefined, "epoch did not end within 120 s of the SIGTERM");
 		assert.deepEqual(left, { containers: [], volumes: [] }, `left behind by epoch with a slow docker rm (made ${JSON.stringify(made)})`);
 	});
