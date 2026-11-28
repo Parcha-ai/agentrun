@@ -380,9 +380,11 @@ export function App() {
   // fails before it shows (a 5xx, the network) is tried again at the next poll while setup is open, so a passing failure
   // never hides the offer. A 404 or a 403 is the server offering none: no box, and no more reads. None is sent while the
   // password is being set (`settingUp`): the server could take it after the owner is set, and answers this browser,
-  // not signed in yet, 404, which the browser logs as an error.
+  // not signed in yet, 404, which the browser logs as an error. A read already out when the password is sent is let
+  // finish first (`importReading`), so none can reach the server behind the setup.
   const [offer, setOffer] = useState<ImportOffer | null>(null);
   const settingUp = useRef(false);
+  const importReading = useRef<Promise<unknown> | null>(null);
   useEffect(() => {
     if (auth !== "setup") return;
     let live = true;
@@ -390,7 +392,10 @@ export function App() {
     (async () => {
       for (let shown = false; live; ) {
         if (settingUp.current) { await new Promise((done) => setTimeout(done, IMPORT_POLL_MS)); continue; }
-        const r = await v2.setupImport().then((x) => x, () => undefined);
+        const reading = v2.setupImport().then((x) => x, () => undefined);
+        importReading.current = reading;
+        const r = await reading;
+        if (importReading.current === reading) importReading.current = null;
         if (!live) return;
         if (r === undefined && shown) return void setOffer({ projects: null, sessions: null });
         if (r !== undefined) {
@@ -410,6 +415,7 @@ export function App() {
     return (
       <SignIn key={auth} mode={auth} code={setupCode} codeNeeded={codeNeeded} offer={offer} problem={signedOutElsewhere && auth === "sign_in" ? "You were signed out. Sign in to go on." : null} onSubmit={async (password, code, importProjects) => {
         settingUp.current = auth === "setup";
+        if (settingUp.current) await importReading.current;
         try { await (auth === "setup" ? v2.setup(password, code, importProjects) : v2.signIn(password)); setSignedOutElsewhere(false); setAuth("signed_in"); return null; }
         catch (e) {
           settingUp.current = false;

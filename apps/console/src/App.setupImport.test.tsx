@@ -296,6 +296,36 @@ describe("App, setup's import of this machine's sessions", () => {
     await act(async () => { release(); });
   }, 15_000);
 
+  it("lets an offer read already out when the password is sent finish before the setup is sent", async () => {
+    // The read is held across the submit: the setup goes out only once it has answered, so it can never reach the server
+    // after the owner is set.
+    let answer = () => {};
+    let held = false, set = false;
+    const order: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      const path = new URL(url, "http://serve.test").pathname;
+      if (path === "/v2/auth/session") return json(200, { password_set: set, signed_in: set });
+      if (path === "/v2/setup") { order.push("setup"); set = true; return json(201, { signed_in: true }); }
+      if (path === "/v2/setup/import") {
+        if (set) { order.push("import after setup"); return json(404, missing(path)); }
+        if (!held) { held = true; order.push("import held"); await new Promise<void>((done) => { answer = done; }); order.push("import answered"); }
+        return json(202, { counting: true });
+      }
+      if (path === "/v2/agents") return json(200, { agents: [], next_cursor: null });
+      return json(404, missing(path));
+    });
+    const host = await render();
+    await until(host, () => held);
+    await setPassword(host);
+    await submit(host);
+    await act(async () => { await new Promise((r) => setTimeout(r, IMPORT_POLL_MS)); });
+    expect(order).toEqual(["import held"]);
+    await act(async () => { answer(); });
+    await until(host, () => order.includes("setup"));
+    // Up to the setup's answer: the signed-in page's own read of the import's progress comes after, with its cookie.
+    expect(order.slice(0, order.indexOf("setup") + 1)).toEqual(["import held", "import answered", "setup"]);
+  }, 15_000);
+
   it("shows no list when the count finds no session", async () => {
     server({ offer: [200, counted()] });
     const host = await render();
