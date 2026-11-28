@@ -2754,7 +2754,9 @@ test("serve finds OpenCode's history where the environment puts it: XDG_DATA_HOM
   mkdirSync(project, { recursive: true });
   const data = join(root, "xdg-data");
   openCodeDb(h.at, [{ id: "ses_xdg", cwd: project }], { file: join(data, "opencode", "opencode.db") });
-  const named = openCodeDb(h.at, [{ id: "ses_named", cwd: project }], { file: join(root, "elsewhere", "history.db") });
+  // A prompt of its own: OpenCode's copy fingerprints carry no ids, so two sessions alike but for their ids, built in the
+  // same millisecond, are one session and its fork copy, and the copy is left out (readers/opencode.ts).
+  const named = openCodeDb(h.at, [{ id: "ses_named", cwd: project, prompt: "Sort the notes." }], { file: join(root, "elsewhere", "history.db") });
   const env = { ...ENV, XDG_DATA_HOME: data, OPENCODE_DB: named };
   const store = await openData(join(root, "agents"));
   t.after(async () => await store.close());

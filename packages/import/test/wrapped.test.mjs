@@ -130,6 +130,23 @@ test("a request whose session records no tokens (Cursor keeps none) is counted a
   assert.deepEqual(both.models.find((m) => m.model === "fx/fx-model")?.tokensUnknownRequests, 1);
 });
 
+test("a request whose time is only its session's start (Cursor keeps no message times) is counted as time unknown, and adds no time at work", async (t) => {
+  const tz = process.env.TZ;
+  process.env.TZ = "UTC";
+  t.after(() => (tz === undefined ? delete process.env.TZ : (process.env.TZ = tz)));
+  const home = await tempHome(t);
+  await buildChat(join(home, ".cursor"));
+  const cursorOnly = await wrappedHome(home, 2026, { catalog: false });
+  assert.ok(cursorOnly.requests > 0, "the chat's answers are requests");
+  assert.equal(cursorOnly.timeUnknownRequests, cursorOnly.requests, "a Cursor-only year: every request's time is unknown");
+  assert.equal(cursorOnly.activeMs, 0);
+  // A pi session beside it: its requests carry their own times, so they are not counted, and its time at work is.
+  await writeJsonl(piFile(home), [piMeta(), piUser(WORDS, 1), piAnswer(30)]);
+  const both = await wrappedHome(home, 2026, { catalog: false });
+  assert.equal(both.timeUnknownRequests, cursorOnly.requests);
+  assert.equal(both.requests, cursorOnly.requests + 1);
+});
+
 test("a model the catalog does not list leaves its requests with tokens unpriced, and its zero-token requests are not counted as unpriced", async (t) => {
   const home = await tempHome(t);
   await writeJsonl(claudeFile(home), [claudeUser({ uuid: "u1", text: WORDS, i: 0 }), answer(1, 10, anthropicUsage(0, 0, 0, 0), "claude-unlisted"), answer(2, 20, anthropicUsage(5, 5, 0, 0), "claude-unlisted")]);
