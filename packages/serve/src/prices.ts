@@ -4,10 +4,11 @@
 // its setting says it (never a float's rounding), with where it comes from:
 //   - `setting`: the operator's setting (AGENTRUN_COMPUTE_USD_PER_*, AGENTRUN_BROWSER_USD_PER_HOUR_*);
 //   - `list`: no setting, a price built in (a browser provider's list price, $0 for a provider that bills nothing);
-//   - `unpriced`: none, or a setting that can't be read: its time runs outside the cap, as the meters say.
+//   - `unpriced`: none, a setting that can't be read, or a provider whose create never says a computer's size: its time
+//     runs outside the cap, as the meters say.
 import { PROVIDERS } from "@parcha/agentrun-computer";
 import { BROWSER_PRICE_ENV, BROWSER_PRICES, browserPrice, priceEnvOf } from "./browser-cost.js";
-import { COMPUTE_PRICE_ENV, COMPUTE_UNITS, type ComputeResource, computePriceEnvOf, unmetered } from "./compute-cost.js";
+import { COMPUTE_PRICE_ENV, COMPUTE_UNITS, type ComputeResource, computePriceEnvOf, unmetered, unsized } from "./compute-cost.js";
 
 export type PriceSource = "setting" | "list" | "unpriced";
 export type ComputePrice = { provider: string; resource: ComputeResource; gpu_type: string | null; unit: (typeof COMPUTE_UNITS)[ComputeResource]; usd: string | null; source: PriceSource };
@@ -33,11 +34,12 @@ export function decimalOf(usd: number): string {
 
 const named = (text: string) => text.toUpperCase().replace(/[^A-Z0-9]/g, "_");
 
-/** One compute resource's price for `provider`: $0 (list) for a provider that bills nothing, else its setting, else
- *  unpriced. */
+/** One compute resource's price for `provider`: $0 (list) for a provider that bills nothing, unpriced for one that never
+ *  says a computer's size, else its setting, else unpriced. */
 function computePrice(provider: string, resource: ComputeResource, gpuType: string | null, env: NodeJS.ProcessEnv): ComputePrice {
   const base = { provider, resource, gpu_type: gpuType, unit: COMPUTE_UNITS[resource] };
   if (unmetered(provider)) return { ...base, usd: "0", source: "list" };
+  if (unsized(provider)) return { ...base, usd: null, source: "unpriced" };
   const set = readable(env[computePriceEnvOf(resource, provider, gpuType)]);
   return set === undefined ? { ...base, usd: null, source: "unpriced" } : { ...base, usd: set, source: "setting" };
 }

@@ -38,12 +38,14 @@ export const fakeWorkspace = (id, name, { status = "active", deleted_at = null }
  *  - deleteRefused: a computer id => { status, error, code } its DELETE answers instead (a Mac Orgo manages);
  *  - extra: ({ method, path, query, body, form, record }) => a Response for a route this fake has not (a Windows or macOS
  *    desktop's screenshot and input calls, fake-orgo-desktop.mjs), or undefined;
+ *  - gives: (body) => the size Orgo ran a create at, { ram, cpu } (a field undefined: the answer leaves it out), else the
+ *    size asked, as Orgo's create answers it;
  *  - upload: (form) => what an upload with destPath does in the computer (fake-orgo-desktop.mjs puts the file there);
  *  - power: (record, verb) => what a stop, suspend, start or resume does inside (a stop's cold start loses init);
  *  - workspaces: what GET /workspaces lists (default one, WORKSPACE), or an HTTP status it fails with;
  * fake.requests holds every request: { method, path, headers, body, form }; fake.computers each computer's record.
  */
-export function fakeOrgoApi({ create = "ok", creatingReads = 1, waking = 0, lingers = 0, bash = () => ({ exit_code: 0, output: "" }), hold, extra, upload, power, deleteRefused = () => undefined, workspaces = [fakeWorkspace(WORKSPACE, "agentrun")] } = {}) {
+export function fakeOrgoApi({ gives, create = "ok", creatingReads = 1, waking = 0, lingers = 0, bash = () => ({ exit_code: 0, output: "" }), hold, extra, upload, power, deleteRefused = () => undefined, workspaces = [fakeWorkspace(WORKSPACE, "agentrun")] } = {}) {
 	const computers = new Map();
 	const requests = [];
 	let wakingLeft = waking;
@@ -70,7 +72,10 @@ export function fakeOrgoApi({ create = "ok", creatingReads = 1, waking = 0, ling
 			if (create === "unauthorized") return json(401, { error: "Invalid API key", code: "unauthorized" });
 			if (create === "fail") return json(400, { error: "ram must be one of 4, 8, 16, 32, 64", code: "invalid_ram" });
 			if ([...computers.values()].some((c) => !c.deleted && c.name === body.name && c.workspace_id === body.workspace_id)) return json(409, { error: "name in use", code: "name_taken" });
-			const record = add({ name: body.name, workspace_id: body.workspace_id, ram: body.ram, cpu: body.cpu, os: body.os ?? "linux", status: create === "creating" ? "creating" : "running", ends_at: body.ends_in_hours ? new Date(Date.now() + body.ends_in_hours * 3_600_000).toISOString() : null });
+			const given = gives?.(body) ?? { ram: body.ram, cpu: body.cpu };
+			const record = add({ name: body.name, workspace_id: body.workspace_id, ram: given.ram, cpu: given.cpu, os: body.os ?? "linux", status: create === "creating" ? "creating" : "running", ends_at: body.ends_in_hours ? new Date(Date.now() + body.ends_in_hours * 3_600_000).toISOString() : null });
+			// A size the answer leaves out is in no read of it either.
+			for (const field of ["ram", "cpu"]) if (Object.hasOwn(given, field) && given[field] === undefined) delete record[field];
 			record.creatingLeft = create === "creating" ? creatingReads : 0;
 			record.asked = body;
 			const { deleted: _d, reads: _r, creatingLeft: _c, asked: _a, ...answer } = record;

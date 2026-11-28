@@ -41,6 +41,7 @@ import {
 	type OrgoLedgerEntry,
 	orgoMemoryLedger,
 	orgoName,
+	orgoSize,
 	claimProblem,
 	andSettled,
 	type EntryLease,
@@ -494,7 +495,7 @@ export class OrgoProvider implements ComputerProvider {
 		// The last read of the workspace, once this computer is up: an older one listed only now is answered here.
 		const last = await this.#converge(spec, request, labels, made.value, signal);
 		if (last !== undefined) return last;
-		return ok(prepared.value.length > 0 ? { ...ref, notes: prepared.value } : ref);
+		return ok({ ...ref, ...(prepared.value.length > 0 ? { notes: prepared.value } : {}), ...orgoSize(made.value, { cpus: cpu, memoryMb: ram * 1024 }) });
 	}
 
 	/**
@@ -562,7 +563,12 @@ export class OrgoProvider implements ComputerProvider {
 					];
 					if (differ.length > 0) return fail("exists", otherSpecWords(record.name, "was made", differ));
 					const inside = await this.#inside(ref, signal);
-					if (inside.ok) return ok(inside.value.length > 0 ? { ...ref, notes: inside.value } : ref);
+					if (inside.ok) {
+						// The workspace's listing carries no size: Orgo's read of the computer says the one it runs at.
+						const read = await this.#get(record.id, signal);
+						const size = orgoSize(read.ok ? read.value : undefined, { ...(file.value.cpus === undefined ? {} : { cpus: file.value.cpus }), ...(file.value.memoryMb === undefined ? {} : { memoryMb: file.value.memoryMb }) });
+						return ok({ ...ref, ...(inside.value.length > 0 ? { notes: inside.value } : {}), ...size });
+					}
 					if (inside.error.code === "aborted") return inside;
 					// Its daemon is not up yet: the create that made it is still preparing it.
 					last = inside.error.message;

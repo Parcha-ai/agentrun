@@ -14,6 +14,8 @@ export const RENDER = defineProvider({
 		{ name: "RENDER_WORKSPACE_ID", option: "ownerId", required: true },
 	],
 	metered: true,
+	// Its create answers the size the vendor runs the computer at (resources), which its time is priced by.
+	sized: true,
 	// Its machines dial the server: Render's runs take no stdin, so nothing reaches into one.
 	connect: "dial",
 	// None: a machine that dials takes no Archil mount (mountsOf).

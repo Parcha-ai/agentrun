@@ -13,6 +13,11 @@ const NAMES = [
   "AGENTRUN_COMPUTE_USD_PER_GPU_SECOND_DAYTONA_H100",
   "AGENTRUN_COMPUTE_USD_PER_VCPU_SECOND_E2B",
   "AGENTRUN_COMPUTE_USD_PER_VCPU_SECOND_DOCKER",
+  "AGENTRUN_COMPUTE_USD_PER_VCPU_SECOND_MORPH",
+  "AGENTRUN_COMPUTE_USD_PER_GIB_SECOND_MORPH",
+  "AGENTRUN_COMPUTE_USD_PER_VCPU_SECOND_GROUNDBOX",
+  "AGENTRUN_COMPUTE_USD_PER_GIB_SECOND_GROUNDBOX",
+  "AGENTRUN_COMPUTE_USD_PER_VCPU_SECOND_ORGO",
   "AGENTRUN_BROWSER_USD_PER_HOUR_BROWSERBASE",
   "AGENTRUN_BROWSER_USD_PER_HOUR_KERNEL",
   "AGENTRUN_BROWSER_USD_PER_HOUR_ACME",
@@ -54,6 +59,33 @@ test("a provider that bills nothing is $0 from the list for every compute resour
   const body = await pricesOf(t, { AGENTRUN_COMPUTE_USD_PER_VCPU_SECOND_DOCKER: "0.5", AGENTRUN_BROWSER_USD_PER_HOUR_LOCAL_CHROME: "0.5" });
   assert.deepEqual(browser(body, "local-chrome"), { provider: "local-chrome", unit: "hour", usd: "0.5", minimum_s: 0, source: "setting" });
   for (const resource of ["vcpu", "memory", "disk"]) assert.deepEqual(compute(body, "docker", resource), { provider: "docker", resource, gpu_type: null, unit: { vcpu: "vcpu_second", memory: "gib_second", disk: "gb_month" }[resource], usd: "0", source: "list" });
+});
+
+test("a metered provider whose computers say no size is unpriced for every compute resource, whatever its setting: its time can't be measured, so a caller counts it as uncounted", async (t) => {
+  const body = await pricesOf(t, {
+    AGENTRUN_COMPUTE_USD_PER_VCPU_SECOND_MORPH: "0.00001",
+    AGENTRUN_COMPUTE_USD_PER_GIB_SECOND_MORPH: "0.000003",
+    AGENTRUN_COMPUTE_USD_PER_VCPU_SECOND_GROUNDBOX: "0.0000111",
+    AGENTRUN_COMPUTE_USD_PER_GIB_SECOND_GROUNDBOX: "0.000002",
+    AGENTRUN_COMPUTE_USD_PER_VCPU_SECOND_ORGO: "0.0000128",
+  });
+  for (const resource of ["vcpu", "memory", "disk"]) assert.deepEqual(compute(body, "morph", resource), { provider: "morph", resource, gpu_type: null, unit: { vcpu: "vcpu_second", memory: "gib_second", disk: "gb_month" }[resource], usd: null, source: "unpriced" }, resource);
+  // A provider whose create says the size it runs at is priced by its setting.
+  assert.deepEqual(compute(body, "groundbox", "vcpu"), { provider: "groundbox", resource: "vcpu", gpu_type: null, unit: "vcpu_second", usd: "0.0000111", source: "setting" });
+  assert.deepEqual(compute(body, "groundbox", "memory"), { provider: "groundbox", resource: "memory", gpu_type: null, unit: "gib_second", usd: "0.000002", source: "setting" });
+  assert.deepEqual(compute(body, "orgo", "vcpu"), { provider: "orgo", resource: "vcpu", gpu_type: null, unit: "vcpu_second", usd: "0.0000128", source: "setting" });
+  // The meter reads the same: no rate for the provider that says no size, so none of its time is held or booked at a guess.
+  const { computeRate } = await import("../dist/compute-cost.js");
+  const env = { AGENTRUN_COMPUTE_USD_PER_VCPU_SECOND_MORPH: "0.00001", AGENTRUN_COMPUTE_USD_PER_VCPU_SECOND_GROUNDBOX: "0.0000111" };
+  assert.equal(computeRate("morph", "vcpu", null, env), null);
+  assert.equal(computeRate("groundbox", "vcpu", null, env), 0.0000111);
+});
+
+test("every metered computer provider says whether its create answers the size it runs at: the ones that do are priced, the rest unpriced (a new provider is decided here)", async () => {
+  const { PROVIDERS } = await import("@parcha/agentrun-computer");
+  const computers = PROVIDERS.filter((entry) => entry.metered && entry.kinds.some((kind) => kind === "sandbox" || kind === "desktop"));
+  assert.deepEqual(computers.filter((entry) => entry.sized === true).map((entry) => entry.id).sort(), ["agent37", "daytona", "e2b", "fly", "groundbox", "modal", "orgo", "render"]);
+  assert.deepEqual(computers.filter((entry) => entry.sized !== true).map((entry) => entry.id).sort(), ["boxd", "cloudflare", "morph", "smolcloud", "sprites", "vercel"]);
 });
 
 test("browser prices: the setting wins over the list, the list where none is set, an unreadable setting unpriced, a provider only a setting names", async (t) => {
