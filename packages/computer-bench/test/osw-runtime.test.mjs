@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { connect, createServer as createTcpServer } from "node:net";
 import { join } from "node:path";
@@ -46,7 +46,10 @@ async function box(t) {
 	const port = await freePort();
 	const env = { PATH: process.env.PATH, PYTHONDONTWRITEBYTECODE: "1", OSW_OSWORLD: osworld, OSW_PORT: String(port), OSW_CACHE: join(dir, "cache"), OSW_HOME: home };
 	const requests = () => (existsSync(join(home, "requests.log")) ? readFileSync(join(home, "requests.log"), "utf8").trim().split("\n") : []);
-	t.after(async () => assert.equal(await listening(port), false, "no osw server is left listening"));
+	t.after(async () => {
+		assert.equal(await listening(port), false, "no osw server is left listening");
+		rmSync(dir, { recursive: true, force: true });
+	});
 	return { dir, home, port, env, requests, cache: (id) => join(dir, "cache", id) };
 }
 
@@ -119,7 +122,7 @@ test("conj: `or` passes when one metric is 1, `and` needs every one; each metric
 	const both = await osw(b, "eval", { id: "conj-and-both", evaluator: evaluator("and", { b: 2 }) });
 	assert.equal(both.code, 0, both.stderr);
 	assert.match(both.stdout, /score 1\b/);
-	const unset = await osw(b, "eval", { id: "conj-default", evaluator: { ...evaluator(undefined, { b: 3 }), conj: undefined } });
+	const unset = await osw(b, "eval", { id: "conj-default", evaluator: evaluator(undefined, { b: 3 }) });
 	assert.equal(unset.code, 1, "conj defaults to and");
 });
 
@@ -213,19 +216,34 @@ test("a score below 1 exits 1; a missing result file scores 0, as OSWorld has it
 	assert.equal(unknown.code, 2, unknown.stderr);
 });
 
-test("osw eval stopped by SIGTERM stops its server and exits 75", async (t) => {
-	const b = await box(t);
+/** Starts `osw eval` on a getter that sleeps, and resolves once the getter runs (past postconfig's /terminal probe). */
+async function slowEval(b, id) {
+	const probes = () => b.requests().filter((line) => line === "GET /terminal").length;
+	const before = probes();
 	let child;
-	const running = osw(b, "eval", { id: "slow", evaluator: { func: "score", result: { type: "slow" } } }, (spawned) => (child = spawned));
+	const running = osw(b, "eval", { id, evaluator: { func: "score", result: { type: "slow" } } }, (spawned) => (child = spawned));
 	const deadline = Date.now() + 30_000;
-	while (!(await listening(b.port))) {
-		assert.ok(Date.now() < deadline, "the server came up");
+	while (probes() === before) {
+		assert.ok(Date.now() < deadline, "the server came up and postconfig ran");
 		await new Promise((resolve) => setTimeout(resolve, 100));
 	}
-	// The server is up before the getters run: wait for the getter, past postconfig's /terminal probe.
-	while (!b.requests().includes("GET /terminal")) await new Promise((resolve) => setTimeout(resolve, 100));
-	child.kill("SIGTERM");
-	const ran = await running;
+	return { child, running };
+}
+
+test("osw eval stopped by SIGTERM stops its server and exits 75; killed by SIGKILL (an exec timeout), its server dies with it", async (t) => {
+	const b = await box(t);
+	const term = await slowEval(b, "slow-term");
+	term.child.kill("SIGTERM");
+	const ran = await term.running;
 	assert.equal(ran.code, INFRA, ran.stderr);
 	assert.equal(await listening(b.port), false);
+
+	const kill = await slowEval(b, "slow-kill");
+	kill.child.kill("SIGKILL");
+	await kill.running;
+	const deadline = Date.now() + 15_000;
+	while (await listening(b.port)) {
+		assert.ok(Date.now() < deadline, "the server ended with osw");
+		await new Promise((resolve) => setTimeout(resolve, 100));
+	}
 });

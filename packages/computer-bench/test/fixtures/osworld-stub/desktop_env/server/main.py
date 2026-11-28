@@ -49,7 +49,7 @@ class Handler(BaseHTTPRequestHandler):
             with open(body["file_path"], "wb") as out:
                 out.write(bytes.fromhex(body["hex"]))
             return self.reply(200, {"status": "success"})
-        log(f"POST {path} {json.dumps(body, sort_keys=True)}")
+        log(f"POST {path} {json.dumps(body, sort_keys=True, separators=(',', ':'))}")
         if path == "/setup/launch":
             # As the real server does: the app is the server's child, in its session.
             child = subprocess.Popen(body["command"])
