@@ -475,7 +475,9 @@ const acpOwnArgs = (tool: string, argsJson: string): string | undefined => {
 /** What an ACP agent's own call does, in its words: the call the ACP adapter's gate asks about is `acp_<kind>` with
  *  `{ title, kind, input, toolCallId? }`, where `input` is the agent's own. Its command where the input names one
  *  (Antigravity's CommandLine, a `command` or `cmd`), its newlines kept; else its title (Cursor's names what it runs).
- *  Undefined for any other call, or one whose arguments say neither: its row shows its arguments. */
+ *  A call the adapter recorded as another MCP server's (`server`) is named by that server first:
+ *  `Calls MCP server "<name>": <words>`, or the server alone. Undefined for any other call, or one whose arguments say
+ *  none of these: its row shows its arguments. */
 export const acpCallWords = (tool: string, argsJson: string): string | undefined => {
   if (!tool.startsWith("acp_")) return undefined;
   let args: unknown;
@@ -485,10 +487,16 @@ export const acpCallWords = (tool: string, argsJson: string): string | undefined
     return undefined;
   }
   if (!args || typeof args !== "object") return undefined;
-  const { title, input } = args as { title?: unknown; input?: unknown };
+  const { title, input, server } = args as { title?: unknown; input?: unknown; server?: unknown };
   const given = (value: unknown) => (typeof value === "string" && value.trim() ? value : undefined);
   const own = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
-  return given(own.CommandLine) ?? given(own.command) ?? given(own.cmd) ?? given(title);
+  const words = given(own.CommandLine) ?? given(own.command) ?? given(own.cmd) ?? given(title);
+  // The other MCP server the adapter recorded for the call (permissionGateCall's `server`), never the agent's own words:
+  // first, so no cut hides whose call a person approves.
+  const other = given(server);
+  if (!other) return words;
+  const named = `Calls MCP server ${JSON.stringify(other)}`;
+  return words === undefined ? named : `${named}: ${words}`;
 };
 
 /** A dollar figure to a millionth, as the timeline's cost.usd is. */
