@@ -59,6 +59,25 @@ test("each fixture the bench desktop can't run is refused with its reason, and P
 	assert.match(port, /\| \*\*all\*\* \| \*\*7\*\* \| \*\*4\*\* \| \*\*1\*\* \| \*\*3\*\* \| \*\*4\*\* \|/);
 });
 
+test("a port that now refuses a task removes its folder from an earlier port, in the domains it writes alone", async () => {
+	const { writeSuite } = await loader();
+	const ids = (out) => loadSuite(out).map((task) => task.spec.id).sort();
+	const out = tmp("osw-port-");
+	writeSuite(await portFixture(), out);
+	writeFileSync(join(out, "chrome-bb5e4c0d", "kept.txt"), "an earlier port's\n");
+	// Without the sums, the calc task's two files have no sha256: refused.
+	const unsummed = await portFixture({});
+	assert.ok(unsummed.find((one) => one.uuid.startsWith("1273e544")).reasons);
+	// A port of another domain leaves the calc folder alone.
+	writeSuite(unsummed, out, ["chrome"]);
+	assert.ok(ids(out).includes("osworld-verified.libreoffice-calc.1273e544"));
+	// A port of the calc domain removes it; the chrome folder, not written by this port, stays as it was.
+	const written = writeSuite(unsummed, out, ["libreoffice_calc"]);
+	assert.deepEqual(ids(out), ["osworld-verified.chrome.bb5e4c0d", "osworld-verified.gimp.dbbf4b99", "osworld-verified.gimp.fbb548ca"]);
+	assert.equal(written.has("libreoffice-calc-1273e544"), false);
+	assert.equal(read(join(out, "chrome-bb5e4c0d", "kept.txt")), "an earlier port's\n");
+});
+
 test("osworld.json is OSWorld's JSON with each file-cache URL at a revision and each download and gold given its sha256", async () => {
 	const results = await portFixture();
 	const calc = JSON.parse(results.find((one) => one.folder === "libreoffice-calc-1273e544").files["osworld.json"]);
