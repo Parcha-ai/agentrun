@@ -182,7 +182,8 @@ export interface ComputerDepsOptions {
  *  this machine's container engine, its descriptor's `local`, Docker's: the owner's AGENTRUN_DOCKER_IMAGE when set, else
  *  for a sandbox the package's recipe, which its prepareImage() builds, and a desktop refused in words, needing an image
  *  with an X server, which the recipe lacks; a provider whose descriptor declares imageEnv (Daytona's
- *  AGENTRUN_DAYTONA_SNAPSHOT): that variable's value in `env` when set; any other provider's, and such a one's while it
+ *  AGENTRUN_DAYTONA_SNAPSHOT, E2B's AGENTRUN_E2B_TEMPLATE): that variable's value in `env` when set (E2B's provider is
+ *  made with it too, and its prepareImage() answers it); any other provider's, and such a one's while it
  *  is unset: its descriptor's defaultImage for the kind, the computer package's PROVIDERS[].defaultImage; none for a
  *  vendor that prepares its own image and names no default (Agent37's), which the claim starts from what its
  *  prepareImage() answers; a kind with none otherwise refused in words), the leak bound for its lifetime (its clean end is the run's release), and its

@@ -456,7 +456,7 @@ in the kernel's tool registry, keyed by these groups.
   | docker | Docker | sandbox, desktop | none | bind | no |
   | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET`, `DAYTONA_ARCHIL_EGRESS`, `DAYTONA_ATTACH_EGRESS`, `DAYTONA_LISTED_MS` (optional) | none (`unmounted`: archil); archil with `DAYTONA_ARCHIL_EGRESS` (`mountsWith`) | yes |
   | modal | Modal | sandbox | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | archil | yes |
-  | e2b | E2B | sandbox, desktop | `E2B_API_KEY` | archil | yes |
+  | e2b | E2B | sandbox, desktop | `E2B_API_KEY`; `AGENTRUN_E2B_DOMAIN`, `AGENTRUN_E2B_API_URL`, `AGENTRUN_E2B_TEMPLATE` (optional) | archil | yes |
   | orgo | Orgo | desktop (Linux; Windows and macOS with `os`) | `ORGO_API_KEY` | none | yes |
   | phone-harness | Phone harness | phone | `PHONE_HARNESS_API_KEY` | none | yes |
   | browserbase | Browserbase | browser | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | none | yes |
@@ -681,6 +681,8 @@ live under:
   | `AGENTRUN_BOX_APP` | Modal's `app` (serve's default, `agentrun`, when unset) |
   | `AGENTRUN_DOCKER_IMAGE` | Docker's `image` option, `{ image: <name> }` (unset: the provider's own recipe); `docker.image()` makes it ready and gives the tag a computer's spec names |
   | `E2B_API_KEY` | E2B's `apiKey`: serve's new name for the E2B box |
+  | `AGENTRUN_E2B_DOMAIN`, `AGENTRUN_E2B_API_URL` | E2B's `domain` and `apiUrl` (unset: `e2b.app`, and `https://api.<domain>`) |
+  | `AGENTRUN_E2B_TEMPLATE` | E2B's `template`, which its `prepareImage()` answers (unset: the box template); E2B's `imageEnv` too |
   | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | Browserbase's `apiKey`, `projectId`: the names pi-browser reads today |
   | `KERNEL_API_KEY` | Kernel's `apiKey`: the name pi-browser reads today |
   | `BOXD_API_KEY`, `BOXD_ORG`, `BOXD_REGION` | boxd's `apiKey`, `org` and `region` (unset: the key's own org, the API's home region) |
@@ -1975,7 +1977,8 @@ option, never the key. It reads no setting from the environment (see [Settings](
 `E2B_API_KEY`, and the conformance module the `COMPUTER_E2B_API_KEY` it reads, never `E2B_API_KEY`, whose value may be
 another team's on a shared host. The SDK reads `E2B_API_KEY`, `E2B_DOMAIN`, `E2B_API_URL` and `E2B_DEBUG` from
 `process.env` whenever it is not given them (`index.mjs:1140-1152`, `1177-1191`), so every call is given the key, the
-domain (`options.domain`, default `e2b.app`), the API URL `https://api.<domain>` and `debug: false` explicitly: with
+domain (`options.domain`, default `e2b.app`), the API URL (`options.apiUrl`, default `https://api.<domain>`) and
+`debug: false` explicitly: with
 debug on, the SDK fakes a create and skips a kill (`index.mjs:5402`, `6021-6024`). The SDK also takes
 `E2B_SANDBOX_URL` when it is given no sandbox URL, and no option clears it (`index.mjs:1152`, `1183-1185`): it would
 send every call into a sandbox, the upload and the bridge with it, there. So the provider refuses to start while it is
@@ -1986,6 +1989,34 @@ Every call is also given `httpVersion: "1.1"`, which wins over `E2B_HTTP_VERSION
 HTTP/2 otherwise, and when an idle HTTP/2 session times out it throws on a stream with no `error` listener, which ends
 the whole process. A unit test points the real SDK, given the provider's options, at a local server that prefers HTTP/2
 and reads HTTP/1.1 arriving.
+
+### Other clouds, and the operator's template
+
+Three options, each filled by serve's setting of the same row (optional keys of E2B's descriptor, none a secret), point
+the provider at a cloud that speaks E2B's API, with the stock SDK, or at a template of the operator's own:
+
+| option | serve's setting | what it is | unset |
+| --- | --- | --- | --- |
+| `domain` | `AGENTRUN_E2B_DOMAIN` | the cloud's domain: each sandbox's envd is under it, and so is the API unless `apiUrl` names another | `e2b.app` |
+| `apiUrl` | `AGENTRUN_E2B_API_URL` | the API's URL, for a cloud whose API is not `https://api.<domain>`: https, with no login, query or fragment, since the key goes to it; another is refused, naming the setting, before any call | `https://api.<domain>` |
+| `template` | `AGENTRUN_E2B_TEMPLATE` | the template `prepareImage()` answers, so every computer, sandbox or desktop, starts from it; E2B's descriptor names it as its `imageEnv` too, so serve takes an agent's `computer.image` that names it | the box template |
+
+`apiKey` stays `E2B_API_KEY`, the key of whichever cloud the domain names. The SDK sends every call through one proxy,
+so it is given the process's proxy unless `NO_PROXY` exempts the whole domain and a given API URL's host too. The box
+template is public on E2B's own cloud alone; on another, a template of `box/Dockerfile` built on that cloud, named in
+`AGENTRUN_E2B_TEMPLATE`, is the one with Archil's client, which a Mode 2 folder mounts.
+
+The clouds whose docs say they speak E2B's API, and what each needs. None of them is run live yet:
+
+| cloud | settings | status |
+| --- | --- | --- |
+| Maritime | `AGENTRUN_E2B_DOMAIN=sb.mtm.sh` | not yet run live |
+| Orble | `AGENTRUN_E2B_DOMAIN=orble.tech`; it can't build templates, so `AGENTRUN_E2B_TEMPLATE` names one it has | not yet run live |
+| SUFY | `AGENTRUN_E2B_API_URL=https://us-south-1-sandbox.sufyapi.com` | not yet run live |
+| Alibaba Cloud Agent Sandbox | `AGENTRUN_E2B_DOMAIN=<region>.sandbox.aliyuncs.com` and `AGENTRUN_E2B_API_URL`, the API URL its docs give for the region | not yet run live |
+| PPIO | `AGENTRUN_E2B_DOMAIN=sandbox.ppio.cn`; its docs set `E2B_VALIDATE_API_KEY=false`, which e2b@2.63.0 never reads (it checks no key's form) | not yet run live |
+| UCloud | `AGENTRUN_E2B_DOMAIN=cn-wlcb.sandbox.ucloudai.com` | not yet run live |
+| Tencent Cloud Agent Runtime | `AGENTRUN_E2B_DOMAIN`, the endpoint its docs give | not yet run live |
 
 ### How the daemon gets in, and how it is reached
 

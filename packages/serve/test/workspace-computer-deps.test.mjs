@@ -325,6 +325,18 @@ test("AGENTRUN_DAYTONA_SNAPSHOT is the image of a Daytona computer and of no oth
   assert.equal(computerSpecOf({ AGENTRUN_FIXTURE_IMAGE: "fixture-template" })(declared, "sandbox", {}).image, "fixture-template");
 });
 
+// AGENTRUN_E2B_TEMPLATE names the template every E2B computer starts from in place of the box one, by E2B's imageEnv,
+// as AGENTRUN_DAYTONA_SNAPSHOT names Daytona's; unset or blank, none, and its prepareImage() answers the box template.
+test("AGENTRUN_E2B_TEMPLATE is the image of an E2B sandbox and desktop and of no other provider's; unset or blank, none", async () => {
+  const spec = computerSpecOf({ AGENTRUN_E2B_TEMPLATE: " osworld-ubuntu " });
+  for (const kind of ["sandbox", "desktop"]) assert.equal(spec(entryOf("e2b"), kind, {}).image, "osworld-ubuntu", kind);
+  assert.equal(spec(entryOf("daytona"), "sandbox", {}).image, DAYTONA_DEFAULT_SNAPSHOT, "Daytona keeps its own");
+  assert.equal("image" in spec(entryOf("modal"), "sandbox", {}), false, "Modal's prepareImage() answers its box image");
+  for (const env of [{}, { AGENTRUN_E2B_TEMPLATE: "" }, { AGENTRUN_E2B_TEMPLATE: "  " }]) {
+    assert.equal("image" in computerSpecOf(env)(entryOf("e2b"), "sandbox", {}), false, JSON.stringify(env));
+  }
+});
+
 // A vendor-hosted computer that runs only on the vendor's own network (the cloud phone's provider declares ["open"]):
 // under a list, the server's default or the operator's own, it runs open, never refused for the list (this server's
 // list can't reach it); under an explicit none, the operator's word for no network at all, it is refused in words.

@@ -1106,7 +1106,8 @@ run's hold), newest first. The runs list carries no computer, so this is the one
 across runs and agents; the console's Settings → Computers shows it as Running now. An agent's own computer kept
 between runs is on the agent's read (`own_computer`), and a paired computer under `paired` in `GET /v2/computers`. The keys are
 `DAYTONA_API_KEY` (with `DAYTONA_API_URL` and `DAYTONA_TARGET` optional), `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`,
-`E2B_API_KEY`, `AGENT37_API_KEY` (with `AGENT37_SSH_KEY` optional: unset, the server makes its own SSH key on first use,
+`E2B_API_KEY` (with `AGENTRUN_E2B_DOMAIN`, `AGENTRUN_E2B_API_URL` and `AGENTRUN_E2B_TEMPLATE` optional, below),
+`AGENT37_API_KEY` (with `AGENT37_SSH_KEY` optional: unset, the server makes its own SSH key on first use,
 seals it in its store as every saved key under `AGENTRUN_SEAL_KEY`, and registers it on the workspace as
 `agentrun-<hash>`, one key per store even when claims or servers reach first use together; without a seal key, a new
 key each restart, the old one left on the workspace), `MORPH_API_KEY`, `ORGO_API_KEY`, `PHONE_HARNESS_API_KEY`,
@@ -1385,6 +1386,22 @@ DAYTONA_API_KEY=... python3 packages/computer/box/build-daytona.py   # prints sn
 A Daytona computer mounts the run's folder only where `DAYTONA_ARCHIL_EGRESS` names a self-hosted target's Archil
 egress relay (see Mode 2 above), and then it needs this snapshot. A changed recipe is a new name, so build again after
 an upgrade that changes `box/`. A Daytona [box](#sandbox) never reads it.
+
+**An E2B computer's cloud and template.** Three optional settings beside `E2B_API_KEY`, each set in the environment or
+saved in Settings → Computers as the keys are, and none a secret:
+
+- `AGENTRUN_E2B_DOMAIN`: the domain of a cloud that speaks E2B's API. Each sandbox is under it, and the API is
+  `https://api.<domain>`. Unset, `e2b.app`.
+- `AGENTRUN_E2B_API_URL`: the API's URL, for a cloud whose API is not `https://api.<domain>`. It must be https, with no
+  login, query or fragment, since the key goes to it; another is refused, naming the setting, before any call. Unset,
+  `https://api.<domain>`.
+- `AGENTRUN_E2B_TEMPLATE`: the template every E2B computer starts from, sandbox or desktop, in place of the box template,
+  as `AGENTRUN_DAYTONA_SNAPSHOT` names Daytona's snapshot. An agent's `computer.image` may name it. A Mode 2 folder is an
+  Archil mount in it, so it needs `box/Dockerfile`'s Archil client (`box/build-e2b.mjs` builds one).
+
+`E2B_API_KEY` holds the key of whichever cloud the domain names, and the proxy (`HTTPS_PROXY`, `NO_PROXY`) is decided for
+that domain and the API URL's host. The computer package's README lists the clouds that speak E2B's API and the settings
+each needs ([E2B: other clouds](../computer/README.md#other-clouds-and-the-operators-template)).
 
 **Before unsetting `DAYTONA_ARCHIL_EGRESS` on a server with open runs.** Each open run's folder moves from the Archil
 mount to a synced folder at its next claim. The synced claim reads the folder through Archil's file API, which lists a
