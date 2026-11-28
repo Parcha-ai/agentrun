@@ -3,7 +3,7 @@
 // the machine's sshd (Agent37's WebSocket tunnel) and as the login the host gives (Agent37's root and key). Every error it throws or
 // rejects with is redacted of the login's secrets. The host's own ssh2 package does the protocol; this package names
 // only the slice it uses (Ssh2Module) and imports nothing at load.
-import { createPrivateKey, type KeyObject, randomBytes } from "node:crypto";
+import { createHash, createPrivateKey, type KeyObject, randomBytes } from "node:crypto";
 import { Duplex, PassThrough } from "node:stream";
 import type { HostCall, MachineProcess } from "../host.js";
 import { boundOf, redact } from "./process.js";
@@ -41,6 +41,8 @@ export interface Ssh2ConnectConfig {
 	readyTimeout: number;
 	keepaliveInterval: number;
 	keepaliveCountMax: number;
+	/** Given the server's host key (its SSH wire blob), whether to go on: false ends the handshake before any login. */
+	hostVerifier?: (key: Buffer) => boolean;
 }
 
 /** The slice of an ssh2 Client this provider uses. */
@@ -143,7 +145,16 @@ export interface SshLogin {
 	password?: string;
 	/** What no error may carry, beside the key and the password, which never do: a key inside the username (Morph's). */
 	secrets?: readonly string[];
+	/**
+	 * The sshd's host key, as OpenSSH's sha256 fingerprint (SHA256: and unpadded base64): a server with another key ends
+	 * the handshake before the login is sent, and is not tried again. For a login that carries a credential (InstaBox's
+	 * token as the username), which a host posing as the gateway would otherwise read.
+	 */
+	hostKey?: string;
 }
+
+/** OpenSSH's sha256 fingerprint of a host key's wire blob. */
+const fingerprintOf = (key: Buffer): string => `SHA256:${createHash("sha256").update(key).digest("base64").replace(/=+$/, "")}`;
 
 export interface SshExecOptions {
 	/** The host's own ssh2 package, or anything with the same slice. */
@@ -239,14 +250,14 @@ export class SshExec {
 			quit(givenUp());
 		};
 		stop.addEventListener("abort", drop, { once: true });
-		const { username, privateKey, password } = this.#loginOf(id);
+		const { username, privateKey, password, hostKey } = this.#loginOf(id);
 		try {
 			await Promise.race([opened, quitted]);
 			await Promise.race([
 				new Promise<void>((resolve, reject) => {
 					client.once("ready", resolve);
 					client.once("error", reject);
-					client.connect({ sock: duplex, username, privateKey, password, readyTimeout: timeoutMs, keepaliveInterval: KEEPALIVE_MS, keepaliveCountMax: KEEPALIVE_COUNT_MAX });
+					client.connect({ sock: duplex, username, privateKey, password, readyTimeout: timeoutMs, keepaliveInterval: KEEPALIVE_MS, keepaliveCountMax: KEEPALIVE_COUNT_MAX, ...(hostKey === undefined ? {} : { hostVerifier: (key: Buffer) => fingerprintOf(key) === hostKey }) });
 				}),
 				quitted,
 			]);
