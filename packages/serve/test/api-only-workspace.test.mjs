@@ -351,8 +351,8 @@ test("a scoped request reads its own agent's package, a revision's skills and it
   const mine = await inW1(server, "GET", `/v2/agents/${agent}/package`);
   assert.equal(mine.status, 200, mine.text);
   assert.match(blockedOf(mine, "opsonly")?.reason ?? "", /not a saved MCP server here/, "in a workspace, the operator's server is one saved nowhere");
-  assert.equal(blockedOf(mine, "w1own"), undefined, mine.text);
-  assert.ok(mine.body.report.remade.some((one) => one.kind === "mcp_server" && one.name === "w1own"), `its own per_run server is remade on the target: ${mine.text}`);
+  // Its own server is one saved here: blocked for what it is (on this machine, as the fake is), never as one saved nowhere.
+  assert.match(blockedOf(mine, "w1own")?.reason ?? "", /^It is on this machine/, mine.text);
   assert.ok(!mine.text.includes(new URL(mcp.url).host), "and nothing of its address reaches the workspace");
 
   const [revision] = (await inW1(server, "GET", `/v2/agents/${agent}/revisions`)).body.revisions;
