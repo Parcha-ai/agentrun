@@ -1,10 +1,11 @@
 import { act, type ReactElement, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { Banner, Button, Checkbox, Chip, ConfirmDialog, CopyButton, Dialog, Field, fieldBoxClass, Input, Menu, MenuItem, NavItem, Picker, Segmented, Spinner, tabPanelProps, Tabs, Textarea, ToastProvider, useToast } from ".";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { Banner, Button, Checkbox, Chip, ConfirmDialog, CopyButton, Dialog, Field, fieldBoxClass, Input, Menu, MenuItem, NavItem, Picker, SearchPicker, type SearchPickerOption, Segmented, Spinner, tabPanelProps, Tabs, Textarea, ToastProvider, useToast } from ".";
 import * as foundations from "@/design/Foundations.stories";
 import * as primitives from "./Primitives.stories";
+import { searchPick, searchPicker, shownIn } from "@/test/search-picker";
 
 // What each primitive promises a person on a keyboard or a screen reader (docs/console-design-system.md), checked on the
 // rendered DOM.
@@ -153,6 +154,10 @@ describe("Banner", () => {
     const host = mount(<Banner tone="warning" title="Enter these keys again">Why.</Banner>);
     expect(host.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
     expect(host.querySelector("p")?.className).toContain("text-warning-text");
+  });
+  it("as a bar, stands at least 48px tall so its bottom edge meets the edge under the navigation's logo row", () => {
+    const bar = mount(<Banner bar tone="info" actions={<Button size="xs">Turn off</Button>}>Demo mode.</Banner>).querySelector('[role="status"]')!;
+    expect(bar.className.split(" ")).toEqual(expect.arrayContaining(["min-h-12", "items-center", "border-b"]));
   });
 });
 
@@ -357,6 +362,37 @@ describe("the design-system stories", () => {
 
 // A picker sized by its words changes width with each pick unless it is `steady`. jsdom lays nothing out, so this holds
 // what the width comes from: every option's words in the field, hidden, in the picked words' own grid cell.
+describe("Picker, option descriptions", () => {
+  it("shows a disabled choice's full reason in the list while keeping its selected label compact", async () => {
+    const reason = "Install the runtime package and configure its provider key, then restart the server before choosing this runtime.";
+    const picked = vi.fn();
+    const options = [{ value: "ready", label: "Ready" }, { value: "missing", label: "Missing runtime", disabled: true, description: reason }];
+    const host = mount(<Picker label="Runtime" value="missing" onChange={picked} options={options} />);
+    const field = host.querySelector("button")!;
+    expect(field.textContent).toBe("Missing runtime");
+    await click(field);
+    const list = document.querySelector('[role="listbox"]')!;
+    const missing = list.querySelector('[role="option"][data-value="missing"]')!;
+    expect(missing.textContent).toContain(reason);
+    expect(missing.getAttribute("aria-disabled")).toBe("true");
+    expect(missing.getAttribute("aria-label")).toBe("Missing runtime");
+    expect(missing.getAttribute("title")).toBeNull();
+    const description = [...missing.querySelectorAll("span")].find(span => span.textContent === reason)!;
+    expect(description).toBeTruthy();
+    expect([...description.classList]).toEqual(expect.arrayContaining(["font-sans", "text-small"]));
+    expect(description.closest(".break-words")).toBeTruthy();
+    expect(document.getElementById(missing.getAttribute("aria-describedby")!)).toBe(description);
+    expect(missing.classList.contains("data-[disabled]:opacity-50")).toBe(false);
+    expect(description.closest('[hidden], [aria-hidden="true"], .hidden, .sr-only, .truncate')).toBeNull();
+    expect(list.querySelector('[role="option"][data-value="ready"]')?.textContent).toBe("Ready");
+    await click(missing);
+    expect(picked).not.toHaveBeenCalled();
+    await key(list, "Escape");
+    expect(field.textContent).toBe("Missing runtime");
+    expect(host.textContent).not.toContain(reason);
+  });
+});
+
 describe("Picker, steady", () => {
   const options = [{ value: "a", label: "GET · Short" }, { value: "b", label: "POST · The longest of them all" }];
   const sizers = (host: HTMLElement) => [...host.querySelectorAll("button [data-picker-sizer]")];
@@ -379,5 +415,100 @@ describe("Picker, steady", () => {
     expect(sizers(host)).toEqual([]);
     await click(host.querySelector("button")!);
     expect(document.querySelector("[data-picker-list]")!.className).not.toContain("w-max");
+  });
+});
+
+describe("SearchPicker", () => {
+  const events: SearchPickerOption[] = [
+    { value: "GITHUB_ISSUE_ADDED_EVENT", label: "Issue Added", keywords: ["GITHUB_ISSUE_ADDED_EVENT", "A new issue is opened."] },
+    { value: "GITHUB_STAR_ADDED_EVENT", label: "Star Added", keywords: ["GITHUB_STAR_ADDED_EVENT", "Someone stars the repository."] },
+    { value: "GITHUB_COMMIT_EVENT", label: "Commit", keywords: ["GITHUB_COMMIT_EVENT", "A commit is pushed."], disabled: true, title: "Not for this account" },
+  ];
+  function Search({ onSubmit = () => {} }: { onSubmit?: () => void }) {
+    const [value, setValue] = useState("");
+    return (
+      <form onSubmit={(e) => { e.preventDefault(); onSubmit(); }}>
+        <Field label="Event" note="What starts a run." error={value ? undefined : "Pick an event."}>
+          <SearchPicker label="Event" name="event" value={value} onChange={setValue} options={events} placeholder="Search or pick an event" nothing={(q) => `No event matches “${q}”`} />
+        </Field>
+      </form>
+    );
+  }
+
+  it("is one field its Field names, describes and marks refused, its list filtered by every word typed in its words or keywords", async () => {
+    const host = mount(<Search />);
+    const field = searchPicker(host, "Event")!;
+    expect(field.getAttribute("role")).toBe("combobox");
+    expect(host.querySelector(`label[for="${field.id}"]`)?.textContent).toBe("Event");
+    expect(field.getAttribute("aria-describedby")?.split(" ").map((id) => document.getElementById(id)?.textContent)).toEqual(["What starts a run.", "Pick an event."]);
+    expect(field.getAttribute("aria-invalid")).toBe("true");
+    expect(field.placeholder).toBe("Search or pick an event");
+    expect((await shownIn(field)).options.map((o) => o.text), "the chevron opens the whole list").toEqual(["Issue Added", "Star Added", "Commit"]);
+    expect((await shownIn(field, "added")).options.map((o) => o.value)).toEqual(["GITHUB_ISSUE_ADDED_EVENT", "GITHUB_STAR_ADDED_EVENT"]);
+    expect((await shownIn(field, "repository star")).options.map((o) => o.text), "every word, in any order, keywords too").toEqual(["Star Added"]);
+    expect((await shownIn(field, "COMMIT")).options, "case aside; a disabled option is listed and says so").toEqual([{ text: "Commit", value: "GITHUB_COMMIT_EVENT", disabled: true }]);
+    const none = await shownIn(field, "nothing-like-it");
+    expect([none.options, none.nothing]).toEqual([[], "No event matches “nothing-like-it”"]);
+  });
+
+  it("puts the picked option's words in the field and its value in the form; a search left unpicked goes back to them; Enter never submits", async () => {
+    const sent = vi.fn();
+    const host = mount(<Search onSubmit={sent} />);
+    const field = searchPicker(host, "Event")!;
+    await searchPick(field, "GITHUB_STAR_ADDED_EVENT", "star");
+    expect([field.value, field.getAttribute("data-value"), (host.querySelector('input[type="hidden"][name="event"]') as HTMLInputElement | null)?.value]).toEqual(["Star Added", "GITHUB_STAR_ADDED_EVENT", "GITHUB_STAR_ADDED_EVENT"]);
+    expect(field.getAttribute("aria-invalid"), "picked, its Field's error is gone").toBeNull();
+    await shownIn(field, "iss");
+    await key(field, "Escape");
+    expect(field.value, "Esc puts the picked words back").toBe("Star Added");
+    await shownIn(field, "issue");
+    const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    await act(async () => { field.dispatchEvent(enter); });
+    await settle();
+    expect([enter.defaultPrevented, sent.mock.calls.length]).toEqual([true, 0]);
+    await key(field, "ArrowDown");
+    await key(field, "Enter");
+    expect(sent).not.toHaveBeenCalled();
+  });
+
+  it("is off whole when disabled", () => {
+    const host = mount(<SearchPicker label="Event" value="" onChange={() => {}} options={events} disabled placeholder="Composio offers no event for this toolkit" />);
+    expect(searchPicker(host, "Event")!.disabled).toBe(true);
+  });
+});
+
+// jsdom lays nothing out, so the search box's size is given here and its changes are sent by hand. Every width the list
+// has had since it was put on the page is read (a MutationObserver), not only the one it ends with: a list first drawn
+// at its minimum width and widened a frame later is what this holds off.
+describe("SearchPicker, a list as wide as its field from the render that opens it", () => {
+  const box = (width: number) => ({ width, height: 40, top: 0, left: 0, right: width, bottom: 40, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+  const options = [{ value: "a", label: "First" }, { value: "b", label: "Second" }];
+  let watched: { el: Element; changed: (entries: ResizeObserverEntry[]) => void }[] = [];
+  let seen: string[] = [];
+  let lists: MutationObserver | undefined;
+  beforeEach(() => {
+    watched = [];
+    seen = [];
+    vi.stubGlobal("ResizeObserver", class { constructor(private readonly changed: (entries: ResizeObserverEntry[]) => void) {} observe(el: Element) { watched.push({ el, changed: this.changed }); } unobserve() {} disconnect() { watched = watched.filter((w) => w.changed !== this.changed); } });
+    lists = new MutationObserver(() => { const list = document.querySelector<HTMLElement>("[data-picker-list]"); if (list) seen.push(list.style.getPropertyValue("--field-width")); });
+    lists.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["style"] });
+  });
+  afterEach(() => { lists?.disconnect(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+  const resize = (field: Element) => act(() => { for (const w of watched.filter((x) => x.el === field)) w.changed([]); });
+  const widths = () => { const all = [...new Set(seen)]; seen = []; return all; };
+
+  it("takes the field's width as it opens, and the field's new width after its size changes", async () => {
+    const measured = vi.spyOn(HTMLInputElement.prototype, "getBoundingClientRect").mockReturnValue(box(608));
+    const host = mount(<SearchPicker label="Event" value="" onChange={() => {}} options={options} />);
+    const field = searchPicker(host, "Event")!;
+    await shownIn(field, "first");
+    expect(document.querySelector("[data-picker-list]")!.className).toContain("w-[var(--field-width)]");
+    expect(widths(), "every width its list had").toEqual(["608px"]);
+    await key(field, "Escape");
+    expect(document.querySelector("[data-picker-list]")).toBeNull();
+    measured.mockReturnValue(box(400));
+    resize(field);
+    await shownIn(field, "second");
+    expect(widths(), "opened again after its field shrank").toEqual(["400px"]);
   });
 });

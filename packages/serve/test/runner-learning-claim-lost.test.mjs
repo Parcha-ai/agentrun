@@ -64,7 +64,7 @@ async function lostRun(t, { capUsd, runCap, held, losses, endOfRun }) {
     rmSync(dir, { recursive: true, force: true });
   });
   await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: [], learning: true } });
-  const seed = await seedOf(dir, "agent-1");
+  const seed = await seedOf(dir, server, "agent-1");
   const body = { input: { content: "Follow the script." }, title: "t", place: { mode: "runner" }, learning: { seed: seed.sha, section: "" }, max_cost_usd: capUsd };
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body });
   const launch = readLaunchBody(body);
@@ -112,10 +112,11 @@ async function lostRun(t, { capUsd, runCap, held, losses, endOfRun }) {
       ...(await spec(claim, run)),
       cap: { capUsd, park: (refusal) => cap.parkOf(refusal, capUsd), checkRaise: cap.checkRaise, followUpOf: cap.followUpOf },
       runCap: { capUsd: () => capUsd, ...runCap },
+      ...(endOfRun ? { endOfRun } : {}),
     }));
     // Run-1 on the adapter loop; any other run it claims is held, never run here.
     const createLoop = (deps) => {
-      const loop = job({ ...deps, endOfRun, journal: (claim) => freezing(name, deps.journal(claim)) });
+      const loop = job({ ...deps, journal: (claim) => freezing(name, deps.journal(claim)) });
       let mine = false;
       let release;
       const parked = new Promise((resolve) => (release = resolve));

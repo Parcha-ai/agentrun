@@ -13,12 +13,15 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { AttachHub, checkLifetime, kindRefusals, MemoryMachineTokens, mountsOf, recordedMount, sweep } from "../dist/index.js";
+import { AttachHub, checkLifetime, computerNameFor, kindRefusals, MemoryMachineTokens, mountsOf, recordedMount, sweep } from "../dist/index.js";
 import { fakeObjects } from "./fake-archil.mjs";
 import { bootDial, desktopOverDial, dialServer } from "./fake-dial-host.mjs";
+import { refusesHttp } from "./https-refusal.mjs";
 
 const modal = await import("../dist/modal.js");
 const { MODAL } = await import("../dist/descriptors/modal.js");
+/** A sandbox's tags as the labels they pack (Modal keeps its tags packed, facts.labels.packed). */
+const { unpackLabels: labelsIn, packLabels } = await import("../dist/hosted/values.js");
 const { ModalProvider } = modal;
 
 const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
@@ -236,31 +239,39 @@ test("lifetime: maxLifetimeMs caps what check takes, in words, and create refuse
 	assert.deepEqual(rec.calls, [], "refused before any SDK call");
 });
 
-test("Modal takes 10 tags on a sandbox, the adapter's own among them: past that check() refuses in words with no SDK call, and create refuses the same words before any SDK call", async () => {
-	const seven = Object.fromEntries([1, 2, 3, 4, 5, 6, 7].map((n) => [`l${n}`, "v"]));
-	const six = Object.fromEntries(Object.entries(seven).slice(1));
-	// Each spec past the limit: the count is create's own, the caller's labels with the adapter's (four with no
-	// max-deadline, as Modal has no extend; and a GPU's).
-	for (const [spec, own] of [
-		[{ ...SPEC, labels: seven }, 4],
-		[{ ...SPEC, labels: six, gpu: { type: "T4", count: 1 } }, 5],
-	]) {
-		const { provider, rec } = setup();
-		const refusals = provider.check(spec);
-		assert.equal(refusals.length, 1, JSON.stringify(refusals));
-		assert.equal(refusals[0].field, "labels");
-		assert.equal(refusals[0].message, `a Modal computer carries at most 10 labels, the adapter's own among them, and this one's would carry 11, ${own} of them the adapter's: give at most ${10 - own} labels`);
-		assert.deepEqual(rec.calls, [], "check made no SDK call");
-		const made = await create(provider, spec);
-		assert.equal(made.error?.code, "refused");
-		assert.equal(made.error.message, `labels: ${refusals[0].message}`, "create's words are check's");
-		assert.deepEqual(rec.calls, [], "create refused before any SDK call: no app lookup, no listing, no sandboxes.create");
+test("Modal keeps its tags packed: a computer with more labels than Modal's 10 tags is made in two, read back exactly; labels that pack past 512 bytes are refused in words before any SDK call", async () => {
+	const eleven = Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((n) => [`l${n}`, "v"]));
+	const { provider, rec } = setup();
+	assert.deepEqual(provider.check({ ...SPEC, labels: eleven }), [], "eleven of the caller's labels, beside the adapter's, fit packed");
+	assert.deepEqual(rec.calls, [], "check made no SDK call");
+	await create(provider, { ...SPEC, labels: eleven });
+	const { tags } = rec.params();
+	assert.deepEqual(Object.keys(tags), ["agentrun", "agentrun-0"], "two tags go to Modal");
+	assert.ok(bytesOf(tags) <= 512, `${bytesOf(tags)} bytes of tags`);
+	assert.deepEqual(Object.fromEntries(Object.entries(labelsIn(tags)).filter(([key]) => key.startsWith("l"))), eleven, "read back exactly");
+	// Digests deflate to no less than half their hex: nine of 128 hex digits pack past Modal's 512 bytes.
+	const digests = Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [`n${n}`, createHash("sha512").update(`n${n}`).digest("hex")]));
+	const tight = setup();
+	const refusals = tight.provider.check({ ...SPEC, labels: digests });
+	assert.equal(refusals.length, 1, JSON.stringify(refusals));
+	assert.equal(refusals[0].field, "labels");
+	assert.match(refusals[0].message, /^a Modal computer keeps its labels packed, and its labels pack into 2 labels of \d+ bytes in all, past the 10 labels and 512 bytes it keeps: give a shorter image, mount folder or labels$/);
+	const made = await create(tight.provider, { ...SPEC, labels: digests });
+	assert.equal(made.error?.code, "refused");
+	assert.equal(made.error.message, `labels: ${refusals[0].message}`, "create's words are check's");
+	assert.deepEqual(tight.rec.calls, [], "create refused before any SDK call: no app lookup, no listing, no sandboxes.create");
+});
+
+test("a caller's label under the packed map's keys (agentrun, agentrun-<n>) is refused at check() and at create, in words naming them, before any SDK call: it could pass for a packed map where tags are read as given", async () => {
+	const { provider, rec } = setup();
+	for (const key of ["agentrun", "agentrun-0", "agentrun-3"]) {
+		const spec = { ...SPEC, labels: { [key]: "pforged" } };
+		assert.deepEqual(provider.check(spec).map((r) => r.field), ["labels"], key);
+		const created = await create(provider, spec);
+		assert.equal(created.error?.code, "refused", key);
+		assert.match(created.error.message, new RegExp(`the label ${key} is reserved: agentrun and agentrun-<n>`), key);
 	}
-	const at = setup();
-	assert.deepEqual(at.provider.check({ ...SPEC, labels: six }), [], "ten labels in all are Modal's limit, taken");
-	assert.deepEqual(at.rec.calls, []);
-	await create(at.provider, { ...SPEC, labels: six });
-	assert.equal(Object.keys(at.rec.params().tags).length, 10, "ten tags go to Modal");
+	assert.deepEqual(rec.names(), [], "no SDK call");
 });
 
 test("the janitor does not sweep Modal computers: Modal ends them at their lifetime", async () => {
@@ -280,7 +291,8 @@ test("a listing before any computer makes no app: it looks the app up with creat
 	assert.ok(rec.calls.every(([, , options]) => options?.createIfMissing === false), "neither made the app");
 	assert.equal((await create(provider)).error?.code, "invalid", "a create Modal refused made nothing");
 	const lookups = rec.calls.filter(([name]) => name === "apps.fromName").map(([, , options]) => options.createIfMissing);
-	assert.deepEqual(lookups, [false, false, false, true], "the create's listing by name finds no app either; the create makes it");
+	// The create's listing by name asks twice, packed and as given (a sandbox made before Modal's tags were packed).
+	assert.deepEqual(lookups, [false, false, false, false, true], "the create's listing by name finds no app either; the create makes it");
 });
 
 test("create asks Modal for one VM sandbox in the app: the entrypoint as its command, init --own-network as 2510:2510, the lifetime as its timeout in whole seconds, Modal's small request under the spec's limits, no network, the labels as tags", async () => {
@@ -288,10 +300,13 @@ test("create asks Modal for one VM sandbox in the app: the entrypoint as its com
 	const result = await create(provider, { ...SPEC, lifetimeMs: 600_500, labels: { team: "a" } });
 	assert.equal(result.error?.code, "invalid", "a create Modal refused made nothing");
 	assert.deepEqual(rec.names().slice(0, 2), ["apps.fromName", "sandboxes.list"], "the listing by the request's name comes first");
-	const [, listed] = rec.calls.find(([name]) => name === "sandboxes.list");
-	assert.deepEqual(Object.keys(listed.tags).sort(), [COMPUTER, NAME]);
+	const [[, packed], [, given]] = rec.calls.filter(([name]) => name === "sandboxes.list");
+	assert.deepEqual(Object.keys(packed.tags), ["agentrun"], "the packed name first");
+	assert.deepEqual(Object.keys(given.tags).sort(), [COMPUTER, NAME], "then the labels as given");
 	assert.deepEqual(rec.calls.find(([name]) => name === "apps.fromName").slice(1), [APP, { createIfMissing: false }], "the listing looks the app up without making it, and keeps the one it found");
 	assert.equal(rec.names().filter((name) => name === "apps.fromName").length, 1);
+	const tags = labelsIn(rec.params().tags);
+	assert.deepEqual(Object.keys(rec.params().tags), ["agentrun", "agentrun-0"], "the labels go to Modal packed");
 	assert.deepEqual(rec.calls.find(([name]) => name === "images.fromRegistry").slice(1), ["debian:bookworm-slim"]);
 	assert.deepEqual(rec.calls.find(([name]) => name === "image.dockerfileCommands")[1], ["ENV HOME=/work", "WORKDIR /work"]);
 	const params = rec.params();
@@ -307,11 +322,12 @@ test("create asks Modal for one VM sandbox in the app: the entrypoint as its com
 	const init = params.command.slice(params.command.indexOf("init"));
 	assert.equal(init[init.indexOf("--user") + 1], "2510:2510");
 	assert.ok(init.includes("--own-network"));
-	assert.equal(params.tags.team, "a");
-	assert.equal(params.tags[COMPUTER], "1");
-	assert.match(params.tags[NAME], /^computer-[0-9a-f]{12}$/);
-	// No max-deadline tag: Modal has no extend, the tag's one reader, so none of its 512 bytes go to it.
-	assert.deepEqual(Object.keys(params.tags).sort(), ["agentrun.computer", "agentrun.computer.deadline", "agentrun.computer.image", "agentrun.computer.name", "team"]);
+	assert.equal(tags.team, "a");
+	assert.equal(tags[COMPUTER], "1");
+	assert.match(tags[NAME], /^computer-[0-9a-f]{12}$/);
+	assert.equal(params.tags.agentrun, tags[NAME], "the packed name is the computer's name");
+	// No max-deadline label: Modal has no extend, the label's one reader, so none of its 512 bytes go to it.
+	assert.deepEqual(Object.keys(tags).sort(), ["agentrun.computer", "agentrun.computer.deadline", "agentrun.computer.image", "agentrun.computer.name", "team"]);
 	assert.ok(init.includes("--max-deadline"), "init still holds the most its deadline may reach");
 	assert.ok(!rec.names().includes("sandboxes.fromId"), "nothing was made, so nothing is read back");
 });
@@ -326,6 +342,34 @@ test("create: a spec's sizes and user map onto Modal's fields and init's --user"
 	const tiny = setup();
 	await create(tiny.provider, { ...SPEC, cpus: 0.25, memoryMb: 64 });
 	assert.deepEqual([tiny.rec.params().cpu, tiny.rec.params().memoryMiB], [0.125, 64], "the request never above the limit");
+});
+
+/** The recorder with sandboxes.create answering a running sandbox that keeps its tags, as Modal makes one. */
+function making() {
+	const { rec, provider } = setup();
+	let next = 0;
+	rec.sdk.sandboxes.create = async (app, image, params) => {
+		rec.calls.push(["sandboxes.create", app, image, params]);
+		return { sandboxId: `sb-made-${++next}`, poll: async () => null, getTags: async () => ({ ...params.tags }), terminate: async () => {} };
+	};
+	return { rec, provider, host: provider.host };
+}
+const machineRequest = (extra = {}) => ({ name: "computer-0123456789ab", image: "debian:bookworm-slim", labels: { [COMPUTER]: "1" }, lifetimeMs: 600_000, backstopAt: new Date(Date.now() + DAY_MS).toISOString(), egress: false, command: ["sh", "-c", "true"], ...extra });
+
+test("a Modal computer's size is the limit its create set (Modal reads none back and bills by use up to it): 2 vCPUs and 4096 MB by default, a spec's own sizes else, as get reads the sandbox back", async () => {
+	const { rec, host } = making();
+	const plain = await host.create(machineRequest(), { timeoutMs: 2_000 });
+	const params = rec.params();
+	assert.deepEqual([params.cpuLimit, params.memoryLimitMiB], [1, 4096], "1 core, 2 vCPUs, and 4 GiB: the create's limits");
+	const machine = await host.get(plain.id, { timeoutMs: 2_000 });
+	assert.deepEqual(machine.resources, { cpus: params.cpuLimit * 2, memoryMb: params.memoryLimitMiB }, "the figures are the create's limits, in vCPUs and MB");
+	assert.deepEqual(machine.resources, { cpus: 2, memoryMb: 4096 });
+	const sized = await host.create(machineRequest({ cpus: 0.5, memoryMb: 512 }), { timeoutMs: 2_000 });
+	assert.deepEqual((await host.get(sized.id, { timeoutMs: 2_000 })).resources, { cpus: 0.5, memoryMb: 512 }, "a spec's sizes are its limits, and its figures");
+	// A sandbox this provider did not make (another process's, read by its id) has no size this provider knows: none said.
+	rec.sdk.sandboxes.fromId = async (id) => ({ sandboxId: id, poll: async () => null, getTags: async () => ({ [COMPUTER]: "1" }) });
+	assert.equal(Object.hasOwn(await host.get("sb-elsewhere", { timeoutMs: 2_000 }), "resources"), false, "never guessed");
+	await host.delete(sized.id, { timeoutMs: 2_000 });
 });
 
 test("create of a GPU computer: Modal's GPU option, on its gVisor runtime", async () => {
@@ -388,8 +432,8 @@ test("create of an Archil computer: Modal's network stays on for root to reach A
 	await create(provider, ARCHIL_SPEC);
 	const { tags, blockNetwork } = rec.params();
 	assert.equal(blockNetwork, undefined, "root reaches Archil; the tools' none is init's own, read from inside");
-	assert.equal(tags["agentrun.mount"], JSON.stringify({ kind: "archil", disk: MOUNT.disk, region: MOUNT.region, agent: "a1" }));
-	assert.equal(recordedMount(tags).folder, MOUNT.folder, "read back as the adapter wrote it");
+	assert.equal(labelsIn(tags)["agentrun.mount"], JSON.stringify({ kind: "archil", disk: MOUNT.disk, region: MOUNT.region, agent: "a1" }));
+	assert.equal(recordedMount(labelsIn(tags)).folder, MOUNT.folder, "read back as the adapter wrote it");
 	noToken(rec.calls, "what the SDK was handed");
 });
 
@@ -404,11 +448,11 @@ test("create under open or a list leaves Modal's network on (no blockNetwork) fo
 		const { blockNetwork, command, tags } = rec.params();
 		assert.equal(blockNetwork, undefined, form);
 		assert.deepEqual(command.slice(-2), ["--network", form]);
-		assert.equal(tags["agentrun.computer.network"], form);
+		assert.equal(labelsIn(tags)["agentrun.computer.network"], form);
 	}
 });
 
-test("Modal's 512 bytes of tags: qa36's Archil computer and one of the longest agent id on the box image fit; past the bound check() refuses in words, before any SDK call", async () => {
+test("Modal's 512 bytes of tags: qa36's Archil computer and one of the longest agent id on the box image fit packed; past the bound check() refuses in words, before any SDK call", async () => {
 	const archilSpec = (agent, image) => ({ ...SPEC, image, labels: { "agentrun.run": RUN, "agentrun.epoch": "1" }, mount: { ...MOUNT, folder: `agents/${agent}/runs/${RUN}/work` } });
 	for (const spec of [archilSpec("qa35e-modal-mwdsumo1", "registry.example/agentrun-archil:qa36"), archilSpec("a".repeat(128), BOX_IMAGE)]) {
 		const { provider, rec } = setup();
@@ -416,20 +460,213 @@ test("Modal's 512 bytes of tags: qa36's Archil computer and one of the longest a
 		await create(provider, spec);
 		const { tags } = rec.params();
 		assert.ok(bytesOf(tags) <= 512, `${bytesOf(tags)} bytes of tags`);
-		assert.equal(recordedMount(tags).folder, spec.mount.folder);
+		assert.equal(recordedMount(labelsIn(tags)).folder, spec.mount.folder);
 	}
 	const { provider, rec } = setup();
-	const over = archilSpec("a".repeat(128), `registry.example/agentrun-archil@sha256:${"b".repeat(64)}`);
+	// A digest deflates to no less than half its hex: an image of four of them packs past 512 bytes.
+	const digest = (n) => createHash("sha512").update(`d${n}`).digest("hex");
+	const over = archilSpec("a".repeat(128), `registry.example/agentrun-archil:${digest(1)}${digest(2)}${digest(3)}${digest(4)}`.slice(0, 520));
 	const refusals = provider.check(over);
 	assert.equal(refusals.length, 1, JSON.stringify(refusals));
 	assert.equal(refusals[0].field, "mount");
-	assert.match(refusals[0].message, /a Modal computer's labels come to at most 512 bytes, names and values together, and this computer's would come to \d+ \(.*agentrun\.mount \d+.*\): give a shorter image, mount folder or labels/);
+	assert.match(refusals[0].message, /^a Modal computer keeps its labels packed, and its labels pack into 2 labels of \d+ bytes in all, past the 10 labels and 512 bytes it keeps: give a shorter image, mount folder or labels$/);
 	noToken(refusals, "the refusal of the tags' size");
 	const created = await create(provider, over);
 	assert.equal(created.error?.code, "refused");
-	const long = { ...SPEC, labels: { a: "x".repeat(480) } };
+	const long = { ...SPEC, labels: { a: `${digest(5)}${digest(6)}${digest(7)}${digest(8)}${digest(9)}` } };
 	assert.deepEqual(provider.check(long).map((r) => r.field), ["labels"], "a computer with no mount: the labels are the field");
 	assert.deepEqual(rec.calls, [], "no SDK call");
+});
+
+test("a hosted Modal computer with the server's labels (an Archil mount for the longest agent id, a network list, a run and its epoch, the deadlines) is made: its tags go to Modal packed within 10 tags and 512 bytes, and read back exactly", async () => {
+	const { unpackLabels } = await import("../dist/hosted/values.js");
+	const agent = "a".repeat(128);
+	const spec = {
+		...SPEC,
+		image: BOX_IMAGE,
+		network: { allow: ["api.anthropic.com", "registry.npmjs.org", "pypi.org", "files.pythonhosted.org", "github.com"] },
+		labels: { "agentrun.run": RUN, "agentrun.epoch": "1" },
+		mount: { ...MOUNT, folder: `agents/${agent}/runs/${RUN}/work` },
+	};
+	const { provider, rec } = setup();
+	assert.deepEqual(provider.check(spec), [], "check() takes the server's computer");
+	await create(provider, spec);
+	assert.ok(rec.names().includes("sandboxes.create"), "the create reaches Modal");
+	const { tags } = rec.params();
+	assert.ok(Object.keys(tags).length <= 10, `${Object.keys(tags).length} tags, past Modal's 10`);
+	assert.ok(bytesOf(tags) <= 512, `${bytesOf(tags)} bytes of tags, past Modal's 512`);
+	const labels = unpackLabels(tags);
+	assert.ok(labels !== undefined, "the tags hold a packed map");
+	assert.ok(Object.entries(labels).reduce((sum, [key, value]) => sum + key.length + value.length, 0) > 512, "as given, the labels pass Modal's 512 bytes");
+	assert.equal(labels["agentrun.run"], RUN);
+	assert.match(labels["agentrun.computer.network"], /^allow:.*registry\.npmjs\.org/);
+	assert.equal(recordedMount(labels).folder, spec.mount.folder);
+	noToken(tags, "the tags");
+});
+
+test("a sandbox made before Modal's tags were packed, its labels as tags, is still the adapter's: list finds it by a label and by its name, attach by its id reads it, a reap by its run's label ends it, and a create of its name finds it and makes none", async () => {
+	const requestId = "req-modal-before";
+	const name = computerNameFor(requestId);
+	const before = { [COMPUTER]: "1", [NAME]: name, "agentrun.computer.deadline": new Date(Date.now() + 600_000).toISOString(), "agentrun.computer.image": SPEC.image, "agentrun.computer.network": "none", "agentrun.run": RUN, "agentrun.epoch": "1" };
+	let finished = null;
+	const calls = [];
+	const sandbox = {
+		sandboxId: "sb-before",
+		poll: async () => finished,
+		getTags: async () => ({ ...before }),
+		terminate: async () => {
+			calls.push(["terminate"]);
+			finished = 0;
+		},
+		exec: async () => {
+			calls.push(["exec"]);
+			throw Object.assign(new Error("400: refused by the test"), { name: "InvalidError" });
+		},
+	};
+	const sdk = {
+		apps: { fromName: async (app) => ({ appId: `ap-${app}` }) },
+		images: { fromRegistry: (tag) => ({ tag, dockerfileCommands: () => ({ tag }) }), fromId: async (id) => ({ id, dockerfileCommands: () => ({ id }) }) },
+		sandboxes: {
+			create: async () => {
+				calls.push(["sandboxes.create"]);
+				throw Object.assign(new Error("400: refused by the test"), { name: "InvalidError" });
+			},
+			fromId: async (id) => (id === sandbox.sandboxId ? sandbox : Promise.reject(Object.assign(new Error("Sandbox not found"), { name: "NotFoundError" }))),
+			// Modal's list filters by tags: the sandbox's own, as they were stored.
+			list: ({ tags }) => {
+				calls.push(["sandboxes.list", tags]);
+				const shown = finished === null && Object.entries(tags).every(([key, value]) => before[key] === value) ? [sandbox] : [];
+				return { async *[Symbol.asyncIterator]() { yield* shown; } };
+			},
+		},
+	};
+	const provider = new ModalProvider({ sdk, app: APP, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const lists = () => calls.filter(([what]) => what === "sandboxes.list").map(([, tags]) => tags);
+
+	const byName = await provider.list({ [NAME]: name });
+	assert.deepEqual(byName.value?.map(({ ref }) => ref.id), ["sb-before"], "found by its name");
+	assert.deepEqual(lists(), [{ agentrun: name }, { [NAME]: name, [COMPUTER]: "1" }], "asked by the packed name and by the labels as given");
+
+	// attach by id: the read gives its labels, so it is the adapter's, and the attach goes on to connect (here refused).
+	const attached = await provider.attach({ id: "sb-before" });
+	assert.notEqual(attached.error?.code, "not_found", JSON.stringify(attached.error));
+
+	// create of its name: the listing by the request's name finds it, so no sandbox is made.
+	calls.length = 0;
+	await provider.create(SPEC, { requestId });
+	assert.ok(lists().some((tags) => tags[NAME] === name), "the create asked for the name's labels as given");
+	assert.ok(!calls.some(([what]) => what === "sandboxes.create"), `the create made no sandbox: ${JSON.stringify(calls.map(([what]) => what))}`);
+
+	// a reap: the run's computers by its label, each released.
+	const byRun = await provider.list({ "agentrun.run": RUN });
+	assert.deepEqual(byRun.value?.map(({ ref }) => ref), [{ id: "sb-before", name }], "found by its run's label");
+	assert.equal(byRun.value[0].labels["agentrun.run"], RUN);
+	const released = await provider.release(byRun.value[0].ref, "delete");
+	assert.equal(released.ok, true, JSON.stringify(released));
+	assert.ok(calls.some(([what]) => what === "terminate"), "the reap ended it");
+});
+
+/**
+ * A Modal whose sandboxes are listed by their stored tags: a create gives a packed sandbox, and an older server's create
+ * of the same request makes a sandbox with its labels as tags, listed from the moment the new one is made. Each
+ * sandbox's id is the one given; Modal answers no createdAt, so the lower id is the older.
+ */
+function upgradeModal({ rawId, packedId, name }) {
+	const calls = [];
+	const sandboxes = new Map();
+	const sandbox = (sandboxId, tags) => {
+		const box = {
+			sandboxId,
+			tags,
+			finished: null,
+			poll: async () => box.finished,
+			getTags: async () => ({ ...tags }),
+			terminate: async () => {
+				calls.push(["terminate", sandboxId]);
+				box.finished = 0;
+			},
+			exec: async () => {
+				calls.push(["exec", sandboxId]);
+				throw Object.assign(new Error("400: refused by the test"), { name: "InvalidError" });
+			},
+		};
+		return box;
+	};
+	const raw = sandbox(rawId, { [COMPUTER]: "1", [NAME]: name, "agentrun.computer.deadline": new Date(Date.now() + 600_000).toISOString(), "agentrun.computer.image": SPEC.image, "agentrun.computer.network": "none" });
+	const sdk = {
+		apps: { fromName: async (app) => ({ appId: `ap-${app}` }) },
+		images: { fromRegistry: (tag) => ({ tag, dockerfileCommands: () => ({ tag }) }), fromId: async (id) => ({ id, dockerfileCommands: () => ({ id }) }) },
+		sandboxes: {
+			create: async (_app, _image, params) => {
+				calls.push(["sandboxes.create"]);
+				sandboxes.set(raw.sandboxId, raw);
+				const made = sandbox(packedId, { ...params.tags });
+				sandboxes.set(packedId, made);
+				return made;
+			},
+			fromId: async (id) => sandboxes.get(id) ?? Promise.reject(Object.assign(new Error("Sandbox not found"), { name: "NotFoundError" })),
+			list: ({ tags }) => {
+				calls.push(["sandboxes.list", tags]);
+				const shown = [...sandboxes.values()].filter((box) => box.finished === null && Object.entries(tags).every(([key, value]) => box.tags[key] === value));
+				return { async *[Symbol.asyncIterator]() { yield* shown; } };
+			},
+		},
+	};
+	return { sdk, calls, raw, sandboxes, sandbox };
+}
+
+test("across the upgrade, a request's raw sandbox (an older server's) and its packed one (this server's) converge on one: the oldest by Modal's id is kept and the other deleted, whichever form each is", async () => {
+	// The raw one is older: this server's packed sandbox is deleted and the create goes on with the raw one.
+	{
+		const requestId = "req-modal-twin-raw";
+		const name = computerNameFor(requestId);
+		const modal = upgradeModal({ rawId: "sb-0-raw", packedId: "sb-1-packed", name });
+		const provider = new ModalProvider({ sdk: modal.sdk, app: APP, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+		const created = await provider.create(SPEC, { requestId });
+		const terminated = modal.calls.filter(([what]) => what === "terminate").map(([, id]) => id);
+		assert.equal(modal.calls.filter(([what]) => what === "sandboxes.create").length, 1, "one sandbox made by this server");
+		assert.deepEqual(terminated, ["sb-1-packed"], `the packed one, the newer, is deleted and the raw one kept: ${JSON.stringify(created.error)}`);
+		assert.ok(modal.calls.some(([what, id]) => what === "exec" && id === "sb-0-raw"), "the create goes on with the raw one, the one kept");
+		assert.ok(!modal.calls.some(([what, id]) => what === "exec" && id === "sb-1-packed"), "nothing runs in the deleted one");
+		assert.doesNotMatch(created.error?.message ?? "", /machines carry the name/, "never refused as two of one name");
+	}
+	// The packed one is older: the raw one is deleted before this server prepares its own.
+	{
+		const requestId = "req-modal-twin-packed";
+		const name = computerNameFor(requestId);
+		const modal = upgradeModal({ rawId: "sb-9-raw", packedId: "sb-1-packed", name });
+		const provider = new ModalProvider({ sdk: modal.sdk, app: APP, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+		const created = await provider.create(SPEC, { requestId });
+		const order = modal.calls.filter(([what]) => what === "terminate" || what === "exec").map(([what, id]) => `${what} ${id}`);
+		assert.equal(modal.calls.filter(([what]) => what === "sandboxes.create").length, 1, "one sandbox made by this server");
+		assert.equal(order[0], "terminate sb-9-raw", `the raw one, the newer, is deleted first: ${JSON.stringify(order)}`);
+		assert.ok(order.includes("exec sb-1-packed"), "the create goes on with its own packed one, the one kept");
+		assert.ok(!order.includes("exec sb-9-raw"), "nothing runs in the deleted one");
+		assert.doesNotMatch(created.error?.message ?? "", /machines carry the name/, "never refused as two of one name");
+	}
+});
+
+test("across the upgrade, a create that finds a request's raw sandbox and its packed one both there before it starts refuses as exists, naming both, and makes, deletes and runs nothing: only racing creates converge", async () => {
+	const requestId = "req-modal-twin-before";
+	const name = computerNameFor(requestId);
+	const modal = upgradeModal({ rawId: "sb-0-raw", packedId: "sb-1-packed", name });
+	// An older server's retry made the raw one beside a newer server's packed one: both are there before this create.
+	const packed = packLabels(modal.raw.tags, name);
+	assert.ok("labels" in packed, JSON.stringify(packed));
+	modal.sandboxes.set(modal.raw.sandboxId, modal.raw);
+	modal.sandboxes.set("sb-1-packed", modal.sandbox("sb-1-packed", packed.labels));
+	const provider = new ModalProvider({ sdk: modal.sdk, app: APP, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const created = await provider.create(SPEC, { requestId });
+	assert.equal(created.ok, false, JSON.stringify(created));
+	assert.equal(created.error.code, "exists", JSON.stringify(created.error));
+	assert.match(created.error.message, /2 machines carry the name/);
+	assert.match(created.error.message, /sb-0-raw/, "names the raw one");
+	assert.match(created.error.message, /sb-1-packed/, "names the packed one");
+	const did = modal.calls.map(([what]) => what);
+	assert.ok(!did.includes("sandboxes.create"), `no sandbox made: ${JSON.stringify(did)}`);
+	assert.ok(!did.includes("terminate"), `neither deleted, both kept: ${JSON.stringify(did)}`);
+	assert.ok(!did.includes("exec"), `nothing runs in either: ${JSON.stringify(did)}`);
+	assert.deepEqual([...modal.sandboxes.values()].filter((box) => box.finished === null).map((box) => box.sandboxId).sort(), ["sb-0-raw", "sb-1-packed"], "both still running");
 });
 
 test('the Modal conformance module: mountFor("archil") gives a fresh run folder on the disk COMPUTER_ARCHIL_* name, read and written outside through the disk\'s object API', async () => {
@@ -457,6 +694,63 @@ test('the Modal conformance module: mountFor("archil") gives a fresh run folder 
 	await folder.close();
 	assert.equal(objects.objects.size, 0);
 	noToken(objects.calls, "the object API's calls");
+});
+
+test("a conformance run's mount cases fit Modal's 10 tags and 512 bytes: each computer as the runner makes it, the run's and the runner's labels, the claim, the case, the mount and the box image, the longest image a Modal recipe runs", async (t) => {
+	const { conformanceImage, mountFor } = await import("../dist/conformance/modal.js");
+	const { runConformance } = await import("../dist/conformance/index.js");
+	// The box image: the run's image on dial, and the image that holds the Archil client, so an Archil run's --image.
+	const image = conformanceImage({ env: { COMPUTER_MODAL_CONNECT: "dial" } });
+	assert.equal(image, BOX_IMAGE);
+	const env = {
+		AGENTRUN_COMPUTER_LIVE_MODAL: "1",
+		COMPUTER_ARCHIL_DISK: MOUNT.disk,
+		COMPUTER_ARCHIL_REGION: MOUNT.region,
+		COMPUTER_ARCHIL_TOKEN: TOKEN,
+		COMPUTER_ARCHIL_API_KEY: "fake-test-key",
+		COMPUTER_ARCHIL_S3_URL: "https://s3.green.us-east-1.aws.prod.archil.com",
+	};
+	const { provider, rec } = setup();
+	const report = await runConformance(provider, {
+		image,
+		only: ["mount"],
+		mountFor: (kind) => mountFor(kind, { env, archil: { objects: fakeObjects() } }),
+		caseTimeoutMs: 10_000,
+		cleanupTimeoutMs: 2_000,
+	});
+	// A case whose labels are past Modal's bounds is refused by the adapter itself (check, then create) before Modal is
+	// called, so it never reaches sandboxes.create. That refusal is the bound this test guards, so it is read first.
+	const overBudget = report.results.filter(({ reason }) => /a Modal computer keeps its labels packed/.test(reason ?? ""));
+	assert.deepEqual(
+		overBudget.map(({ id }) => id),
+		[],
+		`these mount cases' labels are past Modal's 10 tags or 512 bytes, and the adapter refused them:\n${overBudget.map(({ id, reason }) => `${id}: ${reason}`).join("\n").replaceAll(TOKEN, "[token]")}`,
+	);
+	// The tags of each create, as Modal is handed them: the recorder refuses every create, so each case ends at its first.
+	// The mount cases carry the most of a run's labels (a claim's two and the mount's beside the case's), so they bound it.
+	// The run's shared computer is made once too, for the hello the cases' exec and files needs are read from. It carries
+	// no case label: it is the create named by its request, <runner>/shared (the runner's own label holds <runner>).
+	const made = rec.calls.filter(([name]) => name === "sandboxes.create").map(([, , , params]) => params.tags);
+	const given = (tags) => labelsIn(tags);
+	const roleOf = (tags) => (given(tags)[NAME] === computerNameFor(`${given(tags)["agentrun.conformance.runner"]}/shared`) ? "the run's shared computer" : given(tags)["agentrun.conformance.case"]);
+	const results = report.results.map(({ id, status, reason }) => `${id} ${status}: ${reason}`).join("\n");
+	assert.deepEqual(
+		made.map(roleOf).sort(),
+		["mount-archil", "mount-archil-durable", "mount-archil-isolated-durable", "mount-archil-loop-tool-edit", "mount-archil-takeover-1", "mount-archil-token", "mount-sync-cap", "mount-sync-delete", "mount-sync-durable", "mount-sync-push", "the run's shared computer"],
+		`every mount case Modal takes, and the run's shared computer, reached sandboxes.create:\n${results}`,
+	);
+	for (const tags of made) {
+		const which = `${roleOf(tags)} (${JSON.stringify(tags).replaceAll(TOKEN, "[token]")})`;
+		assert.ok(given(tags)["agentrun.conformance"] && given(tags)["agentrun.conformance.runner"], `${which}: the run's and the runner's labels`);
+		assert.ok(Object.keys(tags).length <= 10, `${which}: ${Object.keys(tags).length} tags, past Modal's 10`);
+		assert.ok(bytesOf(tags) <= 512, `${which}: ${bytesOf(tags)} bytes of tags, past Modal's 512`);
+	}
+	noToken(made, "the tags");
+	// The worst: an Archil case, the longest case name, its mount's tag beside the box image's. The shared computer's tags
+	// are a subset of every case's (no claim, case or mount label), so it is never the worst.
+	const worst = made.reduce((most, tags) => (bytesOf(tags) > bytesOf(most) ? tags : most));
+	assert.ok(roleOf(worst).startsWith("mount-"), `the worst is a mount case: ${roleOf(worst)}`);
+	t.diagnostic(`the worst case's tags: ${Object.keys(worst).length} of Modal's 10, ${bytesOf(worst)} of its 512 bytes`);
 });
 
 // --- the token, the server, the environment ---
@@ -567,8 +861,8 @@ test("the conformance module pins the client's server: an ambient MODAL_PROFILE 
 		await withProcessEnv({ MODAL_PROFILE: "prod", MODAL_CONFIG_PATH: toml }, async () => {
 			for (const make of [createProvider, createDriftedProvider]) {
 				for (const [chosen, server] of [
-					[{}, "https://api.modal.com:443"],
-					[{ COMPUTER_MODAL_SERVER_URL: "https://dev.example.invalid:443" }, "https://dev.example.invalid:443"],
+					[{}, "https://api.modal.com"],
+					[{ COMPUTER_MODAL_SERVER_URL: "https://dev.example.invalid:8443" }, "https://dev.example.invalid:8443"],
 				]) {
 					const { ModalClient, made, servers } = fakeClient();
 					await make({ env: { ...MODAL_SETTINGS, ...DEV_TOKEN, MODAL_PROFILE: "prod", MODAL_CONFIG_PATH: toml, ...chosen }, ModalClient, ...MODULE_TEST });
@@ -610,11 +904,27 @@ test("the provider's create() reads no environment: the token, the app and the s
 		assert.equal(provider.id, "modal");
 		assert.equal(provider.capabilities().maxLifetimeMs, DAY_MS);
 		assert.deepEqual(made, [TOKEN_OPTIONS], "the token passed in, never one of the environment");
-		assert.deepEqual(servers, ["https://api.modal.com:443"], "the SDK's default server, not COMPUTER_MODAL_SERVER_URL");
+		assert.deepEqual(servers, ["https://api.modal.com"], "the SDK's default server (its default port, 443, is inferred from https), not COMPUTER_MODAL_SERVER_URL");
 		const chosen = fakeClient();
-		await modal.create({ ...TOKEN_OPTIONS, app: APP, serverUrl: "https://dev.example.invalid:443", ModalClient: chosen.ModalClient, daemonPath: DAEMON_PATH });
-		assert.deepEqual(chosen.servers, ["https://dev.example.invalid:443"], "options.serverUrl is the server");
+		await modal.create({ ...TOKEN_OPTIONS, app: APP, serverUrl: "https://dev.example.invalid:8443", ModalClient: chosen.ModalClient, daemonPath: DAEMON_PATH });
+		assert.deepEqual(chosen.servers, ["https://dev.example.invalid:8443"], "options.serverUrl is the server");
+		// An upper-case scheme reaches the client in lower case: nice-grpc reads the scheme case-sensitively (its
+		// includes('https')), and would dial an upper-case one in the clear.
+		const upper = fakeClient();
+		await modal.create({ ...TOKEN_OPTIONS, app: APP, serverUrl: "HTTPS://API.MODAL.COM", ModalClient: upper.ModalClient, daemonPath: DAEMON_PATH });
+		assert.deepEqual(upper.servers, ["https://api.modal.com"], "the scheme and host are lower-case");
 	});
+});
+
+test("the server URL is https alone, loopback included, so the token never crosses in the clear: another is refused before any client is made", async () => {
+	for (const serverUrl of ["http://api.modal.com:443", "http://127.0.0.1:8080", "http://[::1]:8080", "http://localhost:8080", "grpc://api.modal.com:443"]) {
+		const { ModalClient, made } = fakeClient();
+		await assert.rejects(modal.create({ ...TOKEN_OPTIONS, app: APP, serverUrl, ModalClient, daemonPath: DAEMON_PATH }), refusesHttp("the Modal server URL (options.serverUrl)", serverUrl, TOKEN_OPTIONS.tokenId));
+		assert.deepEqual(made, [], serverUrl);
+	}
+	const { ModalClient, made } = fakeClient();
+	await assert.rejects(modal.create({ ...TOKEN_OPTIONS, app: APP, serverUrl: "//api.modal.com:443", ModalClient, daemonPath: DAEMON_PATH }), /the Modal server URL \(options\.serverUrl\) is not a URL/);
+	assert.deepEqual(made, []);
 });
 
 test("the conformance module reads COMPUTER_MODAL_APP and passes it as options.app, and refuses without it in words naming it", async () => {
@@ -660,7 +970,8 @@ test("the provider refuses an ambient MODAL_SERVER_URL in process.env, the one v
 		const { ModalClient, made } = fakeClient();
 		await assert.rejects(modal.create({ ...TOKEN_OPTIONS, app: APP, ModalClient, daemonPath: DAEMON_PATH }), (error) => {
 			assert.match(error.message, /MODAL_SERVER_URL is set/);
-			assert.match(error.message, /options\.serverUrl/);
+			// The default named as the client gets it, with no :443 (https's own port).
+			assert.match(error.message, /pass the server as options\.serverUrl if it is not https:\/\/api\.modal\.com$/);
 			return true;
 		});
 		assert.deepEqual(made, []);
@@ -670,7 +981,7 @@ test("the provider refuses an ambient MODAL_SERVER_URL in process.env, the one v
 
 test("client constructions run one at a time: each sees only its own MODAL_SERVER_URL, and process.env is put back after each, a failed one too", async () => {
 	const { modalClient } = modal;
-	const servers = ["https://one.example.invalid:443", "https://two.example.invalid:443", "https://three.example.invalid:443"];
+	const servers = ["https://one.example.invalid:8443", "https://two.example.invalid:8443", "https://three.example.invalid:8443"];
 	const seen = [];
 	let inside = 0;
 	function ModalClient(params) {
@@ -693,7 +1004,7 @@ test("client constructions run one at a time: each sees only its own MODAL_SERVE
 	});
 	assert.equal(process.env.MODAL_SERVER_URL, before);
 	assert.ok(await modalClient({ ...TOKEN_OPTIONS, ModalClient }), "a failed construction leaves the turn free for the next");
-	assert.equal(seen.at(-1).server, "https://api.modal.com:443");
+	assert.equal(seen.at(-1).server, "https://api.modal.com");
 	assert.equal(process.env.MODAL_SERVER_URL, before, "and unset again after it");
 });
 
@@ -928,4 +1239,44 @@ test("the conformance module's run image on dial is the box image, the one that 
 	assert.equal(conformanceImage({ env: { [MODAL_ENV.connect]: "dial" } }), boxImageRef());
 	assert.equal(conformanceImage({ env: {} }), "debian:bookworm-slim");
 	assert.equal(conformanceImage({ env: { [MODAL_ENV.connect]: "exec" } }), "debian:bookworm-slim");
+});
+
+test("the conformance module hands onNote, dial and the kind to the drifted twin as to the run's provider: the same desktop, the same refusal on create, the same note on release", async () => {
+	const { MODAL_ENV, createProvider, createDriftedProvider } = await import("../dist/conformance/modal.js");
+	for (const make of [createProvider, createDriftedProvider]) {
+		const notes = [];
+		const provider = await make({
+			env: { ...MODAL_SETTINGS, ...DEV_TOKEN, [MODAL_ENV.connect]: "dial", [MODAL_ENV.kind]: "desktop" },
+			ModalClient: fakeClient().ModalClient,
+			...MODULE_TEST,
+			onNote: (note) => notes.push(note),
+			dial: {
+				tokens: {
+					revoke: async () => {
+						throw new Error("the token store is down");
+					},
+				},
+				hub: { revoke() {}, connection: () => undefined, online: () => false },
+			},
+		});
+		assert.equal(provider.capabilities().kind, "desktop", make.name);
+		const made = await create(provider);
+		assert.equal(made.ok, false, make.name);
+		assert.match(made.error.message, /has no public https address/, make.name);
+		const released = await provider.release({ id: "sb-0000000000000000000001", name: "computer-0123456789ab" }, "delete");
+		assert.equal(released.ok, true, `${make.name}: ${JSON.stringify(released)}`);
+		assert.equal(notes.length, 1, `${make.name}: ${JSON.stringify(notes)}`);
+		assert.match(notes[0].note, /could not be revoked \(the token store is down\)/, make.name);
+	}
+});
+
+test("the conformance module's daemon: an option's path, and the drifted twin uploads the one it built, not the option's", async () => {
+	const { createProvider, createDriftedProvider } = await import("../dist/conformance/modal.js");
+	const options = { env: { ...MODAL_SETTINGS, ...DEV_TOKEN }, daemonPath: "/nonexistent/untangle-option/computerd", buildDaemon: async () => "/nonexistent/untangle-drift/computerd" };
+	const made = await create(await createProvider({ ...options, ModalClient: fakeClient().ModalClient }));
+	assert.equal(made.ok, false);
+	assert.match(made.error.message, /no daemon binary at \/nonexistent\/untangle-option\/computerd/);
+	const drifted = await create(await createDriftedProvider({ ...options, ModalClient: fakeClient().ModalClient }));
+	assert.equal(drifted.ok, false);
+	assert.match(drifted.error.message, /no daemon binary at \/nonexistent\/untangle-drift\/computerd/);
 });

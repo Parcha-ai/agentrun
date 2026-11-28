@@ -26,6 +26,7 @@ import type { CostParts } from "@parcha/agentrun-kernel";
 export type SignInReader = ReturnType<typeof signInReads>;
 import { KINDS } from "./runner/journal-kinds.js";
 import { ENDED_WHILE_WAITING, STOPPED_WHILE_WAITING } from "./refusal-words.js";
+import { micro } from "./micro.js";
 
 /** How a run wound down for its spend cap (`max_cost_usd`), from its journal's root entries: the tool calls the cap's
  *  wrap-up refused (CAP_REFUSED, each call once however often it was refused: a replay is the same call), and whether it
@@ -281,7 +282,10 @@ type BudgetEntry = { pending: { kind: "budget"; cap_usd: number; spent_usd?: num
 
 /** The run's active cap park, from its journal: the last agentrun.budget entry the cap wrote when it parked the run for
  *  room, unless an agentrun.raise after it cleared the pause (the run goes on at the raised cap then). A re-park writes a
- *  fresh budget entry, which a raise before it does not clear, so the last of the two in log order decides. */
+ *  fresh budget entry, which a raise before it does not clear, so the last of the two in log order decides. A raise entry
+ *  clears the park it names (its `pause`), and only that one, as the runner reads it (raiseStateOf): a retry of an earlier
+ *  raise names that raise's pause, and a raise checked against the run while it worked names none, so the park the run
+ *  stands at since stays. */
 function activeBudget(entries: readonly JournalEntry[]): BudgetEntry | undefined {
   return activePark(entries)?.mark;
 }
@@ -291,7 +295,10 @@ function activePark(entries: readonly JournalEntry[]): { mark: BudgetEntry; id: 
   let park: { mark: BudgetEntry; id: string } | undefined;
   for (const entry of entries) {
     if (entry.kind === KINDS.budget) park = { mark: dataOf<BudgetEntry>(entry), id: String(entry.id) };
-    else if (entry.kind === KINDS.raise) park = undefined;
+    else if (entry.kind === KINDS.raise && park) {
+      const named = (entry.data as { pause?: unknown } | undefined)?.pause;
+      if (named !== undefined && String(named) === park.id) park = undefined;
+    }
   }
   return park;
 }
@@ -451,7 +458,7 @@ export const actingOn = (run: Pick<RunView, "approvals" | "meta">) => [...(run.a
 export const shownArgs = (approval: Pick<Approval, "args_json">, redact: (text: string) => string): string => previewOf(redact(approval.args_json));
 
 /** A dollar figure to a millionth, as the timeline's cost.usd is. */
-export const micro = (usd: number): number => Math.round(usd * 1e6) / 1e6;
+export { micro } from "./micro.js";
 /** How many of the refused request's least a run paused at its cap is offered on top of what was taken (suggestedCap). */
 export const SUGGESTED_RAISE_FACTOR = 10;
 /** The raise a run paused at its cap is offered: what the cap counted as taken plus SUGGESTED_RAISE_FACTOR times the

@@ -63,8 +63,9 @@ for (const http of [true, false]) {
   });
 }
 
-test('a permission request for our own tool is answered allow_once, never allow_always, and the gate decides the call', async (t) => {
-  const recipe = fakeRecipe(scratch(), { script: [{ call: 'lookup' }, { sayLastResult: true }], style: 'goose', askMcp: true });
+test('a permission request for our own tool, on a recipe that declares the title tie (Cursor), is answered allow_once, never allow_always, and the gate decides the call', async (t) => {
+  // Was run as Goose, whose recipe has no tie now: Goose asks nothing for our tools (goose-permission.test.mjs).
+  const recipe = fakeRecipe(scratch(), { script: [{ call: 'lookup' }, { sayLastResult: true }], style: 'cursor', askMcp: true });
   const asked = [];
   const { session, events } = await openSession(t, recipe, {
     tools: [tool('lookup', () => 'found')],
@@ -237,6 +238,118 @@ test("the session's instructions go as the system prompt the agent advertises, e
   assert.equal(prompt.length, 2);
   assert.match(prompt[0], /Be brief\./);
   assert.equal(prompt[1], 'go');
+});
+
+test("a recipe's instructions reach the agent on their own, and after the session's own when it has some", async (t) => {
+  const told = 'Write files with a shell command.';
+  const alone = fakeRecipe(scratch(), { script: [{ say: 'ok' }], systemPrompt: true }, { instructions: told });
+  const a = await openSession(t, alone);
+  await a.session.send('go');
+  await a.session.turnEnd();
+  assert.equal(fakeEvents(alone).find((e) => e.type === 'new').system, told);
+  const both = fakeRecipe(scratch(), { script: [{ say: 'ok' }], systemPrompt: true }, { instructions: told });
+  const b = await openSession(t, both, { system: ['Be brief.'] });
+  await b.session.send('go');
+  await b.session.turnEnd();
+  assert.equal(fakeEvents(both).find((e) => e.type === 'new').system, `Be brief.\n\n${told}`);
+  // An agent with no system prompt gets them ahead of the first prompt, as it gets the session's own.
+  const plain = fakeRecipe(scratch(), { script: [{ say: 'ok' }] }, { instructions: told });
+  const c = await openSession(t, plain);
+  await c.session.send('go');
+  await c.session.turnEnd();
+  const prompt = fakeEvents(plain).find((e) => e.type === 'prompt').text;
+  assert.equal(prompt.length, 2);
+  assert.match(prompt[0], /Write files with a shell command\./);
+  assert.equal(prompt[1], 'go');
+});
+
+test("a loaded conversation the agent was never given the recipe's instructions in gets them, once, ahead of its next prompt", async (t) => {
+  const told = 'Write files with a shell command.';
+  // Begun before the recipe had instructions (an upgrade), on an agent with no system prompt: session/load carries none
+  // for it, so before, a loaded conversation never got them.
+  const store = memorySessionStore();
+  const before = fakeRecipe(scratch(), { script: [{ say: 'one' }, { say: 'two' }, { say: 'three' }] });
+  const after = { ...before, instructions: told };
+  for (const [recipe, words] of [[before, 'go'], [after, 'again'], [after, 'more']]) {
+    const { session } = await openSession(t, recipe, { store, system: ['Be brief.'] });
+    await session.send(words);
+    assert.equal((await session.turnEnd()).status, 'completed');
+    await session.close();
+  }
+  assert.equal(fakeEvents(before).filter((e) => e.type === 'load').length, 2, 'both later runs loaded the session');
+  const prompts = fakeEvents(before).filter((e) => e.type === 'prompt').map((e) => e.text);
+  assert.equal(prompts[1].length, 2);
+  assert.match(prompts[1][0], /Write files with a shell command\./);
+  assert.doesNotMatch(prompts[1][0], /Be brief/, "the recipe's alone: the session's own are in its history already");
+  assert.equal(prompts[1][1], 'again');
+  assert.deepEqual(prompts[2], ['more'], 'once: the next load does not repeat them');
+  // Given them on a new session (ahead of its first prompt): a load never repeats them.
+  const fresh = memorySessionStore();
+  const plain = fakeRecipe(scratch(), { script: [{ say: 'one' }, { say: 'two' }] }, { instructions: told });
+  for (const words of ['go', 'again']) {
+    const { session } = await openSession(t, plain, { store: fresh });
+    await session.send(words);
+    assert.equal((await session.turnEnd()).status, 'completed');
+    await session.close();
+  }
+  const given = fakeEvents(plain).filter((e) => e.type === 'prompt').map((e) => e.text);
+  assert.equal(given[0].length, 2);
+  assert.deepEqual(given[1], ['again']);
+});
+
+// A runner that dies in the turn that carried the instructions, before the agent's history was copied back: the next
+// runner loads the history from before that turn, which does not hold them.
+const crashedTelling = async (t, { before, during, after, system = [] }) => {
+  const store = memorySessionStore();
+  if (before) {
+    const { session } = await openSession(t, before, { store, system });
+    await session.send('go');
+    assert.equal((await session.turnEnd()).status, 'completed');
+    await session.close();
+  }
+  const first = await openSession(t, during, { store, system });
+  await first.session.send('again');
+  await until(() => fakeEvents(during).some((e) => e.type === 'hang'), 'the turn to start');
+  first.stop(new Error('the runner died'));
+  await first.session.turnEnd().catch(() => undefined);
+  await first.session.close().catch(() => undefined);
+  const second = await openSession(t, after, { store, system });
+  assert.equal(second.session.state, 'open_turn', 'the turn the crash cut is open');
+  await second.session.recover();
+  assert.equal((await second.session.turnEnd()).status, 'completed');
+  await second.session.close();
+  const third = await openSession(t, after, { store, system });
+  await third.session.send('more');
+  assert.equal((await third.session.turnEnd()).status, 'completed');
+  return fakeEvents(during).filter((e) => e.type === 'prompt').map((e) => e.text);
+};
+
+test("a runner that dies in the turn carrying a recipe's new instructions, before the history holding them is copied back: the next load gives them again", async (t) => {
+  const told = 'Write files with a shell command.';
+  const dir = scratch();
+  const before = fakeRecipe(dir, { script: [{ say: 'one' }] });
+  const during = fakeRecipe(dir, { script: [{ say: 'one' }, { hang: true }] }, { instructions: told });
+  const after = fakeRecipe(dir, { script: [{ say: 'one' }, { say: 'two' }, { say: 'three' }] }, { instructions: told });
+  const prompts = await crashedTelling(t, { before, during, after, system: ['Be brief.'] });
+  assert.equal(fakeEvents(before).filter((e) => e.type === 'load').length, 3, 'every later run loaded the session');
+  assert.match(prompts[1][0], /Write files with a shell command\./, 'the cut turn carried them');
+  assert.match(prompts[2].join('\n'), /\[Recovery\]/);
+  assert.match(prompts[2][0], /Write files with a shell command\./, "the loaded history never got them: the recovery's prompt carries them");
+  assert.doesNotMatch(prompts[2][0], /Be brief/, "the recipe's alone: the session's own are in its history already");
+  assert.deepEqual(prompts[3], ['more'], 'once: given with a history copied back, the next load does not repeat them');
+});
+
+test('a runner that dies in the first turn of a new session, before the history holding its instructions is copied back: the next load gives them all', async (t) => {
+  const told = 'Write files with a shell command.';
+  const dir = scratch();
+  const during = fakeRecipe(dir, { script: [{ hang: true }] }, { instructions: told });
+  const after = fakeRecipe(dir, { script: [{ say: 'one' }, { say: 'two' }] }, { instructions: told });
+  const prompts = await crashedTelling(t, { during, after, system: ['Be brief.'] });
+  assert.equal(fakeEvents(during).filter((e) => e.type === 'load').length, 2, 'both later runs loaded the session');
+  assert.match(prompts[0][0], /Be brief\.[\s\S]*Write files with a shell command\./, 'the cut turn carried them');
+  assert.match(prompts[1].join('\n'), /\[Recovery\]/);
+  assert.match(prompts[1][0], /Be brief\.[\s\S]*Write files with a shell command\./, "the session's own and the recipe's: its history holds neither");
+  assert.deepEqual(prompts[2], ['more'], 'once');
 });
 
 test('the agent runs in a private HOME with the environment allowlist, in a process group of its own', async (t) => {

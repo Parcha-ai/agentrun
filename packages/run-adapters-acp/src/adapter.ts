@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { toolSchemaProblems } from "@parcha/agentrun-kernel";
 import type { AdapterEvent, AdapterSession, AgentAdapter, GateCall, ModelPort, TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, pendingSubmissions, SessionHalt, type Drive } from "@parcha/agentrun-kernel/kernel";
-import { bridgeTool, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
+import { bridgeTool, recoveryNote, settleTurn, transcriptOf, type TurnBudget, windowBudget } from "@parcha/agentrun-kernel/process";
 import { serialWriter, type ParentWatch } from "@parcha/agentrun-kernel/host";
 import { acpHarness, sentSubmissions, type DriveControl } from "./harness.js";
 import { recipeProblems, type AcpRecipe } from "./recipe.js";
@@ -43,7 +43,13 @@ export interface AcpAdapterOptions {
   callIdWaitMs?: number;
   /** How long the agent may take to start and open its session. Default 60 s. */
   startMs?: number;
+  /** The model's context window, in tokens: the host's bound on one tool result is its share of it (the kernel's
+   *  resultMaxChars), under HOST_RESULT_MAX_CHARS. A session's own (SessionSpec.contextWindow) wins. Absent, and none on
+   *  the session: the host's bound alone. */
+  contextWindow?: number;
   log?: (message: string, fields?: Record<string, unknown>) => void;
+  /** Log each call the agent announces, ids and names only (AcpHarnessOptions.debug). */
+  debug?: boolean;
 }
 
 /** What a proxy-billed agent process's proxy is started for: its session's booking and tools, and its drive's stop. */
@@ -53,8 +59,12 @@ export interface AcpProxySession {
   readonly models: ModelPort;
   /** The host's tools, by the names the session has them under. */
   readonly tools: readonly string[];
+  /** Our MCP server's name at this start (mcpServerName): the agent names each tool `<server>__<tool>`. */
+  readonly server?: string;
   /** Ends the agent's drive: its turn ends failed in `reason`'s words. */
   halt(reason: unknown): void;
+  /** The session's turn budget (ResultBudget.turn): a proxy opens it with each answer's facts (ModelProxyOptions.turn). */
+  readonly turn?: TurnBudget;
 }
 
 /** A proxy for one agent process: the variables that point it at the proxy, and the proxy's close. */
@@ -106,20 +116,26 @@ export function acpAdapter(options: AcpAdapterOptions): AgentAdapter {
       if (!dir) throw new Error("acp: a session needs a private directory: the host lends one (io.dir), or pass sessionsDir");
       const instructions = spec.system.join("\n\n");
       let control: DriveControl | undefined;
+      // Each tool result held to the model's share of its window (the session's, else this adapter's; none: the host's
+      // bound), and a turn's results to what it has left, which a proxy reads from each answer.
+      const budget = windowBudget(spec.contextWindow ?? options.contextWindow, spec.system);
+      const turn = budget.resultBudget?.turn;
       const harness = acpHarness({
         recipe,
         tools: spec.tools.map((tool) => bridgeTool(tool)),
+        ...budget,
         ...(instructions ? { instructions } : {}),
         dir,
         ...(io.cwd ? { cwd: io.cwd } : {}),
         ...(options.confine ? { confine: options.confine } : {}),
         ...(options.parentWatch ? { parentWatch: options.parentWatch } : {}),
         ...(options.env ? { env: options.env } : {}),
-        ...(options.proxy ? { proxy: (drive: { halt(reason: unknown): void }) => options.proxy!({ models: io.models, tools: spec.tools.map((tool) => tool.name), halt: drive.halt }) } : {}),
+        ...(options.proxy ? { proxy: (drive: { halt(reason: unknown): void; server: string }) => options.proxy!({ models: io.models, tools: spec.tools.map((tool) => tool.name), server: drive.server, halt: drive.halt, ...(turn ? { turn } : {}) }) } : {}),
         ...(options.beforeStart ? { beforeStart: options.beforeStart } : {}),
         ...(options.callIdWaitMs !== undefined ? { callIdWaitMs: options.callIdWaitMs } : {}),
         ...(options.startMs !== undefined ? { startMs: options.startMs } : {}),
         ...(options.log ? { log: options.log } : {}),
+        ...(options.debug ? { debug: true } : {}),
         // The host's gate: asked by the kernel's tool bridge for our tools, and by the harness for the agent's own.
         ...(io.gate ? { gate: (call: GateCall) => io.gate!(call) } : {}),
       }, (c) => void (control = c));

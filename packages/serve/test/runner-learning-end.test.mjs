@@ -14,20 +14,21 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
-import { mergesOf, repoOf } from "./learn-support.mjs";
+import { mergesOf } from "./learn-support.mjs";
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
 const { runReflect } = await import("../dist/store-reads/journal.js");
 const { runLearningEnd, runLearningOverStore } = await import("../dist/store-reads/learning.js");
 const { recordPromotion } = await import("../dist/learn/promote.js");
-const { textsAt } = await import("../dist/learn/folder.js");
+const { learningOf, readAt } = await import("../dist/learn/rows.js");
 const { workflowDigest } = await import("../dist/runner/workflow-first.js");
-const { learningFolderOf, secretsShown, seedOf } = await import("../dist/learning.js");
+const { secretsShown, seedOf } = await import("../dist/learning.js");
 const { said } = await import("../dist/learning-words.js");
 const { saveToolSettings } = await import("../dist/tool-plane.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
-const { learningEndOfRun, ownerWords } = await import("../dist/runner/learning-end.js");
+const { learningEndOfRun, messagesOf, ownerWords } = await import("../dist/runner/learning-end.js");
+const { CAPS, cut } = await import("../dist/timeline/index.js");
 
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 // One runner, never meant to lose its claim: a lease no stall outlasts.
@@ -52,7 +53,7 @@ async function world(t, body, launchOf, setup = async () => {}) {
   });
   await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body });
   await setup(server, dir);
-  const launch = await launchOf(dir);
+  const launch = await launchOf(dir, server);
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   const until = async (check, what) => {
     const deadline = Date.now() + WAIT_MS;
@@ -72,9 +73,8 @@ async function world(t, body, launchOf, setup = async () => {}) {
     const store = await openSqliteStore({ dataDir: dir, role: "runner" });
     stores.push(store);
     const spec = piAdapterSpec({ script, tools, hooks: quiet }, { requests });
-    // Mode 1: the agent's learning folder is the local one under the data directory.
-    const endOfRun = endOfRunOf({ store, data: dir, env: {}, learningFolder: (agentId) => learningFolderOf(dir, agentId) });
-    const createLoop = (deps) => createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1" }))({ ...deps, ...(endOfRun ? { endOfRun } : {}) });
+    const endOfRun = endOfRunOf({ store, data: dir, env: {} });
+    const createLoop = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1", ...(endOfRun ? { endOfRun } : {}) }));
     runners.push(startRunner({ store, createLoop, name: "runner-a", ...TIMING }));
   };
   const ended = () => until(async () => {
@@ -91,21 +91,17 @@ async function world(t, body, launchOf, setup = async () => {}) {
     });
     return { reflect: await runReflect(server, "run-1", BACKGROUND_CONTEXT), users };
   };
-  /** The texts of `paths` on agent-1's learning folder at `commit`. */
-  const textsOn = async (commit, paths) => {
-    const folder = learningFolderOf(dir, "agent-1");
-    try {
-      return await textsAt(folder.workspace, commit, paths);
-    } finally {
-      await folder.end();
-    }
+  /** The texts of `paths` in agent-1's learning at save `id`. */
+  const textsOn = async (id, paths) => {
+    const read = await readAt(learningOf(server, "agent-1"), id);
+    return Object.fromEntries(paths.map((path) => [path, read?.text(path)]));
   };
   return { dir, server, launch, start, ended, turnOf, textsOn };
 }
 
 const runner = (learning) => (dir) => ({ input: { content: "Follow the script." }, title: "t", place: { mode: "runner" }, ...(learning ? { learning: learning(dir) } : {}) });
-/** A learning start over agent-1's folder as it is now (its definition's compile_after says when it is asked to compile). */
-const learnsFrom = (dir) => seedOf(dir, "agent-1").then((seed) => runner(() => ({ seed: seed.sha, section: "" }))(dir));
+/** A learning start over agent-1's learning as it is now (its definition's compile_after says when it is asked to compile). */
+const learnsFrom = (dir, server) => seedOf(dir, server, "agent-1").then((seed) => runner(() => ({ seed: seed.sha, section: "" }))(dir));
 /** The compile turn's first ask among a run's user messages. */
 const compileAskIn = (users) => users.find((text) => text.startsWith("One more turn: write this agent's job as a learned workflow.")) ?? "";
 const againIn = (users) => users.filter((text) => text.startsWith("Your workflow draft did not pass the checks"));
@@ -121,7 +117,7 @@ test("a learning agent's run with its owner's feedback, through a real runner, i
   assert.deepEqual([kept?.proposal?.state, kept?.proposal?.corrections, kept?.proposal?.workflows], ["merged", 1, undefined], JSON.stringify(kept?.proposal));
   assert.equal(kept.proposal.detail, said.merged([], 1, []));
   assert.equal(kept.proposal.look_back_usd, 0, "nothing asked, nothing spent");
-  assert.deepEqual(mergesOf(repoOf(w.dir, "agent-1"), "run-1"), [`${kept.proposal.merged} run-1`], "one merge on main, by the run");
+  assert.deepEqual((await mergesOf(w.server, "agent-1", "run-1")).map((save) => save.id), [kept.proposal.merged], "one save of the agent's learning, by the run");
   const texts = await w.textsOn(kept.proposal.merged, ["corrections.md"]);
   assert.ok(texts["corrections.md"].includes(FEEDBACK), texts["corrections.md"]);
   const end = await runLearningEnd(w.server, "run-1");
@@ -408,9 +404,9 @@ test("compile: a draft the checks refuse goes back with their words, up to 3 tim
   const read = async () => (await runLearningOverStore(w.server, "run-1", secretsShown([]), [])).compiled;
   assert.deepEqual([(await read()).digest, (await read()).promoted], [digest, null], "undecided");
   const record = { workflow: "answer", digest, at: new Date().toISOString(), source: "replay", reason: "r" };
-  await recordPromotion(w.server.settings, "agent-1", { ...record, decided: "hold" }, () => true);
+  await recordPromotion(w.server.learning, "agent-1", { ...record, decided: "hold" }, () => true);
   assert.equal((await read()).promoted, false, "held");
-  await recordPromotion(w.server.settings, "agent-1", { ...record, decided: "promote" }, () => true);
+  await recordPromotion(w.server.learning, "agent-1", { ...record, decided: "promote" }, () => true);
   assert.equal((await read()).promoted, true, "promoted");
 });
 
@@ -488,6 +484,68 @@ test("ownerWords: a grade's pending words or a person's message after the first 
   assert.deepEqual(ownerWords([words], job), ["Freight goes to 6400."], "a grade's words, pending");
   assert.deepEqual(ownerWords([words, { kind: "agentrun.end" }], job), [], "a round a past end closed");
   assert.deepEqual(ownerWords([], [...job, ...asked, row("0:5", "user_message", { text: "Why 42?" })]), ["Why 42?"], "a person's follow-up");
+});
+
+test("ownerWords: a message sent with said (POST /runs/{id}/messages) is the person's own words, its content the host's: said is kept, a message without one keeps its text", () => {
+  const job = [row("0:1", "user_message", { text: "Question 1" }), row("0:2", "final_answer", { text: "42" })];
+  const wrapped = (words) => `You are continuing a session.\n\n## Previous report\n42\n\n**Follow-up question**: ${words}\n\nReply in English.`;
+  const said = [{ text: wrapped("Freight goes to 6400."), said: "Freight goes to 6400." }, { text: wrapped("Mail goes to 4215."), said: "Mail goes to 4215." }];
+  const rows = [...job, row("0:5", "user_message", { text: wrapped("Freight goes to 6400.") }), row("0:7", "user_message", { text: "Why 42?" }), row("0:9", "user_message", { text: wrapped("Mail goes to 4215.") })];
+  assert.deepEqual(ownerWords([], rows, said), ["Freight goes to 6400.", "Why 42?", "Mail goes to 4215."], "each said in place of its content");
+  assert.deepEqual(ownerWords([], rows), [wrapped("Freight goes to 6400."), "Why 42?", wrapped("Mail goes to 4215.")], "no said: each message's text, as before");
+  // The same content sent twice, each with its own said: each said once, in order.
+  const twice = [...job, row("0:5", "user_message", { text: "Same." }), row("0:7", "user_message", { text: "Same." })];
+  assert.deepEqual(ownerWords([], twice, [{ text: "Same.", said: "First." }, { text: "Same.", said: "Second." }]), ["First.", "Second."]);
+});
+
+// A host's follow-up past the row's cut (CAPS.text, 2,000 characters): ~3.5 KB of scaffolding with the person's words at
+// its end, which the row never shows.
+const longFollowUp = (words) => [`You are continuing a session.\n\n## Previous report\n${Array.from({ length: 60 }, (_, i) => `Finding ${i + 1}: step ${i + 1} is done, with nothing left open on it.`).join("\n")}`, `**Follow-up question**: ${words}`, "Reply in English."].join("\n\n");
+const shownRow = (id, text) => row(id, "user_message", { text: cut(text.trim(), CAPS.text) });
+
+test("ownerWords: a message past the row's cut (3.5 KB, no said) is its whole text from the run's commands, never the row's 2,000 characters", () => {
+  const job = [row("0:1", "user_message", { text: "Question 1" }), row("0:2", "final_answer", { text: "42" })];
+  const content = longFollowUp("Freight goes to 6400.");
+  assert.ok(content.length > 3_000 && content.length < 4_000, `about 3.5 KB (${content.length})`);
+  const [words] = ownerWords([], [...job, shownRow("0:5", content)], [{ text: content }]);
+  assert.equal(words, content, "the whole message, its last words included");
+  assert.ok(words.endsWith("Reply in English.") && words.length > CAPS.text);
+});
+
+test("ownerWords: the same 3.5 KB message sent twice with different saids: each row keeps its own said, in order; a row no message pairs keeps its text", () => {
+  const job = [row("0:1", "user_message", { text: "Question 1" }), row("0:2", "final_answer", { text: "42" })];
+  const content = longFollowUp("Mail goes to 4215.");
+  const rows = [...job, shownRow("0:5", content), row("0:7", "user_message", { text: "Why 42?" }), shownRow("0:9", content)];
+  assert.deepEqual(ownerWords([], rows, [{ text: content, said: "Mail goes to 4215." }, { text: content, said: "Never to 4216." }]), ["Mail goes to 4215.", "Why 42?", "Never to 4216."]);
+});
+
+test("messagesOf: every message a person sent, whole, in order, with its said when sent with one: a steer's text, a deny's note; a refused row, a trigger's or the server's steer and a deny with no note are left out", () => {
+  const command = (kind, body, refused = null) => ({ kind, body, refused });
+  const big = longFollowUp("Freight goes to 6400.");
+  assert.deepEqual(messagesOf([
+    command("steer", { text: `  ${big}\n` }),
+    command("steer", { text: "Refused one.", said: "x" }, "the run had ended"),
+    command("steer", { text: "A trigger fired.", origin: { kind: "trigger", source: "webhook", trigger_id: "t1" } }),
+    command("deny", { approval: "a1", note: "Do not send it.", by: "message", said: "No." }),
+    command("deny", { approval: "a2", by: "setting" }),
+    command("approve", { approval: "a3", note: "Fine." }),
+    command("steer", { text: "Short.", said: "Mine." }),
+  ]), [{ text: big }, { text: "Do not send it.", said: "No." }, { text: "Short.", said: "Mine." }]);
+});
+
+test("messagesOf + ownerWords: a grade's feedback steer is no person's message: a later follow-up with the grade's own text keeps its own said, and the next message stays paired with its own", () => {
+  const command = (kind, body, refused = null) => ({ kind, body, refused });
+  const graded = "Freight goes to 6400.";
+  const commands = [
+    command("steer", { text: graded, feedback: { kept: { at: 3 }, grade: "wrong" } }),
+    command("steer", { text: graded, said: "Mine: freight goes to 6400." }),
+    command("steer", { text: graded, said: "Again, mine." }),
+  ];
+  assert.deepEqual(messagesOf(commands), [{ text: graded, said: "Mine: freight goes to 6400." }, { text: graded, said: "Again, mine." }], "the grade's steer is left out");
+  // The grade's round's rows are left out of the job's (withoutFeedbackRounds); the two follow-ups' rows remain.
+  const job = [row("0:1", "user_message", { text: "Question 1" }), row("0:2", "final_answer", { text: "42" })];
+  const rows = [...job, row("0:9", "user_message", { text: graded }), row("0:11", "user_message", { text: graded })];
+  assert.deepEqual(ownerWords([], rows, messagesOf(commands)), ["Mine: freight goes to 6400.", "Again, mine."]);
 });
 
 test("ownerWords: a subagent's task prompt (a child conversation's user_message) is not the owner's; a root message after the answer still is", () => {

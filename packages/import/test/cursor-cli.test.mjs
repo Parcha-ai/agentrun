@@ -4,11 +4,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { open, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { open, readdir, readFile, stat, unlink, utimes, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { serialize } from "node:v8";
-import { cursorSessionId, HARNESS_OF, parseHome, READERS, readSession, SOURCE_NAMES } from "../dist/index.js";
+import { cursorSessionId, HARNESS_OF, locatorSize, parseHome, READERS, readSession, SOURCE_NAMES } from "../dist/index.js";
 import { AGENT, buildChat, MESSAGES, T0, WORKSPACE } from "./fixtures/cursor/fixture.mjs";
 import { tempHome } from "./fixtures.mjs";
 
@@ -261,6 +261,26 @@ test("a file that is no Cursor store fails its read alone", async (t) => {
     failures.map(({ file }) => file),
     [other],
   );
+});
+
+test("a chat's size and last write take its write-ahead log and meta.json: an open chat writes store.db-wal, store.db's mtime unchanged", async (t) => {
+  const home = await tempHome(t);
+  const chat = await buildChat(join(home, ".cursor"));
+  const meta = join(dirname(chat), "meta.json");
+  const hourAgo = new Date(Date.now() - 60 * 60_000);
+  await utimes(chat, hourAgo, hourAgo);
+  await utimes(meta, hourAgo, hourAgo);
+  const db = await stat(chat);
+  assert.deepEqual(await locatorSize({ file: chat }, "cursor"), { bytes: db.size, mtimeMs: db.mtimeMs }, "no log: the store's own");
+  // A log the open chat has written since (its bytes are not read here): the chat was last written then, and holds both.
+  await writeFile(`${chat}-wal`, Buffer.alloc(4096));
+  const wal = await stat(`${chat}-wal`);
+  assert.deepEqual(await locatorSize({ file: chat }, "cursor"), { bytes: db.size + 4096, mtimeMs: wal.mtimeMs });
+  // meta.json written later still (its updatedAtMs moved): that is the last write.
+  const later = new Date(Math.ceil(wal.mtimeMs) + 60_000);
+  await utimes(meta, later, later);
+  assert.equal((await locatorSize({ file: chat }, "cursor")).mtimeMs, later.getTime());
+  assert.equal(await locatorSize({ file: join(home, ".cursor", "chats", "gone", "gone", "store.db") }, "cursor"), null, "a store gone: no chat");
 });
 
 test("the session id is the chat's folder, as Cursor names its agent", () => {

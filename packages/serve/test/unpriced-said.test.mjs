@@ -5,13 +5,12 @@
 // in the cap's words. A model the catalog prices keeps a known cost. Every request goes to a loopback gateway on a port
 // below the ephemeral range, with dummy keys.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { copyFile } from "node:fs/promises";
-import { createServer } from "node:net";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
+import { freePort } from "./fixtures/ports.mjs";
 import { agent, answerFlow, flowAgent, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const KEY = "not-a-secret-gateway";
@@ -24,26 +23,6 @@ const NAMES = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "AG
 const CODEX_STAND_IN_FILE = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url));
 const CODEX_STAND_IN = { AGENTRUN_CODEX_STANDIN: "1", AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: process.execPath, args: [CODEX_STAND_IN_FILE], env: { FAKE_CODEX_MODEL: "remote" } }) };
 const OPENCODE_STAND_IN_FILE = fileURLToPath(new URL("./fixtures/fake-opencode-serve.mjs", import.meta.url));
-
-/** A port free on 127.0.0.1 now, below the kernel's ephemeral range (no listen(0) or outbound connection is handed it). */
-async function freePort() {
-  let low = 32768;
-  try {
-    low = Number(readFileSync("/proc/sys/net/ipv4/ip_local_port_range", "utf8").trim().split(/\s+/)[0]) || 32768;
-  } catch {}
-  const to = Math.min(low, 32768);
-  const from = Math.max(1024, Math.min(20000, to - 1000));
-  for (let tries = 0; tries < 200; tries++) {
-    const port = from + Math.floor(Math.random() * (to - from));
-    const free = await new Promise((resolve) => {
-      const probe = createServer();
-      probe.once("error", () => resolve(false));
-      probe.listen(port, "127.0.0.1", () => probe.close(() => resolve(true)));
-    });
-    if (free) return port;
-  }
-  throw new Error(`no free port in ${from}-${to - 1}`);
-}
 
 async function gateway(t) {
   const gw = await startFauxGateway({ usage: USAGE, port: await freePort() });

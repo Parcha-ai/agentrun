@@ -13,7 +13,7 @@ you add or restyle anything a person sees there.
 
 ## The look, in six rules
 
-1. **Rounded actions, square fields and surfaces.** Every action button uses the same 8px radius. The build composer has its own softer edge.
+1. **Rounded actions, square fields and surfaces.** Every action button uses the same 8px radius.
 2. **One line weight.** Borders are 1px. 2px marks the open tab and where the
    keyboard is (the focus ring). Nothing else is thicker.
 3. **Mono for structure, sans for prose.** JetBrains Mono for labels, buttons, chips, ids, numbers and code. Schibsted
@@ -129,8 +129,6 @@ a small link in a row gets there with padding the layout does not see (`-my-1 py
   action uses the same radius on its single outer edge; its main action and chooser stay square inside that edge.
   Its tinted main action and chooser share the foreground, hover, open and focus treatment across the whole group,
   with no internal divider. Compact row actions keep the neutral secondary treatment.
-- The integrated build composer uses `!rounded-composer` (`--radius-composer: 1rem`). Keep this softer shape scoped
-  to the build composer.
 - `shadow-float` goes under a menu, a picker's list, a tip, a toast and a dialog. Nothing in the page's flow has a
   shadow.
 
@@ -159,6 +157,8 @@ Never write a number (`z-50`, `z-[60]`).
 - The stylesheet turns every animation and transition off for someone whose OS asks for reduced motion. Do not
   work around it. A spinner then stands still, so the words beside it must say what is happening.
 
+The AgentRun wordmark is a transparent SVG. Its lettering uses the foreground token, and its orange mark stays fixed.
+
 ## Themes
 
 The console follows the OS (light or dark) until the person picks Light or Dark in the sidebar; the pick is kept in
@@ -179,7 +179,8 @@ Import from `@/components/ui`.
 | A state or a kind | `Chip` with a tone; a run's state through `StatusBadge` | A hand-built span. |
 | A text field | `Field` around `Input` or `Textarea`. `note` goes before the control, `hint` after it | A bare `<input>` with its own classes. |
 | A field with an icon or buttons inside its edge | A box with `fieldBoxClass` around `<Input bare>` or `<Textarea bare>` | A field with `outline-none` and no focus of its own. |
-| A choice from a list | `Picker` (opens under its field), for every list; inside a `Field` the label, hint and error are wired to it. `steady` where the field is sized by its words: it keeps the width of its longest option whatever is picked, and no option wraps in its list | A bare `<select>`. |
+| A choice from a list | `Picker` (opens under its field), for every list; inside a `Field` the label, hint and error are wired to it. An option's `description` shows a visible explanation below its label, including why a disabled choice is unavailable. `steady` where the field is sized by its words: it keeps the width of its longest option whatever is picked, and no option wraps in its list | A bare `<select>`. |
+| A choice from a long list (a toolkit's events, its actions) | `SearchPicker`: a `Picker` whose field is a search box. Typing filters its open list by every word typed, in an option's words or its `keywords` (a slug, a description); the chevron opens the whole list; Enter never submits the form; `nothing(query)` says when nothing matches | A filter box of its own beside a `Picker`. |
 | One value out of a run of whole steps (a revision) | `Slider`: a native range, quiet (a thin `border-strong` track, a small `foreground` dot), with a `label` and a `valueText` in words | A bare `<input type="range">`. |
 | One choice of a few, all in view | `Segmented`; `Radio`s in a `<Field group>` when each needs a sentence | Buttons that look like tabs. |
 | Any of several | `Checkbox`; a native input with `accent-primary` where a row has its own layout | |
@@ -239,7 +240,14 @@ Never write `outline-none` without a `focus-visible:` replacement drawn with the
 ## Layout and responsiveness
 
 - **The shell** is a 220px sidebar and a main column. The `roomy:` variant shows the sidebar at 768px wide and 501px tall; smaller or shorter windows use a top bar with a menu.
-  Banners sit above the page, outside its scroller. `main` is the page's only scroller.
+  Banners sit above the page, outside its scroller.
+- **A page's top bar stays in view.** A page with a top bar (`pageToolbarClass`) is `pageClass`, exactly as tall as
+  `main`: the bar first, then the body in `pageBodyClass` (marked `data-page-body`), the box that scrolls. `main` never
+  scrolls such a page, or the bar would go with it. A page made of panes (Mission Control, a run, an agent, the
+  Playground) scrolls each pane in its own box under the bar. A Settings page scrolls in its own `h-full overflow-auto`
+  box under the Settings tabs. A page with no top bar (Build an agent, a trigger's page) scrolls in `main`. A run's page
+  on a `short:` window scrolls as a whole, so its panels are not squeezed to nothing. `e2e/flows/page-frames.mjs`
+  measures every page with a bar.
 - **Breakpoints** are Tailwind's: write mobile first and add `md:` for the desktop layout. `max-sm:` tightens a
   phone. `short:` is for a viewport at most 500px tall (a phone on its side). `roomy:` combines a minimum width of 768px and height of 501px for the desktop shell. Do not add a breakpoint.
 - **A part beside a panel** is laid out by the width of its pane, not the window's: a panel that takes part of the page

@@ -3,7 +3,7 @@
 // module's daemon. Also: the mount a local Workspace asks for, the read-back attach checks, and the background surface
 // with no computer.
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -165,7 +165,7 @@ test("attached: a path that leaves the root is ESCAPE and never reaches the comp
   await refused(workspace.remove(""), "REFUSED");
 });
 
-test("attached: exec is the computer's process.start in /workspace/<cwd>, read as it comes; never exec.run; stdin is refused", async () => {
+test("attached: exec is the computer's process.start in /workspace/<cwd>, read as it comes; never exec.run; stdin goes by process.write, then closed", async () => {
   const { root, computer, workspace } = await attached();
   realProcesses(computer, root);
   mkdirSync(join(root, "src"));
@@ -176,8 +176,60 @@ test("attached: exec is the computer's process.start in /workspace/<cwd>, read a
   assert.deepEqual([Buffer.from(result.stdout).toString(), result.stderr, result.code, result.signal, result.timedOut, result.truncated], [`${join(root, "src")}\n`, "err\n", 3, null, false, false]);
   assert.deepEqual(chunks.sort(), [["stderr", "err\n"], ["stdout", `${join(root, "src")}\n`]]);
   await workspace.exec(["true"], { env: {}, timeoutMs: 1000, onOutput: () => { throw new Error("the caller's bug"); } });
-  await refused(workspace.exec(["cat"], { env: {}, timeoutMs: 1000, stdin: Buffer.from("x") }), "REFUSED", /stdin/);
+  // stdin: the process is started with its stdin open (stdin: true, never the bytes in its argv or environment), the
+  // bytes written, and its stdin closed, so a program that reads to the end ends.
+  computer.clear();
+  const input = Buffer.from(`one\n${"x".repeat(1000)}\n`);
+  const fed = await workspace.exec(["sh", "-c", "IFS= read -r first; printf '%s|' \"$first\"; wc -c"], { env: { PATH: "/usr/bin:/bin" }, timeoutMs: 5000, stdin: input });
+  assert.deepEqual([Buffer.from(fed.stdout).toString().replace(/\s+/g, ""), fed.code], ["one|1001", 0]);
+  assert.deepEqual(computer.calls[0], ["process.start", { argv: ["sh", "-c", "IFS= read -r first; printf '%s|' \"$first\"; wc -c"], cwd: "/workspace", env: { PATH: "/usr/bin:/bin" }, stdin: true }]);
+  const writes = computer.calls.filter(([method]) => method === "process.write");
+  assert.equal(Buffer.concat(writes.map(([, params]) => Buffer.from(params.data ?? "", "base64"))).toString(), input.toString());
+  assert.equal(writes.at(-1)[1].close, true);
+  // A program that ends without reading its input answers as it ended.
+  const unread = await workspace.exec(["sh", "-c", "exit 4"], { env: { PATH: "/usr/bin:/bin" }, timeoutMs: 5000, stdin: Buffer.from("never read\n") });
+  assert.equal(unread.code, 4);
   await refused(workspace.exec(["no-such-program-here"], { env: {}, timeoutMs: 1000 }), "NOT_FOUND");
+});
+
+test("attached: exec's stdin, a write computerd refuses: a program that closed its input (invalid) answers as it ended; any other failure (a write it did not read in time) fails the call at once, naming the cause, and kills the process", async () => {
+  const { root, computer, workspace } = await attached();
+  realProcesses(computer, root);
+  const env = { PATH: "/usr/bin:/bin" };
+  // computerd's answer to a write once the program closed its stdin or ended (process/table.go Write: EPIPE, EIO, a
+  // closed file): kind invalid. The program's own exit is the answer.
+  computer.overrides["process.write"] = { result: { ok: false, error: { code: "invalid", message: "process 1 no longer reads its input: it closed its stdin, or ended (0 of 12 bytes were written)" } } };
+  const closed = await workspace.exec(["sh", "-c", "exit 5"], { env, timeoutMs: 5000, stdin: Buffer.from("never read\n") });
+  assert.equal(closed.code, 5);
+  // computerd's answer to a write the program did not read within its bound (writeTimeout, 10 s): kind timeout. The
+  // program, which reads its input to the end, would wait for the stdin never closed until the call's own deadline; the
+  // call fails now instead, the write's words in it, and the process is killed.
+  computer.clear();
+  computer.overrides["process.write"] = { result: { ok: false, error: { code: "timeout", message: "process 2 did not read its input: 0 of 12 bytes were written in 10s" } } };
+  const started = Date.now();
+  await refused(workspace.exec(["sh", "-c", "cat > /dev/null"], { env, timeoutMs: 30_000, stdin: Buffer.from("never read\n") }), "TIMEOUT", /did not read its input: 0 of 12 bytes were written/);
+  assert.ok(Date.now() - started < 10_000, `failed at once, not at the call's deadline: ${Date.now() - started} ms`);
+  assert.ok(computer.calls.some(([method, params]) => method === "process.signal" && params.signal === "KILL"), "the process was killed");
+});
+
+test("attached: exec's stdin, a write computerd answers invalid for an error other than a closed input (its catch-all) while the program still reads: its stdin is closed at once (process.write close, its answer ignored), so the program sees its input end and answers now, not at the call's deadline", { timeout: 30_000 }, async () => {
+  const { root, computer, workspace } = await attached();
+  realProcesses(computer, root);
+  const real = computer.overrides["process.write"];
+  // computerd's catch-all for a write's OS error (process/table.go Write's default case): kind invalid, answered before
+  // its close is looked at, so the program's stdin is still open. A write that only closes goes to the real process.
+  computer.overrides["process.write"] = (params) => {
+    if (params.data !== undefined) throw Object.assign(new Error("process 1's input could not be written: write |1: no buffer space available"), { code: "EINVAL" });
+    return real(params);
+  };
+  const started = Date.now();
+  const result = await workspace.exec(["sh", "-c", "cat > /dev/null; exit 7"], { env: { PATH: "/usr/bin:/bin" }, timeoutMs: 20_000, stdin: Buffer.from("Authorization: never read\n") });
+  assert.equal(result.timedOut, false, "not at the call's deadline");
+  assert.equal(result.code, 7, "the program saw its input end and answered as it ended");
+  assert.ok(Date.now() - started < 10_000, `at once: ${Date.now() - started} ms`);
+  const writes = computer.calls.filter(([method]) => method === "process.write").map(([, params]) => params);
+  assert.equal(writes.length, 2, JSON.stringify(writes));
+  assert.deepEqual(writes[1], { id: writes[0].id, close: true }, "the close, alone, after the refused write");
 });
 
 test("attached: exec streams, gives onOutput every byte of a long output (its end included), keeps the cap's head, and says a signal", async () => {
@@ -410,4 +462,33 @@ test("attached on a bind, with the real host sync: a file the host cannot open (
   assert.deepEqual(ran, ["sync /workspace/locked"], "the target, which the host could not open, was synced in the computer");
   chmodSync(join(root, "locked"), 0o600);
   assert.equal(readFileSync(join(root, "locked"), "utf8"), "new");
+});
+
+test("attached: writeNew makes a file only where nothing is, by a temporary file and a move that never replaces: a file landing at the path before the move is kept, the temporary file removed", async () => {
+  const landed = [];
+  const { root, computer, workspace } = await attached({ onMove: ({ to }) => {
+    const at = landed.shift();
+    if (at && to === `/workspace/${at}`) writeFileSync(join(root, at), "theirs");
+  } });
+  assert.equal(await workspace.writeNew("notes/a.md", "hello"), true, "made where nothing was");
+  assert.equal(readFileSync(join(root, "notes/a.md"), "utf8"), "hello");
+  const move = computer.calls.find(([method]) => method === "files.move");
+  assert.match(move[1].from, /^\/workspace\/notes\/\.workspace-[0-9a-f]{16}\.tmp$/);
+  assert.deepEqual([move[1].to, move[1].overwrite], ["/workspace/notes/a.md", undefined], "the move never replaces");
+  assert.equal(await workspace.writeNew("notes/a.md", "again"), false, "a file there is kept");
+  assert.equal(readFileSync(join(root, "notes/a.md"), "utf8"), "hello");
+  mkdirSync(join(root, "notes/folder"));
+  assert.equal(await workspace.writeNew("notes/folder", "x"), false, "a folder there is kept");
+  assert.ok(statSync(join(root, "notes/folder")).isDirectory());
+  writeFileSync(join(root, "elsewhere.md"), "target");
+  symlinkSync(join(root, "elsewhere.md"), join(root, "notes/link.md"));
+  assert.equal(await workspace.writeNew("notes/link.md", "x"), false, "a link there is kept, never followed");
+  assert.equal(readlinkSync(join(root, "notes/link.md")), join(root, "elsewhere.md"));
+  assert.equal(readFileSync(join(root, "elsewhere.md"), "utf8"), "target");
+  // The window: nothing at the check, then a file lands at the path before the move.
+  landed.push("notes/raced.md");
+  assert.equal(await workspace.writeNew("notes/raced.md", "mine"), false, "the file that landed is held");
+  assert.equal(readFileSync(join(root, "notes/raced.md"), "utf8"), "theirs", "and kept, never replaced");
+  assert.ok(lstatSync(join(root, "notes/raced.md")).isFile());
+  assert.deepEqual(readdirSync(join(root, "notes")).filter((name) => name.endsWith(".tmp")), [], "no temporary file is left");
 });

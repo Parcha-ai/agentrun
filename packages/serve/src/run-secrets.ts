@@ -3,9 +3,8 @@
 // The runner's claim reads them (runner/claim-secrets.ts).
 import type { Revision } from "./agent-rows.js";
 import { harnessModelKeys } from "./adapters.js";
-import { COMPOSIO_KEY_ENV } from "./composio-made.js";
+import { COMPOSIO_KEY_ENVS } from "./composio-made.js";
 import { COMPUTER_KEY_NAMES } from "./computer-keys.js";
-import { BOX_KEYS } from "./place-offers.js";
 import { providersNamed } from "./decisions.js";
 import { harnessOfBody } from "./harness.js";
 import { BUILTIN_OWN_KEYS, builtinOwns, harnessOf } from "./harness-table.js";
@@ -21,13 +20,12 @@ import { ARCHIL_API_KEY_ENV } from "./workspace/archil-key.js";
  *  the server's and the runner's computer providers read one, at a claim or a Settings test. */
 const COMPUTER_ACCOUNT_KEYS = COMPUTER_KEY_NAMES.filter((name) => !TOOL_FIELDS.includes(name));
 /** The server's own secrets, which a run never gets: the API token, by name or by value, the seal key the tool keys are
- *  kept under (tool-keys.ts), the store's URL (it may hold the database's password), the remote boxes' keys
- *  (place-offers.ts BOX_KEYS) and every other computer provider's account key, which only the server's and the runner's
- *  computer providers use, the Archil account key (archil-key.ts), from which the claim mints each run's own mount
+ *  kept under (tool-keys.ts), the store's URL (it may hold the database's password), every computer provider's account
+ *  key, a vendor's box's among them, which only the server's and the runner's computer providers use, the Archil account key (archil-key.ts), from which the claim mints each run's own mount
  *  credential, the launch hook's signing secret (trigger-launch-hook.ts), and the Composio account key a Composio MCP
  *  server saved with api_key_env reads (composio-made.ts), which reaches a run only as the MCP header of a Composio
  *  server its revision is granted, sent by the runner. */
-const SERVER_ONLY: ReadonlySet<string> = new Set(["AGENTRUN_TOKEN", "AGENTRUN_TOKENS", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_STORE_URL", ...BOX_KEYS, ...COMPUTER_ACCOUNT_KEYS, ARCHIL_API_KEY_ENV, LAUNCH_HOOK_SECRET_ENV, COMPOSIO_KEY_ENV]);
+const SERVER_ONLY: ReadonlySet<string> = new Set(["AGENTRUN_TOKEN", "AGENTRUN_TOKENS", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_STORE_URL", ...COMPUTER_ACCOUNT_KEYS, ARCHIL_API_KEY_ENV, LAUNCH_HOOK_SECRET_ENV, ...COMPOSIO_KEY_ENVS]);
 /** The secrets a run may be handed: every one but the server's own and the decision keys, which go apart. */
 export const RUN_SECRETS = SECRET_NAMES.filter((name) => !SERVER_ONLY.has(name) && !DECISION_KEYS.includes(name));
 type KeyRow = { kind: string; fields: readonly string[]; unlocks: readonly string[] };

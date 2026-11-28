@@ -4,7 +4,7 @@
 // provider's key, a default model, a tier's model) saves as a warning. Either refuses a run, 409 agent_not_runnable.
 import { WORKFLOW_ADAPTERS } from "./runner/workflow-adapters.js";
 import { DECISION_ADAPTER, decisionModelsNamed, providerMissing, providersNamed } from "./decisions.js";
-import { isHostTool } from "./tool-list.js";
+import { adapterBinds } from "./tool-list.js";
 import { type InputIssue, sentence } from "./errors.js";
 import { DEFAULT_HARNESS, type HarnessCapability, harnessOffers } from "./harness.js";
 import { harnessOf, onAdapter } from "./harness-table.js";
@@ -12,10 +12,11 @@ import { capShortOf } from "./cap-short.js";
 import { chooseModel } from "./model.js";
 import { llmTiers, MODEL_NODES, type ModelNeeds, type ModelRef, nodeTiers, type Tier, unpricedModels, workflowNodes } from "./model.js";
 import type { BoxOffer } from "./place-offers.js";
-import { boxAvailability, newAgentPlace, placeFix, RUN_BOXES } from "./place.js";
+import { noExecWords } from "./archil-settings.js";
+import { boxAvailability, newAgentPlace, noExecIssue, noPlaceIssue, placeFix } from "./place.js";
 import { allows, BOUND_TOOLS, CALL_TOOLS, grantedTools, missingEnv, NODE_TOOLS, shellTools, toolOf, workflowTools } from "./tools.js";
 import { DENIED, isUnavailable, NO_PARALLEL_KEY, type Pickable, planeFor, type ToolSettingsMap, whyUnavailable } from "./tool-plane.js";
-import { denyPlace, permissionFrom, permissionKeys, permissionOf } from "./tool-gate.js";
+import { computerDenied, denyPlace, permissionFrom, permissionKeys, permissionOf } from "./tool-gate.js";
 import { approvalsOf } from "./approvals.js";
 import { PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
@@ -42,8 +43,11 @@ export type RevisionShape =
  *  (code nodes this server does not run), `shell` (a shell or executor call), `tier`, `harness`, `box` (the place's,
  *  which this server does not have) and `denied` (a tool a workflow's call node calls that is set to deny) name it for a
  *  run's 409 details; `notGrantable` a tool no setup makes grantable (a known MCP meta tool, mcp-meta.ts), with why.
- *  `short`: a save's cap below what its model needs for one more step and an answer, a warning alone (cap-short.ts). */
-export type Blocker = InputIssue & { host: boolean; tool?: string; notGrantable?: { tool: string; reason: string }; missing?: { tool: string; vars: string[] }; adapter?: string; decision?: { provider: string; needs: string[] }; codeNodes?: true; shell?: true; tier?: string; harness?: string; box?: string; denied?: string; asks?: string; unpriced?: true; short?: true };
+ *  `short`: a save's cap below what its model needs for one more step and an answer, a warning alone (cap-short.ts).
+ *  `model`: an agentic revision's model is the blocker (no key for it, its harness refusing it or unavailable here for
+ *  want of a model key alone, no price under a cap): a held run's create defers it to the run's start (server.ts
+ *  runnable, computer-held.ts). */
+export type Blocker = InputIssue & { host: boolean; tool?: string; notGrantable?: { tool: string; reason: string }; missing?: { tool: string; vars: string[] }; adapter?: string; decision?: { provider: string; needs: string[] }; codeNodes?: true; shell?: true; tier?: string; harness?: string; box?: string; denied?: string; asks?: string; unpriced?: true; short?: true; model?: true };
 
 /**
  * The model `harness` runs an agentic revision on here: `ref`, its own `provider/model-id`, or with none this host's
@@ -78,15 +82,26 @@ const PRICE_FIX = "Set AGENT_MODEL_PRICE (USD per million input,output,cacheRead
  *  `new Function` transform, which is no sandbox. Off by default. */
 export const CODE_NODES_ENV = "AGENTRUN_SERVE_CODE_NODES";
 
+/** The kind of an agentic `revision`'s computer setting when every tool that computer serves is set to deny under the
+ *  server's tool `settings` (tool-gate.ts computerDenied), with its shell where `shellOf` puts it: a run of it never
+ *  starts that computer (computer-for-claim.ts), so blockersOf asks nothing of it, and a save warns (server.ts saveable).
+ *  Undefined for one with no computer setting, or with no `shellOf` to place its shell. */
+export async function deniedComputer(revision: RevisionShape, settings: ToolSettingsMap, shellOf?: (setting: RevisionComputer) => Promise<ShellPlace>): Promise<string | undefined> {
+  if (revision.kind !== "agentic" || !revision.computer || !shellOf) return undefined;
+  return computerDenied({ kind: revision.kind, body: revision }, await shellOf(revision.computer), { settings, problems: [] });
+}
+
 /** What keeps `revision` from running in `env` under the server's tool `settings` (tool-plane.ts). `boxes`: what this
  *  server found at its start (place-offers.ts); none, every box is unavailable. `monid`: its pin. `offers`: the harnesses' offers
  *  the server already holds (its reading); none given, they are probed here. `computerReady`: whether an agent's computer
  *  setting can be had here now, or its refusal (resolve-computer.ts computerReadiness); none given, the box check.
  *  `shellOf`: where a run of an agent with that computer setting has its shell here now (resolve-computer.ts
  *  runShellOf, in the server's mode): a sandbox-only tool on the runner is let by it (Mode 2's Archil exec runs bash);
- *  none given, the runner has no shell. `capUsd`: a save's cap (with `capped`), whose shortfall for one more step and an
- *  answer is a warning of its own (`short`, cap-short.ts); a run's check never names one. */
-export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape, settings: ToolSettingsMap = {}, { capped = false, capUsd, boxes = [], offers, mcp, monid, decisionPrice, computerReady, shellOf }: { capped?: boolean; capUsd?: number; boxes?: readonly BoxOffer[]; offers?: readonly HarnessCapability[]; mcp?: (server: string) => readonly (McpTool & { grantable?: false; reason?: string })[] | undefined; monid?: MonidPinBody; decisionPrice?: (model: string) => Promise<unknown>; computerReady?: (setting: RevisionComputer) => Promise<{ readonly ok: true } | { readonly refused: string; readonly box?: string }>; shellOf?: (setting: RevisionComputer) => Promise<ShellPlace> } = {}): Promise<Blocker[]> {
+ *  none given, the runner has no shell. `noExec`: in Mode 2, the server's Archil region where it has no serverless exec
+ *  (archil-settings.ts noExecRegionOf), so a sandbox-only tool on the runner names a sandbox computer, never Docker's box,
+ *  which can't mount Archil. `capUsd`: a save's cap (with `capped`), whose shortfall for one more step and an answer is
+ *  a warning of its own (`short`, cap-short.ts); a run's check never names one. */
+export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape, settings: ToolSettingsMap = {}, { capped = false, capUsd, boxes = [], offers, mcp, monid, decisionPrice, computerReady, shellOf, noExec }: { capped?: boolean; capUsd?: number; boxes?: readonly BoxOffer[]; offers?: readonly HarnessCapability[]; mcp?: (server: string) => readonly (McpTool & { grantable?: false; reason?: string })[] | undefined; monid?: MonidPinBody; decisionPrice?: (model: string) => Promise<unknown>; computerReady?: (setting: RevisionComputer) => Promise<{ readonly ok: true } | { readonly refused: string; readonly box?: string }>; shellOf?: (setting: RevisionComputer) => Promise<ShellPlace>; noExec?: string } = {}): Promise<Blocker[]> {
   const out: Blocker[] = [];
   /** A web tool its run would resolve unavailable (tool-plane.ts): a warning at save, a 409 at a run, never another
    *  provider in its place. One set to deny is not: its run starts, and the gate refuses each call. */
@@ -101,16 +116,19 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   };
   const harness = revision.harness ?? DEFAULT_HARNESS;
   const offer = (offers ?? (await harnessOffers(env))).find((h) => h.id === harness);
-  // One the table hides (HarnessEntry.hidden: Goose before its owner installs it) has no offer: its entry says why.
-  if (!offer?.available) out.push({ field: "definition.harness", reason: NOT_SET_UP, message: offer?.reason ?? harnessOf(env, harness)?.hidden?.(env) ?? `This server does not run ${harness}.`, host: true, harness });
+  // One the table hides (HarnessEntry.hidden: Goose before its owner installs it) has no offer: its entry says why. One
+  // that lacks only a model key (its offer's `keys`: harness.ts harnessOffers keeps them on no other) is its model's
+  // blocker, which a held create defers.
+  if (!offer?.available) out.push({ field: "definition.harness", reason: NOT_SET_UP, message: offer?.reason ?? harnessOf(env, harness)?.hidden?.(env) ?? `This server does not run ${harness}.`, host: true, harness, ...(offer?.keys?.length ? { model: true as const } : {}) });
   const { place } = revision;
   // A workflow's model and call nodes run on the runner here; in a box they do not run yet. Its fix names the runner: an
   // edit that leaves the place out keeps the agent's (agents-store.ts), so removing the field would change nothing.
   if (revision.kind === "workflow" && place && place.mode !== "runner") out.push({ field: "definition.place", reason: "not_an_option", message: `A workflow runs on the runner here: its place is runner (or none), not ${place.mode} on ${place.box ?? "no box"}.`, fix: placeFix({ mode: "runner" }), host: false });
   // An agent with a computer setting is checked by the claim's own answers (resolve-computer.ts computerReadiness: the
-  // provider and its kind, the mode's mount, its keys), not as a box; one with only an old place keeps the box check.
+  // provider and its kind, the mode's mount, its keys), not as a box; one with only an old place keeps the box check. One
+  // every tool of whose computer is set to deny is not: its runs never start it (deniedComputer).
   else if (revision.kind === "agentic" && revision.computer && computerReady) {
-    const ready = await computerReady(revision.computer);
+    const ready = (await deniedComputer(revision, settings, shellOf)) ? { ok: true as const } : await computerReady(revision.computer);
     if ("refused" in ready) out.push({ field: "definition.computer", reason: NOT_SET_UP, message: ready.refused, host: true, ...(ready.box ? { box: ready.box } : {}) });
   } else if (place && place.mode !== "runner") {
     const box = boxAvailability(boxes).find((b) => b.id === place.box);
@@ -123,16 +141,32 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   // server's folder with the runner-only tools, which the runnerOnly check below holds to a sandbox place alone.
   const onRunner = revision.kind === "agentic" && shellOf && (place?.mode ?? "runner") === "runner";
   const runnerShell = onRunner && (await shellOf(revision.computer ?? { kind: "none" })) === "local" ? shellTools("local") : new Set<string>();
-  /** A shell tool the runner does not run: a box this server runs in is the fix; with none, why it has none
-   *  (capabilities' default_reason) and both ways out, fixing that or keeping the agent on the runner without the tool.
-   *  Where the runner has a shell that runs others (Mode 2's Archil exec runs bash), it says which. */
+  /** A shell tool the runner does not run. One that names no place, on a runner with no shell (Mode 1), is there only
+   *  because Docker's box, its default, is not here (place.ts defaultPlaceOf): it names a box or the runner, in the words
+   *  its create is refused in (nameABox), never given another box. One whose place is the runner: a box this server runs in is the fix; with none, why
+   *  Docker's box is not here and both ways out, fixing that or keeping the agent on the runner without the tool. Where
+   *  the runner has a shell that runs others (Mode 2's Archil exec runs bash), it says which. */
   const shellOnRunner = (tool: string, field: string, named: boolean): Blocker => {
+    // On a Mode 2 region with no exec the runner has no shell and Docker's box can't mount Archil: a sandbox computer is
+    // the one way to run the tool. With no place named, in the words its save is refused in (noExecIssue).
+    if (noExec !== undefined && !named) return { ...noExecIssue(noExec), host: false, tool };
+    if (noExec !== undefined) return { field, reason: "not_an_option", message: `${tool} runs only in a box, and this agent's place is the runner, which has no shell here: ${noExecWords(noExec)}, and the docker box can't mount Archil. Give it a sandbox computer (a box), or remove "${tool}" from definition.tools.`, fix: `Remove "${tool}" from definition.tools.`, host: false, tool };
+    const fresh = newAgentPlace(boxes);
+    if (!named && !runnerShell.size && "reason" in fresh) {
+      // A tool the box refuses (the browser) keeps this agent out of every box, so naming one is no way out: its words
+      // say that it is one tool or the other.
+      const boxless = (revision.tools ?? []).filter((one) => toolOf(one)?.runnerOnly);
+      if (!boxless.length) return { ...noPlaceIssue(boxes), host: false, tool };
+      const them = new Intl.ListFormat("en", { type: "conjunction" }).format(boxless.map((one) => `"${one}"`));
+      return { field, reason: "not_an_option", message: `${tool} runs only in a box, and ${boxless.join(", ")} never ${boxless.length > 1 ? "run" : "runs"} in one, so no place runs this agent with both: remove "${tool}" from definition.tools to keep it on the runner, or remove ${them} and name a box.`, fix: `Remove "${tool}" from definition.tools.`, host: false, tool };
+    }
     const where = named ? "this agent's place is the runner" : "this agent names no place, so it runs on the runner";
     const has = runnerShell.size ? `whose shell here runs ${[...runnerShell].join(", ")} alone` : "which has no shell";
-    const box = boxAvailability(boxes).find((b) => RUN_BOXES.includes(b.id) && b.available);
+    const box = boxAvailability(boxes).find((b) => b.available);
     if (box) return { field, reason: "not_an_option", message: `${tool} runs only in a box, and ${where}, ${has}: give it a sandbox computer (a sandbox place).`, fix: placeFix({ mode: "sandbox", box: box.id }), host: false, tool };
-    const fresh = newAgentPlace(boxes);
-    const why = "reason" in fresh ? fresh.reason : "no box runs execute in is available here";
+    // In Mode 2 new agents do run on the runner (placesOf), so its words say so, as they always have; in Mode 1 a new
+    // agent names its place, so they say only why Docker's box is not here.
+    const why = "why" in fresh ? `${runnerShell.size ? "new agents run on the runner, because " : ""}the docker box is unavailable here: ${fresh.why}` : "no box runs execute in is available here";
     return { field, reason: "not_an_option", message: `${tool} runs only in a box, and ${where}, ${has} (${runnerShell.size ? tool : "a shell"} needs a sandbox computer), and ${why}. Do that, or keep this agent on the runner: name "place": {"mode": "runner"} and remove "${tool}" from definition.tools.`, fix: `Remove "${tool}" from definition.tools.`, host: false, tool };
   };
   // A harness's own MCP client may drop or retype a shape of a tool's schema (its facts' schemaProblems, measured on its
@@ -188,13 +222,18 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
       }
       if (!allows(BOUND_TOOLS, tool)) out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} is not a tool here: grant one of ${BOUND_TOOLS.join(", ")}, an MCP server's tool as mcp:<server>/<tool>, or a monid endpoint as monid:<provider>/<endpoint>.`, host: false, tool });
       // A shell runs in a box; on the runner (no place names one) only what its shell here runs (runnerShell).
-      else if (toolOf(tool)!.sandboxOnly && (place?.mode ?? "runner") === "runner" && !runnerShell.has(tool)) out.push(shellOnRunner(tool, `definition.tools[${index}]`, !!place && !revision.unnamed));
+      // One that names no place is refused once, whatever shell tools it names: at its place (Mode 1), or at its computer
+      // on a Mode 2 region with no exec.
+      else if (toolOf(tool)!.sandboxOnly && (place?.mode ?? "runner") === "runner" && !runnerShell.has(tool)) {
+        const blocker = shellOnRunner(tool, `definition.tools[${index}]`, !!place && !revision.unnamed);
+        if (!out.some((b) => b.field === blocker.field && b.message === blocker.message)) out.push(blocker);
+      }
       // Its writes into work/ go by path from this machine, and a box's command could swap a link in on their way.
       else if (toolOf(tool)!.runnerOnly && place?.mode === "sandbox") out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} does not run in a sandbox place yet: it saves files into the run's work/ from this server, outside the box, and a command in the box could point those writes elsewhere on this server. Give it to an agent whose place is the runner.`, fix: `Remove "${tool}" from definition.tools.`, host: false, tool });
-      // Another harness gets the host tools only (host-tools.ts: the file tools, ask_person, web_fetch and web_search):
-      // any other tool this host binds (the browser, subagent, pdf_pages, llm) is pi's here and refuses the
-      // run, never runs without it.
-      else if (onAdapter(env, harness) && !isHostTool(tool)) out.push({ field: `definition.tools[${index}]`, reason: NOT_SET_UP, message: `${tool} runs on pi here; on ${harness} it is not bound yet.`, host: true, tool });
+      // Another harness gets the host tools (host-tools.ts: the file tools, ask_person, web_fetch and web_search) and the
+      // browser (tool-list.ts adapterBinds): any other tool this host binds (subagent, pdf_pages, llm) is pi's here and
+      // refuses the run, never runs without it.
+      else if (onAdapter(env, harness) && !adapterBinds(tool)) out.push({ field: `definition.tools[${index}]`, reason: NOT_SET_UP, message: `${tool} runs on pi here; on ${harness} it is not bound yet.`, host: true, tool });
       else {
         unset(`definition.tools[${index}]`, tool);
         // The browser of an agent whose computer is a browser is that computer (tools.ts browserComputer), on the keys
@@ -204,13 +243,13 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     });
     const resolved = await harnessModel(env, harness, revision.model, offer?.available === true);
     if (!resolved) return out;
-    if ("why" in resolved) out.push({ field: "definition.model", reason: resolved.host ? NOT_SET_UP : "not_an_option", message: resolved.why, host: resolved.host });
-    else if ("refused" in resolved) out.push({ field: revision.model ? "definition.model" : "definition.harness", reason: NOT_SET_UP, message: resolved.refused, host: true, harness });
+    if ("why" in resolved) out.push({ field: "definition.model", reason: resolved.host ? NOT_SET_UP : "not_an_option", message: resolved.why, host: resolved.host, model: true });
+    else if ("refused" in resolved) out.push({ field: revision.model ? "definition.model" : "definition.harness", reason: NOT_SET_UP, message: resolved.refused, host: true, harness, model: true });
     // Under a cap, a model serve has no price for (unpricedModels: a gateway id no price names and the catalog does not
     // list) cannot be kept to it: the run is refused now, never started and refused at its first request.
     else if (capped) {
       const unpriced = await unpricedModels(env, revision.model, ["default"], harness);
-      for (const id of unpriced) out.push({ field: "definition.model", reason: NOT_SET_UP, message: `The model ${id} has no price here, so a run's spend cap cannot be kept on it.`, fix: PRICE_FIX, host: true, unpriced: true });
+      for (const id of unpriced) out.push({ field: "definition.model", reason: NOT_SET_UP, message: `The model ${id} has no price here, so a run's spend cap cannot be kept on it.`, fix: PRICE_FIX, host: true, unpriced: true, model: true });
       // A save's cap (`capUsd`) below what the model needs for one more step and an answer: a warning, never a refusal
       // (cap-short.ts). Asked of a save alone: a run under such a cap starts, and its wrap-up says the same.
       if (capUsd !== undefined && unpriced.length === 0) {

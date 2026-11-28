@@ -11,6 +11,7 @@ import type { RunRow, Store } from "../store/store.js";
 import { DEFAULT_HARNESS } from "../harness.js";
 import { costOfRun, runReadState } from "./runs.js";
 import { isShadowRun, shadowRunId } from "../learn/audit.js";
+import { shadowOfRun, shadowUsdOf } from "../learn/ledger.js";
 
 export type ImportSource = Source;
 /** The states a run's end can have (AnalyticsFilter.pending). */
@@ -27,12 +28,23 @@ export type StoreAnalytics = {
   byDay: Array<AnalyticsGroup & { day: string }>;
   bySource: Array<AnalyticsGroup & { source: "live" | ImportSource }>;
   tools: Array<{ tool: string; calls: number; errors: number }>;
+  /** The imported runs' cache, summed (import.ts RunCache): how many runs were analyzed, their cache read and whole
+   *  prompt (the hit rate's parts), breaks by cause, extra cost by cause (USD) and unpriced breaks. A run imported
+   *  before the import analyzed it, or of a source with no chain, is in no figure here. */
+  cache: StoredCache & { runs: number };
+  /** The keys and tokens the import cut from the runs in scope (import.ts, a run's `secrets`): how many runs carry a
+   *  count, how many of them held a key, and the keys summed (a key met in two runs counts in each). A run imported
+   *  before the import counted them is in no figure here. */
+  secrets: { runs: number; holding: number; removed: number };
 };
+
+/** A run's cache as the import keeps it in the run's metrics (import.ts RunCache). */
+type StoredCache = { read: number; prompt: number; breaks: Record<string, number>; extraCost: Record<string, number>; unpriced: number };
 
 /** A run's metrics as the end commit wrote them (the row's JSON): what analytics sums. */
 type StoredMetrics = {
   input?: number | null; cacheRead?: number | null; cacheWrite?: number | null; output?: number | null; requests?: number | null; unmetered?: number | null;
-  activeMs?: number; effort?: string; tools?: Record<string, { calls?: number; errors?: number }>;
+  activeMs?: number; effort?: string; tools?: Record<string, { calls?: number; errors?: number }>; cache?: Partial<StoredCache>; secrets?: number;
 };
 
 const num = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) ? value : 0);
@@ -60,10 +72,11 @@ type Fact = {
   harness: string;
   source: "live" | ImportSource;
   effort: string | null;
-  /** Its audit's shadow run's cost, once known (learn/audit.ts shadowRunId): learning spend on this run, booked on its
-   *  day and in its groups (A8), whenever the shadow started; 0 for none. The shadow is no fact of its own: in no count,
-   *  time, token or tool figure, and out of every filter its run is out of. */
-  shadowUsd: number;
+  /** Its audit's shadow run's cost (learn/audit.ts shadowRunId; learn/ledger.ts shadowUsdOf): learning spend on this run,
+   *  booked on its day and in its groups (A8), whenever the shadow started; 0 for none; null while it is at work or
+   *  unpriced, which leaves the run's cost unknown. The shadow is no fact of its own: in no count, time, token or tool
+   *  figure, and out of every filter its run is out of. */
+  shadowUsd: number | null;
 };
 
 /** The runs and their metrics summed (the old AgentStoreReader.analytics), from A's run rows. */
@@ -102,7 +115,7 @@ export async function analytics(store: Store, filter: AnalyticsFilter = {}): Pro
     const metered = !running && metricsOf(run) !== null;
     const metrics = metered ? metricsOf(run) : null;
     const shadow = shadows.get(shadowRunId(run.id));
-    const shadowUsd = shadow && runReadState(shadow, "agentic") !== "running" && shadow.costUsd !== null ? shadow.costUsd : 0;
+    const shadowUsd = shadowUsdOf(shadow && shadowOfRun(shadow));
     facts.push({
       startedMs: run.startedAt,
       endedMs: run.endedAt,
@@ -121,10 +134,10 @@ export async function analytics(store: Store, filter: AnalyticsFilter = {}): Pro
   }
 
   const counted = (group: readonly Fact[]): AnalyticsGroup => {
-    let runsN = 0, completed = 0, needsReview = 0, failed = 0, metered = 0, tokenMetered = 0, tokens = 0, costUsd = 0, known = 0, pend = 0;
+    let runsN = 0, completed = 0, needsReview = 0, failed = 0, metered = 0, tokenMetered = 0, tokens = 0, costUsd = 0, priced = 0, known = 0, pend = 0;
     let shadowUsd = 0;
     for (const f of group) {
-      shadowUsd += f.shadowUsd;
+      shadowUsd += f.shadowUsd ?? 0;
       runsN += 1;
       if (f.state === "completed" || f.state === "escalated") completed += 1;
       if (f.state === "escalated") needsReview += 1;
@@ -134,10 +147,11 @@ export async function analytics(store: Store, filter: AnalyticsFilter = {}): Pro
         const reported = tokensOf(f.metrics!);
         if (reported !== null) { tokenMetered += 1; tokens += reported; }
       }
-      if (!f.running && !f.pending && f.costUsd !== null) (costUsd += f.costUsd, (known += 1));
+      // Its $ is spent either way; the run is known only with its shadow's.
+      if (!f.running && !f.pending && f.costUsd !== null) (costUsd += f.costUsd, (priced += 1), (known += f.shadowUsd === null ? 0 : 1));
       if (f.pending) pend += 1;
     }
-    return { runs: runsN, completed, needsReview, failed, runsWithMetrics: metered, runsWithTokenMetrics: tokenMetered, tokens: tokenMetered > 0 || runsN === 0 ? tokens : null, costUsd: known > 0 || shadowUsd > 0 ? costUsd + shadowUsd : null, unknownCostRuns: runsN - known - pend };
+    return { runs: runsN, completed, needsReview, failed, runsWithMetrics: metered, runsWithTokenMetrics: tokenMetered, tokens: tokenMetered > 0 || runsN === 0 ? tokens : null, costUsd: priced > 0 || shadowUsd > 0 ? costUsd + shadowUsd : null, unknownCostRuns: runsN - known - pend };
   };
 
   // Totals over the whole scope: the group counts, the token sums, and the time figures.
@@ -194,6 +208,32 @@ export async function analytics(store: Store, filter: AnalyticsFilter = {}): Pro
   }
   const tools = [...calls.entries()].map(([tool, c]) => ({ tool, calls: c.calls, errors: c.errors })).sort((a, b) => b.calls - a.calls || (a.tool < b.tool ? -1 : a.tool > b.tool ? 1 : 0)).slice(0, 20);
 
+  // The cache over the runs in scope that keep one, ended (an import writes its run ended).
+  const cache: StoreAnalytics["cache"] = { runs: 0, read: 0, prompt: 0, breaks: {}, extraCost: {}, unpriced: 0 };
+  for (const f of notPending) {
+    const kept = f.metered ? f.metrics?.cache : undefined;
+    if (!kept || typeof kept !== "object") continue;
+    cache.runs += 1;
+    cache.read += num(kept.read);
+    cache.prompt += num(kept.prompt);
+    cache.unpriced += num(kept.unpriced);
+    for (const [cause, n] of Object.entries(kept.breaks ?? {})) cache.breaks[cause] = (cache.breaks[cause] ?? 0) + num(n);
+    // Summed in micro-dollars: USD figures of six places added as floats drift.
+    for (const [cause, usd] of Object.entries(kept.extraCost ?? {})) cache.extraCost[cause] = Math.round(((cache.extraCost[cause] ?? 0) + num(usd)) * 1e6) / 1e6;
+  }
+
+  // The keys the import cut over the imported runs in scope that keep a count, ended (an import writes its run ended).
+  // A live run is none of them whatever its metrics hold, and a count is a whole number of zero or more.
+  const secrets: StoreAnalytics["secrets"] = { runs: 0, holding: 0, removed: 0 };
+  for (const f of notPending) {
+    if (f.source === "live") continue;
+    const kept = f.metered ? f.metrics?.secrets : undefined;
+    if (typeof kept !== "number" || !Number.isSafeInteger(kept) || kept < 0) continue;
+    secrets.runs += 1;
+    if (kept > 0) secrets.holding += 1;
+    secrets.removed += kept;
+  }
+
   const totalsGroup = counted(facts);
   return {
     totals: { ...totalsGroup, input:unknownTokens.has('input')?null:input, cacheRead:unknownTokens.has('cacheRead')?null:cacheRead, cacheWrite:unknownTokens.has('cacheWrite')?null:cacheWrite, output:unknownTokens.has('output')?null:output, requests: unknownRequests ? null : requests, unmetered: unknownRequests ? null : unmetered },
@@ -202,5 +242,7 @@ export async function analytics(store: Store, filter: AnalyticsFilter = {}): Pro
     byDay,
     bySource,
     tools,
+    cache,
+    secrets,
   };
 }

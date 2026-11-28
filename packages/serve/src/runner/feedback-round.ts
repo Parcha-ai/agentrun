@@ -4,11 +4,12 @@
 //   - a run its learned workflow answered alone (path `workflow`), graded right or wrong: the grade is kept and nothing else happens: no round, no turn, $0. One wrong answer is one sample;
 //   - a run the agent finished (path `agent` or `handed_back`) graded with words (`label`): a correction round on them.
 //     The run opens again on it: the grade's words are on its record, the agent is asked no turn of the job's, and the
-//     run goes straight to its end-of-run step, which appends the words to corrections.md as one line (and compiles, when
-//     a compile is due). Its spend is learning spend.
+//     run goes straight to its end-of-run step, which appends the words to corrections.md as one line and, when a compile
+//     is due, tells that compile the line on every attempt, beside the owner's other corrections (reflect-hook.ts `taken`;
+//     a line the checks refuse is told never). Its spend is learning spend.
 // A grade with neither asks for nothing more. The server writes the round's steer (server.ts gradeRun, runs.reopen); the
 // adapter loop takes it (adapter-loop.ts steer: a FEEDBACK entry, no turn), and the end-of-run step reads it
-// (learning-end.ts: heard, never "nothing new"; adapter-loop.ts askEndOfRun: feedbackAsk before the prompt).
+// (learning-end.ts: heard, never "nothing new"; ownerWords: the grade's words, one line of corrections.md).
 import { type Grade, markGradeRound, putGrade } from "../learn/promote.js";
 import type { RunPath } from "../learning-cost.js";
 import { readLaunchBody, type RunLaunch } from "../run-launch.js";
@@ -70,7 +71,9 @@ export function jobEndOpen(entries: readonly { readonly kind: string }[]): boole
  *  - the job's end kept for it (KINDS.jobEnd, with its time), newer than the run's last end: by its claim before the
  *    end-of-run step, or for a grade's round by the steer's taking;
  *  - else from the round's steer the grade wrote, not taken yet (the run opened again, no runner on it yet).
- *  A follow-up's own turn keeps none until its job's end is kept: its run reads as going on, as main's does. */
+ *  A follow-up's own turn keeps none until its job's end is kept: its run reads as going on, as main's does.
+ *  Of `entries` it reads only the newest that is a job's end kept or a run's end, so a reader may hand it that one alone
+ *  (learning-rounds.ts roundOpen, journal-reader.ts newestRootEntryOf). */
 export function keptEndOf(entries: readonly { readonly kind: string; readonly data?: unknown }[], commands: readonly Pick<Command, "kind" | "body" | "takenAt" | "refused">[]): KeptEnd | undefined {
   if (jobEndOpen(entries)) {
     const { end, endedAt } = entries.findLast((entry) => entry.kind === KINDS.jobEnd)!.data as JobEndData;
@@ -101,11 +104,6 @@ export function pendingFeedbackOf(entries: readonly { readonly kind: string; rea
   const at = entries.findLastIndex((entry) => entry.kind === KINDS.feedback);
   if (at < 0 || entries.slice(at + 1).some((entry) => entry.kind === KINDS.end)) return undefined;
   return roundOf(entries[at]!.data, (entries[at]!.data as { text?: unknown } | undefined)?.text);
-}
-
-/** What the end-of-run turn of a feedback round is told before its prompt: the grade and its words. */
-export function feedbackAsk(feedback: FeedbackData): string {
-  return [`A reviewer graded this run's answer ${feedback.correct ? "right" : "wrong"}. What they said:`, "", feedback.text].join("\n\n").replace(/\n{3,}/g, "\n\n");
 }
 
 /** How a feedback round stands (GET /runs/{id}/learning `graded.feedback_status`): `running` until it settles; `ended`,
@@ -152,6 +150,8 @@ export async function openFeedbackRound(store: Pick<Store, "runs" | "agents">, g
   const launch = launched ? readLaunchBody(launched.body) : undefined;
   // Source sessions and application-owned SDK tasks cannot consume a managed feedback steer.
   if (launch?.native || launch?.sdk || launch?.cli_learning) return null;
+  // A held run its model kept from running at its create never runs a turn (computer-held.ts): no round opens it again.
+  if (launch?.hold?.refused) return null;
   const learning = launch?.learning;
   if (!learning || learning.use) return null;
   // The round is a turn of the run with no caller's model key (a grade hands none): where the server holds no key for the
@@ -175,8 +175,8 @@ export async function openFeedbackRound(store: Pick<Store, "runs" | "agents">, g
  *  round it asks for (openFeedbackRound), and only then marks the kept grade with that round and its steer. The grade is
  *  kept first, so the round's end reads it; the round is named last, so a reopen that fails (thrown, or a run that can't
  *  be opened again) leaves a grade naming none, never one claiming a round that didn't open. The grade as kept. */
-export async function keepGrade(store: Pick<Store, "runs" | "agents" | "settings">, agentId: string, grade: Grade, label: string | undefined, canTurn?: (launch: RunLaunch) => boolean): Promise<Grade> {
-  const kept = await putGrade(store.settings, agentId, { ...grade, feedback: null });
+export async function keepGrade(store: Pick<Store, "runs" | "agents" | "learning">, agentId: string, grade: Grade, label: string | undefined, canTurn?: (launch: RunLaunch) => boolean): Promise<Grade> {
+  const kept = await putGrade(store.learning, agentId, { ...grade, feedback: null });
   const opened = await openFeedbackRound(store, kept, label, canTurn);
-  return opened ? markGradeRound(store.settings, agentId, kept, opened) : kept;
+  return opened ? markGradeRound(store.learning, agentId, kept, opened) : kept;
 }

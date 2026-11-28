@@ -74,9 +74,10 @@ once they have loaded. A port already taken at the start is left to the start's 
 replaces, as it always has, and prints no `Starting` line.
 
 A Docker box's image is built on its first run, which shows that on its timeline. `npx @parcha/agentrun` prints the
-`Boxes:` line on stderr, after its own line on stdout. On a machine where Docker is not running, the `Boxes:` line says so instead (`Boxes: none, so new agents run on the
-runner. Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart
-AgentRun.`); see [Sandbox](#sandbox).
+`Boxes:` line on stderr, after its own line on stdout. On a machine where Docker is not running, the `Boxes:` line says so instead (`Boxes: none, so a new agent must name its
+place: a box, or the runner. Docker isn't running on this machine (no docker command on PATH): install or start Docker,
+then restart AgentRun.`; in Mode 2, where the runner's shell is Archil's serverless exec, `Boxes: none, so new agents run on
+the runner.` and Docker's reason); see [Sandbox](#sandbox).
 
 `Open` is [the console](#the-console), which takes [your password](#your-password). For a client, export the two lines before
 it, then make an agent, start a run, and read its timeline until a page says `final`:
@@ -139,6 +140,40 @@ An id or a secret given twice, or an entry that is not `id:secret`, stops the st
 the launcher hands it over its pipe, and no run's process or runner loop gets it. A rotation adds the new token, moves
 callers, then removes the old one ([deploy/README.md](../../deploy/README.md#rotating-the-api-token)).
 
+### API keys for your apps
+
+An app that calls this server does not need a token from the server's environment. The owner makes a key for it in the
+console, under Settings → AgentRun API keys, or with `POST /v2/settings/api-keys` and `{"name": "billing app"}` from
+their signed-in session:
+
+- **Shown once.** The answer holds the key as `api_key` (`ar_key_` and 32 random bytes in base64url). No read shows it
+  again. A lost key is revoked and replaced.
+- **What it opens.** Everything a token opens on `/v2` and `/mcp`, sent as `Authorization: Bearer <key>`. A key is never
+  the setup code: only a token the server was started with sets the first password.
+- **What is kept.** A keyed hash of the key (HMAC-SHA-256 under a key derived from the seal key), never the key. A row
+  written without the seal key opens nothing.
+- **Who makes and revokes.** Both are secret writes: the owner's signed-in session alone. A token, or a key, gets
+  `403 forbidden` with the console page in `details.console_url`, so a key that leaks cannot make another.
+- **Listing and revoking.** `GET /v2/settings/api-keys` answers each key's `name`, `created_at` and `last_used_at`
+  (written about once a minute). `DELETE /v2/settings/api-keys/{api_key_id}` revokes one, and the next request that
+  carries it is `401`.
+- **Limit.** A server keeps at most 50 keys; the next `POST` is `409 api_keys_full` until one is revoked.
+- **One person's server.** A key is one more caller that starts runs, as a second token is. So a server with Claude
+  Code's login on makes no key (`403 forbidden`, in words), and a server with a key refuses to turn that login on until
+  the key is revoked. A server started with `--harness-sign-in` makes none, and a key made before opens nothing there.
+  Such a key is still listed, so its owner can revoke it, and it still refuses the login. The list says why in
+  `refused`.
+- **In the log.** A request a key opened names it by id (`api_key=<id>`), never by value.
+
+The server keeps no copy of a key, so it finds one in a text by its shape: `ar_key_` and 43 or more base64url
+characters, a capital or a digit among them, are cut wherever a run's views, a shared transcript or a learned note
+would show them, whatever stands before them. A key cut short, or split across lines, is not found, so keep keys out
+of prompts and files a run reads all the same. A row under the keys' name in the store that is no key's (damaged, or
+another version's) opens nothing and counts toward the limit. The list names it in `unreadable`, the console shows it
+with a Remove button, the log says it at the start, and `DELETE` with its id removes it. An
+[API-only](#api-only) server has no owner and serves none of these routes, so it takes no key at all: only the tokens
+it was started with. Its capabilities say `features.api_keys.routes: false`.
+
 ## Sandbox in 60 seconds
 
 An agent with a shell, in a Docker container of its own: on a machine with Docker, in a checkout built as above, with
@@ -200,6 +235,11 @@ A request's path has no query. `auth_failed` names the route and why (`no_creden
 `wrong_launch_code`, `wrong_password`, `sign_in_table_full`), never the token given nor any part of it. `AGENTRUN_LOG=quiet` leaves out the request lines; the
 run and `auth_failed` lines stay. A run whose process failed at its start says why in its `error.message`, in words.
 One line at start, `event=boxes`, says which boxes this server has ([Sandbox](#sandbox)); quiet keeps it too.
+`AGENTRUN_LOG=debug` keeps every line and also writes into a run's log one line per call an ACP agent announces, when
+its recipe declares `announces`: `acp: the agent announced a call`, with the call's `toolCallId`, its `kind`, the tool
+name the recipe's field holds when it names an AgentRun tool (at most 200 characters; `native` for any other call,
+since a recipe's field may sit inside the call's input) and the AgentRun tool it named, never the call's input. A call
+announced with no name (Cursor's) gets the line again when a later update names it.
 `event=harness_offers why=start ms=<n>` says how long the server took to check what each harness offers (each CLI's
 package and pins; [harnesses](#harnesses)), the bulk of its start; quiet keeps it too. It is made at the start only: a
 PUT of `/settings/tools` and a save or delete of a tool key change no harness's offer, so they remake capabilities at
@@ -208,6 +248,119 @@ once without checking again (a key some harness reads would, with `why=key`).
 whose stored cost was unknown that it read, those whose priced booking it wrote back, and those it could not read (each
 heals on its next read). The rest stay unknown: a charge of no known cost, or a booking with no request to read. It
 names no run, and a store with no such run says nothing; quiet keeps it too.
+
+## Traces (OpenTelemetry)
+
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) and every run on a pi or CLI harness
+exports a GenAI trace over OTLP/HTTP to any backend that takes one, with the official OpenTelemetry SDK: an
+`invoke_agent {agent name}` span per claim of the run, under it a `chat {model}` span per model request (provider, model,
+`server.address` (the host the request goes to, OpenRouter's for a model reached through it; none where not known),
+and tokens with the cache: `gen_ai.usage.input_tokens` includes the cache read and write, which are also given on their
+own) and an `execute_tool {tool}` span per tool call. Every span says which agent ran and on what, as the
+[GenAI semantic conventions][otel-agent-spans] name it:
+
+| Attribute | Value |
+| --- | --- |
+| `gen_ai.agent.name` | The agent's name as you gave it (`billing-helper`). An agent with no name has none, never the harness in its place, and its span is `invoke_agent` alone. |
+| `gen_ai.agent.id` | The agent's id, the one its API routes take. |
+| `agentrun.harness` | The harness that ran it (`pi`, `claude-agent`, `codex`). The conventions have no attribute for it. |
+| `gen_ai.conversation.id`, `agentrun.run.id`, `session.id` | The run's id. |
+| `gen_ai.operation.name` | `invoke_agent`, `chat` or `execute_tool`. |
+
+An inline run (`POST /runs` with its definition) names its agent too, since it writes the agent's row first. The
+agent's name and id are cut as any other name is (below), and a name written like a key (a GitHub token's shape, an
+`sk-` key's) is `[redacted]` whatever the runner holds. A name the model wrote is never sent as written: a call the
+harness refused (a tool the session does not have) is `execute_tool` with `error.type=tool_refused` and no tool name, a
+model the run does not know is named by its route's model, and any other name is cut of every secret the runner holds
+and at 64 characters. A run is one trace, sampled whole or not at
+all (`OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG`). A request billed to a plan, and every turn of a plan harness,
+has `agentrun.billing=plan` and no token counts. No span holds content (a prompt, a message, a tool's arguments or
+result), whatever `OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT` says; content capture comes later. Reasoning tokens are
+not on chat spans yet: the usage a run's requests are booked with does not count them apart. Nor is
+`gen_ai.response.model`: the model asked for is `gen_ai.request.model`. The exporter takes the standard
+`OTEL_EXPORTER_OTLP_HEADERS` and `OTEL_EXPORTER_OTLP_TIMEOUT`, and the resource `OTEL_SERVICE_NAME` and
+`OTEL_RESOURCE_ATTRIBUTES` (put `deployment.environment.name` there); `service.name` is `agentrun` unless set. Runs never
+receive these settings: no `OTEL_*` variable reaches a run's harness, tools or computer, and a run in a process of its
+own (under `agentrun-serve runner`) sends its trace to its runner, which exports it. The runner reads what that process
+sends as untrusted: every string is cut as a name the model wrote, a provider or host that loses its shape is dropped,
+and a request's or turn's end takes only a value the runner knows. Every OTLP header value of 8 characters or more is a
+secret the server and the runner hold, under any name, an unknown one too, but the value of a `Content-Type`, `Accept`,
+`Content-Encoding` or `User-Agent` header, and of a dataset or tenant header (`x-honeycomb-dataset`, `x-axiom-dataset`,
+`x-scope-orgid`), which is only cut from the `[otel]` lines below. A value is held as written and decoded. What follows
+its first word is held too when that word is a known auth scheme (`Bearer`, `Basic`, `Api-Key`, `Api-Token`, `Token`,
+`sentry`, `Splunk`, `GenieKey`) or the header is named like a credential (`authorization`, `x-sentry-auth`,
+`x-api-key`); any other header's value is held whole, never its tail alone. So are an OTLP endpoint's user, password
+and any query parameter named like a credential, and, inside any header's value, the value of each `name=value` pair
+named like a credential, read over the whole value as written, a URL's query and fragment included (a cookie's
+`session=<token>`, `https://relay/v1?region=us;session=<token>`, `#access_token=<token>`). Such a pair's value is held
+at every boundary: a key may hold a `&`, `;`, comma or space, raw or written `%26`, `%3B`, `%2C` or `%20`, and the
+pairs around it may be joined by any other of them, so no one split finds it. So its value runs from the `=` to the
+end of the header value, and each prefix of it that ends just before one of those separators is held, the whole rest
+too, so `region=us%3Bapi_key=<key%20rest>%26theme=dark` holds `<key%20rest>` (all are held, since a redactor matches
+each held value exactly and a longer reading never covers the key alone). Each prefix is held as written and decoded,
+out of a matching pair of quotes (raw, `%22` or `%27`), and without a lone opening or closing quote when what is left
+is 8 characters or more. A value whose part before its first `;` is empty, `token=;<key>` or `token=%3B<key>`, is held
+after that `;` too, whole and as its first piece of 8 characters or more, but not when that is a pair named like no
+credential (`token=;theme=dark`). The prefixes past a pair's first separator take 4,096 characters of one header value
+at most, but the last such pair's whole rest. Past that budget a pair still holds its value as any reader that splits
+pairs at some kinds of separator reads it (a raw `&` and a `%26` are two kinds, every whitespace one): up to the next
+separator of each kind, until it has passed one of each kind of separator since the last `=` before its name, since a
+reader that splits at any of those finds the pair (`; session=` by one that splits at `;` and one that splits at
+spaces, `&flag;api_key=` by one that splits at `&`), and its whole rest when one of those kinds never comes again, as
+a reader of that kind reads it to the end (`&token=<a>;<b>;secret=<c>`). So a key of any length is held alone, and
+these take a fixed multiple of the header value's length at most, never its square. A prefix past the first that opens
+or ends with a raw `&` or space is held only at 8 characters or more. Not covered: a `+` read as a space, spaces
+around a pair's `=`, a URL inside a pair's value whose query holds `%3B` or `%26` (the key decoded is held, not as
+written), and a raw comma inside a quoted value, which splits the variable itself (write it `%2C`).
+`theme=dark` is not held, nor is a value of only `=`, `;`, `&`, quotes, commas or spaces, as written or decoded, so
+`api_key=%2C` cuts no comma from the `[otel]` lines. Inside a URL that is a pair's value, a pair after a `?`, `#` or
+`/` is read up to the next of those, a `;`, `&`, comma, space or `%2C`. Also held are the user, password and
+credential-named query parameters of every URL in it, one inside another's query or path too, scheme-relative
+(`//<key>@host`) or with its slashes escaped (`https:\/\/`). A URL's query, an endpoint's too, is read split at `&`
+alone and again at `&` and `;`, so `?api_key=<key;rest>` holds the whole key and `?region=us;session=<token>` the
+token; after the first query a header value's read takes, a later one is read while 4,096 characters of them in all
+fit, and the pair read covers the rest. A URL in quotes ends at its
+closing quote; one without at the next space or quote, and, when that is a quote, it is also read on to the next space,
+since a password may hold a raw `'`. Inside it the user and password are read as RFC 3986 reads them, everything before
+the last `@` of its authority, any `;`, `&`, `=`, `,` or `@` in a password included, and also, a user or password of
+8 characters or more, before its first `@` and up to 14 more `@` (4,096 characters of those at most), each as written
+and decoded. A URL only adds readings: the pair
+read covers its text too. A header's, a parameter's or a pair's name is split into words at punctuation and at each
+lower-to-upper case change, a word's trailing digits are dropped (`apiKey2` is `api` and `key`), and it is named like a
+credential when a word is authorization, auth, key, apikey, token, secret, password, passwd, pwd, sig, signature,
+credential, credentials, jwt or session; or ends in key, token, secret, password, passwd, pwd, auth, authorization,
+sig, signature, credential, credentials, jwt or sessionid; or starts with token, secret, password, passwd or jwt and is
+longer than its plural (`api_key`, `access_token`, `apiKey`, `token2`, `accesstoken`, `tokenvalue`, `passwordhash`,
+`jsessionid`, `writekey` and `hmackey` are; `authority`, `keyspace`, `tokens`, `sessions` and `sessioncount` are not).
+Commas split the header variables, so write a comma inside a value as `%2C`. The tracer's own `[otel]` lines, where an exporter's error may quote a header it sent or the URL it
+posted to, are cut of every such value at any length, a short one too, and of what follows any header value's first
+word, whatever the word and the header's name; values that overlap or touch in a line are cut as one `[redacted]`, as
+every other redactor cuts them, so no character of any of them is left. A run's process can hold at most 512
+model requests and 512 tool calls open in its runner's trace at once; one started past that has no span. No OpenTelemetry diag logger is set, since the
+SDK's diag writes can quote a header value as sent, and a test fails if a source sets one or `OTEL_LOG_LEVEL`. Everywhere else, the runner's logs and what a run
+writes, a held value is cut at 8 characters or more, a header value's as any other's, and a shorter header value is on
+no held list: that floor is kept on purpose, since a needle of a few characters would cut ordinary text, turn a served
+number such as `1` into `[redacted]`, or refuse a source capture of any project that holds it. Spans are sent in the background, so a run's end never waits on
+the collector; a server or runner that stops waits at most 3 s to send what is left. At its start, a runner (the one
+beside the server, or `agentrun-serve runner`) with tracing on says so once, and where its spans go:
+`[otel] tracing is on: spans export to https://collector.example:4318`, the endpoint's origin alone (scheme, host and
+port; never its user, password, path, query or fragment, nor a header). A collector that is down costs the dropped spans
+and a line with the endpoint's origin and the time (`[otel] a trace export to ... failed at 2026-11-25T07:01:31.465Z; its spans were
+dropped: Request timed out`), then at most one line a minute, said by the next failure once a minute has passed, that
+counts the failures since the last line (`[otel] 25 more trace exports to ... failed since ..., the last at ...`); never
+a line per span or per batch. Unset, or with `OTEL_SDK_DISABLED=true`, no OpenTelemetry code loads, nothing is sent and
+nothing is said. The headers go to the endpoint, so it takes the rule of a URL a key goes to, over http or https: one
+with a user, a password, a query or a fragment, or one that is not a URL, is refused, and tracing is off for it. The
+server and its runs carry on, no OpenTelemetry code loads, nothing is sent, and the runner's start says why once, with
+the variable and the origin alone: `[otel] tracing is off: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT takes no user or
+password, since the key goes to it: https://collector.example:4318` (or `takes no query or fragment: ...`, or `is not a
+URL`). Put a credential in `OTEL_EXPORTER_OTLP_HEADERS` instead.
+
+[otel-agent-spans]: https://github.com/open-telemetry/semantic-conventions-genai/blob/d0e74ba6c48bcc4ded473b1828a8212f06b23753/docs/gen-ai/gen-ai-agent-spans.md#L213-L272
+
+To send traces to Sentry (two variables: its OTLP endpoint and its `x-sentry-auth` header) or to any other backend
+through an OpenTelemetry Collector, and for what Sentry's Agents view shows of a run, see
+[Send run traces to Sentry or any OpenTelemetry backend](../../docs/traces.md).
 
 ## Anonymous usage counts
 
@@ -263,7 +416,7 @@ sealed secrets, so a lost key is not replaced: recreating the container with the
 
 From a checkout, the same command in its root, with `--build` to build the image from it.
 `packages/serve/docker/Dockerfile` builds that image: the server and the open packages it runs, on Node 24.22.3 and Debian 13
-(trixie), with git 2.47 for an agent's learning folder and the Docker client. Everything it keeps is under `/data`: the agent store,
+(trixie), with git 2.47 for a source project's capture and the Docker client. Everything it keeps is under `/data`: the agent store,
 the runs and the token.
 
 The image's default command, `server-and-runner --data /data --listen 0.0.0.0 --port 7340 --drain-timeout 6s`, starts
@@ -271,7 +424,8 @@ two processes in the container: the server with `--no-runner`, and one runner on
 `GET /v2/health`. Each has its own store connection, so a busy runner never holds up the API. If either exits, the other
 stops and the container exits non-zero. Give the image other arguments and it runs that one command, as given:
 `runner --data /data --name runner-1` is a runner, and server options alone (no `server-and-runner`) are a server with
-its runner in its own process, which a [paired computer](#a-persons-own-computer) needs.
+its runner in its own process. A [paired computer](#a-persons-own-computer) works under either once the runner relays,
+below.
 
 A computer provider whose machines dial the server (Fly Machines and Cloudflare; the computer package's `connectOf`,
 which also says dial for E2B, Daytona or Modal made with `connect: "dial"`) works under a runner apart that knows the
@@ -287,9 +441,23 @@ and the server says it sooner: in `GET /v2/computers`, each dial provider's row 
 and its Test connection in Settings → Computers fails in the same words. With a runner that relays, `runs_refused` is
 null.
 
+A [paired computer](#a-persons-own-computer) takes the same relay. A run's claim on a runner that relays writes the
+computer's route (a settings row: the runner, its process, the run and the hold's end), refused while a live run on a
+live runner holds it, and taken from a runner that is gone or restarted, or a run that is over. Once a second the server
+closes a paired computer's socket that is not where its route says (close 1001), and the driver's redial lands there:
+relayed to the run's runner, or back on the server once the run releases it. The run's create waits for it about 80 s
+(the driver's longest redial, a relay's connect and a hello) and fails in words naming the runner when it does not
+come. `GET /v2/computers` lists the runner the hold is on (`held_on`), and the server's note when a relay was refused
+(`hold_note`), each shown on the computer's row in Settings → Computers.
+
 The token is in the log of the start that made it. A `docker stop` reaches both processes. The runner gives a busy run
-6 s (`--drain-timeout 6s`) to finish its turn, so a busy `docker stop` ends in about 7.5 s, inside Docker's default 10 s
-grace, and Compose's `stop_grace_period` is 15 s; a turn cut off resumes at the next start. Compose publishes the port
+6 s (`--drain-timeout 6s`) to finish its turn, so a busy `docker stop` ends in about 7.5 s; a turn cut off resumes at
+the next start. Signed in with ChatGPT, a stop also waits up to 25 s for a renewal OpenAI is answering to save its new
+pair, and a browser's release to its provider may take up to its 30 s cleanup bound, so the runner's close takes up to
+40 s. Compose's `stop_grace_period` is 45 s, and a plain `docker stop` needs `-t 45`: Docker's default 10 s can cut
+that wait short, lose the sign-in, and kill a release before it is recorded. A stop signal again while it closes (a second `docker stop`, a second Ctrl-C on a
+runner started by hand) is said once and changes nothing, so that save is never cut; a close that never ends (a store
+that no longer answers) ends only with SIGKILL (`docker kill`, `kill -9`). Compose publishes the port
 on this machine's loopback only (port 7340, or `AGENTRUN_PORT`; set `AGENTRUN_PUBLIC_URL` with it, so the printed link names that port), and
 the volume `agentrun-data` keeps `/data` across `down` and `up`. In the container the server listens on `0.0.0.0`, so
 setup takes the code the start prints (`Set up this server: <url>/setup#code=<code>`), and every route but `GET /v2/capabilities` and `GET /v2/health` still needs the token. Compose's `healthcheck` and
@@ -302,8 +470,10 @@ copy: a service that loses it loses them). With no
 `AGENTRUN_PUBLIC_URL` the server takes Render's own `RENDER_EXTERNAL_URL` as its public address, so setup takes
 `AGENTRUN_TOKEN` from the Environment tab, or the code the start prints in the service's log (`Set up this server: ...`). On another host, set `AGENTRUN_PUBLIC_URL` to
 the address people open before the first start; without it, whoever opens the console first sets the password. Set
-`AGENT_MODEL` and the provider's key there too. Render waits 30 s after SIGTERM, above the image's 6 s drain; it does not
-let a service with a disk change that. It sets `AGENTRUN_RUN_USER=same` (every run as the server's own user, each still
+`AGENT_MODEL` and the provider's key there too. Render waits 30 s after SIGTERM, above the image's 6 s drain and a
+signed-in stop; it does not let a service with a disk change that. It is under the 40 s the runner's close takes when a
+browser's release hangs to its provider's cleanup bound, so on Render such a stop can be killed before that release is
+recorded; the run resumes at the next start. It sets `AGENTRUN_RUN_USER=same` (every run as the server's own user, each still
 a process of its own), as Railway's template does: neither platform has been shown to keep the image helper's file
 capabilities.
 
@@ -321,7 +491,7 @@ that can claim is there, the refusal is gone.
 The data directory has two parts. Its own files, the control plane, hold the agent store (`DIR/store.sqlite`, where
 each run's row keeps its claim: an epoch and its holder), the token and the server's settings; only the server and its
 runners open them. Everything the agents make is on the disk, `DIR/disk/`: one folder per agent, `DIR/disk/agents/<agent>/` (its id
-in lower case, a dash and 16 hex digits of its SHA-256), with its learning folder (`learning/`) and its runs
+in lower case, a dash and 16 hex digits of its SHA-256), with its runs
 (`runs/<id>/`, each with `work/`, where its tools work). Nothing is copied in or out of a run's folder: where it
 works, it works in that folder. A run's record is not in its folder: its row, its claim and its journal (what the run
 did, in order) are rows of the store.
@@ -413,10 +583,16 @@ It names no path, size or version. One route serves as both liveness and readine
 and a 200 says it can work, and the platforms here take one path.
 
 A run's runner renews its claim on the run every 10 s, for a claim of 30 s. A runner that stops, or cannot renew in
-time, writes nothing more to the run, and the store refuses any write under a claim the run has moved past. Once the
+time, writes nothing more to the run, and the store refuses any write under a claim the run has moved past. On SQLite
+the runner counts a claim's 30 s from when the store granted it, not from when it asked, so a claim or renew that
+waited for a busy disk keeps the time the store gave it; the runner still stops 5 s before the store's claim runs out.
+On Postgres it counts from when it asked. A renew the store never answers in time still loses the run. Once the
 claim lapses another runner claims the run and resumes it from its journal. A run's own computer doesn't survive a
 runner loss, a crash, a server stop or a park (the claim that resumes the run starts a new one, and says so on the
-timeline and, once, to the model as an "AgentRun server note"), and the agent's own computer, a persistent setting, does. `agentrun-serve runner --check --data DIR --name N`
+timeline and, once, to the model as an "AgentRun server note"), and the agent's own computer, a persistent setting, does.
+The exception is a park's keep: a desktop, phone or sandbox a park keeps for 10 minutes comes back to the run's resume.
+One that only its runner can reach (a Docker container, a machine that dials the server) brings the run back to that
+runner while it is up; a stop or cancel never waits for it, and the run's end deletes the machine. `agentrun-serve runner --check --data DIR --name N`
 (or `AGENTRUN_RUNNER_NAME=N` in place of `--name`) checks the runner's environment by name (its store, its seal key,
 every run-facing name its server holds, a forwarder on loopback) and whether the runner named `N` has a fresh
 heartbeat: it exits 0 when both hold, 1 when either does not, and 2 when no name is given. `--check --env` checks the
@@ -446,11 +622,16 @@ one off.
 ## Sandbox
 
 A sandbox agent's `bash` runs in a box, a machine apart from this server. Docker is the default box and the only one offered
-with no setup: a Docker container made for each run, which binds the run's `work/` and nothing else. A Daytona or Modal box
-runs on a computer from that provider, offered once `AGENTRUN_BOXES` lists it and the keys its computer provider needs are
-set (the environment, or Settings → Computers). No box holds a key. A Docker box on Linux reaches the package registries
-and GitHub through a proxy, and nothing else; so does a Daytona or Modal box, through the egress proxy its computer's
-init starts, and capabilities say so in its `places.boxes` entry. Its `read`, `write` and `edit` work on that same `work/`: on this server, where the box binds it and this server
+with no setup: a Docker container made for each run, which binds the run's `work/` and nothing else. Every other provider
+whose sandbox can hold the run's folder is a box too: `daytona`, `modal`, `e2b`, `agent37`, `morph`, `cloudflare`, `fly`,
+`boxd` and `groundbox`. Such a box runs on a sandbox computer from that provider, offered once `AGENTRUN_BOXES` lists it
+and the keys its computer provider needs are set (the environment, or Settings → Computers): `AGENTRUN_BOXES=docker,e2b`
+with `E2B_API_KEY` set offers both. A box is a provider that serves a sandbox, takes the run's folder (a bind, an Archil
+mount or a synced folder), starts with no image named and keeps to the allow-list or has no network; Orgo (desktops), the
+phone, the hosted browsers and smol cloud (whose disk sits where the folder would) are not. No box holds a key. A Docker
+box on Linux reaches the package registries and GitHub through a proxy, and nothing else; so does a vendor's box, through
+the egress proxy its computer's init starts, and capabilities say so in its `places.boxes` entry (`none` for boxd, whose
+computers have no network). Its `read`, `write` and `edit` work on that same `work/`: on this server, where the box binds it and this server
 holds directory handles (Docker on Linux), else in the box. The agent's loop, its log, its model calls and every key stay
 on the server. An agent says so in its [place](#place); the server says which boxes it has (`places.boxes` in its capabilities); [a run in a Docker
 box](#a-run-in-a-docker-box) is what the container gets; [the box's image](#the-boxs-image) is what it starts from.
@@ -462,8 +643,8 @@ end to end. The [published image](#in-the-published-image) hosts Docker boxes th
 A definition may name where its runs execute: `{"mode": "runner"}` or `{"mode": "sandbox", "box": ...}`, the box one of
 the providers under [Computers](#computers). `place` is the v2 view of the agent's computer setting: `runner` is kind
 `none`, and `sandbox` a sandbox on that provider. On the runner a run has no shell where its folder is on this
-server's disk (Mode 1), and `bash` on Archil's serverless exec where it is on Archil (Mode 2)
-([where `bash` runs](#computers)). In a sandbox the agent's `bash` runs in the named box and its
+server's disk (Mode 1), and `bash` on Archil's serverless exec where it is on Archil (Mode 2), except on an Archil
+region with no serverless exec (`gcp-us-central1`), where bash needs a box ([where `bash` runs](#computers)). In a sandbox the agent's `bash` runs in the named box and its
 file tools (`read`, `write`, `edit`) work on the `work/` the box has ([a run in a Docker box](#a-run-in-a-docker-box)),
 while the agent's loop, its log and every key stay on the server, whatever its harness. Any other shape is `422 input_invalid` on `definition.place`, whose `fix` is the change to make: the field to
 remove, or the place it most likely meant, to copy (`"place": {"mode": "sandbox", "box": "docker"}`). One that names a
@@ -476,17 +657,47 @@ command in the background ([background processes](#background-processes)). The p
 revision, so its answers show it. A definition that names its tools keeps exactly those, an empty list included, and
 gets the box only when one of them runs only there (`bash` or a background tool). One whose tools need no shell (`[]`,
 or `read`, `write`, `web_fetch` and the like) is saved with no place and runs on the runner, so its first run starts at
-once instead of waiting on a container. Where docker is unavailable, a new agent is saved with no place. So is one whose
-tools name one the box refuses (`browser`, runner-only for now). A workflow is never given a box.
+once instead of waiting on a container. One whose tools name one the box refuses (`browser`, runner-only for now) is
+saved with no place too. A workflow is never given a box.
 
-`capabilities.places.default_place` is the place a new agent with a shell gets here, and where a revision that names no
-place and has a shell tool runs. It is worked out again at each run, the same way as at create: an agentic revision with
-no place and a shell tool runs in the Docker box wherever this server has docker now, and on the runner where it does
-not. A workflow, a revision whose tools need no shell, and one whose tools name one the box refuses run on the runner. A save checks a revision with no place against where it would run, so `bash`
-with no place saves where docker is there and is `422` where it is not. When that is the runner,
-`default_reason` says why in docker's own words, such as `new agents run on the runner, because the docker box is
-unavailable here: Docker isn't running on this machine (no docker command on PATH): install or start Docker, then
-restart AgentRun`. The console's new-agent form says docker's reason too, under its place picker. The console's new-agent form starts on `default_place`, with bash ticked when that place is a sandbox.
+Where a new agent with no place goes, by mode:
+
+- **Docker's box available:** it gets the box (`default_place` is `{"mode": "sandbox", "box": "docker"}`, no
+  `default_reason`), as above.
+- **No Docker, and the runner has no shell (Mode 1): refused, `name a box`.** A new agent that would get the box (no
+  tools named, or a shell tool) is `422 input_invalid` with `{field: "definition.place", reason: "missing"}`, and so is an
+  edit that would save such a revision: `name a box: this server has no Docker box for a new agent. Set place to {mode:
+  sandbox, box: <one of: daytona, e2b>}, or to {mode: runner} to run without a shell. docker: <why>.` The words list the
+  boxes this server has (`<none is set up>` when it has none), and its `fix` says the same, so no box is picked for it:
+  the default box is the one whose provider descriptor sets `defaultBox` (Docker's), never another box that answers. They
+  end with why Docker's box is not here, in its entry's own words and fix (joining the docker group, say). A template
+  apply, or an `agentrun deploy`, of a package that names no `tools` and no `computer` list is refused the same way,
+  whatever MCP tools it ticks: it is the agent that gets the box where Docker is here. Its `dry_run` is refused
+  alike, with no plan. `default_place` is `null`, and
+  `default_reason` carries those words. A definition with no place that names a shell tool and the browser is refused at
+  the shell tool instead: a box refuses the browser, so no place runs both, and the words say to remove one.
+- **No Docker, in Mode 2:** not refused. The runner's shell is Archil's serverless exec, so a new agent with no place
+  saves for the runner as before, and `default_place` is `{"mode": "runner"}`, no `default_reason`. A background tool
+  still runs in a box alone, so naming one with no place is refused at the tool.
+- **Mode 2 on an Archil region with no serverless exec (`gcp-us-central1`), Docker or not: bash needs a box.** The
+  runner has no shell there and Docker's box can't mount Archil, so a new agent with a shell tool and no computer is
+  refused at `definition.computer`, "bash needs a box (a sandbox computer): …", and `default_place` is `null` with
+  those words in `default_reason` ([where `bash` runs](#computers)).
+
+A definition that names its place, the runner included, a workflow, and one whose tools need no shell save as before in
+every mode, and so does a package that names its tools (`tools: []` included) or its computer list. An agent saved
+before this change with no place and no tools keeps running on the runner: the store holds its tools as `[]`.
+
+`capabilities.places.default_place` is always sent: the place a new agent with a shell gets here, and where a revision
+that names no place and has a shell tool runs; `null` means no default, so a new agent names its place. It is worked out
+again at each run, the same way as at create: an agentic revision with no place and a shell tool runs in the Docker box
+wherever this server has docker now, on the runner in Mode 2, and in Mode 1 with no Docker its run is `409
+agent_not_runnable` in the `name a box` words. A workflow, a revision whose tools need no shell, and one whose tools name
+one the box refuses run on the runner. `default_reason` is there exactly when `default_place` is `null`; a client tells
+the cases apart by `default_place === null`, never by reading `default_reason`. Docker's own reason is on its entry in
+`boxes`. The console's new-agent form starts on `default_place`, with bash ticked when that place is a sandbox; with
+`null`, it starts on neither the server nor a box, Create waits until one is chosen, and its picker says each box's
+reason, and, with no box set up, that the agent needs one set up or On the server chosen.
 What a person picks or unticks there is what is sent.
 
 A run runs in its revision's place, else where `default_place` says at that run (a workflow, a revision whose tools need
@@ -497,7 +708,8 @@ and `GET /v2/runs/{id}` shows it as `place`. A harness's own tools in the box, w
 
 `bash` may be named only by an agentic definition whose place is a sandbox (`422` on a runner, named or by default, with
 the sandbox place as its `fix`), or, in Mode 2, by one on the runner, where `bash` runs on Archil's serverless exec
-([where `bash` runs](#computers)); the background tools run in a box alone, in either mode. A workflow's place is `runner`
+([where `bash` runs](#computers)), except on an Archil region with no serverless exec (`gcp-us-central1`), where bash
+needs a box; the background tools run in a box alone, in either mode. A workflow's place is `runner`
 or none (`422` on a sandbox, with the runner place as its `fix`). In `capabilities.tools`, `bash` is `available: false`
 with a `reason` (`no box is set up on this server: …`, each box's own reason) when no box this server has can run it and
 the server is in Mode 1.
@@ -506,8 +718,8 @@ the server is in Mode 1.
 `unavailable`) and, when it is unavailable, the `reason`.
 A definition naming a box this server does not have saves with a warning on `definition.place`, and a run of it is
 `409 agent_not_runnable` with `details.box`. `GET /v2/openapi.json` marks `definition.place`, the run's `place` and
-`capabilities.places` `x-agentrun-serve: "place/1"`, `default_reason` `"place/3"`, and `default_place` `"place/4"`
-(it replaced `places.default`).
+`capabilities.places` `x-agentrun-serve: "place/1"`, and `default_place` and `default_reason` `"place/5"` (`default_place`
+replaced `places.default`, and took `null` at place/5).
 
 ### A run in a Docker box
 
@@ -841,11 +1053,40 @@ the screenshot are the tools of those names, and the rest (apps, the shell, file
 `computer_op` (`{op, args}`), a tool bound for scripts alone. Each call is held to the run's gate and recorded on the
 timeline like a tool's, and a crash rerun of the script answers a call that already ran from its record: a shell
 command (`shell.run`) is held to the agent's `bash` setting, a started process to `bash_background`, a file written to
-`write`, and a file read, listed or looked up to `read`, after the kind's own setting for `computer_op`. A script's call
-of a computer tool answers the tool's value. Codex's code mode takes no binding of ours, so a Codex run is offered
+`write`, and a file read, listed or looked up to `read`, after the kind's own setting for `computer_op`. A file op needs
+its tool among the agent's tools first, as the run's own file tools do: `files.write` needs `write`, and `files.read`,
+`files.list` and `files.stat` need `read`. An agent not given one is refused the op whatever its setting says, on every
+desktop, mounted or not. Naming a desktop does not grant its file ops. The shell's ops (`shell.run`, `processes.start`)
+follow `bash`'s setting alone, not a grant. `computer_op`'s op list and the script's `computer` declarations leave out
+an op held to a tool (the file ops to `read` and `write`, `shell.run` to `bash`, `processes.start` to
+`bash_background`) that the gate refuses whatever its arguments: its tool not given, set to deny, or set to ask on a
+server where no one can approve, or `bash`'s policy refusing it whatever its command (`processes.start` under the
+read-only policy). Apps and raw input are held to no tool, so they stay in the list. Leaving `read` out
+keeps no file from an agent that has the shell, paired machines included: on a desktop with exec on,
+`computer.shell.run` reads and writes any file the desktop's user can, held to `bash`'s setting alone, which allows by
+default. To keep files from such an agent, set `bash` to deny or turn the desktop's exec off. Input ops on a desktop
+with a terminal app or a GUI file manager, and `apps.open` with a URL or a path, can do what a shell or the file ops
+do, whatever `bash`'s, `read`'s or `write`'s setting. Where `write` is granted, `apps.open` can do what a shell does
+even with no URL or path: an app reads its config from the user's home (computerd's `HOME`, which `write` reaches), so
+the agent can write the config of an app it then opens. To deny all of that, don't grant input ops or apps on that
+desktop; to deny only the input ops' reach, use an image with neither a terminal nor a file manager. A script's call of a computer tool answers the
+tool's value. Codex's code mode takes no binding of ours, so a Codex run is offered
 `computer_op` beside the computer's tools and its scripts call them as nested calls, each answering the tool's value as
 JSON. A run whose `codemode` is set to deny lists them the same way, so its computer stays in reach. `computerMcp` (`src/workspace/computer-mcp.ts`) serves the same tools to an MCP
 client, each answer with its value as `structuredContent`.
+
+A desktop's or a phone's own disk is not the run's files: only the run's folder is collected, and the computer goes at
+the run's end with what is on it. `computer_screenshot`'s `save_as` (a path relative to the run's folder, ending `.png`)
+saves the screenshot into the run's files through the run's own file writer, on any computer; a path outside the folder
+is refused in words before the computer is asked. A screenshot with `save_as` is a file written, so `write`'s setting holds
+it too, after the kind's deny: the stricter decides (`write` set to deny refuses it before the computer is asked, set to
+ask puts it to a person); one with no `save_as` is held to the kind's setting alone. `save_as` needs `write` among the
+agent's tools: an agent not given `write` is not offered it, and the gate refuses one anyway whatever `write`'s setting
+says, as a script's `computer.files.write` does. `save_as` is offered only
+where the gate would let a save through: not with `write` set to deny, nor set to ask on a server where no one can
+approve. On a desktop or a phone the run's folder is not mounted in (one with `exec: false`, or a provider that mounts
+none), the model is told this once in the run, as the server's note, after a due cap wrap-up; a run whose saves the
+gate would refuse is told instead that screenshots can't be saved to the run's files.
 
 A kind with no provider, a provider that does not serve the kind, or a provider whose required keys are not saved is
 refused before anything starts, in words that name the fix in Settings → Computers. A Docker computer needs a Docker
@@ -865,10 +1106,13 @@ run's hold), newest first. The runs list carries no computer, so this is the one
 across runs and agents; the console's Settings → Computers shows it as Running now. An agent's own computer kept
 between runs is on the agent's read (`own_computer`), and a paired computer under `paired` in `GET /v2/computers`. The keys are
 `DAYTONA_API_KEY` (with `DAYTONA_API_URL` and `DAYTONA_TARGET` optional), `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`,
-`E2B_API_KEY`, `AGENT37_API_KEY` and `AGENT37_SSH_KEY`, `MORPH_API_KEY`, `ORGO_API_KEY`, `PHONE_HARNESS_API_KEY`,
+`E2B_API_KEY`, `AGENT37_API_KEY` (with `AGENT37_SSH_KEY` optional: unset, the server makes its own SSH key on first use,
+seals it in its store as every saved key under `AGENTRUN_SEAL_KEY`, and registers it on the workspace as
+`agentrun-<hash>`, one key per store even when claims or servers reach first use together; without a seal key, a new
+key each restart, the old one left on the workspace), `MORPH_API_KEY`, `ORGO_API_KEY`, `PHONE_HARNESS_API_KEY`,
 `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, `KERNEL_API_KEY`, `BOXD_API_KEY` (with `BOXD_ORG` and
 `BOXD_REGION` optional), `SMOLCLOUD_API_KEY`, `GROUNDBOX_API_KEY`, `CLOUDFLARE_RELAY_URL` and `CLOUDFLARE_RELAY_TOKEN` (the relay Worker's,
-`packages/computer/relays/cloudflare`), and `FLY_API_TOKEN` and `FLY_APP`; Docker takes none.
+`packages/computer/relays/cloudflare`), `FLY_API_TOKEN` and `FLY_APP`, and `RENDER_API_KEY` and `RENDER_WORKSPACE_ID`; Docker takes none.
 `GET /v2/computers/running` lists every run still going (queued, working, paused or waiting on its person) whose agent
 has a computer, newest first, each as `GET /v2/runs/{run_id}` answers it: its `computer` says the kind and provider,
 `starting`, `ready` or `taken_over` while its owner drives it, and a held run's hold. The runs list carries no
@@ -1025,13 +1269,16 @@ passes the binding's conformance cases (below) needs no change here.
   refused at its start, saying to open its driver. A run uses what the hello's groups and features allow.
 - **Remove it.** Remove on its row (`DELETE /v2/computers/{computer_id}`) ends its token and closes its connection; a
   run holding it loses it. Pairing it again gives it a new id.
-- **One process.** A computer's connection lands on one server process, and only a run in that process can use it:
-  run `agentrun-serve start` with its runner beside the server (the default). A runner started apart
-  (`agentrun-serve runner`, beside a server started with `--no-runner`) refuses a paired computer at the claim, saying
-  so. Such a server says it sooner: its pairing code, the pair answer and each paired computer carry `runs_refused`,
-  which the console shows with the code and on the computer's row. The image's default command starts its runner apart; give the image the server's options alone
-  (`--data /data --listen 0.0.0.0 --port 7340 --drain-timeout 6s`) to keep the runner in the server's process. A
-  second server on one store is already refused by the store's owner lock, on SQLite and Postgres alike.
+- **One process, or a relay.** A computer's connection lands on the server process it dials. A run of the runner
+  beside the server (`agentrun-serve start`, the default) uses it there. A runner started apart (`agentrun-serve
+  runner`, beside a server started with `--no-runner`; the image's default command) uses it through the server's relay
+  when it knows the server's public address, `AGENTRUN_PUBLIC_URL`: its run's claim routes the computer's next dial to
+  that runner, and its release routes it back (above). One that does not refuses a paired computer at the claim,
+  naming both fixes. Such a server says it sooner: while no runner relays, its pairing code, the pair answer and each
+  paired computer carry `runs_refused`, which the console shows with the code and on the computer's row. Give the
+  runner `AGENTRUN_PUBLIC_URL`, or give the image the server's options alone (`--data /data --listen 0.0.0.0 --port
+  7340 --drain-timeout 6s`) to keep the runner in the server's process. A second server on one store is already
+  refused by the store's owner lock, on SQLite and Postgres alike.
 - **Conformance.** `node dist/attach-conformance-cli.js [--port 7392] [--listen 127.0.0.1]` runs the binding's cases
   against whatever driver pairs with the code it prints: pair, a wrong or used code, ping, a quiet minute, a redial
   after each close it must redial after (4408, 1000, 1001, 4409) and after a drop, a binary frame (1003), a frame over
@@ -1044,8 +1291,12 @@ passes the binding's conformance cases (below) needs no change here.
 - **Mode 1** (the default): on this server's own disk. Only a provider that binds a folder of this machine can hold
   it, so a sandbox runs on Docker only; a Daytona, Modal, E2B or Agent37 sandbox is refused ("Mode 1 runs a sandbox only on
   Docker").
-- **Mode 2**: on Archil disks. `PUT /v2/workspace/archil` turns it on with the account key, `ARCHIL_API_KEY`, its
-  region and that region's S3 URL (and an exec image pinned by digest, if you want one other than serve's default);
+- **Mode 2**: on Archil disks. `PUT /v2/workspace/archil` turns it on with the account key, `ARCHIL_API_KEY`, and its
+  region (and an exec image pinned by digest, if you want one other than serve's default). For a region serve knows
+  (`aws-us-east-1`, `aws-us-west-2`, `aws-eu-west-1` and `gcp-us-central1`, the regions Archil's SDK names; `GET` lists
+  them in `regions`), the S3 URL is the region's (`https://s3.green.us-east-1.aws.prod.archil.com` for `aws-us-east-1`)
+  and `s3Url` may be left out; one given is used instead, and `GET` says which in `s3UrlFrom`. Any other region needs
+  its `s3Url`;
   `DELETE` turns it off. The default exec image is Docker's `buildpack-deps:trixie-scm` pinned by digest (git 2.47),
   because Archil's own has git 2.34 and a read-only bash policy runs git only at 2.43 or later. An image you name needs
   git 2.43 for that too, and GNU coreutils and perl, as Debian-family images have. A Modal, E2B or Agent37 sandbox
@@ -1068,17 +1319,17 @@ passes the binding's conformance cases (below) needs no change here.
   machine) or null (none).
 
   The PUT is a secret write, so it takes the owner's signed-in session. A server with none to give it (API only, or
-  `AGENTRUN_ACCOUNTS=0` reached beyond loopback) is set where it is started instead: `AGENTRUN_ARCHIL_REGION` and
-  `AGENTRUN_ARCHIL_S3_URL` together, and `AGENTRUN_ARCHIL_IMAGE` for a pinned exec image, with the account key in
-  `ARCHIL_API_KEY`. Each agent's disk is then made on its first run, as with saved settings:
+  `AGENTRUN_ACCOUNTS=0` reached beyond loopback) is set where it is started instead: `AGENTRUN_ARCHIL_REGION`,
+  `AGENTRUN_ARCHIL_S3_URL` for a region serve doesn't know (or to use another endpoint than a known region's), and
+  `AGENTRUN_ARCHIL_IMAGE` for a pinned exec image, with the account key in `ARCHIL_API_KEY`. Each agent's disk is then
+  made on its first run, as with saved settings:
 
   ```sh
-  AGENTRUN_ARCHIL_REGION=aws-us-east-1 AGENTRUN_ARCHIL_S3_URL=https://s3.example.com \
-  ARCHIL_API_KEY=... node packages/serve/dist/cli.js
+  AGENTRUN_ARCHIL_REGION=aws-us-east-1 ARCHIL_API_KEY=... node packages/serve/dist/cli.js
   ```
 
-  Each value is checked as the PUT checks it. One of the region and S3 URL without the other, or a value the PUT would refuse,
-  stops the start, in words naming each variable. Set, they win over saved settings, as `ARCHIL_API_KEY` wins over a
+  Each value is checked as the PUT checks it. A variable set without the region, no S3 URL for a region serve doesn't
+  know, or a value the PUT would refuse, stops the start, in words naming each variable. Set, they win over saved settings, as `ARCHIL_API_KEY` wins over a
   saved key, and nothing is written to the store: `GET /v2/workspace/archil` says `source: "env"` (saved ones say
   `"console"`), and `PUT` and `DELETE` are `409 key_set_by_server`, since they are changed where the server is started.
   Unset, the saved settings, if any, hold again. A runner started on its own (`agentrun-serve runner`) reads them from its
@@ -1177,6 +1428,15 @@ A desktop, a phone and a browser run in either mode. The run's folder is at
   write does not keep a file's mode (a `0755` file is `0644` after a write), and a symbolic link a command made is never
   followed: reading one is refused, a write through a linked folder is refused, and `bash` refuses a working directory
   with a link on the way.
+- **On an Archil region with no serverless exec (`gcp-us-central1`), bash needs a box.** Archil's AWS regions have the
+  exec above; `gcp-us-central1` has none, so in Mode 2 there a run with no computer that mounts its folder has no shell,
+  as in Mode 1, and Docker's box can't mount Archil. Give the agent a sandbox computer, or leave `bash` out of its
+  tools. A new agent with `bash` (or another shell tool) and no computer is refused at its save or its `agentrun
+  deploy`, `422 input_invalid` at `definition.computer`: "bash needs a box (a sandbox computer): this server's Archil
+  region gcp-us-central1 has no serverless exec, …". One that names the runner (or computer kind `none`) is refused at
+  the tool: "bash runs only in a box, …". An agent saved with `bash` and no computer before is refused at each run,
+  `409 agent_not_runnable`, in the first words, and no run starts. `capabilities.places.default_place` is `null` there, with
+  those words in `default_reason`, and `bash` shows unavailable.
 
 **The run's scratch.** `bash`'s `TMPDIR` is `.agentrun/tmp` in the run's folder, and a cut answer's full output is in
 `.agentrun/output/`. The run's end removes both before its end commit: through the computer when it mounts the folder,
@@ -1223,7 +1483,8 @@ An agentic revision names its model as `provider/model-id` (`"model"` in its def
 this host's default, `AGENT_MODEL`. With no `AGENT_MODEL`, a model provider's key, the server's own or saved as a
 [tool key](#tool-keys), gives the default, the first of: `anthropic/claude-sonnet-5-5` with `ANTHROPIC_API_KEY`,
 `openai/gpt-6.1-sol` with `OPENAI_API_KEY`, `particle/particle-1` with `PARTICLE_API_KEY`, then
-`openrouter/openai/gpt-6.1-sol` with `OPENROUTER_API_KEY`. Set `AGENT_MODEL` for another. Direct Particle runs on Pi;
+`openrouter/openai/gpt-6.1-sol` with `OPENROUTER_API_KEY`. With none of those, pi's default is the first model of this
+machine's Ollama that calls tools ([below](#on-this-machines-ollama)), and so is claude-agent's and Goose's. Set `AGENT_MODEL` for another. Direct Particle runs on Pi;
 claude-agent takes the Anthropic one and codex the OpenAI one. A workflow revision names no model: each model node names a tier (`fast`, `default`
 or `strong`), and the host maps it, `fast` to `AGENT_MODEL_FAST` and `strong` to `AGENT_MODEL_STRONG`, each falling back
 to `AGENT_MODEL`. Capabilities show the mapping in `models` (`{source, route_prefix, fast, default, strong}`):
@@ -1286,8 +1547,8 @@ model with no price set that the catalog does not list in any form; null while `
   process is handed a model key only when its model needs it: a pi run its model's provider's (a run on Gemini
   `GEMINI_API_KEY`, one on `openrouter/...` `OPENROUTER_API_KEY`; a workflow each of its tiers'), or `AGENT_MODEL_API_KEY`
   through the gateway; a codex run `OPENAI_API_KEY`, or `AGENT_MODEL_API_KEY` through the gateway; a claude-agent run
-  `ANTHROPIC_API_KEY`. No run gets another's. A workflow's decision nodes get their providers' keys on a descriptor of
-  their own, whatever its model, and only those ([Safety](#safety)).
+  `ANTHROPIC_API_KEY`. No run gets another's. A workflow's decision nodes get their providers' keys on the claim's own
+  environment, whatever its model, and only those ([Safety](#safety)).
 
 A definition is checked for what keeps it from running here when it is saved, with the same checks a run makes before
 it starts:
@@ -1353,7 +1614,7 @@ curl -s http://127.0.0.1:7340/v2/agents/support/runs -H "Authorization: Bearer $
 curl -s http://127.0.0.1:7340/v2/runs/$RUN_ID/messages -H "Authorization: Bearer $AGENTRUN_TOKEN" \
   -H 'content-type: application/json' -d "{\"content\": \"And the refund?\", \"model_key\": \"$NEXT_KEY\"}"
 
-# When the run's turn has ended (run.ended), revoke it.
+# When the run is terminal and GET /v2/runs/$RUN_ID reads learning_work.state other than "running", revoke it.
 curl -s https://litellm.example.com/key/delete -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
   -H 'content-type: application/json' -d "{\"keys\": [\"$KEY\"]}"
 ```
@@ -1373,15 +1634,32 @@ Custody, as for a per_run MCP server's `mcp_auth`:
   keeps failing, the message waits untaken and is delivered again, never run on the key held before it or the
   server's. A stop or cancel sent after it still reaches the run. A message without one keeps the key the run holds.
 
-**The revoke-at-turn-end contract.** The write that ends a run's turn erases its key from the store, and the run
-reports the turn ended (`run.ended`, the run's `completed`, `failed` or `stopped` status) only after that write. Every model request
-tied to the turn finishes before then: the job, its subagents, its learned workflows' nodes, its end-of-run compile
-turn. So a caller may revoke the key as soon as it sees the turn end, and no request of that run will
-answer 401 for it. Model spend that would run after the turn ends is never sent on the run's key or the server's:
+**The revoke contract: `learning_work`.** The write that ends a run's turn erases its key from the store. Every model
+request tied to the turn finishes before then: the job, its subagents, its learned workflows' nodes, its end-of-run
+compile turn. A run that learns also starts learning work on its key at its end: a learned workflow's check (replay
+runs) and its audit (a shadow run). Each of those runs takes a copy of the key sealed for it alone, and the write that
+ends that run (or its purge) erases the copy. They are capped at their share of what the run's cap leaves at its end;
+with too little left they are dropped and spend nothing. GET `/v2/runs/{run_id}` says where that work stands in
+`learning_work`:
+
+- `state`: `none` (the run started none), `running` (its compile turn, or a run in `runs`, is still going) or `ended`
+  (all of it finished or dropped, at `ended_at`). It only moves forward once the run is terminal; a lost or cancelled
+  child counts as ended.
+- Revoke the key once the run is terminal and `learning_work.state` is not `running`. No request of the run or its
+  children answers 401 for it then.
+- `deadline_at`, while `running`: the latest instant that work may still spend on the key. It is the later of the
+  compile turn's start plus its 10 minute timeout and each child's start plus 30 minutes, and it only moves later. The
+  server cancels a child still at work at its 30 minutes, as a person's cancel is, and it then counts as ended. Set
+  the key's expiry no earlier than `deadline_at` as a backstop for a missed read; `state` stays the signal to revoke on.
+- A purge of the run (`DELETE /v2/runs/{run_id}`) while its check's replays still run cancels them and erases their
+  copies first, and answers only once they have ended: after a 204 nothing spends on the key. A live shadow audit
+  refuses the purge (409 `run_not_final`), as any run made from it does.
+- What those runs spend is the run's own learning: its `cost.learning_usd`, with the replays as `cost.check_usd` and
+  the shadow as `cost.shadow_usd`, never a workflow revision's spend.
 
 | Spend | With the run's key | Server holds no key, run brought none |
 | --- | --- | --- |
-| A shadow audit, a learned workflow's replay check | Skipped, logged | Skipped, logged |
+| A shadow audit, a learned workflow's replay check | On a sealed copy of the run's key, at its end, within its cap's room (listed in `learning_work`) | Skipped, logged |
 | A grade's feedback round (`PUT /runs/{id}/grade`) | A new turn with no key: the server's, else not opened | Not opened; the grade is kept |
 | An owner's replay, an SDK run's compile turn | Tied to no run's key | 409 or skipped, in words |
 | A trigger's firing | Starts a run with no key | 422 `model_key_required` for the firing |
@@ -1430,7 +1708,9 @@ unless the [launch hook](#launch-hook) is set, which hands each firing to your b
 would start runs of the agent with no hook, or message one of its runs, hook or not. A `message_run` trigger made
 before the setting was on, or while the server held the key, fails each firing with that 409 and sends nothing. An
 update apply that skips a trigger leaves the agent's trigger of that name as it was; when that one is on, it still
-fires, and the skip's warning names it and says how to turn it off.
+fires until you turn it off. A firing that would start a run of the new revision is refused 409 for the keys it owes and
+starts no run, but a `message_run` firing aimed at a run of an earlier revision that owes no keys still reaches that run,
+which may spend. The skip's warning names the trigger and says how to turn it off.
 
 `MONID_API_KEY` stays the server's even with the setting on: an agent's monid tools are checked with it when the agent
 is saved, before any run, so a template that grants them is still refused at its apply (409 at
@@ -1510,7 +1790,10 @@ The sign-in is the owner's alone, over the owner's signed-in session (the API to
   sign-in tab ends on a page that won't load: copy its whole address into the console, which sends it as
   `POST /v2/settings/chatgpt/sign-in/finish` `{"redirect_url": "..."}`.
 - `GET /v2/settings/chatgpt` says `state`: `signed_out`, `pending` (with `authorize_url` and `expires_at`), `signed_in`
-  (with `email`, `plan` and the plan's `models`) or `expired`.
+  (with `email`, `plan` and the plan's `models`) or `expired`. A `pending` sign-in with no code back after its first
+  minute also carries a `hint`. It names the likely cause first: the ChatGPT workspace's admin has turned off open-source
+  apps (External access → OSS → Use ChatGPT plan). OpenAI shows that refusal on its own page and never sends the browser
+  back.
 - `DELETE /v2/settings/chatgpt` signs out: it removes the sign-in here and revokes it at OpenAI, and answers
   `{"revoked": true}` when OpenAI confirmed it (or nothing was signed in, as when it only cancels a waiting sign-in).
   When OpenAI didn't confirm it, the answer is `{"revoked": false, "message": "Signed out here. OpenAI didn't confirm
@@ -1541,32 +1824,168 @@ run agents on it.
 
 On a server one person runs on their own machine, Claude Agent can run on that person's Claude plan through the Claude
 Code CLI's own login. The CLI holds the login and calls Anthropic itself. AgentRun never reads, copies, stores or relays
-the login. It tells the CLI where the login is and asks it `claude auth status`, nothing else. Settings → Model keys
+the login's tokens. It tells the CLI where the login is and asks it `claude auth status`, nothing else. Settings → Model keys
 has the row **Use Claude Code's login on this machine**, over these routes:
 
 - `PUT /v2/settings/claude-login` `{"only_me": true, "place": "agentrun"}` turns it on. `only_me` is the owner's word
   that they alone run agents on this server. `place` is where the login is: `agentrun` (the default) is AgentRun's own
-  login directory in the data folder, which you sign in once; `machine` is this machine's own Claude Code login
-  (`~/.claude`), which you opt into by name. A server where more than one person can start runs (more than one API
-  token, the API-only profile) refuses it with `403` and one line saying why, and a turn-on saved before is dropped
-  when such a server starts.
+  login directory in the data folder, which you sign in once; `machine` is this machine's own Claude Code login, which
+  you opt into by name. Its folder is the one the CLI uses: `CLAUDE_CONFIG_DIR` when the server's environment sets it to
+  an absolute path, else `~/.claude`. A Claude Code that keeps its login in another folder is found only when AgentRun
+  is started with `CLAUDE_CONFIG_DIR` set to that folder. Where the server's environment sets
+  `CLAUDE_SECURESTORAGE_CONFIG_DIR` (an absolute path, or empty), the CLI is asked, signed in and run with it, as the
+  person's own Claude Code with that variable keeps its tokens: in that folder, or, empty, in `~/.claude` and on macOS
+  the Keychain item with no suffix. A server where more than one person can start runs (more than one API token, an
+  [API key made for an app](#api-keys-for-your-apps), the API-only profile) refuses it with `403` and one line saying
+  why, and a turn-on saved before is dropped when such a server starts. The setting names the machine it was turned on
+  for by an id the server makes once in its data folder (`machine-id`, 0600) and reads back on every later start,
+  never by the hostname, which on a laptop changes with the network. Two data folders are two machines. A setting
+  saved before the id reads as `other_machine` until it is turned on again.
+  The login's folders must be the server's user's own: at either place its home, and on `machine` each folder the
+  server's environment gives it (`CLAUDE_CONFIG_DIR`, `CLAUDE_SECURESTORAGE_CONFIG_DIR`, and `ANTHROPIC_CONFIG_DIR`
+  or else `XDG_CONFIG_HOME`'s `anthropic`). Each is a folder that user owns, or one still to make in a folder it owns,
+  reached through no other user's link or folder, and writable by no one else; a folder on the way may be open to
+  all where the sticky bit is set, as on `/tmp`. Else the turn-on and the sign-in answer `403` in words, no run goes
+  on the login, and a setting saved before is kept but not used, the start logging why. A folder its group may write
+  in is the user's alone where that group is the user's private one, as the local account files alone say:
+  `/etc/nsswitch.conf` takes users and groups from those files only (`files` or `compat` on its `passwd`, `group` and
+  any `initgroups` line), and the group is the user's primary group, which no other user has as theirs and
+  `/etc/group` lists with no other member and gives no password there (`x`, `!`, `*` or empty), and `/etc/passwd` has
+  one account with the user's uid and one with its name, so a umask of 002 under one refuses nothing. Any other group
+  (one shared with other users, one that is not the user's primary group, one `/etc/group` lacks, account files with
+  a `+` or `-` line, a second account with the user's name or uid, an id with blanks before it, or a switch that also
+  asks sssd, LDAP, NIS, winbind or systemd's user records, as the `files systemd` of recent Ubuntu, Debian and Fedora
+  installs does, or no switch file: there members can exist that the files do not show), and a folder anyone may
+  write in, are refused in words that name the folder, its mode and the `chmod g-w,o-w` that closes it. A group
+  `/etc/group` gives a password is refused too, since anyone who knows it may join the group with `newgrp`, and the
+  words also name the group and the `gpasswd -r` that removes the password. An `x` there is not refused: it says only
+  that the group's password, if it has one, is in `/etc/gshadow`, with the members `newgrp` lets in without it, and a
+  server without privileges cannot read that file, so the check does not. A gshadow password or member set with
+  `gpasswd` is not seen; remove it with `gpasswd -r` or `gpasswd -d`. The files are read as they are now: a user
+  removed from the group keeps it in the sessions they already have open, since a process's groups are set when it
+  logs in, so end those sessions before counting the folder as the user's alone. A folder of the login
+  still to make is made by AgentRun at the turn-on and before the CLI's sign-in, 0700 whatever the umask, so the login
+  the CLI signs in there is not refused after.
 - `GET /v2/settings/claude-login` says `state`: `off`, `signed_in` (with the `account` the CLI names: method, email,
-  organization, plan), `signed_out`, `no_cli` (claude-agent's first run installs the pinned CLI), `unknown`, or
-  `other_machine`. `command` is the line that signs the CLI in at the login's place, for a terminal on the server's
-  machine. Where the console is on that machine (a server on loopback with no public address), `can_start` is true and
-  `POST /v2/settings/claude-login/login` starts the pinned CLI's own `auth login`, which opens a browser there.
+  organization, plan), `signed_out`, `no_cli` (claude-agent's first run installs the pinned CLI), `unknown`,
+  `other_machine`, or `refused` (turned on and kept, but its folders or the home are refused, `refused` saying why;
+  `DELETE` turns it off, and an API key is made only after that). `folder` is the folder whose login the CLI is asked about, and `machine` is this machine's own
+  login folder (`machine.source`: `CLAUDE_CONFIG_DIR` or `default`; `machine.credentials`: the server's
+  `CLAUDE_SECURESTORAGE_CONFIG_DIR`, when it sets one). `command` is the line that signs the CLI in at
+  the login's place, for a terminal on the server's machine; it is empty where the login's folders are refused, and
+  `folder` is then the folder as the environment names it. Where the console is on that machine (a server on loopback
+  with no public address), `can_start` is true and `POST /v2/settings/claude-login/login` starts the pinned CLI's own
+  `auth login`, which opens a browser there. Elsewhere `start_off` says why it never starts, naming
+  the public address and the variable it came from (`AGENTRUN_PUBLIC_URL`, a placeholder too, or Render's
+  `RENDER_EXTERNAL_URL`) or the address past loopback the server listens on, and the
+  console shows it beside the command. It runs with the same variables as `command`, so it signs in at `folder`,
+  and the status is read there too, since `auth login` writes the account it signed in to its config dir. On
+  `machine` with the default `~/.claude`, the CLI is signed in as the person's own `claude` runs: no
+  `CLAUDE_CONFIG_DIR` or `CLAUDE_SECURESTORAGE_CONFIG_DIR`, in their home, so it writes the account in `~/.claude.json`
+  and the tokens where their Claude Code keeps them (in `~/.claude`; on macOS the Keychain item `Claude Code-credentials`).
+  On macOS the CLI names that item's account by `USER`, so the sign-in, the status check and a run all get `USER` and
+  `LOGNAME` set to the user the server runs as (as the system names it, whatever `USER` the server was started with):
+  the item is the one the person's own `claude auth status` reads in their terminal, never one under the account
+  `unknown`, which a CLI started with no `USER` uses.
+  `command` there is `env -u CLAUDE_CONFIG_DIR -u CLAUDE_SECURESTORAGE_CONFIG_DIR ... auth login`, so a terminal that
+  exports either still signs in at that login. env is a program, so the line runs alike when pasted into sh, bash,
+  zsh, fish or tcsh; a CLI path holding `=`, which env would read as a variable, goes to `sh -c` as its `$0`. env skips
+  a `claude` alias or function of the terminal's shell. A run
+  there reaches the same tokens: on macOS with `CLAUDE_SECURESTORAGE_CONFIG_DIR` set and empty, the CLI's way to name
+  that item while the run has a config dir of its own; elsewhere with it set to `~/.claude`. On every place, the status
+  check never runs the CLI on the login's own account file, which the CLI rewrites on every start whose config version
+  is not its own: each check copies `.claude.json` (`~/.claude.json` on `machine` with the default folder, else the
+  login folder's), opening the original only to read it, into a folder of its own, gives the CLI that folder as its
+  config dir and the tokens as a run reads them, and removes the folder however the check ends. The copy (0600, in a
+  0700 folder) leaves out the fields that hold secrets: `primaryApiKey` (the API key an older Claude Code signed in
+  with), `env` and every `mcpServers`, whose env and headers hold tokens. Only a regular file of at most 32 MiB is
+  copied: a file that doesn't parse as a JSON object, a bigger one, a FIFO or a device is not copied at all, and the
+  check never waits on one. A run's config dir has none of them either, so the status says what a run gets. A check
+  killed mid-way leaves its folder (`agentrun-claude-status-*` in the temporary folder); a server where the login is
+  allowed removes this user's ones as it starts, once the check has ended by the end it wrote in its folder (its limit,
+  however long, and 2 s) and 15 s more, or, for a folder with none, once older than twice the check's limit. At its
+  limit the check asks the CLI to go (SIGTERM), kills it 1 s later, and waits at most 1 s more for its output, so a CLI
+  that ignores the TERM, or a process it started that holds its output open, never holds the check. The status check
+  runs in the person's home (the server's `HOME` when it is an absolute path, else the OS's home, read once where the
+  server makes the login) on every place, as the sign-in does, and so does a run on the login
+  on macOS: the CLI reads its tokens there from the login keychain, which is under that home. So a run there writes the
+  CLI's cache and logs under the person's `~/Library/Caches/claude-cli-nodejs`, where they stay; removing that folder is
+  safe. `sign_in`
+  says what became of that sign-in while the server runs: `waiting` for the browser since `started_at`, `signed_in`,
+  `timed_out` (no answer from the browser within 10 minutes, so it was ended and a sign-in page still open can't
+  finish), `failed` (the CLI ended without signing in, with its `exit_code`), or `not_started`. A second start ends a
+  sign-in that still waits, and so do turning the mode off, a `PUT` that moves the login to the other `place`, and
+  stopping the server, which waits for that CLI to exit. A `PUT` at the same `place` leaves it waiting.
+  The CLI dies with the server, as a session's CLI does, so a server that is killed outright (SIGKILL, the OOM killer)
+  leaves no sign-in waiting on the browser's port.
 - `DELETE /v2/settings/claude-login` turns it off. The login stays as the CLI keeps it.
+- `POST /v2/settings/claude-login/sign-out` signs out of AgentRun's own login, for a fresh sign-in or another account: it
+  ends a sign-in that waits, turns the mode off, runs the pinned CLI's own `claude auth logout` on
+  `<data>/claude-login` (which removes its credentials file and, on macOS, its Keychain item for that folder), then
+  removes that folder, the login's signed-in note in `claude-login-answers/` and the runner's token reader, whatever the
+  CLI said. Each removal stands alone: one that fails is named in the answer and the rest still happen. It answers
+  `{ "confirmed": true, "login": <the view, off> }`; `confirmed` false adds a `message` saying what may remain: the
+  CLI didn't confirm its own sign-out, or its step failed, named (on macOS its Keychain item may remain), or a file it
+  could not remove, by path, or, on macOS, an older Keychain item a sign-in left under the account `unknown`, which
+  holds a refresh token and which the sign-out deletes too, could not be removed, with how to delete that item alone:
+  its exact service, `Claude Code-credentials-` and 8 hex of AgentRun's folder, to search in Keychain Access, and the
+  one `security delete-generic-password -a unknown -s "<that service>"` command. The words never name the bare
+  `Claude Code-credentials`, the person's own CLI's item. The CLI's sign-out runs where the folder is already gone too, so a retry after an
+  unconfirmed sign-out confirms only where the CLI does. The next turn-on reads `signed_out` and the sign-in starts as
+  before. `<data>/claude-login`
+  is a folder AgentRun keeps itself: a turn-on where it is a link is refused, and a sign-out that finds a link there
+  removes the link alone (and the login's signed-in note), runs no CLI through it, and names what it led to. Runs already going are left as a turn-off leaves them, and fail saying the
+  login is signed out at their next read of it. Where each run is a user of its own, a run claimed on the login and
+  started while the mode is off is refused at its start, as after a turn-off; the claim checks the login's folder, not
+  its account, so a run claimed before Sign out and started after a new sign-in may run on the new account. What Sign
+  out does not guarantee for a run still going: where runs stay in the runner's process, the run's CLI holds the login's
+  refresh token itself and may write a renewed token pair back into `<data>/claude-login` after the folder is removed
+  (nothing removes it again when that run ends), so once such runs end, a turn-on that reads `signed_in` again means
+  Sign out again. The runner's own renewal, for
+  runs that are users of their own, never writes back to a removed login. This machine's own login (`place` `machine`)
+  is the person's: the sign-out is refused (403) with nothing touched, and the words say to run `claude auth logout` in
+  a terminal there. The console's Claude login row offers Sign out only while AgentRun's own login is signed in. Its
+  Turn on, where the login then reads `signed_out` and the server says the sign-in can start here (`can_start`), also
+  starts the CLI's sign-in (`POST /v2/settings/claude-login/login`), which opens the browser; the API's turn-on alone
+  never does.
 
 While it is on, a claude-agent run on an `anthropic/<model>` model goes on the login: its CLI gets no
 `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` or key, no model proxy runs, and the CLI's sandbox denies its commands
 reads of the login. A model named on a gateway or OpenRouter keeps its key, and so does a run started with its own
 `model_key`. With no key at all, claude-agent's default
-model is `anthropic/claude-sonnet-5-5`. A run whose login is signed out fails at its start and says so. It never
-switches to a key. The run books its tokens and no dollars (`cost.plan`, `on: "claude_code"`), and the plan's own limits
+model is `anthropic/claude-sonnet-5-5`. A run whose login is signed out fails at its start and says so. A status check
+the CLI outlasts (15 s) is asked once more; still no answer, the run goes on when the same login read signed in within
+the last 10 minutes on this machine (at a run's check or in Settings, in the server or in a runner process of its own on
+the same data folder, which keeps that time alone per login in `claude-login-answers/`, 0600), else it fails saying the
+check timed out. Being on disk, a signed-in answer outlives a restart of the server, and a turn-off and turn-on, for up to
+those 10 minutes; a signed-out answer removes it, and a new machine id (`machine-id` made again) leaves it standing for
+nothing.
+A check where the CLI answered nothing that reads as a status gets the same. Any other failure of the check, such as no CLI at
+its path, fails the run at once in the check's own words. It never switches to a key. The run books its tokens and no dollars (`cost.plan`, `on: "claude_code"`), and the plan's own limits
 apply. Only a run in a runner place, on the machine the mode was turned on for, goes on the login. A run placed in a
-sandbox, or on another machine, uses the keys. The login is the server's user's, so a run on it needs runs under that
-user: where each run is a user of its own (the image, `run_isolation: "uid"`), a claude-agent run that would go on the
-login fails at its claim and says so. Set `AGENTRUN_RUN_USER=same`, or give the run a `model_key`.
+sandbox, or on another machine, uses the keys. The login is the server's user's. Where each run is a user of its own
+(the image, `run_isolation: "uid"`), a run on AgentRun's own login folder gets the login's access token alone in
+`CLAUDE_CODE_OAUTH_TOKEN`: never the folder and never the refresh token, so its CLI never renews the login. The runner
+reads the token from the folder at the run's start and again whenever Anthropic refuses it mid-run, so a renewal the
+person's own Claude Code wrote there is picked up. The runner renews the login itself, in the CLI's place: when a token
+has less than five minutes left, and after Anthropic refuses one mid-run. It sends the pinned CLI's own refresh request,
+holds the CLI's own refresh lock on the folder (so a renewal by the CLI or another runner is taken and nothing is sent
+twice), and writes the answer back to the folder's `.credentials.json` alone, atomically at mode 0600, every other field
+kept. It holds that lock as the CLI does, by the mtime it set: a lock another holder took over while the runner was
+paused is never touched or removed, and the runner sends nothing under it. If the write back fails, the runner keeps the
+new pair in memory: each later ask gets its token, sends nothing (the old refresh token is spent and is never sent
+again) and tries the write again, under the same refresh lock and after reading the file again, so a newer pair another
+holder wrote there is kept. Once that token has less than five minutes left and is still unsaved, the run fails
+in words that say the renewal could not be saved and what to fix. A held token Anthropic refuses is never handed again:
+the ask fails while the pair is unsaved, and once it is saved the runner renews from it. One ask sends at most one renewal and nothing retries it. A renewal that fails, a refresh token Anthropic refused
+included, fails the run at its start in words that say to open Claude Code once to renew it, and mid-run ends the turn
+in the same words (or, with no failure to tell, words that say to run the claude CLI once on this login to renew it).
+No token is in the runner's log or in any error, and each token handed is cut from the run's journal, messages and rows
+as the runner writes them. A command the run's CLI starts can read the token,
+as the run's own user can. Under per-run users, a run on this machine's own Claude Code login (`~/.claude`, or the `CLAUDE_CONFIG_DIR` AgentRun was started with) fails at its
+claim and says so, and so does any login run while another runner on the same data folder runs its login runs under
+the server's user (its CLI renews the folder's login itself), naming that runner. Set `AGENTRUN_RUN_USER=same`, or give
+the run a `model_key`.
 
 The mode exists only on a server that listens on loopback (a local install, or one behind a local proxy). A server
 bound to any other address, such as all interfaces in a container or on a hosting service, has it off
@@ -1574,6 +1993,74 @@ with nothing to set. `AGENTRUN_CLAUDE_CODE_LOGIN` overrides the default. `off` t
 it available past loopback, but a server with more than one API token still refuses it, and so does the API-only
 profile. While the mode is off, the row is gone and every route above answers `404` naming its operation. A turn-on
 saved earlier is dropped when the server starts, and claude-agent runs on the model keys.
+
+### On this machine's Ollama
+
+Start Ollama (`ollama serve`, or its app) beside your own server and it lists Ollama's models itself, with no key, no
+gateway and no restart: `GET /api/tags` for the tags, `POST /api/show` for each one's capabilities and trained context. Each chat model
+is `ollama/<tag>` in `harnesses[].models` and `harnesses[].free_models` for pi and for every harness on a wire the
+route translates, and the console names it
+`<tag> · local (Ollama)`, on a run's page too (from the run's `tokens` usage line, `provider` `ollama` and `model` the
+tag), so a run on the default says which model it ran on. An embedding model is left out. A model pulled after the server shows in capabilities
+within half a minute (the listing is kept that long, and asked again behind the next answer). A down or stuck Ollama
+slows nothing: the listing has 2 seconds in all and follows no redirect. A listing that fails is never kept as one:
+past its deadline or with an answer of the wrong shape, the models listed before it stay; refused (Ollama is not
+running), none do. Either way Ollama is asked again behind the next answer, so an Ollama that comes back or starts
+after the server shows in the answer after that. A run never waits on the listing: one on `ollama/<tag>` asks that model's `/api/show` alone (10
+seconds), and a run on any other model, a key's default included, never asks Ollama.
+
+- Where: `OLLAMA_HOST`, read as the ollama CLI reads it. Unset, 127.0.0.1:11434, but only on one owner's own server
+  on their own machine, the one `--harness-sign-in` starts on: it listens on loopback with no public address, keeps the
+  SQLite store, runs its runs beside it as its own user, and takes one owner and one API token. On any other server
+  (shared, `--no-runner`, Postgres, API-only, more than one token), whatever answers on that machine's 11434 is no model
+  of the people who start runs there, so unset means no Ollama: name it in `OLLAMA_HOST`. A host alone, or `host:port`, with no
+  scheme is plain http, port 11434 when none is given; `http://` and `https://` take their own default ports. `0.0.0.0`
+  and `::`, where `ollama serve` listens on every address, mean this machine (127.0.0.1 and `[::1]`). A path is kept.
+  Plain http goes only to this machine (loopback); another machine takes `https://`. A refused `OLLAMA_HOST` lists no
+  models, and the server's log says why once, at its start (`event=ollama_host_refused`, never the value: a user or
+  password in it stays unsaid). `agentrun service install --env OLLAMA_HOST=<host:port>` gives it to the service.
+- Context: each request is Ollama's own `/api/chat`, streamed, with `options.num_ctx` the least of 65,536, the model's
+  trained context (where `/api/show` names one) and `OLLAMA_CONTEXT_LENGTH` (where the server's environment sets it to a
+  whole number above 0, as a person short of memory does for Ollama itself). The model's context window here is the same
+  number, so pi compacts before Ollama would cut the prompt. `agentrun service install --env
+  OLLAMA_CONTEXT_LENGTH=<tokens>` gives the limit to the service.
+- Thinking: a model whose capabilities include `thinking` has its reasoning split out by Ollama. For any other, an
+  answer that opens with `<think>` has that part as thinking up to `</think>`, the split Ollama makes for a thinking
+  model, so the tags never reach the answer.
+- Tools: a model whose capabilities include `tools` takes them natively. Any other takes them as text: the tools are
+  described in its prompt, and a call written in its answer comes back as a real call.
+- Cost: $0, booked as a known cost. Its requests never count toward the server's [limit on free
+  requests](#a-limit-on-free-requests): there is no shared quota behind them. An agent's own `max_requests` counts them,
+  with its other free requests, so a run on Ollama that keeps calling tools still stops there.
+- Harness: pi, and every harness on a wire the route translates. Those wires are Anthropic's Messages (claude-agent,
+  Goose, a harness module on it) and OpenAI's Responses (codex, opencode, a harness module on it). Their requests go
+  through the same translation as pi's: the same `/api/chat`, `num_ctx`, tools and cost. A Messages client's token
+  count (`/v1/messages/count_tokens`) is answered there without asking the model, an answer it asks for unstreamed
+  comes back whole (or as a 500 error with words when part of the stream doesn't read), and every model id it sends
+  (Claude Code's small model too) runs the one tag. claude-agent turns its own tool search off on these models.
+- On OpenAI's Responses, each request is the whole conversation: `store: true` and `previous_response_id` are
+  refused, since nothing is stored here. Function tools only: a custom (freeform) tool such as Codex's `apply_patch`
+  grammar, `local_shell` and `web_search` are refused with words, never dropped, and codex offers no live web search
+  on these models. A `tool_choice` that forces a call (`"required"`, or one naming a function) is refused too: Ollama
+  can't be made to call a tool. `"auto"` and `"none"` are taken. `text.format` `json_schema` is Ollama's own `format`
+  (the answer held to the schema; `json_object` to any object), refused beside tools sent, since a model held to it
+  can't call one. `temperature` and `top_p` reach Ollama's options; `reasoning.effort` turns a thinking model's
+  thinking on, `"none"` off. An effort or a format the route doesn't know is refused. `parallel_tool_calls: false` gets
+  an answer's first call alone, and the calls it drops are logged by tool name. A request streams only with
+  `stream: true`; one that names no stream is answered whole. Replayed reasoning, OpenAI's encrypted reasoning
+  included, is dropped, not refused. An answer cut at its output limit ends `response.incomplete` with its usage, so it
+  is booked and codex ends the turn rather than asking again. Every model id the client sends (a title or compaction
+  request's too) runs the one tag. codex and opencode are given the model's window as the route runs it (its `num_ctx`,
+  at most 64k), so they compact before Ollama would cut the prompt, and its output ceiling (half that, at most 16,384).
+- Cloud models: an Ollama cloud model (a `-cloud` tag, with `remote_host` and `remote_model` in `/api/tags` or
+  `/api/show`) runs on ollama.com, not here, so it is never listed: never local, never $0, never the default.
+- Default: with no model key held (and no `AGENT_MODEL`, ChatGPT sign-in or gateway), pi and every harness on a wire the
+  route translates run on the first model Ollama lists that calls tools. Any key wins. A model without tools is pickable, never the default. Ollama lists the model
+  pulled last first, so pulling one can change that default, and a saved agent that names no model follows it. Name the
+  model (`ollama/<tag>`) to pin it.
+
+`inkling-2-mini` (Ollama 0.40.17 or later) is the model to try first. Under `--faux` or `AGENT_MODEL_BASE_URL`, Ollama
+is never asked.
 
 ## Tools
 
@@ -1597,9 +2084,9 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `bash_signal` | Send a background process's group `TERM`, `INT` or `KILL`: `{id, signal}` | an agentic definition whose place is a sandbox | no, no |
 | `bash_list` | List the run's background processes: id, state or exit code, output size, start time and command | an agentic definition whose place is a sandbox | no, no |
 | `ask_person` | Ask the person who started the run; the turn ends until a message answers | nothing | no, no |
-| `web_fetch` | Read one web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked ([search and fetch](#search-and-fetch)), a part at a time: `{url, offset?, max_chars?}` in, a Page out, `{ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel, one billed extract a page a run) | yes, yes |
-| `web_search` | Search the web, natively where the harness or the model's provider can, else through Parallel where the server holds its key, else keyless through Exa, or through the provider picked ([search and fetch](#search-and-fetch)): `{query, n?}` in, `{provider, query, results: [{url, title, snippet, published?}], text?}` or `{error}` out | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
-| `web_save` | Download one file from a public URL into the run's `work/` and keep it there, for a link that expires (a generated image, audio or video): `{url, path}` in, `path` relative to `work/` and a bare name under `media/`; `{ok: true, path, bytes, content_type, duration_s?, url}` or `{ok: false, url, refused \| error}` out, `duration_s` an mp3, wav, mp4 or m4a's length in seconds read from its bytes. Never overwrites | nothing | no, no |
+| `web_fetch` | Read one web page from a public host through Parallel's extract where the server holds a Parallel key (the default, `auto`), else keyless Firecrawl, with the guarded direct fetch behind either, or the guarded direct fetch alone where `kernel` is picked ([search and fetch](#search-and-fetch)), a part at a time: `{url, offset?, max_chars?, objective?}` in (`objective`, what the page is read for, is passed to the run's Web; with no classifier in the run it changes nothing), a Page out, `{ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel, one billed extract a page a run) | yes, yes |
+| `web_search` | Search the web, natively where the harness or the model's provider can, else through Parallel where the server holds its key, else keyless through Exa, or through the provider picked ([search and fetch](#search-and-fetch)): `{objective, queries?, n?}` in (`query` is deprecated: a model's call must give `objective`, which the schema requires; a workflow call node's `{query}` alone is still searched as the objective and its one query), `{provider, objective, queries, results: [{url, title, snippet, published?}], text?}` or `{error}` out | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
+| `web_save` | Download one file from a public URL into the run's `work/` and keep it there, for a link that expires (a generated image, audio or video): `{url, path}` in, `path` relative to `work/` and a bare name under `media/`; `{ok: true, path, bytes, content_type, duration_s?, url}` or `{ok: false, url, refused \| error}` out, `duration_s` its length in seconds when it is audio or video whose bytes give it (below). Never overwrites | nothing | no, no |
 | `browser` | A hosted browser, Browserbase's or Kernel's, on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`); Kernel keeps no downloads, so a run on Kernel has no `browser_downloads` | `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, or `KERNEL_API_KEY` | yes, no |
 | `monid:<provider>/<endpoint>`, `monid:<provider>/*` | One monid endpoint, or every endpoint monid lists for a provider (at most 50), each pinned at the save and run as a tool of its own, paid per call from the monid wallet: `{body?, queryParams?, pathParams?}` in, the run's `output`, `price` and `cost` out ([monid](#monid)) | `MONID_API_KEY` | no, no |
 | `pdf_pages` | A workflow call only: `{path, maxPages?, dpi?}` in, `{name, pageCount, dpi, pages: [{page, image}], text}` out. Draws a document's first pages (3 by default, at 110 dpi) as PNGs under the run's `work/pages/<stem>/<dpi>/` (`<stem>`: the document's path below its directory made one name, with a short hash, so two documents of one file name never share pages), the dpi lowered so a page's long side is at most 1568 px, with its text (`pdftotext`, cut at 20,000 characters). A PNG or JPEG passes through as one page, scaled down to 1568 px. `path` is under `--documents` or the run's `work/`, never outside | `pdftoppm`, `pdftotext` | no, yes |
@@ -1747,35 +2234,63 @@ Each child books on the run's cap, so size the cap for K passes, not one.
 
 `web_search` and `web_fetch` work on every harness with only a model key. Each resolves, for a run, in one order: (1) the
 provider the user picked, optional: the agent's own (`definition.tool_settings`) over the server's
-(`PUT /settings/tools`); (2) the native tool, the harness's own or its model provider's hosted one (on claude-agent
-only where it is picked: `auto` there skips Claude's own search, an explicit `native` pick); (3) for
+(`PUT /settings/tools`), except that the server's `kernel` for `web_fetch`, and its `native` or `off` for `web_search`,
+are a ceiling no agent's pick raises ([below](#search-and-fetch)); (2) for
 `web_search`, Parallel, where the server holds a Parallel key (`PARALLEL_API_KEY` in its environment, or one saved on Tool
-keys): `auto` then uses that key and bills it, each search booked as the run's cost ($0.001 a search); (4) the keyless
-fallback, Firecrawl's public MCP endpoint (for `web_search` with Exa's behind it). A revision's `tools` (and a pack's grant) names the capability, never a provider. On codex, `auto` is
-Codex's own search, except behind a gateway, on OpenRouter (which runs neither Codex's nor Claude's own search, and
-counts no searches to price) or under a spend cap (its request has no input bound, which a cap cannot
-admit), where it is Parallel on the server's key, else keyless Firecrawl. `off` turns `web_search` off: nothing is
+keys): `auto` then uses that key and bills it, each search booked as the run's cost ($0.001 a search); (3) the keyless
+fallback, Firecrawl's public MCP endpoint (for `web_search` with Exa's behind it). A revision's `tools` (and a pack's grant) names the capability, never a provider.
+`auto` is agentrun's own search on every harness. The native search, the harness's own (Claude's WebSearch, Codex's
+live search) or on pi one request to the run's own model provider with its hosted search, runs only where `native` is
+picked; it is unavailable behind a gateway, on OpenRouter (which runs neither Codex's nor Claude's own search, and
+counts no searches to price) or under a spend cap (Codex's request has no input bound, and Claude's searches have
+per-use fees, which a cap cannot reserve yet). `off` turns `web_search` off: nothing is
 searched, and an agent naming it is refused (`409`) until it is turned on again. A pick of `firecrawl-keyless` is keyless
 Firecrawl with keyless Exa behind it, and a pick of `exa-keyless` is keyless Exa alone, the key held or not.
 A workflow's model nodes may each run on another tier's model, so a workflow's `web_search` never searches natively:
 it is Parallel on the server's key, else keyless Firecrawl, or the provider picked, and a pick of `native` alone is
 unavailable for a workflow.
 
+Where the server holds a TypeSafe key (`TYPESAFE_API_KEY`, set or saved), Jev runs on the web tools by default, and
+run content goes to TypeSafe. Each `web_search` sends TypeSafe its objective and each result's URL, title, snippet and
+published date (when the provider gives one).
+Each `web_fetch` given an objective sends TypeSafe the page's text (up to 1,000,000 characters, in chunks) and the
+objective; a fetch with no objective sends nothing. TypeSafe bills every request to the server's TypeSafe key. To
+keep the old behaviour on a server that holds the key, set `AGENTRUN_WEB_JEV_OFF=1`. Jev (`jev-1.14.0`) scores each
+search's results against its objective and reorders them by that score, keeping every one,
+each with its `relevance` (0 to 1), and a `sift` line saying how they were ranked, or why not (a Jev failure leaves them
+as the provider gave them). It applies wherever the run's own `web_search` runs (Parallel, keyless Firecrawl or Exa,
+pi's hosted search), never to a harness's own search inside its CLI. Each Jev request is held on the run's spend cap at
+Jev's published price and booked at the cost Jev reported, never above that hold. A `web_fetch` given an objective has
+Jev pick the chunks of the page most likely to hold it, in page order (`found`, each with its `relevance`), its requests
+held and booked the same way; a fetch with no objective asks Jev nothing and its page is whole. A server with only an
+OpenRouter key runs no ranking; `AGENTRUN_WEB_JEV_OFF=1` on the server turns Jev off for every run created while it is
+set, on whatever runner host claims it (the run's plane carries the switch, and keeps it at every later launch); a
+runner's own switch can add off for the runs that host claims, never turn it back on. `GET /capabilities`' `why` for
+each tool says what it sends TypeSafe, or that Jev is off: for `web_search` `…; Jev (jev-1.14.0) ranks results …; each
+search sends that and each result's URL, title, snippet and published date to TypeSafe …`, for `web_fetch` `…; a fetch given an
+objective sends the page's text and the objective to TypeSafe …`, and for either `…; Jev off: no TypeSafe key` or
+`…; Jev off (AGENTRUN_WEB_JEV_OFF)`.
+An agent's own `jev: "off"` on `web_search` or `web_fetch` (`definition.tool_settings.web_search.jev`) turns Jev off for
+both of that agent's web tools the same way: its runs' planes carry it and no TypeSafe key is handed. `off` is its one
+value; the server's own tool settings refuse it, and leaving it out runs Jev as the server has it.
+
 | | `claude-agent` | `codex` | pi |
 | --- | --- | --- | --- |
-| `web_search`, `auto` (the default) | Parallel on the server's key, else keyless Firecrawl: Claude's own WebSearch is the `native` pick | Codex's own search, each search booked; behind a gateway, on OpenRouter or under a spend cap, Parallel on the server's key, else keyless Firecrawl, a host tool | one request to the run's own model provider with its hosted search (Anthropic, OpenAI direct); behind a gateway (`AGENT_MODEL_BASE_URL`) or on another provider, Parallel on the server's key, else keyless Firecrawl |
-| `web_search`, `native` | Claude's own WebSearch, unavailable on OpenRouter or under a spend cap | the same, unavailable behind a gateway, on OpenRouter or under a spend cap | the same, unavailable where there is none: never a keyless search |
+| `web_search`, `auto` (the default) | Parallel on the server's key, else keyless Firecrawl, a host tool: Claude's own WebSearch is the `native` pick | the same: Codex's own search is the `native` pick | the same: the model provider's hosted search is the `native` pick |
+| `web_search`, `native` | Claude's own WebSearch, unavailable on OpenRouter or under a spend cap | Codex's own search, each search booked; unavailable behind a gateway, on OpenRouter or under a spend cap | one request to the run's own model provider with its hosted search (Anthropic, OpenAI direct); unavailable behind a gateway (`AGENT_MODEL_BASE_URL`) or on another provider: never a keyless search |
 | `web_search`, `off` | unavailable (`web_search is turned off in settings`): nothing is searched | the same | the same |
 | `web_search`, `firecrawl-keyless` | Firecrawl's public MCP search, keyless Exa's behind it, a host tool | the same | the same |
 | `web_search`, `exa-keyless` | Exa's public MCP search alone, a host tool | the same | the same |
-| `web_fetch`, `auto` (the default) | the guarded direct fetch where the server holds a Parallel key, else keyless Firecrawl | the same | the same |
+| `web_fetch`, `auto` (the default) | Parallel's extract where the server holds a Parallel key, the guarded direct fetch behind it; else keyless Firecrawl | the same | the same |
 | `web_fetch`, `firecrawl-keyless` | Firecrawl's public MCP scrape, the guarded direct fetch behind it: Firecrawl is sent each URL | the same | the same |
 | `web_fetch`, `kernel` | the guarded direct fetch | the same | the same |
 | either, `parallel` | Parallel's search and extract, host tools | the same | the same |
 
 `GET /settings/tools` answers the server's settings, `{web_search: {provider}, web_fetch: {provider}, browser: {provider}}`, the default
 where none is set; `PUT /settings/tools` takes the same map and replaces it (a capability it leaves out takes its
-default). An agent's `definition.tool_settings` has the same shape and is over the server's. A provider is one offered
+default). An agent's `definition.tool_settings` has the same shape and is over the server's, except under the server's
+`kernel` for `web_fetch`, or its `native` or `off` for `web_search`, a ceiling no agent's pick raises, and a `deny`,
+which no agent's setting reaches past. A provider is one offered
 for its capability (`auto`, `native`, `firecrawl-keyless`, `exa-keyless`, `parallel` or `off` for `web_search`; `auto`,
 `firecrawl-keyless`, `kernel` or `parallel` for `web_fetch`;
 `auto`, `browserbase`, `kernel` or `chrome` for `browser`, [below](#tools)); an
@@ -1807,10 +2322,11 @@ Upgrading to the tool gate: a workflow whose call node's tool is set to ask, by 
 run (`409` with `details.asks`); set that tool to allow for the agent (`definition.tool_settings`). Built-in tools are
 allowed by default; catalog (`monid:<provider>/<endpoint>`) and MCP tools, which ask by default, are no call node's tools here.
 
-Upgrading: a server holding `PARALLEL_API_KEY` used to read every `web_fetch` page through Parallel's extract on its own.
-Now `web_fetch` on `auto` is the guarded direct fetch on such a server (keyless Firecrawl on one with no Parallel key)
-unless Parallel is picked; to keep the old behaviour, set
-`PUT /v2/settings/tools {"web_fetch": {"provider": "parallel"}}` once (or `tool_settings` in an agent). Parallel's key reaches an agentic run only when one of its capabilities resolves to Parallel (see
+Upgrading: on a server holding `PARALLEL_API_KEY`, `web_fetch` on `auto` reads each page through Parallel's extract
+first, with the guarded direct fetch behind it, as `web_search` on `auto` searches through Parallel (keyless Firecrawl on
+a server with no Parallel key). To keep every URL on the server instead, set
+`PUT /v2/settings/tools {"web_fetch": {"provider": "kernel"}}` once (or `tool_settings` in an agent). Both tools'
+`auto` order is one table in the source (`DEFAULT_WEB_ORDER`, tool-plane.ts). Parallel's key reaches an agentic run only when one of its capabilities resolves to Parallel (see
 [Decision workflows](#decision-workflows)), and a web tool reaches Parallel only where its own capability does.
 
 pi's native `web_search` is one standalone request, as Claude's CLI runs its WebSearch: one user turn carrying the
@@ -1829,11 +2345,13 @@ https://exa.ai/terms). To turn them off, set `web_search` to `native` (native on
 keys (or set `PARALLEL_API_KEY`): `auto` then searches through Parallel and bills the key.
 
 Keyless Firecrawl is one MCP exchange with Firecrawl's public endpoint (`https://mcp.firecrawl.dev/v2/mcp`), with no key,
-no Authorization header and no header of our own: `firecrawl_search` with the query and the number of results asked for,
+no Authorization header and no header of our own: `firecrawl_search` once for each of the search's first 3 queries, all at
+once, each with the objective (its tool requires one), its share of the results asked for and a scrape of each result
+as markdown, the answers merged by URL,
 or `firecrawl_scrape` with the URL, for its markdown. A call ends at 30 s and is not retried: the backend behind Firecrawl
 answers it in its place. A search's 60 s are one deadline for both keyless backends: Firecrawl's 30 s leave Exa the rest,
 and no backend starts once the deadline is spent. A page Firecrawl read with a status that is not 2xx, or an answer past
-the bound (1 MiB for a search, the guarded fetch's 5 MiB for a page), is no read: the call goes to the backend behind
+the bound (8 MiB for a search, its results scraped; the guarded fetch's 5 MiB for a page), is no read: the call goes to the backend behind
 Firecrawl, and where the guarded direct fetch then reads the page, the server logs why Firecrawl gave none
 (`event=web_fetch_firecrawl_failed`, never the URL). Firecrawl refuses a keyless call it will not serve with a code, and
 only the code is read, never its words or its sign-up link: `KEYLESS_QUOTA_EXHAUSTED` (its free daily limit spent), `KEYLESS_ACCESS_NOT_AVAILABLE` or
@@ -1846,10 +2364,32 @@ off for a run, `web_search` answers `search is unavailable for the rest of this 
 sees the URL, its query string included, so a token in a URL's query goes to Firecrawl with it. A URL first passes the
 guard's own check, and one it refuses (a private, loopback, link-local or intranet address, a name that resolves to one,
 or a URL holding a user name or password) is refused as the guarded direct fetch refuses it, and never sent to Firecrawl,
-to Exa or to Parallel. To keep every URL on the server, pick `kernel` for `web_fetch`, or hold a Parallel key, where
-`auto` is the guarded direct fetch. A server's pick is the default only: an agent's own `tool_settings` outrank it, so an
-agent (an imported template's among them) that picks `firecrawl-keyless` or `auto` still sends its URLs to Firecrawl.
-Only a server's `deny` is absolute: set `web_fetch` to `deny` to stop every agent's fetches.
+to Exa or to Parallel. To keep every URL on the server, pick `kernel` for `web_fetch` (with a Parallel key, `auto`
+is Parallel's extract, which sends Parallel each URL). A server's pick is the default only, an agent's own `tool_settings` (an imported
+template's among them) over it, except for these. The server's `kernel` for `web_fetch`, and its `native` or `off` for
+`web_search`, are a ceiling: an agent's pick of `firecrawl-keyless`, `exa-keyless`, `auto` or `parallel` resolves as the
+server's setting does, so nothing goes to Firecrawl, to Exa or to Parallel, and capabilities' `why` says so ("the
+server's setting, kernel, is a ceiling over this agent's pick of auto"). An agent's own view (`GET /agents/{agent_id}`,
+its `tools`) keeps the agent's pick as `provider`, shows what runs as `resolved`, and names the server's setting that
+capped it as `ceiling`. Under `off`, an agent's `native` is off too;
+under `native`, it is the ceiling's own. To let agents use Parallel, set `parallel` server-wide; any server pick but
+these three (`auto`, `firecrawl-keyless`, `exa-keyless`, `parallel`) is only a default an agent's pick replaces. A
+server's `deny` is absolute: set `web_fetch` or `web_search` to `deny` to refuse every agent's calls, whatever it picks.
+A server setting applies at a run's next claim (its start, a follow-up, a resume or a reclaim): a claim keeps the plane
+it began with to its end, through any approval it waits on while it holds the run. `deny` is read at each call, so it
+is the setting that stops a claim already running. Tool settings a claim cannot read fail closed: a capability kept on a
+keyless service or on Parallel runs nothing, its tool saying the settings could not be read.
+
+The ceiling covers `web_search` and `web_fetch`, not every way a run reaches the web:
+- `browser` sends each URL to its provider, and `bash` (`curl`) and MCP or catalog tools reach the web on their own; set
+  them to `deny` to stop them.
+- Jev, where it is on, sends a kernel fetch's page text, or a native pi search's query and result URLs, to TypeSafe;
+  `AGENTRUN_WEB_JEV_OFF=1` turns it off.
+- A workflow's typed questions on the `parallel` decision provider send the workflow's state to Parallel, which answers
+  from live web research, whatever `web_search` says. A server `deny` on `parallel` refuses it to learned workflows; a
+  workflow agent's own decision nodes run on it wherever the server holds `PARALLEL_API_KEY`.
+- A native job runs the user's own Claude Code or Codex CLI with that CLI's own configuration, which these settings do
+  not reach.
 
 A `web_fetch` through keyless Firecrawl takes at most about 95 s: up to 30 s for the guard's check of the URL, 30 s for
 Firecrawl, then, where Firecrawl gives no page, the guarded fetch's 30 s and 5 s to read the page.
@@ -1882,7 +2422,10 @@ refuses is refused and never leaves the machine. A call stopped before its page 
 `via: "stopped"`: no page came for it (the run's read of the URL goes on for its other calls).
 
 `web_search` through Parallel uses its Search API (`POST https://api.parallel.ai/v1/search`, its `fast` mode, about
-$0.001 a search). On every provider the query is cut at 200 characters and `n` is 1 to 25 (10 by default). A result is a lead: the agent reads the page with `web_fetch`. A failure answers
+$0.001 a search): the objective as its objective, the queries as its `search_queries`, and the run's model as
+`client_model` (its bare id) where the run names one. A search asks an objective, what the agent wants to find out in a
+sentence (cut at 1,000 characters), and up to 5 keyword queries (each cut at 200; with none, the objective's first 200
+characters); Exa is sent the objective as its query, native search the first query. `n` is 1 to 25 (10 by default). A result is a lead: the agent reads the page with `web_fetch`. A failure answers
 `{error}`, with nothing searched instead; a 401 or 403 to either web tool stops Parallel for both for the rest of the run.
 
 Parallel's fees are the run's spend, booked as monid's are: each search and each page Parallel extracts is marked in the
@@ -1910,7 +2453,7 @@ keyless use has a rate limit it does not publish, and its own terms. Past that l
 then is a tool error in our words (above): the model reads why and answers without it, and the run's later searches
 are held for the wait. Exa answers its daily count running out the same way, naming no wait, so a second limit naming no
 wait after a wait has passed (a 429 with Retry-After is a timed limit, and only waits), in the same run and with no search succeeding since, turns search off for the rest of that run. A search ends at 60 s, its retry
-included, so a call never hangs. The answer is the query and its results, each a URL, a title, a
+included, so a call never hangs. The answer is the objective, the queries and their results, each a URL, a title, a
 snippet of at most 3,000 characters and its date when Exa knows it, then a line asking the model to cite the URLs it
 relies on. Keyless Exa answers behind keyless Firecrawl, the default for a harness with no native search when the server
 holds no Parallel key; `off` turns `web_search` off, both included.
@@ -2216,8 +2759,8 @@ A stored value that does not open is never a reason not to start. It reads `set:
 so once, naming the condition and the file, never a value; a `PUT` of the value seals it again under the current key.
 
 A saved key is read by name like one the launcher hands over, and the launcher's value wins for a name it holds. A run
-gets the saved keys at its launch, over the pipe its secrets come on (a workflow run's `PARALLEL_API_KEY` on its
-decision descriptor), never in any process's environment, and never the seal key. No restart: a `PUT` or `DELETE`
+gets the saved keys at its launch, on its claim's own environment (a workflow run's `PARALLEL_API_KEY` too), never in
+any process's environment, and never the seal key. No restart: a `PUT` or `DELETE`
 answers once capabilities, a save's checks and a run's checks see the change, in milliseconds. No harness reads a tool
 key, so a key leaves what each harness offers as it is, and the harnesses are not checked again. A run already
 running keeps what it was handed; the next run started, or a run's process started again, takes what is saved then.
@@ -2265,10 +2808,12 @@ Composio is an MCP server like any other, so it needs no adapter of its own. Set
 preset: you give your Composio API key, a toolkit (`github`, `slack`...), the actions to grant (picked from the
 toolkit's list) and a server name, and the server has Composio make a managed MCP server for them, then saves it as an
 ordinary MCP server with the key sealed as an `x-api-key` header. `POST /v2/settings/mcp-servers/composio/tools`
-`{api_key, toolkit}` lists the actions; `PUT /v2/settings/mcp-servers/{name}/composio` `{api_key, toolkit, tools,
-user_id?, auth_config_id?, price_usd?}` makes and saves the server. In place of `api_key`, `"api_key_env":
-"COMPOSIO_API_KEY"` reads the key from that variable, as the server and each runner were started with it, at each use and keeps no copy: the
-way an [API-only](#api-only) server's token saves one. That key is only ever sent to Composio's own origin, fixed in
+`{api_key, toolkit}` lists the actions, and `POST /v2/settings/mcp-servers/composio/toolkits` `{api_key}` lists the
+toolkits Composio offers (`{toolkits: [{slug, name}]}`, by name) for the console's toolkit picker;
+`PUT /v2/settings/mcp-servers/{name}/composio` `{api_key, toolkit, tools, user_id?, auth_config_id?, price_usd?}` makes
+and saves the server. In place of `api_key`, `"api_key_env":
+"COMPOSIO_API_KEY"` or `"AGENTRUN_COMPOSIO_API_KEY"` (in the save and both listings) reads the key from that variable, as the server and each runner were started with it, at each use and keeps no copy: the
+way an [API-only](#api-only) server's token saves one and lists the toolkits and their actions, scoped to a workspace or not. That key is only ever sent to Composio's own origin, fixed in
 code, so a server saved so whose address is anywhere else is refused by name and sent nothing. The body names no
 address or headers (`422 not_allowed`): Composio answers the address. When the toolkit needs your account and `user_id`
 (default `agentrun`) has none active, the answer's `connect_url` is Composio's page to connect it; nothing here signs
@@ -2280,8 +2825,17 @@ server. `price_usd` (0 or more, as a `prices` value) is what each call costs you
 price, so a call is held under its run's cap and booked as the run's tool cost (its trace span's `usd`, the run's
 `cost.usd`), as any priced MCP tool's. A re-save that names no price keeps the server's prices for the actions it still
 lists. Composio's server can leave out an action it was allowed (it did for `HACKERNEWS_GET_FRONTPAGE`), so the answer's
-`not_served` names any chosen action the saved server doesn't list. Both routes are the owner's session alone, and a
-saved Composio server is gated, approved and shown on the Timeline as any MCP server's tools are, "not metered" until
+`not_served` names any chosen action the saved server doesn't list. These routes are the owner's session alone.
+
+A refresh of a saved Composio server also reads its account at Composio, and every read of the server then says it as
+`composio_account: {state, labels?, checked_at}`: `connected` with each account's label (its alias, else the name
+Composio shows, else its word id; never its id or a token), `pending` while its connect link is unfinished, `expired`,
+`none`, or `unknown` when Composio didn't answer. Only an account Composio names as the server's user's is the server's,
+for its state, its label, a save and a trigger alike: one answered as another user's, or with no user at all, never is,
+and the user connects one again. A per-run server has none; an empty recorded user reads
+`unknown`. The API token sees `composio_account` too, in a server's full read: its label may be the account's email.
+
+A saved Composio server is gated, approved and shown on the Timeline as any MCP server's tools are, "not metered" until
 you price them (`price_usd`, or the server's `prices`). Composio's own meta tools stay refused, and the helper actions
 that connect an account are left off the server's address. Deleting the server in Settings deletes what its save made in Composio too, with the saved key: the Composio MCP server, the connected account its connect link started (the link with it) and the auth config it made (Composio's "already gone" is fine). What another saved server uses is kept until the last of them goes, and what was there before the save (an auth config or account you had) is never deleted. The `DELETE` answers `200 {deleted: true, composio: {removed, note}}`: the note says what it removed, what it kept and why, and, when Composio refuses or does not answer, what is left to remove in Composio yourself (`removed: false`; the server is still forgotten here). The console shows it. A save that fails removes in Composio what it made there and never what it found, and its error names what is left when Composio refuses that too (a 422 on a field says it in `details.composio` as well). A save over a preset server removes, once it is saved, the Composio MCP server its earlier save made, and what that save made and the new one no longer stands on (the account of another `user_id`, the auth config of another toolkit), with the key it was made with, unless another saved server uses it, and answers `composio: {removed, note}` saying so. An ordinary `PUT` that moves a preset server to another address makes it another service's server: it removes what the preset made for it in Composio as its delete would, and answers `composio` too. While Composio triggers use the server, that move, and a preset save over it as another `user_id` or auth config, are refused as its delete is (`409 composio_in_use`, naming them). Preset saves and MCP server deletes run one at a time, so a delete never removes what a save in progress reuses; an ordinary save of a preset server lists its tools at once and takes its turn only to write the server and clean up.
 [Connect Composio tools and triggers](../../docs/tutorials/composio.md) walks through the preset and a Composio
@@ -2306,16 +2860,38 @@ curl -X POST "$BASE/v2/agents/$AGENT/runs" -H "authorization: Bearer $TOKEN" -H 
 user and account, the Composio key staying the server's own. The binding is kept as a `per_run` server's headers are:
 sealed into the run's launch, erased from the store by the write that ends the run, never on the server's row, the
 run's view, its timeline, its trace or a log line, and its values are cut from whatever the run shows. A message's
-binding replaces the run's for the turn it starts. A run that names no account has its calls of the server answered, unsent, that it was
-handed none, so a per-run server never calls as a default account. A malformed user or account is `422 input_invalid` at
+binding replaces the run's for the turn it starts. A run that names no account is not offered the server's tools (on
+Codex, its calls of them are answered, unsent, that it was handed none), so a per-run server never calls as a default
+account. A malformed user or account is `422 input_invalid` at
 `mcp_auth.<server>.composio_user_id` or `.connected_account_id`, and so is a binding to the preset's default user
 `agentrun` (`not_allowed`: the user single-user preset servers call as); headers for such a server, or a binding for any
 other server, are `422` at `mcp_auth.<server>`, and no run starts. A per-run server makes no Composio trigger: a trigger
 runs as one account. A server saved for one user before this mode keeps calling as that user.
 
 With `user_id: "per_run"`, whoever can start a run chooses its Composio user, so the host owns which user each run
-binds: it binds each run to its own person and never takes the ids from that person. Only `agentrun` is
-refused, so a host must not bind a per-run server to a `user_id` that a single-user server calls as.
+binds: it binds each run to its own person and never takes the ids from that person. The API token never binds a run to
+a Composio user the owner calls as here, in any letter case: the user any preset server the owner saved calls as or
+its kept account stands on (not one the token saved, and not a per-run one), `agentrun`, and the tool-listing user.
+On a start, an inline start, a launch hook's firing start and a message, the
+token's binding of one is `422 input_invalid` at `mcp_auth.<server>.composio_user_id` (`not_allowed`), and nothing is
+written: no run, no new binding, and a firing stays as it was. The owner's users are read at each request, so one the
+owner connects after a token's run started is refused from then on. The seal marks each binding with who handed it
+(the token or the owner's session), and each claim reads the owner's users again: a token's binding of a user the owner
+has connected since has its calls answered, unsent, that the user is the owner's, until a message hands `mcp_auth`
+again or a new run starts. The owner's session binds any user, the owner's own included, but `agentrun`: no caller
+binds a run to the preset's shared default user (`422 not_allowed`), so a run that forgot its own never lands there. On
+an [API-only](#api-only) server every caller is the token: the same users are refused, at the request and at each claim whoever handed the
+binding, and a named account must be one Composio lists under the run's user.
+
+What this leaves open: a per-run server lends the install's Composio key to whoever starts a run, and a token can still
+name a user the owner connected directly at Composio (the dashboard, or another client of the same Composio project),
+outside this install, which no record here names. Save a per-run server only on an install whose token callers own
+that Composio project's users.
+
+Upgrading: a run sealed before the mark, in flight across the upgrade, whose binding names a user the owner connects
+here has its calls of that server answered, unsent, in the same words at its next claim, since nothing says the owner
+handed it: a message that hands `mcp_auth` again (the owner's session, for the owner's user) marks it, or start a new
+run.
 
 What can go wrong, told apart:
 
@@ -2361,8 +2937,10 @@ its authorization server refused: sign in again), null for `auth.type` none. No 
 credential; a server's error text is cut of the values sent before it is shown. `POST .../{name}/refresh` lists the
 tools again with the saved URL and credential, keeps them, and answers `{added, removed, changed, server}`: `changed`
 names a tool whose title, description, schemas or annotations differ. `DELETE .../{name}` forgets the server and its
-credential. Capabilities' `features.mcp_client` says `transports: ["streamable-http"]`, the `auth` types and `at_rest:
-"sealed"`.
+credential. Capabilities' `features.mcp_client` says `transports: ["streamable-http"]`, the `auth` types, `at_rest:
+"sealed"`, and `composio_per_run: true`: a per-run Composio server takes each run's own Composio account, named in the
+run's `mcp_auth`. A backend in front of an API-only server reads it there, since that server does not serve the API
+document.
 
 ### A credential handed with each run
 
@@ -2388,7 +2966,11 @@ credential answers the first request's run), and its values are cut from whateve
 `POST /v2/runs/{run_id}/messages` takes `mcp_auth` too: it replaces the run's credentials in the message's own write, so the turn the message starts (a
 steer into a working run from its next model request, or a follow-up that opens an ended run again) calls with them. A
 name that is not a saved per_run server is `422` at `mcp_auth.<server>`, and no run starts. A run handed no credential
-for a per_run server it calls has those calls answered, unsent, that it was handed none. `POST .../{name}/refresh` lists
+for a per_run server it calls is not offered that server's tools, and its timeline says which server was left out and
+why; the next time the run picks up work after a message hands the credential, it has them. A message that hands it
+while a turn is still going is not put into that turn, whose tools can't change: it runs as the run's next turn, and
+the timeline says so. Codex keeps the tools its thread started with, so a Codex run keeps listing them, and their
+calls are answered, unsent, that it was handed none until the credential comes. `POST .../{name}/refresh` lists
 a per_run server's tools with no credential: save it again with `headers` for a server that lists only to a caller it
 knows. The tools are those it listed at its save, so a server whose tool list varies by caller shows each run the saved
 list.
@@ -3084,9 +3666,29 @@ after asks, saying "this run has sent 5 emails" (the count is the run's own reco
 stops two auto-responders answering each other. On a run an email started whose `email_read` is thread-scoped (no
 `scope: "mailbox"`), a send to anyone outside the thread's people
 (the account's own address and every From, To and Cc of the thread's messages) asks too, naming them ("eve@example.com
-is outside this email's thread"). The pending approval carries the reason as `asks_because`, which the console's card
-says above the call's arguments ("Asks because ..."). With accounts off, where no one can
-approve, such a send is refused in those words.
+is outside this email's thread"). On every run a trigger started (schedule, webhook, Slack, GitHub, Composio, feed or
+email), a send to an address this account has never sent to asks too, naming it ("someone@example.com: this account
+has never sent to them"). Never sent to means no message in the account's own Sent folder (Gmail's Sent Mail), from
+the account's own address and not a draft, has the address in its To, Cc or Bcc: the exact address, blind to the case
+of ASCII letters only (a Unicode look-alike such as the Kelvin sign for K is another address), as far back as Sent
+goes. Some servers (Exchange and Outlook among them) keep no Bcc header on a Sent copy over IMAP, so there an address
+only ever Bcc'd asks. Mail received from someone doesn't count, so a scheduled run replying to a first-time sender asks
+once; nor does a draft or someone else's message in Sent, and `email_file` refuses Sent and Drafts as targets, so a run
+can't file its own evidence there. Once it has made a folder, `email_file` files only into a mailbox the server lists
+by exactly the name given, so a name the server takes as another's (`Sent/` read as Sent) files nothing. Mail sent from a "send as" alias is filed from that alias, so a send to its
+recipients asks. The new-address check never asks about the account's own address or an address the run already sent
+to (unasked or approved). On a thread-scoped email run it doesn't ask about the thread's starter (the From of the
+message that started the run) either, but only when the receiving mail server vouched for that From: the message's
+topmost Authentication-Results header carries the account provider's authserv-id and says `dmarc=pass` with a
+`header.from` equal to the From's domain (case-blind, ASCII letters only). A header lower down may be the sender's own
+and is never read; `dkim=pass` or `spf=pass` alone doesn't count. The provider's authserv-id is known for Gmail
+(`mx.google.com`, by the Gmail preset or an IMAP host under gmail.com) and for no other provider yet, so there the
+starter asks like any new address. A starter with no DMARC pass asks too, since their From may be forged. Anyone else
+that message names, such as a stranger it Cc'd, asks on a reply-all. The 5-send cap still counts
+every send. A Sent folder that can't be read (or none, or no account saved when the send is checked) asks, saying so.
+`scope: "mailbox"` turns the thread ask off and exempts no starter. A playground or API run has neither ask, only the
+cap. The pending approval carries the reason as `asks_because`, which the console's card says above the call's
+arguments ("Asks because ..."). With accounts off, where no one can approve, such a send is refused in those words.
 
 An agent whose definition says `checkout: repository` starts each run in a checkout of the repository the run names: its
 start's `repo`, else the first `https://github.com/<owner>/<repo>` in its first message (a github trigger's run, its
@@ -3142,8 +3744,9 @@ Create; no run ever holds a token that can write.
      then applies it here (an apply refused takes the package back, deletes the branch and makes nothing). The push is
      recorded on the suggestion first, so a create after a write that failed finds the agent made from that template at
      that commit and reuses it, never making a second one;
-   - opens the pull request, naming the agent's id and the variables the client reads (`AGENTRUN_URL`,
-     `AGENTRUN_API_KEY`, `AGENTRUN_AGENT_<KEY>`). A pull request GitHub refuses keeps the agent (`502 github_failed`,
+   - opens the pull request, naming the agent's id and the variables the client reads (`AGENTRUN_BASE_URL`, given
+     with `/v2` as the server prints it and taken with or without, as AgentRun's own clients take it;
+     `AGENTRUN_API_KEY`; `AGENTRUN_AGENT_<KEY>`). A pull request GitHub refuses keeps the agent (`502 github_failed`,
      `details.agent_id`), and the next create opens the pull request alone. A created suggestion answers `200` as it is.
 
 `--faux-github` (with `--faux`) serves the list, the checks and the create from its fake App: its installation holds
@@ -3167,6 +3770,16 @@ warning, as a github trigger is with GitHub not connected. The first package is 
 `agent-scout` finds where a repository's app needs an agent ([Suggested agents](#suggested-agents)). The format and the
 rules of an apply are in [templates/README.md](https://github.com/Parcha-ai/agentrun/blob/main/packages/serve/templates/README.md);
 `agentrun template validate DIR` checks a folder as the server does.
+
+`GET /v2/marketplace/templates` lists the templates on [marketplace.agentrun.ai](https://marketplace.agentrun.ai), the
+list the marketplace publishes (`/search.json`), each with `here`, the id of the package on this server that it is
+(`x-agentrun-serve: "marketplace/1"`). The server reads the list only when asked, never at its start, keeps it 5
+minutes, and keeps the last good one through a failed read (`state: "stale"`); with none it answers `unreachable` and an
+empty list, always with a 200. Nothing on the list is imported or run: an entry that names its `source` installs with
+`POST /v2/templates/import`, its publisher trusted once, and one that names none from its marketplace page. The
+console's Templates and Build pages list this server's packages, then the marketplace's others.
+`AGENTRUN_MARKETPLACE=off` reads none, as does `--faux` unless it names an address; `AGENTRUN_MARKETPLACE=<https
+address>` reads that site's list.
 
 `agentrun template eval DIR` (`agentrun-serve eval-template DIR`) runs a package's eval cases as real runs of its agent
 and grades each run with the case's graders: by default on a server of its own over a temp data directory, so it never
@@ -3192,19 +3805,20 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /capacity` | This server's own (`capacity/1`): the runs waiting for a runner and held by one, each live runner's version, slots and free slots, and the hand-backs within `?window=` minutes, read from the store ([capacity and health](#capacity-and-health)). Served under `AGENTRUN_API_ONLY=1` too. |
 | `GET /openapi.json` | Without a credential: this API as an OpenAPI 3.1 document, the `agentrun.v2/0` contract (vendored in `src/openapi/`, its source in `info`) with this server's own routes marked `x-agentrun-serve`, the operations it answers `501` marked `x-agentrun-serve-unsupported`, and a contract operation that takes more than the contract gives marked `x-agentrun-serve-changed` with each change named; `links.openapi` in capabilities points at it. |
 | `GET /capabilities` | Without a credential. `backend: local`, every feature flag present and true only when it works; `tools`, the tools an agentic revision may name; `workflows`, what a workflow revision's model nodes get and, in `workflows.decisions.providers`, the decision providers its typed questions run on; `models`, where models come from and the model of each tier. |
-| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `place` ([place](#place)), `tools`, `tool_settings` ([search and fetch](#search-and-fetch)), `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets, and `max_cost_usd`, the agent's default cap (an agentic agent's or a workflow's), kept by an edit that leaves it out and cleared only by 0 ([spend cap](#spend-cap)), and `output_schema` (agentic only, at most 64 KiB): the JSON Schema the final answer's last fenced json block meets, which a completed run's `result.output` then holds (null when the answer doesn't meet it), kept by an edit that leaves it out. A template's answer schema is set here at apply, and a run a schedule trigger starts is handed that trigger's last completed `result.output` after its message; no other source's runs are, since each of their firings is a different event. Over 32 KiB, a scheduled run is handed only the fields the producing run's schema names in `x-carried`; carried arrays lose entries from the front until they fit, and the run is told how many. A save refuses an `x-carried` that is not unique root property names. `checkout` (agentic only): `pull_request` has the server check out, before each run's first turn, the pull request the run's GitHub event names, in `repo/` at its head with its base and merge base, using a read-only token of its GitHub App that the agent never holds ([GitHub triggers](#github-triggers-connect-github)); `none` clears it, and an edit that leaves it out keeps it. A field the store does not keep (`input_schema`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. `GET /agents/{id}` adds `tools`, the tools its current revision grants with each one's provider ([search and fetch](#search-and-fetch)). It also adds `run_blockers` (`x-agentrun-serve: "runblockers/1"`): `{message, fields}` as a start with no overrides would be refused now (`409 agent_not_runnable`), or null. It is always null for an archived, native or SDK agent and for a revision whose MCP tools its first run pins, and the read asks no other service, so under the agent's `max_cost_usd` an OpenRouter decision model's missing price is named only once a save or a start has read OpenRouter's catalog: null is no promise that a start is accepted. |
+| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `place` ([place](#place)), `tools`, `tool_settings` ([search and fetch](#search-and-fetch)), `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets, and `max_cost_usd`, the agent's default cap (an agentic agent's or a workflow's), kept by an edit that leaves it out and cleared only by 0 ([spend cap](#spend-cap)), and `output_schema` (agentic only, at most 64 KiB): the JSON Schema the final answer's json block meets (its last fenced one, or the whole answer when it is one JSON object), which a completed run's `result.output` then holds (null when the answer doesn't meet it), kept by an edit that leaves it out. A template's answer schema is set here at apply, and a run a schedule trigger starts is handed that trigger's last completed `result.output` after its message; no other source's runs are, since each of their firings is a different event. Over 32 KiB, a scheduled run is handed only the fields the producing run's schema names in `x-carried`; carried arrays lose entries from the front until they fit, and the run is told how many. A save refuses an `x-carried` that is not unique root property names. `checkout` (agentic only): `pull_request` has the server check out, before each run's first turn, the pull request the run's GitHub event names, in `repo/` at its head with its base and merge base, using a read-only token of its GitHub App that the agent never holds ([GitHub triggers](#github-triggers-connect-github)); `none` clears it, and an edit that leaves it out keeps it. A field the store does not keep (`input_schema`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. `GET /agents/{id}` adds `tools`, the tools its current revision grants with each one's provider ([search and fetch](#search-and-fetch)). It also adds `run_blockers` (`x-agentrun-serve: "runblockers/1"`): `{message, fields}` as a start with no overrides would be refused now (`409 agent_not_runnable`), or null. It is always null for an archived, native or SDK agent and for a revision whose MCP tools its first run pins, and the read asks no other service, so under the agent's `max_cost_usd` an OpenRouter decision model's missing price is named only once a save or a start has read OpenRouter's catalog: null is no promise that a start is accepted. |
 | `PUT /agents/{id}/definition` | The same body, checked [the same way](#models): a new revision, its parent the current one, made current. Without `skills` the current revision's skill files carry over. A definition that is the current revision already writes nothing, so a PUT sent twice makes one revision. An agent's id and name stay those it was made with (another name is `422` on `definition.name`). Its description is a label kept on the agent, not on a revision: a PUT that names a new one makes the next revision (even when nothing else changed) and writes the description with it in one commit, so a stale or refused edit changes neither; a PUT that leaves it out keeps it. `If-Match` that is not the current ETag is `412 precondition_failed`; the store compares it again inside the commit, so of two edits that read the same revision exactly one lands. The contract's body is taken too: the definition itself, with `If-Match` required (`412` without it) and `definition.version` greater than the current one (`422`). Any such version is taken, and always makes a new revision, the same definition included; the revision is numbered as this server numbers them, the next, and the answer says which; the route reads a body holding `definition` as this one, any other as the contract's. |
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
+| `GET /agents/{id}/revisions/{revision}/skills` | `{revision, skills}`: every skill file saved with that exact revision, as paths relative to `.agents/skills/` mapped to their text, including supporting files. Read these before preparing a replacement `skills` map for a definition edit; retain the revision's ETag for `If-Match`. An unknown revision or one belonging to another agent is `404 not_found`, never the current revision instead. This read changes nothing and reads no connected agent's source filesystem; a revision without stored skills returns `{}`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
 | `POST /agents/{id}/archive`, `POST /agents/{id}/unarchive` | [Archiving](#archiving): hides the agent and its runs from the lists, or shows them again. Answers the agent, with `archived_at`. |
 | `DELETE /agents/{id}` | This server's own route (`x-agentrun-serve: "agentdelete/1"`): [deletes an agent another system owns](#deleting-an-agent-another-system-owns) (one an inline run made) whole, and [purges](#purging-a-run-or-an-agent-made-here) an archived agent made here. `204`; an agent made here not archived is `409 agent_not_archived`. |
 | `DELETE /runs/{id}` | This server's own route (`x-agentrun-serve: "purge/1"`): [purges](#purging-a-run-or-an-agent-made-here) a run that is not live, its cost kept in every total. `204`, again on a second `DELETE`; a live run is `409 run_not_final`, and every route of a purged run is `410 purged`. |
 | `DELETE /agents/{id}/sign-ins/{key}` | This server's own route (`x-agentrun-serve: "signins/1"`): forgets one of the agent's [saved sign-ins](#saved-sign-ins), at its vendor and here. `409 sign_in_held` while a run holds its save lease, or while a run it was handed is still going. |
 | `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. `file_ids` names [uploaded](#uploads) files, copied into the run's `work/inputs/` before it starts and named in its first message. `labels` (this server's own, `runlabels/1`) is the caller's map of its own strings for the run: at most 16 keys, each 1 to 63 letters, digits, `.`, `_`, `-` or `/` starting with a letter or a digit, each value 1 to 256 characters with no control character; kept as given, served as `labels` on every read of the run (`{}` when none), never read by the server otherwise, so no place for a secret. The agent's runs, newest first; `label` filters them as `GET /runs` does. |
-| `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, `label=<key>:<value>` (`runlabels/1`, split at the first `:`, once per request) keeps the runs holding that label, and `archived=true` lists only archived ones. A failed run's summary carries its `error`, and a waiting run's its `pending`. |
+| `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, `label=<key>:<value>` (`runlabels/1`, split at the first `:`, once per request) keeps the runs holding that label, `source=<name>` (`runsource/1`, once per request) keeps the runs imported from that source (its name as `imported_from.source` holds it: `claude-code`, `codex`, ...) and `source=live` the runs made here, not imported, `from` and `to` (`runwindow/1`, RFC 3339 date-times with their zone, each once) keep the runs started in [from, to), `model=<provider/model>` (`runmodel/1`, once) the runs that sent at least one request to that model (its exact name as their metrics hold it; a run counts from its first finished turn, as its metrics are written each time a turn ends), and `archived=true` lists only archived ones. A failed run's summary carries its `error`, and a waiting run's its `pending`. |
 | `GET /runs/{id}` | The run: its revision, kind, status, state, result, error, `pending` (this server's own, `pending/1`: what a waiting run waits on, by `kind`: `{kind: "question", question, asked_at}` for a question it asked a person; `approval` for a tool call held for a person's approval, with the tool, its arguments and its price; `budget` for a run paused at its cap ([a run paused at its cap](#a-run-paused-at-its-cap)); `{kind: "browser", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner in its browser; or `{kind: "computer", computer: "desktop" \| "phone", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner on its desktop or phone; else null, a stopped turn's included) and cost (`basis` `reported`, `estimate` or `unpriced`, with its model requests' `tokens`: [A run's cost](#a-runs-cost-its-tokens-and-its-basis); $0 before its first model request, a cancelled run's included). |
-| `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll, and this server's own `limit`, 1 to 500 rows a page, default 500), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). Rows sort by `seq`; the usage row (`Cost so far`), the run's running total, is always the last row, and moves to the end when a row comes after it. |
-| `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop or after it completed: a completed run opens again, the same run on its own session and store, takes a place under `--max-runs` (it waits for one when none is free), and completes again. A failed or cancelled run, an archived run and a run of an archived agent are `409 not_continuable` (a run of an agent [being deleted](#deleting-an-agent-another-system-owns), `409 agent_not_runnable`); a workflow run takes none (`501`). |
+| `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll, and this server's own `limit`, 1 to 500 rows a page, default 500), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). Rows sort by `seq`; the usage row (`Cost so far`), the run's running total, is always the last row, and moves to the end when a row comes after it. Beside the rows, `in_flight`: what a live run waits on now, each model request sent and not answered (from its booking's `runner.request`, stamped `at` when it left) and each tool call not returned, from when it was sent; empty once the run is final. A request sent or answered is a change of the page, as a row is. |
+| `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop or after it completed: a completed run opens again, the same run on its own session and store, takes a place under `--max-runs` (it waits for one when none is free), and completes again. A failed or cancelled run, an archived run and a run of an archived agent are `409 not_continuable` (a run of an agent [being deleted](#deleting-an-agent-another-system-owns), `409 agent_not_runnable`); a workflow run takes none (`501`). The model gets `content`; a host that wraps the person's words in its own text (an earlier report, turn instructions) sends their words alone as `said` (`messagesaid/1`), which the run's [learning](#learning) keeps in place of `content` (at most 4,000 characters, not empty after trimming, else `422 input_invalid` at `said`; `features.messages.said` says a server takes it). |
 | `POST /runs/{id}/stop`, `POST /runs/{id}/cancel` | Stop ends an agentic run's turn and leaves the run `input_required` and idle. Cancel ends a run `cancelled` once its process has exited. |
 | `POST /runs/{id}/archive`, `POST /runs/{id}/unarchive` | [Archiving](#archiving) one run. Answers the run, with `archived_at`. |
 | `GET /runs/{id}/files`, `GET /runs/{id}/files/{path}` | The files under the run's `work/`, raw, one byte range at a time on asking (`Range`, `206`); and its screen recordings under `recordings/` ([A video of each run](#computers)). |
@@ -3212,7 +3826,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /agents/{id}/home/files`, and `GET`, `PUT`, `DELETE` on a file's path below it | The files in the agent's home, listed, read, written and deleted ([agent home](#agent-home)). This server's own routes (`x-agentrun-serve: "home/1"`). |
 | `GET /stats` | This server's own route, outside the contract (`x-agentrun-serve: "stats/1"`): the agents, the runs (`total`, `active`, `needs_input`, `failed`, `needs_review`, `status_unknown`), each agent's run count, the cost and what is archived, read from the agent store's aggregates and verified source reports; source completion counters are read when needed to separate overlapping usage. Archived agents and runs are left out of every number but `archived`. A completed or cancelled run counts only in `runs.total`, but for an escalated one (completed, waiting for a person's review), which `needs_review` (`stats/3`) counts; `failed` never does. Each running run is in exactly one of `active` (queued or working) and `needs_input` (`input_required`), both from the runs this server holds, and `status_unknown`: a running run it does not hold, or holds as ended before its end is written. `cost.usd` sums the runs that ended with a cost and is null when none did, never $0, with `basis` (`reported`, `estimate` or `unpriced`: [A run's cost](#a-runs-cost-its-tokens-and-its-basis)), or null beside a null `usd`; `unknown_runs` counts the rest. `analytics` (`stats/2`) sums the runs' metrics over the runs not archived that the `from` and `to` query parameters (RFC 3339 date-times to the millisecond, an impossible one or a finer fraction refused; runs started in [`from`, `to`)) and `agent` pick, each optional, 400 when malformed: `filter` echoes them; `totals` (runs, completed, an escalated run included, `needs_review` (`stats/3`), failed, never an escalated run, `runs_with_metrics`, `runs_with_token_metrics`, tokens and each token kind, requests, unmetered, `cost_usd` and `unknown_cost_runs`), `time` (`wall_ms` over the ended runs, `active_ms` where metrics have it), `by_harness_effort`, `by_day` (UTC), `by_source` (`live` or the import source) and the top 20 `tools`. Token totals sum only runs with every token counter reported, counted by `runs_with_token_metrics`; other runs remain in `runs` but cannot hide the known partial total. If runs exist but none reports a complete count, `tokens` is null; an empty scope is zero. Individual token-kind totals remain null when a measured run reports that counter as unknown. `analytics.usage` combines recorded runs and connected source reports ([Unified token usage](#unified-token-usage)). `learning` (`learning/1`) counts the runs that tried to learn over the same filters, from the store ([Learning](#learning)). The query bounds `analytics` and `learning` alone. |
 | `GET /runs/{id}/graph` | A workflow run drawn, live: its workflow, the DSL's `workflowGraph`, each node's state (a map's items with their labels and the branch each route took for them, a route's branch), every decision with its receipt (answers, evidence, the state the judge saw, image links), every call with its input and output, and the totals (cost, null when any part is unknown). While the run goes it reads the run process's `live.json`, rewritten every 300 ms, never the run's store, which the process holds; once it ended, its store is read lock-free, so a poll never waits on it and never answers `home_busy`. An agentic run has none (`404`). |
-| `GET /runs/{id}/usage` | This server's own (`runusage/1`): what one run cost, line by line: its model requests by model and provider, its paid tool calls by who charged for them, its browser time by provider, its computers' time by provider and resource (`runusage/4`), each line by the attempt it was made in and whether that attempt is billable, with `infra_usd` beside them (`runusage/5`), joining to its `cost.usd` ([A run's cost, line by line](#a-runs-cost-line-by-line)); beside them its browser sessions (`runusage/2`) and the computers it made, each from its create to its proven delete (`runusage/3`). Lines once the run ended; `reason` says why there are none. |
+| `GET /runs/{id}/usage` | This server's own (`runusage/1`): what one run cost, line by line: its model requests by model and provider, its paid tool calls by who charged for them, its browser time by provider, its computers' time by provider and resource (`runusage/4`), each line by the attempt it was made in and whether that attempt is billable, with `infra_usd` beside them (`runusage/5`) and the absorbed time of browsers a create race left (`runusage/7`), joining to its `cost.usd` ([A run's cost, line by line](#a-runs-cost-line-by-line)); beside them its browser sessions (`runusage/2`) and the computers it made, each from its create to its proven delete (`runusage/3`). Lines once the run ended; `reason` says why there are none. |
 | `GET /runs/{id}/trace` | A run's trace, for a person who debugs it: each model request that answered and each tool call as one span, in the order they started. A span has its `kind` (`model` or `tool`), its `name` (the model, or the tool), when it started and ended, how it ended (`status`), and the span it ran under (`parent_id`: the request that made a call, the call a subagent's request was started by). A model request also has its `tokens` (`input` not read from cache, `cache_read`, `cache_write`, `output`, and `reasoning` where reported), and its `usd`. A tool call also has the head of its arguments and of its output, as its Timeline rows show them, and what was charged under it (`usd`, `charged`, `not_metered`). A call that asked for approval ends as its approval did: `waiting` until it is answered, `refused` on a deny, `interrupted` when it was withdrawn with its run. Nothing is measured again or estimated: `model_requests` says what the run's record keeps. `priced`: each request is a span with its cost. `tokens_only`: a workflow run. Its model nodes' requests carry tokens and no cost, since the run's cost is its booking's; each of its decisions (a judge's, a route's, a verify's request) is a span too (`decision: true`), named by the model its provider answered with and labelled by its node, with its own cost. `not_recorded`: a CLI harness's record keeps no request, so its trace is its tool calls. A computer's own time is its provider's to bill and is in no span. Readable while the run goes; one read serves the run's first 2,000 spans and counts the rest in `dropped`. Its words are cut as the Timeline's are, and a run whose handed sign-in can't be read back is refused (`403`), as its graph is. The console's Dev tools tab reads it. |
 | `POST /runs/{id}/pause`, `POST /runs/{id}/resume` | A workflow run: what is in flight finishes, and no node, model call or decision starts until it is resumed. Its status reads `paused`, and stays so across a server restart. An agentic run is `501`, an ended one `409`. |
 | `POST /workflows/validate` | `{workflow, tools?}`: every issue a save would refuse (`[{path, code, message}]`, the DSL's validation with code not run) and what this host lacks as `warnings`. Writes nothing. A refused save's `422` carries each issue as a field under `definition.workflow`, with its `code`. |
@@ -3223,9 +3837,11 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /runs/{id}/browser` | This server's own (`x-agentrun-serve: "liveview/1"`): the run's live browser view for the owner, `{state: "off", reason}`, `{state: "none"}` or `{state: "live", viewer}` ([the live view](#the-browsers-live-view)). |
 | `POST /runs/{id}/browser/hand-back` | This server's own (`liveview/2`): the owner's answer to the agent's ask for them in its browser, `{outcome: "done" \| "cancelled"}`; the first answer wins, a different one is `409 handoff_answered` ([the live view](#the-browsers-live-view)). |
 | `GET /runs/{id}/computer` | This server's own (`computer/1`): the run's live computer view for the owner, one family for every kind, `{state: "off", hold, why?}`, `{state: "none", kind, hold}` or `{state: "live", kind, viewer, hold}`, its viewer under `/runs/{id}/computer/live/`; the browser is kind `browser` here, beside its own route ([the live view](#the-browsers-live-view)). |
+| `GET` and `POST /settings/api-keys`, `DELETE /settings/api-keys/{api_key_id}` | [API keys for your apps](#api-keys-for-your-apps), this server's own routes (`x-agentrun-serve: "apikeys/1"`): the keys the owner makes in the console, each shown once and kept as a keyed hash. Making and revoking take the owner's signed-in session. |
 | `GET`, `PUT` and `DELETE /settings/webhook`, `POST /settings/webhook/test`, `GET /settings/webhook/deliveries` and `POST .../deliveries/{webhook_id}/redeliver` | [Webhooks](#webhooks), this server's own routes (`x-agentrun-serve: "webhook/1"`): the URL run notices are POSTed to, signed by the Standard Webhooks spec; never its secret but once. |
 | `GET` and `POST /triggers`, `GET`, `PATCH` and `DELETE /triggers/{id}`, `POST /triggers/{id}/fire`, `GET /triggers/{id}/firings`, `POST /triggers/{id}/secret`, `POST /hooks/{id}` (no token: [signed](#webhook-triggers)) | [Schedules](#schedules), this server's own routes (`x-agentrun-serve: "trigger/1"`): schedules that start an agent's capped runs, each firing once, and their history. |
 | `GET /templates`, `POST /templates/{name}/apply` | [Templates](#templates), this server's own routes (`x-agentrun-serve: "templates/1"`): the template packages it ships, and an apply that makes one's agent and triggers, all or nothing. |
+| `GET /marketplace/templates` | [Templates](#templates), this server's own route (`x-agentrun-serve: "marketplace/1"`): marketplace.agentrun.ai's templates as this server read them, each with the package here that it is. |
 | `POST /mcp` | This server's own route (`x-agentrun-serve: "mcp/1"`): the [MCP endpoint](#for-coding-agents), Streamable HTTP with one JSON-RPC message per POST (`initialize`, `ping`, `tools/list`, `tools/call`), answered as JSON, stateless. Its ten tools call these routes in process with the caller's token. The Bearer token only, never the page's cookie; a browser `Origin` other than this server's own is `403`; any other method is `405`. |
 | `GET /usage` | The runs' costs, by meter, agent, key, day or region (`key` and `region` are one line, `local`). By meter, `tools` holds the runs' paid tool calls and the workflow decisions Parallel charged on its own API, as `cost.tools_usd` does. A run of unknown cost adds what it is known to have spent so far (its `so_far_usd`: each priced charge, browser time and paid tools included) and is counted in `unpriced_runs` (in the total and in each line it is unknown on), so no sum is ever null, it never passes as $0, and a total is never below a line of its own: with `unpriced_runs` above 0 the total is a lower bound. `basis` says how the costs were reached ([A run's cost](#a-runs-cost-its-tokens-and-its-basis)). |
 
@@ -3336,19 +3952,25 @@ serves these routes alone:
 - a run's usage lines (`GET /runs/{id}/usage`): what its `cost.usd` joins, by meter, cut of the host's secrets as the
   run's read is;
 - its files (`GET /runs/{id}/files`, `GET /runs/{id}/files/{path}`) and [uploads](#uploads) (`/files`);
+- an ended run's share bundle (`GET /runs/{id}/export`, with its `?restore=`), the `agentrun.share/1` document the full
+  server answers, cut by the same scrubber: `409` before the run ends. A workflow run's bundle carries its graph, cut,
+  where `GET /runs/{id}/graph` stays refused. The share preview page (`/share/{run}`) is the console's, refused here:
+  `agentrun share RUN --out FILE` writes the bundle;
 - an agent's Archil disk (`GET` and `DELETE /agents/{id}/archil`);
 - the [delete of an agent another system owns](#deleting-an-agent-another-system-owns) (`DELETE /agents/{id}`), for
   the backend whose inline runs made it;
 - the [purge of a run](#purging-a-run-or-an-agent-made-here) (`DELETE /runs/{id}`) of such an agent, for that
   backend: it erases one user's runs where deleting the agent, which every user's runs share, would take them all. A
-  run of an agent made here is refused, as every address not listed here is;
+  run of an agent made here (a deploy's, below) is purged the same way, since the token may archive and delete that
+  whole agent, every run of it purged;
 - the computer settings' two reads, for a backend to check before it launches: `GET /computers` (each provider, its
   key names and whether each is saved, and whether it is ready) and `GET /workspace/archil` (whether runs' folders are
   on Archil, and whether its account key is saved). Neither answers a key's value. Their writes, tests and key choices
   are the console's, refused here;
 - what an agent learned, for the backend whose runs it learned from: the loop's compile turns
   (`GET /agents/{id}/learning/loop`), each learned workflow's promotion and what serves
-  (`GET /agents/{id}/learning/promotions`), the cost per run (`GET /agents/{id}/learning/cost`) and a run's learning
+  (`GET /agents/{id}/learning/promotions`), the audit ledger of the workflows that serve
+  (`GET /agents/{id}/learning/audits`), the cost per run (`GET /agents/{id}/learning/cost`) and a run's learning
   (`GET /runs/{id}/learning`), each cut of the host's secrets as the console's reads are; and its reset
   (`DELETE /agents/{id}/learning`, the agent and its runs kept), its one learning write served here;
 - a run's hosted machine fetching this server's computerd build (`GET /computers/daemon`), with the token its create
@@ -3356,30 +3978,46 @@ serves these routes alone:
 - `GET /capabilities`, `GET /health`, `GET /usage` and `GET /capacity`;
 - the names of the MCP servers saved here (`GET /settings/mcp-server-names`, `{names}`), never a URL or a credential:
   a backend that builds runs from saved servers holds back a job whose server isn't saved, before its launch is refused;
+- the prices this server meters computer and browser time at (`GET /settings/prices`), each a decimal string with
+  its source, never a key: a backend bounds a run's budget in this server's figures before its launch;
 - a deploy, for a backend that deploys agents here: a template's apply (`POST /templates/{id}/apply`, a redeploy with
   its `agent_id`), the agent's read (`GET /agents/{id}`), its revisions (`GET /agents/{id}/revisions`), a rollback
   (`POST /agents/{id}/current`), and its archive and unarchive (`POST /agents/{id}/archive`, `/unarchive`). The archive
   is what its delete (`DELETE /agents/{id}`) needs first. With the [launch hook](#launch-hook) set, the apply makes the
   package's schedule and feed triggers, and every firing that starts a run goes to the backend, which starts it through
   the API with the keys and budget it sends, a trigger the agent had before the profile included; the unarchive turns
-  them on again, as no trigger route is served to. Without the hook it makes neither (`not_set_up_here`: set the hook,
-  or start those runs through the API), and a trigger the agent already had stays as it was: an enabled one still fires
-  here, on this server's keys, until the agent is archived, and the skip's warning says so. A webhook, GitHub, Composio or email trigger is never made here, hook
+  them on again. Without the hook it makes neither (`not_set_up_here`: set the hook, or start those runs through the
+  API), and a trigger the agent already had stays as it was: an enabled one still fires here, on this server's keys,
+  until it is turned off (below) or the agent is archived, and the skip's warning says so. A webhook, GitHub, Composio or email trigger is never made here, hook
   or not, since this profile refuses the hook or setting each needs (`not_an_option`). Each skipped trigger is a warning
   under `warnings` (`triggers.<i>`), and the dry run (`dry_run: true`) plans it as `skip` in the same words;
+- the triggers, for a backend to see one that is off and turn it on again: their list (`GET /triggers`), one
+  (`GET /triggers/{id}`), its firings (`GET /triggers/{id}/firings`), and its turn on or off
+  (`PATCH /triggers/{id}` with `{"enabled": true}` or `{"enabled": false}`; from the CLI,
+  `agentrun triggers update <id> --enabled` or `--no-enabled`). A trigger whose firings failed 5 times in
+  a row turns itself off (`disabled.reason` `auto_paused`), and there is no console here to turn it on in. The PATCH
+  takes `enabled` alone (any other field is `422 not_allowed`), and turns on only what the apply would make: a schedule
+  or a feed, with the launch hook set (`422` under `enabled` otherwise, since its firings would start runs on this
+  server's keys or wait on a hook this profile refuses). Turning one off always works. Making, deleting or firing a
+  trigger, and its secret, stay refused;
 - a Composio server's save (a new name, or a server the token saved) and the delete of a server the token saved, for a
   backend that grants its runs Composio tools. The token here never writes a secret, so the save keeps none:
   - a Composio server (`PUT /settings/mcp-servers/{name}/composio`) names its key with
-    `"api_key_env": "COMPOSIO_API_KEY"`, never `api_key` (still `403`). The server keeps the variable's name, never its
+    `"api_key_env": "COMPOSIO_API_KEY"` or `"AGENTRUN_COMPOSIO_API_KEY"`, never `api_key` (still `403`). The server keeps the variable's name, never its
     value, and reads the value it and each runner were started with at each use: the save's calls to Composio, each
-    run's connection and the delete's. A new value takes effect once they start again with it. `COMPOSIO_API_KEY` is
-    the one name taken (`422 invalid` for any other), and it must be set when the server is saved (`422 missing`). A
+    run's connection and the delete's. A new value takes effect once they start again with it. These are the only
+    names taken (`422 invalid` for any other), and the selected variable must be set when the server is saved (`422 missing`). A
     run of a server whose variable is unset is refused before it starts (`409 agent_not_runnable`), naming it; it never
     runs without the server's tools. `toolkit`, `tools`, `auth_config_id`, `price_usd` and `user_id: "per_run"` work as
     they do on the full server;
-  - `COMPOSIO_API_KEY` is a secret, so give it to the server and to each runner. The launcher hands it to each over a
+  - Both project keys are secrets: give each configured key to the server and to each runner. The launcher hands it to each over a
     pipe, so neither process's environment holds it, and no run is handed it: the runner sends it only as the MCP
     header of a Composio server the run is granted a tool of, and a run granted none gets nothing of it;
+  - `GET /capabilities` advertises the supported names in `features.mcp_client.composio_key_envs`. Read it before
+    saving a server for a second project; an older server that omits it does not support the second key. Each saved
+    server records its selected name; re-saving that name with a different project key is `422 not_allowed` before
+    Composio is called. Use separate server names for separate projects; a missing project key never
+    falls back to the other key. Upgrade both the server and every runner before saving servers with the new name.
   - the body names no address and no headers (`url` or `headers` is `422 not_allowed`): Composio answers the server's
     address, and the key read from the variable is only ever sent to Composio's own origin, fixed in code. A server
     whose saved address is anywhere else is refused by name wherever that key would be read (a refresh, a run's start),
@@ -3388,20 +4026,74 @@ serves these routes alone:
     One saved any other way (by the owner, sealing a credential or not) is `403` to both, it stays as it was, and
     nothing is sent to Composio. An owner's save over a server the token saved makes it the owner's once it lands (one
     refused with `412` leaves it the token's), and one that lands while the token's is under way wins: the token's is
-    `412`.
+    `412`;
+  - the token's Composio save never uses an auth config a server the owner saved uses: an `auth_config_id` naming one
+    is `403`, and so is the save when the toolkit's own auth config, as Composio answers it, is that one, before
+    anything is made at Composio; both say so in the same words. An `auth_config_id` Composio answers under another id
+    (another letter case, say) is `422` under it, for any save. An `auth_config_id` naming one that another server the
+    token saved made is used, and that server's record still says it made it, so only its delete removes the auth
+    config at Composio, or, while this server still uses it, hands it to this one, whose delete then removes it;
+  - the token's Composio user has a namespace of its own: a save that is not `per_run` reaches Composio, and its server
+    calls, as `agentrun.token.<user_id>` (no `user_id`: `agentrun.token.agentrun`), a user that, through this install,
+    only the token's own connect link connects (the Composio dashboard, or another client of the same Composio project,
+    can connect any user id), so its `user_id` is at most 113 characters. No save names a `user_id` starting
+    `agentrun.token.` in any letter case, the owner's included: `422` under `user_id`, before anything is sent;
+  - nor does the token's save stand on a connected account it did not connect: when Composio already has ACTIVE
+    accounts for that user under its auth config, the save is `403` before anything is made, unless a server the token
+    saved holds each of them as one it made (connected through the token's own link). The lookup reads 50 accounts a
+    page, at most 10 pages (500 for that user and auth config): past that the token's save is `403`, since it can't
+    check them all, and an owner's save goes on with the ones it read. That check sees the accounts there when the token
+    saves; the namespace is what keeps the user the token's after it, since no save here names it;
+  - a run's binding of a per-run Composio server (`mcp_auth.<server>`, `{composio_user_id, connected_account_id?}`)
+    never calls as a user the owner calls as here, since every caller here is the token: its `composio_user_id`, in any
+    letter case, is not the preset's default user (`agentrun`), its tool-listing user, or any user a server the owner
+    saved (no token's mark on its record) stands on, by its preset record, the account its refresh kept or its address,
+    else `422` `not_allowed` under it, before any account is looked up. Any other user is the caller's: a backend's
+    own bare user id or one in the token's namespace alike. A `connected_account_id` it names is
+    one Composio lists under that user for the server's toolkit, read at the start or the message that hands it with the
+    server's key, 50 a page and at most 10 pages, as the save's lookup reads; one Composio answers under another user,
+    or with no `user_id`, never counts. An account it doesn't list there is `422` `not_allowed` under `connected_account_id`, and so is one
+    past those 10 pages, in words of its own, since it can't be checked. Composio not answering that read is `424`
+    (`upstream_failed`): a run's account is never taken unchecked. Each refusal says which check refused it, nothing is
+    started, and none quotes what was sent. A run's claim reads the same check again (one sealed before it, or before
+    the owner's server was saved), its calls refused unsent. What it can't see: the per-run server lends this install's
+    Composio key, so a binding may name a user the owner connected only at Composio (its dashboard, or another client of
+    the same Composio project) with no record here, and call as that user. Save a per-run Composio server only with a
+    Composio project whose users are all the token's backend's. On the full server the owner's runs bind as before;
+  - a server the token saved before the namespace (0.1.0-beta.56 and earlier) calls as a user outside it, which may be
+    the owner's: every run's claim of it is refused unsent, in words that say to delete it, and the start names each such
+    server in one log line (`api_only_composio_outside_namespace`), never its user or address. Delete it, then save it
+    again: the new save is namespaced and returns a connect link for it. Where a server the owner saved stands on its
+    auth config, which is the case a takeover leaves, a save over it is `403` (the auth config rule above), so it can only
+    be deleted, and the refusal says so. Where none does, a save over it moves it to the namespaced user and returns a
+    connect link; that save deletes at Composio every account the server's record holds as made here under the bare user
+    (the one its own link connected, or one handed to it), unless another saved server stands on it (that one then owns
+    it), and keeps an account it found there, which was never its own.
 
-  The names route above is the listing: there is no list or read of a server's address, auth or tools here, and no
-  generic save (`PUT /settings/mcp-servers/{name}`), so the token saves no server at an address or with headers of its
-  own. The preview, refresh, sign-in, Composio tool listing and every other MCP settings route stay refused. On the full
-  server the token's `api_key_env` is `403`, as `api_key` is: the owner's session saves a Composio server there either
-  way;
+  The names route above is the listing: there is no list or read of a server's address, auth or tools here. The
+  generic save (`PUT /settings/mcp-servers/{name}`) is a `404` unless the operator names the MCP origins it may save at,
+  so by default the token saves no server at an address or with headers of its own. The preview, refresh, sign-in,
+  Composio tool listing and every other MCP settings route stay refused. On the full server the token's `api_key_env`
+  is `403`, as `api_key` is: the owner's session saves a Composio server there either way;
+- a per_run MCP server's save at an origin the operator names: `AGENTRUN_API_ONLY_MCP_ORIGINS`, comma-separated
+  http(s) origins (`https://mcp.example.com`), a plain setting. With it, the token's `PUT /settings/mcp-servers/{name}`
+  saves `"auth": {"type": "per_run"}` at a listed origin, and each run hands its own credential in `mcp_auth`. A body
+  that carries a credential, or a save over a server the token did not save or one that seals a credential, is `403`;
+  any other origin or auth type, or a Composio server's name, is `404`. A wildcard, an entry that is not an http(s)
+  origin alone, or plain http to a host other than a loopback one (127.0.0.0/8, ::1, localhost) stops the start, and a
+  loopback origin also needs `AGENTRUN_MCP_ALLOW_LOOPBACK=1`. The list holds past
+  the save: a per_run server the token saved at an origin not listed is refused, and nothing is sent to it. Unset, the
+  list is empty, so on an upgrade list each such server's origin first, or re-save it from the owner's signed-in
+  session with API-only off; the start names the servers off the list in one log line (`api_only_mcp_off_list`), never
+  their addresses. A server the owner's session saved is not governed by the list, and its runs' `mcp_auth` still
+  goes there;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
 
 Here a run's computer routes take the server's token. `POST /runs/{id}/computer/viewer` mints a 5-minute link on
 `AGENTRUN_PUBLIC_URL` that opens that run's live page and socket until the run ends (API doc).
 
 Every other address is `404 not_found`, answered before the request is read further: the console at `/` and its
-assets, sign-in and setup, every other `/settings` route, `POST /mcp`, triggers and their
+assets, sign-in and setup, every other `/settings` route, `POST /mcp`, every other trigger route and the triggers'
 `POST /hooks/{id}`, the agents list, an agent made or edited through `/agents`, the templates list and every other
 template route, `/openapi.json`, `/llms.txt` and a browser's live view. It has no accounts: there is no page to sign in
 to, so no setup code is printed. The token works as it does on every route served. Unset, `0` or `false` serve the
@@ -3409,6 +4101,123 @@ whole server, as before; any value other than these and `1` or `true` stops the 
 
 So on an API-only server a run is launched inline (`POST /runs` with its definition), on an agent a template's apply
 made, or on an agent made before the profile was turned on.
+
+#### Workspaces
+
+A backend in front of an API-only server can keep each of its tenants to its own rows: it names the tenant's workspace
+in the `AgentRun-Workspace` header, 1 to 128 letters, digits, `:`, `.`, `_` or `-`, an opaque name the server keeps and
+never checks against anything. The header is taken only on an API-only server and only on a request a server token
+(`AGENTRUN_TOKENS`) opened; anywhere else, or malformed, it is `400 bad_request`. `AGENTRUN_WORKSPACE_TOKENS` lists the
+ids of the tokens whose every request must carry it (comma-separated): such a token without it is `403 forbidden`, so a
+backend that forgot the header is refused rather than handed every tenant's rows. A request with no header is served
+as before.
+
+A request in a workspace is served only: the runs' reads and lists (`GET /runs`, `/runs/{id}`, its timeline, files and
+export), a run's message, stop and cancel; the agents' list, read, create, revisions, definition and current revision,
+archive, unarchive and delete, and a run started on one; the templates' list, read, import, apply and delete (a bundled
+package stays `403`); the uploaded files' create, upload, list, read and delete (`/files`); the triggers' list, read,
+firings, create, edit, delete and run now (`/triggers`); and `/capabilities`, `/health` and `/openapi.json`. Every
+other route is `403 forbidden` with
+`details.reason: "not_scoped"`. In it, an agent, run, imported template package or file of another workspace (or of none)
+answers the same `404` as an id no row has, and every list holds the workspace's rows alone, paged within them; bundled
+template packages are every workspace's. What it makes is the workspace's: an agent (made or applied), an imported
+package (an import whose name another workspace holds is `409 name_taken`), a file. A run is its agent's workspace's,
+whoever started it, so a run a request with no header starts on that agent is the workspace's too. A run's `file_ids`
+take the workspace's files alone: one out of it reads as no file. An `Idempotency-Key` is the workspace's own: the same
+key in another workspace starts afresh. A trigger is its agent's workspace's: another's answers the same `404` as an id
+no trigger has, and a new one naming another workspace's agent or run is refused in the words an unknown one gets. A
+request in a workspace makes what an apply here makes, a schedule or a feed that starts runs, with the launch hook set;
+any other source or target, or no hook, is `422` and nothing is made. Its edit is `enabled` alone, as above, and its run
+now (`POST /triggers/{id}/fire`) is served only for a trigger that may be on here, so the firing goes to the backend
+through the launch hook. An import with no header of a name a workspace holds is `409 name_taken` too,
+never replacing that workspace's package: the operator deletes it first.
+
+Launch disks (`archil_disk` on a run's start) are the backend's to map to its tenants: the server keeps no record of which
+tenant a disk it did not make is for, and a run in a workspace may name any of them. It names no agent's own disk
+(`GET /agents/{id}/archil`) outside its workspace: that reads as a disk Archil does not have (`422` at
+`archil_disk.disk_id`, in the same words).
+
+A computer paired with the server is the operator's own machine, never a workspace's. An agent create or definition edit
+in a workspace that names one as its computer's provider (or its place's box) is `422` at `definition.computer` (or
+`definition.place`), nothing written; a run of an agent in a workspace whose revision names one fails its claim with
+`computer_unavailable`, in the same words. `features.computers` in a workspace's `GET /capabilities` counts no kind a
+paired computer alone offers.
+
+`GET /capabilities` says what this server does in `features.workspaces`: the header's name, `enforced` (true on an
+API-only server alone), `required_for_tokens` (true when `AGENTRUN_WORKSPACE_TOKENS` names a token, so a request of that
+token without the header is refused, not served every workspace's rows) and the operations a scoped request is served.
+A proxy checks it before it forwards, on each instance: during a rolling deploy an instance of an earlier build ignores
+the header and serves every row. The backend names the workspace itself: it overwrites, never passes through, an
+`AgentRun-Workspace` header its own callers send.
+
+`agentrun-serve workspace-backfill FILE [--apply]` puts agents made before the backend sent the header in a workspace:
+FILE is `{"<agent id>": "<workspace>"}`. It sets an agent with none, refuses one in another workspace and keeps it, and
+without `--apply` writes nothing and prints what it would do. On SQLite it adds the workspace columns first when a server
+of this build has not yet opened the store. A store behind this build (on Postgres, below migration 0034) is refused with
+exit 2 and never migrated: start a server of this build once, then run it again.
+
+Known limits:
+
+- Agent ids are the server's, not a workspace's. `createAgent` with a `definition.id` another workspace holds is
+  `409 agent_exists`, so a caller-picked id tells a tenant that some workspace has it. Ids the server makes (UUIDv7) never
+  collide; a backend that lets its tenants pick ids prefixes them with the workspace.
+- Publisher trust is the server's. Once any workspace imports from a GitHub publisher with `trust_publisher`, every
+  workspace imports from it without, and a dry run's `trusted: true` tells a workspace that some workspace trusted it.
+- `workspace-backfill` maps agents alone. A template package imported before the backend sent the header stays in no
+  workspace: no workspace sees it, an import of its name is `409 name_taken`, and an agent made from it is not applied
+  again in a workspace (its package reads as missing). Delete the package and import it again with the header.
+- Launch disks are not a workspace's. A disk no agent owns, one another workspace's run named at launch included, is
+  served to a run in any workspace that names it. A backend that lets its tenants pick a launch disk keeps their disks
+  apart itself; one that maps each tenant's disk at launch, and takes no disk from the caller, needs nothing more.
+- On Postgres, migration 0033 builds its two indexes (`agents_by_workspace`, `runs_by_workspace`) inside the migrate
+  transaction, which holds writes to `runs` and `agents` for the build: on a large `runs` table runners wait that long.
+
+### Share host
+
+`agentrun-serve --share-host` (or `AGENTRUN_SHARE_HOST=1`) is the server behind a public share link such as
+`https://agentrun.ai/r/<id>`. It answers under `/r/` alone, so a site in front of it routes one path to it:
+
+- `/r/<id>`: the share's page, the console's `share.html`, with its asset URLs under `/r/_assets/` and a CSP that loads
+  nothing from another origin;
+- `/r/<id>/bundle.json`: the bytes that were uploaded, exactly (`nosniff`, `X-Robots-Tag: noindex`);
+- `POST /r/v2/shares`: stores a run's `agentrun.share/1` bundle (`GET /v2/runs/{id}/export`'s body) and answers
+  `201 {id, url, sha256}`;
+- `GET /r/v2/shares`: the caller's own shares and its quota; `DELETE /r/v2/shares/<id>`: deletes one;
+- `GET /r/v2/health`: without a credential.
+
+Every other address is `404 not_found`, answered before the request is read further: the console, `/v2`, MCP and
+every run, agent, key, computer and trigger route. It starts no runner and has no owner, accounts or console session.
+Its API takes one of its tokens (`AGENTRUN_TOKENS`, `id:secret` entries) as a Bearer header: the token's id owns the
+shares it uploads.
+
+An upload is checked in this order, and refused with nothing stored at the first failure: the token; its quota (100
+shares a token, `403 forbidden` with `details.reason: share_quota`; shares never expire, and a delete makes room); the
+body, at most 8 MiB of canonical JSON (`413` over it); the bundle's closed fields and the export's caps, each file's size
+and digest, and the document's sha256 (`400`); then the scrubber in cut mode, with the values this host holds (its keys and
+tokens), over the whole body and over each of its strings alone. A value the scrubber finds is refused unless the bundle
+declares it restored: a `restored` record naming it exactly (its string's pointer, rule, start and end) and a kind the
+host's own scrub says may be restored (label, personal, jev; never a key format, a held value or a dump, whatever the
+record says). Each refusal is `422 input_invalid` with `details.reason` and counts by rule id, never a value:
+`scrub_found` (a value no restore declares), `restored_unmatched` (a restored record naming no value the host finds: a
+stale or edited bundle) or `scrub_failed` (the scrub failed or threw). The one record taken unchecked is a restore of
+Jev's rule (Scrubber beta 3): the host never runs Jev, so it can't find that value, and the answer counts such records
+in `restored_unchecked`; the value is still scrubbed by every other rule, and a hit there needs its own record.
+
+The bounds on what one upload asks of the host: the body is at most 8 MiB (`413` past it, from its `Content-Length`
+before a byte is read), the scrubber reads that body once whole, and then reads each distinct string alone, at most
+50,000 of them (`SHARE_STRINGS`; `413` with `details.reason: share_strings` past it, before any scrub), which together
+hold no more than the body. The host never repairs a bundle:
+what it serves is what was uploaded and scanned. Shares are kept in `DIR/shares/<id>/` (`bundle.json` and `meta.json`,
+`0600`). Only the token that made a share deletes it (`204`); its bytes go, and its page and bundle then answer `410`.
+
+A share's URL is on `AGENTRUN_PUBLIC_URL`, never a request's Host header. A share host on an address other than
+loopback refuses to start without it.
+
+Not yet checked: the share page drawn in a real browser. Its HTML, CSP and every asset it references were fetched from a
+real console build on a loopback share host; the page's own reads are covered by the console's unit tests.
+
+Run one replica, with `DIR` on a persistent volume. The quota and the share index are kept by the one process (a
+second replica would neither see the other's shares nor hold the quota), and a share lives only in `DIR`.
 
 ### Launch hook
 
@@ -3421,8 +4230,13 @@ host, and this server starts no run for it:
 ```json
 { "firing_id": "fir_...", "trigger_id": "trg_...", "agent_id": "digest", "revision_id": "rev_...",
   "input": { "content": "Summarize yesterday's issues.\n\n(Started by the schedule ...)" },
-  "fired_at": "2026-06-01T00:10:00Z" }
+  "fired_at": "2026-06-01T00:10:00Z", "max_cost_usd": 0.5 }
 ```
+
+`max_cost_usd` is the trigger's cap, the most the firing's run may cost, so a host that pays for runs can check the
+payer's balance against it before it starts one. The firing keeps the cap it was handed with: a retry of the hand sends
+the same one, and the run the host starts for the firing runs under it even if the trigger's target changed since. A
+`null` means the agent's default when the host starts the run: the target set no cap when the firing was handed.
 
 The POST carries `webhook-id` (the firing's id, the same if it is handed again), `webhook-timestamp` and
 `webhook-signature` as [webhooks](#webhooks) do: check them with any Standard Webhooks library before reading the
@@ -3434,12 +4248,14 @@ The host starts the run with `POST /v2/agents/{agent_id}/runs`, giving the input
 trigger's title and input origin, and the firing reads `started` with it, so the trigger's overlap check and
 `max_active_runs` count it.
 
-The run starts on the trigger's target, as the run this server would start for the firing:
+The run starts on the trigger's target as it stands when the host starts it, as the run this server would start for
+the firing, except for its cap:
 
-- Its cap is the target's `max_cost_usd`, which the host's `max_cost_usd` may lower and never raise. A target capped at
-  0.5 runs at 0.5 when the host sends 10, and at 0.2 when the host sends 0.2. A target with no cap takes the agent's
-  default in its place, which the host's may lower the same way: on an agent with a $5 default, the host's 500 runs at
-  5 and its 1 at 1.
+- Its cap is the `max_cost_usd` the hook sent for the firing, which the host's `max_cost_usd` may lower and never
+  raise: the lower of the two is taken. A firing handed at 0.5 runs at 0.5 when the host sends 10, and at 0.2 when the
+  host sends 0.2, even if the target's cap was raised after the hand. A firing handed with `null` takes the agent's
+  default when the host starts it, which the host's may lower the same way: on an agent with a $5 default, the host's
+  500 runs at 5 and its 1 at 1.
 - Its effort is the target's when the target sets one, else the host's `effort`, else the agent's.
 - It runs on the agent's current revision and holds no computer: `revision`, `hold` or `hold_minutes` in the host's
   body is refused with 422 `not_allowed`, naming the field.
@@ -3453,13 +4269,19 @@ The 10 minutes run from the answer, not from `fired_at`, so a firing that reache
 waited on `max_active_runs`, one handed again after a restart) gets the same time. The server never hands a `sent`
 firing over again. Until its run starts or its `start_by` passes, it holds its trigger's room as a run in progress
 would: with `max_active_runs`, a later firing waits for that room, and without it the overlap check skips a later
-firing, naming the held one. Once `start_by` passes it holds nothing, and a waiting firing is handed.
+firing, naming the held one. Once `start_by` passes it holds nothing, and a waiting firing is handed. A start that
+begins by `start_by` holds the room until its run is written: when `start_by` is less than a minute away, the server
+moves it to a minute after the start began, before it writes the run. A start that fails without writing its run
+moves `start_by` back, so failed starts never extend the window.
 
-The firing is the run's key, so a second start for the same firing answers the same run, and the request takes no
+The firing is the run's key, so a second start for the same firing answers the same run, also while the first is
+still writing it (202 with `idempotent-replayed: true`), and the request takes no
 `Idempotency-Key` (422 with one). A firing that is neither due nor taken by its host (failed, skipped, or one of
 another agent's triggers) is refused with 422. A due firing takes its start only while its trigger has room for it,
 by the overlap check and `max_active_runs` the server applies before it hands a firing over: one waiting on its retry
-whose place another firing's run has taken since is refused with 422 `not_due`, which says why.
+whose place another firing's run has taken since is refused with 422 `not_due`, which says why. So is one whose place
+another firing is taking: a firing whose hook has not answered yet, or whose host's start is being written, holds the
+room as a run in progress until that is done.
 
 A hook that does not take the firing is a failed try of it, as a refused run is, unless the host started its run by
 then. The firing's `error.code` is `hook_failed`, and its `reason` names the cause: the status the host answered,
@@ -3617,7 +4439,9 @@ back.
 `GET /v2/capabilities` lists each in `harnesses`, with `available` and, when not, the `reason`, and `default_model`: the
 model the harness runs when a definition names none (`provider/model-id`, as a save and a run resolve it), or null where
 it runs none (the harness does not run here, or no default model here runs on it: claude-agent never takes a gateway's
-model). A definition naming a
+model). Its `models` are those a save takes; `ready_models`, those of them a run takes now, their provider connected here
+(its key set, or the ChatGPT sign-in where that is how the harness runs them). One that lacks only its key is in `models`
+and not in `ready_models`: a save of it warns, and the console's Model picker lists it only when asked. A definition naming a
 harness this server does not run yet saves with a warning on `definition.harness`, and a run of it is
 `409 agent_not_runnable` with `details.harness`; it never runs on pi instead. This server runs pi always, and
 `claude-agent`, `codex` and `opencode` when each adapter's package, pins and provider endpoint check out; the harness's
@@ -3713,7 +4537,9 @@ A module exports `entries(builtins, kit)`, which returns new entries by id. [HAR
 writing one, and [examples/harness-module](../../examples/harness-module/README.md) is a whole one.
 
 An entry made without `kit` gives `label`, `steer`, `runMib`, `oneAlwaysFits`, `runs`, `onWire`, `model`, `priceModel`,
-`refusal` and its `runner`, and may give `promises`; a run of it runs on its runner's `adapter(launch, extra)`. Every
+`refusal` and its `runner`, and may give `promises`; a run of it runs on its runner's `adapter(launch, extra)`, where
+`launch.redact` is the run's redactor (required: it holds every key the run's claim opens) and `extra` the harness's
+own options. Every
 harness is admitted by the `runMib` its entry declares. A module adds harnesses and never replaces one: the built-in
 harnesses' facts, offers, key rows, default models and tool names are the same with any module loaded. The start of the
 server, or of a separate runner, is refused, naming the module and the id, when a module:
@@ -3762,7 +4588,7 @@ typed answers and their probabilities.
 - OpenRouter's Decisions models answer a node that says `provider: "openrouter"` and names its model in `model`
   (`liquid/d1`, `perplexity/pplx-decider-v1.2`, `cloudflare/clef`, `typesafe/jev-1.14`). They run on the OpenRouter key
   Jev's OpenRouter route reads (`OPENROUTER_API_KEY`, else `AGENT_MODEL_API_KEY` with `AGENT_MODEL_BASE_URL` on
-  openrouter.ai), handed to the run's process on the decision descriptor as Jev's is. That key is also the model
+  openrouter.ai), laid on the run's claim's own environment as Jev's is. That key is also the model
   gateway's, which a run's process holds. Images to them are experimental. A model that cites the web returns
   `url_citation` annotations, which become the node's evidence. A cost OpenRouter reports above 0 is booked; 0 (a model its
   catalog prices at 0) or none is unknown, never $0.
@@ -3782,18 +4608,17 @@ typed answers and their probabilities.
   ($0.042 per million input tokens; output tokens are free) as an estimate, and the run's `cost.usd` is its decisions'
   sum, with `basis: "estimate"`. A decision whose cost is unknown (no token counts, the OpenRouter route, or a call that
   failed after it may have been sent) keeps its receipt's cost `null`, and the run's reads `null`, never `0`.
-- The TypeSafe and Parallel keys never enter a run's environment, which its tools and its model's provider read. The
-  server drops `TYPESAFE_API_KEY` and `PARALLEL_API_KEY` from every run's process. It hands a run's process those it
-  needs ([Safety](#safety)), a workflow's decision providers' and Parallel's where its `web_fetch` or `web_search`
-  resolves to Parallel, once, by name, on an inherited pipe (the first descriptor after its stdio and its secrets pipe, as macOS refuses a high one), at each
-  launch, a resume after a restart included. The process reads them once into its decision providers and web tools,
-  closes the descriptor before anything else runs, and keeps the keys nowhere else. It is never in an
-  environment, an argument list or a file, and no program the run starts inherits it. With no key, no descriptor is
-  opened. On the OpenRouter route Jev's key comes on the same descriptor, never from the run's environment; that key is
-  also the model gateway's key, which a run's process holds for its model nodes.
+- A run gets only the TypeSafe and Parallel keys it needs ([Safety](#safety)): a workflow's decision providers',
+  Parallel's where its `web_fetch` or `web_search` resolves to Parallel, and TypeSafe's where one of its web tools is
+  the run's own ([Search and fetch](#search-and-fetch): `web_fetch` wherever it runs, `web_search` except a harness's
+  own search inside its CLI, as on codex or claude-agent). The runner's claim reads them from the store and lays them
+  on the claim's own environment, the one the run's tools and decision providers read, a fresh object for each claim,
+  so no run sees another's. No program the run starts inherits them: a run process's environment has every key-shaped
+  name removed, and the run's shell environment is fixed. On the OpenRouter route Jev's key is also the model
+  gateway's key, which the claim holds for its model nodes.
 - `TYPESAFE_API_KEY` and `PARALLEL_API_KEY` are among the secrets the launcher hands the server over its pipe, so the
   server holds them out of its own environment too. Neither is ever among the secrets a run's process gets over its own
-  pipe, which are its tools' environment: the decision descriptor is their only way into a run.
+  pipe, which are its tools' environment: the runner's claim is their only way into a run.
 
 ## Archiving
 
@@ -3855,24 +4680,25 @@ stays in every total.
     overwrites them. `VACUUM FULL` rewrites the table into a new file (under an exclusive lock), and the old file's
     blocks go back to the filesystem unwiped. Postgres's own WAL and its archived WAL keep the old values until they are
     recycled or expire, and backups keep them for their retention.
-- Its agent's other runs and what the agent learned from it are kept. A promotion record keeps the run's id and the
-  commits it names. A run's purge removes its diff file and its feedback line from the folder's current files, and the
-  folder's history no longer serves its merge; the bytes stay in the folder's `.git` until a learning reset
-  (`DELETE /v2/agents/{id}/learning`) or the agent's purge, which delete the folder whole. Each merge's feedback line goes in
-  one commit by the host (none when nothing is left to remove), a line a person edited since stays, and another
-  merge's diff that shows the line as context is written without it. The log and a workflow's revisions leave out its
-  merges, known by the run the log names for each (its newest 200 changes). A purge takes off main only what the run
-  put there, in one host commit: each learned workflow whose `workflow.json` it wrote last (over the whole history,
-  past those 200; a host commit that puts a version back names that version's run) goes back, its whole folder, to
-  the version before it that no purged run wrote, so another run's champion keeps serving; one it wrote new leaves
-  main, its file reads `404`. No run lays its text, and a read at an older commit (a champion by its digest, an SDK
-  receipt's pinned commit, a later merge's diff, which shows its files as added) never serves it. Each merge's scrub lands once, so a `DELETE` sent again
-  after a stop takes no other run's same line, and a merge of the run made since is scrubbed by it. A second `DELETE`
-  does this again. It covers the learning folder on this
-  server; a Mode 2 agent's folder on an Archil disk keeps the run's text until a learning reset or the agent's purge.
+- Its agent's other runs, and what the agent learned from them, are kept. The run's own learning rows go in the purge's
+  transaction: each line it added to `corrections.md`, each learned workflow version it wrote (a person's approve of one
+  goes with it, being still its text; a person's retire or restore of one stays on the version that comes back), its
+  grades, and the promotion records and audit rows of the workflow versions it alone wrote. Its saves stay as facts with
+  no words (a version, its id and its merge key, so the run never merges again), and a person's save that changed only
+  its text loses its words too; no other save names a file or workflow only it wrote.
+- The purge is a save of the agent's learning (the host's, which the log never shows). A write computed before it (a
+  person's edit, a run's merge) is computed again on what the purge left, so none writes the purged text back. A run of
+  the agent that read its learning before the purge (its seed) has its learning dropped at its end, nothing written
+  (`learning.reason` `purged_since_seed`): the purge changed what it started from, so a file it gives back unchanged
+  can't be told apart from the purged run's. A promotion, audit row or grade written after the purge for what it took
+  (a check of the run's workflow version still replaying, a grade of the purged run) writes nothing. So the log and a
+  workflow's revisions leave it out, and `GET /runs/{id}/learning/diff` is `404`. A workflow it revised goes back to the
+  version before it, so another run's champion keeps serving; one it wrote new is gone, its file reads `404`. A read at
+  an older version id (a champion by its digest, an SDK receipt's pinned save, a later merge's diff) reads the rows as
+  they are now, so it never serves the run's text. A second `DELETE` does this again and finds nothing left.
 - It takes the owner's session (the password sign-in, or the console on a server bound to loopback) or the API token;
   any other console session is `403 forbidden`, no credential `401`. An [API-only](#api-only) server purges a run of
-  an agent another system owns alone; a run of an agent made here is its profile's `404` there.
+  any agent with its token, as it deletes or purges the whole agent.
 
 An agent made here is purged the same way once archived: `DELETE /v2/agents/{id}`. Its revisions' content, name and
 description, learning, triggers, saved sign-ins, own computer, disk and folders go, and each of its runs is purged.
@@ -3895,7 +4721,8 @@ delete what it sent. `DELETE /v2/agents/{id}` deletes such an agent whole, in th
    while a `DELETE` runs waits for it, then finds the agent gone (`404`), so none lands after its learning went. Each of
    its runs still going, its learning runs included, is cancelled as `POST /runs/{id}/cancel` cancels it, and the
    delete waits until every one has ended.
-2. Its learning is deleted by the learning module: every file of its learning folder, then its promotions and grades.
+2. Its learning is deleted by the learning module: every learning row of the agent (its corrections, workflows, saves,
+   promotion records, grades and audit rows).
    It refuses while learning work of the agent is in flight: `409 learning_busy`, naming
    that work in `details.runs`.
 3. The rest: its triggers (and what each registered at its source), its saved sign-ins (and each object at its vendor),
@@ -3928,6 +4755,14 @@ server's own origin, under a CSP that allows that origin only, but for the provi
 - **Mission Control**: the store's counts, imported history, analytics and the latest runs, available before the first
   server-run agent and without a model-provider key. Its introduction is dismissible. Connect agent and Query use
   the coding-agent selector; the page refreshes when you return from your coding agent.
+- **Agent Factory** (`#/factory`): a kanban of sessions reported to this server, including parallel runs of one agent,
+  reported active child conversations, an audit's shadow run while it runs, and sessions without a repository. Waiting, Working, Needs you and Unknown
+  describe execution; a completed run does not prove that its GitHub change passed checks or merged. Cards open the
+  existing run viewer for activity and supported controls. GitHub links come from launch or trusted trigger provenance.
+  Native connector health and missing SDK freshness are explicit; observed sessions do not acquire controls here.
+  Archived active runs remain visible, imported history is excluded, and ended attention is separate from active counts.
+  The board refreshes every ten seconds after a read settles. It reads bounded pages and offers **Load more** with
+  partial-coverage counts; failures preserve the last-known cards with a stale notice.
 - **Agents**: **Build** opens a description composer and local starter templates; **Connected agents** lists definitions,
   with archived ones behind **Archived**. Build, edit and run actions share the remembered coding-agent dropdown,
   including **API playground**. Choosing a template prepares its full definition without creating or running it.
@@ -3955,6 +4790,18 @@ A run that reports learning also has a **Learning result** panel: the outcome, t
 the checks' problems, and the seed and merge revisions. Its changed
 files remain available beside the result. The agent's Learning tab refreshes after returning to the console and
 while visible, without replacing an open edit or review.
+
+The visibility API uses `GET /v2/runs?scope=active` and `scope=review` (also on an agent's runs route), with `limit`
+and opaque `next_cursor`. Scope is filtered before pagination; cursors are tied to the scope and agent filters.
+Do not combine scope with `status` or `archived`. Scoped summaries add `factory` source/control, observation,
+activity, GitHub provenance and reported-child metadata. A lifecycle version captured inside each run snapshot
+orders overlapping observations across the two scopes. A run's summary is built once per change of the run and
+kept on its row, as the runs list keeps its items, so a refresh builds no view of a run that has not changed;
+only who observes the run and its computer are read at each request (a computer's read opens the run's journal
+only for a desktop or phone that is up, or a computer held for its owner). GitHub provenance is what the server
+saved of the delivery that fired the run, never a payload tag found in its input; a run started before servers
+saved it (0.1.0-beta.39) shows no GitHub link. An online connector is transport health, not a heartbeat for each
+session. These reads add no scheduling, branch-writing or merge authority.
 
 Its files (`index.html`, and Vite's hashed files under `/assets/`) are public and hold no data: everything it shows
 comes through `/v2`. With accounts on (the default) the console asks for the owner's password
@@ -4039,14 +4886,14 @@ Never bypass the store lock. This local-store operation has no server endpoint t
 machine; importing into a different local store does not populate a remote console. Build, edit, run, query and
 connection handoffs use the shared coding-agent selector and target this server's matching skill, MCP endpoint and API.
 
-`agentrun-serve import --data DIR` reads the Claude Code, Codex, pi and Cursor CLI sessions in your own home
-(`~/.claude/projects`, `~/.codex/sessions`, `~/.pi/agent/sessions`, `~/.cursor/chats`) into the data directory,
+`agentrun-serve import --data DIR` reads the Claude Code, Codex, pi, OpenCode, Copilot CLI and Cursor CLI sessions in your own home
+(`~/.claude/projects`, `~/.codex/sessions`, `~/.pi/agent/sessions`, `~/.local/share/opencode`, `~/.copilot/session-state`, `~/.cursor/chats`) into the data directory,
 once. Each project folder becomes an agent, with its
 CLAUDE.md or AGENTS.md and its skill folders, and each session becomes a run you can read but not continue. Nothing leaves
 this machine, and the values of key-shaped environment variables are cut out of what it writes. Run it again and it takes
 only what it has not taken already. Sessions written in the last 10 minutes wait for the next import.
 
-A run's cost is what its source recorded (Claude Code's and pi's). A session its source did not price, such as a Codex
+A run's cost is what its source recorded (Claude Code's, pi's and OpenCode's). A session its source did not price, such as a Codex or Copilot CLI
 session, keeps the model catalog's estimate for its tokens beside an unknown cost, and every place that shows a run's
 cost reads that estimate, as an estimate: the run (`cost.usd`, basis `estimate`), its usage row, `GET /stats` and its
 analytics, and `GET /usage`. A session on a model the catalog does not price stays unknown. Cursor keeps no tokens or
@@ -4054,7 +4901,7 @@ cost on the machine (its usage is on Cursor's server): a Cursor run's requests a
 unknown.
 
 - `--dry-run` lists what it would import and writes nothing.
-- `--from claude-code,codex,pi,cursor` picks the sources.
+- `--from claude-code,codex,pi,opencode,copilot,cursor` picks the sources.
 - `--include-deleted` also imports the sessions of project folders that no longer exist, such as a git worktree you
   deleted. Each such folder is still its own agent, with no instructions or skills to read.
 - `--all` keeps those too, as well as sessions of temporary folders and sessions with no message of yours.
@@ -4158,7 +5005,7 @@ The agent's Learning tab and Learning Dojo show missing setup for that agent's a
 `ready` means the route and credentials are configured, not that quota or provider availability has been verified.
 These reads make no paid request, and saving a matching key refreshes the setup guidance.
 
-Importing Claude Code, Codex or pi session history does not replay learning or connect a live learning stream.
+Importing Claude Code, Codex, pi or Copilot CLI session history does not replay learning or connect a live learning stream.
 Before/after cost and duration are observations, not an accuracy evaluation.
 
 **Existing CLI capture.** A project enrolled with `cli_learning` keeps running in its original Codex CLI or Claude
@@ -4170,22 +5017,25 @@ corrections and shows captured runs; new captures begin with the next normal pro
 Historical learning files remain stored and are not converted into owner corrections or deleted. Older stored
 CLI `learning: "notes"` settings read publicly as `true`; that compatibility read does not rewrite the revision.
 
-An agent that learns has a learning folder, `learning/` in its folder on the disk (`DATA/disk/agents/<key>/learning/`):
+An agent's learning is kept by the server as versioned rows in its store, SQLite or Postgres alike. It reads as a
+folder, and the routes name its files by path:
 
-- `corrections.md`, its owner's standing corrections, one `- ` line each, at most 2048 bytes;
+- `corrections.md`, its owner's standing corrections, one `- ` line each, at most 8192 bytes;
 - one folder per learned workflow, `workflows/<name>/`, with its `workflow.json` and its `README.md` (front matter with
   `name` and `description`, and `status: pending` while it waits for its owner's OK).
 
 The server reads and writes it with its own code, in [`src/learn/`](src/learn/SPEC.md), whose `SPEC.md` is the
-folder's contract. The folder is plain git with `main` checked out. The agent's first run that learns makes it, with
-one empty commit on `main`; an agent that does not learn never gets one. The server is its only writer. Every git
-call the server makes there runs with the folder's hooks and fsmonitor off, no replace refs, no lazy fetch and no system
-or global config, one at a time per agent.
+contract. Three tables hold it: `learning_saves`, one row per version of the agent's learning (its random 40-hex id,
+its kind: `init`, `run`, `person` or `purged`, who saved it and why, and a run's merge key, one per run and round);
+`learning_items`, each item's versions (a note: one line of `corrections.md`; a workflow: its folder's files whole, with
+its `workflow.json`'s digest), never updated, each naming the run whose text it is; and `learning_records`, its promotion
+records, grades and audit rows. The server is its only writer, and nothing in it runs. The agent's first run that
+learns makes its first save, empty; an agent that does not learn never gets one.
 
-Each run of an agent that learns starts from `main` as it is when the run is made, whatever its harness:
+Each run of an agent that learns starts from the agent's newest save when the run is made, whatever its harness:
 
-- `runs/<id>/learning.json` pins that commit (`seed`). It is written once: a resume or a follow-up reads the same
-  commit, however `main` moves on.
+- The run's launch record pins that save's id (`learning.seed`). It is written once: a resume or a follow-up reads the
+  same save, however the agent's learning moves on.
 - The agent's corrections go into the run's instructions after the agent's, under `# Learned`, so a run reads them
   whatever its tools: `corrections.md` whole, after one line that says they are its owner's standing corrections, to
   follow each one that applies. Nothing picks, ranks or summarizes them: the file's cap keeps it whole. A run with no
@@ -4193,7 +5043,7 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
   pi's system prompt and claude-agent's and codex's instructions: the same channel `CLAUDE.md` and `AGENTS.md` travel
   in. No file is written into the run's work. The pin keeps the section the run reads (`section`), so a resume or a
   follow-up reads the same.
-- The workflows the agent learned, each a folder `workflows/<name>/` on `main` with its `workflow.json` and its
+- The workflows the agent learned, each a folder `workflows/<name>/` at the run's seed with its `workflow.json` and its
   `README.md`, are the run's as one tool, `learned_workflow {name, input}`, on every harness (pi, claude-agent, codex),
   with no edit of the agent's definition. Only an active, promoted revision is: its `README.md` sets no status, or `active`,
   and its promotion record names the checked champion. A compiled draft without that record is withheld; front
@@ -4201,10 +5051,10 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
   than one line) reads as retired, so no run is given it. Its description names each workflow with the line its README gives, 8 KiB of lines in all: by name, each
   while its line fits, and one that does not, or holds one of the server's secrets, is left out. A README whose front
   matter does not read one way (not closed, or a line that is no key at its left edge) is not read. The pin names the
-  ones the run gets (`workflows`), each kept whole in the run's directory (`learned-workflows.json`), outside its work,
-  and the ones left out (`workflows_left_out`). The list is fixed when the run starts: a workflow approved or retired
+  ones the run gets (`workflows`), each read whole from the rows at the run's seed when the run is claimed, outside its
+  work, and the ones left out (`workflows_left_out`). The list is fixed when the run starts: a workflow approved or retired
   while it runs is the next run's to get or not. A call checks the workflow again against the agent's own tools as its
-  run resolves them, as the commit's checks did: one whose call node names a tool the agent was not
+  run resolves them, as the save's checks did: one whose call node names a tool the agent was not
   granted (or one its run resolves unavailable), whose model node names any tool (a learned model node runs without
   tools, so the checks refuse one too), or that holds a code node or a shell or executor call, is refused before any of
   its nodes runs. It runs with the workflow DSL: each model node on the run's own model (the one the run was made with
@@ -4227,33 +5077,39 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
   runs; set to ask, the `learned_workflow` call asks once, naming every such tool, and the run parks. A run's own draft
   can't call one yet: the checks admitting it are coming.
 
-The server reads the commit with git plumbing, never the working tree. What it holds that is not a regular UTF-8 file of
-1 MiB or less, or a workflow out of shape, is not read, and the server's stderr names it. A learning fault never blocks
-a run: when the folder cannot be made or read, the run starts with nothing learned. A host without
-git 2.32 or later (what learning's own git calls need) is one such fault, said once on stderr.
+A workflow out of shape is not read, and the server's stderr names it. A learning fault never blocks a run: when the
+agent's learning cannot be read, the run starts with nothing learned (`seed_failed`).
 
 ### What a run learns
 
-When a run that learns answers or fails, its end step (`src/runner/reflect-hook.ts`) keeps two things, one commit a
-round on the agent's `main`, whatever its harness:
+When a run that learns answers or fails, its end step (`src/runner/reflect-hook.ts`) keeps two things, one save a
+round on the agent's learning, whatever its harness:
 
-- Its owner's words. A grade's words, or a message they sent after the job's first, become one line of
+- Its owner's words. A grade's words, or a message they sent after the job's first (its `said` when sent), become one line of
   `corrections.md`, with no model turn: `- ` and the words, whitespace folded. A line that holds one of the server's
-  secrets, text shaped like a secret or a hidden character, or that would take the file past 2048 bytes, is refused
-  whole, nothing of it written, and the run's learning says why (`problems`).
+  secrets, text shaped like a secret or a hidden character, or that is past 8192 bytes alone, is refused whole,
+  nothing of it written, and the run's learning says why (`problems`). A line that would take the file past 8192
+  bytes drops the file's oldest lines until it fits: the newest correction wins, and the run's learning says how many
+  lines went (`dropped_lines`). A line it keeps is that run's known correction too: with no grade's expected answer, a
+  promotion check judges a replay of the run against its recorded answer as the correction changes it, the agent's
+  answer counted wrong: only the fast model's verdict, asked with the correction, says a draft agrees, never equal
+  answers alone. With no such verdict (no fast model, or its request failed) that input is unjudged, since a message may
+  be a question or thanks rather than a correction.
 - Its job, when a compile is due: once the agent has its `learning.compile_after` completed runs (20 by default) and no
   learned workflow, or once per hold of one its promotion held, the server asks the same session one more turn, under
   the fixed request id `learn-reflect-<run id>` and the origin `reflect`, so a server that restarts mid-turn asks again
   and the run takes it once. The turn (`compilePrompt`, in `src/learn/compile.ts`) gives the agent's last runs (each
   input, its tool calls, its answer and what the person said after it), the workflow language and one worked example,
-  and asks for the whole job as one workflow draft. The draft is checked in code and dry-run; what the checks refuse
-  goes back to the model, as data, up to 3 times. A draft that passes is committed directly, with no grader: its
+  and asks for the whole job as one workflow draft. When the same round takes its owner's words (a grade's, say), the
+  compile is told that line too, on every attempt, beside the owner's other corrections; a line refused above is
+  never told. The draft is checked in code and dry-run; what the checks refuse
+  goes back to the model, as data, up to 3 times. A draft that passes is saved directly, with no grader: its
   promotion check (below) decides whether it serves. A compile whose drafts all failed is recorded as the compile's
   attempt (compile once), and its errors are on the run's learning (`draft_errors`), never silent.
   [`src/learn/SPEC.md`](src/learn/SPEC.md) has the rules.
 - Its answer's quote re-pick, with `learning.repick: true` (off by default): a workflow whose answer quotes the pages
   its run fetched re-picks once when a quote is in none of them. Off, the re-pick reads its compact notes and its failed
-  draft. On, the server rewrites the passing draft before it commits it, so the re-pick reads the pages themselves,
+  draft. On, the server rewrites the passing draft before it saves it, so the re-pick reads the pages themselves,
   sent as untrusted data (the model is told never to follow anything written in them, and the step has no tools), at
   most `learning.repick_max_chars` characters of them (150000 by default, 1 to 400000; past it the longest pages are
   cut first). Its request is the served run's, under the run's cost cap. The setting is read at each compile: turning
@@ -4266,17 +5122,21 @@ owner and no compile due spends nothing on learning, and its learning ends `drop
 work was its learned workflows, each answering, with nothing said after its first message and no compile due, ends
 `dropped` (`empty`) too: "Nothing new: the run only ran a learned workflow."
 
-The round's commit is made with plumbing: the passing draft's files added or changed (its `README.md` with
+The round's save is one transaction: the passing draft's workflow written whole (its `README.md` with
 `status: pending` when a step calls a tool with no price, to wait for its owner's OK) and the owner's line appended to
-`corrections.md`. Its message is `learning: <run id>: merged`, the reason and a `Run-Id` trailer; `main` moves only from
-the commit the change was made on (once more on a `main` that moved meanwhile), and a run a trailer already names is
-merged, never twice. A draft file that is not on `main` as it was on the run's seed is a conflict, never written over.
+`corrections.md`, with the run's reason. It is a compare and swap on the agent's newest version (computed once more on
+a version that moved meanwhile), and its merge key (the run and its round) is taken once, in the same transaction, so a
+run's round is merged once, never twice. A draft file that is not at the newest version as it was at the run's seed is
+a conflict, never written over; a seed the agent's learning no longer holds (a reset since) makes the whole merge a
+conflict that says so.
 
 A new workflow revision serves only once its promotion check passes. For a server-run agent, the first run that lays it replays it on the
 inputs of the agent's last `compile_after` completed runs, one replay run each at workflow cost, and scores each against
 the agent's own recorded answer. It is promoted when it agrees on at least `learning.agree_min` (0.8) of them and
 answers at least `learning.alone_min` (0.7) alone; under either bar it is held, and the next run asks one revision with
-the inputs it disagreed on. Held again, it stops, and nothing compiles again until its owner acts. A promotion by
+the inputs it disagreed on. Held again, it stops, and nothing compiles again until a correction merges after the stop or `compile_after` more of
+the agent's own runs start after it; that restarts it as a first compile (one revise, one recompile, then it stops
+again). A promotion by
 check is never moved by grades. `GET /agents/{agent_id}/learning/promotions` reads every record.
 
 Connected SDK agents (Claude Agent SDK, Codex SDK and Eve) check where their original tools live. When an application
@@ -4321,7 +5181,7 @@ evidence and the shadow result through the run-scoped SDK credential.
 The run's `learning` (on `GET /runs/{run_id}`, and `{state, reason, detail}` in run lists, the detail cut to 140
 characters and no time) says how it went: `seeded`, then `reflecting` during its end step, and `merged`, or `dropped`
 with a reason from a closed list (`seed_failed`, `no_budget`, `unknown_cost`, `cancelled`, `crashed`, `reflect_failed`,
-`empty`, `checker`, `use`; a run record with any other reason is not counted). It is `null` for a run that does not
+`empty`, `checker`, `use`, `reset`, `purged_since_seed`; a run record with any other reason is not counted). It is `null` for a run that does not
 learn (its agent's `learning` is not true, the server's switch was off when it started, or it is a workflow's or an
 imported run). Its `detail` says the same in a person's words, never the machine's: "Started from 2 corrections.",
 "Keeping what this run learned…", "Learned the workflow sort-invoice. Kept your correction.", "Nothing new to keep from
@@ -4351,64 +5211,60 @@ proposed and reused, staleness after a rule changes, and wrong keeps after a pla
 A person reads and changes an agent's learning through this server's own routes (`learning/1` in `/v2/openapi.json`),
 with the token, an archived agent's too:
 
-- `GET /agents/{agent_id}/learning`: `main`'s head, `corrections.md` as `corrections`, the learned workflows (each its
+- `GET /agents/{agent_id}/learning`: its newest save's id as `main`, `corrections.md` as `corrections`, the learned workflows (each its
   name, files, description, status and `etag`; `status` is one word: `pending` or `retired` as its `README.md` says,
   else where it stands as `.../learning/promotions` says it: `serving`, `checking`, `held` or `stopped`, a champion
-  the cost rule stopped included), the first 20 changes on `main` (newest first, each `by: {run}` from its
-  `Run-Id` trailer or `{user: true}`, with its commit, time, reason and files), how the agent's runs that tried to learn
+  the cost rule stopped included), the first 20 changes of its log (newest first, each `by: {run}` for a run's merge or
+  `{user: true}` for a person's change, with its save id as `commit`, time, reason and files), how the agent's runs that tried to learn
   fared (`merged`, `dropped` by reason, `in_progress`), counted as `GET /stats` counts them, and `impact`, what
   learning changed: the agent's completed runs that started from at least one learned item (a correction, or a learned
   workflow) against those that started before its first, each side's `runs`; `median_duration_s`, the time to the
   answer (the run's start to its job's end, before its end-of-run step). What a run costs, learning included, and what
   learning itself cost are `.../learning/cost`'s (`summary.before`/`after`, the bill's `learning_usd`).
-  Null unless both sides count 2 runs. An agent with no folder answers `main: null`, empty lists and `impact: null`.
-  `GET .../learning/log?cursor=&limit=` pages on, up to 200 at a time; a cursor reads the same commit its first page
-  did.
-- `GET .../learning/corrections`: `corrections.md` on `main` as `{text, etag, cap_bytes}` (empty text when there is
+  Null unless both sides count 2 runs. An agent with no save yet answers `main: null`, empty lists and `impact: null`.
+  `GET .../learning/log?cursor=&limit=` pages on, up to 200 at a time; a cursor names the version its page stopped at, so the
+  next page starts below it however the log grew since.
+- `GET .../learning/corrections`: `corrections.md` at the newest save as `{text, etag, cap_bytes}` (empty text when there is
   none). `PUT .../learning/corrections` with `{text}` replaces it whole under `If-Match: <etag>`: a stale ETag is 412,
   none (or `If-Match: *`) 428 `precondition_required`. A text that holds one of the server's secrets, a secret's shape or
-  a hidden character, or passes 2048 bytes, is 422 with the problems, and nothing is written. A text read cut of a
-  secret and sent back keeps the cut: a person's write never puts a secret back. One commit on `main` in the agent's
-  queue, `learning: edited by a person: corrections.md` with a `Changed-By: user` trailer.
-- `GET .../learning/files/{file}`: `corrections.md` or a workflow's file on `main`, with its `ETag`, the file's git blob
-  id. `POST .../learning/files/{file}/retire` under `If-Match`, on a workflow's `README.md`, sets `status: retired`: no
+  a hidden character, or passes 8192 bytes, is 422 with the problems, and nothing is written. A text read cut of a
+  secret and sent back keeps the cut: a person's write never puts a secret back. One save of the agent's learning,
+  `edited by a person: corrections.md`, which the log shows as `by: {user: true}`.
+- `GET .../learning/files/{file}`: `corrections.md` or a workflow's file at the newest save, with its `ETag`, its text's
+  blob id (as git would name its bytes). `POST .../learning/files/{file}/retire` under `If-Match`, on a workflow's `README.md`, sets `status: retired`: no
   later run is given it. `POST .../learning/files/{file}/approve` makes a pending workflow active (see
   [Approving a workflow that waits](#approving-a-workflow-that-waits), below). `POST .../learning/files/{file}/restore`
   under `If-Match` gives a retired workflow to every later run again, after checking its files again as a run's draft
   is checked (a refusal is 400 with `problems`, and it stays retired); it takes the owner's password session alone, as
   an approval does. The learning view gives each workflow `last_change` (`{kind, by, at}`: `approved`, `edited`,
   `created`, `retired` or `restored` by a `person`, or `learned` by a `run`) and each retired one `retired` (`{at, by}`).
-- `GET .../learning/workflows/{name}/revisions` lists a learned workflow's revisions on `main`;
+- `GET .../learning/workflows/{name}/revisions` lists a learned workflow's revisions, newest first;
   `GET .../learning/promotions` its promotion records; `GET .../learning/loop` each compile turn; and
   `GET .../learning/cost` the agent's cost per run, run after run.
-- `DELETE /agents/{agent_id}/learning` resets the agent's learning: its learning folder whole (`corrections.md`, its
-  workflows, their history and the audit ledger), here and on every Archil disk its runs used (`503` while one can't be
-  reached), then its promotion records and grades. The agent and its runs stay,
+- `DELETE /agents/{agent_id}/learning` resets the agent's learning: every learning row of the agent (`corrections.md`,
+  its workflows, every save and version of them, its promotion records, grades and audit rows), in one transaction. A
+  run started before it from a save it removed merges nothing: its seed is no longer held, a conflict. The agent and its runs stay,
   with their files, costs and each run's own learning, so the run list, `GET /stats` and `GET /usage` read the same (a
-  served run keeps its share of its revision's compile and check); a run's learning diff goes with the folder (404);
+  served run keeps its share of its revision's compile and check); a run's learning diff goes with the rows (404);
   the next run takes the agent path, given nothing learned. It cancels the runs that exist only for learning (replays,
   audit shadows) and waits for them; while a run of the agent's own is still going it is `409 learning_busy` (each named
   in `details.runs`), and nothing is deleted. `204`, a second call and an agent that never learned included. The
   API-only profile serves it too.
 - `GET /runs/{run_id}/learning`: the run's learning whole (its seed, its merge, the corrections it added, the workflow it
   wrote, its compile turn's attempts and the checks' problems), `null` for a run that does not learn.
-  `GET /runs/{run_id}/learning/diff`: a merged run's merge commit against its parent, each file's patch as git writes it
-  from the first `@@`, or `withheld` (`too_large`, `secret`).
+  `GET /runs/{run_id}/learning/diff`: a merged run's merge save against the one before it, each file's patch in unified
+  diff form from the first `@@` (as git writes one), `404` once the run is purged or the agent's learning reset, or `withheld` (`too_large`, `secret`).
 
-Every read is the folder's snapshot (`.agentrun/snapshot.json`, written last by the same exec as each commit to
-`main`), the files it names, each checked against its blob id (a file that is not, read twice, is a write in flight:
-`503`), and a merge's `.agentrun/diffs/<run>.json`, through the folder's file API: no git and no exec. Every text it
-answers is cut of the server's secrets as they are then; a file name holding one (a workflow named after a value made
-secret since, say) reads `[redacted]` whole, in the workflows, the log's `files` and a diff's `path`, while its route
-still answers the real name to a caller who knows it. A log page reads the snapshot alone (it keeps the newest 200
-changes). A cursor reads at the main it names while this server still holds that snapshot, else as the first page of
-`main` now. Every write to `main` (a run's merge, a person's corrections, retire, approve or restore) is one exec of the learning
-script, a compare and swap on `main`. A symbolic link at the agent's home, its learning folder or the folder's `.git` is never
-followed: a read or a write there answers `500`, and nothing is written.
+Every read is the store's learning rows: the newest save, or a save by its id, read as the rows are now (so a purged
+run's text is never served at any version). Every text it answers is cut of the server's secrets as they are then; a
+file name holding one (a workflow named after a value made secret since, say) reads `[redacted]` whole, in the
+workflows, the log's `files` and a diff's `path`, while its route still answers the real name to a caller who knows it.
+Every write (a run's merge, a person's corrections, retire, approve or restore) is one save, a compare and swap on the
+agent's newest version, computed again when another write landed first; one that keeps losing is `503`, to retry.
 
 ### Approving a workflow that waits
 
-A learned workflow whose step calls a tool with no price is committed with `status: pending` in its `README.md` and
+A learned workflow whose step calls a tool with no price is saved with `status: pending` in its `README.md` and
 given to no run until its owner approves it.
 
 Who can approve: the owner, signed in with their password. No token approves, the server's own included, so a run that reaches this server only through its API (its MCP tools, a sandbox run) can't approve its own workflows. Runs that use bash on the host run as you: they can read this server's files, its session key among them, so no route keeps them from approving. For untrusted tasks, use the sandbox.
@@ -4419,8 +5275,7 @@ carry) and a token sent beside the session. So is every request on a server with
 (`AGENTRUN_ACCOUNTS=0`), which has no password session: its console session comes from the launch code, never the token. With no credential it is 401, as every route.
 `capabilities.learning.approve` is true only for the owner's session; every other caller reads `approve: false` with
 `approve_needs: "password"`. A workflow that is not pending is 400; a stale ETag is 412, none 428. The approval is one
-host commit, `learning: approved by a person: <file>`, with the trailers `Changed-By: user` and `Approved-Via: console`;
-the log shows `by: {user: true, via: "console"}` at the commit's time.
+save, `approved by a person: <file>`; the log shows `by: {user: true, via: "console"}` at the save's time.
 
 ## A run's cost: its tokens and its basis
 
@@ -4442,15 +5297,24 @@ and says how its figure was reached.
   and do not change it. A native, SDK or imported run's figure is its harness's own, an `estimate`; so is an imported
   session's catalog estimate where its source priced none ([importing your sessions](#importing-your-sessions)). LiteLLM writes no
   cost into a streamed answer's headers, so a run whose answers stream through LiteLLM reads `estimate`.
-- `tools_usd` (on `GET /runs/{id}` alone, `toolsusd/1`; Parallel's decisions in it since `toolsusd/2`): the part of `usd` its paid tool calls cost (monid's endpoints,
+- `tools_usd` (on `GET /runs/{id}` alone, `toolsusd/1`; Parallel's decisions in it since `toolsusd/2`; a learning run's
+  follow-up turns since `toolsusd/3`): the part of `usd` its paid tool calls cost (monid's endpoints,
   MCP tools with a saved price, Parallel behind `web_search` and `web_fetch`, browser time, and a workflow decision
   Parallel answered on its own API, on `PARALLEL_API_KEY`, at Parallel's list price), as the run's ledger booked them,
   rounded as `usd` is. It is inside `usd`, never added to it: `usd` less `tools_usd` is what its model requests and its
   other decisions cost (Jev's, an OpenRouter model's, Parallel's model reached through OpenRouter). A paid call in a learning run's end-of-run turn is learning's (in `learning_usd`), never in
-  `tools_usd`. 0 when it made no paid call. Null while a paid call's charge is unknown (as `usd` is then); while the run
-  is at work (until it ended, stopped or failed); for a learning run a follow-up opened again, whose `usd` is what its
-  first round had cost; and for an imported, native or SDK run, whose `usd` is its import's or its harness's own figure
+  `tools_usd`. A learning run a follow-up opened again counts its job and every follow-up turn, each round's end-of-run
+  turn left out, as its `usd` does: a follow-up's turns are the job's, not learning's. 0 when it made no paid call. Null while a paid call's charge is unknown (as `usd` is then); while the run
+  is at work (until it ended, stopped or failed); and for an imported, native or SDK run, whose `usd` is its import's or its harness's own figure
   and whose tool calls the server never books. Each call's own charge is its span's `usd` on `GET /runs/{id}/trace`.
+  Since `toolsusd/4`, the time of a browser a create race left running that the run never held is not in `tools_usd`:
+  it is absorbed (`absorbed: "create_race"` on its usage line), booked in `usd` and never billed.
+- `billable_usd` (on `GET /runs/{id}` alone, `billable/1`): `usd` less what its absorbed usage lines cost, the figure a
+  caller bills the run's owner by. `usd`, `total` and `all_in_usd` keep the absorbed time so the run's cost record is
+  whole; `billable_usd` alone leaves it out. With no absorbed line it is exactly `usd` (an imported, native or SDK run
+  has none), so a run whose `usd` is known never has it null for want of a race; while the run is at work it is `usd`
+  less the absorbed time booked so far, read from the same journal records as `usd`, and a bound `usd` gives a bound. Null only when `usd` is null or an absorbed
+  line's cost is unknown.
 - `GET /stats` (`cost.basis`) and `GET /usage` (`basis`) say the same words over the runs they sum: `estimate` when any
   run's is, else `reported` when any run's is, else `unpriced`. A run whose end stored no basis (one that ended before
   this, or a workflow run: its run read still says its basis from its booking) counts as `estimate` when it cost anything.
@@ -4496,7 +5360,9 @@ were reached. Nothing is priced here, and nothing is rounded to a billing increm
   them: `not_metered_calls`, in neither `quantity` nor `usd`.
 - `browser_time`: one line per browser provider (`provider`). `quantity` is the seconds this server's clock charged the
   provider's sessions for, the provider's minimum per session included as the browser charged it; `basis` is
-  `estimate`, the provider's price per hour on this server's clock, never its invoice.
+  `estimate`, the provider's price per hour on this server's clock, never its invoice. A charge's seconds are read from
+  its record wherever the journal holds it: one recorded in a learning round's end-of-run turn and booked later (a
+  follow-up's reopen) counts on the line its booking is on.
 - A field a meter does not use is null, and so is a name the record does not keep: never `""`.
 - A charge of unknown cost makes its line's `usd` null, with `so_far_usd` and `unpriced` beside it, never $0. `total`
   joins the lines by the rule `cost.usd` is, so `total.usd` is the run's `cost.usd`, with the same `so_far_usd`,
@@ -4507,15 +5373,17 @@ were reached. Nothing is priced here, and nothing is rounded to a billing increm
   and it ends again later. `ended_at` is the end the lines cover: keep it with them, and read again at `run.ended`, which
   fires at each end. A later read with another `ended_at`, or null, means the run moved since.
 - `lines` and `total` are null, with `reason`, while the run is at work (`running`), for a run whose figure is not its
-  booking's (`not_booked`: an imported, native or SDK run, or a CLI run whose model requests went past its proxy), and
-  for a learning run a follow-up opened again (`reopened`, whose booking can't be split by round).
+  booking's (`not_booked`: an imported, native or SDK run, or a CLI run whose model requests went past its proxy). A
+  learning run a follow-up opened again has lines (`runusage/6`; before, `reopened` and none): its job's and every
+  follow-up turn's up to its latest end, each round's end-of-run turn left out. Each end's lines hold the last end's and
+  what the follow-up added, so a reader that bills each end bills the difference.
 - `compute_time` (`runusage/4`): one line per computer provider and resource (`resource`: `vcpu`, `memory`, `gpu` with
   its `gpu_type`, `disk`), for the computers the run made. Sum a provider's lines for its one compute figure. `quantity`
   is every second of each such computer at its figure (`vcpu_second`, `gib_second`, `gpu_second`, or `gb_month` of disk
   over a 730-hour month); a computer still open is counted up to `measured_to` (`open_computers` says how many). `usd` is
   what the run's ledger booked for it while a claim held the computer, at the operator's price ([Computer
   time](#computer-time)), so `total` stays the run's `cost.usd`. The part no claim held (`unheld_quantity`: a computer
-  kept past its claim for a follow-up, one deleted after its run, one whose delete failed) is in no cost. A resource with
+  kept past its claim for a follow-up, one deleted after its run, one whose delete failed) is in no cost; on a provider that bills nothing (`docker`) it reads 0, since none of its time costs anything. A resource with
   no price set, or whose figure no one said, is `unpriced`, its `usd` null; a provider that bills nothing (`docker`) is
   $0. A `compute_time` line that is `unpriced` and any `unheld_quantity` are outside `total`.
   ```json
@@ -4569,6 +5437,16 @@ every line.
   does. It is also null with no lines.
 - A run from before this server kept attempts reads `attempt: null` and `billable: true` on every line.
 
+The time of browsers a create race left running that the run never held ([Spend cap](#spend-cap)) is the infrastructure's too (`runusage/7`). The run's ledger books it, so
+`total` and `cost.usd` hold it and the run's cost record is whole, but it is on a `browser_time` line of its own with
+`absorbed: "create_race"` and `billable: false`, and in `infra_usd`. A bill for the run's task is its billable lines,
+which leave it out:
+
+```json
+{ "meter": "browser_time", "model": null, "provider": "browserbase", "charged_by": "browserbase", "quantity": 60,
+  "unit": "second", "basis": "estimate", "attempt": 1, "billable": false, "absorbed": "create_race", "usd": 0.002 }
+```
+
 The attempts live in the store's `run_attempts` table: one row per claim, written in the claim's own transaction. Each
 row holds the claim's turn and attempt, and `cause`, which says why the attempt before it was cut:
 
@@ -4617,8 +5495,10 @@ names it and `<GPU_TYPE>` the provider's own GPU name, both in capitals with eve
 | `AGENTRUN_COMPUTE_USD_PER_DISK_GB_MONTH_<PROVIDER>` | one GB of disk for a month of 730 hours |
 
 A price sheet that quotes by the hour divides by 3,600 (a vCPU at $0.0504 an hour is `0.000014`). What a computer holds
-is its provider's own figure where the provider's answer gives one (Daytona: vCPUs, memory, disk and GPUs; E2B and Fly:
-vCPUs and memory), else what its create asked for. Nothing is built in: a provider that bills nothing (`docker`) is $0,
+is its provider's own figure where the provider's answer gives one (Daytona: vCPUs, memory, disk and GPUs; Agent37:
+vCPUs, memory and disk; E2B, Fly and Render: vCPUs and memory), else what its create asked for. Modal reads no size back
+and bills a sandbox by its use up to the limits its create set, so a Modal computer holds those limits (2 vCPUs and
+4096 MB unless the spec asks other sizes), the most its time can bill. Nothing is built in: a provider that bills nothing (`docker`) is $0,
 a resource set to `0` is $0 (its time booked at $0, its line `estimate` with `usd` 0), and with no setting a resource
 is unpriced.
 
@@ -4638,6 +5518,7 @@ is unpriced.
   seconds between the end's booking and its delete included), and one whose delete failed run on with no claim to hold
   them. Their time is on the usage read (`unheld_quantity`, and the
   interval's `booked_seconds` beside its life) but in no cap and no cost: check `computer_intervals` for such a computer.
+  On a provider that bills nothing (Docker) both are 0: its time costs nothing, held or not.
   A computer a later claim takes back is held again from then on.
 - A run whose process keeps no ledger here (a runner of its own with no run ledger) holds and books nothing, as if
   unpriced.
@@ -4660,13 +5541,27 @@ not metered and bills its own account outside the cap. fal is counted: a job sen
 toolkit `fal`, or at `mcp.fal.ai`) through `run_model`, `submit_job` or `submit_jobs` is priced before it is sent, at
 fal's unit price for its endpoint (the server's own `get_pricing`, read with the run's credential and kept five
 minutes) times the units the job's input states: its images, their megapixels, its text's characters, the seconds it
-names, or, for dubbing, lip-sync, voice isolation and speech-to-text, which fal bills by the length of the media they
-are given, that length, read from the file first. That price is held under the cap, a
+names (only on an endpoint whose input sets the length fal bills, such as Kling's or Veo's `duration`, and only in
+that field), or, for dubbing, lip-sync, voice isolation and speech-to-text, which fal bills by the length of the media they
+are given, that length, read from the file first. A length fal rounds up is rounded up the same way: a talking head's
+voice to whole seconds, ElevenLabs Music and dubbing to whole minutes. That price is held under the cap, a
 job the cap can't take is refused before it is submitted, and the job is booked as the run's tool cost, charged by the
 server, with the price and the count it came from. It is an estimate at fal's list price, not fal's invoice: fal
-reports no cost for a job, and a minimum charge, a discount or a rate that depends on a setting `get_pricing` does not
-list are not in it. A job whose units can't be known before it runs (one billed by compute time or tokens, one that
-names no size or length, media whose length can't be read, an endpoint with no listed price) is refused under a cap,
+reports no cost for a job, and a minimum charge or a discount `get_pricing` does not list is not in it. Where fal's rate
+depends on a setting and `get_pricing` states one rate (Ideogram v3's and Ideogram character's `rendering_speed`,
+Veo's audio and resolution, Kling v3's audio and voice control, sync-lipsync's pro model, Nano Banana Pro's and Nano
+Banana 2's resolution, web search and thinking, Fabric's resolution), a job is priced at `get_pricing`'s rate times the ratio fal's model page gives its
+settings, a setting it leaves out at its default, plus any charge the page adds per unit (a web search, per image).
+Where the page and `get_pricing` disagree, the higher is held. The endpoints of those families (Ideogram v3 and
+character, Nano Banana Pro and 2, each also served as a Gemini image preview, Veo 3 and 3.1, Kling v3, sync-lipsync v2,
+Fabric 1.0) are each decided: priced by their settings or at one rate. Some of their video endpoints have no reader for
+the length fal bills (the changelog lists them). These endpoints' rates are decided, but their holds aren't yet: under a cap, a job on one is refused until its length can be read. Ideogram v4, v4.5 and v4.6 and Nano Banana
+2.1 are such families with no rate decided, so all of them are refused under a cap. An image job whose `limit_generations` is anything but `true` or
+left out is refused under a cap too: `false` lets its prompt ask for more images than it names, each billed. A variant fal adds to one of them is refused under a cap until it is decided, in words that
+name it, never held at `get_pricing`'s one rate. Any other endpoint is priced at `get_pricing`'s one rate, whatever its
+settings. A job whose units can't be known before it runs (one billed by compute time or tokens,
+one that names no size or length, media whose length can't be read, an endpoint with no listed price, a setting value
+the model page names no rate for, a variant whose rate is not decided) is refused under a cap,
 in words that say why; with no cap it runs, booked as an unknown charge. A price saved for a fal tool takes the place
 of this. A request costs its input, plus the output it
 is sent with at the output price, plus any fee its tokens do not show (below). Its input is priced at its worst case:
@@ -4743,16 +5638,16 @@ step is sent only when the run's spend plus that step's least (its whole input b
 1,024-token answer) fits. So a small cap pauses a run well before it has spent it. Measured on a pi desktop run on Sonnet
 ($3 / $15, cache write $3.75, cache read $0.30 a million) through the dispatch's own system prompt and tools (read,
 write, edit, the desktop's and `codemode`, with the desktop skill named in the system prompt), five requests (four
-screenshots, then the answer), spending about $0.04 in all. Through a gateway the first request's byte bound is 9,772
-tokens, so it needs $0.052; each later request is bounded by the last one's bill and the bytes it adds, so the whole run
+screenshots, then the answer), spending about $0.04 in all. Through a gateway the first request's byte bound is 10,445
+tokens, the server's note that the desktop's disk is not the run's files among them, so it needs $0.055; each later request is bounded by the last one's bill and the bytes it adds, so the whole run
 needs $0.082;
-straight to Anthropic the count is one recorded from a real desktop run on Sonnet (3,146 tokens at first), so it needs
-$0.030 and $0.083:
+straight to Anthropic the count is one recorded from a real desktop run on Sonnet (3,146 tokens at first), and the note,
+placed after the count, adds its byte bound (371 tokens), so it needs $0.031 and $0.083:
 
 | Route | First request needs | Five-step run needs | Each further step |
 | --- | --- | --- | --- |
 | Through a gateway (OpenRouter): the byte bound, then the last bill | $0.06 | $0.09 | about $0.012 |
-| Straight to Anthropic: Anthropic's count | $0.03 | $0.09 | about $0.012 |
+| Straight to Anthropic: Anthropic's count | $0.04 | $0.09 | about $0.012 |
 
 A claude-agent run's first request is of the same size (the pinned
 CLI's measured 6,926 bytes with five tools: $0.04 for its first request through a gateway). A cap below these pauses at
@@ -4779,12 +5674,33 @@ call returns. So what the run spent plus what it holds stays within the cap thro
 idle time between them and its release. A session a create's lost answer left to a release after the create deadline is
 held for that deadline and a stretch until its release is billed. Across a restart of the run's process, every session
 custody still tracks (kept, unreached, still releasing) is held from the reopen, at a stretch beside what it ran since
-its last charge, and one kept is released an idle window later unless a call uses it. Three
+its last charge, and one kept is released an idle window later unless a call uses it. Four
 things can still pass the cap, each by what it ran over, booked and shown: a single browser call that runs longer than a
-stretch, a release that takes longer than 30 s to be confirmed, and the time a run's process was down while it held a
-session (spent before any process could hold it). A session whose release is never confirmed is billed in full
+stretch, a release that takes longer than 30 s to be confirmed, the time a run's process was down while it held a
+session (spent before any process could hold it), and a browser no session held (below). A session whose release is never confirmed is billed in full
 (what it ran and its minimum) when the run gives up on it. When the run is let go, its sessions are released and their
-last charges booked before its process exits.
+last charges booked before its process exits. Then, when the run ends, is stopped or parks, every browser at its vendor
+that carries the run's labels and the claim's epoch and that nothing the run holds names (not a session's browser by id,
+nor one whose tag a session still being created owns) is released: one a create made and then lost, kept by its
+recovery because another create's browser was answered, is such a browser, and it would otherwise run to the vendor's
+lifetime. What the run holds is read once the vendor's list has answered: every browser its custody held in this process
+counts, released since or not, so one the vendor still lists a moment past its own release is billed by its own record
+alone, and a browser whose create this process still has in flight is left to that create and named. A release by a
+session's tag that ends such a browser beside the session's own (the vendor already lists it) charges it there. Either
+way its time, from when its vendor listing says it was made, is charged on the run with the rest (one whose listing
+gives no time is charged unpriced, never $0), under one key per browser (`unheld:<id>`), so whichever release sees it
+end charges it once and a reopen books it once. The let-go records each such browser on the run's root before its
+release is sent and charges and says it in one commit once that release answers, before the next is sent, so a process
+that ends, or a release that does not answer, leaves every released browser charged and said, or recorded; the next
+claim's open charges and says a recorded one: to when that claim's sweep of the run's older-epoch sessions answered,
+where that sweep released it, else to when its release went out (one its vendor says still runs is released then and
+charged to then). A release cut at its bound (a session's own release that never answers) releases these browsers
+too, before it says the cut, so a hung release leaves none of them to the vendor's lifetime; one both the cut and the
+release it cut see is charged once. The run's timeline and its root record say it, one line per browser: `AgentRun: Released 1
+browser a create race left running (…); this run did not hold it, and its time is booked on the run and absorbed, not
+billed.` On the run's usage that time is a `browser_time` line of its own, `absorbed` and not billable ([Attempts: what
+the infrastructure redid](#attempts-what-the-infrastructure-redid)). A browser of another run, or of a later claim, is
+never touched.
 
 A computer's minutes (a sandbox's, a desktop's or a phone's) are billed by its provider to your own account there, and
 AgentRun does not count them yet: they are in no run's cost and are not held against its cap.
@@ -4865,7 +5781,7 @@ A request on a free model costs $0, so no dollar cap can stop one: a free model 
 (an OpenRouter `:free` model and the like, as `harnesses[].free_models` lists them; an OpenRouter router is none, since
 it bills the model it picks), with no fee beside the request. Its provider's shared daily quota is what a looping run
 burns. So a run has a limit on those requests: 60, or `AGENTRUN_FREE_MODEL_REQUESTS` (a whole number above 0; anything
-else refuses the server's start and the runner's). ChatGPT-plan requests don't count. Capabilities'
+else refuses the server's start and the runner's). ChatGPT-plan requests and [Ollama's](#on-this-machines-ollama) don't count. Capabilities'
 `limits.free_model_requests` says it, and the console says "free model: up to 60 requests" beside the cap of an agent
 on a free model. A run may make that many; the next is not sent, and the run ends `failed` as one its
 cap ends, its error `spend_cap_reached`: "Not sent: this run reached its 60-request limit for free models." (the number
@@ -4874,6 +5790,9 @@ workflow's agent nodes. Every such request of the run counts, its own model's, i
 compaction, a title), and one a crash cut, which is booked at $0, a known cost; a paid request, a paid tool call and a
 workflow's decision never count, and are never refused by it. The count is read from the run's booking records at each
 request, so a restart or a claim moved to another runner keeps it.
+
+An agent's own `max_requests` is a lower limit of the same kind, in the same words. It counts everything the server's
+limit counts and a local model's requests (Ollama's) too: the only limit a run on Ollama meets besides its turns.
 
 ### A run paused at its cap
 
@@ -5049,7 +5968,7 @@ carries no cost at all, as from a provider that does not price the model. The te
   run needs are read from the store at its claim, opened with the seal key, and are put on that run's environment alone.
   It gets none of the computer providers' account keys ([Sandbox](#sandbox)), not the Archil account key
   (`ARCHIL_API_KEY`), from which the claim mints the run's own mount credential, and not the Composio account key
-  (`COMPOSIO_API_KEY`), which the runner sends only as a granted Composio server's MCP header. A tool key reaches it only when its
+  (`COMPOSIO_API_KEY` and `AGENTRUN_COMPOSIO_API_KEY`), which the runner sends only as a granted Composio server's MCP header. A tool key reaches it only when its
   revision names a tool the key unlocks (`MONID_API_KEY` a monid tool, `BROWSERBASE_API_KEY` and `KERNEL_API_KEY` `browser`; a workflow's
   tools are those its model and call nodes name), and a model key only when its model needs it ([Models](#models)), read
   from the revision at each claim, a resume after a restart included.
@@ -5065,8 +5984,8 @@ carries no cost at all, as from a provider that does not price the model. The te
   keys or bearer token (held, and handed to a run on Bedrock), an `AWS_PROFILE`, `GOOGLE_CLOUD_API_KEY` or the default
   application credentials file work. A credential file a provider reads by path (`AWS_PROFILE`'s `~/.aws` files, the
   default application credentials) is the host's: a run's process reads it for its model, and its file tools cannot.
-- `TYPESAFE_API_KEY` is a decision key, given to a workflow run's decision providers alone and never
-  with a run's other secrets, so a pi run on a `typesafe/` model does not get it: it finds no key for that model, and
+- `TYPESAFE_API_KEY` is a decision key, given to a workflow run's decision providers and to a run's web tools Jev
+  ranks alone, and never with a run's other secrets, so a pi run on a `typesafe/` model does not get it: it finds no key for that model, and
   the run fails.
 - A run's file tools (`read`, `write`, `edit`) reach its own `work/`, and two places of its own beside it: `read` also
   reaches the run's `tmp/` (next to `work/`, where a command's spilled output would go), and a write may also land in a

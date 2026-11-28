@@ -69,9 +69,8 @@
   --trace-model: 251 55% 53%;
   --trace-tool: 174 72% 33%;
 
-  /* Square fields and surfaces; rounded action buttons and a softer build composer. */
+  /* Square fields and surfaces; rounded action buttons. */
   --radius: 0px;
-  --radius-composer: 1rem;
   --radius-action: 0.5rem;
   /* Lines are 1px. 2px marks where you are (the active nav item, the open tab) and the focus ring. */
   --border-width: 1px;

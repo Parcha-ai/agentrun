@@ -171,12 +171,12 @@ describe("agents", () => {
   });
 
   it("reads corrections.md whole and writes it back whole as same-origin JSON under If-Match", async () => {
-    const file = { text: "# Learned\n- Keep it short.\n", etag: '"c1"', cap_bytes: 2048 };
+    const file = { text: "# Learned\n- Keep it short.\n", etag: '"c1"', cap_bytes: 8192 };
     const { fn, calls } = fakeFetch((c) => (c.init?.method === "PUT" ? json(200, { ...file, text: "# Learned\n- Keep it to three lines.\n", etag: '"c2"' }) : new Response(JSON.stringify(file), { status: 200, headers: { "content-type": "application/json", etag: '"c1"' } })));
     const v2 = createClient({ fetch: fn });
     expect(await v2.corrections("my agent")).toEqual(file);
     const saved = await v2.writeCorrections("my agent", "# Learned\n- Keep it to three lines.\n", '"c1"');
-    expect(saved).toMatchObject({ etag: '"c2"', cap_bytes: 2048 });
+    expect(saved).toMatchObject({ etag: '"c2"', cap_bytes: 8192 });
     expect(calls.map((c) => `${c.init?.method} ${c.url}`)).toEqual(["GET /v2/agents/my%20agent/learning/corrections", "PUT /v2/agents/my%20agent/learning/corrections"]);
     expect(new Headers(calls[1].init?.headers).get("if-match")).toBe('"c1"');
     expect(new Headers(calls[1].init?.headers).get("content-type")).toBe("application/json");
@@ -192,12 +192,16 @@ describe("agents", () => {
     await v2.listRuns(50, "c2", { archived: true });
     await v2.listAgentRuns("x", 50, null, { status: "input_required", archived: true });
     await v2.listRuns(50, null, { archived: false });
+    await v2.listRuns(50, null, { source: "claude-code", status: "failed" });
+    await v2.listRuns(50, null, { from: "2026-11-01T00:00:00.000Z", to: "2026-11-02T00:00:00.000Z", model: "openai/gpt-5" });
     expect(calls.map((c) => c.url)).toEqual([
       "/v2/runs?limit=10",
       "/v2/runs?limit=50&status=failed",
       "/v2/runs?limit=50&cursor=c2&archived=true",
       "/v2/agents/x/runs?limit=50&status=input_required&archived=true",
       "/v2/runs?limit=50",
+      "/v2/runs?limit=50&status=failed&source=claude-code",
+      "/v2/runs?limit=50&from=2026-11-01T00%3A00%3A00.000Z&to=2026-11-02T00%3A00%3A00.000Z&model=openai%2Fgpt-5",
     ]);
   });
 

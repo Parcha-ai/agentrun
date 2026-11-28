@@ -14,22 +14,23 @@ import { dirname, join } from "node:path";
 import { READ_SKILL_FILE, hostedTool, readSkillFileTool, skillProblems, type AdapterSession, type AgentAdapter, type GateCall, type HostSkill, type HostTool, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, pendingSubmissions, Restart, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { toolSchemaProblems } from "@parcha/agentrun-kernel";
-import { bridgeTool, NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
+import { bridgeTool, NativeJournal, recoveryNote, settleTurn, transcriptOf, windowBudget } from "@parcha/agentrun-kernel/process";
 import { type BinaryProbe, checkedOnce, checkedOnceAsync, hostHeaderProblems, type ModelProxyOptions, startModelProxy } from "@parcha/agentrun-kernel/host";
-import { anthropicPolicy, withWebSearches } from "./host/policy.js";
+import { anthropicPolicy, isoDay, withWebSearches } from "./host/policy.js";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
 import { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
 import { type ClaudeAgentSdk, claudeCodeHarness, claudeToolSearch, lostPrompts } from "./harness.js";
-import { JournalSessionStore } from "./store.js";
+import { JournalSessionStore, type BarrierTimers } from "./store.js";
 import { type ConfineChild, localMachine } from "./host/machine.js";
-import type { ClaudeAgentLogin } from "./login.js";
+import type { ClaudeAgentLogin, ClaudeLoginToken } from "./login.js";
 import { serialWriter } from "./serial.js";
 import type { ToolServerModules } from "./host/tool-server.js";
 import { CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, CLAUDE_CODE_VERSION, installedVersion } from "./versions.js";
 export { CLAUDE_AGENT_CLI_SKILL_NAMES } from "./cli-names.js";
 
-/** The pinned CLI's tools the copied harness leaves undecided, off by name in every session (WebSearch unless `webSearch`). */
-export const CLAUDE_AGENT_ALSO_OFF: readonly string[] = Object.freeze(["Skill", "WebSearch"]);
+/** The pinned CLI's tools off by name in every session (WebSearch unless `webSearch`): those the copied harness leaves
+ *  undecided, and WebFetch, which fetches from the CLI's own process where the host's web_fetch is the session's. */
+export const CLAUDE_AGENT_ALSO_OFF: readonly string[] = Object.freeze(["Skill", "WebSearch", "WebFetch"]);
 
 /** The local plugin the session's skills are served from: the model sees each as `agentrun:<name>`, and may load it by
  *  that name or, unless the CLI has a command or skill of that name (`CLAUDE_AGENT_CLI_SKILL_NAMES`), by its bare one. */
@@ -92,8 +93,9 @@ export interface ClaudeAgentAdapterOptions {
   provider?: ClaudeAgentProvider;
   /** A person's own login on this machine (login.ts), which the CLI runs on in place of a provider: it calls Anthropic
    *  itself, with no proxy, no model URL and no key of the host's; each response is booked from its stream, billed to the
-   *  person's plan (`price` is not read), and the session has no host port. The host only says where the login is. */
-  login?: ClaudeAgentLogin;
+   *  person's plan (`price` is not read), and the session has no host port. The host says where the login is, or hands
+   *  its access token alone (ClaudeLoginToken), asked at each start of the CLI and on a 401. */
+  login?: ClaudeAgentLogin | ClaudeLoginToken;
   /** Start the CLI under the host's confinement (its own `confine()`, a `setpriv --no-new-privs` prefix, say). It may
    *  only add in front of the pinned binary and its arguments, and never touches its environment. */
   confine?: ConfineChild;
@@ -101,6 +103,10 @@ export interface ClaudeAgentAdapterOptions {
   price?: ModelProxyOptions["price"];
   /** The most output tokens one request may ask for. Default 128 000, what the pinned CLI asks for on current models. */
   maxOutputTokens?: number;
+  /** The model's context window, in tokens: the host's bound on one tool result is its share of it (the kernel's
+   *  resultMaxChars), under HOST_RESULT_MAX_CHARS. A session's own (SessionSpec.contextWindow) wins. Absent, and none on
+   *  the session: the host's bound alone. */
+  contextWindow?: number;
   /** The most one image a tool answers with may be, as base64 (default 5 MB, `CLAUDE_AGENT_MAX_IMAGE_BYTES`; at most
    *  10 MB, Anthropic's API's own limit). A larger one is the call's error. */
   maxImageBytes?: number;
@@ -138,16 +144,31 @@ export interface ClaudeAgentAdapterOptions {
   /** For tests only (AGENTRUN_CLAUDE_AGENT_STANDIN=1 under a test runner): a scripted SDK's stand-in CLI, which no
    *  pin is checked against. */
   standIn?: { command: string };
+  /** For tests: the timers a host tool's wait for its call to reach the log runs on (a fake clock). Default the system's. */
+  barrierTimers?: BarrierTimers;
   /** How hard the model thinks when a node names no level (its `thinking`, else its `effort`). Default medium; it is
    *  never off. */
   thinking?: ClaudeAgentThinking;
-  /** For tests: the fetch the model proxy forwards with. */
+  /** The fetch the model proxy forwards with: the host's route for a model it translates onto this wire (a test's
+   *  recorder, too); absent, the network. Forwarding it is the harness contract (HARNESS.md, the facts' `wire`). */
   fetch?: typeof fetch;
-  /** For tests: the clock a user turn's day is read from (harness.ts dateLine). Default the system's. */
+  /** How long the CLI waits on a silent stream before it gives the stream up and asks again without one
+   *  (CLAUDE_STREAM_IDLE_TIMEOUT_MS). A host sets it for a model on its own machine (LOCAL_STREAM_IDLE_MS), which says
+   *  nothing while it loads, reads its prompt or thinks. Absent: the CLI's own limit (5 minutes), which a paid provider's
+   *  hung stream is held to. */
+  streamIdleMs?: number;
+  /** The run's clock, when the host sets one (serve: a template eval case's `now`): a user turn's day is read from it
+   *  (harness.ts dateLine), and the CLI's own date lines, which it reads from the machine's clock, are made to say its
+   *  day in `zone` at the session's model proxy (policy.ts `day`). A session on a login has no proxy: there the CLI's
+   *  lines keep the machine's date. Default the system's clock, and the CLI's lines pass as written. */
   now?: () => Date;
   /** The IANA zone a user turn's day is read in (harness.ts dateLine), the one the host's environment line names. Default UTC. */
   zone?: string;
 }
+
+/** How long the CLI waits on a silent stream from a model on the host's own machine (an Ollama model): the longest the
+ *  CLI takes (CLAUDE_STREAM_IDLE_TIMEOUT_MS, 30 minutes). */
+export const LOCAL_STREAM_IDLE_MS = 30 * 60_000;
 
 /** The thinking levels a session runs at: the SDK's effort levels, with adaptive thinking. There is no off. */
 export type ClaudeAgentThinking = "low" | "medium" | "high" | "xhigh" | "max";
@@ -391,6 +412,9 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       const tools: HostTool[] = skills.length ? [...spec.tools, hostedTool(io, readSkillFileTool(join(dir, "plugin", "skills"), skills.map((skill) => ({ name: skill.name, files: Object.keys(skill.files) }))))] : spec.tools;
 
       const calls = new CallsInFlight();
+      // Each tool result held to the model's share of its window (the session's, else this adapter's; none: the host's
+      // bound), and a turn's results to what the window has left, which the session's model proxy reads from each answer.
+      const budget = windowBudget(spec.contextWindow ?? options.contextWindow, spec.system);
       // The CLI's own tools offered to the model: Skill only when the session has skills, WebSearch only when it is on.
       const builtins = [...(skills.length ? ["Skill"] : []), ...(webSearch ? ["WebSearch"] : [])];
       const acquire = localMachine({
@@ -401,6 +425,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         // On a login, no proxy: the CLI calls Anthropic itself.
         ...(provider ? { proxy: {
           hooks: io.models,
+          ...(budget.resultBudget?.turn ? { turn: budget.resultBudget.turn } : {}),
           tools: tools.map((t) => t.name),
           ...(builtins.length ? { builtins } : {}),
           ...(webSearch ? { webSearch: true, ...(options.webSearchAllowance !== undefined ? { webSearchAllowance: options.webSearchAllowance } : {}) } : {}),
@@ -410,6 +435,8 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
           ...(provider.auth ? { auth: provider.auth } : {}),
           ...(provider.headers ? { headers: provider.headers } : {}),
+          // The CLI's own date lines follow the clock (policy.ts `day`).
+          ...(options.now ? { day: () => isoDay(options.now!(), options.zone) } : {}),
           ...(options.log ? { log: options.log } : {}),
           ...(options.fetch ? { fetch: options.fetch } : {}),
         } } : {}),
@@ -427,6 +454,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         },
         tools: tools.map((tool) => claudeTool(tool, io, maxImageBytes, calls)),
         ...(spec.deferCatalog === undefined ? {} : { deferCatalog: spec.deferCatalog }),
+        ...budget,
         builtins: false,
         // Off by name too, besides tools: []: the pinned CLI's tools that neither the harness's allowlist nor its off list
         // decide (test/tool-off.test.mjs pins the CLI's whole tool set against these lists), but WebSearch when it is on.
@@ -435,6 +463,10 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         model: modelFor(spec),
         ...(skills.length ? { skills: { plugin: join(dir, "plugin"), names: writeSkillsPlugin(join(dir, "plugin"), skills) } } : {}),
         ...(options.smallModel ? { smallModel: options.smallModel } : {}),
+        // A model on the host's own machine (an Ollama model) sends nothing while it loads, reads its prompt or thinks (the
+        // route holds its thinking to redact it whole): the host has the CLI wait longer on it (streamIdleMs), never
+        // dropping the stream at 5 minutes to ask again without one. Any other route keeps the CLI's own limit.
+        ...(options.streamIdleMs ? { streamIdleMs: options.streamIdleMs } : {}),
         ...(spec.system.length ? { instructions: spec.system.join("\n\n") } : {}),
         ...(provider ? { credential: async () => provider.credential(), gatewayUrl: provider.origin } : { login: { at: login!, models: io.models } }),
         executable,
@@ -443,6 +475,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         ...(options.log ? { log: options.log } : {}),
         ...(options.now ? { now: options.now } : {}),
         ...(options.zone ? { zone: options.zone } : {}),
+        ...(options.barrierTimers ? { barrierTimers: options.barrierTimers } : {}),
         // The host's gate, asked about each host-tool call and each WebSearch before it is written or run.
         ...(io.gate ? { gate: (call: GateCall) => io.gate!(call) } : {}),
       });
@@ -465,7 +498,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         // A call the CLI refused itself (a tool the session doesn't have): shown as a call that failed, by the name the
         // model gave. The CLI's transcript, mirrored to the store, keeps the refusal.
         if (e?.type === "tool_refused" && typeof e.callId === "string" && typeof e.name === "string") {
-          io.onEvent({ type: "tool_start", callId: e.callId, name: e.name, args: e.args ?? {} });
+          io.onEvent({ type: "tool_start", callId: e.callId, name: e.name, args: e.args ?? {}, refused: true });
           io.onEvent({ type: "tool_end", callId: e.callId, name: e.name, isError: true });
           options.log?.("claude-agent: the CLI turned down a call to a tool this session does not have", { name: e.name, reason: e.reason });
         }

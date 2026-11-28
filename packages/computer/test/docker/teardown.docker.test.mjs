@@ -56,20 +56,22 @@ const FILES = [
 	"conformance",
 ];
 
-const WRAPPER = `#!/usr/bin/env bash
-# Logs what a docker command is about to make, then runs the real docker.
+/** The docker a case's run finds first on PATH: it logs what a docker command is about to make to `log`, then runs the
+ *  real docker. Its log, the real docker and the slowed create's seconds are written into it, not read from its
+ *  environment: the provider starts docker with only the names docker reads (DOCKER_ENV_NAMES). */
+const wrapperOf = ({ log, real: realDocker, slow }) => `#!/usr/bin/env bash
 if [ "\${1:-}" = "run" ] || [ "\${1:-}" = "create" ]; then
   prev=""
   for arg in "$@"; do
-    if [ "$prev" = "--name" ]; then printf 'c %s\\n' "$arg" >> "\${DOCKER_NAME_LOG:?}"; fi
+    if [ "$prev" = "--name" ]; then printf 'c %s\\n' "$arg" >> ${JSON.stringify(log)}; fi
     prev=$arg
   done
   # A slowed create: the container comes into being this long after the name is logged.
-  sleep "\${DOCKER_SLOW_SECONDS:-0}"
+  sleep ${slow}
 elif [ "\${1:-}" = "volume" ] && [ "\${2:-}" = "create" ]; then
-  printf 'v %s\\n' "\${@: -1}" >> "\${DOCKER_NAME_LOG:?}"
+  printf 'v %s\\n' "\${@: -1}" >> ${JSON.stringify(log)}
 fi
-exec "\${REAL_DOCKER:?}" "$@"
+exec ${JSON.stringify(realDocker)} "$@"
 `;
 
 /** A preload for the file's own process, not for `node --test` itself: process.exit once a container exists. */
@@ -100,8 +102,6 @@ if (process.env.NODE_TEST_CONTEXT) {
 describe("a test file that is cut off leaves no container or volume it made", { skip: LIVE ? false : "set AGENTRUN_COMPUTER_LIVE_DOCKER=1 to run on real Docker" }, () => {
 	const dir = mkdtempSync(join(tmpdir(), "agentrun-teardown-"));
 	const realDocker = execFileSync("which", ["docker"], { encoding: "utf8" }).trim();
-	writeFileSync(join(dir, "docker"), WRAPPER);
-	chmodSync(join(dir, "docker"), 0o755);
 	writeFileSync(join(dir, "crash.mjs"), CRASH);
 	/** Every container and volume any case's run made, by exact name, for the after hook to remove if a case failed. */
 	const everything = { containers: new Set(), volumes: new Set() };
@@ -139,7 +139,11 @@ describe("a test file that is cut off leaves no container or volume it made", { 
 	async function cutOff(file, how) {
 		const log = join(dir, `${file}-${how}.log`);
 		const early = how === "early";
-		const env = { ...process.env, PATH: `${dir}:${process.env.PATH}`, DOCKER_NAME_LOG: log, REAL_DOCKER: realDocker, AGENTRUN_COMPUTER_LIVE_DOCKER: "1", DOCKER_SLOW_SECONDS: early ? String(SLOW_SECONDS) : "0" };
+		const bin = mkdtempSync(join(dir, `${file}-${how}-bin-`));
+		writeFileSync(join(bin, "docker"), wrapperOf({ log, real: realDocker, slow: early ? SLOW_SECONDS : 0 }));
+		chmodSync(join(bin, "docker"), 0o755);
+		// DOCKER_NAME_LOG and REAL_DOCKER are the crash preload's, which runs in the file's own process.
+		const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, DOCKER_NAME_LOG: log, REAL_DOCKER: realDocker, AGENTRUN_COMPUTER_LIVE_DOCKER: "1" };
 		// This file runs under `node --test`: with its marker left in, the nested one runs the file as a child and skips it.
 		delete env.NODE_TEST_CONTEXT;
 		const flags = how === "crash" ? ["--import", join(dir, "crash.mjs")] : [];

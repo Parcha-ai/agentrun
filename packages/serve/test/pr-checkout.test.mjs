@@ -6,7 +6,7 @@
 // it reads (github.ts githubPullOf).
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { cpSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, open, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,7 +14,7 @@ import { test } from "node:test";
 import { git, gitHttp, pullRepo } from "./fixtures/git-http.mjs";
 import { stranger } from "./fixtures/stranger.mjs";
 
-const { prCheckout, CHECKOUT_DIR } = await import("../dist/runner/pr-checkout.js");
+const { prCheckout, repoCheckout, CHECKOUT_DIR } = await import("../dist/runner/pr-checkout.js");
 const { githubPullOf } = await import("../dist/github.js");
 /** githubPullOf for a run a github trigger started (its launch's inputOrigin). */
 const githubPullOf_ = (content) => githubPullOf(content, { payload: true });
@@ -190,6 +190,111 @@ test("with the GitHub App, the fetch carries a token minted for the one reposito
   assert.deepEqual(await readdir(folder), []);
 });
 
+/** Each checkout's script, run with the App's token over `server`: a pull request's (deepened past its first fetch) and
+ *  a repository's, each landing at its commit in the run's folder. */
+const SCRIPTS = {
+  pull_request: { run: (options, server) => prCheckout({ ...options, fromGitHub: true, input: firing("acme/private", server.pull), web: server.url }), at: (pull) => pull.head },
+  repository: { run: (options, server) => repoCheckout({ ...options, repo: "acme/private", web: server.url }), at: (pull) => pull.base },
+};
+
+/** A git server holding acme/private (60 commits behind, so the pull request's checkout deepens), which takes only the
+ *  App's token's header, and a mint that gives that token. */
+async function privateServer(t, dir) {
+  const gh = join(dir, "gh");
+  const pull = pullRepo(gh, "acme/private", { shared: 4, ahead: 2, behind: 60 });
+  const token = `ghs_${"H".repeat(36)}`;
+  const authorization = `Basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`;
+  const server = await gitHttp(t, gh, { authorization });
+  return { url: server.url, seen: server.seen, pull, authorization, mint: async () => ({ ok: true, token, expires_at: Date.now() + 3600_000 }) };
+}
+
+/** The system's own `name`, found in /usr/bin and /bin. */
+const system = (name) => execFileSync("/bin/sh", ["-c", `command -v ${name}`], { encoding: "utf8", env: { PATH: "/usr/bin:/bin" } }).trim();
+
+/** A program `name` in `folder` that appends its name to `marks`, then runs the real one: what a program planted ahead of
+ *  the system's would do. */
+function planted(folder, name, marks) {
+  writeFileSync(join(folder, name), `#!${system("sh")}\nprintf '%s\\n' '${name}' >> '${marks}'\nexec '${system(name)}' "$@"\n`, { mode: 0o755 });
+}
+
+/** git's subcommand in a logged argument list: the first word that is not an option or a `-c` option's value. */
+function subcommandOf(args) {
+  const words = args.split(" ");
+  for (let i = 0; i < words.length; i++) {
+    if (words[i] === "-c") i++;
+    else if (!words[i].startsWith("-")) return words[i];
+  }
+  return undefined;
+}
+
+for (const [kind, script] of Object.entries(SCRIPTS)) {
+  test(`checkout ${kind}, run: the Authorization header is in the environment of the git calls that reach GitHub alone (fetch, ls-remote), never of the script or any other git call; every git call runs with core.hooksPath=/dev/null; git init copies no template, so neither a template's hook nor its config runs`, { timeout: 120_000 }, async (t) => {
+    const dir = await scratch(t);
+    const server = await privateServer(t, dir);
+    const { folder, workspace } = await runFolder(dir);
+    // A git in front of the run's PATH that logs whether the header is in its environment and its arguments, then runs the
+    // real one; a template (as an image's /usr/share/git-core/templates would be) whose hooks and config hooksPath would
+    // leave a mark if git ran them.
+    const spy = join(dir, "spy");
+    const log = join(dir, "git-calls.log");
+    const marks = join(dir, "hook-marks.log");
+    await mkdir(spy);
+    writeFileSync(join(spy, "git"), `#!${system("sh")}\nprintf '%s\\t%s\\t%s\\n' "\${GIT_CONFIG_VALUE_0+header}" "\${GIT_CONFIG_COUNT+count}" "$*" >> '${log}'\nexec '${system("git")}' "$@"\n`, { mode: 0o755 });
+    const template = join(dir, "template");
+    const hooks = join(dir, "hooks");
+    await mkdir(join(template, "hooks"), { recursive: true });
+    await mkdir(hooks);
+    for (const at of [join(template, "hooks"), hooks]) {
+      for (const hook of ["post-checkout", "reference-transaction", "post-index-change"]) writeFileSync(join(at, hook), `#!/bin/sh\nprintf '%s\\n' '${at}/${hook}' >> '${marks}'\n`, { mode: 0o755 });
+    }
+    writeFileSync(join(template, "config"), `[core]\n\thooksPath = ${hooks}\n`);
+    const spied = Object.create(workspace);
+    spied.exec = (argv, options) => workspace.exec(argv, { ...options, env: { ...options.env, PATH: `${spy}:${options.env.PATH}`, GIT_TEMPLATE_DIR: template } });
+    const made = await script.run({ workspace: spied, mint: server.mint }, server);
+    assert.equal(git(join(folder, CHECKOUT_DIR), "rev-parse", "HEAD"), script.at(server.pull), made.note);
+    assert.ok(server.seen.length > 0 && server.seen.every((request) => request.authorization === server.authorization), "every request carried the token's header");
+    const calls = readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => {
+      const [header, count, args] = line.split("\t");
+      return { header: header === "header", count: count === "count", args, command: subcommandOf(args) };
+    });
+    t.diagnostic(calls.map((call) => `${call.header ? "H" : "-"} ${call.args}`).join(" | "));
+    const network = new Set(["fetch", "ls-remote"]);
+    assert.ok(calls.filter((call) => call.command === "fetch").length >= (kind === "pull_request" ? 2 : 1), "the fetches ran (a pull request's deepened)");
+    for (const call of calls) {
+      assert.equal(call.header, network.has(call.command), `the header is in ${call.command}'s environment only if it reaches GitHub: ${call.args}`);
+      assert.equal(call.count, network.has(call.command), `GIT_CONFIG_COUNT likewise: ${call.args}`);
+      assert.match(` ${call.args} `, / -c core\.hooksPath=\/dev\/null /, `hooks off: ${call.args}`);
+    }
+    const init = calls.find((call) => call.command === "init");
+    assert.match(` ${init?.args} `, / --template= /, "git init copies no template");
+    assert.ok(!existsSync(marks), `no hook ran: ${existsSync(marks) ? readFileSync(marks, "utf8") : ""}`);
+    await made.end();
+  });
+
+  test(`checkout ${kind}, run: sh, git and every program the script runs are the system's (/usr/bin, /bin), never one a folder ahead of them on the run's PATH holds (/usr/local/bin, which an image or a root agent may fill)`, { timeout: 120_000 }, async (t) => {
+    const dir = await scratch(t);
+    const server = await privateServer(t, dir);
+    const { folder, workspace } = await runFolder(dir);
+    // /usr/local/bin, as the run's PATH has it, stood in for by a folder holding a planted sh and git.
+    const local = join(dir, "usr-local-bin");
+    const marks = join(dir, "planted.log");
+    await mkdir(local);
+    for (const name of ["sh", "git", "rm", "cat"]) planted(local, name, marks);
+    const paths = [];
+    const spied = Object.create(workspace);
+    spied.exec = (argv, options) => {
+      paths.push(options.env.PATH);
+      return workspace.exec(argv, { ...options, env: { ...options.env, PATH: options.env.PATH.split(":").map((one) => (one === "/usr/local/bin" ? local : one)).join(":") } });
+    };
+    const made = await script.run({ workspace: spied, mint: server.mint }, server);
+    assert.equal(git(join(folder, CHECKOUT_DIR), "rev-parse", "HEAD"), script.at(server.pull), made.note);
+    await made.end();
+    assert.deepEqual(await readdir(folder), [], "the end removed it");
+    assert.ok(!existsSync(marks), `no planted program ran: ${existsSync(marks) ? readFileSync(marks, "utf8") : ""}`);
+    for (const path of paths) assert.match(path, /^\/usr\/bin:\/bin:/, "the checkout's exec and its removal find programs in /usr/bin and /bin first");
+  });
+}
+
 test("with no App, a public repository is fetched anonymously; a private one is not, and the run is told why and to read through the GitHub tools, with no half folder left", { timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   const gh = join(dir, "gh");
@@ -210,6 +315,32 @@ test("with no App, a public repository is fetched anonymously; a private one is 
   assert.match(refused.note, /there is no repo\/ folder: read the change through the GitHub tools/);
   assert.deepEqual(await readdir(folder), [], "what the failed fetch made is gone");
   await refused.end();
+});
+
+test("a run in a workspace on a server whose GitHub App is connected: a private repository's checkout, of its pull request or the repository it names, says the run doesn't use the server's App, never that the server has none", { timeout: 120_000 }, async (t) => {
+  const IN_WORKSPACE = "a run in a workspace doesn't use this server's GitHub App, so only public repositories are read";
+  const { storeOn } = await import("./store-helpers.mjs");
+  const { seal } = await import("../dist/sealing.js");
+  const { store } = await storeOn(t);
+  const key = Buffer.alloc(32, 7);
+  for (const [field, value] of [["app_id", "4242"], ["private_key", "not-a-key"]]) await store.triggerSettings.put({ adapter: "github", scope: "server", field, sealed: seal(key, Buffer.from(value, "utf8"), `trigger_settings|github|server|${field}`).toString("base64") });
+  await store.agents.create({ id: "scoped", name: "scoped", workspace: "org:acme" }, { id: "rev-scoped", kind: "agentic", body: { instructions: "Answer." } });
+  await store.runs.create({ id: "run-scoped", agentId: "scoped", revisionId: "rev-scoped" });
+  const dir = await scratch(t);
+  const gh = join(dir, "gh");
+  const priv = pullRepo(gh, "acme/secret");
+  const locked = await gitHttp(t, gh, { authorization: "Basic never" });
+  const { folder, workspace } = await runFolder(dir);
+  const { prCheckoutForClaim } = await import("../dist/runner/pr-checkout.js");
+  const deps = { store, sealKey: key, githubApi: "http://127.0.0.1:1", githubWeb: locked.url };
+  const pull = await prCheckoutForClaim(deps, "run-scoped", workspace, { input: firing("acme/secret", priv), inputOrigin: { kind: "trigger", source: "github" } }, { hold: () => {} });
+  assert.match(pull.note, /^The pull request acme\/secret#7 could not be checked out \(/);
+  assert.ok(pull.note.includes(`fetched with no token: ${IN_WORKSPACE}: `), pull.note);
+  const repo = await prCheckoutForClaim(deps, "run-scoped", workspace, { input: { content: "Scan https://github.com/acme/secret." } }, { hold: () => {} }, undefined, undefined, "repository");
+  assert.ok(repo.note.includes(`fetched with no token: ${IN_WORKSPACE}: `), repo.note);
+  for (const note of [pull.note, repo.note]) assert.doesNotMatch(note, /has no GitHub App/);
+  assert.ok(locked.seen.length > 0 && locked.seen.every((request) => request.authorization === null), "every fetch was anonymous");
+  assert.deepEqual(await readdir(folder), []);
 });
 
 test("a head the repository does not have, a run no pull request started, and a payload tag in a run no github trigger started each get a note and no checkout", { timeout: 60_000 }, async (t) => {

@@ -24,6 +24,9 @@ import type { ClaudeAgentSdk } from '../harness.js';
  *   a dangling tool_use with a synthetic "interrupted" result.
  * - `exit-during <tool> <json args>` starts the call and exits at once (the
  *   CLI dying mid-call), leaving the handler running.
+ * - `parallel <json>` is one answer making several calls at once, `{ usage, calls: [{ name, args }] }`: its stream
+ *   events as the CLI streams them (`message_start` with `usage`, a `tool_use` block per call, `message_delta` stopping
+ *   for tools, `message_stop`), then every call at once, then one reply naming each result's length.
  * - A message sent at priority `next` while a call runs is folded into that
  *   turn (one result consumes both), as Claude Code does with a steer, and
  *   mirrored as the CLI does: a `queued_command` attachment naming its uuid.
@@ -45,9 +48,24 @@ import type { ClaudeAgentSdk } from '../harness.js';
  *   call and exits at once (the CLI dying mid-call).
  * - `mirror-error` yields the SDK's `system/mirror_error` (a dropped mirror
  *   batch), then answers as usual.
+ * - `whole <json>` (`{ thinking?, text }`) is an answer that came whole, as
+ *   Claude Code's non-streaming retry of a stalled stream hands it: its
+ *   `assistant` messages with no stream deltas.
  * - `cut <json answers>` says each answer in one turn; one the output limit
  *   cut (stop_reason max_tokens) the CLI resumes with its recovery note, up
  *   to 3 times, as Claude Code does, and the result says the last stop.
+ * - `batch <json>` (`{ n, gapMs, tool, args, lost? }`) is one assistant
+ *   message of `n` calls to `tool`, its blocks streamed `gapMs` apart (on
+ *   `sleep`): each block's stream events, then its `assistant` message, then
+ *   its call, which starts as its block ends, as Claude Code runs it. As the
+ *   real mirror does, the message's transcript lines reach the session store
+ *   only once the message ends; those of the blocks in `lost` (from 1) never.
+ *   The blocks in `refused` the CLI answers itself as its block ends, a
+ *   tool the session doesn't have, as Claude Code does: no call is made. A
+ *   block in both `refused` and `lost` has neither line reach the store, its
+ *   answer included. With `then` (`{ n, gapMs }`), the answer after the calls
+ *   is a second message of the turn, its text streamed in `n` deltas `gapMs`
+ *   apart before its line is mirrored.
  */
 
 interface FakeTool {
@@ -83,6 +101,12 @@ export interface FakeSdkOptions {
   reply?: (call: { name: string; result: string; steers: readonly string[] }) => string;
   /** Each `PreToolUse` decision a built-in got (with the input the hook rewrote, if it did). */
   onDecision?: (call: { id: string; name: string; decision: string; updatedInput?: Record<string, unknown>; reason?: string }) => void;
+  /** The wait between a `batch` message's blocks. Default a real timer; a test on a fake clock passes its own. */
+  sleep?: (ms: number) => Promise<void>;
+  /** A `batch` call's handler returned: its block's place in the message (from 1), and what the tool server answered. */
+  onCallEnd?: (call: { id: string; index: number; isError: boolean; text: string }) => void;
+  /** A `batch` message's `message_stop` was taken: the consumer asked for what follows it, so it has heard the stop. */
+  onMessageEnd?: () => void;
 }
 
 /**
@@ -448,6 +472,118 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
               await mirror([entry('user', { isMeta: true, message: { role: 'user', content: RECOVERY_NOTE } })]);
             }
             yield { type: 'result', subtype: 'success', is_error: false, result: 'ok', stop_reason: stop, usage: { output_tokens: 12 }, session_id: sessionId, user_message_uuids: consumed, queued_turn_count: 0 };
+            await mirror([{ type: 'last-prompt' }]);
+            continue;
+          }
+          const parallel = /^parallel (.*)$/s.exec(command);
+          if (parallel) {
+            const answer = JSON.parse(parallel[1]!) as { usage?: Record<string, number>; calls: { name: string; args?: unknown }[] };
+            const made = answer.calls.map((c) => ({ id: `toolu_${randomUUID().slice(0, 8)}_${++calls}`, name: c.name, args: c.args ?? {} }));
+            const event = (e: Record<string, unknown>) => ({ type: 'stream_event', parent_tool_use_id: null, event: e });
+            yield event({ type: 'message_start', message: { id: `msg_${randomUUID().slice(0, 8)}`, type: 'message', role: 'assistant', content: [], usage: { ...answer.usage, output_tokens: 1 } } });
+            for (const [index, c] of made.entries()) {
+              yield event({ type: 'content_block_start', index, content_block: { type: 'tool_use', id: c.id, name: `mcp__hands__${c.name}`, input: {} } });
+              yield event({ type: 'content_block_stop', index });
+            }
+            yield event({ type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: answer.usage?.output_tokens ?? 12 } });
+            yield event({ type: 'message_stop' });
+            const a = entry('assistant', { message: { role: 'assistant', content: made.map((c) => ({ type: 'tool_use', id: c.id, name: `mcp__hands__${c.name}`, input: c.args })) } });
+            yield { type: 'assistant', parent_tool_use_id: null, uuid: a.uuid, session_id: sessionId, message: a.message };
+            await mirror([a], lag);
+            const toolset = await tools;
+            const results = await Promise.all(made.map(async (c) => {
+              const tool = toolset.get(c.name);
+              return tool ? await tool.handler(c.args, { _meta: { 'claudecode/toolUseId': c.id } }) : { content: [{ type: 'text', text: `no tool ${c.name}` }], isError: true };
+            }));
+            if (signal?.aborted) return;
+            const r = entry('user', { message: { role: 'user', content: made.map((c, i) => ({ type: 'tool_result', tool_use_id: c.id, is_error: !!results[i]!.isError, content: results[i]!.content[0]?.text })) } });
+            await mirror([r]);
+            yield { type: 'user', parent_tool_use_id: null, message: r.message };
+            const reply = made.map((c, i) => `${c.name} returned ${String(results[i]!.content[0]?.text ?? '').length} characters.`).join(' ');
+            const b = entry('assistant', { message: { role: 'assistant', content: [{ type: 'text', text: reply }] } });
+            await mirror([b]);
+            yield { type: 'assistant', parent_tool_use_id: null, uuid: b.uuid, session_id: sessionId, message: b.message };
+            yield { type: 'result', subtype: 'success', is_error: false, result: 'ok', session_id: sessionId, user_message_uuids: consumed, queued_turn_count: 0 };
+            await mirror([{ type: 'last-prompt' }]);
+            continue;
+          }
+          // `whole <json>` (`{ thinking?, text }`): the answer as Claude Code hands on its non-streaming retry of a stalled
+          // stream: the stalled message's start, then the answer's `assistant` messages (its thinking block, then its text
+          // block, one message id), with no stream deltas.
+          const whole = /^whole (.*)$/s.exec(command);
+          if (whole) {
+            const answer = JSON.parse(whole[1]!) as { thinking?: string; text: string };
+            yield { type: 'stream_event', parent_tool_use_id: null, event: { type: 'message_start', message: { id: `msg_${uuid().slice(0, 8)}`, role: 'assistant', content: [] } } };
+            const id = `msg_${uuid().slice(0, 8)}`;
+            const blocks = [...(answer.thinking ? [{ type: 'thinking', thinking: answer.thinking, signature: '' }] : []), { type: 'text', text: answer.text }];
+            const b = entry('assistant', { message: { id, role: 'assistant', content: blocks, stop_reason: 'end_turn' } });
+            await mirror([b]);
+            for (const block of blocks) yield { type: 'assistant', parent_tool_use_id: null, uuid: b.uuid, session_id: sessionId, message: { id, role: 'assistant', content: [block] } };
+            yield { type: 'result', subtype: 'success', is_error: false, result: answer.text, session_id: sessionId, user_message_uuids: consumed, queued_turn_count: 0 };
+            await mirror([{ type: 'last-prompt' }]);
+            continue;
+          }
+          const batching = /^batch (.*)$/s.exec(command);
+          if (batching) {
+            const spec = JSON.parse(batching[1]!) as { n: number; gapMs: number; tool: string; args: unknown; lost?: number[]; refused?: number[]; then?: { n: number; gapMs: number } };
+            const sleep = fake.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+            const event = (ev: Record<string, unknown>) => ({ type: 'stream_event', parent_tool_use_id: null, event: ev });
+            const tool = (await tools).get(spec.tool);
+            const lines: unknown[] = [];
+            const running: Promise<{ id: string; result: { content: { type: string; text: string }[]; isError?: boolean } }>[] = [];
+            yield event({ type: 'message_start', message: { id: `msg_${uuid().slice(0, 8)}`, role: 'assistant', content: [] } });
+            for (let index = 1; index <= spec.n; index++) {
+              const id = `toolu_${randomUUID().slice(0, 8)}_${++calls}`;
+              const block = { type: 'tool_use', id, name: `mcp__hands__${spec.tool}`, input: spec.args };
+              yield event({ type: 'content_block_start', index: index - 1, content_block: { ...block, input: {} } });
+              await sleep(spec.gapMs);
+              yield event({ type: 'content_block_delta', index: index - 1, delta: { type: 'input_json_delta', partial_json: JSON.stringify(spec.args) } });
+              yield event({ type: 'content_block_stop', index: index - 1 });
+              const a = entry('assistant', { message: { role: 'assistant', content: [block] } });
+              if (!spec.lost?.includes(index)) lines.push(a);
+              yield { type: 'assistant', parent_tool_use_id: null, uuid: a.uuid, session_id: sessionId, message: a.message };
+              if (spec.refused?.includes(index)) {
+                const r = entry('user', { message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, is_error: true, content: `<tool_use_error>Error: No such tool available: ${block.name}</tool_use_error>` }] } });
+                if (!spec.lost?.includes(index)) lines.push(r);
+                yield { type: 'user', parent_tool_use_id: null, message: r.message };
+                continue;
+              }
+              running.push(
+                (async () => {
+                  const result = tool ? await tool.handler(spec.args, { _meta: { 'claudecode/toolUseId': id } }) : { content: [{ type: 'text', text: `no tool ${spec.tool}` }], isError: true };
+                  fake.onCallEnd?.({ id, index, isError: !!result.isError, text: String(result.content[0]?.text ?? '') });
+                  return { id, result };
+                })()
+              );
+            }
+            yield event({ type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 12 } });
+            yield event({ type: 'message_stop' });
+            fake.onMessageEnd?.();
+            await mirror(lines);
+            const results = await Promise.all(running);
+            if (signal?.aborted) return;
+            for (const { id, result } of results) {
+              const r = entry('user', { message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, is_error: !!result.isError, content: result.content[0]?.text }] } });
+              await mirror([r]);
+              yield { type: 'user', parent_tool_use_id: null, message: r.message };
+            }
+            const reply = `${spec.tool} ran ${results.filter(({ result }) => !result.isError).length} of ${spec.n}`;
+            if (spec.then) {
+              // The answer is a message of its own, in the same stream, streamed as the model writes it.
+              yield event({ type: 'message_start', message: { id: `msg_${uuid().slice(0, 8)}`, role: 'assistant', content: [] } });
+              yield event({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
+              for (let at = 0; at < spec.then.n; at++) {
+                await sleep(spec.then.gapMs);
+                yield event({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: at ? ' .' : reply } });
+              }
+              yield event({ type: 'content_block_stop', index: 0 });
+              yield event({ type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 12 } });
+              yield event({ type: 'message_stop' });
+            }
+            const b = entry('assistant', { message: { role: 'assistant', content: [{ type: 'text', text: reply }] } });
+            await mirror([b]);
+            yield { type: 'assistant', parent_tool_use_id: null, uuid: b.uuid, session_id: sessionId, message: b.message };
+            yield { type: 'result', subtype: 'success', is_error: false, result: 'ok', session_id: sessionId, user_message_uuids: consumed, queued_turn_count: 0 };
             await mirror([{ type: 'last-prompt' }]);
             continue;
           }

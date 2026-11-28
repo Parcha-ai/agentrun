@@ -1,14 +1,17 @@
-import { ArrowDown, ChevronLeft, ChevronRight, Download, Maximize2, X, ZoomIn, ZoomOut } from "lucide-react";
+import { ArrowDown, ChevronLeft, ChevronRight, Download, Maximize2, Play, X, ZoomIn, ZoomOut } from "lucide-react";
 import { type KeyboardEvent, type PointerEvent, type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Banner } from "@/components/ui/banner";
 import { Button } from "@/components/ui/button";
 import { Chip, type ChipTone } from "@/components/ui/chip";
+import { Dialog } from "@/components/ui/dialog";
+import { Field, Input } from "@/components/ui/field";
 import { ListFilter } from "@/components/ListFilter";
 import { Segmented } from "@/components/ui/segmented";
 import { Spinner } from "@/components/ui/spinner";
 import { tabPanelProps, Tabs } from "@/components/ui/tabs";
-import { bytes, compact, isEstimate, runEnded, soFar } from "@/lib/format";
-import { BASIS_WORDS, type Bar, between, bookedWords, byModel, byTool, cacheShare, costSplit, duration, findings, inputTokens, keeps, lane, lineName, lineNotes, offset, ordered, panned, percent, place, quantityWords, type SpanKind, type SpanSort, type Spend, spanMs, ticks, timing, traceTotals, traceWindow, usd as dollars, type View, vitals, WHOLE, zoomed } from "@/lib/trace";
+import { bytes, capDollars, compact, isEstimate, runEnded, soFar } from "@/lib/format";
+import { attemptWords, BASIS_WORDS, type Bar, between, bookedWords, budgetStop, byModel, byTool, cacheShare, costSplit, duration, findings, inputTokens, keeps, lane, lineName, lineNotes, offset, ordered, panned, percent, place, quantityWords, redoOf, redoWords, since, type SpanKind, type SpanSort, type Spend, spanMs, type StretchBar, stretches, stretchLane, ticks, timing, traceTotals, traceWindow, usd as dollars, type View, vitals, WHOLE, zoomed } from "@/lib/trace";
+import { compareHref, runIdOf } from "@/lib/traceCompare";
 import { cn } from "@/lib/utils";
 import type { Run, RunTrace as Trace, RunUsage, TraceSpan, UsageLine } from "@/lib/v2";
 
@@ -154,6 +157,23 @@ function Lane({ title, swatch, bars, rows, selected, dimmed, onPick, at }: {
   );
 }
 
+/** A lane of the overview for what was up beside the run's calls: its computers, or its browser sessions. A bar opens
+ *  nothing (it is no call) and says what it is where the pointer rests; the Breakdown lists each. One that began before
+ *  the first request or outlasted the last has no edge on that side. */
+function StretchLane({ title, swatch, bars, rows, now, from }: { title: string; swatch: string; bars: StretchBar[]; rows: number; now: number; from: number }) {
+  return (
+    <div className="mt-2.5 first:mt-0" data-stretches>
+      <p className="caps flex items-center gap-1.5 text-label text-muted-foreground"><Swatch className={swatch} />{title}</p>
+      <div className="relative mt-1.5" style={{ height: rows * 12 - 4 }}>
+        {bars.map(({ stretch, left, width, row, before, after }) => (
+          <span key={stretch.key} data-stretch={stretch.key} title={`${stretch.name}, ${stretch.to === null ? "no end recorded" : `up ${duration(stretch.to - stretch.from!)}`}, from ${since(stretch.from! - from)}`}
+            style={{ left: `${left}%`, width: `${width}%`, top: row * 12 }} className={cn("trace-mark absolute h-2 min-w-0.5", swatch, before && "border-l-0", after && "border-r-0", stretch.to === null && now > stretch.from! && "border-r-0")} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /** The overview's lanes over the axis's marks, with the part the table's time axis shows framed on it. A drag across
  *  picks that part, as on a browser's performance overview; the zoom buttons beside the legend do the same from the
  *  keyboard. */
@@ -226,7 +246,7 @@ function Timing({ span, trace, now, onPick }: { span: TraceSpan; trace: Trace; n
 
 /** The panel of one span: what it cost and used, when it ran, what called it and what it called, and a call's arguments
  *  and the head of its output. */
-function SpanPanel({ span, trace, run, from, now, reveal, onPick, onClose }: { span: TraceSpan; trace: Trace; run: Run; from: number; now: number; reveal: boolean; onPick: (id: string) => void; onClose: () => void }) {
+function SpanPanel({ span, trace, run, from, now, reveal, onPick, onClose, onRecording }: { span: TraceSpan; trace: Trace; run: Run; from: number; now: number; reveal: boolean; onPick: (id: string) => void; onClose: () => void; onRecording?: () => void }) {
   const [text, setText] = useState<"input" | "output">("input");
   // The text shown, copied: the button says so for a moment. A browser that refuses the clipboard leaves it as it was.
   const [copied, setCopied] = useState(false);
@@ -284,6 +304,9 @@ function SpanPanel({ span, trace, run, from, now, reveal, onPick, onClose }: { s
           </div>
         ))}
       </dl>
+
+      {/* The run's screen was recorded while this call ran: the Screen tab plays the recording from the call's time. */}
+      {onRecording && <p className="mt-3"><Button size="xs" onClick={onRecording}><Play aria-hidden />Show on the recording</Button></p>}
 
       <Timing span={span} trace={trace} now={now} onPick={onPick} />
 
@@ -384,6 +407,32 @@ function SpanPanel({ span, trace, run, from, now, reveal, onPick, onClose }: { s
   );
 }
 
+/** Asks which run to compare this one with, and opens the two side by side (#/compare, lib/traceCompare.ts): this run
+ *  first, the other second. The other is named by its id or by its page's address, as a person copies either. */
+function CompareWith({ runId, onClose }: { runId: string; onClose: () => void }) {
+  const [pasted, setPasted] = useState("");
+  const [refused, setRefused] = useState<string | null>(null);
+  const field = useRef<HTMLInputElement>(null);
+  const go = () => {
+    const other = runIdOf(pasted);
+    if (!other) { setRefused(pasted.trim() ? "That is not a run's id or its page's address." : "Paste the other run's id, or its page's address."); return; }
+    if (other === runId) { setRefused("That is this run. Name another one."); return; }
+    onClose();
+    location.hash = compareHref([runId, other]);
+  };
+  return (
+    <Dialog open onClose={onClose} title="Compare with another run" initialFocus={field}
+      description="This run's requests, calls, tokens, cost and time beside another run's, with the difference."
+      footer={<><Button onClick={onClose}>Cancel</Button><Button variant="primary" onClick={go}>Compare</Button></>}>
+      <form onSubmit={(e) => { e.preventDefault(); go(); }}>
+        <Field label="The other run" hint="Its id, or the address of its page. It is the second run; this one is the first." error={refused}>
+          <Input ref={field} value={pasted} onChange={(e) => { setPasted(e.target.value); setRefused(null); }} placeholder="run id or address" className="font-mono" />
+        </Field>
+      </form>
+    </Dialog>
+  );
+}
+
 /** A model's mark where the cost is split by model: the first the full colour, the next striped, the rest light with an edge. */
 const MODEL_TONES = ["bg-trace-model", `bg-trace-model ${HATCH}`, TINT];
 
@@ -391,6 +440,10 @@ const MODEL_TONES = ["bg-trace-model", `bg-trace-model ${HATCH}`, TINT];
 const TOOL_TONES = ["bg-trace-tool", `bg-trace-tool ${HATCH}`, "border border-trace-tool bg-trace-tool/30"];
 /** Browser and computer time's mark: its own colour, hollow, told from a tool vendor's by more than its hue. */
 const BROWSER_TONE = "border border-trace-tool bg-card";
+/** A computer's stretch on the time axis: light with an edge, so one that spans the whole run still reads as a band. A
+ *  browser session's: hollow, as its time's line is. Each has a lane of its own, named. */
+const COMPUTER_TONE = "border border-trace-tool bg-trace-tool/30";
+const SESSION_TONE = BROWSER_TONE;
 
 /** Each usage line as a part of the split, with its mark: a model's tones in turn, a tool vendor's, browser time's. A line
  *  whose cost is not known counts what is known of it, and says so. */
@@ -399,7 +452,10 @@ function lineParts(lines: readonly UsageLine[]) {
   return lines.map((line) => {
     const tone = line.meter === "browser_time" || line.meter === "compute_time" ? BROWSER_TONE
       : line.meter === "tokens" ? MODEL_TONES[Math.min(seen.tokens++, MODEL_TONES.length - 1)]! : TOOL_TONES[Math.min(seen.tools++, TOOL_TONES.length - 1)]!;
-    return { word: lineName(line), tone, n: line.usd ?? line.so_far_usd ?? 0, says: bookedWords(line) };
+    // Two lines of one name differ by the attempt they were made in, and two of one attempt by whether their requests
+    // were sent again: the part says both, where the run's lines differ by either.
+    const attempt = attemptWords(line, lines) === null ? "" : `${line.attempt !== null ? ` · attempt ${line.attempt}` : ""}${line.billable ? "" : " · sent again"}`;
+    return { word: `${lineName(line)}${attempt}`, tone, n: line.usd ?? line.so_far_usd ?? 0, says: bookedWords(line) };
   });
 }
 
@@ -407,7 +463,6 @@ function lineParts(lines: readonly UsageLine[]) {
 const NO_LINES: Record<NonNullable<RunUsage["reason"]>, string> = {
   running: "Cost by line appears when the run ends.",
   not_booked: "This run's cost is its harness's own figure, so it can't be split by line.",
-  reopened: "A follow-up reopened this learning run, so its cost can't be split by round.",
 };
 
 /** The run's cost line by line, from the server's booking: a row a line, with its quantity, its cost and how the cost
@@ -423,7 +478,8 @@ function CostLines({ lines }: { lines: readonly UsageLine[] }) {
           <thead><tr className="border-b">{["Line", "Quantity", "Cost", "Basis"].map((h) => <th key={h} scope="col" className={th}>{h}</th>)}</tr></thead>
           <tbody>
             {lines.map((line, i) => {
-              const notes = lineNotes(line);
+              // The attempt a line was made in goes first: it says which of two lines of one name this is.
+              const notes = [attemptWords(line, lines), ...lineNotes(line)].filter((note): note is string => note !== null);
               const kind = line.meter === "tokens" ? `Tokens${line.provider ? ` · sent to ${line.provider}` : ""}` : line.meter === "tools" ? "Tool charges" : line.meter === "compute_time" ? "Computer time" : "Browser time";
               return (
                 <tr key={i} className="border-b last:border-b-0">
@@ -468,6 +524,7 @@ function CostByLine({ usage, lines }: { usage: RunUsage; lines: readonly UsageLi
   const parts = lineParts(lines);
   const whole = parts.reduce((sum, part) => sum + part.n, 0);
   const free = lines.length > 0 && lines.every((line) => line.usd === 0);
+  const redo = redoOf(usage);
   return (
     <>
       <Heading level="h2" aside={usage.total ? bookedWords(usage.total) : undefined}>Where the cost went</Heading>
@@ -475,18 +532,64 @@ function CostByLine({ usage, lines }: { usage: RunUsage; lines: readonly UsageLi
         : whole > 0 ? <Split label="Where the cost went" whole={whole} say={dollars} parts={parts} />
         : <p className="text-body text-muted-foreground">{free ? "Every line of this run's cost was $0." : "No line of this run's cost is known yet."}</p>}
       <p className="mt-2 max-w-prose text-small text-muted-foreground">The run's cost as the server booked it: a line for each model, each vendor that charged for a tool, and each browser provider.</p>
+      {redo && (
+        <p className="mt-3 max-w-prose text-small" data-redo>
+          <span className="font-semibold">Requests sent twice: {redoWords(redo)}{redo.share !== null ? ` · ${percent(redo.share)}` : ""}.</span>{" "}
+          <span className="text-muted-foreground">An attempt at a turn was cut (its runner drained, crashed or lost its lease, or the turn was tried again) and another took over. Model requests it had sent and not finished were sent again; its answered requests and finished paid calls were reused. The repeated requests' lines say so, and their cost is in the run's.</span>
+        </p>
+      )}
       {lines.length > 0 && <CostLines lines={lines} />}
     </>
   );
 }
 
+/** The run's computers and browser sessions, a row each: when it started against the first request (`anchor`: against
+ *  the run's start, for a run with no request), how long it was up, and how much of that is in the run's cost. The
+ *  overview draws the same on its time axis. A session whose start is not recorded has a row too, with what was charged. */
+function Stretches({ usage, from, anchor }: { usage: RunUsage; from: number; anchor?: string }) {
+  const { computers, browsers } = useMemo(() => stretches(usage), [usage]);
+  const all = [...computers, ...browsers];
+  if (!all.length) return null;
+  // One with no end recorded (a computer whose delete failed, a session whose release was never told) may be up still:
+  // how long it had been up is said as of the run's end, the moment the usage covers, never as its age now.
+  const ended = usage.ended_at ? Date.parse(usage.ended_at) : Number.NaN;
+  const upAtEnd = (began: number) => (ended > began ? `No end recorded · up ${duration(ended - began)} when the run ended` : "No end recorded");
+  const th = "caps whitespace-nowrap px-3 py-2 text-right text-label font-normal text-muted-foreground first:text-left last:text-left";
+  const td = "whitespace-nowrap px-3 py-2 text-right align-top font-mono";
+  return (
+    <section aria-label="Computers and browser sessions">
+      <Heading level="h2" aside="up beside the run's calls">Computers and browser sessions</Heading>
+      <div className="overflow-x-auto border bg-card" tabIndex={0} role="region" aria-label="The run's computers and browser sessions">
+        <table className="w-full text-small">
+          <thead><tr className="border-b">{["What", "Started", "Up for", "In the run's cost", "Note"].map((h) => <th key={h} scope="col" className={th}>{h}</th>)}</tr></thead>
+          <tbody>
+            {all.map((stretch) => (
+              <tr key={stretch.key} className="border-b last:border-b-0">
+                <th scope="row" className="px-3 py-2 text-left font-normal">
+                  <span className="flex items-center gap-2 font-mono"><Swatch className={stretch.kind === "computer" ? COMPUTER_TONE : SESSION_TONE} />{stretch.name}</span>
+                  {stretch.about && <span className="block break-all pl-4 text-muted-foreground">{stretch.about}</span>}
+                </th>
+                <td className={td}>{stretch.from !== null ? since(stretch.from - from, anchor) : "Not recorded"}</td>
+                <td className={td}>{stretch.from === null ? "Not recorded" : stretch.to !== null ? duration(stretch.to - stretch.from) : upAtEnd(stretch.from)}</td>
+                <td className={td}>{stretch.counted !== null ? duration(stretch.counted * 1000) : "Unknown"}</td>
+                <td className="px-3 py-2 text-left align-top text-muted-foreground">{stretch.notes.length ? stretch.notes.join(". ") : NONE}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="mt-2 max-w-prose text-small text-muted-foreground">A computer's and a browser session's time is billed by its provider, apart from any call. What of it is in the run's cost is on its lines above: a computer's time while a claim of the run held it, a session's as it was charged.</p>
+    </section>
+  );
+}
+
 /** The run's requests and calls added up: what stands out, where the time and the cost went, each request's input and
  *  cost in the order they ran, and the same by model and by tool. */
-function Breakdown({ trace, usage, now, onPick, selected }: { trace: Trace; usage: RunUsage | null; now: number; onPick: (id: string) => void; selected: string | null }) {
+function Breakdown({ trace, usage, run, now, onPick, selected }: { trace: Trace; usage: RunUsage | null; run: Run; now: number; onPick: (id: string) => void; selected: string | null }) {
   const totals = useMemo(() => traceTotals(trace, now), [trace, now]);
   const tools = useMemo(() => byTool(trace.spans, now), [trace, now]);
   const models = useMemo(() => byModel(trace.spans, trace.model_requests === "priced"), [trace]);
-  const found = useMemo(() => findings(trace, now), [trace, now]);
+  const found = useMemo(() => findings(trace, now, { usage, run }), [trace, now, usage, run]);
   const split = useMemo(() => costSplit(trace.spans), [trace]);
   const vital = useMemo(() => vitals(trace.spans, now), [trace, now]);
   // The figures every run has, in one order: what a browser's vitals are to a page load.
@@ -560,6 +663,8 @@ function Breakdown({ trace, usage, now, onPick, selected }: { trace: Trace; usag
           )}
         </section>
       </div>
+
+      {usage && <Stretches usage={usage} from={traceWindow(trace.spans, now).from} />}
 
       {requests.length > 0 && (
         <section aria-label="Each request" className="border bg-card p-4">
@@ -656,8 +761,10 @@ const TH = "relative bg-card px-3 py-2 after:absolute after:inset-x-0 after:bott
  *  network panel does: an overview of the whole run, a row a call with its bar, and a panel for the open one.
  *  `version` moves when the run does (its rows, its status), so the trace is read again. `panel`: what ties the tab's
  *  body to its tab (tabPanelProps). For a story or a test: `now`, its own clock; `open`, the span open at first; `view`,
- *  the view shown at first. */
-export function RunTrace({ run, read, readUsage, version, live, panel, now: fixed, open = null, view: first = "calls" }: { run: Run; read?: () => Promise<Trace>; readUsage?: () => Promise<RunUsage>; version: string; live: boolean; panel?: ReturnType<typeof tabPanelProps>; now?: number; open?: string | null; view?: "calls" | "breakdown" }) {
+ *  the view shown at first. `openCall`: a tool call to open once the trace is read, by its span's id, asked for from the
+ *  Screen tab's recording (`n` tells one ask from the next). `recorded`: for a call's span id, what shows the call on the
+ *  run's recording, where one was made while it ran; a call's panel then offers it. */
+export function RunTrace({ run, read, readUsage, version, live, panel, now: fixed, open = null, view: first = "calls", openCall, recorded }: { run: Run; read?: () => Promise<Trace>; readUsage?: () => Promise<RunUsage>; version: string; live: boolean; panel?: ReturnType<typeof tabPanelProps>; now?: number; open?: string | null; view?: "calls" | "breakdown"; openCall?: { span: string; n: number }; recorded?: (spanId: string) => (() => void) | undefined }) {
   const { trace, error, retry } = useRunTrace(read, version);
   // The run's cost line by line, read beside the trace and again as it moves. A read that fails leaves the trace's own split.
   // Lines are shown only as read at the run's version now: a follow-up reopens a run, and a reread that failed after it must
@@ -679,6 +786,7 @@ export function RunTrace({ run, read, readUsage, version, live, panel, now: fixe
   // The part of the run the table's time axis shows: all of it, until a zoom or a drag across the overview.
   const [range, setRange] = useState<View>(WHOLE);
   const [whole, setWhole] = useState(false);
+  const [comparing, setComparing] = useState(false);
   const [reveal, setReveal] = useState(false);
   // The row the keyboard was last on: the table's one stop for the Tab key.
   const [cursor, setCursor] = useState<string | null>(null);
@@ -687,9 +795,27 @@ export function RunTrace({ run, read, readUsage, version, live, panel, now: fixe
   const uid = useId();
 
   const spans = trace?.spans ?? [];
+  // A call asked for from the recording: opened once, when the trace is read, as a call opened from the table is (on a
+  // narrow screen its panel comes into view). One the trace does not hold (a read serves a run's first spans, and a
+  // recording's step can be past them) is said, never passed over in silence.
+  const asked = useRef<number | null>(null);
+  const [missing, setMissing] = useState<number | null>(null);
+  useEffect(() => {
+    if (!openCall || !trace || asked.current === openCall.n) return;
+    asked.current = openCall.n;
+    const span = trace.spans.find((s) => s.id === openCall.span);
+    if (!span) { setMissing(openCall.n); return; }
+    setMissing(null);
+    setView("calls");
+    setReveal(true);
+    setPicked(span.id);
+    setCursor(span.id);
+  }, [openCall, trace]);
   const window = useMemo(() => traceWindow(spans, now), [spans, now]);
   const totals = useMemo(() => (trace ? traceTotals(trace, now) : null), [trace, now]);
   const lanes = useMemo(() => ({ model: lane(spans.filter((s) => s.kind === "model"), window, now), tool: lane(spans.filter((s) => s.kind === "tool"), window, now) }), [spans, window, now]);
+  // What was up beside the calls, once the run's usage says: its computers and its browser sessions, a lane each.
+  const beside = useMemo(() => { const { computers, browsers } = stretches(usage); return { computers: stretchLane(computers, window, now), browsers: stretchLane(browsers, window, now) }; }, [usage, window, now]);
   const marks = useMemo(() => ticks(window.ms, 8), [window.ms]);
   // The table's own axis: what of the window shows, with a mark every quarter or so of it.
   const shownMs = (range.to - range.from) * window.ms;
@@ -770,6 +896,14 @@ export function RunTrace({ run, read, readUsage, version, live, panel, now: fixe
   // The Call column takes what is left of the table; where the time axis shows beside it, the two share it.
   const callWidth = selected ? "w-full md:max-xl:w-[30%] @4xl:w-[30%]" : "w-full md:w-[30%]";
   const priced = totals!.cost.requests;
+  // The run's spend cap, where it has one: how much of it the run's cost is, or the cap alone while the cost is not one
+  // figure. A cost that is a ceiling (a request cut before its usage was known counts at what was held for it) is at most
+  // that share of the cap.
+  const cap = typeof run.cost?.cap_usd === "number" ? run.cost.cap_usd : null;
+  const ofCap = cap === null ? null : typeof runUsd === "number" && cap > 0 ? `${run.cost?.upper_bound ? "at most " : ""}${percent(runUsd / cap)} of its ${capDollars(cap)} cap` : `cap ${capDollars(cap)}`;
+  const costParts = priced ? `requests ${spendWords(priced)}${totals!.cost.charged ? ` · tools ${spendWords(totals!.cost.charges)}` : ""}` : totals!.cost.charged ? `tools ${spendWords(totals!.cost.charges)}` : "Booked for the run as a whole";
+  const stopped = budgetStop(run);
+  const besideWords = [[beside.computers.bars.length, "computer"], [beside.browsers.bars.length, "browser session"]].filter(([n]) => (n as number) > 0).map(([n, word]) => `${n} ${word}${n === 1 ? "" : "s"}`).join(" and ");
   const zoomedIn = range !== WHOLE;
   const filtered = kind !== "all" || query.trim() !== "" || zoomedIn;
   // A zoom goes in about the open span's middle, so it stays in view; with none open, about the middle of what shows.
@@ -784,6 +918,9 @@ export function RunTrace({ run, read, readUsage, version, live, panel, now: fixe
         {trace.model_requests === "not_recorded" && (
           <Banner tone="info" title="This run's harness keeps no record of each model request">The trace shows its tool calls. The run's cost and how many requests it made are on its Timeline's usage line.</Banner>
         )}
+        {missing !== null && missing === openCall?.n && !selected && (
+          <Banner tone="info" title="That step's call is not in this trace">{trace.dropped > 0 ? `The trace shows the run's first ${spans.length.toLocaleString("en-US")} requests and calls, and that call came after them.` : "The trace has no call for that step of the recording."}</Banner>
+        )}
         {trace.dropped > 0 && <Banner tone="warning">This is the run's first {spans.length.toLocaleString("en-US")} requests and calls. {trace.dropped.toLocaleString("en-US")} later ones are not shown.</Banner>}
 
         {/* The run in six figures, on one line where there is room: the data under it starts as high as it can. */}
@@ -792,7 +929,7 @@ export function RunTrace({ run, read, readUsage, version, live, panel, now: fixe
           <Tile label="Tool calls" value={totals!.calls} note={toolNames.size === 1 ? "1 tool" : `${toolNames.size} tools`} />
           <Tile label="Failed" value={totals!.failed} tone={totals!.failed > 0 ? "bad" : undefined} note={firstFailed ? `First: ${firstFailed.name}` : "Nothing failed"} />
           <Tile label="Tokens" value={totals!.tokens ? compact(inputTokens(totals!.tokens) + totals!.tokens.output) : "–"} note={!totals!.tokens ? "No request to count" : `${share !== null ? `${percent(share)} of input read from cache` : "No input reported"}${totals!.untold ? ` · ${totals!.untold} request${totals!.untold === 1 ? "" : "s"} reported none` : ""}`} />
-          <Tile label={runUsd === null && known ? "Cost so far" : run.cost && isEstimate(run.cost) ? "Cost, estimated" : "Cost"} value={typeof runUsd === "number" ? dollars(runUsd) : known ? dollars(known.so_far_usd) : "Unknown"} note={priced ? `requests ${spendWords(priced)}${totals!.cost.charged ? ` · tools ${spendWords(totals!.cost.charges)}` : ""}` : totals!.cost.charged ? `tools ${spendWords(totals!.cost.charges)}` : "Booked for the run as a whole"} />
+          <Tile label={runUsd === null && known ? "Cost so far" : run.cost && isEstimate(run.cost) ? "Cost, estimated" : "Cost"} value={typeof runUsd === "number" ? dollars(runUsd) : known ? dollars(known.so_far_usd) : "Unknown"} note={ofCap ? `${ofCap} · ${costParts}` : costParts} />
           <Tile label="Time" value={duration(totals!.time.wall)} note={totals!.time.wall > 0 ? `model ${percent(totals!.time.model / totals!.time.wall)} · tools ${percent(totals!.time.tools / totals!.time.wall)}` : "Nothing ran yet"} />
         </dl>
 
@@ -804,15 +941,29 @@ export function RunTrace({ run, read, readUsage, version, live, panel, now: fixe
                 options={([["all", "All"], ["model", "Model"], ["tool", "Tools"], ["failed", "Failed"]] as const).map(([value, label]) => ({ value, label: <>{label} <span className="font-normal">{counts[value]}</span></> }))} />
             </ListFilter>
           )}
-          <Button size="sm" className="ml-auto" onClick={exportJson} title="Save the trace as the server sent it"><Download aria-hidden />Export JSON</Button>
+          <Button size="sm" className="ml-auto" onClick={() => setComparing(true)} title="This run's figures beside another run's">Compare</Button>
+          <Button size="sm" onClick={exportJson} title="Save the trace as the server sent it"><Download aria-hidden />Export JSON</Button>
         </div>
 
         {spans.length === 0 ? (
           // A run whose record keeps no request (a CLI harness's) and called no tool has no span, yet its booking may
           // still have its cost by line.
-          usage?.lines?.length ? <section aria-label="Where the cost went" className="border bg-card p-4"><CostByLine usage={usage} lines={usage.lines} /></section>
-            : <p className="border bg-card p-4 font-mono text-body text-muted-foreground">{live ? "No model request has answered and no tool has been called yet." : "This run made no model request and called no tool."}</p>
-        ) : view === "breakdown" ? <Breakdown trace={trace} usage={usage} now={now} onPick={pick} selected={selected?.id ?? null} /> : (
+          <>
+            {/* A run can wind down for its budget with no span to show: a CLI harness's record keeps no request, and it may
+                answer the wrap-up with no call. What its cap did is said all the same, as bad only where a call was refused. */}
+            {stopped && (
+              <section aria-label="What stands out">
+                <Heading level="h2">What stands out</Heading>
+                <ul className="grid border-l border-t"><li className="border-b border-r bg-card p-3"><span className={cn("block text-body font-semibold", stopped.bad && "text-destructive-text")}>{stopped.title}</span><span className="mt-0.5 block text-small text-muted-foreground">{stopped.detail}</span></li></ul>
+              </section>
+            )}
+            {usage?.lines?.length ? <section aria-label="Where the cost went" className="border bg-card p-4"><CostByLine usage={usage} lines={usage.lines} /></section>
+              : <p className="border bg-card p-4 font-mono text-body text-muted-foreground">{live ? "No model request has answered and no tool has been called yet." : "This run made no model request and called no tool."}</p>}
+            {/* A run can make a computer and end before its first request, and a CLI run's record may keep no call: its
+                computers and sessions are listed all the same, against the run's start. */}
+            {usage && <Stretches usage={usage} from={Date.parse(run.created_at)} anchor="the run's start" />}
+          </>
+        ) : view === "breakdown" ? <Breakdown trace={trace} usage={usage} run={run} now={now} onPick={pick} selected={selected?.id ?? null} /> : (
           <>
             <section aria-label="Overview of the run" className="border bg-card">
               <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b px-4 py-1.5">
@@ -836,10 +987,12 @@ export function RunTrace({ run, read, readUsage, version, live, panel, now: fixe
                 </div>
               </div>
               {/* A picture of the run for the eye and the mouse. The table lists every span it draws. */}
-              <div className="px-4 pb-2 pt-3" role="img" aria-label={`The run on a time axis: ${totals!.requests} model request${totals!.requests === 1 ? "" : "s"} and ${totals!.calls} tool call${totals!.calls === 1 ? "" : "s"} over ${duration(window.ms)}. The table lists each.`}>
+              <div className="px-4 pb-2 pt-3" role="img" aria-label={`The run on a time axis: ${totals!.requests} model request${totals!.requests === 1 ? "" : "s"} and ${totals!.calls} tool call${totals!.calls === 1 ? "" : "s"} over ${duration(window.ms)}. The table lists each.${besideWords ? ` Under them, ${besideWords}: the Breakdown lists each.` : ""}`}>
                 <Overview marks={marks} view={range} onView={setRange}>
                   {trace.model_requests !== "not_recorded" && <Lane title={`Model requests (${totals!.requests})`} swatch="bg-trace-model" {...lanes.model} selected={selected?.id ?? null} dimmed={(s) => !keeps(s, kind, query)} onPick={pickBar} at={say} />}
                   <Lane title={`Tool calls (${totals!.calls})`} swatch="bg-trace-tool" {...lanes.tool} selected={selected?.id ?? null} dimmed={(s) => !keeps(s, kind, query)} onPick={pickBar} at={say} />
+                  {beside.computers.bars.length > 0 && <StretchLane title={`Computers (${beside.computers.bars.length})`} swatch={COMPUTER_TONE} {...beside.computers} now={now} from={window.from} />}
+                  {beside.browsers.bars.length > 0 && <StretchLane title={`Browser sessions (${beside.browsers.bars.length})`} swatch={SESSION_TONE} {...beside.browsers} now={now} from={window.from} />}
                 </Overview>
                 <div className="relative mt-1.5 h-5 border-t">
                   {/* A mark near the right edge writes its label to its left, inside the panel. */}
@@ -916,10 +1069,11 @@ export function RunTrace({ run, read, readUsage, version, live, panel, now: fixe
             </div>
           </>
         )}
+        {comparing && <CompareWith runId={run.run_id} onClose={() => setComparing(false)} />}
         {/* The panel opens beside or under the table, away from where the keyboard is: a screen reader is told. */}
         <p role="status" className="sr-only">{selected ? `Details shown for ${selected.name}. Escape closes them.` : ""}</p>
       </section>
-      {selected && <SpanPanel key={selected.id} span={selected} trace={trace} run={run} from={window.from} now={now} reveal={reveal} onPick={pick} onClose={close} />}
+      {selected && <SpanPanel key={selected.id} span={selected} trace={trace} run={run} from={window.from} now={now} reveal={reveal} onPick={pick} onClose={close} onRecording={selected.kind === "tool" ? recorded?.(selected.id) : undefined} />}
     </div>
   );
 }

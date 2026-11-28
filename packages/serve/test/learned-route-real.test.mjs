@@ -8,15 +8,13 @@
 import assert from "node:assert/strict";
 import { promoteChecked } from "./learned-workflow-seed-support.mjs";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
-import { agentFolderOf } from "../dist/files.js";
-import * as learning from "../dist/learning.js";
 import { LEARNED_WORKFLOW_TOOL } from "../dist/learned-workflow.js";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
-import { entriesOf, git, resnap } from "./learn-support.mjs";
+import { entriesOf, putLearning } from "./learn-support.mjs";
 import { agent, answerFlow, call, cookieOf, follow, scratch, serve, withEnv } from "./support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
@@ -29,17 +27,6 @@ const INPUT = { name: "answer", input: { question: "What is six times seven" } }
 const MODEL_VARS = ["AGENT_MODEL_BASE_URL", "ANTHROPIC_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "AGENT_MODEL_PRICE", "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AGENTRUN_CODEX_STANDIN", "AGENTRUN_SERVE_CODEX_STANDIN"];
 const SETPRIV = existsSync("/usr/bin/setpriv");
 
-async function folderWith(data, id) {
-  await learning.seedOf(data, id);
-  const repo = join(agentFolderOf(data, id), "learning");
-  for (const [path, text] of Object.entries(flowFiles)) {
-    mkdirSync(dirname(join(repo, path)), { recursive: true });
-    writeFileSync(join(repo, path), text);
-  }
-  git(repo, ["add", "--", ...Object.keys(flowFiles)]);
-  git(repo, ["commit", "-q", "-m", "learned"]);
-  await resnap(data, id);
-}
 /** The owner's answer to an approval, signed in on `server` (`first`: the setup that makes the owner). */
 async function owner(server, first) {
   const origin = `http://127.0.0.1:${server.port}`;
@@ -51,15 +38,42 @@ async function owner(server, first) {
   return (runId, approvalId) => call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${approvalId}`, headers: { ...json, cookie, origin }, body: { decision: "allow" } });
 }
 
-/** Nothing outlives a test whose servers are all closed: no process is this test process's child (the ps that looks is
- *  left out), and none names the runs' data `data` (a run's process, or a harness CLI reparented when its parent died). */
+/** The most of ps's listing read: a busy box's whole process list (thousands of processes, long command lines) runs
+ *  past exec's default 1 MiB, which throws ENOBUFS. */
+const PS_MAX_BUFFER = 256 * 1024 * 1024;
+/** The processes ps lists that are this test process's children (the ps that looks is left out) or name the runs' data
+ *  `data` (a run's process, or a harness CLI reparented when its parent died), each as its pid and the start of its args. */
+const leftOf = (data) => execFileSync("ps", ["-eo", "pid=,ppid=,args="], { maxBuffer: PS_MAX_BUFFER }).toString().split("\n").map((line) => line.trim()).filter(Boolean)
+  .map((line) => line.match(/^(\d+)\s+(\d+)\s+(.*)$/)).filter((m) => m && !m[3].startsWith("ps -eo") && (Number(m[2]) === process.pid || m[3].includes(data)))
+  .map((m) => `${m[1]} ${m[3].slice(0, 120)}`);
+
+/** Nothing outlives a test whose servers are all closed: ps lists nothing of its runs (leftOf). */
 async function nothingOutlives(data) {
-  const left = () => execFileSync("ps", ["-eo", "pid=,ppid=,args="]).toString().split("\n").map((line) => line.trim()).filter(Boolean)
-    .map((line) => line.match(/^(\d+)\s+(\d+)\s+(.*)$/)).filter((m) => m && !m[3].startsWith("ps -eo") && (Number(m[2]) === process.pid || m[3].includes(data)))
-    .map((m) => `${m[1]} ${m[3].slice(0, 120)}`);
+  const left = () => leftOf(data);
   for (const deadline = Date.now() + 15_000; left().length && Date.now() < deadline; await new Promise((resolve) => setTimeout(resolve, 200)));
   assert.deepEqual(left(), [], "no process of the test's runs outlives it");
 }
+
+test("the check that nothing outlives a run reads a busy box's whole process list: a ps listing of several MiB, past exec's default buffer", async (t) => {
+  // A stand-in ps on PATH: 40,000 lines of another lane's long command lines (about 6 MiB), then a run's process.
+  const bin = await scratch(t);
+  const data = `${bin}/runs-data`;
+  const filler = `999999 1 node --test-concurrency=8 ${"--some-long-flag=value ".repeat(4)}test/other-lane.test.mjs`;
+  writeFileSync(join(bin, "ps"), `#!/bin/sh\nyes '${filler}' | head -n 40000\necho '4242 1 node ${data}/run.mjs'\n`, { mode: 0o755 });
+  withEnv(t, { PATH: `${bin}:${process.env.PATH}` }, ["PATH"]);
+  // leftOf keeps a command line's first 120 characters: the expected line is cut the same way, whatever TMPDIR is.
+  assert.deepEqual(leftOf(data), [`4242 ${`node ${data}/run.mjs`.slice(0, 120)}`]);
+});
+
+test("the check that nothing outlives a run names a process by its command line's first 120 characters, however long its path", async (t) => {
+  const bin = await scratch(t);
+  const data = `${bin}/${"runs-data-".repeat(13)}`;
+  const command = `node ${data}/run.mjs`;
+  assert.ok(command.length > 120, `the path runs past the cut: ${command.length}`);
+  writeFileSync(join(bin, "ps"), `#!/bin/sh\necho '4242 1 ${command}'\n`, { mode: 0o755 });
+  withEnv(t, { PATH: `${bin}:${process.env.PATH}` }, ["PATH"]);
+  assert.deepEqual(leftOf(data), [`4242 ${command.slice(0, 120)}`]);
+});
 
 /** The node's submit when a request offers it and has no tool result yet (the faux gateway's `call`, codex). */
 const submitsAnswer = ({ body }) => {
@@ -103,9 +117,9 @@ for (const harness of ["claude-agent", "codex"]) {
       const allowOn = await owner(first, true);
       const id = `real-${harness}-${restart ? "restart" : "live"}`;
       assert.equal((await first.api("POST", "/agents", agent(id, { learning: true, harness, instructions: route.ask, tool_settings: { [LEARNED_WORKFLOW_TOOL]: { permission: "ask" } } }))).status, 201);
-      await folderWith(first.data, id);
+      await putLearning(first.store, id, flowFiles);
       // The owner approves this tool call; the workflow itself already passed its independent check.
-      await promoteChecked(first.store.settings, id, [{ name: "answer", workflow: answerFlow() }]);
+      await promoteChecked(first.store, id, [{ name: "answer", workflow: answerFlow() }]);
       const started = await first.api("POST", `/agents/${id}/runs`, { input: { content: route.ask } });
       assert.equal(started.status, 202, JSON.stringify(started.body));
       const runId = started.body.run_id;

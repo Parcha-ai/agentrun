@@ -3,8 +3,14 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { parseHome as parseHomeOn, wrappedHome as wrappedHomeOn } from "../dist/index.js";
 
 /** A fresh temporary home, removed when the test ends. */
+/** parseHome and wrappedHome on the calling thread unless a test names its threads: which path a test covers, and the
+ *  workers it starts, are then the same on any machine's cores. Tests of the pool call the package's own. */
+export const parseHome = (home, options = {}) => parseHomeOn(home, { threads: 1, ...options });
+export const wrappedHome = (home, year, options = {}) => wrappedHomeOn(home, year, { threads: 1, ...options });
+
 export async function tempHome(t) {
   const dir = await mkdtemp(join(tmpdir(), "agentrun-import-"));
   t.after(() => rm(dir, { recursive: true, force: true }));

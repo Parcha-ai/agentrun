@@ -9,8 +9,8 @@
 // computer-deps.ts dockerVolumeOf, the Docker provider's `volume`). Any other layout, or an older engine, is a reason,
 // said once at the start, and docker is unavailable: a guess would make every computer fail at its create.
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { containerSigns, dockerEnv } from "@parcha/agentrun-computer";
 import { FAUX_ENV } from "./model.js";
 import { withoutSecrets } from "./secrets.js";
 
@@ -81,11 +81,13 @@ export function remoteDockerOnce(env: NodeJS.ProcessEnv): Promise<string | undef
 /** Why this server can't run a Docker computer, or undefined when it can: on its Docker's own host (`here`), or in a
  *  container of that Docker's with its data on a named volume (`paths`: the computer mounts the run's folder and its
  *  daemon as that volume's subpaths, workspace/computer-deps.ts dockerVolumeOf). Any other layout says why (`reason`,
- *  dockerPathsOf), and so does a daemon of another machine (`remote`, remoteDockerOf's endpoint). The one check every
- *  reader of Docker's offer takes. */
-export function dockerComputerRefusal(paths: DockerPaths, remote: string | undefined): string | undefined {
+ *  dockerPathsOf), and so does a daemon of another machine (`remote`, remoteDockerOf's endpoint), and then a computerd
+ *  build missing for Docker's architecture (`noDaemon`: the computer package's dockerDaemonOf words, the ones its
+ *  create() would fail with). The one check every reader of Docker's offer takes. */
+export function dockerComputerRefusal(paths: DockerPaths, remote: string | undefined, noDaemon?: string): string | undefined {
   if ("reason" in paths) return paths.reason;
-  return remote !== undefined ? remoteDockerWords(remote) : undefined;
+  if (remote !== undefined) return remoteDockerWords(remote);
+  return noDaemon === undefined ? undefined : `${noDaemon}, then restart AgentRun`;
 }
 
 /** Where a runner's Docker has the data directory `data`, read once by the runner that makes a Docker computer: as the
@@ -136,7 +138,7 @@ export type DockerCall = (args: readonly string[]) => Promise<{ code: number | s
 
 const dockerCall = (env: NodeJS.ProcessEnv): DockerCall => (args) =>
   new Promise((resolve) => {
-    const child = execFile("docker", args, { env: withoutSecrets(env), timeout: 10_000, killSignal: "SIGKILL", maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+    const child = execFile("docker", args, { env: dockerEnv(withoutSecrets(env)), timeout: 10_000, killSignal: "SIGKILL", maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
       const failed = error as (NodeJS.ErrnoException & { killed?: boolean }) | null;
       resolve({ code: !failed ? 0 : failed.killed ? "timeout" : typeof failed.code === "number" ? failed.code : (failed.code ?? failed.name), stdout: String(stdout), stderr: String(stderr) });
     });
@@ -145,13 +147,14 @@ const dockerCall = (env: NodeJS.ProcessEnv): DockerCall => (args) =>
 
 /**
  * Where the Docker this server runs boxes on has `data` (see the head of this file), resolved once at its start. A
- * server with no container id in its mountinfo and none of a container's marks (`inContainer`: /.dockerenv, Podman's
- * /run/.containerenv) is on a host: `here`, and nothing is asked. `mountinfo`, `inContainer` and `docker` are the tests'.
+ * server with no container id in its mountinfo that computer's containerSigns sees in no container either (`inContainer`:
+ * a runtime's mark, or a container's cgroup, as a Kubernetes pod's) is on a host: `here`, and nothing is asked. One it sees
+ * is in a container this way can't map onto Docker's paths: IN_COMPOSE. `mountinfo`, `inContainer` and `docker` are the tests'.
  */
 export async function dockerPathsOf(env: NodeJS.ProcessEnv, data: string, options: { mountinfo?: string; inContainer?: boolean; docker?: DockerCall } = {}): Promise<DockerPaths> {
   const mountinfo = options.mountinfo ?? (await readFile("/proc/self/mountinfo", "utf8").catch(() => ""));
   const id = ownContainerOf(mountinfo);
-  if (!id) return (options.inContainer ?? (existsSync("/.dockerenv") || existsSync("/run/.containerenv"))) ? { reason: IN_COMPOSE } : { here: true };
+  if (!id) return (options.inContainer ?? containerSigns() !== undefined) ? { reason: IN_COMPOSE } : { here: true };
   const docker = options.docker ?? dockerCall(env);
   // A container this Docker does not have is another Docker's: its socket is not the one that runs this server.
   const inspected = await docker(["inspect", "--type", "container", "--format", "{{json .Mounts}}", id]);

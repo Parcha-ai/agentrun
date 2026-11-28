@@ -81,8 +81,9 @@ const until = async (done, what, ms = 60_000) => {
  *  questions in `wrong`, else 42, sure either way; the agent answers AGENT_SAYS, after calling learned_workflow `answer`
  *  itself first on the questions in `calls`, or its `read` tool first on the questions in `reads` (a job by hand that
  *  costs more than a served one). A claim of a run in `refuse` is refused as its MCP step refuses one (nothing sent, the
- *  run ends failed). */
-async function world(t, { wrong = new Set(), calls = new Set(), reads = new Set(), outputSchema, refuse = new Set() } = {}) {
+ *  run ends failed). `learned`: false for an agent that learned nothing yet (no workflow, no promotion record);
+ *  `learning`: its definition's learning (its compile_after). */
+async function world(t, { wrong = new Set(), calls = new Set(), reads = new Set(), outputSchema, refuse = new Set(), learned = true, learning = true } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-feedback-rounds-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -104,11 +105,11 @@ async function world(t, { wrong = new Set(), calls = new Set(), reads = new Set(
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
-  await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: true, ...(outputSchema ? { outputSchema } : {}) } });
-  const seed = await landWorkflows(dir, "agent-1", FLOWS);
+  await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning, ...(outputSchema ? { outputSchema } : {}) } });
+  const seed = await landWorkflows(dir, "agent-1", learned ? FLOWS : []);
   // `answer` passed its check when it landed (runner/promotion.ts): the stream reads its grades, never a check of its own.
   const digest = workflowDigest({ workflow: JSON.stringify(answerFlow) });
-  await recordPromotion(server.settings, "agent-1", { workflow: "answer", digest, at: new Date().toISOString(), decided: "promote", reason: "checked before the stream", check: { compile_after: 20, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, agreed: 5, alone: 5 } }, () => true);
+  if (learned) await recordPromotion(server.learning, "agent-1", { workflow: "answer", digest, at: new Date().toISOString(), decided: "promote", reason: "checked before the stream", check: { compile_after: 20, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, agreed: 5, alone: 5 } }, () => true);
   const price =(_model, usage) => ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15) / 1e6;
   const route = { model: MODEL, provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 8_192, price, fetch: globalThis.fetch };
   const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }), log: () => {} };
@@ -172,7 +173,7 @@ test("a 20-run labelled stream: served runs, right or wrong, cost $0 learning an
   // The wrong served run: its grade is kept, wrong, naming no round; no request after it asked a compile, and its answer
   // stands.
   const wrong = rows.get(`run-${WRONG}`);
-  const kept = (await gradesOf(server.settings, "agent-1")).find((one) => one.run === `run-${WRONG}`);
+  const kept = (await gradesOf(server.learning, "agent-1")).find((one) => one.run === `run-${WRONG}`);
   assert.deepEqual([kept?.correct, kept?.path, kept?.workflow, kept?.feedback], [false, "workflow", "answer", null], `the wrong grade is kept: ${JSON.stringify(kept)}`);
   const compiles = agentRequests().filter((request) => /^One more turn: (revise your learned workflow|write this agent's job)/.test(lastText(request.body).trimStart()));
   assert.deepEqual(compiles.map((request) => lastText(request.body).slice(0, 80)), [], "no run of the stream asked a compile");
@@ -203,6 +204,38 @@ test("a 20-run labelled stream: served runs, right or wrong, cost $0 learning an
     assert.equal(rows.get(id).row.metrics?.path, "agent");
   }
   assert.equal(summary.takeover?.run_id, "run-4", JSON.stringify(summary));
+});
+
+// A grade's correction round with a compile due: the correction the round takes (reflect-hook.ts `taken`) is part of
+// what that round's compile is told, on every attempt, beside the owner's other corrections; one the checks refuse is
+// never told. The agent learned nothing yet and compiles after 1 run: run 1's own compile answers no block on each
+// attempt (a first compile's failure stops nothing), so the grade's round is due its compile again.
+test("a grade's correction round with a compile due: each attempt of the round's compile is told the grade's words; a refused correction is told never", { timeout: 180_000 }, async (t) => {
+  const isCompile = (request) => /^(One more turn: (revise your learned workflow|write this agent's job)|Your workflow draft did not pass the checks)/.test(lastText(request.body).trimStart());
+  const WORDS = "Always answer in words, never digits.";
+  // A character a reader does not see: corrections.md refuses the line (learn/check.ts unstorable).
+  const REFUSED = `Answer in Roman numerals${String.fromCodePoint(0x200b)} from now on.`;
+  for (const [label, told] of [[WORDS, true], [REFUSED, false]]) {
+    const { gw, start, grade, server } = await world(t, { learned: false, learning: { compile_after: 1 } });
+    const first = await start("run-1", 1);
+    assert.equal(first.metrics?.path, "agent", JSON.stringify(first.metrics));
+    assert.ok(gw.requests.some(isCompile), "run 1's own end asked its compile");
+    const before = gw.requests.length;
+    const { round } = await grade(first, false, label);
+    assert.equal(round, "correction");
+    const compiles = gw.requests.slice(before).filter(isCompile);
+    assert.equal(compiles.length, 4, `the round's compile asked 1 + 3 attempts: ${compiles.map((request) => lastText(request.body).slice(0, 60)).join(" | ")}`);
+    const kept = await server.learning.proposal("run-1", 2);
+    assert.equal(kept?.proposal?.compiled?.attempts?.length, 4, JSON.stringify(kept?.proposal));
+    if (told) {
+      assert.ok(lastText(compiles[0].body).includes(WORDS), `the round's first compile ask holds the grade's words: ${lastText(compiles[0].body)}`);
+      compiles.forEach((request, i) => assert.ok(textOf(request.body).includes(WORDS), `attempt ${i + 1}, as the model received it, holds the grade's words`));
+      assert.equal(kept.proposal.corrections, 1, "the correction is kept too");
+    } else {
+      compiles.forEach((request, i) => assert.ok(!textOf(request.body).includes("Roman numerals"), `attempt ${i + 1} never holds the refused correction`));
+      assert.equal(kept.proposal.corrections, undefined, "the refused correction is kept nowhere");
+    }
+  }
 });
 
 test("feedbackRoundOf: a served run graded right or wrong asks nothing, with words or none; a run the agent finished opens a correction round on a label; a replay nothing", () => {
@@ -244,15 +277,17 @@ test("the path compares the workflow's answer as it produced it and as the agent
   assert.equal(runPathOverStore.length >= 3, true);
 });
 
-test("a run with rounds: its impact and its cost per run read the same split: the job is its first round's, every later turn its learning", async () => {
-  const { impactLearningOf, roundsLooked } = await import("../dist/store-reads/learning.js");
+test("a run with rounds: its impact and its cost per run read the same split: the job and its follow-up turns are the job's, every round's look-back its learning", async () => {
+  const { impactLearningOf } = await import("../dist/store-reads/learning.js");
+  const { roundsLooked } = await import("../dist/learn/ledger.js");
   const rounds = { answered_at: "2026-11-13T00:00:00.000Z", job_cost_usd: 0.6, look_back_usd: 0.1 };
-  // Round 1's job $0.60, a follow-up turn $0.30, two compile turns $0.10: the row holds $1.00.
-  assert.deepEqual(roundsLooked(rounds, 1.0), { answered_at: rounds.answered_at, job_cost_usd: 0.6, look_back_usd: 0.4 });
-  assert.deepEqual(roundsLooked(rounds, null), { answered_at: rounds.answered_at, job_cost_usd: 0.6, look_back_usd: null }, "an unknown row cost with the job known: the spend after the job is unknown, never the rounds' turns added up as settled");
+  // Round 1's job $0.60, a follow-up turn $0.30, two compile turns $0.10: the row holds $1.00. A grade's feedback round
+  // asks no job turn (feedback-round.ts): its spend is all in its look-back, learning's either way.
+  assert.deepEqual(roundsLooked(rounds, 1.0), { answered_at: rounds.answered_at, job_cost_usd: 0.9, look_back_usd: 0.1 });
+  assert.deepEqual(roundsLooked(rounds, null), { answered_at: rounds.answered_at, job_cost_usd: null, look_back_usd: 0.1 }, "an unknown row cost: the job, which holds the follow-up, is unknown, never round 1's figure");
   const impact = impactLearningOf({ state: "merged", reason: null, at: "2026-11-13T00:01:00.000Z" }, { seed: "a".repeat(40), section: "" }, undefined, rounds, 1.0);
-  assert.equal(impact.job_cost_usd, 0.6, "the job is round 1's");
-  assert.equal(impact.look_back_usd, 0.4, "the follow-up turn is learning, as the cost per run counts it");
+  assert.equal(impact.job_cost_usd, 0.9, "the job and its follow-up turn");
+  assert.equal(impact.look_back_usd, 0.1, "the look-backs alone are learning, as the cost per run counts them");
 });
 
 test("a run whose agent called learned_workflow itself, graded wrong, label and all: the grade is kept and opens no round; the path stays workflow (#2648 review)", { timeout: 120_000 }, async (t) => {
@@ -269,6 +304,28 @@ test("a run whose agent called learned_workflow itself, graded wrong, label and 
   assert.deepEqual([read?.graded?.correct, read?.graded?.feedback, read?.graded?.path, read?.graded?.workflow], [false, null, "workflow", "answer"], `the learning read keeps the grade, naming no round: ${JSON.stringify(read?.graded)}`);
   assert.deepEqual([row.metrics?.path, row.metrics?.workflow], ["workflow", "answer"], JSON.stringify(row.metrics));
   assert.equal(await server.learning.proposal("run-called", 2), undefined, "no second round");
+});
+
+test("a run whose agent called its learned workflow, the answer the workflow's, is served by that revision as a platform-served one is: its record, its view and its ledger row name the call's digest, and the revision's spend is shared over it", { timeout: 180_000 }, async (t) => {
+  const { summarize } = await import("../dist/learn/ledger.js");
+  const { server, start } = await world(t, { calls: new Set([5]), reads: new Set([1]) });
+  const digest = workflowDigest({ workflow: JSON.stringify(answerFlow) });
+  await start("run-hand", 1, { byHand: true });
+  const platform = await start("run-served", 6);
+  assert.deepEqual([platform.metrics?.path, platform.metrics?.workflow_digest], ["workflow", digest], `the platform served it first: ${JSON.stringify(platform.metrics)}`);
+  const called = await start("run-called", 5, { byHand: true, offered: true });
+  const calls = called.metrics?.workflow_calls ?? [];
+  assert.deepEqual(calls.map((call) => [call.caller, call.digest]), [["agent", digest]], `the agent's own call, at the revision: ${JSON.stringify(called.metrics)}`);
+  assert.deepEqual([called.metrics?.path, called.metrics?.workflow, called.metrics?.workflow_digest], ["workflow", "answer", digest], `its record names the call's digest: ${JSON.stringify(called.metrics)}`);
+  assert.equal((await viewOverStore(server, "run-called", VIEW_DEPS)).workflow?.digest, digest, "the run view names the revision that ran");
+  const { rows } = await server.learning.ledger("agent-1");
+  assert.equal(rows.find((one) => one.runId === "run-called")?.digest, digest, "its ledger row names the revision");
+  // The revision's $0.40 compile (kept on the run by hand) spread over its first two served runs: the platform's and the
+  // agent's, $0.20 each.
+  const spend = [{ runId: "run-hand", agentId: "agent-1", round: 1, kind: "compile", ofRun: null, workflow: "answer", digest, usd: 0.4 }];
+  const out = summarize({ rows, spend, shadows: new Map(), revisions: [{ workflow: "answer", digest, k: 2, state: "serving" }], compileAfter: 2 });
+  assert.deepEqual(["run-served", "run-called"].map((id) => out.figures.get(id)?.share_usd), [0.2, 0.2], "each served run carries its share");
+  assert.deepEqual(out.bill.revisions.map((one) => [one.served, one.attributed_usd, one.unattributed_usd]), [[2, 0.4, 0]], JSON.stringify(out.bill.revisions));
 });
 
 test("a graded run keeps its answer: its feedback round's words are no message of the job's, so result.final_answer and result.output stand after the round (#2648 review)", { timeout: 120_000 }, async (t) => {
@@ -364,7 +421,7 @@ test("a wrong grade of a served run opens no round and asks no compile; the grad
     assert.deepEqual([row.state, row.epoch, row.endedAt], ["ended", first.epoch, first.endedAt], "the run was not opened again");
     assert.equal(await server.learning.proposal(first.id, 2), undefined, "no second round");
   }
-  assert.deepEqual((await gradesOf(server.settings, "agent-1")).map((grade) => [grade.run, grade.correct, grade.feedback]).sort(), [["run-wrong-4", false, null], ["run-wrong-5", false, null], ["run-wrong-6", false, null]]);
+  assert.deepEqual((await gradesOf(server.learning, "agent-1")).map((grade) => [grade.run, grade.correct, grade.feedback]).sort(), [["run-wrong-4", false, null], ["run-wrong-5", false, null], ["run-wrong-6", false, null]]);
   // The next served run asks no compile either: the grades are kept, and only a hold of the workflow asks its revision.
   const before = agentRequests().length;
   const next = await start("run-after", 7);
@@ -379,9 +436,9 @@ test("a grade names its round only once the round opened: a failed reopen leaves
   const { server, start, grade } = await world(t);
   const first = await start("run-reopen", 1, { byHand: true });
   assert.equal(first.metrics?.path, "agent", "the agent finished it: a label opens a correction round");
-  const failing = { settings: server.settings, agents: server.agents, runs: { get: (id) => server.runs.get(id), launch: (id) => server.runs.launch(id), reopen: async () => { throw new Error("the store went away") } } };
+  const failing = { settings: server.settings, learning: server.learning, agents: server.agents, runs: { get: (id) => server.runs.get(id), launch: (id) => server.runs.launch(id), reopen: async () => { throw new Error("the store went away") } } };
   await assert.rejects(grade(first, false, LABEL(1), failing), /the store went away/);
-  const [failed] = await gradesOf(server.settings, "agent-1");
+  const [failed] = await gradesOf(server.learning, "agent-1");
   assert.deepEqual([failed?.run, failed?.feedback], ["run-reopen", null], `the grade is kept, naming no round: ${JSON.stringify(failed)}`);
   const unopened = await server.runs.get("run-reopen");
   assert.deepEqual([unopened.epoch, unopened.endedAt], [first.epoch, first.endedAt], "the run was never opened again");
@@ -390,7 +447,7 @@ test("a grade names its round only once the round opened: a failed reopen leaves
 
   const { round, kept } = await grade(first, false, LABEL(1));
   assert.equal(round, "correction");
-  const [marked] = await gradesOf(server.settings, "agent-1");
+  const [marked] = await gradesOf(server.learning, "agent-1");
   assert.deepEqual([marked.feedback, marked.seq, marked.at], ["correction", kept.seq, kept.at], `marked in place: ${JSON.stringify(marked)}`);
   assert.equal(kept.seq, failed.seq + 1, "one new seq per grade, none for the round's mark");
 });
@@ -409,7 +466,7 @@ test("a grade's round reads ended from its run's journal, never a clock: a grade
   const read = (await runLearningOverStore(server, first.id, secretsShown([]), []))?.graded;
   assert.deepEqual([read?.feedback, read?.feedback_status], ["correction", "ended"], `the round ended: ${JSON.stringify(read)}`);
 
-  const [marked] = await gradesOf(server.settings, "agent-1");
+  const [marked] = await gradesOf(server.learning, "agent-1");
   assert.equal(typeof marked.feedbackCommand, "number", `the grade keeps its round's steer: ${JSON.stringify(marked)}`);
   const entries = await runEntries(server, first.id, BACKGROUND_CONTEXT);
   const taken = { id: marked.feedbackCommand, refused: null };
@@ -457,17 +514,22 @@ test("a store failure while the read looks up the round's steer fails the read, 
 // Two grades of one run can share their `at` (a millisecond): the second replaces the first, then the first's round
 // opens. The round marks the grade it was opened for (its run, `at` and `seq`), never its replacement.
 test("a round marks only the grade it was opened for: a replacement given in the same millisecond stays naming none", async () => {
+  // The agent's grade records in memory, each write one change of them (Store.learning changeRecords).
   const kept = new Map();
-  const settings = {
-    get: async (key) => kept.get(key),
-    putIfAbsent: async (key, value) => { if (!kept.has(key)) kept.set(key, value); return kept.get(key); },
-    replaceIf: async (key, was, value) => { if (JSON.stringify(kept.get(key)) !== JSON.stringify(was)) return false; kept.set(key, value); return true; },
+  let seq = 0;
+  const rows = {
+    records: async (_agentId, kind) => structuredClone(kept.get(kind) ?? []),
+    changeRecords: async (_agentId, kind, update) => {
+      const out = update(structuredClone(kept.get(kind) ?? []));
+      if ("records" in out) kept.set(kind, out.records.map((one) => ({ ...one, seq: one.seq ?? ++seq, at: one.at ?? 0 })));
+      return out.result;
+    },
   };
   const at = "2026-11-14T10:05:00.000Z";
-  const first = await putGrade(settings, "agent-1", { run: "run-same-ms", correct: false, source: "feedback", at, path: "agent", feedback: null });
-  const second = await putGrade(settings, "agent-1", { run: "run-same-ms", correct: true, source: "feedback", at, path: "agent", feedback: null });
-  await markGradeRound(settings, "agent-1", first, { round: "correction", command: 1 });
-  const [only] = await gradesOf(settings, "agent-1");
+  const first = await putGrade(rows, "agent-1", { run: "run-same-ms", correct: false, source: "feedback", at, path: "agent", feedback: null });
+  const second = await putGrade(rows, "agent-1", { run: "run-same-ms", correct: true, source: "feedback", at, path: "agent", feedback: null });
+  await markGradeRound(rows, "agent-1", first, { round: "correction", command: 1 });
+  const [only] = await gradesOf(rows, "agent-1");
   assert.deepEqual([only.seq, only.correct, only.feedback], [second.seq, true, null], `the replacement names no round: ${JSON.stringify(only)}`);
 });
 
@@ -477,7 +539,7 @@ test("a run's learning read hides a secret in its grade's workflow name", { time
   const { server, start } = await world(t);
   const done = await start("run-secret-name", 1, { byHand: true });
   const secret = "registered-after-the-run-7781";
-  await putGrade(server.settings, "agent-1", { run: done.id, correct: false, source: "feedback", at: new Date().toISOString(), path: "workflow", workflow: `answer-${secret}`, feedback: null });
+  await putGrade(server.learning, "agent-1", { run: done.id, correct: false, source: "feedback", at: new Date().toISOString(), path: "workflow", workflow: `answer-${secret}`, feedback: null });
   const read = await runLearningOverStore(server, done.id, secretsShown([secret]), [secret]);
   assert.ok(read?.graded, `the read says the grade: ${JSON.stringify(read)}`);
   assert.ok(!JSON.stringify(read.graded).includes(secret), `the secret is hidden: ${JSON.stringify(read.graded)}`);

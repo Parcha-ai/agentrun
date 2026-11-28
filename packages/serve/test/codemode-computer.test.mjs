@@ -18,6 +18,7 @@ import { fakeComputer } from "./workspace-fake-computer.mjs";
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { CODEMODE } = await import("../dist/runner/meta-tools.js");
 const { suiteTools } = await import("../dist/runner/conformance/harness.js");
 const { localWorkspace, runTools } = await import("../dist/workspace/index.js");
@@ -85,7 +86,7 @@ async function codemodeRun(t, script, computerTools, gate = () => "allow", resta
   const { tools } = suiteTools();
   const requests = [];
   const loop = createAdapterLoop(async (_claim, run) => ({
-    adapter: options.adapterOf ? await options.adapterOf(run) : options.adapter ?? piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => "not-a-secret" }, fetch: scriptedOrigin(script, requests), price: () => 0 }),
+    adapter: options.adapterOf ? await options.adapterOf(run) : options.adapter ?? piAdapter({ redact: heldRedactor((text) => text), run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => "not-a-secret" }, fetch: scriptedOrigin(script, requests), price: () => 0 }),
     facts: options.facts,
     ...(options.record ? { record: options.record } : {}),
     session: { key: "root", label: "root", system: ["Follow the script."], tools: [...hostTools(tools), ...computerTools], context: "fresh" },
@@ -414,7 +415,7 @@ test("on a vendor's desktop whose agent's write is set to deny, a script's compu
   const { runners } = await stores({ runners: 1 });
   const folder = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "codemode-computer-gate-"));
   dirs.push(folder);
-  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask", toolSettings: { write: { permission: "deny" } } } }, folder, "none", { facts: undefined });
+  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask", tools: ["read", "write"], toolSettings: { write: { permission: "deny" } } } }, folder, "none", { facts: undefined });
   const script = "const apps = await computer.apps.list();\nawait computer.files.write('/workspace/notes.txt', 'Pears: 41');\nreturn 'wrote';";
   const { requests } = await codemodeRun(t, [{ call: CODEMODE, args: { script } }, { say: "done" }], tools, gate, undefined, { computer: run.computer });
   const result = lastResult(requests);
@@ -525,7 +526,7 @@ test("on Codex, a computer_op answers its script one text item: an op that ran i
   const { runners } = await stores({ runners: 1 });
   const folder = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "codemode-computer-codex-shape-"));
   dirs.push(folder);
-  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask", toolSettings: { bash: { permission: "allow" }, write: { permission: "deny" } } } }, folder, "none", { facts: undefined });
+  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask", tools: ["read", "write"], toolSettings: { bash: { permission: "allow" }, write: { permission: "deny" } } } }, folder, "none", { facts: undefined });
   const { server } = await codexRun(t, [{ tool: "computer_op", args: { op: "shell.run", args: { command: "echo hi" } } }, { tool: "computer_op", args: { op: "files.write", args: { path: "/workspace/notes.txt", data: "Pears: 41" } } }], { gate });
   const answers = await codexAnswers(server);
   const ran = answers.find((one) => one.arguments?.op === "shell.run");

@@ -1,7 +1,9 @@
 import cronstrue from "cronstrue";
 import { type Accept, acceptFields, acceptOf, acceptWords, type ConditionDraft, conditionDraftOf, type RuleDraft, ruleDraftOf } from "./accept";
-import { ClientError } from "./client";
+import { ClientError, type FieldIssue } from "./client";
 import { clock } from "./format";
+import { type AgentInput, fieldOfIssue, fieldStartText, inputOf } from "./inputForm";
+import type { ParameterText } from "./templatePackages";
 import type { Firing, Trigger, TriggerCreate, TriggerInput, TriggerSource, TriggerTarget } from "./v2";
 
 /** A trigger this console shows: a schedule that starts a run (isScheduleTrigger). */
@@ -18,7 +20,70 @@ export type EveryUnit = "seconds" | "minutes" | "hours";
  *  cron line's alone; `every` is a count of `everyUnit`. `read`: the instants an edited schedule had, kept so a time left
  *  alone is sent as it was, not as its wall time reads back (a time in a clock change's repeated hour reads as its first
  *  pass). */
-export type Draft = { name: string; kind: WhenKind; cron: string; timezone: string; at: string; every: string; everyUnit: EveryUnit; startAt: string; agentId: string; content: string; maxCost: string; enabled: boolean; read?: { at?: string; startAt?: string } };
+export type Draft = { name: string; kind: WhenKind; cron: string; timezone: string; at: string; every: string; everyUnit: EveryUnit; startAt: string; agentId: string; content: string; maxCost: string; enabled: boolean; read?: { at?: string; startAt?: string } } & InputDraft;
+
+/** What a trigger's run is given beside its message, as a form holds it (lib/inputForm.ts, as the run bar takes it).
+ *  `shape`: how the picked agent takes its input, given when the form saves (none: the message alone). `values`: the text
+ *  typed in the agent's input fields, by key (none yet: the fields as they start). `json`: the whole input as JSON, for an
+ *  agent whose input_schema the fields can't show (none yet: its example). `inputRead`: an edited trigger's input as
+ *  read, of which what the form doesn't show is kept. `stored`: the agent and input it was read with, which picking that
+ *  agent again after another brings back. */
+export type InputDraft = { shape?: AgentInput; values?: ParameterText; json?: string; inputRead?: Record<string, unknown>; stored?: { agentId: string; input: Record<string, unknown> } };
+
+const isRecord = (x: unknown): x is Record<string, unknown> => !!x && typeof x === "object" && !Array.isArray(x);
+const scalar = (x: unknown) => typeof x === "string" || typeof x === "number" || typeof x === "boolean";
+/** A value a field can show as text: a scalar, or a list of them. */
+const fieldShows = (x: unknown) => scalar(x) || (Array.isArray(x) && x.every(scalar));
+
+/** An input's values as its fields' text, fieldValues read back: a list one item a line, a box "true" or "false". The
+ *  message and what no field can show are left out. */
+export const inputText = (input: Record<string, unknown>): ParameterText =>
+  Object.fromEntries(Object.entries(input).flatMap(([k, v]): [string, string][] => (k === "content" || !fieldShows(v) ? [] : [[k, Array.isArray(v) ? v.map(String).join("\n") : String(v)]])));
+
+/** `input` with the run's message, "" where it has none. serve adds to input.content, and only when that is text, what
+ *  comes with a trigger's run: its event (a webhook's body, a feed's item, an email) and the line saying what fired it
+ *  (triggers.ts), and a schedule's last completed answer (trigger-targets.ts previousResultOf). A run whose typed input
+ *  left the message out would start without them. */
+const withMessage = (input: Record<string, unknown>): Record<string, unknown> => (Object.hasOwn(input, "content") ? input : { ...input, content: "" });
+
+/** The input a trigger's run is given, or what is wrong with it under `target.input`: the message alone; the message
+ *  (optional when the agent's schema requires another field) and the typed fields; or, for a schema the fields can't
+ *  show, the whole input as JSON, an object. An edited trigger's input starts as read, and only a field or the message
+ *  whose text was changed is taken from the form: a key no field has, a value a field can't show, and a field the
+ *  schema now requires but the input never had all go as stored until edited, so a rename never changes the input.
+ *  Typed fields go with the message even when it is blank, on a new trigger and on an edit that changes the input
+ *  (withMessage). Whole JSON goes exactly as written: its schema can refuse a key the form would add (maxProperties),
+ *  and the form says there what comes in `content`. */
+export function targetInputOf(d: { content: string } & InputDraft, issues: Record<string, string>): Record<string, unknown> {
+  const read = d.inputRead ?? {};
+  const shape = d.shape;
+  if (shape?.kind === "json") {
+    const text = d.json ?? shape.example.text;
+    let input: unknown;
+    try { input = JSON.parse(text); } catch { input = undefined; }
+    if (isRecord(input)) return input;
+    issues["target.input"] = text.trim() ? "The agent's input is a JSON object: this is not." : "Give the agent's input, as JSON.";
+    return {};
+  }
+  if (shape?.kind === "fields") {
+    if (shape.form.contentRequired && !d.content.trim()) issues["target.input"] = "Say what each run is asked.";
+    const typed = d.values ?? fieldStartText(shape.form);
+    const fromForm = withMessage(inputOf(shape.form, d.content, typed));
+    if (!d.inputRead) return fromForm;
+    // A value rebuilt from a field's text can differ from the one stored (a list's text is trimmed, its blank items
+    // dropped: ["a\nb", ""] would go back as ["a", "b"]), so only a field whose text changed is rebuilt. A field's
+    // text as read is "" for a value it can't show or none.
+    const asRead = inputText(read);
+    const input: Record<string, unknown> = { ...read };
+    let edited = false;
+    const take = (k: string) => { edited = true; if (Object.hasOwn(fromForm, k)) input[k] = fromForm[k]; else delete input[k]; };
+    for (const [k] of shape.form.fields) if ((typed[k] ?? "") !== (asRead[k] ?? "")) take(k);
+    if (d.content !== (typeof read.content === "string" ? read.content : "")) take("content");
+    return edited ? withMessage(input) : input;
+  }
+  if (!d.content.trim()) issues["target.input"] = "Say what each run is asked.";
+  return { ...read, content: d.content };
+}
 
 /** The instant a wall time is: the one read with the schedule while the wall time is still what it read as, else the
  *  wall time as typed. What a save sends, and what the form's hint under the time says. */
@@ -346,7 +411,7 @@ export function bodyOf(d: Draft, capOptional: boolean | CapRule = false): { body
     source = { kind: "schedule", every_s: Math.round((n ?? 0) * UNIT_S[d.everyUnit]), ...(start ? { start_at: start } : {}) };
   }
   if (!d.agentId) issues["target.agent_id"] = "Pick an agent.";
-  if (!d.content.trim()) issues["target.input"] = "Say what each run is asked.";
+  const input = targetInputOf(d, issues);
   const { cap, issue } = capUnder(d.maxCost, capOptional, "A cost cap is needed: every run a schedule starts is capped.");
   if (issue) issues["target.max_cost_usd"] = issue;
   if (Object.keys(issues).length) return { issues };
@@ -355,14 +420,14 @@ export function bodyOf(d: Draft, capOptional: boolean | CapRule = false): { body
       ...(d.name.trim() ? { name: d.name.trim() } : {}),
       enabled: d.enabled,
       source,
-      target: { kind: "start_run", agent_id: d.agentId, input: { content: d.content }, ...(cap !== undefined ? { max_cost_usd: cap } : {}) },
+      target: { kind: "start_run", agent_id: d.agentId, input, ...(cap !== undefined ? { max_cost_usd: cap } : {}) },
     },
   };
 }
 
 /** A new webhook's fields as typed: how its requests are signed, its filter (none: every signed request fires), then the
  *  run each one starts (as a schedule's). */
-export type WebhookDraft = { name: string; signature: "standard" | "github"; accept: RuleDraft[]; agentId: string; content: string; maxCost: string };
+export type WebhookDraft = { name: string; signature: "standard" | "github"; accept: RuleDraft[]; agentId: string; content: string; maxCost: string } & InputDraft;
 export const emptyWebhook = (): WebhookDraft => ({ name: "", signature: "standard", accept: [], agentId: "", content: "", maxCost: "" });
 
 /** A webhook's source with `rules` as its filter (none: no accept), its kind and signature as `was` has them. */
@@ -384,7 +449,7 @@ export function webhookBodyOf(d: WebhookDraft, capOptional: boolean | CapRule = 
  *  `other`) and each picked event's rule as read, so what the person left goes back as it came. */
 export type GitHubPicks = { events: string[]; where: Record<string, ConditionDraft[]>; other: RuleDraft[]; read?: { order: string[]; rules: Record<string, Accept> } };
 /** A new GitHub trigger's fields as typed: its filter, then the run each event starts. */
-export type GitHubDraft = GitHubPicks & { name: string; agentId: string; content: string; maxCost: string };
+export type GitHubDraft = GitHubPicks & { name: string; agentId: string; content: string; maxCost: string } & InputDraft;
 export const emptyGitHub = (): GitHubDraft => ({ name: "", events: ["pull_request:opened"], where: {}, other: [], agentId: "", content: "", maxCost: "" });
 
 /** The picker's events, one each, in the list's order. */
@@ -489,7 +554,7 @@ export function configOf(fields: readonly ConfigField[], values: Record<string, 
 
 /** A new trigger from an app as typed: the saved Composio server, its event, the event's config by field, the filter's
  *  conditions on the event's delivery, then the run each event starts. */
-export type ComposioDraft = { name: string; server: string; event: string; config: Record<string, string>; where: ConditionDraft[]; agentId: string; content: string; maxCost: string };
+export type ComposioDraft = { name: string; server: string; event: string; config: Record<string, string>; where: ConditionDraft[]; agentId: string; content: string; maxCost: string } & InputDraft;
 export const emptyComposio = (): ComposioDraft => ({ name: "", server: "", event: "", config: {}, where: [], agentId: "", content: "", maxCost: "" });
 
 /** A filter of one event (a trigger from an app's, a feed trigger's): its conditions, a rule of their own; none takes
@@ -536,7 +601,7 @@ const FEED_EVENT = "item";
  *  (empty: the server's own, the whole document and /id), its filter's conditions on the item, then the run each item
  *  starts. `others`: rules after the first, made through the API, kept as they are; `read`: the source as read, so a
  *  pointer and a first rule the person left go back as they came. */
-export type FeedDraft = { name: string; urls: string; every: string; everyUnit: EveryUnit; items: string; id: string; where: ConditionDraft[]; others: RuleDraft[]; read?: FeedSource; agentId: string; content: string; maxCost: string };
+export type FeedDraft = { name: string; urls: string; every: string; everyUnit: EveryUnit; items: string; id: string; where: ConditionDraft[]; others: RuleDraft[]; read?: FeedSource; agentId: string; content: string; maxCost: string } & InputDraft;
 export const emptyFeed = (): FeedDraft => ({ name: "", urls: "", every: "15", everyUnit: "minutes", items: "", id: "", where: [], others: [], agentId: "", content: "", maxCost: "" });
 
 /** A feed trigger's source as its editor holds it. A first rule that names actions (none a feed takes) is kept with the
@@ -615,7 +680,7 @@ export function feedFields(urls: number, conditions: readonly number[]): Set<str
 /** A new email trigger's fields as typed: the mailbox of the server's account it reads (INBOX unless told), how often
  *  (as a count of `everyUnit`; the server's least, a minute, by default), on or off from now, then the run each new
  *  message starts (as a schedule's). */
-export type EmailDraft = { name: string; mailbox: string; every: string; everyUnit: EveryUnit; enabled: boolean; agentId: string; content: string; maxCost: string };
+export type EmailDraft = { name: string; mailbox: string; every: string; everyUnit: EveryUnit; enabled: boolean; agentId: string; content: string; maxCost: string } & InputDraft;
 export const emptyEmail = (): EmailDraft => ({ name: "", mailbox: "INBOX", every: "1", everyUnit: "minutes", enabled: true, agentId: "", content: "", maxCost: "" });
 /** The fields an email form says an issue under. */
 export const EMAIL_FIELDS = new Set(["name", "enabled", "source.mailbox", "source.every_s", "target.agent_id", "target.input", "target.max_cost_usd"]);
@@ -636,9 +701,9 @@ export function githubBodyOf(d: GitHubDraft, capOptional: boolean | CapRule = fa
 }
 
 /** A create body from its source and the run it starts (bodyOf's rules for the target), or what is missing. */
-function createOf(d: { name: string; agentId: string; content: string; maxCost: string }, source: TriggerCreate["source"], issues: Record<string, string>, capOptional: boolean | CapRule, what: string): { body?: TriggerCreate; issues?: Record<string, string> } {
+function createOf(d: { name: string; agentId: string; content: string; maxCost: string } & InputDraft, source: TriggerCreate["source"], issues: Record<string, string>, capOptional: boolean | CapRule, what: string): { body?: TriggerCreate; issues?: Record<string, string> } {
   if (!d.agentId) issues["target.agent_id"] = "Pick an agent.";
-  if (!d.content.trim()) issues["target.input"] = "Say what each run is asked.";
+  const input = targetInputOf(d, issues);
   const { cap, issue } = capUnder(d.maxCost, capOptional, `A cost cap is needed: every run ${what} starts is capped.`);
   if (issue) issues["target.max_cost_usd"] = issue;
   if (Object.keys(issues).length) return { issues };
@@ -646,7 +711,7 @@ function createOf(d: { name: string; agentId: string; content: string; maxCost: 
     body: {
       ...(d.name.trim() ? { name: d.name.trim() } : {}),
       source,
-      target: { kind: "start_run", agent_id: d.agentId, input: { content: d.content }, ...(cap !== undefined ? { max_cost_usd: cap } : {}) },
+      target: { kind: "start_run", agent_id: d.agentId, input, ...(cap !== undefined ? { max_cost_usd: cap } : {}) },
     },
   };
 }
@@ -656,7 +721,8 @@ function createOf(d: { name: string; agentId: string; content: string; maxCost: 
 export function draftOf(t: Schedule): Draft {
   const s = t.source;
   const zone = "cron" in s ? s.timezone : browserZone();
-  const base = { ...emptyDraft(t.target.agent_id), name: t.name, timezone: zone, content: typeof t.target.input.content === "string" ? t.target.input.content : "", maxCost: typeof t.target.max_cost_usd === "number" ? String(t.target.max_cost_usd) : "", enabled: t.enabled };
+  const base = { ...emptyDraft(t.target.agent_id), name: t.name, timezone: zone, content: typeof t.target.input.content === "string" ? t.target.input.content : "",
+    values: inputText(t.target.input), json: JSON.stringify(t.target.input, null, 2), inputRead: t.target.input, stored: { agentId: t.target.agent_id, input: t.target.input }, maxCost: typeof t.target.max_cost_usd === "number" ? String(t.target.max_cost_usd) : "", enabled: t.enabled };
   if ("cron" in s) return { ...base, kind: "cron", cron: s.cron };
   if ("at" in s) return { ...base, kind: "at", at: wallOf(s.at), read: { at: s.at } };
   const unit: EveryUnit = s.every_s % 3600 === 0 ? "hours" : s.every_s % 60 === 0 ? "minutes" : "seconds";
@@ -678,8 +744,10 @@ export const same = (a: unknown, b: unknown): boolean => {
 export function patchOf(t: Schedule, body: ScheduleInput, connected = false): ScheduleInput {
   // An interval typed with no start keeps the start the schedule has.
   const source = body.source && "every_s" in body.source && !body.source.start_at && "every_s" in t.source ? { ...body.source, start_at: t.source.start_at } : body.source;
-  // What the form does not show of the target (its effort, the input's other fields) is kept as it is.
-  const target = body.target && { ...body.target, input: { ...t.target.input, ...body.target.input }, ...(!connected && t.target.effort !== undefined && body.target.effort === undefined ? { effort: t.target.effort } : {}) };
+  // What the form does not show of the target (its effort) is kept as it is; the input's other fields are kept by the
+  // body itself (targetInputOf), so a field emptied in the form is left out. A connected agent takes no effort, so the
+  // schedule's is not carried over to it.
+  const target = body.target && { ...body.target, ...(!connected && t.target.effort !== undefined && body.target.effort === undefined ? { effort: t.target.effort } : {}) };
   return {
     ...(body.name !== undefined && body.name !== t.name ? { name: body.name } : {}),
     ...(source && !same(source, t.source) ? { source } : {}),
@@ -690,13 +758,18 @@ export function patchOf(t: Schedule, body: ScheduleInput, connected = false): Sc
 /** The fields the form shows an issue under. */
 export const FORM_FIELDS = ["name", "enabled", "source.cron", "source.timezone", "source.at", "source.every_s", "source.start_at", "target.agent_id", "target.input", "target.max_cost_usd"] as const;
 
-/** A refused save: a 422's issues by the field they name (those the form shows), and the rest as said. */
-export function issuesOf(e: unknown): { fields: Record<string, string>; rest: string[] } {
+/** A refused save: a 422's issues by the field they name (those the form shows), and the rest as said. `inputKeys`: the
+ *  agent's input fields the form shows: an issue at one (`target.input.company`, an item's `target.input.topics.1`) is
+ *  kept whole in `input`, to say at that field; one at any other part of the input is said under the message. */
+export function issuesOf(e: unknown, inputKeys: readonly string[] = []): { fields: Record<string, string>; rest: string[]; input?: FieldIssue[] } {
   if (!(e instanceof ClientError)) return { fields: {}, rest: [e instanceof Error ? e.message : String(e)] };
   if (e.status !== 422 || !e.fields?.length) return { fields: {}, rest: [`${e.code}: ${e.message}`] };
   const fields: Record<string, string> = {};
   const rest: string[] = [];
+  const input: FieldIssue[] = [];
   for (const f of e.fields) {
+    const key = fieldOfIssue(f.field, "target.input");
+    if (key !== null && inputKeys.includes(key)) { input.push(f); continue; }
     const at = f.field.startsWith("target.input") ? "target.input" : f.field;
     // A filter's issues are kept by their field too: its editor shows each one it has a place for (acceptFields); so are a
     // trigger from an app's server, event and config, and a feed trigger's URLs (each by its place) and pointers (the
@@ -704,5 +777,5 @@ export function issuesOf(e: unknown): { fields: Record<string, string>; rest: st
     if (((FORM_FIELDS as readonly string[]).includes(at) || at.startsWith("source.accept") || at === "source.server" || at === "source.event" || at === "source.config" || at.startsWith("source.config.") || /^source\.urls(\[\d+\])?$/.test(at) || at === "source.items" || at === "source.id") && !fields[at]) fields[at] = f.message;
     else rest.push(f.message);
   }
-  return { fields, rest };
+  return { fields, rest, ...(input.length ? { input } : {}) };
 }

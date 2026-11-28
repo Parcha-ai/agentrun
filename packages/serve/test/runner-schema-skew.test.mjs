@@ -1,4 +1,5 @@
-// A runner beside a server of a later release, on Postgres (migrate.ts runnerFloorOf; runner/main.ts watchFloor). The
+// A runner beside a server of a later release, on Postgres (migrate.ts runnerFloorOf; runner/main.ts watchFloor), and the
+// learning rows' release on SQLite too (its SCHEMA_VERSION: a runner that knows an earlier one is refused, loudly). The
 // server migrates first, under runners of the earlier release that keep running:
 //   - an additive migration leaves the runner floor where it was: a runner of the earlier build opens the schema ahead of
 //     it, and one already running finishes its run and goes on claiming;
@@ -15,9 +16,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startRunnerProcess } from "../dist/runner/main.js";
-import { LAST_UNMARKED, migrate, Unanswered, migrationsIn, openPostgresStore, RunnerBelowFloor, runnerFloorOf, StoreAwaitsServer } from "../dist/store/index.js";
+import { LAST_UNMARKED, migrate, Unanswered, migrationsIn, openPostgresStore, openSqliteStore, RunnerBelowFloor, runnerFloorOf, runnerOn, StoreAwaitsServer } from "../dist/store/index.js";
+import { refuseBelowFloor } from "../dist/store/postgres/migrate.js";
+import { SCHEMA_VERSION } from "../dist/store/schema.js";
 import { readStoreSchema, STORE_SCHEMA_LOCK_MS } from "../dist/store/store-schema.js";
 import { SCHEMA_STATE_MS } from "../dist/store/postgres/store.js";
 import { fauxLoops, until } from "./runner-support.mjs";
@@ -38,6 +42,12 @@ function later(breaking, version = KNOWN + 1) {
     : `-- A later release's additive step.\nALTER TABLE runs ADD COLUMN IF NOT EXISTS skew_note_${version} TEXT;\nUPDATE store_meta SET schema_version = ${version} WHERE singleton = 1;\n`;
   return { version, name: breaking ? "later_breaking" : "later_additive", sql, sha256: createHash("sha256").update(sql).digest("hex"), breaking };
 }
+
+/** The version of the learning rows' migration (0032_learning_rows.sql), and the version before it: what a runner of the
+ *  release before learning rows knows. */
+const ROWS = migrationsIn().find((m) => m.name === "learning_rows").version;
+/** The SQLite schema version of the release before learning rows: its runner opens only that version. */
+const SQLITE_BEFORE_ROWS = 16;
 
 /** A scratch schema dropped at the test's end, with a test client on it. */
 async function schemaFor(t) {
@@ -81,9 +91,9 @@ test("the server records which migrations break runners: the floor is the newest
   const { schema, sql } = await schemaFor(t);
   assert.deepEqual(await runnerFloorOf(sql, schema), { version: null, runnerFloor: null }, "nothing set up");
   await migrateTo(sql, schema, []);
-  assert.deepEqual(await runnerFloorOf(sql, schema), { version: KNOWN, runnerFloor: LAST_UNMARKED });
+  assert.deepEqual(await runnerFloorOf(sql, schema), { version: KNOWN, runnerFloor: floorAt(KNOWN) });
   await migrateTo(sql, schema, [later(false)]);
-  assert.deepEqual(await runnerFloorOf(sql, schema), { version: KNOWN + 1, runnerFloor: LAST_UNMARKED }, "an additive migration leaves the floor");
+  assert.deepEqual(await runnerFloorOf(sql, schema), { version: KNOWN + 1, runnerFloor: floorAt(KNOWN) }, "an additive migration leaves the floor");
   await migrateTo(sql, schema, [later(false), later(true, KNOWN + 2), later(false, KNOWN + 3)]);
   assert.deepEqual(await runnerFloorOf(sql, schema), { version: KNOWN + 3, runnerFloor: KNOWN + 2 }, "a breaking one raises it to its version, and the next additive one leaves it there");
   const marks = (await sql.query(`SELECT version, runners_breaking FROM ${schema}.schema_migrations WHERE version > $1 ORDER BY version`, [KNOWN])).rows;
@@ -92,12 +102,13 @@ test("the server records which migrations break runners: the floor is the newest
 
 test("a ledger an earlier server kept, with no breaking marks, has its version as its floor", ONLY, async (t) => {
   const { schema, sql } = await schemaFor(t);
-  await migrateTo(sql, schema, []);
+  // An earlier server's ledger: no breaking marks, and so no migration past LAST_UNMARKED (the marks came with 0023).
+  await migrate(sql, schema, Date.now(), migrationsIn().slice(0, LAST_UNMARKED));
   await sql.query(`ALTER TABLE ${schema}.schema_migrations DROP COLUMN runners_breaking`);
-  assert.deepEqual(await runnerFloorOf(sql, schema), { version: KNOWN, runnerFloor: KNOWN });
-  // This build's server marks it again at its next start.
+  assert.deepEqual(await runnerFloorOf(sql, schema), { version: LAST_UNMARKED, runnerFloor: LAST_UNMARKED });
+  // This build's server marks it at its next start, and marks each migration it applies past it.
   await migrateTo(sql, schema, []);
-  assert.deepEqual(await runnerFloorOf(sql, schema), { version: KNOWN, runnerFloor: LAST_UNMARKED });
+  assert.deepEqual(await runnerFloorOf(sql, schema), { version: KNOWN, runnerFloor: floorAt(KNOWN) });
 });
 
 test("after an additive migration, a runner of the earlier build opens the schema ahead of it and runs a run to its end", ONLY, async (t) => {
@@ -108,7 +119,7 @@ test("after an additive migration, a runner of the earlier build opens the schem
   const started = await runner(t, schema, { name: "runner-old", createLoop: fauxLoops({ turns: 2, turnMs: 10 }).createLoop, warn: (line) => said.push(line) });
   let closed = false;
   t.after(() => (closed ? undefined : started.close()));
-  assert.ok(said.some((line) => line.includes(`the store is at schema version ${KNOWN + 1}, ahead of this runner's ${KNOWN}; its runner floor is ${LAST_UNMARKED}`)), said.join(" | "));
+  assert.ok(said.some((line) => line.includes(`the store is at schema version ${KNOWN + 1}, ahead of this runner's ${KNOWN}; its runner floor is ${floorAt(KNOWN)}`)), said.join(" | "));
   await until(async () => (await row(sql, schema, "run-1")).state === "ended", "the run ends on the newer schema", 15_000);
   await until(async () => (await row(sql, schema, "run-1")).runner === null, "its release");
   await started.close();
@@ -212,9 +223,9 @@ test("store-schema reads the live schema and floor beside this build's version, 
   await migrate(sql, schema, Date.now(), migrationsIn().slice(0, -1));
   assert.deepEqual(await read(), { store: "postgres", where, schema: KNOWN - 1, runnerFloor: floorAt(KNOWN - 1), build: KNOWN, server: "migrates", runner: "waits" });
   await migrateTo(sql, schema, []);
-  assert.deepEqual(await read(), { store: "postgres", where, schema: KNOWN, runnerFloor: LAST_UNMARKED, build: KNOWN, server: "opens", runner: "opens" });
+  assert.deepEqual(await read(), { store: "postgres", where, schema: KNOWN, runnerFloor: floorAt(KNOWN), build: KNOWN, server: "opens", runner: "opens" });
   await migrateTo(sql, schema, [later(false)]);
-  assert.deepEqual(await read(), { store: "postgres", where, schema: KNOWN + 1, runnerFloor: LAST_UNMARKED, build: KNOWN, server: "refuses", runner: "opens" }, "a rollback across a migration: this build's server refuses, its runner still opens");
+  assert.deepEqual(await read(), { store: "postgres", where, schema: KNOWN + 1, runnerFloor: floorAt(KNOWN), build: KNOWN, server: "refuses", runner: "opens" }, "a rollback across a migration: this build's server refuses, its runner still opens");
   await migrateTo(sql, schema, [later(false), later(true, KNOWN + 2)]);
   assert.deepEqual(await read(), { store: "postgres", where, schema: KNOWN + 2, runnerFloor: KNOWN + 2, build: KNOWN, server: "refuses", runner: "refused" });
   const ledger = (await sql.query(`SELECT * FROM ${schema}.schema_migrations ORDER BY version`)).rows;
@@ -282,4 +293,74 @@ test("a floor read on a database that stopped answering gives up at its deadline
   const closing = Date.now();
   await store.close();
   assert.ok(Date.now() - closing < 5_000, `closed promptly: ${Date.now() - closing} ms`);
+});
+
+// Learning rows are runners-breaking: a runner of the release before them commits a run's learning to its git folder and
+// settings keys, which this server neither reads nor purges, so it must never run beside this server's store. It is
+// refused at its open, in words that name the floor, on either store.
+test("the learning rows' migration (0032) is breaking for runners: a schema migrated through it refuses a runner that knows only the version before it", () => {
+  const rows = migrationsIn().find((m) => m.version === ROWS);
+  assert.equal(rows.breaking, true, `${String(ROWS).padStart(4, "0")}_${rows.name}.sql says "-- runners: breaking" in its leading comment`);
+  const state = { version: ROWS, runnerFloor: floorAt(ROWS) };
+  assert.equal(state.runnerFloor, ROWS);
+  assert.equal(runnerOn(state, ROWS - 1), "refused");
+  assert.throws(() => refuseBelowFloor("agentrun", state, ROWS - 1), (error) => error instanceof RunnerBelowFloor && error.floor === ROWS && error.message.includes(`must know version ${ROWS} or later`), "RunnerBelowFloor, naming the floor");
+  assert.equal(runnerOn(state, ROWS), "opens", "this build's runner opens it");
+});
+
+// The ledger's re-record mark (0034) is breaking for runners, the workspace columns (0033) before it and the hooked firing
+// column (0035) after it additive: the floor this build's Postgres store holds is 0034, a runner that knows only 0033 is
+// refused, and one that knows 0034 still opens a store at 0035.
+test("the reopened-run ledger mark (0034) is breaking, the workspace columns (0033) and the hooked firing column (0035) additive: this build's floor is 34", () => {
+  const all = migrationsIn();
+  const byName = (name) => all.find((m) => m.name === name);
+  assert.deepEqual([byName("workspace")?.version, byName("workspace")?.breaking], [33, false], "0033_workspace.sql, additive");
+  assert.deepEqual([byName("learning_ledger_rerecorded")?.version, byName("learning_ledger_rerecorded")?.breaking], [34, true], "0034_learning_ledger_rerecorded.sql, -- runners: breaking");
+  assert.deepEqual([byName("trigger_firing_hooked")?.version, byName("trigger_firing_hooked")?.breaking], [35, false], "0035_trigger_firing_hooked.sql, additive");
+  const latest = Math.max(...all.map((m) => m.version));
+  assert.equal(latest, 35);
+  const state = { version: latest, runnerFloor: floorAt(latest) };
+  assert.equal(state.runnerFloor, 34);
+  assert.equal(runnerOn(state, 33), "refused", "a runner that knows the workspace columns only");
+  assert.equal(runnerOn(state, 34), "opens", "a runner that knows the ledger mark but not the hooked column opens it");
+  assert.equal(runnerOn(state, 35), "opens", "this build's runner opens it");
+});
+
+test("on SQLite, this build's store is past the release before learning rows: its runner is refused, a later store's runner gets RunnerBelowFloor naming the floor, and an earlier store waits for its server", async (t) => {
+  assert.ok(SCHEMA_VERSION > SQLITE_BEFORE_ROWS, `SCHEMA_VERSION (${SCHEMA_VERSION}) is past ${SQLITE_BEFORE_ROWS}, the version a runner before learning rows opens`);
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-skew-sqlite-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, "store.sqlite");
+  const server = await openSqliteStore({ file });
+  const state = await server.schemaState();
+  await server.close();
+  assert.deepEqual([state.version, state.runnerFloor], [SCHEMA_VERSION, SCHEMA_VERSION]);
+  assert.equal(runnerOn(state, SQLITE_BEFORE_ROWS), "refused", "a runner that knows the version before learning rows");
+  // A later release's file: this build's runner is refused at its open, its words naming the floor.
+  const raw = new DatabaseSync(file);
+  raw.exec(`UPDATE store_meta SET schema_version = ${SCHEMA_VERSION + 1}`);
+  raw.close();
+  await assert.rejects(openSqliteStore({ file, role: "runner" }), (error) => error instanceof RunnerBelowFloor && error.floor === SCHEMA_VERSION + 1 && error.known === SCHEMA_VERSION && error.message.includes(`must know version ${SCHEMA_VERSION + 1} or later`) && error.message.includes(`this runner knows ${SCHEMA_VERSION}`));
+  // The release before learning rows' file: a runner of this build waits for its server, which brings it to this version.
+  const back = new DatabaseSync(file);
+  back.exec(`UPDATE store_meta SET schema_version = ${SQLITE_BEFORE_ROWS}`);
+  back.close();
+  await assert.rejects(openSqliteStore({ file, role: "runner" }), (error) => error instanceof StoreAwaitsServer);
+  const upgraded = await openSqliteStore({ file });
+  assert.equal((await upgraded.schemaState()).version, SCHEMA_VERSION);
+  await upgraded.close();
+  const runner = await openSqliteStore({ file, role: "runner" });
+  await runner.close();
+});
+
+test("a Postgres schema this build's server migrated through the learning rows refuses a runner of the release before them: RunnerBelowFloor at its open, naming the floor", ONLY, async (t) => {
+  const { schema, sql } = await schemaFor(t);
+  await migrate(sql, schema, Date.now(), migrationsIn().filter((m) => m.version < ROWS));
+  const before = await runnerFloorOf(sql, schema);
+  assert.equal(runnerOn(before, ROWS - 1), "opens", "the release before learning rows runs on its own schema");
+  // Through the learning rows only: a later breaking migration raises the floor past them.
+  await migrate(sql, schema, Date.now(), migrationsIn().filter((m) => m.version <= ROWS));
+  const state = await runnerFloorOf(sql, schema);
+  assert.equal(state.runnerFloor, ROWS, "the floor rose to the learning rows' migration");
+  assert.throws(() => refuseBelowFloor(schema, state, ROWS - 1), (error) => error instanceof RunnerBelowFloor && error.floor === ROWS && error.message.includes(`must know version ${ROWS} or later`));
 });

@@ -97,6 +97,8 @@ export const ERROR_STATUS = {
   // GET /agents/{id}/package (agent-package.ts) of an agent whose source is elsewhere (a native, CLI learning, SDK or
   // another system's agent), a workflow, or one with no revision: there is no package of it to write.
   not_exportable: 409,
+  // GET /runs/{id}/export (run-export.ts) of a run whose bundle is over its 8 MiB cap: it is never cut short.
+  export_too_large: 413,
   // A run or an agent that was purged (DELETE /runs/{id}, /agents/{id}): every route of it reads its tombstone in the
   // error's details, and its DELETE answers 204 again.
   purged: 410,
@@ -107,6 +109,10 @@ export const ERROR_STATUS = {
   // (run-child-host.ts runIsolationOf), in the runner's words and their fix. Not retryable: it stays so until the runner
   // is started again as the words say.
   runner_refused: 503,
+  // POST /settings/api-keys (api-keys.ts) while the server keeps as many API keys as it takes: one is revoked first.
+  api_keys_full: 409,
+  // POST /settings/local-model/pull while a pull is under way here (local-model.ts): one at a time.
+  local_model_pulling: 409,
 } as const;
 
 export type ErrorCode = keyof typeof ERROR_STATUS;

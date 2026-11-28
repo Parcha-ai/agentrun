@@ -9,6 +9,7 @@
 //   last result says the whole answer is filed at (`in the run's files at <path>`), from the line that result names
 //   (`offset=<n>`), then again from each `offset=<n>` the read answers, until a read names none;
 // - `Answer:` and the lines after it: the final answer, with `{{last-result}}` the text of the last tool result,
+//   `{{env:<NAME>}}` that environment variable's value (a held value the run's input never holds),
 //   `{{tools}}` the names of the tools the run was given, `{{describe:<tool>}}` that tool's description as the run was
 //   handed it, `{{learned:<text>}}` yes or no for whether its instructions hold <text> (a seeded note's, under # Learned),
 //   `{{today}}` the day its system prompt's environment line names (environment.ts, "Today is <day> (<zone>)"), and
@@ -20,7 +21,8 @@
 //
 // The grader agent (its instructions are template-eval.ts GRADER_INSTRUCTIONS) passes a run when every line of its
 // rubric that says `Pass if the answer contains "<text>".` holds of the <answer> it was given (or of the <target>, when it
-// was given one), and answers one fenced json block, {pass, reason}. Each grader input is appended to the file
+// was given one) and every line that says `Pass if the file "<path>" contains "<text>".` holds of that file's <file>
+// block in the <files> it was given, and answers one fenced json block, {pass, reason}. Each grader input is appended to the file
 // AGENTRUN_TEST_EVAL_GRADER_LOG names, as a line of JSON, so a test reads what the grader saw.
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 
@@ -44,7 +46,13 @@ function grade(context, faux) {
   const subject = target ? between(asked.slice(target.index), target[0], "\n</target>") : between(asked, "<answer untrusted>\n", "\n</answer>");
   const wanted = [...rubric.matchAll(/^Pass if the answer contains "([^"]+)"\.$/gm)].map((m) => m[1]);
   const missing = wanted.filter((text) => !(subject ?? "").includes(text));
-  const verdict = missing.length ? { pass: false, reason: `the answer lacks ${missing.map((m) => JSON.stringify(m)).join(", ")}` } : { pass: true, reason: `the answer holds ${wanted.map((m) => JSON.stringify(m)).join(", ") || "what the rubric asks"}` };
+  // A file's text is read from its own <file> block, never from a call that names the file.
+  const files = between(asked, "<files untrusted>\n", "\n</files>") ?? "";
+  const fileOf = (path) => between(files, `<file path="${path}" bytes="`, "\n</file>")?.replace(/^\d+">\n/, "");
+  const lacking = [...rubric.matchAll(/^Pass if the file "([^"]+)" contains "([^"]+)"\.$/gm)].filter(([, path, text]) => !(fileOf(path) ?? "").includes(text)).map(([, path, text]) => `the file ${path} lacks ${JSON.stringify(text)}`);
+  const verdict = missing.length || lacking.length
+    ? { pass: false, reason: [...(missing.length ? [`the answer lacks ${missing.map((m) => JSON.stringify(m)).join(", ")}`] : []), ...lacking].join("; ") }
+    : { pass: true, reason: `the answer holds ${wanted.map((m) => JSON.stringify(m)).join(", ") || "what the rubric asks"}` };
   return faux.message(`I read the rubric and the answer.\n\n\`\`\`json\n${JSON.stringify(verdict)}\n\`\`\``);
 }
 
@@ -114,6 +122,7 @@ export default function reply(context, faux) {
   const answer = at < 0 ? "Done." : input.slice(at + "Answer:\n".length);
   return faux.message(answer
     .replaceAll("{{last-result}}", textOf(results.at(-1)?.content ?? ""))
+    .replace(/\{\{env:(\w+)\}\}/g, (_, name) => process.env[name] ?? "")
     .replaceAll("{{tools}}", toolsOf(context).join(", "))
     .replace(/\{\{describe:([^}]+)\}\}/g, (_, name) => String(describedOf(context, name)))
     .replaceAll("{{today}}", /^Today is (.+?) \([^)]+\)\./m.exec(system)?.[1] ?? "(no environment line)")

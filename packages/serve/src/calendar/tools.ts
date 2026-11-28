@@ -21,8 +21,9 @@ import { held } from "../runner/held.js";
 export type CalendarAnswer = { calendar: string; time_zone: string; from: string; to: string; events: readonly unknown[]; truncated: boolean };
 
 /** `value` as JSON with a line break before each field and item: the longest line is one field's cut value. The run's
- *  redactor (key-refusal.ts redactedAnswer) reads an answer in pieces split at whitespace and gives "[redacted]" for a run
- *  of 8,192 characters with none, which compact JSON of a busy week (one-word titles, no description) is. */
+ *  redactor (key-refusal.ts redactedAnswer) reads an answer in pieces split at whitespace, a run of 8,192 characters with
+ *  none at a JSON string's end, and gives "[redacted]" for such a run with no such end; a line a field keeps every cut at
+ *  whitespace, whatever a value holds. */
 const lined = (value: unknown): string => {
   if (Array.isArray(value)) return value.length ? `[\n${value.map(lined).join(",\n")}\n]` : "[]";
   if (isObject(value)) {
@@ -81,7 +82,7 @@ function calendarTool(host: ToolHost): ToolRegistration {
       let secret: string[] = [saved.url];
       const clean = (text: string) => {
         const cut = scrubAddress(text, secret);
-        return host.redact ? host.redact(cut) : cut;
+        return host.redact(cut);
       };
       const failed = (words: string) => forModel(clean(calendarError(`${CALENDAR_EVENTS}: ${words}`)), { isError: true });
       const given = (isObject(args) ? args : {}) as { from?: unknown; to?: unknown };

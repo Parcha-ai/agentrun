@@ -61,6 +61,7 @@ your harness's name. The ones that change what an owner sees:
 | Fact | What serve does with it |
 | --- | --- |
 | `wire` | Which models the harness is offered and which key rows name it. On `anthropic-messages` that is Anthropic's models, on the Anthropic and OpenRouter key rows; on `openai-responses`, OpenAI's, on the OpenAI and OpenRouter rows. |
+| `wire` and `forwardsRoute` (a translated route) | The models the runner's route translates onto that wire are offered too, to a harness that sets `forwardsRoute: true`. Today that is this machine's Ollama models on `anthropic-messages` and on `openai-responses`, at $0, with no key. Such a model's provider comes with a `fetch`: the route's own, answering at the provider's `origin`. A harness forwards its model requests with it: a module hands `ModuleLaunch.fetch` to its model proxy (`startModelProxy`'s `fetch`), and a built-in adapter passes it as its `fetch` option. Set the fact only once it does: a harness without it is offered none of those models, takes none as its default, and a run that names one is refused before it starts. |
 | `ownModel` | Set it when the harness runs only its wire's vendor's models, never the gateway's default. |
 | `normalizeModel` | How the model id is written for your provider (Anthropic's ids have dashes where OpenRouter's have dots). |
 | `steer` | Whether a message sent mid-turn reaches the turn in flight. ACP has no steer, so an ACP agent says `false`. |
@@ -101,7 +102,9 @@ argument, and the run's skills that check accepts are taken out of the prompt an
 
 A module may instead give a whole entry with its own runner (the members [serve's README](packages/serve/README.md#harness-modules)
 lists): it then states by hand what the kit derives from the facts (models, key rows, offer, refusal and price), and
-without facts its agent gets pi's tools, not the host tools.
+without facts its agent gets pi's tools, not the host tools. Its runner's `adapter(launch, extra)` gets the run's redactor
+as `launch.redact` (always given), which holds every key the run's claim opens: cut anything the adapter logs, records or
+hands back of a provider's answer with it.
 
 For either one, serve picks the model and the key the way it does for its own harnesses. A person's Claude Code login is
 never a module's credential. An entry's `ownKeys` names no key a built-in harness owns (Cursor's `CURSOR_API_KEY`): if
@@ -189,8 +192,9 @@ adds a row to [docs/examples.md](docs/examples.md) with:
 A recipe fits an ACP agent that the [ACP registry](https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json)
 lists with a binary release packed as `.tar.bz2`, `.tar.gz` or `.zip`. A recipe is installed, signed in where its
 agent signs a person in, checked, and then run by a server that names it ([Run it](#run-it)). A whole one, for Google Antigravity
-(a `.zip`, a key handed under the name the agent reads, and a person's own sign-in), is in
-[examples/harness-recipe](examples/harness-recipe/README.md).
+(a `.tar.gz` pinned by sha512, a key handed under the name the agent reads, and a person's own sign-in), ships with the
+ACP adapter and goes by its name, `antigravity`, wherever a recipe file does
+([examples/harness-recipe](examples/harness-recipe/README.md)).
 
 ### What you need
 
@@ -220,9 +224,12 @@ refused (`RECIPE_INVALID`, or the code of the rule it would break).
 | `signIn` | no | The owner's own sign-in, made by the agent's own command, for runs on the owner's own machine: `{ "args": [ARG, ...], "homeArg": FLAG, "terms"?: URL }`, `args` the agent's sign-in flags (agy's `["--login"]`), `homeArg` the flag that names the folder it keeps that sign-in in (agy's `--gemini-dir`), and `terms` the https address of the vendor's terms (printable ASCII with no space, at most 200 characters), named in the warning each sign-in prints. Plan billing alone, beside `keys`. See [Sign-in](#sign-in) and [Vendor terms](#vendor-terms). |
 | `env` | no | Variables the agent gets, each written out as a literal string: `{ "NAME": "value" }`. The place for an agent's switches (turn off its own tools, its telemetry, its session naming). No key, nothing read from the host (rule 5). |
 | `files` | no | Files written into the session's private HOME before the agent starts: `{ "path/in/home": "content" }`. A path is relative to HOME (`.config/agent/config.yaml`, or `$HOME/.config/...`). |
+| `allowFile` | no | `{ "path": "path/in/home", "form": FORM }`: a file the adapter writes into the private HOME at each start, listing the tools that start's MCP server offers in the form the agent reads, so the agent calls AgentRun's tools without asking permission and the server's gate asks at the MCP call. `form` is `"goose-permission"` (Goose's `.config/goose/permission.yaml`: each tool as `agentrun__<tool>` under `always_allow`, nothing else). Not one of `files`. An agent that asks before every tool call needs this, or the title tie in `quirks`, or `harness-check` fails its `mcp_tool`. |
+| `announces` | no | `{ "tool": PATH, "server"?: PATH, "prefix"?: TEXT, "args"?: PATH, "extras"?: [NAME, ...] }`, each a dotted path into the agent's `tool_call` (or the update that names the call later): where it names the tool it calls. A path that starts at its `title`, `toolCallId`, `kind`, `status`, `rawOutput`, `content`, `locations` or `sessionUpdate` is refused: the agent's text or a tool's output never names a call. With `server`, that field must say our server's name and `tool` is the tool's own name: a second server named exactly `agentrun` (a workspace's or the owner's own MCP configuration) would say `agentrun` there too, so under it AgentRun's MCP server goes by a name of the run's own, as below, and the field must say that name; without, `tool` must say `<prefix><tool>`, where `prefix` is how the agent writes our server's name before a tool's (default `agentrun__`; agy's `mcp_agentrun_`; it must name `agentrun`, and is refused beside `server`). A prefix that joins `agentrun` to the tool's name with one `_` or `-` (agy's) is one another server's name could spell (a server `agentrun_look` with a tool `up` reads as `mcp_agentrun_look_up`), so under it AgentRun's MCP server goes by a name of the run's own, `ar` and 6 random hex digits (as long as `agentrun`), and the prefix reads that name (`mcp_ar3f…_`). The prefix counts toward the agent's 64-character cap on a tool's name, so under it a tool's own name may be at most 64 less the prefix (51 under agy's, as under `agentrun`). A longer one is left out of the tools the agent is given at that start, and the run gets a notice naming it while the run goes on with the rest. `args` is where its arguments are (default `rawInput`). `extras` names fields the agent writes beside the arguments that the MCP call never carries (agy's `toolSummary`): left out, when they hold text, before the two are matched, except where the tool's own input schema declares that argument; then the announcement matches the MCP call with that argument or without it. Goose's: `{ "tool": "_meta.goose.toolCall.toolName" }`; Cursor's: `{ "tool": "rawInput.toolName", "server": "rawInput.providerIdentifier", "args": "rawInput.args" }`; agy's (the shipped Antigravity recipe): `{ "tool": "name", "prefix": "mcp_agentrun_", "extras": ["toolSummary"] }`. A call it names as another tool is the agent's own and never takes an AgentRun call's id. Without it, calls are matched by their arguments alone. A title is never read for this. The title tie needs it: a recipe with the tie and no `announces` is refused. |
 | `state` | no | Folders in the private HOME where the agent keeps its sessions (`.local/share/agent/sessions`). AgentRun copies them into the session's records after each turn, so a session survives a crash and moves to another runner. It keeps only the bytes that changed since the last copy, never SQLite's `-shm` file, and at most 8 MiB per session. Past that, the run says so and a resume starts the agent fresh with the conversation so far. |
+| `mcpConfigs` | no | MCP config files the agent reads, each JSON with an `mcpServers` object: `~/path` or `$HOME/path` in the session's private HOME, any other path in its work directory (Cursor's recipe: `~/.cursor/mcp.json` and `.cursor/mcp.json`). Under a per-start name for AgentRun's MCP server (see `quirks`), a recipe that lists at least one keeps the first start's name for the whole run; one that lists none names the server afresh at each start. One that declares a server under the kept name has it refused at the start, as `quirks` says; so does one that is no regular file, is over 1 MiB or fails to read, or does not parse but names it or holds a `\u` escape. The file is never edited, and one that does not parse and names nothing declares nothing. |
 | `declares` | yes | What the agent says it can do at ACP `initialize`: `{ "load": true \| false, "mcp": "http" \| "stdio" }`. `load` is whether it resumes a session with `session/load`; `mcp` is how it takes AgentRun's tools (an MCP server over HTTP, or over stdio). A run is refused (`ACP_CAPABILITY_MISMATCH`) when the agent says otherwise. |
-| `quirks` | no | `{ "mcpCall": "match" \| "mint" }`: how an MCP call is tied to the agent's tool call, for an agent that announces its calls late (`mint`). Most agents need none. |
+| `quirks` | no | `{ "mcpCall": "match" \| "mint", "permissionTie": "title" }`. `mcpCall`: how an MCP call is tied to the agent's tool call, for an agent that announces its calls late (`mint`). `permissionTie`: for an agent that asks permission before every MCP call whatever its config says (Cursor's allowlist with an empty `allow`; agy), the adapter answers its request for an AgentRun tool that `announces` named `allow_once` when the request's title names the same tool, and the server's gate asks at the MCP call. Under it AgentRun's MCP server always goes by a name of the run's own (`ar` and 6 random hex digits; the default prefix reads `ar3f…__`, and Goose's permission file names that), so a second server named exactly `agentrun` never passes for it. The name is minted at the run's first start and given again at each later one: an agent may keep, with its session, the name it was first given and title a resumed run's calls under it (Cursor does). A file in `mcpConfigs` that declares a server under that name has it refused at the start: AgentRun's server gets a fresh name, kept from then on, and the run gets a notice naming the file. The name is the run's own, not secret from the agent: its model reads it in its tool list. The server's gate asks about a request for a call the `announces` server field names as another server's with that server's name beside the title (`server`). Without it, every permission request goes to the server's gate. Most agents need neither. |
 | `description` | no | A sentence about the agent. |
 
 An example, for an agent called Acme that bills through AgentRun's proxy:
@@ -278,7 +285,7 @@ with that rule's code. `agentrun harness install --recipe` and `agentrun harness
    archive is pinned the same way: an archive with more than one executable (Antigravity's ships a sidecar,
    `localharness_external`, beside its server) has its whole tree's digest pinned by `treeSha256` or recorded at the
    first install, so no file beside the binary runs unpinned. A check or a sign-in refuses a tree that changed since.
-3. **Private paths** (`RECIPE_PATH_OUTSIDE`). Every `files` path and `state` folder is inside the session's private
+3. **Private paths** (`RECIPE_PATH_OUTSIDE`). Every `files` path, the `allowFile` path and every `state` folder is inside the session's private
    HOME: no absolute path, no `..`. The archive's `cmd` stays inside the agent's own folder.
 4. **The owner installs it** (`RECIPE_INSTALLS_ITSELF`). Only `agentrun harness install --recipe FILE` downloads and
    unpacks the release. A recipe has no `install`, `postinstall`, `setup` or `script` step of its own, and a check of
@@ -338,10 +345,11 @@ with the archive's owners and permissions dropped; AgentRun makes none of the zi
 the host's `tar` extracts (symbolic links included). Either way the archive is the one the recipe pins by its digest,
 and every file it unpacks to is pinned by the tree's digest (rule 2).
 
-A digest the recipe leaves out is recorded at the first install, one file each under
-`~/.agentrun/harnesses/.first-seen/`: `<id>@<version>-<platform>.sha256` for the binary and `.tree.sha256` for the
-tree. A record is written once and never over another; to take a new release, change `version` in the recipe. A
-release whose binary or tree differs from its record is refused at every check, sign-in and reinstall.
+A tree digest the recipe leaves out is recorded at the first install, in
+`~/.agentrun/harnesses/.first-seen/<id>@<version>-<platform>.tree.sha256`. The tree holds the binary too, so no
+binary digest is recorded; one the recipe pins (`binarySha256`) is checked at the install. A record is written once and
+never over another; to take a new release, change `version` in the recipe. A release whose binary or any file beside
+it differs from its record is refused at every check, sign-in, start and reinstall.
 
 A failure names its code and the command to try again: `HARNESS_PLATFORM_UNSUPPORTED` (no archive for this platform),
 `HARNESS_DOWNLOAD_FAILED`, `HARNESS_ARCHIVE_MISMATCH` (the archive's sha256 or sha512 is not the recipe's),
@@ -390,8 +398,15 @@ a harness row carries:
   asks, so its tools are gated only by its config).
 - `billing`: `proxy` or `plan`.
 
-The report's `gate` lists each permission the agent asked for and each question the gate was asked. A call whose title
-the adapter can't tie to an AgentRun tool is refused, and fails `mcp_tool`.
+The report's `gate` lists each permission the agent asked for and each question the gate was asked. `mcp_tool` fails
+when the agent asked permission for `check_echo` and the recipe declares no title tie (`quirks.permissionTie`): give it
+an `allowFile` so it runs AgentRun's tools unasked. A request counts as one for `check_echo` by its `toolCallId` (the
+id a `check_echo` call reached the gate under) or by its input's `text` (the check's nonce, as `check_echo`'s `text`
+argument), so a refused request the agent never ran still counts. Never by its title, and never by the nonce elsewhere
+in its input (an agent's own write of `proof.txt`). The row counts every request (`permissionAsks`) and those for
+`check_echo` (`ourAsks`). A request for a call of the agent's own is refused and listed, and fails no
+stage. A request whose title the adapter can't tie to an AgentRun tool is refused, and fails `mcp_tool` too. Turn 1
+asks for `check_echo` with a `path` argument, the kind of argument an agent may summarize in its call's title.
 
 `--cap USD` bounds what the check spends (default $0.25). `--data DIR` is the data directory the agent was installed
 into. A check that passes writes `~/.agentrun/harnesses/<id>.checked` there, open to you alone: the sha256 of the
@@ -494,8 +509,9 @@ runs each run as a user of its own (the image's default) a run is refused at its
 is set there. A recipe the loader refuses, one with no
 archive for this platform, or one whose id a harness module or another recipe already has refuses the start.
 
-The harness is in the server's table from the start, so a run naming it is refused in words, but `GET /v2/capabilities`
-lists it as available only once all of these hold, and a run starts only then:
+The harness is in the server's table from the start, so a run naming it is refused in words. `GET /v2/capabilities`
+always lists it, but as available only once all of these hold, and a run starts only then. Until then its offer says
+`available: false` and its `reason` is the first code below that still applies, with the command that fixes it:
 
 - the binary and its tree are installed and pinned on `<data>` (else `HARNESS_NOT_INSTALLED`, with the install command);
 - a `harness-check` passed on `<data>` for this recipe file, this binary and this tree: the `.checked` note's three
@@ -512,6 +528,14 @@ the link). That page is offered once the server is started with such a recipe. E
 seal key in the store, named `harness:<id>:<KEY>`, so a key saved for one harness never reaches another harness's run,
 even under the same name. Saving or removing one is a secret write: the owner's signed-in session alone, never the API
 token. The routes are `GET /v2/settings/harness-keys` and `PUT`/`DELETE /v2/settings/harness-keys/{harness_id}/{key}`.
+
+Each saved key is bound to the recipe file it was saved for (the file's sha256) and to the seal key it was sealed under.
+A later recipe file that takes the same id, even one naming the same keys, never opens them: the page lists each to
+paste again, with why (`recipe_changed`, `not_bound`, `seal_key_changed`, `file_unreadable`). A recipe AgentRun ships
+is a recipe file too: an AgentRun release that changes it (a new agy pin) asks for a new check and the keys pasted
+again, as an edit of your own file would. A recipe the server is no longer
+started with keeps its keys sealed, and still cut, but no run gets them. The page lists them under its id, and `DELETE`
+removes each, as it removes a key that its recipe no longer runs on.
 
 Each claim of a run on the harness opens that harness's keys, and lays no other harness's. A runner apart opens them
 for its run's own process. They are laid all or none, and only on the agent's start: the vendor's agent process gets

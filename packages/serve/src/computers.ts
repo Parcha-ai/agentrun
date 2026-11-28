@@ -74,6 +74,9 @@ export interface ComputerRoutesOptions {
   /** This server's folder mode, or how to read it at each call (folderModeOf: the Archil settings, the environment's or the saved row), so turning
    *  Archil on or off takes effect without building the routes again. */
   readonly mode: FolderMode | (() => FolderMode | Promise<FolderMode>);
+  /** In Mode 2, this server's Archil region where it has no serverless exec (archil-settings.ts noExecRegionOf), read
+   *  at each call as `mode` is: a choice with no computer that mounts the folder has no shell then. Absent: none. */
+  readonly noExec?: () => Promise<string | undefined>;
   /** Why this machine cannot run a provider's computers, by its id (hostCommandRefusals at the server's start): the
    *  provider is not ready, and a claim of it is refused, in these words. Absent: every provider can run here. */
   readonly hostWhy?: Readonly<Record<string, string>>;
@@ -82,17 +85,17 @@ export interface ComputerRoutesOptions {
   /** Whether a provider that binds a folder of this machine (Docker) answers here now, or why not (the server's daemon
    *  check, docker-daemon.ts, which keeps its answer a while). Absent: taken as answering. */
   readonly answers?: (provider: string) => Promise<DockerDaemon>;
-  /** The person's own computers paired with this server (computer-attach.ts): the store's rows and each one's view.
-   *  Each is one more provider of its kind (attached-computers.ts pairedEntry), ready while it is attached. Absent:
-   *  none. */
-  readonly paired?: { rows(): Promise<readonly PairedComputerRow[]>; viewOf(row: PairedComputerRow, serves: readonly ComputerSettingKind[]): PairedView };
-  /** No runner in this server's process (ServeOptions.runnerApart): no run here can use a computer whose socket the
-   *  server's attach hub takes, a paired computer's or a dial provider's machine's. Each such provider's row says so
-   *  (runs_refused), and a dial provider's test fails in those words. */
+  /** The person's own computers paired with this server (computer-attach.ts): the store's rows and each one's view, with
+   *  its runs_refused as this module reads it. Each is one more provider of its kind (attached-computers.ts pairedEntry),
+   *  ready while it is attached. Absent: none. */
+  readonly paired?: { rows(): Promise<readonly PairedComputerRow[]>; viewOf(row: PairedComputerRow, serves: readonly ComputerSettingKind[], runsRefused: string | null): Promise<PairedView> };
+  /** No runner in this server's process (ServeOptions.runnerApart): while no runner relays (`relayed`), no run here can
+   *  use a computer whose socket the server's attach hub takes, a paired computer's or a dial provider's machine's. Each
+   *  such provider's row says so (runs_refused), and a dial provider's test fails in those words. */
   readonly runnerApart?: boolean;
-  /** Whether a runner in a process of its own relays its dials now (dial-relay.ts): its machines dial this server, which
-   *  relays each socket to it, so a dial provider's runs can use it and its row says nothing. Read once per view and per
-   *  test. Absent: none does. A paired computer's socket is never relayed. */
+  /** Whether a runner in a process of its own relays now (dial-relay.ts): a dial provider's machines and a paired
+   *  computer dial this server, which relays each socket to the runner that holds its run, so their runs can use them and
+   *  their rows say nothing. Read once per view and per test. Absent: none does. */
   readonly relayed?: () => Promise<boolean>;
 }
 
@@ -171,10 +174,14 @@ export const COMPUTER_UNAVAILABLE = "computer_unavailable";
  *  computer that binds a local folder (Docker) reaches; Mode 2 keeps it on the owner's disk, which a computer holds as an
  *  Archil mount where its provider takes one and Archil's image is here, else as a synced folder the runner keeps on the
  *  disk (never a local Docker bind). A desktop, phone or browser holds no folder unless its provider takes one, so either
- *  mode takes it. `provider` is as this server has it (resolve-computer.ts entryHere). */
+ *  mode takes it. `provider` is as this server has it (resolve-computer.ts entryHere). In Mode 1, a provider that would
+ *  hold the folder in Mode 2 is told how to get there: Archil on, in Settings → Workspace. */
 export function modeRefusal(kind: ComputerKind, provider: ProviderEntry, mode: FolderMode): string | undefined {
   if (kind !== "sandbox") return undefined;
-  if (mode === "local" && !provider.mounts.includes("bind")) return `${provider.label} can't mount this server's run folders (they are on its own disk): set this agent's computer to sandbox on Docker, or none (Settings → Computers)`;
+  if (mode === "local" && !provider.mounts.includes("bind")) {
+    const archil = folderKindOf(provider, 2) === undefined ? "" : "keep run folders on an Archil disk instead (turn on Archil in Settings → Workspace), or ";
+    return `${provider.label} can't mount this server's run folders (they are on its own disk): ${archil}set this agent's computer to sandbox on Docker, or none (Settings → Computers)`;
+  }
   if (mode === "disk" && folderKindOf(provider, 2) === undefined) {
     const why = [provider.unmounted?.archil, provider.unmounted?.sync].filter((one) => one !== undefined).join("; ");
     return `${provider.label} can't mount the owner's disk this server keeps run folders on${why ? ` (${why})` : ""}: set this agent's computer to a sandbox that mounts it, or none (Settings → Computers)`;
@@ -221,10 +228,10 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
   const modeNow = async (): Promise<FolderMode> => (typeof options.mode === "function" ? options.mode() : options.mode);
   /** Why no run here can use `provider`'s computers, on a server whose runner runs in a process of its own: its machines
    *  dial this server (connectOf, with the connect its settings give), or it is a paired computer (`paired`), so the
-   *  server's attach hub takes its socket, which the runner never reaches. A dial provider's machine reaches a runner
-   *  that relays its dials (`relayed`, read by relaysNow), so it is null there. Null where its runs can use it. */
+   *  server's attach hub takes its socket, which the runner never reaches. Either reaches a runner that relays
+   *  (`relayed`, read by relaysNow), so it is null there. Null where its runs can use it. */
   const runsRefused = (provider: Pick<ProviderEntry, "id" | "label" | "connect">, relays: boolean, paired = false): string | null =>
-    options.runnerApart !== true ? null : paired ? RUNNER_APART_WORDS : !relays && connectOf(provider, settingOptions(provider.id, settings, keyTable)) === "dial" ? dialApartWords(provider.label) : null;
+    options.runnerApart !== true || relays ? null : paired ? RUNNER_APART_WORDS : connectOf(provider, settingOptions(provider.id, settings, keyTable)) === "dial" ? dialApartWords(provider.label) : null;
   const relaysNow = async (): Promise<boolean> => options.runnerApart === true && options.relayed !== undefined && (await options.relayed());
   /** Why a computer of `kind` on `provider` can't be had for its daemon (a provider that binds a folder of this machine,
    *  `said` its answer, in folder `mode`): none answering is the one wording (docker-daemon.ts noDockerWords); else its
@@ -233,16 +240,17 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     said.up ? undefined : said.absent ? noDockerWords(kind, kinds.PROVIDERS, mode === "disk" ? 2 : 1) : said.reason;
 
   /** Each kind, whether this server offers it and why not, the capability groups and tools it brings, and each provider
-   *  that serves it, with its keys (saved or not, never a value) and whether a run could have it now. */
-  async function view(): Promise<{ kinds: KindView[]; paired: PairedView[] }> {
+   *  that serves it, with its keys (saved or not, never a value) and whether a run could have it now. `scoped`: the view
+   *  of a request in a workspace, which never sees the operator's paired computers. */
+  async function view({ scoped = false }: { scoped?: boolean } = {}): Promise<{ kinds: KindView[]; paired: PairedView[] }> {
     const mode = await modeNow();
     // The paired computers, each one more provider of its kind; one not attached now is not ready, saying so.
-    const rows = options.paired ? await options.paired.rows() : [];
+    const rows = options.paired && !scoped ? await options.paired.rows() : [];
     const listed = withPaired(options.kinds, rows);
-    const paired = rows.map((row) => options.paired!.viewOf(row, listed.PROVIDERS.find((provider) => provider.id === row.id)?.kinds ?? []));
+    const relays = await relaysNow();
+    const paired = await Promise.all(rows.map((row) => options.paired!.viewOf(row, listed.PROVIDERS.find((provider) => provider.id === row.id)?.kinds ?? [], runsRefused({ id: row.id, label: row.name }, relays, true))));
     const offline = new Map(rows.flatMap((row, at) => (paired[at]!.online ? [] : [[row.id, `${row.name} is not attached now: open its driver on that computer, which dials this server`] as const])));
     const pairedIds = new Set(rows.map((row) => row.id));
-    const relays = await relaysNow();
     // Every provider's keys in one read: each a SecretMeta named for its provider, set by the environment or the store row
     // of its key's name.
     const slots = listed.PROVIDERS.flatMap((provider) => provider.keys.map((key) => ({ secret: secretName("computer", provider.id, key.name), env: key.name, row: key.name })));
@@ -251,7 +259,8 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     // Each provider as this server has it: the mounts its saved keys turn on, whether this server names its image, and no
     // Archil mount where its settings make its machines dial this server.
     const kinds = { ...listed, PROVIDERS: listed.PROVIDERS.map((provider) => entryHere(provider, (name) => saved.has(name) || envValue(env, name) !== undefined, settingOptions(provider.id, settings, keyTable))) };
-    const choice = (setting: ComputerSetting): ShellChoice => shellChoiceOf(setting, mode === "disk" ? 2 : 1, kinds);
+    const noExec = mode === "disk" ? await options.noExec?.() : undefined;
+    const choice = (setting: ComputerSetting): ShellChoice => shellChoiceOf(setting, mode === "disk" ? 2 : 1, kinds, noExec);
     // The run's folder a computer of this choice holds, by the rule the claim picks it by, over the same providers.
     const folderOf = (setting: ComputerSetting): MountKind | null => runFolderOf(setting, mode === "disk" ? 2 : 1, kinds) ?? null;
     // Under this server's AGENTRUN_BOX_ALLOW none, a computer that needs a network is refused at a
@@ -430,7 +439,8 @@ export async function settingsComputerRoute(routes: ComputerRoutes, name: string
   throw new ApiError("not_found", `no computer route ${name}`);
 }
 
-/** capabilities.computers: the kinds this server offers now, in the registry's order. */
-export async function computerCapabilities(routes: ComputerRoutes): Promise<{ kinds: ComputerKind[] }> {
-  return { kinds: (await routes.view()).kinds.filter((kind) => kind.offered).map((kind) => kind.kind) };
+/** capabilities.computers: the kinds this server offers now, in the registry's order. `scoped`: a request in a workspace,
+ *  whose count leaves out the paired computers (view). */
+export async function computerCapabilities(routes: ComputerRoutes, { scoped = false }: { scoped?: boolean } = {}): Promise<{ kinds: ComputerKind[] }> {
+  return { kinds: (await routes.view({ scoped })).kinds.filter((kind) => kind.offered).map((kind) => kind.kind) };
 }

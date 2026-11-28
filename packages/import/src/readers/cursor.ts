@@ -7,11 +7,13 @@
 // Cursor's server), no model a person can read (each turn's is encrypted, and is never read), nor a message's time: each
 // answer is a request of unknown tokens on an unknown model, and every turn is at the chat's start. A store is read once,
 // whole, read-only: no cursor to go on from. A store no cursor-agent has open is opened immutable, so the read writes
-// no -wal or -shm into Cursor's folder; a writer that comes mid-read fails the read (openDb).
+// no -wal or -shm into Cursor's folder; a writer that comes mid-read fails the read (openDb). An open chat writes its
+// store's write-ahead log, store.db's mtime unchanged until a checkpoint: a chat's size and last write take the log and
+// meta.json with the store (chatStat).
 import { readFile, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { entries, type Env, type Reader, type ReadOptions, type ReadResult, rememberUser } from "../reader.js";
+import { entries, type Env, type Locator, type LocatorSize, type Reader, type ReadOptions, type ReadResult, rememberUser } from "../reader.js";
 import { argsOf, isObject, str, textOf } from "../text.js";
 import { ACTIVE_GAP_MS, type Answer, type SessionOf, type ToolCall, type Turn } from "../types.js";
 
@@ -244,10 +246,25 @@ async function readChat(file: string, { turns: keep = true }: ReadOptions): Prom
   }
 }
 
+/** A chat's size and last write: its store's with its write-ahead log's (an open chat writes store.db-wal, store.db's
+ *  mtime unchanged until a checkpoint) and meta.json's last write. null: the store is gone. */
+async function chatStat({ file }: Locator): Promise<LocatorSize | null> {
+  const gone = (error: unknown): undefined => {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return undefined;
+    throw error;
+  };
+  const [db, wal, meta] = await Promise.all([file, `${file}-wal`, join(dirname(file), "meta.json")].map((path) => stat(path).catch(gone)));
+  if (!db) return null;
+  return { bytes: db.size + (wal?.size ?? 0), mtimeMs: Math.max(db.mtimeMs, wal?.mtimeMs ?? 0, meta?.mtimeMs ?? 0) };
+}
+
 export const cursor: Reader<"cursor", null> = {
   source: "cursor",
   name: "Cursor",
   harness: "cursor",
   discover: async (home, env = {}) => (await storesIn(configDir(home, env))).map((file) => ({ file })),
   read: (locator, _cursor, options = {}) => readChat(locator.file, options),
+  idOf: ({ file }) => cursorSessionId(file),
+  stat: chatStat,
 };

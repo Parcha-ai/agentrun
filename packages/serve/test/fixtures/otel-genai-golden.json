@@ -1,0 +1,82 @@
+[
+  {
+    "name": "invoke_agent Agent one",
+    "kind": "INTERNAL",
+    "attributes": {
+      "agentrun.harness": "stand-in-cli",
+      "agentrun.run.id": "run-1",
+      "agentrun.semconv.version": "genai-0.1.0",
+      "gen_ai.agent.id": "agent-1",
+      "gen_ai.agent.name": "Agent one",
+      "gen_ai.conversation.id": "run-1",
+      "gen_ai.operation.name": "invoke_agent",
+      "session.id": "run-1"
+    },
+    "children": [
+      {
+        "name": "chat anthropic/claude-sonnet-4.5",
+        "kind": "CLIENT",
+        "attributes": {
+          "agentrun.harness": "stand-in-cli",
+          "agentrun.run.id": "run-1",
+          "agentrun.semconv.version": "genai-0.1.0",
+          "gen_ai.agent.id": "agent-1",
+          "gen_ai.agent.name": "Agent one",
+          "gen_ai.conversation.id": "run-1",
+          "gen_ai.operation.name": "chat",
+          "gen_ai.provider.name": "openrouter",
+          "gen_ai.request.model": "anthropic/claude-sonnet-4.5",
+          "gen_ai.usage.cache_creation.input_tokens": 300,
+          "gen_ai.usage.cache_read.input_tokens": 2000,
+          "gen_ai.usage.cache_write.input_tokens": 300,
+          "gen_ai.usage.input_tokens": 2400,
+          "gen_ai.usage.output_tokens": 50,
+          "server.address": "openrouter.ai",
+          "session.id": "run-1"
+        },
+        "children": []
+      },
+      {
+        "name": "execute_tool write",
+        "kind": "INTERNAL",
+        "attributes": {
+          "agentrun.harness": "stand-in-cli",
+          "agentrun.run.id": "run-1",
+          "agentrun.semconv.version": "genai-0.1.0",
+          "gen_ai.agent.id": "agent-1",
+          "gen_ai.agent.name": "Agent one",
+          "gen_ai.conversation.id": "run-1",
+          "gen_ai.operation.name": "execute_tool",
+          "gen_ai.tool.call.id": "call-1",
+          "gen_ai.tool.name": "write",
+          "gen_ai.tool.type": "function",
+          "session.id": "run-1"
+        },
+        "children": []
+      },
+      {
+        "name": "chat openai/gpt-5",
+        "kind": "CLIENT",
+        "attributes": {
+          "agentrun.harness": "stand-in-cli",
+          "agentrun.run.id": "run-1",
+          "agentrun.semconv.version": "genai-0.1.0",
+          "gen_ai.agent.id": "agent-1",
+          "gen_ai.agent.name": "Agent one",
+          "gen_ai.conversation.id": "run-1",
+          "gen_ai.operation.name": "chat",
+          "gen_ai.provider.name": "openrouter",
+          "gen_ai.request.model": "openai/gpt-5",
+          "gen_ai.usage.cache_creation.input_tokens": 0,
+          "gen_ai.usage.cache_read.input_tokens": 1200,
+          "gen_ai.usage.cache_write.input_tokens": 0,
+          "gen_ai.usage.input_tokens": 1500,
+          "gen_ai.usage.output_tokens": 400,
+          "server.address": "openrouter.ai",
+          "session.id": "run-1"
+        },
+        "children": []
+      }
+    ]
+  }
+]

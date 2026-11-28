@@ -3,6 +3,7 @@ import { runWorkflow, validateWorkflow, WorkflowInvalidError, WorkflowInputInval
 import { resolveSchemaForWorkflow } from "./schema-references.js";
 import { synthesizeAnswers } from "./system-one.js";
 import type { DecisionCapabilities, DecisionProvider } from "./decision-provider.js";
+import { isRecord } from "./record.js";
 
 /** `ok` keeps its meaning: false only when a check failed. `status` says whether every check ran: `passed`, `not_run`
  *  (a check stood down; `skipped` says which and why, so this is not proof the graph was exercised) or `failed`. */
@@ -233,7 +234,7 @@ export async function dryRunWorkflow(workflow: Workflow, opts: DryRunOptions = {
       if (error instanceof SynthesisTooLarge) return { ok: true, status: "not_run", skipped: [error.message] };
       throw error;
     }
-    if (!generated || typeof generated !== "object" || Array.isArray(generated) || !Compile(schema as never).Check(generated)) {
+    if (!isRecord(generated) || !Compile(schema as never).Check(generated)) {
       return { ok: true, status: "not_run", skipped: ["Could not synthesize a valid input object. Supply input explicitly to dryRunWorkflow or the dry-run CLI."] };
     }
     input = generated as Record<string, unknown>;

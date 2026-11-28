@@ -1,6 +1,6 @@
 # Connect existing Claude Code and Codex agents
 
-Use **Connect agent** and choose whether to connect a live setup, import past history, or both. For a live connection, select this server or another source machine, discover the selected project and choose its default, a Claude Code named agent, or a Codex profile. Verify checks the CLI and native sign-in without a model call. It separately reports that model and tool execution remain untested. The console handoff reads the skill bundled with that exact server build at `/skills/agentrun-serve/SKILL.md`.
+Use **Connect your agents** and choose whether to connect a live setup, import past history, or both. For a live connection, select this server or another source machine, discover the selected project and choose its default, a Claude Code named agent, or a Codex profile. Verify checks the CLI and native sign-in without a model call. It separately reports that model and tool execution remain untested. The console handoff reads the skill bundled with that exact server build at `/skills/agentrun-serve/SKILL.md`.
 
 The current bridge requires stable Claude Code 2.1.322 or later in major version 2, or Codex 0.167.2 or later in major version 0. Older, prerelease and other major versions show Needs attention until the bridge supports their protocol.
 

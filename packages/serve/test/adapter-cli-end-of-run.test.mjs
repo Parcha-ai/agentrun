@@ -21,7 +21,7 @@ const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 const INPUT = "Find it.";
 
 /** A CLI stand-in whose turns say one thing each: the job's answer to the input, the next of `replies` to anything else
- *  (a note once they run out). */
+ *  (a note once they run out). A reply that is a list is the turn's live events as they are, in order. */
 function standInCli(turns, replies = []) {
   return {
     id: "stand-in-cli",
@@ -36,7 +36,7 @@ function standInCli(turns, replies = []) {
           turns.push(text);
           const say = text === INPUT ? "the job's answer" : (replies.shift() ?? "a note");
           turn = (async () => {
-            io.onEvent({ type: "text", delta: say });
+            for (const event of Array.isArray(say) ? say : [{ type: "text", delta: say }]) io.onEvent(event);
             io.onEvent({ type: "turn_end", status: "completed" });
             return { status: "completed" };
           })();
@@ -52,19 +52,19 @@ function standInCli(turns, replies = []) {
 }
 
 /** The adapter loop over the stand-in (`replies`: its scripted end-of-run answers), the run's agent named, the end-of-run
- *  step `endOfRun` in its deps. Only run-1's turns are `turns` and only it takes `replies`: a learning run its end queues,
+ *  step `endOfRun` on its spec. Only run-1's turns are `turns` and only it takes `replies`: a learning run its end queues,
  *  which the same runner claims whenever it does, talks to a stand-in of its own. */
 function loopWith(turns, endOfRun, replies = []) {
-  const inner = createAdapterLoop((claim) => ({
+  return createAdapterLoop((claim) => ({
     adapter: claim.runId === "run-1" ? standInCli(turns, replies) : standInCli([]),
     session: { key: "root", label: "root", system: [], tools: [], context: "fresh" },
     input: INPUT,
     runCap: { capUsd: () => undefined, modelOf: () => undefined },
     record: "loop",
     agentId: "agent-1",
+    endOfRun,
     hooks: quiet,
   }));
-  return (deps) => inner({ ...deps, endOfRun });
 }
 
 const ended = (server) =>
@@ -89,6 +89,29 @@ test("a CLI run's end-of-run answer is read from its submission, and is not on t
   assert.deepEqual(turns, [INPUT, "What did you learn?"]);
   const records = await journalRecords(opened.server.journal({ runId: "run-1", runner: "reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT);
   assert.deepEqual(messagesOf(records).map((message) => [message.role, message.text]), [["person", INPUT], ["model", "the job's answer"]], "neither the step's prompt nor its answer is shown");
+});
+
+// A CLI whose streamed request stalled and that asked again whole says the stalled part, then a message boundary, then
+// the whole answer (harness-claude transcript.ts, where the whole one does not go on from it): the turn's answer is its
+// last message, as pi's is, never the stalled part and the whole one run together.
+test("a CLI's end-of-run answer is its last message: a stalled part before a text_end is not kept, and a text_end after the answer keeps it", async (t) => {
+  const opened = await stores({ runners: 1 });
+  await queue(opened.server, "run-1");
+  const turns = [];
+  const answers = [];
+  const endOfRun = async (input) => {
+    answers.push(await input.ask("What did you learn?", { origin: "reflect", deadlineMs: 5_000 }));
+    answers.push(await input.ask("And then?", { origin: "reflect", deadlineMs: 5_000, again: true }));
+    return undefined;
+  };
+  const replies = [
+    [{ type: "text", delta: "Learned: the" }, { type: "text_end" }, { type: "text", delta: "Learned: the job's " }, { type: "text", delta: "shape." }],
+    [{ type: "text", delta: "Nothing more." }, { type: "text_end" }],
+  ];
+  const runner = startRunner({ store: observed(opened.runners[0], recorder()), createLoop: loopWith(turns, endOfRun, replies), name: "runner-a", ...TIMING });
+  t.after(() => runner.close());
+  await ended(opened.server);
+  assert.deepEqual(answers, [{ ended: true, answer: "Learned: the job's shape." }, { ended: true, answer: "Nothing more." }]);
 });
 
 test("asked again for a run whose end-of-run turn already answered, the step is answered from its submission; the CLI is not asked twice", async (t) => {
@@ -197,20 +220,21 @@ test("a CLI feedback round whose runner died mid end-of-run turn: the next claim
   const hold = (text) => /graded/.test(text) && held++ === 0;
   let round = 1;
   const answers = [];
+  // The round's own ask says it was graded: how the stand-in tells it from the first round's.
   const endOfRun = async (input) => {
-    answers.push(await input.ask("What did you learn?", { origin: "reflect", deadlineMs: 5_000, round }));
+    answers.push(await input.ask(round === 1 ? "What did you learn?" : "You were graded wrong. What did you learn?", { origin: "reflect", deadlineMs: 5_000, round }));
     return undefined;
   };
-  const loop = createAdapterLoop((claim) => ({
+  const createLoop = createAdapterLoop((claim) => ({
     adapter: claim.runId === "run-1" ? durableCli(log, hold) : standInCli([]),
     session: { key: "root", label: "root", system: [], tools: [], context: "fresh" },
     input: INPUT,
     runCap: { capUsd: () => undefined, modelOf: () => undefined },
     record: "loop",
     agentId: "agent-1",
+    endOfRun,
     hooks: quiet,
   }));
-  const createLoop = (deps) => loop({ ...deps, endOfRun });
   const first = startRunner({ store: opened.runners[0], createLoop, name: "runner-a", ...TIMING });
   let second;
   t.after(async () => {

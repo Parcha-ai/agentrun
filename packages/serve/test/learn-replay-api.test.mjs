@@ -6,13 +6,10 @@
 // owner's password session (a token is 403), as making a learned workflow an agent is.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { agentFolderOf } from "../dist/files.js";
-import { seedOf } from "../dist/learning.js";
-import { GRADES_KEPT, PROMOTIONS_KEPT, promotionsOf, recordPromotion } from "../dist/learn/promote.js";
-import { git, resnap } from "./learn-support.mjs";
+import { GRADES_KEPT, promotionsOf, recordPromotion } from "../dist/learn/promote.js";
+import { putLearning } from "./learn-support.mjs";
+import { putPromotions } from "./learned-workflow-seed-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, call, cookieOf, follow, serve, withEnv } from "./support.mjs";
 
@@ -33,8 +30,9 @@ const TEXT = JSON.stringify(FLOW);
 const DIGEST = createHash("sha256").update(TEXT).digest("hex").slice(0, 16);
 
 /** A server with accounts and the owner's session; agent `source` learning (`learning`: its definition's), `graded` runs of
- *  it ended on the agent's path and graded right, then the workflow landed on its learning folder's main. */
-async function world(t, { graded = 5, learning = true } = {}) {
+ *  it ended on the agent's path and graded right, then the workflow landed on its learning. `together`: the graded runs
+ *  after the first run side by side. */
+async function world(t, { graded = 5, learning = true, together = false } = {}) {
   withEnv(t, {}, ["AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG"]);
   const server = await serve(t, { learning: "on", accounts: true, openSetup: true });
   const { api, data, port, baseUrl } = server;
@@ -44,27 +42,25 @@ async function world(t, { graded = 5, learning = true } = {}) {
   const cookie = cookieOf(setup);
   assert.equal((await api("POST", "/agents", agent("source", { learning }))).status, 201);
   // The graded runs: on the agent's path (no workflow learned yet), keeping nothing (`use`), each graded right.
-  const runs = [];
-  for (let i = 0; i < graded; i++) {
+  const gradedRun = async (i) => {
     const started = await api("POST", "/agents/source/runs", { input: { content: `What is ${i} plus 42?` }, learning: "use" });
     assert.equal(started.status, 202, JSON.stringify(started.body));
     await follow(api, started.body.run_id, ["completed"], { deadlineMs: 60_000 });
     const grade = await api("PUT", `/runs/${started.body.run_id}/grade`, { correct: true, source: "eval" });
     assert.equal(grade.status, 200, JSON.stringify(grade.body));
     assert.equal(grade.body.path, "agent");
-    runs.push(started.body.run_id);
+    return started.body.run_id;
+  };
+  const runs = [];
+  if (!together) for (let i = 0; i < graded; i++) runs.push(await gradedRun(i));
+  else {
+    // `together`: the first ends before the rest start, so it is the oldest; the rest run side by side (the case reads
+    // them as a set), as a 31-run history one at a time is half a minute of waiting.
+    runs.push(await gradedRun(0));
+    runs.push(...(await Promise.all(Array.from({ length: graded - 1 }, (_, i) => gradedRun(i + 1)))));
   }
-  await seedOf(data, "source");
-  const repo = join(agentFolderOf(data, "source"), "learning");
   const files = { "workflows/answer/workflow.json": TEXT, "workflows/answer/README.md": "---\nname: answer\ndescription: Answers a question as a number; use when the person asks for the answer\n---\n" };
-  for (const [path, text] of Object.entries(files)) {
-    mkdirSync(dirname(join(repo, path)), { recursive: true });
-    writeFileSync(join(repo, path), text);
-  }
-  git(repo, ["add", "--", ...Object.keys(files)]);
-  git(repo, ["commit", "-q", "-m", "learned"]);
-  await resnap(data, "source");
-  const main = git(repo, ["rev-parse", "main"]);
+  const main = await putLearning(server.store, "source", files);
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   const base = (agentId = "source", name = "answer", digest = DIGEST) => `/v2/agents/${agentId}/learning/workflows/${name}/revisions/${digest}/replays`;
   const replay = (body = {}, { agentId, name, digest, headers = { ...json, cookie, origin } } = {}) => call(port, { method: "POST", path: base(agentId, name, digest), headers, body });
@@ -75,8 +71,8 @@ test("an owner replays a held revision on the inputs its hold was decided on: 20
   const { api, store, runs, main, doc, replay } = await world(t, { graded: 6 });
   // Held on a replay of five of the six graded runs (its record names them, and the commit its text is at).
   const held = runs.slice(0, 5);
-  await store.settings.put("learning.promotions.source", { v: 1, items: [{ workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "hold", reason: "checked on 5 of the agent's inputs: held",
-    check: { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, agreed: 4, alone: 5, of: held, cost_usd: 0.01, outcomes: { answered: 5, handed_back: 0, failed: 0, skipped_write: 0 } }, inputs: held, commit: main }] });
+  await putPromotions(store, "source", [{ workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "hold", reason: "checked on 5 of the agent's inputs: held",
+    check: { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, agreed: 4, alone: 5, of: held, cost_usd: 0.01, outcomes: { answered: 5, handed_back: 0, failed: 0, skipped_write: 0 } }, inputs: held, commit: main }]);
   const meets = (path, method, status, value) => assert.deepEqual(schemaProblems(doc, doc.paths[path][method].responses[status].content["application/json"].schema, value), [], `${path}: ${JSON.stringify(value)}`);
 
   const started = await replay();
@@ -128,25 +124,36 @@ test("an owner replays a held revision on the inputs its hold was decided on: 20
   assert.equal((await api("GET", `${path.slice(0, path.lastIndexOf("/"))}/not-a-replay`)).status, 404, "an unknown replay is 404");
 });
 
+// Review on #3914 (tenancy): a held replay's inputs are read by bare id off the hold's `check.of`, so a record naming
+// another agent's completed run (one no check of this agent's writes) never replays it: only the agent's own are inputs.
+test("an owner's held replay whose hold names another agent's run replays only the agent's own runs", { timeout: 240_000 }, async (t) => {
+  const { api, store, runs, main, replay } = await world(t, { graded: 2 });
+  assert.equal((await api("POST", "/agents", agent("other"))).status, 201);
+  const started = await api("POST", "/agents/other/runs", { input: { content: "What is 7 plus 42?" } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await follow(api, started.body.run_id, ["completed"], { deadlineMs: 60_000 });
+  const named = [...runs, started.body.run_id];
+  await putPromotions(store, "source", [{ workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "hold", reason: "checked on 3 inputs: held",
+    check: { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 3, agreed: 2, alone: 3, of: named, cost_usd: 0.01, outcomes: { answered: 3, handed_back: 0, failed: 0, skipped_write: 0 } }, inputs: named, commit: main }]);
+  const asked = await replay();
+  assert.equal(asked.status, 202, asked.text);
+  const reserved = (await api("GET", "/agents/source/learning/promotions")).body.promotions.find((one) => one.replay_id === asked.json.replay);
+  assert.deepEqual([asked.json.inputs, [...(reserved?.inputs ?? [])].sort()], [runs.length, [...runs].sort()], `only the agent's own runs: ${JSON.stringify(reserved)}`);
+  for (const id of reserved.runs) await follow(api, id, ["completed", "failed", "escalated"], { deadlineMs: 120_000 });
+});
+
 // Review on #3064 (PRRT_kwDOUmdVMs64QeeB): "held" reads the inputs off the revision's decided check (`check.of`), not
-// only off its reservation's `inputs`. A check reserved on three of six runs, 250 records of other workflows written
-// while its runs ran, then its hold: the kept history (PROMOTIONS_KEPT) keeps the hold, not the reservation. Replay
-// "held" still replays exactly those three, never the agent's newest runs.
-test("an owner's held replay after the check's reservation fell out of the kept history: it replays exactly the cases the hold was decided on", { timeout: 240_000 }, async (t) => {
+// only off its reservation's `inputs`. A hold decided on three of six runs whose reservation record is not among the
+// agent's records (only the hold is): replay "held" still replays exactly those three, never the agent's newest runs.
+test("an owner's held replay with no reservation record beside its hold: it replays exactly the cases the hold was decided on", { timeout: 240_000 }, async (t) => {
   const { api, store, runs, main, replay } = await world(t, { graded: 6 });
   const held = [runs[0], runs[2], runs[4]];
   const bar = { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1 };
-  const write = (record) => recordPromotion(store.settings, "source", { at: new Date().toISOString(), ...record }, () => true);
   const replayId = "00000000-0000-7000-8000-000000000001";
-  await write({ workflow: "answer", digest: DIGEST, decided: "replaying", reason: "checking it on 3 inputs", runs: held.map((_, i) => `replay-run-${i}`), inputs: held, replay_id: replayId, check: bar, commit: main });
-  const others = PROMOTIONS_KEPT + 50;
-  for (let i = 0; i < others; i++) {
-    await write({ workflow: `other-${i}`, digest: createHash("sha256").update(`other-${i}`).digest("hex").slice(0, 16), decided: "hold", reason: "its draft failed its checks: no draft passed", check: { ...bar, n: 0, agreed: 0, alone: 0, of: [] } });
-  }
-  await write({ workflow: "answer", digest: DIGEST, decided: "hold", reason: "checked on 3 of the agent's inputs: held", replay_id: replayId, commit: main,
-    check: { ...bar, n: 3, agreed: 2, alone: 3, of: held, cost_usd: 0.01, outcomes: { answered: 3, handed_back: 0, failed: 0, skipped_write: 0 } } });
-  const kept = (await promotionsOf(store.settings, "source")).filter((one) => one.workflow === "answer");
-  assert.deepEqual(kept.map(({ decided, inputs }) => [decided, inputs]), [["hold", undefined]], `the reservation fell out, its hold did not: ${JSON.stringify(kept)}`);
+  await recordPromotion(store.learning, "source", { at: new Date().toISOString(), workflow: "answer", digest: DIGEST, decided: "hold", reason: "checked on 3 of the agent's inputs: held", replay_id: replayId, commit: main,
+    check: { ...bar, n: 3, agreed: 2, alone: 3, of: held, cost_usd: 0.01, outcomes: { answered: 3, handed_back: 0, failed: 0, skipped_write: 0 } } }, () => true);
+  const kept = (await promotionsOf(store.learning, "source")).filter((one) => one.workflow === "answer");
+  assert.deepEqual(kept.map(({ decided, inputs }) => [decided, inputs]), [["hold", undefined]], `only the hold, no reservation: ${JSON.stringify(kept)}`);
 
   const started = await replay();
   assert.equal(started.status, 202, started.text);
@@ -161,7 +168,7 @@ test("an owner's held replay after the check's reservation fell out of the kept 
 // Review on #3064 (PRRT_kwDOUmdVMs64PlpE): with no earlier check, an owner's replay picks the agent's own compile_after
 // (its definition's), never the default's 20: 5 picks 5 of 6 runs, 30 picks 30 of 31. Its record's bar says the same.
 for (const compileAfter of [5, 30]) test(`an owner's replay of a revision never checked, compile_after ${compileAfter} on the definition: it picks the agent's last ${compileAfter} completed runs`, { timeout: 480_000 }, async (t) => {
-  const { api, runs, replay } = await world(t, { graded: compileAfter + 1, learning: { compile_after: compileAfter } });
+  const { api, runs, replay } = await world(t, { graded: compileAfter + 1, learning: { compile_after: compileAfter }, together: compileAfter > 5 });
   const started = await replay();
   assert.equal(started.status, 202, started.text);
   assert.equal(started.json.inputs, compileAfter, `the agent's compile_after, not the default 20: ${started.text}`);

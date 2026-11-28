@@ -8,20 +8,21 @@
 import { createHash } from "node:crypto";
 import { stringify } from "yaml";
 import { LOOPBACK } from "./mcp-oauth.js";
-import { INPUT_KEYS, ITEM_KEYS, MANIFEST, memoryFiles, onServerNames, type Package, PackageError, readPackage } from "./templates.js";
+import { INPUT_KEYS, ITEM_KEYS, MANIFEST, memoryFiles, onServerNames, type Package, PackageError, readPackage, uncappedTriggers } from "./templates.js";
 import { isMcpName, isMonidName, mcpToolName, parseToolName } from "./tool-names.js";
 import { isPinKeys, permissionKeys, SHELL_FAMILY } from "./tool-gate.js";
 import { toolOf } from "./tools.js";
 import { configSecrets, SEALED_FIELD, SEALED_MASK } from "./trigger-composio.js";
 import { CATCHUP_WINDOW_S } from "./triggers.js";
 import { isObject, type Json, MODEL_TIER_NAMES, stable } from "./validate.js";
+import { fileIssues } from "./filed-tool.js";
 import { PAIRED_ID_PREFIX } from "./workspace/attached-computers.js";
 
 /** A package's file as the API carries it: text as itself, anything else base64. */
 export type PackageFile = { path: string; encoding: "utf8" | "base64"; content: string };
 /** What an export's note can be about: the document's enum of them (openapi.ts), so a note of a kind not here fails the
  *  build, and an answer the document does not list fails its schema check. */
-export const EXPORT_NOTE_KINDS = ["mcp_server", "trigger", "pin", "tool_setting", "tool_policy", "computer", "paired_computer", "sign_in", "learning", "input_schema", "budget", "package"] as const;
+export const EXPORT_NOTE_KINDS = ["mcp_server", "trigger", "pin", "tool_setting", "tool_policy", "computer", "paired_computer", "sign_in", "learning", "secrets", "input_schema", "budget", "package"] as const;
 /** One thing an export could not carry as it is here: what it is, which one, and why, in words. */
 export type ExportNote = { kind: (typeof EXPORT_NOTE_KINDS)[number]; name: string; reason: string };
 export type AgentPackage = { name: string; files: PackageFile[]; sha256: string; report: { blocked: ExportNote[]; remade: ExportNote[] } };
@@ -33,8 +34,8 @@ export type ExportInput = {
   definition: Json;
   /** The revision's skill files, by path under the agent's skills folder. */
   skills: Readonly<Record<string, string>>;
-  /** The package the agent was applied from (agentView's `template`) with the key names its apply kept, and that package
-   *  as this server holds it now. */
+  /** The package the agent was applied from (agentView's `template`) with the key names its apply kept (absent on a
+   *  revision applied before an apply kept them), and that package as this server holds it now. */
   template: { id: string; version: string; secrets?: readonly string[] } | null;
   origin: Package | undefined;
   servers: ReadonlyMap<string, SavedServer>;
@@ -164,9 +165,15 @@ export function agentPackage(input: ExportInput): AgentPackage {
       for (const field of clear) blocked.push({ kind: "pin", name: `${server}: ${field}`, reason: IN_THE_CLEAR });
       if (!clear.length) pin[tool] = held;
     }
+    // A file setting travels as it is: a folder of the run's files and the paths the tool's result shows, never a value.
+    const file: Json = {};
+    for (const tool of granted) {
+      const held = settings[mcpToolName(server, tool)]?.file;
+      if (held !== undefined && !fileIssues(held, `file.${tool}`).length) file[tool] = held;
+    }
     const reason = origin?.mcp.find((need) => need.source === saved.source.source && need.toolkit === toolkit)?.reason;
     // Required where a composio trigger runs on it (as a package's composio trigger must); else skipped where none matches.
-    mcp.push({ source: saved.source.source, toolkit, tools: granted, ...(composioServers.has(server) ? { required: true } : {}), ...(reason ? { reason } : {}), ...(Object.keys(pin).length ? { pin } : {}) });
+    mcp.push({ source: saved.source.source, toolkit, tools: granted, ...(composioServers.has(server) ? { required: true } : {}), ...(reason ? { reason } : {}), ...(Object.keys(pin).length ? { pin } : {}), ...(Object.keys(file).length ? { file } : {}) });
   }
   // What the tool settings hold beyond a pin of a granted MCP tool and bash's policy is this server's.
   for (const [tool, setting] of Object.entries(settings)) {
@@ -177,6 +184,7 @@ export function agentPackage(input: ExportInput): AgentPackage {
       if (parsed?.kind === "mcp" || parsed?.kind === "mcp-server") remade.push({ kind: "pin", name: tool, reason: "A pin on a tool the agent is not granted: pin it again on the target if the tool is granted there." });
       else blocked.push({ kind: "tool_setting", name: tool, reason: "Its arguments are pinned, and a package pins MCP tools alone: without the pin the agent would get more than it has here." });
     }
+    if (setting.file !== undefined && !ofNeed) remade.push({ kind: "tool_setting", name: tool, reason: "Its answers are filed (a file setting) on a tool the agent is not granted: set it again on the target if the tool is granted there." });
     if (setting.permission === "allow") remade.push({ kind: "tool_setting", name: tool, reason: "It runs without asking here: allow it again on the target." });
     const own = ["provider", "scope"].filter((key) => setting[key] !== undefined);
     if (own.length) remade.push({ kind: "tool_setting", name: tool, reason: `Its ${own.join(" and ")} is set on this server: set it again on the target.` });
@@ -287,22 +295,29 @@ export function agentPackage(input: ExportInput): AgentPackage {
   const inputSchema = isObject(definition.input_schema) ? definition.input_schema : undefined;
   const inputs = inputSchema && inputsOf(inputSchema);
   if (inputSchema && !inputs) blocked.push({ kind: "input_schema", name: "inputs", reason: "Its input schema is not a closed object of fields, which is what a package's inputs are." });
-  // The keys its package declared, as its apply kept them.
+  // The keys its package declared, as its apply kept them. A revision applied before an apply kept them names none here,
+  // so the package says none, and the note says the target sets them up.
   const secrets = [...new Set([...(template?.secrets ?? []), ...((plain ?? []).some(isMonidName) ? ["MONID_API_KEY"] : [])])].sort();
+  if (template && !template.secrets) remade.push({ kind: "secrets", name: template.id, reason: `The key names version ${template.version} of ${template.id} declares were not kept when it was applied here, so the package names none: save the keys the agent uses on the target, and name them under secrets in ${MANIFEST}.` });
   const bash = settings.bash?.policy;
   // Bash's policy holds every shell tool, and a package writes it only beside bash: a shell tool kept without bash would
   // run there what the policy refuses here.
   const shellKept = (plain ?? []).filter((tool) => Object.hasOwn(SHELL_FAMILY, tool));
   if (typeof bash === "string" && shellKept.length && !shellKept.includes("bash")) blocked.push({ kind: "tool_policy", name: "bash", reason: `Its bash policy (${bash}) holds ${shellKept.join(", ")}, and a package writes that policy only beside bash: grant bash too, or take ${shellKept.length === 1 ? "it" : "them"} out of the agent.` });
   const description = (agent.description?.trim() || agent.name).slice(0, 1024);
-  // A package's budget is a spend cap per run first, and one with triggers has one: what fires runs nobody watches.
+  // A package's budget is a spend cap per run first. Every run a package's trigger starts is capped, what fires runs
+  // nobody watches: by the budget (the agent's max_cost_usd), else by the trigger's own cap, as readPackage holds it
+  // (uncappedTriggers). A trigger with neither is blocked, and left out, so the read-back does not name it again.
   const cost = typeof definition.max_cost_usd === "number" ? definition.max_cost_usd : undefined;
   const requests = typeof definition.max_requests === "number" ? definition.max_requests : undefined;
   if (cost === undefined && requests !== undefined) blocked.push({ kind: "budget", name: "max_requests", reason: "It caps each run's requests and not its spend, and a package's budget is a spend cap per run: set the agent's max_cost_usd." });
-  if (cost === undefined && triggers.length) {
-    blocked.push({ kind: "budget", name: "max_cost_usd", reason: "It has triggers and no spend cap per run, and a package with triggers caps what each run they fire may spend: set the agent's max_cost_usd." });
-    triggers.length = 0;
-    remade.splice(0, remade.length, ...remade.filter((note) => note.kind !== "trigger"));
+  const uncapped = cost === undefined ? uncappedTriggers(triggers) : [];
+  if (uncapped.length) {
+    const names = new Set(uncapped.map((one) => one.name));
+    for (const name of names) blocked.push({ kind: "trigger", name, reason: "It has no spend cap of its own and the agent has no max_cost_usd, and every run a package's trigger starts is capped: give the trigger's target a max_cost_usd, or set the agent's max_cost_usd." });
+    const left = triggers.filter((_, index) => !uncapped.some((one) => one.index === index));
+    triggers.splice(0, triggers.length, ...left);
+    remade.splice(0, remade.length, ...remade.filter((note) => !(note.kind === "trigger" && names.has(note.name))));
   }
 
   // The manifest, in the order templates.ts reads its fields.

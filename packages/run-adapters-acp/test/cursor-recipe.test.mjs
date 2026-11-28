@@ -38,6 +38,16 @@ test('its CLI config denies every Write and allows nothing: Cursor makes no file
   assert.equal(config.approvalMode, 'allowlist');
 });
 
+test("its title tie is declared: Cursor's allowlist with allow: [] asks for every MCP call, so its request for one of our announced calls is answered allow_once; it writes no allowFile", () => {
+  const file = recipeFile('cursor');
+  assert.deepEqual(file.quirks, { permissionTie: 'title' });
+  assert.equal(file.allowFile, undefined);
+});
+
+test("its announces field names a call by Cursor 2026.11.13's late update: rawInput.providerIdentifier is our server, rawInput.toolName the tool, rawInput.args its arguments", () => {
+  assert.deepEqual(recipeFile('cursor').announces, { tool: 'rawInput.toolName', server: 'rawInput.providerIdentifier', args: 'rawInput.args' });
+});
+
 test('the credential Cursor derives from its key is named, so its HOME goes when its process ends', () => {
   assert.deepEqual(recipeFile('cursor').credentials, ['.config/cursor/auth.json']);
 });
@@ -63,6 +73,22 @@ test("a run's recipe adds the binary, the run's model and the owner's limits, an
   for (const name of Object.keys(recipe.env ?? {})) assert.equal(RESERVED_ENV.has(name), false, name);
 });
 
+test("its instructions tell the model its own Write is refused, so a file is written with a shell command, never left unwritten, and a shell command the person denies is not asked again", () => {
+  // The config above refuses every Write without asking (Cursor asks for none), and a model that tries its Write tool
+  // first can stop at the refusal and answer nothing (a race lane did on Cursor 2026.11.13). The recipe says so up front.
+  const file = recipeFile('cursor');
+  assert.equal(typeof file.instructions, 'string');
+  assert.match(file.instructions, /Write/);
+  assert.match(file.instructions, /refused/);
+  assert.match(file.instructions, /shell command/);
+  assert.match(file.instructions, /never stop/i);
+  // Only Write's own refusal is worked around: a shell command the person denies is their answer, never asked again.
+  assert.match(file.instructions, /When the person denies a shell command/);
+  assert.match(file.instructions, /do not ask again/);
+  assert.doesNotMatch(file.instructions, /If a write is refused/, 'no rule that reads as covering the person too');
+  assert.equal(cursorRecipe({ command: BINARY }).instructions, file.instructions, 'the run carries them');
+});
+
 test('a recipe that could not run is refused: a relative binary, a model that is no model id, limits that are no limits', () => {
   assert.throws(() => cursorRecipe({ command: 'cursor-agent' }), /absolute path/);
   for (const model of ['', 'two\nlines', 'a b', '-flag', 'x'.repeat(300)]) assert.throws(() => cursorRecipe({ command: BINARY, model }), /not a model id/, JSON.stringify(model));
@@ -78,6 +104,8 @@ test('recipeProblems refuses a key that is no variable name, one the adapter set
   assert.match(recipeProblems({ ...base, credentials: ['/etc/passwd'] }).join(' '), /inside the private HOME/);
   assert.match(recipeProblems({ ...base, refusals: [{ says: '', code: 'X', words: 'y' }] }).join(' '), /refusal/);
   assert.match(recipeProblems({ ...base, model: 'a b' }).join(' '), /model/);
+  for (const instructions of ['', '  ', 7, ['x']]) assert.match(recipeProblems({ ...base, instructions }).join(' '), /instructions/, JSON.stringify(instructions));
+  assert.deepEqual(recipeProblems({ ...base, instructions: 'Write files with a shell command.' }), []);
 });
 
 test('the pin: Cursor 2026.11.13-eacade1, its archive by the first digest recorded (the registry lists none), its launcher and every file it unpacks to by theirs', () => {
@@ -155,7 +183,11 @@ test("its facts: plan billed (no wire of the host's), its own model, no steer, t
   assert.equal(CURSOR_INSTALL, 'agentrun harness install cursor');
   assert.equal(cursorFacts.install.spec, 'cursor@2026.11.13-eacade1');
   assert.equal(cursorFacts.install.codes.pins, ACP_CODES.binaryMismatch);
-  assert.equal(cursorFacts.hostName('agentrun-read: read'), 'read');
+  // Our server goes by its start's own name under Cursor (ar and 6 hex digits), so a title under `agentrun` is another
+  // server's and keeps its own words.
+  assert.equal(cursorFacts.hostName('ar3f12ab-read: read'), 'read');
+  assert.equal(cursorFacts.hostName('ar3f12ab: read'), 'read');
+  assert.equal(cursorFacts.hostName('agentrun-read: read'), 'agentrun-read: read');
   assert.equal(cursorFacts.hostName('read'), 'read');
   assert.throws(() => cursorFacts.policy({ model: 'x', tools: [] }), /plan/);
 });

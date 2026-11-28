@@ -1,5 +1,5 @@
-// Synthetic Claude Code, Codex and pi sessions, written as each tool writes its JSONL, and Cursor CLI chats, written as
-// cursor-agent writes its store, for the importer's tests. Every
+// Synthetic Claude Code, Codex, pi, OpenCode and Copilot CLI sessions, written as each tool writes its JSONL (OpenCode: its SQLite
+// database), and Cursor CLI chats, written as cursor-agent writes its store, for the importer's tests. Every
 // value is invented: the projects are under the test's own scratch home, the ids are made up, and no line comes from a
 // real transcript.
 import { createHash } from "node:crypto";
@@ -222,7 +222,7 @@ const plus = (a, b) => Object.fromEntries(Object.keys(a).map((key) => [key, a[ke
  *  `thenModel` (else `model`). Each request's usage is in a token_count event (the first one written twice), with `usage: "records"`
  *  also in a token_usage_record (the first one written twice), with `usage: "none"` in neither. With `failing`, the first
  *  request also runs two calls that fail: one whose output says so, one whose completed item does, after its output. */
-export function codexSession(home, cwd, n, { prompt = "Run the tests.", output = "2 passed", subagent = false, parent = sessionId(n + 1000), aborted = false, events = true, then, model = "gpt-sol-6.1", thenModel = model, usage = "token_count", failing = false, provider = "openai" } = {}) {
+export function codexSession(home, cwd, n, { prompt = "Run the tests.", output = "2 passed", subagent = false, parent = sessionId(n + 1000), forkedFrom, aborted = false, events = true, then, model = "gpt-sol-6.1", thenModel = model, usage = "token_count", failing = false, provider = "openai" } = {}) {
   const id = sessionId(n);
   const text = (value) => ({ type: "input_text", text: value });
   const requests = [codexUsage(900, 600, 40, 10), codexUsage(1000, 900, 25, 5), codexUsage(1200, 1000, 10, 0)];
@@ -272,6 +272,7 @@ export function codexSession(home, cwd, n, { prompt = "Run the tests.", output =
       payload: {
         id,
         cwd,
+        ...(forkedFrom ? { forked_from_id: forkedFrom } : {}),
         timestamp: at(0),
         model_provider: provider,
         cli_version: events ? "0.99.0" : "0.150.0",
@@ -452,6 +453,32 @@ export function piSession(home, cwd, n, { prompt = "Read the notes.", output = "
   return writeSession(join(home, ".pi", "agent", "sessions", dir, `2026-10-20T09-00-00-000Z_${id}.jsonl`), records, { fresh });
 }
 
+/** A Copilot CLI session in `cwd`, as the CLI writes ~/.copilot/session-state/<id>/events.jsonl: a question, a bash call
+ *  and its output, an answer, and the shutdown the process writes as it exits. Copilot writes no request's tokens: the
+ *  shutdown holds each model's for the process (its input holding the cache read and write), unless `shutdown: false`. */
+export function copilotSession(home, cwd, n, { prompt = "Check the build.", output = "build ok", model = "claude-sonnet-5", shutdown = true, chunked = false } = {}) {
+  const id = sessionId(n);
+  const ev = (i, type, data) => ({ type, data, id: `${id}-e${i}`, parentId: i ? `${id}-e${i - 1}` : null, timestamp: at(i) });
+  const records = [
+    ev(0, "session.start", { sessionId: id, version: 1, producer: "copilot-agent", copilotVersion: "1.0.40", startTime: at(0), selectedModel: model, reasoningEffort: "medium", context: { cwd } }),
+    ev(1, "user.message", { content: prompt }),
+    ev(2, "assistant.message", { messageId: `${id}-m1`, model, content: "", toolRequests: [{ toolCallId: "call_1", name: "bash", arguments: { command: "npm run build" } }] }),
+    ev(3, "tool.execution_start", { toolCallId: "call_1", toolName: "bash", arguments: { command: "npm run build" } }),
+    ev(4, "tool.execution_complete", { toolCallId: "call_1", success: true, result: { content: output } }),
+    // `chunked`: the answer split in two messages of one model call (its chunks), each with a messageId of its own.
+    ...(chunked
+      ? [
+          ev(5, "assistant.message", { messageId: `${id}-m2`, model, content: "The build says:", apiCallId: `${id}-call2`, chunkIndex: 0, chunkCount: 2 }),
+          ev(6, "assistant.message", { messageId: `${id}-m3`, model, content: `${output}.`, apiCallId: `${id}-call2`, chunkIndex: 1, chunkCount: 2 }),
+        ]
+      : [ev(5, "assistant.message", { messageId: `${id}-m2`, model, content: `The build says: ${output}.` })]),
+    ...(shutdown
+      ? [ev(chunked ? 7 : 6, "session.shutdown", { shutdownType: "routine", totalPremiumRequests: 1, totalApiDurationMs: 4000, sessionStartTime: Date.parse(at(0)), codeChanges: { linesAdded: 0, linesRemoved: 0, filesModified: [] }, modelMetrics: { [model]: { requests: { count: 2, cost: 1 }, usage: { inputTokens: 1500, outputTokens: 60, cacheReadTokens: 1000, cacheWriteTokens: 200, reasoningTokens: 10 } } } })]
+      : []),
+  ];
+  return writeSession(join(home, ".copilot", "session-state", id, "events.jsonl"), records);
+}
+
 /** A Claude Code subagent's session under parent session `n`, as the CLI writes it in <session id>/subagents/: its
  *  task, a Grep call and its result, and its answer, each request with its usage, on `model`. */
 export function claudeSubagent(home, cwd, n, k, { model = "claude-haiku-5", slug = cwd.replaceAll("/", "-"), answer = "It is config.json." } = {}) {
@@ -510,5 +537,74 @@ export function cursorChat(home, cwd, n, { prompt = "Tidy the notes.", model = "
   }
   // With `wal`, the chat is open: it has just written its write-ahead log, store.db's own mtime unchanged.
   if (wal) writeFileSync(`${file}-wal`, Buffer.alloc(4096));
+  return file;
+}
+
+// The tables of OpenCode 2.x's opencode.db the reader reads, the columns it reads (anomalyco/opencode
+// packages/core/src/database/migration).
+const OPENCODE_SCHEMA = `
+CREATE TABLE session_v2 (id text PRIMARY KEY, project_id text NOT NULL, parent_id text, fork_session_id text, fork_boundary text, slug text NOT NULL,
+  directory text NOT NULL, title text, version text NOT NULL, model text, time_created integer NOT NULL, time_updated integer NOT NULL);
+CREATE TABLE session_message (id text PRIMARY KEY, session_id text NOT NULL, type text NOT NULL, seq integer NOT NULL, time_created integer NOT NULL,
+  time_updated integer NOT NULL, data text NOT NULL);
+CREATE TABLE session_part (message_id text NOT NULL, session_id text NOT NULL, ordinal integer NOT NULL, type text NOT NULL, call_id text,
+  time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL, PRIMARY KEY (message_id, ordinal));`;
+
+/** OpenCode 2.x sessions in one opencode.db under `home` (~/.local/share/opencode), returned. Each session: its `id`,
+ *  `cwd`, when its rows were last updated (`updated`, ms; an hour ago by default), and its `answers` after one prompt,
+ *  each with its tokens and cost; one with `mirrors` ran on the claude-agent provider, which runs Claude Code: the
+ *  request is also that Claude Code session's. A session with a `parent` is that session's subagent; an answer's `key`, its message row's id. One with `pad`
+ *  holds a part of that many zero bytes more (its size, never read). `file`: the database elsewhere (OPENCODE_DB's,
+ *  XDG_DATA_HOME's). */
+export function openCodeDb(home, sessions, { file = join(home, ".local", "share", "opencode", "opencode.db") } = {}) {
+  mkdirSync(dirname(file), { recursive: true });
+  const db = new DatabaseSync(file);
+  db.exec(OPENCODE_SCHEMA);
+  const session = db.prepare("INSERT INTO session_v2 VALUES (?, 'prj_fixture', ?, NULL, NULL, 'fixture', ?, ?, '2.3.2', ?, ?, ?)");
+  const message = db.prepare("INSERT INTO session_message VALUES (?, ?, ?, ?, ?, ?, ?)");
+  const SONNET = { id: "claude-sonnet-5", providerID: "anthropic" };
+  const AGENT = { id: "opus", providerID: "claude-agent" };
+  for (const { id, parent = null, pad = 0, cwd, title = "Tidy the notes", prompt = "Tidy the notes.", updated = Date.now() - 60 * 60_000, created, answers = [{ input: 10, output: 5, cost: 0.01 }] } of sessions) {
+    const start = updated - 60_000;
+    // `created`: the session's own start, when its rows are older (a fork's, copied with their times).
+    session.run(id, parent, cwd, title, JSON.stringify(SONNET), created ?? start, updated);
+    message.run(`${id}_m0`, id, "user", 0, start, updated, JSON.stringify({ text: prompt, files: [], agents: [], time: { created: start } }));
+    if (pad) db.prepare("INSERT INTO session_part VALUES (?, ?, 0, 'text', NULL, ?, ?, zeroblob(?))").run(`${id}_m0`, id, start, updated, pad);
+    answers.forEach(({ input, output, cost, mirrors, text = `Done ${input}.`, key }, i) => {
+      const created = start + (i + 1) * 1000;
+      const model = mirrors ? AGENT : SONNET;
+      const content = [{ type: "text", text, ...(mirrors ? { native: { sessionID: mirrors, messageID: `u${i}` } } : {}) }];
+      const data = { agent: "build", model, finish: "stop", cost, tokens: { input, output, reasoning: 0, cache: { read: 0, write: 0 } }, time: { created, completed: created + 500 }, content };
+      message.run(key ?? `${id}_m${i + 1}`, id, "assistant", i + 1, created, updated, JSON.stringify(data));
+    });
+  }
+  db.close();
+  return file;
+}
+
+/** OpenCode 1.x sessions in an opencode.db under `home` (`file` elsewhere), returned: the 1.x tables (session, message,
+ *  part), each message's `data` the message as OpenCode keeps it. Each session: its `id`, `cwd`, `created` (ms),
+ *  OpenCode `version`, and its `messages` in order: a prompt ({ id, role: "user", text, at }) or an answer ({ id, role:
+ *  "assistant", input, output, cost, at, text }), one request each. */
+export function openCodeV1Db(home, sessions, { file = join(home, ".local", "share", "opencode", "opencode.db") } = {}) {
+  mkdirSync(dirname(file), { recursive: true });
+  const db = new DatabaseSync(file);
+  db.exec(`CREATE TABLE session (id text PRIMARY KEY, project_id text NOT NULL, parent_id text, slug text NOT NULL, directory text NOT NULL, title text NOT NULL,
+  version text NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL);
+CREATE TABLE message (id text PRIMARY KEY, session_id text NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL);
+CREATE TABLE part (id text PRIMARY KEY, message_id text NOT NULL, session_id text NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL);`);
+  for (const { id, cwd, created, version = "1.2.0", title = "Sort the notes", messages } of sessions) {
+    const last = Math.max(created, ...messages.map((m) => m.at));
+    db.prepare("INSERT INTO session VALUES (?, 'prj_fixture', NULL, 'fixture', ?, ?, ?, ?, ?)").run(id, cwd, title, version, created, last);
+    for (const m of messages) {
+      const data =
+        m.role === "user"
+          ? { role: "user", time: { created: m.at }, agent: "build", model: { providerID: "anthropic", modelID: "claude-sonnet-5" } }
+          : { role: "assistant", providerID: "anthropic", modelID: "claude-sonnet-5", mode: "build", agent: "build", path: { cwd, root: cwd }, time: { created: m.at, completed: m.at + 500 }, cost: m.cost, tokens: { input: m.input, output: m.output, reasoning: 0, cache: { read: 0, write: 0 } }, finish: "stop" };
+      db.prepare("INSERT INTO message VALUES (?, ?, ?, ?, ?)").run(m.id, id, m.at, m.at, JSON.stringify(data));
+      db.prepare("INSERT INTO part VALUES (?, ?, ?, ?, ?, ?)").run(`${m.id}_p0`, m.id, id, m.at, m.at, JSON.stringify({ type: "text", text: m.text }));
+    }
+  }
+  db.close();
   return file;
 }

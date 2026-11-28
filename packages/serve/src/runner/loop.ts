@@ -50,6 +50,13 @@ export const END_PATCH_MS = 30_000;
 /** What an end whose patch was late or failed writes: its cost and metrics unknown (null), never left as an earlier end
  *  of the run stored them, never read as a run that cost $0 by the agent's own path. */
 export const END_PATCH_UNKNOWN = { costUsd: null, metrics: null } as const;
+/** What a loop's bound is armed on: the timer half of the runner's clock (RunnerOptions.clock). Every runner arms the real
+ *  one (REAL_TIMER); a test's fires when its case says, so a stalled read is let go on an event, never after a real wait. */
+export interface BoundTimer {
+  setTimeout(fn: () => void, ms: number): unknown;
+  clearTimeout(handle: unknown): void;
+}
+export const REAL_TIMER: BoundTimer = { setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: (handle) => clearTimeout(handle as NodeJS.Timeout) };
 /** How many times an end reads its cost before it is written unknown, and the pause between reads: all within the end's
  *  bound (END_PATCH_MS), so a store that refused one read never leaves the cost null. The stored cost is every reader's
  *  answer for an ended run (the list, the view, usage, learning), so a null there stays only when no read could be made. */
@@ -87,16 +94,25 @@ type Match = (batches: readonly (readonly StorageWrite[])[]) => Matched | undefi
 /** What an expectation stages: the run patch and rows, and the commands it takes (by id; each keyed to the matched record). */
 type Expected = { readonly run?: Staged["run"]; readonly also?: Staged["also"]; readonly take?: readonly number[]; readonly answer?: { readonly command: number; readonly value: unknown } };
 
+/** The errors Gates refuse commits with once sealed. */
+const seals = new WeakSet<Error>();
+/** Whether `error` is a Gate's seal: the refusal of a commit that never reached the store, by a loop that writes nothing
+ *  more (a stop, a park, a kernel fault). A Session that fails on one has a sound store, and every commit it stored was
+ *  published before it failed. */
+export const isSeal = (error: unknown): boolean => error instanceof Error && seals.has(error);
+
 /**
  * The run's journal with the loop's staging matched to commits. stage() replaces what was staged, so the loop never
  * calls it directly: `expect(match, expected)` stages `expected` on the first commit whose batches `match`, merged with
  * any other match of that commit, its takes keyed to the matched record (the store writes a take only with that
  * record's batch, so a command is taken with its effect or not at all), and resolves once that batch is stored. seal()
- * refuses every later commit.
+ * refuses every later commit, but those made while a through() whose own test holds runs.
  */
 export class Gate {
   readonly journal: Journal;
   #sealed: Error | undefined;
+  /** The through() calls running, each with its test: while one's test holds, a sealed gate still takes commits. */
+  #through: { readonly open: () => boolean }[] = [];
   #pending: { match: Match; expected: Expected; landed: () => void; failed: (error: unknown) => void }[] = [];
 
   constructor(inner: Journal) {
@@ -114,7 +130,7 @@ export class Gate {
   }
 
   async #commit(target: Journal, batches: readonly (readonly StorageWrite[])[], receive: (index: number, seq: never) => void, context: Context): Promise<CommitResult> {
-    if (this.#sealed) throw this.#sealed;
+    if (this.#sealed && !this.#through.some((each) => each.open())) throw this.#sealed;
     const hits = this.#pending.flatMap((pending) => {
       const at = pending.match(batches);
       return at ? [{ pending, at }] : [];
@@ -145,7 +161,22 @@ export class Gate {
   /** Every later commit is refused with `error`; a pending expectation fails with it. */
   seal(error: Error): void {
     this.#sealed ??= error;
+    seals.add(this.#sealed);
     for (const pending of this.#pending.splice(0)) pending.failed(error);
+  }
+
+  /** `write`, its commits taken even once the gate is sealed, while `open` holds when each is made (always, by default):
+   *  what a stopped loop still owes its claim's journal while it holds the claim (a tool host's release and its charges,
+   *  on a shutdown, whether the shutdown came before `write` began or while it runs). The claim's fence still refuses
+   *  them once it is lost. The seal stands for every commit after `write` returns. */
+  async through<T>(write: () => Promise<T>, open: () => boolean = () => true): Promise<T> {
+    const each = { open };
+    this.#through.push(each);
+    try {
+      return await write();
+    } finally {
+      this.#through.splice(this.#through.indexOf(each), 1);
+    }
   }
 
   get sealed(): boolean {

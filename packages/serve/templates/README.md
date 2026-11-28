@@ -106,7 +106,7 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   the corrections the agent starts with, as its `corrections.md`: one line each), `web` (fakes `web_search`, `web_fetch` and `web_save` for the case's runs),
   `monid` (fakes the package's monid endpoints for the case's runs), `now` (the case's clock), `email` (a fake mailbox
   for the case's runs), `calendar` (a fake calendar for the case's runs), `feed` (fake feeds for the case's runs),
-  `previous` (the earlier results the schedule's run is handed).
+  `previous` (the earlier results the schedule's run is handed), `files` (the files each run's work folder starts with).
 - `web: unavailable`: every `web_search` answers with the words a rate-limited free search answers with, and every
   `web_fetch` and `web_save` fails as a host that never answers does; no call reaches the network. `web:` a fixture file in the case
   answers from that file instead:
@@ -135,11 +135,13 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   tools it sees live and needs `MONID_API_KEY` as a live eval does. The package must grant a monid endpoint; only the
   eval's own server honours `monid`, so a case with it refuses `--server`. `unavailable` is its only value.
 - `now: 2026-11-14T09:00:00Z`, a date and time with its offset: each run's current date and time. The run's environment
-  line says that day ("Today is 2026-11-14 (UTC)"), as does claude-agent's turn date, and each `llm` grader is told it,
-  so a rubric can say "the run's date". A tool that reads the machine's clock (a shell's `date`, a browser's page) and
-  a harness CLI's own date (Codex adds its own to each turn) still read the real one. A fixture case whose prompt or
-  pages carry dates sets `now:`, else it drifts a day each day it is run. Only the eval's own server honours it: a case with `now` refuses
-  `--server`. Without it, the real clock.
+  line says that day ("Today is 2026-11-14 (UTC)"), as do claude-agent's turn date and the Claude CLI's own date lines
+  (rewritten at the session's model proxy, so a claude-agent case on a person's Claude login keeps the real date: run it
+  on the provider route), and each `llm` grader is told it, so a rubric can say "the run's date". A tool that reads the
+  machine's clock (a shell's `date`, a browser's page) and another harness CLI's own date (Codex adds its own to each
+  turn) still read the real one. A fixture case whose prompt or pages carry dates sets `now:`, else it drifts a day each
+  day it is run. Only the eval's own server honours it: a case with `now` refuses `--server`. Without it, the real
+  clock.
 - `email: fixtures/mailbox.json`, a fixture file in the case: each run gets a fake mail account of its own, seeded from
   it and saved as the server's email account (plaintext, on this machine's loopback), closed after the run, so no run
   reads real mail or shares another's mailbox. The fixture:
@@ -226,6 +228,20 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   its report as `handed_previous` (`kind`: `whole`, `carried`, `too_large` or `none`; `text`, as handed; `run_id`; and
   for carried fields, `fields` and `dropped`, the count each carried array gave up, 0 for none). Only the eval's own server honours
   `previous`, so a case with it refuses `--server`.
+- `files`, a mapping of a path in the run's work folder to the text that file starts with: each run's folder holds them
+  before its first turn, so a case can start where an earlier run left off (a run that resumes on the keys an earlier
+  one made, say):
+  ```yaml
+  files:
+    media/run-keys.json: |
+      {"stem": "k7m2p9qa"}
+  ```
+  A path is relative, with no empty, `.` or `..` segment, and outside `inputs/`, where the server puts the run's
+  uploads and its message; a file's text is a string, written as UTF-8. The eval's runner writes them at the run's
+  claim, before its computer starts, so a computer's `/workspace` holds them as it holds the run's uploads; a file the
+  folder already holds (a claim that resumes the run) is left as the run made it. They are the run's files like any
+  other, so `file_exists` finds them. Only the eval's own server honours
+  `files`, so a case with it refuses `--server`.
 - A fake MCP server's fixture, one shape for every package:
   ```json
   { "server": "github", "description": "what the fake holds",
@@ -235,7 +251,12 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   ```
   An answer is taken when every argument its `when` lists equals the call's, the first that does; else `default`. A
   `when` may be a list of such mappings, taken when any one matches (one answer for each spelling of a call: a file by
-  `sha` or by `ref`). Each `result` is an MCP tool result. A tool may also hold `search`, `{query, files: [{path,
+  `sha` or by `ref`). An argument's value may instead be `{"$pattern": "<regex>"}`, nothing else in it: the call's
+  argument must be a string the JavaScript regular expression matches whole, as if it began with `^` and ended with
+  `$` (`{"submission_key": {"$pattern": "ns-[a-z0-9]{8}-voice-cold-open"}}` answers whatever random stem a run made,
+  and never `ns-k7m2p9qa-voice-cold-open-2`). A `$pattern` that is no string or does not compile, or one beside another
+  key, fails the case when it is read. Any other value, a string or a mapping, is compared by equality. Each `result`
+  is an MCP tool result. A tool may also hold `search`, `{query, files: [{path,
   text}], limit?, note?}`: a call no answer matches is answered by searching its `query` argument over those files
   (GitHub code search's syntax, read loosely: terms every one of which a file holds, `NOT` before a term or a
   qualifier, and `path:`, `filename:`, `extension:`, `language:`; a `/.../` term is read as literal text, never as a
@@ -245,8 +266,14 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   - `llm`: the body is the rubric a blind grader applies to the answer (or to `target`, one field of the answer's JSON), with the run's tool calls (each with its arguments and the head of its result) and the fake MCP servers' calls beside it, so a rubric can check what the run did, not only what it said.
   - `regex`: `pattern` over the answer (or `target`), with `flags` and `expect: match` (the default) or `no_match`.
   - `tool_used`: `tool` (or `tools`, a list), `expect: called` (the default) or `not_called`, and optionally `args` (the
-    arguments a call must carry) and one of `count` (exactly that many matching calls) or `at_least` (that many or more,
-    so a run that searches once more than the case needs still passes).
+    arguments a call must carry) and either `count` (exactly that many matching calls) or bounds: `at_least` (that many
+    or more, so a run that searches once more than the case needs still passes), `at_most` (that many or fewer, and at
+    least one), or both (`at_least: 3` with `at_most: 4` passes on 3 or 4 calls). `at_least` and `at_most` are 1 or more and mean
+    `expect: called`; a grader that gives either beside `count` or `expect: not_called`, or an `at_least` above its
+    `at_most`, is refused. `args_file` names a JSON file the run writes in its work folder (`media/clips.json`), a
+    list of argument objects: each entry must be carried by a call of its own (its arguments hold the entry, as `args`
+    is matched), and the calls number the list's length, or `count` when given. It is refused beside `expect:
+    not_called`, `at_least` or `at_most`.
   - `file_exists`: `path` in the run's work folder.
   - `mailbox`, on an `email` case: `message_id` is `in` a mailbox (or, on gmail, under a label) after the run, and in
     none of `not_in` (a list); `INBOX`, `Drafts` and `Sent` name the account's own on either layout. `in: INBOX` is
@@ -273,7 +300,7 @@ case's `max_cost_usd`, and each `llm` grade is a run of its own, capped at $0.50
 | `--case NAME` | A case to run; repeat it. Without one, every case. |
 | `--runs N` | Runs of each case, in place of each case's `runs`. |
 | `--server URL` | Run on that server instead, with its token as the CLI finds one (`AGENTRUN_API_KEY`, the CLI's config, or the data directory's for the server on this machine). The token goes to the runner over the launcher's pipe and is never printed. An eval's runs carry no `keys`, so on a server started with `AGENTRUN_RUN_KEYS=1` that lacks a tool key the package declares, the eval stops at the first case's apply, before any run, names the key and exits 2. |
-| `--on-data DIR` | Run the eval's own server on DIR, a stopped server's data folder, in place of a temp one: the runs use what that server keeps (its ChatGPT sign-in, so a package is measured on the owner's plan), and every case's fakes still bind (`now`, `email`, `calendar`, `web`, `monid`). The agents the eval made are archived there, and the folder stays, its tool settings as they were (the agent's own pin holds a pinned write, as on `--server`). Refused with `--server`, while another server holds DIR, when DIR's server has work of its own (an enabled trigger, a run not ended) that the eval's server and runner would take up, for an email case when DIR's server keeps an email account, which the case's fake mailbox would replace, and for a calendar case when DIR's server keeps a calendar. A case that fakes an MCP server DIR's server keeps by the same name fails, as on `--server`. |
+| `--on-data DIR` | Run the eval's own server on DIR, a stopped server's data folder, in place of a temp one: the runs use what that server keeps (its ChatGPT sign-in, so a package is measured on the owner's plan), and every case's fakes still bind (`now`, `email`, `calendar`, `web`, `monid`, `files`). The agents the eval made are archived there, and the folder stays, its tool settings as they were (the agent's own pin holds a pinned write, as on `--server`). Refused with `--server`, while another server holds DIR, when DIR's server has work of its own (an enabled trigger, a run not ended) that the eval's server and runner would take up, for an email case when DIR's server keeps an email account, which the case's fake mailbox would replace, and for a calendar case when DIR's server keeps a calendar. A case that fakes an MCP server DIR's server keeps by the same name fails, as on `--server`. |
 | `--grader-model PROVIDER/MODEL` | The `llm` graders' model. Absent: the server's default. |
 | `--report FILE` | The whole report as JSON: per case, per run and per grader, its pass, its reason and its cost. A summary goes to stdout either way, progress to stderr. |
 | `--faux MODULE` | Answer every model request from the module, as the server's `--faux` does: no key, no network. |
@@ -308,7 +335,8 @@ and runs on the eval's own server.
    permission; with `--server` it writes nothing.
 3. The `learning` file is written as the agent's corrections (`PUT .../learning/corrections`), checked as that route
    checks them.
-4. A run starts with the prompt's body as its input's `content` and its `input` front matter as its typed fields, and
+4. The case's `files` are written into the run's work folder at its claim, before its first turn. A run starts with the
+   prompt's body as its input's `content` and its `input` front matter as its typed fields, and
    `max_cost_usd` as its cap, and is waited for (30 minutes at
    most, then cancelled and failed). A run that ends waiting on its person's answer (an `ask_person` question, a tool
    call's approval) is graded as it stands, then cancelled. One paused at its cap, stopped, failed or cancelled fails,
@@ -319,14 +347,15 @@ and runs on the eval's own server.
 A case passes when every grader passes on every run.
 
 **The output check.** A package with `output` holds every completed run to its schema with no grader file: the run
-fails when the server's own read of its answer sets `result.output_error` (its last fenced `json` block missing, not
-JSON, or refused by the schema, after the runner's one retry). The report lists it as the grader `output`.
+fails when the server's own read of its answer sets `result.output_error` (its json block missing, not JSON, or refused
+by the schema, after the runner's one retry). The json block is the answer's last fenced `json` block, or the whole
+answer when it is one JSON object and nothing else. The report lists it as the grader `output`.
 
 **The graders**, as the runner reads them:
 
 - `regex`: `pattern` with `flags` (some of `i`, `m`, `s`, `u`, `v`) over the whole answer, or over `target`, a field of
-  the last `json` block (`a.b` for a nested one; a string as it is, anything else as its JSON). An answer with no such
-  field fails the grader, whatever `expect` says.
+  the answer's json block (`a.b` for a nested one; a string as it is, anything else as its JSON). An answer with no
+  such field fails the grader, whatever `expect` says.
 - `tool_used`: the calls of `tool` (or any of `tools`) by gate name (`write`, `web_fetch`, `mcp:<server>/<tool>`,
   `monid:<provider>/<endpoint>`). A monid endpoint is one the package's `tools` grants by name: a provider's wildcard
   (`monid:<provider>/*`) is filled from monid's listing when the agent is saved, so the eval cannot check a name under
@@ -335,17 +364,27 @@ JSON, or refused by the schema, after the runner's one retry). The report lists 
   that carry each of its arguments (an object's own fields compared the same way, any other value equal), on any
   tool's calls: the eval reads the timeline with `calls=whole`, which carries each call's arguments through the run's
   redaction (a held value or a key-shaped string reads `[redacted]`, and so never matches), each string cut at 2,000
-  characters.
+  characters. With `args_file`, the eval reads that file from the run's work folder after the run (under the run's
+  cut, at most 262,144 bytes, the most a cut read answers) and matches its entries to the calls one to one, so two
+  entries never pass on one call: a run that wrote a list of the twelve clips it meant to make, and sent them, passes
+  only when each clip's call carries what its entry says. Since the file is read cut, an entry's `[redacted]` stands
+  for one character or more of the call's string, so a call that sent a held value still carries the entry that names
+  it. A file that is missing, not JSON or not a list of objects fails the grader, saying which.
 - `file_exists`: `path`, relative to the run's work folder, among its files.
 - `llm`: a run of a grader agent on the same server, with no tools, a fixed instruction and the `--grader-model`. It is
   given the rubric, the run's input, its answer, its tool calls and the calls each fake received, and with `target`
   that field besides (the whole answer stays, for anything else the rubric checks). Each call shows its arguments as
-  `tool_used` reads them, its status, and its result's first 8,000 characters through the same redaction. The prompt
-  stays under 120,000 characters: past that, the two call lists share what the rest leaves, the longest results (and a
-  fake's longest arguments) lose their middle first (marked), then the middle calls, and each list's first line says
-  what was cut. The rubric, task and answer are never cut, so they alone can pass the cap. Never another grader, the case's
-  description or anything the case expects. It answers `{pass, reason}` in a fenced `json` block; any other answer
-  fails the grader.
+  `tool_used` reads them, its status, and its result whole to 120,000 characters through the same redaction. The prompt
+  stays under 120,000 characters: past that, the run's final files take room first, but never so much that the calls'
+  arguments get less than half of it (or all they need); the files under a folder whose name starts with `.` (a
+  package's skills copied under `.agents/skills`, a tool's cache) are listed by path and size before any file of the
+  run's own is cut. The two call lists share what the rest leaves, each by its whole size, and the fake servers' list
+  gets at least half of it (or all it needs). The longest results (and a fake's longest arguments) lose their middle
+  first (marked), then the middle calls, and each list's first line says what was cut. A `<cuts>` note ahead of the
+  evidence counts every cut, and tells the grader that what a cut left out was not seen; under a cap so tight the note
+  would take more than a twentieth of it, the marks in place say it alone. The rubric, task and answer are never cut, so they alone can pass the cap. Never another grader, the case's
+  description or anything the case expects. It answers `{pass, reason}` in a fenced `json` block, or as that one
+  object alone; any other answer fails the grader.
 
 The report gives each run's cost and each `llm` grade's, as their run records say, and the total.
 
@@ -378,7 +417,7 @@ package}`, and a line in the markdown).
 | `parameters` | The setup an owner fills once, at apply. Written exactly as `inputs` are (the same keys, the same rule: required unless `required: false`, a `default` only on one that is not) and compiled by the same code; `GET /v2/templates` shows them as a JSON Schema like `input_schema`, and the console's Apply form is the run form. The one difference is where they are filled: apply takes them in `parameters` (a blank one takes its `default`; they are checked as a run's input is, with the same `422` words under `parameters.<name>`), and puts them where the package writes `${parameters.<name>}`: `display_name`, the body, a trigger's `target.input`, a schedule's `cron` and `timezone`, the `in` values of a github, webhook, composio or feed trigger's `accept` where conditions, a composio trigger's `config` values, a feed trigger's `urls`, a trigger's `enabled`, and an `mcp` entry's `pin` values, nowhere else. Text takes the value as text (a list as its items joined by `, `). A `target.input` value, a composio trigger's `config` value or a pin value that is one placeholder alone takes the value with its type (a list pinned is a one-of); in `target.input` one given no value is dropped, so the input schema sees the field absent. A trigger's `enabled` takes only one placeholder alone, naming a boolean parameter with a default: the trigger is made on or off by its value. A feed trigger's `urls` that are one placeholder alone take an array-of-strings parameter whole. A parameter a where, a composio `config` or a feed's `urls` take is required or has a default, so none fills empty; one a schedule uses has a default, which the package's own schedule is checked with, and apply checks every trigger with the values given before it makes anything (`422` under `triggers.<i>`). |
 | `inputs` | By name: each run's typed input, which apply compiles into the agent's `input_schema` (a closed JSON Schema object). Each is `{type: string \| number \| integer \| boolean \| array, required?, title?, description?, examples?, default?, enum?, pattern? and format? (strings), minLength?/maxLength? (strings), minimum?/maximum? (numbers), items? (an array's scalar, with that scalar's keys)}`, nothing else; an input is required unless it says `required: false`, and a `default` is for one that is not. `format` is `uri`, `email`, `hostname`, `date`, `date-time` or `uuid`, which the server checks, or `cron` or `timezone`, which a form reads. A default and each example are checked against their own input. `content` is the run's message: named, it is a string. Every path that starts a run (the API, the CLI, a trigger, the console) checks the input against it and refuses one that does not meet it with `422 input_invalid`, a path per field (`input.country`). The model is sent the input's `content`, then the other fields as one fenced `json` block under the line `Input:`, so the instructions read each field by its name. `GET /v2/templates` shows it as `input_schema`, and the console's run form is drawn from it. A trigger's `target.input` and an eval case's `input` are checked against it too. Absent: a run takes `{content}`, as before. |
 | `secrets` | Variable names (never values) the server must hold: a model or tool key Settings saves (`OPENROUTER_API_KEY`, `PARALLEL_API_KEY`, ...), set where it starts or saved there. Any other name is refused: the server could neither save it nor hand it to a run. Apply refuses with `409 agent_not_runnable`, making nothing, when one is missing. |
-| `budget` | `{per_run_usd}`: each run's cap (the agent's `max_cost_usd`), required when the package has triggers. A call count belongs in the instructions ("about 30 calls"); the cap is the hard stop. |
+| `budget` | `{per_run_usd}`: each run's cap (the agent's `max_cost_usd`). Every run a trigger starts is capped, so a package with triggers has a budget, or each of its triggers has a cap of its own (`target.max_cost_usd`, above 0); validate names each trigger with neither. Without a budget the agent has no cap, so a run its person starts has none, as on any agent without `max_cost_usd`. A call count belongs in the instructions ("about 30 calls"); the cap is the hard stop. |
 | `learning` | `true`, `false`, or an object (on, with the loop's settings), as an agent definition's `learning` takes it: whether the agent's runs learn. A package whose answer carries a decision names it in `agree_on`, dotted paths into the answer's JSON object (kyb's `{agree_on: [verdict.decision]}`, inbound-lead's `[next_step.action]`): a learned workflow's check and audit compare two answers on those alone, never on the rationale or prose two runs never repeat. Each path must be a required property at every level of the `output` schema (validate refuses one an answer may leave out: a path missing on both sides never agrees). Without it, two answers that differ are compared by the agent's fast model, which says whether they reach the same decision (one request per pair, on the run's own cap), so a learning agent with no `agree_on` wants a fast tier: `model_tiers.fast`, or the host's AGENT_MODEL_FAST. With neither, the whole answer is compared, word for word. |
 | `approvals` | `ask` (the default: the agent asks its person before a tool runs) or `never` (it runs unattended). The package's recommendation, shown as `approvals_default` for the apply screen; a template whose job runs on triggers says `never`. `never` only skips asking for the tools the agent was granted: an MCP tool the owner left unticked at apply is not one. Under `ask`, a ticked tool is granted but not allowed: it follows this server's tool settings, so a write asks unless the owner allowed it in Settings → Tools, and a read runs unasked only where the owner turned on Allow reads for its server. Deny settings and pins hold either way. |
 | `triggers` | `POST /v2/triggers` bodies with no `agent_id` (the target is a `start_run`), each with a `name`, unique in the package: the key an upgrade will match triggers by. `enabled` is `true` (the default), `false`, or `"${parameters.<name>}"`, one placeholder alone naming a boolean parameter that has a default (validate refuses any other text there, a parameter of another type, or one with no default): apply makes the trigger enabled or disabled by the owner's answer, the default when it is left out, so a second schedule can be one the owner opts into (`weekly`, default `false`, turning on a `monday-brief` at `0 8 * * 1`). A trigger made off is off as any trigger is: the owner switches it on or off later with `PATCH /v2/triggers/{id}` or the console. A `composio` trigger's `source.server` is the toolkit of one of the package's `mcp` needs, one with `source: composio` and `required: true` (`server: github` for `{source: composio, toolkit: github}`), never a saved server's name: apply makes the trigger on the saved Composio server that need maps to, the one candidate or the owner's pick under `servers`. Its `config` values and its `accept` where `in` values may hold `${parameters.<name>}`, a parameter that is required or has a default (`config: {owner: "${parameters.owner}", repo: "${parameters.repo}"}`); its `server` and `event` can't. It can't carry `instance_id`, `hook` or `move_subscription`, which this server sets when it makes the trigger on Composio. A composio trigger this server can't set up yet (no public URL, the saved server's user with no connected account or several, the project's subscription at another address) is skipped with a `triggers.<i>` warning in the refusal's words, as a github one is with GitHub not connected: the agent stands, and the owner makes the trigger from Triggers → New app trigger once that's fixed. Any other refusal undoes the apply. A `feed` trigger's `urls` is a list of URLs, each of which may hold `${parameters.<name>}` (pr-alert's `https://api.github.com/repos/${parameters.owner}/${parameters.repo}/pulls?state=open&sort=created&direction=desc`), or one placeholder alone naming an array-of-strings parameter (vendor-outage-watch's `"${parameters.status_feeds}"`), filled whole; each parameter required or with a default, and each filled value an http(s) URL, which apply checks (`422` under `triggers.<i>.source.urls[<j>]`). An array parameter given empty (`[]`) reads no feed: apply skips that trigger with a `triggers.<i>` warning naming the parameter, as it skips a github one with GitHub not connected, and the agent stands. Its `every_s`, `items` and `id` take no placeholder, its `accept` where `in` values may, and it has no `key` in a package. |

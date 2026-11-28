@@ -3,11 +3,13 @@
 // disk: each agent has its own, made on its first run that needs one (workspace/run-disk.ts), and a run's launch may
 // name another. The one kept credential is the account key, sealed under the claim's row name ("archil.api_key"). No
 // disk token is kept: a computer's mount credential is minted per run from the account key.
-//   GET    /v2/workspace/archil       on or off, the settings and where from (the server's environment, else saved), and
+//   GET    /v2/workspace/archil       on or off, the settings and where from (the server's environment, else saved), the
+//                                     S3 URL's (the region's, or given), each region serve knows with its S3 URL, and
 //                                     the account key as the shared secret shape: set or not, where from, when changed
 //                                     (never a value)
 //   PUT    /v2/workspace/archil       the settings row replaced, and the account key sealed when given (null removes it);
-//                                     the exec image, when given, pinned by digest
+//                                     the S3 URL, left out, the region's (one serve knows); the exec image, when given,
+//                                     pinned by digest
 //   DELETE /v2/workspace/archil       off (the settings row removed; the key is kept, for turning it on again)
 //   POST   /v2/workspace/archil/test  one listing of the account's disks at the region's control plane, with the
 //                                     account key opened as a claim opens it: { ok, detail } or { ok: false, why }
@@ -20,7 +22,7 @@
 // key_set_by_server: they are changed where the server is started, as a tool key its launcher sets is, never saved here
 // to no effect.
 // archilRoute holds the routes' rules, so serve's dispatch only calls it and sends the answer, or the ApiError's status.
-import { agentDiskOf, ARCHIL_API_KEY_ROW, ARCHIL_SETTINGS_ENV, type ArchilSettings, archilSettingsFromEnv, archilSettingsIssues, archilSettingsOf, clearArchilSettings, forgetAgentDisk, loadArchilSettings, saveArchilSettings, storeAgentDisk } from "./archil-settings.js";
+import { agentDiskOf, ARCHIL_API_KEY_ROW, ARCHIL_S3_URLS, ARCHIL_SETTINGS_ENV, type ArchilSettings, archilSettingsFromEnv, archilSettingsIssues, archilSettingsOf, clearArchilSettings, forgetAgentDisk, loadArchilSettings, s3UrlFromOf, saveArchilSettings, storeAgentDisk } from "./archil-settings.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { envValue, type KeyEnv, type KeyMeta, keyMetaOf } from "./key-meta.js";
 import { registerNotSecretWrite, registerSecretPage, registerSecretWrite, secretName } from "./secret-writes.js";
@@ -35,7 +37,7 @@ import { archilWorkspace, spillFolderOf } from "./workspace/archil.js";
 import { agentDirName } from "./workspace/paths.js";
 import { WorkspaceError } from "./workspace/workspace.js";
 import { ARCHIL_API_KEY_ENV, archilApiKey } from "./workspace/archil-key.js";
-import { launchDiskProblem } from "./workspace/run-disk.js";
+import { launchDiskProblem, noDiskWords } from "./workspace/run-disk.js";
 
 /** The routes, by their operation names. */
 export const ARCHIL_ROUTES: ReadonlySet<string> = new Set(["getWorkspaceArchil", "putWorkspaceArchil", "deleteWorkspaceArchil", "testWorkspaceArchil", "getAgentArchil", "deleteAgentArchil"]);
@@ -57,8 +59,9 @@ registerNotSecretWrite("testWorkspaceArchil", "A connection test reads the saved
 const SECRET = { secret: secretName("workspace", "archil"), env: ARCHIL_API_KEY_ENV, row: ARCHIL_API_KEY_ROW };
 
 /** The Archil settings as the owner reads them, with `source` while on (the server's environment, or saved through the
- *  PUT, "console"): the account key as `secret`, its SecretMeta, never a value. */
-export type ArchilView = { on: boolean; source?: "env" | "console"; region?: string; s3Url?: string; image?: string; secret: KeyMeta };
+ *  PUT, "console") and `s3UrlFrom` (the region's own S3 URL, or one given): the account key as `secret`, its SecretMeta,
+ *  never a value. `regions`: each region serve knows, with its S3 URL, which a PUT naming it may leave out. */
+export type ArchilView = { on: boolean; source?: "env" | "console"; region?: string; s3Url?: string; s3UrlFrom?: "region" | "given"; image?: string; regions: Readonly<Record<string, string>>; secret: KeyMeta };
 export type ArchilTest = { ok: true; detail: string } | { ok: false; why: string };
 /** An agent's disk as GET /v2/agents/{id}/archil answers it: the one agentrun made for it (diskNameOf:
  *  agentrun-<server id>-i-<agent id>), or none until its first run that uses it. */
@@ -97,7 +100,7 @@ export interface ArchilRoutesOptions {
   readonly env?: KeyEnv;
 }
 
-const OFF = `Archil is off on this server: save its region, S3 URL and account key (PUT /v2/workspace/archil), or start the server with ${ARCHIL_SETTINGS_ENV.region}, ${ARCHIL_SETTINGS_ENV.s3Url} and ARCHIL_API_KEY`;
+const OFF = `Archil is off on this server: save its region and account key (PUT /v2/workspace/archil), or start the server with ${ARCHIL_SETTINGS_ENV.region} and ARCHIL_API_KEY; a region serve doesn't know needs its S3 URL too (s3Url, ${ARCHIL_SETTINGS_ENV.s3Url})`;
 const nonEmpty = (value: unknown): value is string => typeof value === "string" && value.trim() !== "";
 const describe = (error: unknown): string => String((error as Error)?.message ?? error).replace(/\s+/g, " ").slice(0, 300);
 const statusOf = (error: unknown): number | undefined => {
@@ -113,8 +116,8 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
 
   async function view(): Promise<ArchilView> {
     const settings = await loadArchilSettings(store, env);
-    const shown = settings === undefined ? {} : { source: archilSettingsFromEnv(env) ? "env" as const : "console" as const, region: settings.region, s3Url: settings.s3Url, ...(settings.image !== undefined ? { image: settings.image } : {}) };
-    return { on: settings !== undefined, ...shown, secret: (await keyMetaOf(store, [SECRET], env))[0]! };
+    const shown = settings === undefined ? {} : { source: archilSettingsFromEnv(env) ? "env" as const : "console" as const, region: settings.region, s3Url: settings.s3Url, s3UrlFrom: s3UrlFromOf(settings), ...(settings.image !== undefined ? { image: settings.image } : {}) };
+    return { on: settings !== undefined, ...shown, regions: ARCHIL_S3_URLS, secret: (await keyMetaOf(store, [SECRET], env))[0]! };
   }
 
   /** A change refused while the server's environment sets the settings: nothing saved would take effect. */
@@ -127,7 +130,7 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
   /** The settings row replaced and the keys given sealed, once every field is right; nothing is saved when one is not. */
   async function save(body: unknown): Promise<ArchilView> {
     refuseWhileEnv();
-    if (typeof body !== "object" || body === null || Array.isArray(body)) throw new ApiError("input_invalid", "the body is a JSON object: { region, s3Url, image?, keys? }");
+    if (typeof body !== "object" || body === null || Array.isArray(body)) throw new ApiError("input_invalid", "the body is a JSON object: { region, s3Url?, image?, keys? }");
     const given = body as Record<string, unknown>;
     const issues: InputIssue[] = unknownFields(given, ["region", "s3Url", "image", "keys"]).map((issue) =>
       issue.field === "diskId" ? { ...issue, message: "There is no server-wide disk: each agent has its own, made on its first run, and a run may name another (archil_disk on its start)." } : issue);
@@ -253,16 +256,20 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
    *  not there, or not in the key's region, is 422 at `archil_disk.disk_id` in words naming the region; Mode 1, or no key,
    *  is 422 at `archil_disk`; Archil not reached (or refusing the key) is 503. The claim reads it again, for a disk
    *  removed in between. */
-  async function checkLaunchDisk(diskId: string, signal?: AbortSignal): Promise<void> {
+  async function checkLaunchDisk(diskId: string, signal?: AbortSignal, unseen = false): Promise<void> {
     const settings = await loadArchilSettings(store, env);
     if (settings === undefined) throw invalid([{ field: "archil_disk", reason: "not_allowed", message: "This server keeps run folders on its own disk (Mode 1): a run names an Archil disk only in Archil mode (PUT /v2/workspace/archil).", fix: "Remove archil_disk." }]);
     const key = await keyOr("input_invalid", "This server's Archil key can't be read to check the run's disk");
+    const on = control(settings, key);
     let problem: string | undefined;
     try {
-      problem = await launchDiskProblem(control(settings, key), diskId, signal ? { signal } : {});
+      problem = await launchDiskProblem(on, diskId, signal ? { signal } : {});
     } catch (error) {
       throw new ApiError("unavailable", `Archil could not be asked about the disk ${diskId}: ${describe(error).split(key).join("[the key]")}`);
     }
+    // A disk the caller may not name reads as one Archil does not have, asked all the same, so neither the words nor the
+    // wait tell it from a missing one.
+    if (unseen) problem = noDiskWords(diskId, on.region);
     if (problem !== undefined) throw invalid([{ field: "archil_disk.disk_id", reason: "not_an_option", message: problem }]);
   }
 
@@ -303,11 +310,12 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
   }
 
   /** Agent `agentId`'s learning folder on disk `diskId` deleted over the disk's file API: agents/<agent>/learning and
-   *  everything under it (paths.ts learningKey), which a Mode 2 run's end writes on the disk its claim mounted, the
-   *  agent's own or one its launch named (the caller's: never made, renamed or removed here), and the folder a learning
-   *  exec spills beside it (workspace/archil.ts spillFolderOf: a write's input text, left by a failed cleanup). Nothing
-   *  else on the disk is touched: the agent's runs' folders stay. Done again, it does nothing: a folder not there is gone, and so is the
-   *  folder of a disk Archil says is gone. Archil off, or no account key, is 503 unavailable; a delete Archil refuses
+   *  everything under it, which a Mode 2 run's end wrote, before learning moved to the store's rows, on the disk its
+   *  claim mounted, the agent's own or one its launch named (the caller's: never made, renamed or removed here), and the
+   *  folder a learning exec spilled beside it (workspace/archil.ts spillFolderOf). Nothing reads it any more; a run's
+   *  purge removes it from a disk the run's launch named, as it did before (server.ts forgetRun). Nothing else on the
+   *  disk is touched: the agent's runs' folders stay. Done again, it does nothing: a folder not there is gone, and so is
+   *  the folder of a disk Archil says is gone. Archil off, or no account key, is 503 unavailable; a delete Archil refuses
    *  (a computer that still holds the folder, Archil not reached) is 424 upstream_failed, what was not deleted left for
    *  the next call. */
   async function removeLearningFolder(agentId: string, diskId: string): Promise<void> {

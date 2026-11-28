@@ -32,8 +32,8 @@ export const SECRET_NAMES: readonly string[] = (() => {
  *  (mcp-gateway.ts McpCredentials). A run that grants none gets no entry. */
 export const MCP_AUTH = "AGENTRUN_MCP_AUTH";
 
-/** The decision keys among them: a run's process gets them only on its decision descriptor (decisions.ts), never with
- *  the secrets on its pipe, which are its tools' environment. */
+/** The decision keys among them: never among a run's secrets (run-secrets.ts RUN_SECRETS); the runner's claim lays them
+ *  on the claim's own environment (claim-secrets.ts) for its decision providers and web tools. */
 export const DECISION_KEYS: readonly string[] = ["TYPESAFE_API_KEY", "PARALLEL_API_KEY"];
 
 const held = new Map<string, string>();
@@ -112,13 +112,14 @@ const SECRET_NAME = /(?:^|_)(?:KEY|TOKEN|SECRET|PASSWORD)$/i;
 /** This host's secrets, for a scan of what a run wrote: each one the launcher lists, as this process holds it (never in
  *  the environment once handed over, so a scan of process.env alone sees none of them), and beside it the key a person
  *  saved under that name on the server `stored` reads for (a run that names its tool is handed it), and the value of
- *  every other key, token, secret or password `env` names. One shorter than the checker's MIN_SECRET,
- *  whitespace aside, matches too much text by chance to be refused, and is left out. */
+ *  every other key, token, secret or password `env` names, and each OTLP header value and endpoint credential
+ *  (keptSecrets). One shorter than the checker's MIN_SECRET, whitespace aside, matches too much text by chance to be
+ *  refused, and is left out, an OTLP header value's too. */
 export const hostSecrets = (env: NodeJS.ProcessEnv, stored?: StoredKeys): string[] => {
   // AGENTRUN_TOKENS's each secret too, not only the list whole (api-token.ts secretValues).
   const held = [...SECRET_NAMES.flatMap((name) => [...secretValues(name, secret(name) ?? ""), stored?.(name) ?? ""]), ...mcpSecretValues(mcpCredentials()), ...sealKeys.keys(), ...heldTokens];
   const named = Object.entries(env).filter(([name]) => SECRET_NAME.test(name) && !SECRET_NAMES.includes(name)).map(([, value]) => value ?? "");
-  return [...new Set([...held, ...named])].filter((value) => value.replace(/\s+/g, "").length >= MIN_SECRET);
+  return keptSecrets([...held, ...named], env);
 };
 
 /** The seal keys this process's open stores were booted with (seal-key.ts bootSealKey), by how many hold each: several
@@ -191,6 +192,11 @@ export const withSecrets = (env: NodeJS.ProcessEnv, which: "all" | "own" = "all"
   return out;
 };
 
+/** A copy of `env` (one withSecrets made) with every own property as it is: each secret still read by name and never
+ *  enumerated, savedIn still saying which were saved, and its symbols. A spread keeps none of the secrets, so a copy
+ *  that is read for a key is made with this (env-copy.test.mjs scans for spreads). */
+export const copyEnv = <T extends object>(env: T): T => Object.create(Object.getPrototypeOf(env), Object.getOwnPropertyDescriptors(env)) as T;
+
 /** The secrets of `env` (one withSecrets made) that were saved on the server, not its own, by name. */
 export const savedIn = (env: NodeJS.ProcessEnv): ReadonlySet<string> => (env as { [SAVED]?: Set<string> })[SAVED] ?? new Set();
 
@@ -211,6 +217,23 @@ export function handover(names: readonly string[], stored?: StoredKeys): Buffer 
   }));
 }
 
+/** A `key=value,key=value` list (OTEL_EXPORTER_OTLP_HEADERS, OTEL_RESOURCE_ATTRIBUTES), each part percent-decoded; a
+ *  part that is not one is skipped. */
+export function keyValues(text: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const part of (text ?? "").split(",")) {
+    const at = part.indexOf("=");
+    if (at <= 0) continue;
+    try {
+      const key = decodeURIComponent(part.slice(0, at).trim());
+      if (key) out[key] = decodeURIComponent(part.slice(at + 1).trim());
+    } catch {
+      continue;
+    }
+  }
+  return out;
+}
+
 /** The MCP credentials this process was handed (MCP_AUTH), by server; none when it was handed none. */
 export function mcpCredentials(): Record<string, { url: string; headers?: Record<string, string>; unopened?: string }> {
   try {
@@ -219,6 +242,452 @@ export function mcpCredentials(): Record<string, { url: string; headers?: Record
   } catch {
     return {};
   }
+}
+
+/** The OTLP header names whose value is not held (otlpHeaderValues), matched in any case: the standard headers that say
+ *  how a body is sent, which carry no key. Every other header's value is held, an unknown name's too: a name not on this
+ *  list never means its value is safe. */
+export const OTLP_PLAIN_HEADERS: readonly string[] = ["content-type", "accept", "content-encoding", "user-agent"];
+
+/** `text` percent-decoded, or undefined when it can't be. */
+const decoded = (text: string): string | undefined => {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return undefined;
+  }
+};
+
+/** The OTLP header names whose value is on no held list but is cut from the tracer's own lines (otlpHeaderCut), matched
+ *  in any case: a backend's dataset or tenant, which says where spans go and carries no key. Such a value is often a
+ *  word like `production`, which a held list would find in nearly every project a source capture reads and in served
+ *  text. Only the names here: an unknown name's value is still held. */
+export const OTLP_CUT_ONLY_HEADERS: readonly string[] = ["x-honeycomb-dataset", "x-axiom-dataset", "x-scope-orgid"];
+
+/** An auth scheme before its credential, as a header writes it (`Bearer <token>`, `Basic <base64>`, `Api-Key <key>`,
+ *  `sentry sentry_key=<key>`): a token, then a space or its `%20`. */
+const AUTH_SCHEME = /^[A-Za-z][\w.+-]*(?:\s+|%20)/;
+
+/** The auth schemes a backend's header writes before its credential, in any case, under any header name. */
+const KNOWN_SCHEME = /^(?:bearer|basic|api-?key|api-?token|token|sentry|splunk|geniekey)(?:\s+|%20)/i;
+
+/** Whether a header's or an endpoint's query parameter's name says its value is a credential (`authorization`,
+ *  `x-sentry-auth`, `x-api-key`, `access_token`, `apiKey2`, `X-Amz-Signature`, `sessionid`): a name is split at each
+ *  non-alphanumeric and at each lower-to-upper case change, a word's trailing digits are dropped (`key2` is `key`), and
+ *  a word counts when it is one of CREDENTIAL_WORDS, ends in one of CREDENTIAL_ENDINGS (`accesstoken`, `dbpasswd`,
+ *  `writekey`, `hmackey`), or starts with one of CREDENTIAL_STARTS and is more than its plural (`tokenvalue`,
+ *  `passwordhash`; never `tokens`). `auth`, `key`, `sig` and `session` start no compound, so a word that only starts like
+ *  one says nothing (`authority`, `keyspace`, `sessions`). */
+const CREDENTIAL_WORDS = new Set(["authorization", "auth", "key", "apikey", "token", "secret", "password", "passwd", "pwd", "sig", "signature", "credential", "credentials", "jwt", "session"]);
+const CREDENTIAL_ENDINGS = ["key", "token", "secret", "password", "passwd", "pwd", "auth", "authorization", "sig", "signature", "credential", "credentials", "jwt", "sessionid"];
+const CREDENTIAL_STARTS = ["token", "secret", "password", "passwd", "jwt"];
+const credentialWord = (word: string): boolean => {
+  const bare = word.replace(/\d+$/, "");
+  return CREDENTIAL_WORDS.has(bare)
+    || CREDENTIAL_ENDINGS.some((ending) => bare.endsWith(ending))
+    || CREDENTIAL_STARTS.some((start) => bare.startsWith(start) && bare.length > start.length + 1);
+};
+const credentialNamed = (name: string): boolean =>
+  name.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).some(credentialWord);
+
+/** Where a URL starts: a scheme, then `://`; or `//` alone (a scheme-relative URL, `//<key>@host`) at the start of the
+ *  text or after a space, a quote, `=`, `(`, `,`, `;` or `&`, never inside a path (`/a//b`). A scheme is read at most 32
+ *  characters long, so a long word with no `://` after it costs one short look from each of its letters. */
+const URL_START = /[A-Za-z][\w+.-]{0,31}:\/\/|(?<=^|[\s"'=(,;&])\/\//;
+const URL_HEAD = /(?:[A-Za-z][\w+.-]{0,31}:)?\/\//y;
+
+/** How many readings of one URL's userinfo urlParts takes at most, and how many characters its shorter readings (all
+ *  but the RFC's and the first `@`'s) take together at most: a value can hold thousands of `@`, and a reading at each
+ *  would hold, and the [otel] cut compile into one pattern, their count times the value's length. */
+const MAX_READINGS = 16;
+const READINGS_BUDGET = 4096;
+
+/** How many characters of URL queries one header value's read (innerCredentials) takes after the first query it reads:
+ *  a value of URLs nested each in the last's query gives each a query running to the value's end, and reading every one
+ *  would hold their count times the value's length. The pair reads (credentialPrefixes, pieceValues) still cover every
+ *  query's text. */
+const QUERY_BUDGET = 4096;
+
+/** The URL queries one header value's read has taken (`spans`, each its `from to`) and the QUERY_BUDGET characters left. */
+type QueriesRead = { spans: Set<string>; left: number };
+
+/** A URL as RFC 3986 reads it, `text` from `start` (its scheme, or the `//` of a scheme-relative one) to `end`: its
+ *  authority, up to the first `/`, `?` or `#`; the readings of its userinfo, the RFC's first (everything before the
+ *  authority's last `@`, so a password's `;`, `&`, `=`, `,`, `'` or raw `@` stays in it), then, when the authority holds
+ *  more than one `@`, the one up to its first `@` and the next shorter ones, up to MAX_READINGS in all and
+ *  READINGS_BUDGET characters for those after the first two (a URL with no closing mark, followed by a pair holding an
+ *  `@`, `...@relay.invalid&contact=ops@team`, reads too long a userinfo, and a redactor holding an extra candidate is
+ *  safe where missing one leaks); and where its query is, from the first `?` to a `#`. Read in place, never copied to
+ *  `end`: a value of thousands of URLs one inside the next costs each only its authority. Undefined when no URL starts
+ *  at `start`. */
+const urlParts = (text: string, start: number, end: number): { readings: string[]; query: readonly [number, number] } | undefined => {
+  URL_HEAD.lastIndex = start;
+  if (!URL_HEAD.test(text)) return undefined;
+  const from = URL_HEAD.lastIndex;
+  let stop = from;
+  while (stop < end && !"/?#".includes(text[stop])) stop++;
+  const authority = text.slice(from, stop);
+  const ats = [...authority.matchAll(/@/g)].map((at) => at.index);
+  const kept = ats.length > 1 ? [ats[ats.length - 1], ats[0]] : ats;
+  let budget = READINGS_BUDGET;
+  for (let next = 1; next < ats.length - 1 && kept.length < MAX_READINGS && ats[next] <= budget; next++) {
+    budget -= ats[next];
+    kept.push(ats[next]);
+  }
+  const mark = text.indexOf("?", stop);
+  const hash = text.indexOf("#", stop);
+  const query = mark >= 0 && mark < end && (hash < 0 || hash > mark) ? [mark + 1, hash >= 0 && hash < end ? hash : end] as const : [0, 0] as const;
+  return { readings: kept.map((at) => authority.slice(0, at)), query };
+};
+
+/** A user or password as a URL parser writes it back (a client's error may quote the URL it parsed): `;`, `=`, `@`, `:`
+ *  and the like percent-encoded. */
+const asParsed = (part: string): string => {
+  const url = new URL("http://host.invalid");
+  url.password = part;
+  return url.password;
+};
+
+/** The credentials a URL writes into itself (`text` from `start` to `end`, urlParts): the user and password of its
+ *  userinfo (before its first `:` and after it), each as written, decoded and as a parser writes it back, the RFC's
+ *  reading at any length and each shorter reading's only at MIN_SECRET or more (so a short piece of a password, `pa` of
+ *  `pa@ss...`, cuts no ordinary word), and the value of each query parameter whose name says it is one
+ *  (credentialNamed), the query split at `&` alone and again at `&` and `;`, as written and decoded; none when no URL
+ *  starts at `start`. A query already in `queriesRead` (several URLs nested in one share it) is not read again, and
+ *  after the first one read, one is read only while QUERY_BUDGET has room for all of it. */
+const urlCredentials = (text: string, start = 0, end = text.length, queriesRead: QueriesRead = { spans: new Set(), left: QUERY_BUDGET }): string[] => {
+  const url = urlParts(text, start, end);
+  if (!url) return [];
+  const userinfo = url.readings.flatMap((reading, at) => {
+    const colon = reading.indexOf(":");
+    const parts = (colon < 0 ? [reading] : [reading.slice(0, colon), reading.slice(colon + 1)]).flatMap((part) => [part, decoded(part) ?? part, asParsed(part)]);
+    return at === 0 ? parts : parts.filter((part) => part.replace(/\s+/g, "").length >= MIN_SECRET);
+  });
+  const [from, to] = url.query;
+  const span = `${from} ${to}`;
+  if (from === to || queriesRead.spans.has(span)) return userinfo;
+  if (queriesRead.spans.size > 0) {
+    if (to - from > queriesRead.left) return userinfo;
+    queriesRead.left -= to - from;
+  }
+  queriesRead.spans.add(span);
+  // Read split at `&` alone (a WHATWG parser's reading, a value's raw `;` kept), and each `&` piece holding a `;` split
+  // at it too (a path parameter's or a cookie's reading): both, so a key with a `;` in it is held whole and a pair after
+  // a `;` alone. A query writes a space as `+`; a user and password do not.
+  const pieces = text.slice(from, to).split("&");
+  const query = [...pieces, ...pieces.filter((piece) => piece.includes(";")).flatMap((piece) => piece.split(";"))].flatMap((pair) => {
+    const at = pair.indexOf("=");
+    const name = pair.slice(0, Math.max(at, 0)).replace(/\+/g, " ");
+    const value = pair.slice(at + 1);
+    return at > 0 && credentialNamed(decoded(name) ?? name) ? [value, decoded(value.replace(/\+/g, " ")) ?? value] : [];
+  });
+  return [...userinfo, ...query];
+};
+
+/** Each URL inside a header value (a DSN, a relay's address) as the spans of text it takes, one starting at every
+ *  `scheme://` (URL_START), so a URL inside another's query or path is read too: from its scheme to the quote that
+ *  closes it when a `'` or `"` opens it (comes right before its scheme and is closed later), else to the first space or
+ *  quote, and, when that is a quote, also on to the first space (RFC 3986 allows a raw `'` in a userinfo, so both
+ *  readings are taken). Read inside a span alone (urlParts), a quoted URL's userinfo never runs past its closing quote to
+ *  a later `@`, and an unquoted one's runs past any `;`, `&`, `=` or `,`. */
+const urlSpans = (value: string): { start: number; end: number }[] => {
+  const spans: { start: number; end: number }[] = [];
+  const start = new RegExp(URL_START.source, "g");
+  // The first match of `mark` at or after an index, found once for every index from the last one asked up to it: URLs
+  // nested one in the next share their end, and a search from each would read the rest of the value again.
+  const nextOf = (mark: RegExp): ((from: number) => number) => {
+    let asked = -1;
+    let found = -1;
+    return (from) => {
+      if (from < asked || from > found) {
+        mark.lastIndex = from;
+        found = mark.exec(value)?.index ?? value.length;
+      }
+      asked = from;
+      return found;
+    };
+  };
+  const nextStop = nextOf(/[\s'"]|$/g);
+  const nextSpace = nextOf(/\s|$/g);
+  for (let found = start.exec(value); found; found = start.exec(value)) {
+    const open = value[found.index - 1];
+    const from = found.index + found[0].length;
+    const closing = open === "'" || open === '"' ? value.indexOf(open, from) : -1;
+    if (closing >= 0) {
+      spans.push({ start: found.index, end: closing });
+      continue;
+    }
+    const end = nextStop(from);
+    spans.push({ start: found.index, end });
+    if (value[end] === "'" || value[end] === '"') spans.push({ start: found.index, end: nextSpace(end) });
+  }
+  return spans;
+};
+
+/** A separator in a header value: `&`, `;`, a comma or a space, raw or percent-encoded (`%26`, `%3B`, `%2C`, `%20`, in
+ *  any case). One splits the value's `name=value` pairs, or sits inside a key: a reader can't tell which, so a
+ *  credential's value is held up to each one (credentialPrefixes). */
+const SEPARATOR = /[&;,\s]|%26|%3B|%2C|%20/gi;
+
+/** A pair's value in quotes, raw or written `%22` or `%27` (QUOTED), a quote opening one (OPEN_QUOTE), and a quote
+ *  closing one (CLOSE_QUOTE). */
+const QUOTED = /^(["']|%22|%27)(.*)\1$/;
+const OPEN_QUOTE = /^(?:["']|%22|%27)/;
+const CLOSE_QUOTE = /(?:["']|%22|%27)$/;
+
+/** Whether `text` reaches the held lists' floor: MIN_SECRET characters or more, decoded and whitespace aside. */
+const atFloor = (text: string): boolean => (decoded(text) ?? text).replace(/\s+/g, "").length >= MIN_SECRET;
+
+/** Whether `text`, decoded, is itself a `name=value` pair named like no credential (`theme=dark-mode`): a word, `=`,
+ *  then a value that starts with no other `=` (a base64 credential's padding, `<b64>=`, makes no pair). */
+const PAIR_SHAPE = /^([A-Za-z][\w.-]*)=[^=]/;
+const plainPair = (text: string): boolean => {
+  const pair = PAIR_SHAPE.exec(decoded(text) ?? text);
+  return pair !== null && !credentialNamed(pair[1]);
+};
+
+/** What a credential's value whose part before its first `;` is empty (`;<key>`) holds after that `;`: the rest whole,
+ *  as a reader that skips an empty part reads it, and its first piece up to a `;` at the floor or longer (atFloor), so
+ *  `;a;<key>` gives `<key>`, never an `a` the tracer's cut would take from every word; neither when it is a pair named
+ *  like no credential (plainPair, `;theme=dark-mode`). Nothing for any other value. */
+const afterEmpty = (value: string): string[] => {
+  if (!value.startsWith(";")) return [];
+  const after = value.replace(/^;+/, "");
+  const piece = after.split(";").find(atFloor);
+  return [after, ...(piece === undefined ? [] : [piece])].filter((taken) => !plainPair(taken));
+};
+
+/** What one prefix of a credential's value holds: the prefix; out of a matching pair of quotes around it, raw or written
+ *  `%22` or `%27`, at any length; without a lone opening or a lone closing quote, at the floor or longer (atFloor: a
+ *  shorter rest, `token=%27a`, would cut ordinary words from the tracer's lines); each of those after an empty first
+ *  part (afterEmpty), when `afterRead`; and each as written and decoded. Not one whose decoded form is only `=`, `;`,
+ *  `&`, quotes, commas and spaces (a base64 credential's padding read as a pair, `token=;` before a space, a lone `'` or
+ *  its `%27`, `api_key=%2C`, `api_key=&` read to its end), as written or decoded: otlpHeaderCut has no length floor, and
+ *  it would cut those characters everywhere in the tracer's lines. */
+const heldForms = (value: string, afterRead: boolean): string[] => {
+  const quoted = QUOTED.exec(value);
+  const lone = [value.replace(OPEN_QUOTE, ""), value.replace(CLOSE_QUOTE, "")].filter((form) => form !== value && atFloor(form));
+  const forms = [value, ...(quoted ? [quoted[2]] : []), ...lone];
+  const after = (form: string): string[] => (afterRead ? afterEmpty(form) : []);
+  return forms
+    .flatMap((form) => [form, ...after(form)])
+    .flatMap((form) => [form, decoded(form) ?? form])
+    .concat(forms.flatMap((form) => after(decoded(form) ?? form)))
+    .filter((form) => /[^=;&"',\s]/.test(decoded(form) ?? form));
+};
+
+/** How many characters credentialPrefixes takes in all from one text for the prefixes it budgets: each pair's value
+ *  runs to the text's end, so a text of thousands of pairs, each read up to each separator after it, would hold their
+ *  count times the text's length. */
+const PREFIX_BUDGET = 4096;
+
+/** A raw `&` or space at either end of a prefix as written: a value that opens with one (`sentry_key= @`), or a prefix
+ *  that ends inside a run of separators (`token=+  ;`, `api_key=@&` read to its end). No key is read that way by any
+ *  reader that splits pairs, so beyond a pair's first prefix such a prefix is held only at the floor or longer
+ *  (atFloor): shorter, it would cut a character or two, with that `&` or space, from every tracer line. */
+const RAW_EDGE = /^[&\s]|[&\s]$/;
+
+/** A `;` that opens a value and the separator a prefix of it ends at, written the same way (a raw `;` both, or `%3B`
+ *  both): the reader that skips the empty part before that `;` (afterEmpty) reads the piece up to the next one itself. */
+const sameSemicolon = (prefix: string, separator: string): boolean => {
+  const opening = prefix.startsWith(";") ? ";" : prefix.slice(0, 3).toLowerCase() === "%3b" ? "%3b" : "";
+  return opening !== "" && separator.toLowerCase() === opening;
+};
+
+/** A separator's kind: its text, an encoded one in any case the same (`%3b` is `%3B`), and any whitespace one kind. */
+const separatorKind = (separator: string): string => (/^\s$/.test(separator) ? " " : separator.toLowerCase());
+
+/** The value of each `name=value` pair of `text` whose name says it is a credential (credentialNamed), held at every
+ *  boundary: a pair is a run of `text` between separators (SEPARATOR) whose first `=` has a name before it, the name
+ *  being what follows the last `/`, `?`, `#` or `:` before that `=` (a URL's query, `https://relay/v1?region=us`, names
+ *  `region`); its value runs from the `=` to the end of `text`, and each prefix of it that ends just before a separator
+ *  is held, the whole rest one more, each by heldForms. A key may hold any separator, raw or encoded, and the pairs
+ *  around it may be joined by any other, so no one split finds it: one of these prefixes is the key alone, whatever
+ *  ends it. A pair's first prefix (up to its first separator) is always taken, and so is the last credential pair's
+ *  whole rest; the others are taken pair by pair, shortest first within a pair, while PREFIX_BUDGET has room for all of
+ *  one. Past the budget, a pair still holds its value as a reader that splits pairs at some kinds of separator
+ *  (separatorKind) reads it, up to the first separator of one of those kinds: its prefix up to the next separator of
+ *  each kind, until it has passed one of each kind that opens it. The kinds that open a pair are those of every
+ *  separator since the last `=` before its name (with the text's start while there is none): a reader that splits at
+ *  any of them finds the pair (`; session=`, `&foo;api_key=`), and one that splits at none of them never does. Each
+ *  pair's walk ends at the first separator of the last of its opening kinds to come, or at the text's end when one
+ *  never comes, and then the pair holds its whole rest too: a reader of the kind that never comes reads the value to
+ *  the end (`&token=<a>;<b>;secret=<c>` with no `&` after it). A later pair that the last kind seen opens has one of
+ *  that kind after this pair's `=`, so its name comes after this walk's end. So the walks that end at one kind are
+ *  disjoint, all walks take at most nine passes over the separators (eight kinds and the text's start), and these
+ *  prefixes hold at most eight times that, 72 times `text`'s length, in all. A later pair that a kind which never comes
+ *  opens would need one of it after this pair's `=`, so at most one pair per kind, and the text's start, holds its
+ *  whole rest this way: at most nine times `text`'s length more. One past the first with a raw `&` or space at an end
+ *  is held only at the floor or longer (RAW_EDGE). A prefix that ends at a `;` written as the one that opens it is not
+ *  read after that `;` (sameSemicolon). */
+const credentialPrefixes = (text: string): string[] => {
+  const separators = [...text.matchAll(SEPARATOR)].map((found) => ({ start: found.index, end: found.index + found[0].length, kind: separatorKind(found[0]), text: found[0] }));
+  const startOf = (at: number): number => (at < separators.length ? separators[at].start : text.length);
+  const pairs: { value: number; first: number; opening: Set<string> }[] = [];
+  // The kinds of the separators since the last `=`, and "" (the text's start) while no `=` has come.
+  let opening = new Set([""]);
+  let equals = -1;
+  for (let at = 0; at <= separators.length; at++) {
+    const from = at === 0 ? 0 : separators[at - 1].end;
+    if (at > 0) opening.add(separators[at - 1].kind);
+    if (equals < from) equals = text.indexOf("=", from);
+    if (equals < 0) break;
+    if (equals >= startOf(at)) continue;
+    const name = text.slice(from, equals).split(/[/?#:]/).at(-1) ?? "";
+    if (equals > from && credentialNamed(decoded(name) ?? name)) pairs.push({ value: equals + 1, first: at, opening });
+    opening = new Set();
+  }
+  let left = PREFIX_BUDGET;
+  return pairs.flatMap(({ value, first, opening }, index) => {
+    const ends = new Set([first]);
+    for (let at = first + 1; at < separators.length && separators[at].start - value <= left; at++) {
+      left -= separators[at].start - value;
+      ends.add(at);
+    }
+    if (first < separators.length) {
+      if (index === pairs.length - 1) ends.add(separators.length);
+      else if (text.length - value <= left) {
+        left -= text.length - value;
+        ends.add(separators.length);
+      }
+    }
+    const kinds = new Set<string>();
+    let unseen = opening.size;
+    for (let next = first; next < separators.length && unseen > 0; next++) {
+      const { kind } = separators[next];
+      if (kinds.has(kind)) continue;
+      kinds.add(kind);
+      ends.add(next);
+      if (opening.has(kind)) unseen--;
+    }
+    // An opening kind that never comes: its reader reads the value to the text's end.
+    if (unseen > 0) ends.add(separators.length);
+    return [...ends].flatMap((at) => {
+      const prefix = text.slice(value, startOf(at));
+      if (at !== first && RAW_EDGE.test(prefix) && !atFloor(prefix)) return [];
+      return heldForms(prefix, at === separators.length || !sameSemicolon(prefix, separators[at].text));
+    });
+  });
+};
+
+/** The breaks of the piece read (pieceValues): `;`, `&`, a comma (or its `%2C`), spaces, and `?`, `#` and `/`. */
+const PIECE_BREAK = /[;&,\s?#/]+|%2C/i;
+
+/** The value of each credential-named pair that starts inside a URL that is itself a pair's value, after a `?`, `#` or
+ *  `/` (`upstream=https://relay/v1#access_token=<token>`): `text` split at PIECE_BREAK, each piece whose first `=` has
+ *  a credential name before it held by heldForms. credentialPrefixes finds a pair only after a separator; finding one
+ *  after each `/` too would give each of thousands of `token=<a>/` its own value up to the next separator, and hold
+ *  their count times the text's length. */
+const pieceValues = (text: string): string[] =>
+  text.split(PIECE_BREAK).flatMap((piece) => {
+    const at = piece.indexOf("=");
+    if (at <= 0) return [];
+    const name = piece.slice(0, at).split(":").at(-1) ?? "";
+    return credentialNamed(decoded(name) ?? name) ? heldForms(piece.slice(at + 1), true) : [];
+  });
+
+/** The credentials a header value carries inside it, the union of two reads over the whole value as written: the value
+ *  of each `name=value` pair whose name says it is a credential, held at every boundary (credentialPrefixes), and of
+ *  each such pair inside a URL's query, fragment or path (pieceValues): a cookie's `session=<token>`, sentry's
+ *  `sentry_key=<key>`, a path's `;jsessionid=<id>`, a URL query's or fragment's `session=` or `access_token=`; and the
+ *  user, password and key parameters of each URL in it (urlSpans, urlCredentials: a DSN's `https://<key>@host/1`, a
+ *  relay's whole `user:pa;ss`). A URL only adds readings: the pair read covers its text too. A value that escapes its
+ *  slashes (JSON's `https:\/\/`) is read again with them plain, and what that finds is held both ways. A pair named like
+ *  no credential (`theme=dark`) is not taken. */
+const innerCredentials = (value: string): string[] => {
+  const read = (text: string): string[] => {
+    const queriesRead: QueriesRead = { spans: new Set(), left: QUERY_BUDGET };
+    return [
+      ...credentialPrefixes(text),
+      ...pieceValues(text),
+      ...urlSpans(text).flatMap(({ start, end }) => urlCredentials(text, start, end, queriesRead)),
+    ];
+  };
+  if (!value.includes("\\/")) return read(value);
+  return [...read(value), ...read(value.replace(/\\\//g, "/")).flatMap((found) => [found, found.replace(/\//g, "\\/")])];
+};
+
+/** The OTLP exporter's header values `env` names (OTEL_EXPORTER_OTLP_HEADERS and OTEL_EXPORTER_OTLP_TRACES_HEADERS: a
+ *  tracing backend's key is one), at any length (keptSecrets floors them for the held list; otlpHeaderCut does not),
+ *  but those of a header OTLP_PLAIN_HEADERS names, and, for the held list (`held`), those OTLP_CUT_ONLY_HEADERS names.
+ *  Each is held as written (percent-encoded) and as sent (decoded); and as the SDK reads the same variable, which it
+ *  merges under ours (`headers`, tracer.ts exporterConfig) and which drops a `;` and what follows it, so a part ours
+ *  can't decode still sends that much; and, under a credential-named header (credentialNamed) or after a known auth
+ *  scheme (KNOWN_SCHEME), each of those without its first word (AUTH_SCHEME), the credential alone, as an error may
+ *  quote it. For the held list, any other header's value is held whole, never its tail alone; for the cut (`held`
+ *  false), every value is taken without any first word too, since cutting more of the tracer's own lines costs
+ *  nothing. Under any header, each credential a value carries inside it (innerCredentials: a credential-named
+ *  `name=value` pair's value, a URL's user, password and key parameters) is taken alone too. A part whose name can't
+ *  be decoded is held. Commas split the variable, so a comma inside a value must be written `%2C`. */
+export const otlpHeaderValues = (env: NodeJS.ProcessEnv, held: boolean): string[] =>
+  [env.OTEL_EXPORTER_OTLP_HEADERS, env.OTEL_EXPORTER_OTLP_TRACES_HEADERS].flatMap((text) =>
+    (text ?? "").split(",").flatMap((part) => {
+      const at = part.indexOf("=");
+      if (at <= 0) return [];
+      const rawName = part.slice(0, at).trim();
+      const name = decoded(rawName) ?? rawName;
+      if (OTLP_PLAIN_HEADERS.includes(name.toLowerCase())) return [];
+      if (held && OTLP_CUT_ONLY_HEADERS.includes(name.toLowerCase())) return [];
+      const written = part.slice(at + 1).trim();
+      const property = written.indexOf(";");
+      const forms = [written, ...(property >= 0 ? [written.slice(0, property).trim()] : [])].flatMap((value) => [value, decoded(value) ?? value]);
+      const named = credentialNamed(name);
+      return forms.flatMap((value) => [value, ...(!held || named || KNOWN_SCHEME.test(value) ? [value.replace(AUTH_SCHEME, "")] : []), ...innerCredentials(value)]);
+    })).filter((value) => value.trim() !== "");
+
+/** The credentials the OTLP endpoints `env` names write into their URLs (OTEL_EXPORTER_OTLP_ENDPOINT and
+ *  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT; urlCredentials): a user and password, and the value of each query parameter
+ *  whose name says it is one, each as written and decoded. An exporter's error may quote the URL it posted to. */
+export const otlpEndpointValues = (env: NodeJS.ProcessEnv): string[] =>
+  [env.OTEL_EXPORTER_OTLP_ENDPOINT, env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT].flatMap((text) => urlCredentials((text ?? "").trim())).filter((value) => value.trim() !== "");
+
+/** Every OTLP credential `env` names: its header values (otlpHeaderValues, a cut-only header's only when not `held`) and
+ *  its endpoints' (otlpEndpointValues). */
+const otlpValues = (env: NodeJS.ProcessEnv, held: boolean): string[] => [...otlpHeaderValues(env, held), ...otlpEndpointValues(env)];
+
+/** `values` and every OTLP credential `env` names (otlpValues: its header values but a cut-only header's, its
+ *  endpoints' user, password and key parameters) as the held list keeps them: each MIN_SECRET long or more, whitespace
+ *  aside. A shorter one matches too much text by chance to be held, and some readers of the list have no floor of their
+ *  own (a number equal to a held value is withheld, key-refusal.ts heldNumber; a source capture refuses a path or file
+ *  holding one), so a short header value is on no held list, nor is a dataset's or tenant's (OTLP_CUT_ONLY_HEADERS):
+ *  otlpHeaderCut alone cuts it, from the tracer's own lines. */
+export const keptSecrets = (values: readonly string[], env: NodeJS.ProcessEnv): string[] =>
+  [...new Set([...values, ...otlpValues(env, true)])].filter((value) => value.replace(/\s+/g, "").length >= MIN_SECRET);
+
+const CUT = "[redacted]";
+
+/** Text with every OTLP credential `env` names (otlpValues: its header values, a cut-only header's too, its endpoints'
+ *  user, password and key parameters) put as "[redacted]", at any length: the one cut without the MIN_SECRET floor.
+ *  The tracer's own lines take it, after the runner's redactor (otel/tracer.ts saidOf), since they are where one can
+ *  show: an exporter's error may quote a header it sent or the URL it posted to, and a run's process never holds one.
+ *  Every other cut keeps the floor on purpose: a needle of a few characters in every redactor would cut ordinary text
+ *  everywhere. Each value is matched exactly as held, and the cut is the union of every place each one stands: at each
+ *  character, the longest value (or a "[redacted]" already in the text) starting there is found without being taken,
+ *  so a value starting inside another is found too, and the places, which come in order, are merged where they overlap
+ *  or touch and each run cut as one "[redacted]". So no character of any held value is left, whichever of two
+ *  overlapping values starts first or is longer (the SDK's reading `api_key=<key>` and a key `<key;rest>` quoted as
+ *  `api_key=<key;rest>`), and a "[redacted]" already in the text is left whole. One pass over the text, one merge. */
+export function otlpHeaderCut(env: NodeJS.ProcessEnv): (text: string) => string {
+  const values = [...new Set([CUT, ...otlpValues(env, false)])].sort((a, b) => b.length - a.length);
+  if (values.length === 1) return (text) => text;
+  const needle = new RegExp(`(?=(${values.map((value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")}))`, "g");
+  return (text) => {
+    if (!text) return text;
+    const spans: [number, number][] = [];
+    for (const found of text.matchAll(needle)) {
+      const [start, end] = [found.index, found.index + found[1].length];
+      const last = spans.at(-1);
+      if (last && start <= last[1]) last[1] = Math.max(last[1], end);
+      else spans.push([start, end]);
+    }
+    let out = "";
+    let from = 0;
+    for (const [start, end] of spans) {
+      out += `${text.slice(from, start)}${CUT}`;
+      from = end;
+    }
+    return out + text.slice(from);
+  };
 }
 
 /** Every header value of `credentials`: what a secret scan refuses. */

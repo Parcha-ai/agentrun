@@ -77,12 +77,14 @@ describe("tailwind.config.ts", () => {
     const fonts = [...stylesCss.matchAll(/@fontsource\/[a-z-]+\/(\d+)\.css/g)].map((m) => m[1]);
     expect([...new Set(fonts)].sort()).toEqual(["400", "600"]);
   });
-  it("keeps square defaults, shared action and composer shapes, and one shadow", () => {
+  it("keeps square defaults, shared action shapes, and one shadow", () => {
     expect(tokens.light.radius).toBe("0px");
     for (const shape of SHAPES) {
       expect(theme.borderRadius[shape.name]).toBe(`var(--radius-${shape.name})`);
       expect(tokens.light[`radius-${shape.name}`]).toMatch(/^[\d.]+rem$/);
     }
+    // Actions share the 8px radius.
+    expect(tokens.light["radius-action"]).toBe("0.5rem");
     expect(Object.keys(theme.boxShadow)).toEqual(["none", "float"]);
   });
 });

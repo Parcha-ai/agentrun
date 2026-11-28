@@ -28,13 +28,16 @@ export const LAUNCH_HOOK_LATE_START_MS = 10 * 60_000;
  *  IPv6 in brackets and shortest form). */
 const loopback = (hostname: string): boolean => hostname === "localhost" || hostname === "[::1]" || /^127(\.\d{1,3}){3}$/.test(hostname);
 
-/** The hook a server hands its firings to: where, and the secret it signs with. `bound`: a test's seam, the signal for a
- *  POST's bound (LAUNCH_HOOK_TIMEOUT_MS) in place of AbortSignal.timeout. */
+/** The hook a server hands its firings to: where, and the secret it signs with. `bound`: a test's seam, a signal that can
+ *  cut a POST before LAUNCH_HOOK_TIMEOUT_MS, never after: the 10 s bound is always set as well. */
 export type LaunchHook = { readonly url: string; readonly secret: string; readonly bound?: (ms: number) => AbortSignal };
 
 /** What the host is sent for a firing: its id (the message's webhook-id too), its trigger, the agent and the revision a
- *  run would start on now, the run's input as the trigger gives it, and the firing's time. */
-export type HookFiring = { firing_id: string; trigger_id: string; agent_id: string; revision_id: string | null; input: Json; fired_at: string };
+ *  run would start on now, the run's input as the trigger gives it, the firing's time, and the trigger's cap: the most
+ *  its run may cost, which the host's own max_cost_usd may lower and never raise. The firing keeps the cap it was first
+ *  handed with (FiringRow.hooked): a retry sends the same, and the host's start runs under it whatever the target says
+ *  by then. A null means the agent's default when the host starts the run. */
+export type HookFiring = { firing_id: string; trigger_id: string; agent_id: string; revision_id: string | null; input: Json; fired_at: string; max_cost_usd: number | null };
 
 /** The host's answer: taken (2xx); or `stopped`, the server's stop cut it short and the firing is left as it was. Any
  *  other answer, or none, is a HookFailed. */
@@ -88,7 +91,7 @@ export async function handToHost(hook: LaunchHook, firing: HookFiring, stop: Abo
   const body = JSON.stringify(firing);
   const timestamp = String(Math.floor(now() / 1000));
   const headers = signedRequest(hook.secret, firing.firing_id, timestamp, body, "agentrun-serve-launch-hook/1");
-  const signal = AbortSignal.any([hook.bound ? hook.bound(LAUNCH_HOOK_TIMEOUT_MS) : AbortSignal.timeout(LAUNCH_HOOK_TIMEOUT_MS), stop]);
+  const signal = AbortSignal.any([AbortSignal.timeout(LAUNCH_HOOK_TIMEOUT_MS), ...(hook.bound ? [hook.bound(LAUNCH_HOOK_TIMEOUT_MS)] : []), stop]);
   let res: Awaited<ReturnType<typeof undiciFetch>>;
   try {
     res = await undiciFetch(hook.url, { method: "POST", redirect: "manual", signal, headers, body });

@@ -162,7 +162,8 @@ test("the composer builds a working claim on a docker box: the real Docker provi
   const store = await savedKeysStore(sealKey);
   // The production builder (providerFor), told only where the fake daemon file and its cache are; docker is the one on PATH.
   const load = (id, options) => providerFor(id, { ...options, daemonPath: fake.daemonPath, daemonCache: fake.cache });
-  const { computerForClaim, computerDeps } = computerDepsFrom({ env: ENV, store, sealKey, load });
+  // The server's environment holds the PATH the fake is first on: the provider hands docker that PATH, never this process's.
+  const { computerForClaim, computerDeps } = computerDepsFrom({ env: { ...ENV, PATH: process.env.PATH }, store, sealKey, load });
   const answer = await computerForClaim({ runId: "run-1", epoch: 3, computer: { kind: "sandbox", provider: "docker" } }, store, { ...computerDeps, mode: 1, workspace: localWorkspace(root), sealKey });
   assert.equal(answer.computer?.kind, "sandbox", "a kinded RunComputer");
   const run = fake.calls().find((args) => args[0] === "run");
@@ -500,25 +501,37 @@ test("the composer builds every provider through the one provider builder, and g
   assert.equal(typeof computerDeps.spec, "function");
 });
 
-test("the local browser's provider is built with the server's Chrome lookup (CHROME_PATH, PI_BROWSER_CHROME, PATH) and no other variable", async () => {
+test("the local browser's provider is built with the server's Chrome lookup (CHROME_PATH, PI_BROWSER_CHROME, PATH) and what Chrome reads (HOME, the display, the locale), and no other variable", async () => {
   const built = [];
-  const env = { CHROME_PATH: "/opt/chrome/chrome", PI_BROWSER_CHROME: "/opt/pi/chrome", PATH: "/opt/bin:/usr/bin", ANTHROPIC_API_KEY: mark("model-key") };
+  const reads = { PATH: "/opt/bin:/usr/bin", HOME: "/home/agentrun", DISPLAY: ":99", LANG: "C.UTF-8" };
+  const env = { CHROME_PATH: "/opt/chrome/chrome", PI_BROWSER_CHROME: "/opt/pi/chrome", ...reads, ANTHROPIC_API_KEY: mark("model-key"), AGENTRUN_UNLISTED_SETTING: "plain" };
   const { computerDeps, factories } = computerDepsFrom({ env, store: memoryStore(), sealKey: undefined, kinds: KINDS, load: async (id, options) => (built.push([id, options]), {}) });
   await computerDeps.providers["local-chrome"]({}, { ledger: {} });
   await factories["local-chrome"]({});
   assert.deepEqual(built.map(([id]) => id), ["local-chrome", "local-chrome"], "the claim's and Settings → Computers' alike");
-  for (const [, options] of built) assert.deepEqual(options.env, { CHROME_PATH: "/opt/chrome/chrome", PI_BROWSER_CHROME: "/opt/pi/chrome", PATH: "/opt/bin:/usr/bin" });
+  for (const [, options] of built) assert.deepEqual(options.env, { CHROME_PATH: "/opt/chrome/chrome", PI_BROWSER_CHROME: "/opt/pi/chrome", ...reads }, "the local browser is built with what Chrome reads of the server's environment");
 });
 
-test("the phone's provider is built with the server's PHONE_HARNESS_APKS, the APKs every phone installs, and no other variable", async () => {
+test("the Docker provider is built with what the docker CLI reads of the server's environment (where the daemon and its config are, PATH, HOME, a proxy), and no key or other variable", async () => {
+  const built = [];
+  const reads = { PATH: "/opt/bin:/usr/bin", HOME: "/home/agentrun", DOCKER_HOST: "unix:///run/docker.sock", DOCKER_CONFIG: "/etc/agentrun/docker", HTTPS_PROXY: "http://proxy.example.com:3128" };
+  const env = { ...reads, ANTHROPIC_API_KEY: mark("model-key"), AWS_SECRET_ACCESS_KEY: mark("aws-key"), AGENTRUN_UNLISTED_SETTING: "plain" };
+  const { computerDeps, factories } = computerDepsFrom({ env, store: memoryStore(), sealKey: undefined, kinds: KINDS, load: async (id, options) => (built.push([id, options]), {}) });
+  await computerDeps.providers.docker({}, { ledger: {} });
+  await factories.docker({});
+  assert.deepEqual(built.map(([id]) => id), ["docker", "docker"], "the claim's and Settings → Computers' alike");
+  for (const [, options] of built) assert.deepEqual(options.env, reads, "the Docker provider is built with what docker reads of the server's environment");
+});
+
+test("the phone's provider is built with the server's PHONE_HARNESS_APKS, the APKs every phone installs, and what its adb reads, and no other variable", async () => {
   const built = [];
   const apks = `/srv/apks/wikipedia.apk@sha256:${"a".repeat(64)}`;
-  const env = { PHONE_HARNESS_APKS: apks, PATH: "/opt/bin:/usr/bin", PHONE_HARNESS_API_KEY: mark("phone-key") };
+  const env = { PHONE_HARNESS_APKS: apks, PATH: "/opt/bin:/usr/bin", ANDROID_HOME: "/opt/android-sdk", ADB_SERVER_SOCKET: "tcp:adb.invalid:5037", PHONE_HARNESS_API_KEY: mark("phone-key"), AGENTRUN_UNLISTED_SETTING: "plain" };
   const { computerDeps, factories } = computerDepsFrom({ env, store: memoryStore(), sealKey: undefined, kinds: KINDS, load: async (id, options) => (built.push([id, options]), {}) });
   await computerDeps.providers["phone-harness"]({}, { ledger: {} });
   await factories["phone-harness"]({});
   assert.deepEqual(built.map(([id]) => id), ["phone-harness", "phone-harness"], "the claim's and Settings → Computers' alike");
-  for (const [, options] of built) assert.deepEqual(options.env, { PHONE_HARNESS_APKS: apks });
+  for (const [, options] of built) assert.deepEqual(options.env, { PHONE_HARNESS_APKS: apks, PATH: "/opt/bin:/usr/bin", ANDROID_HOME: "/opt/android-sdk" });
 });
 
 test("every remote provider is built with the server's dial, the one the server holds, and a local one with none; a runner of its own process gives none", async () => {

@@ -16,6 +16,7 @@ import { queued, registryPin, storeOn } from "./store-helpers.mjs";
 const listed = ({ inputSchema, ...tool }) => ({ ...tool, input_schema: inputSchema });
 const { mcpClaim } = await import("../dist/runner/mcp-claim.js");
 const { mcpGateway } = await import("../dist/mcp-gateway.js");
+const { keepText } = await import("../dist/runner/redact.js");
 const { GITHUB_UNUSABLE } = await import("../dist/runner/mcp-github.js");
 
 const HOUR = 3_600_000;
@@ -67,7 +68,7 @@ async function setUp(t, { answers = [] } = {}) {
   const claimOf = (access = { mint, target: { installation: 7, repo: "acme/widgets" } }) =>
     // The fake MCP server stands in for GitHub's hosted one (githubMcpOrigin, the claim's test-only seam).
     mcpClaim({ store, claim, grants: ["mcp:gh/add"], sealKey: KEY, signal: new AbortController().signal, now: () => clock.now, githubApp: access, githubTimer, githubMcpOrigin: new URL(fake.url).origin });
-  const call = (step) => mcpGateway({ pin: step.pin, credentials: step.credentials, work: () => work }).call("gh", "add", { a: 1, b: 1 }, { signal: new AbortController().signal });
+  const call = (step) => mcpGateway({ redact: keepText, pin: step.pin, credentials: step.credentials, work: () => work }).call("gh", "add", { a: 1, b: 1 }, { signal: new AbortController().signal });
   return { store, clock, fake, seen, valid, mints, timers, to, claimOf, call, mint, work };
 }
 const bearer = (step) => step.credentials.gh?.headers?.authorization;
@@ -91,7 +92,7 @@ test("G2: a run past 55 minutes has its token minted again once, mid-run, and it
   const { clock, fake, seen, valid, mints, to, claimOf, call, work } = await setUp(t);
   const step = await claimOf();
   // One gateway built at the claim, as the run's is, and used after the token was minted again.
-  const gateway = mcpGateway({ pin: step.pin, credentials: step.credentials, work: () => work });
+  const gateway = mcpGateway({ redact: keepText, pin: step.pin, credentials: step.credentials, work: () => work });
   await step.fresh();
   assert.equal(mints.length, 1, "a fresh() while the token has more than five minutes left mints nothing");
   await to(clock.now + 55 * 60_000);

@@ -37,10 +37,11 @@ import { agentDirName, runKey } from "./workspace/paths.js";
 import { runDiskOf } from "./workspace/run-disk.js";
 import { isWorkspaceError, type Workspace, WorkspaceError } from "./workspace/index.js";
 import {
-  answerOf, copyFilesInto, type FileUploadAnswer, INPUTS_DIR, isUploadedFile, MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, mismatchOf, pathProblem, readyFilesOf, type Received, reservation, sentInOneCall, slots,
+  answerOf, copyFilesInto, type FileRecord, fileSeen, type FileUploadAnswer, recordText, INPUTS_DIR, isUploadedFile, MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, mismatchOf, pathProblem, readyFilesOf, type Received, reservation, sentInOneCall, slots,
   type UploadedFile, type UploadStore,
 } from "./uploads.js";
 import { uuidv7 } from "./ids.js";
+import { workspaceNow } from "./workspace-scope.js";
 
 /** The folder of the uploads disk the files are kept under. */
 export const UPLOADS_KEY = "files";
@@ -120,6 +121,10 @@ export class WorkspaceUploads implements UploadStore {
   }
 
   async get(id: string): Promise<UploadedFile | null> {
+    return fileSeen(await this.kept(id));
+  }
+
+  private async kept(id: string): Promise<FileRecord | null> {
     if (!ID.test(id)) return null;
     let text: string;
     try {
@@ -169,7 +174,7 @@ export class WorkspaceUploads implements UploadStore {
         const file: UploadedFile = { file_id: uuidv7(now), path, size_bytes: size, content_type: contentType, sha256, status: "ready", created_at: new Date(now).toISOString(), expires_at: null };
         try {
           await this.workspace.write(`${file.file_id}/${BYTES}`, bytes);
-          await this.workspace.write(`${file.file_id}/${RECORD}`, `${JSON.stringify(file)}\n`);
+          await this.workspace.write(`${file.file_id}/${RECORD}`, recordText(file, workspaceNow()));
         } catch (error) {
           await this.drop(file.file_id);
           throw error;
@@ -183,7 +188,7 @@ export class WorkspaceUploads implements UploadStore {
 
   async reserve(body: Json): Promise<FileUploadAnswer> {
     const file = reservation(body, archilPathProblem);
-    await this.workspace.write(`${file.file_id}/${RECORD}`, `${JSON.stringify(file)}\n`);
+    await this.workspace.write(`${file.file_id}/${RECORD}`, recordText(file, workspaceNow()));
     return answerOf(file);
   }
 
@@ -196,7 +201,8 @@ export class WorkspaceUploads implements UploadStore {
     if (wrong) throw wrong;
     return await this.exclusive(id, async () => {
       // Read again: another PUT may have made it ready meanwhile, or a DELETE removed it.
-      const now = await this.get(id);
+      const record = await this.kept(id);
+      const now = fileSeen(record);
       if (!now) throw new ApiError("not_found", `no file ${id}: it was deleted while its bytes arrived`);
       if (now.status === "ready") {
         const other = mismatchOf(now, size, sha256);
@@ -205,13 +211,13 @@ export class WorkspaceUploads implements UploadStore {
       }
       await this.workspace.write(`${id}/${BYTES}`, bytes);
       const ready: UploadedFile = { ...now, sha256, status: "ready" };
-      await this.workspace.write(`${id}/${RECORD}`, `${JSON.stringify(ready)}\n`);
+      await this.workspace.write(`${id}/${RECORD}`, recordText(ready, record?.workspace));
       return ready;
     });
   }
 
   readyFiles(ids: readonly unknown[]): Promise<UploadedFile[]> {
-    return readyFilesOf(ids, (id) => this.get(id), archilPathProblem);
+    return readyFilesOf(ids, async (id) => fileSeen(await this.kept(id)), archilPathProblem);
   }
 
   /** File `file`'s bytes. */

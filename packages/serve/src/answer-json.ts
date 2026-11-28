@@ -1,4 +1,5 @@
-// An answer's structured part: the last fenced `json` block of a final answer, parsed, and checked against an agent's
+// An answer's structured part: the last fenced `json` block of a final answer (or the whole answer when it is one JSON
+// object and nothing else), parsed, and checked against an agent's
 // output schema (definition.output_schema). The one reader of it: a completed agentic run's result.output (store-view.ts)
 // and a template eval's target graders (template-eval.ts) read an answer's JSON alike. The runner tells the
 // model the schema (outputContract, in every harness's system prompt) and asks once more on a miss (outputRetryWords,
@@ -23,9 +24,24 @@ export function lastJsonBlock(text: string): string | undefined {
   return found;
 }
 
-/** The answer's last fenced json block, parsed, or why there is none. */
+/** An answer's json block: its last fenced `json` block, else the whole answer when its trimmed text is one JSON object
+ *  and nothing else (a reply that is the object alone). The one rule every reader of an answer's JSON keeps: a run's
+ *  output, a template eval's target and its grader's verdict. */
+export function jsonBlockOf(text: string): string | undefined {
+  const fenced = lastJsonBlock(text);
+  if (fenced !== undefined) return fenced;
+  const whole = text.trim();
+  if (!whole.startsWith("{")) return undefined;
+  try {
+    return isObject(JSON.parse(whole)) ? whole : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The answer's json block (jsonBlockOf), parsed, or why there is none. */
 export function answerJson(answer: string): { value: unknown } | { why: string } {
-  const block = lastJsonBlock(answer);
+  const block = jsonBlockOf(answer);
   if (block === undefined) return { why: "the answer has no fenced json block" };
   try {
     return { value: JSON.parse(block) };
@@ -85,7 +101,7 @@ export function outputMiss(answer: string, schema: unknown): string | undefined 
   return "why" in read ? read.why.replace(MISSES, "") : undefined;
 }
 
-/** A final answer's structured part against an agent's output schema: the value of its last fenced json block when it
+/** A final answer's structured part against an agent's output schema: the value of its json block (jsonBlockOf) when it
  *  meets the schema, else why not (no block, not JSON, the first problems against the schema). */
 export function structuredAnswer(answer: string, schema: unknown): { value: unknown } | { why: string } {
   const compiled = schemaCheck(schema);

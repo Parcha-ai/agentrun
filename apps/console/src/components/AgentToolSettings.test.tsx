@@ -108,7 +108,7 @@ describe("AgentEditor, an agent's tool settings", () => {
     const agent: Agent = { ...base, definition: { ...base.definition, model: "anthropic/claude-sonnet-5" } };
     const page = await open(agent);
     expect(page.row("web_search")!.textContent).toContain("pi: native");
-    await page.click(/Harness, thinking and model/);
+    await page.click(/Model & runtime/);
     const model = page.host.querySelector<HTMLInputElement>('input[placeholder="provider/model"]')!;
     await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(model, "openai/gpt-x"); model.dispatchEvent(new Event("input", { bubbles: true })); });
     await page.click(/What this agent can do/);
@@ -216,6 +216,35 @@ describe("AgentEditor, tool settings around a save and a stale read", () => {
     expect(page.row("web_search")!.textContent).not.toContain("pi: Parallel");
     // Capabilities' word, read with the provider the select shows.
     expect(page.row("web_search")!.textContent).toContain("pi: Exa keyless");
+  });
+});
+
+// The agent's own Jev switch on its web tools: off writes `jev: "off"` on web_search, on takes it off either web tool.
+describe("AgentEditor, an agent's Jev switch", () => {
+  const jev = (host: HTMLElement) => host.querySelector<HTMLButtonElement>('section[aria-label="Tool settings"] button[role="switch"][aria-label="Jev ranks web results"]');
+
+  it("is on by default for an agent with a web tool; turned off, the save writes jev off on web_search", async () => {
+    const page = await open(agentWith());
+    expect(jev(page.host)?.getAttribute("aria-checked")).toBe("true");
+    await act(async () => { jev(page.host)!.click(); });
+    expect(jev(page.host)!.getAttribute("aria-checked")).toBe("false");
+    await page.click(/^Save revision$/);
+    expect(page.saves[0].tool_settings).toEqual({ web_search: { jev: "off" } });
+  });
+
+  it("reads off from either web tool; turned on, the save takes jev off both and keeps the provider", async () => {
+    const page = await open(agentWith({ web_search: { provider: "parallel" }, web_fetch: { jev: "off" } }, "parallel"));
+    expect(jev(page.host)!.getAttribute("aria-checked")).toBe("false");
+    await act(async () => { jev(page.host)!.click(); });
+    await page.click(/^Save revision$/);
+    expect(page.saves[0].tool_settings).toEqual({ web_search: { provider: "parallel" } });
+  });
+
+  it("is not shown for an agent with no web tool", async () => {
+    const base = agentWith();
+    const agent: Agent = { ...base, definition: { ...base.definition, tools: ["read"] }, tools: [base.tools![0]!] };
+    const page = await open(agent);
+    expect(jev(page.host)).toBeNull();
   });
 });
 

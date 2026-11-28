@@ -43,6 +43,16 @@ let n = 0;
 /** A fresh directory under the tests' own. */
 export const scratch = () => mkdtempSync(join(ROOT, `t${n++}-`));
 
+/** What each style's shipped recipe says about our tools' permission requests: Cursor's declares the title tie
+ *  (quirks.permissionTie), Goose's writes its permission file (allowFile), so Goose asks nothing for our tools. A test
+ *  that wants neither passes `{ quirks: undefined }` or `{ allowFile: undefined }`. Each names its calls by the field its
+ *  shipped recipe declares (announces). */
+export const GOOSE_ALLOW_FILE = Object.freeze({ path: '.config/goose/permission.yaml', form: 'goose-permission' });
+export const GOOSE_ANNOUNCES = Object.freeze({ tool: '_meta.goose.toolCall.toolName' });
+export const CURSOR_ANNOUNCES = Object.freeze({ tool: 'rawInput.toolName', server: 'rawInput.providerIdentifier', args: 'rawInput.args' });
+export const AGY_ANNOUNCES = Object.freeze({ tool: 'name', prefix: 'mcp_agentrun_', extras: Object.freeze(['toolSummary']) });
+const shipped = (style) => (style === 'cursor' ? { announces: CURSOR_ANNOUNCES, quirks: { permissionTie: 'title' } } : style === 'antigravity' ? { announces: AGY_ANNOUNCES, quirks: { permissionTie: 'title' } } : { announces: GOOSE_ANNOUNCES, allowFile: GOOSE_ALLOW_FILE });
+
 /** The fake agent as a recipe: its config written to `dir`. `fake`: the fake's config (fake-acp-agent.mjs). */
 export function fakeRecipe(dir, fake, recipe = {}) {
   const file = join(dir, `fake-${n++}.json`);
@@ -56,6 +66,7 @@ export function fakeRecipe(dir, fake, recipe = {}) {
     state: ['.fake-acp'],
     declares: { load: fake.load ?? true, mcp: (fake.http ?? true) ? 'http' : 'stdio' },
     billing: { kind: 'plan', maxTurns: 50, maxToolCalls: 50 },
+    ...shipped(fake.style ?? 'goose'),
     ...recipe,
     countFile,
   };
@@ -73,8 +84,9 @@ export function tool(name, run, replay = 'never') {
 }
 
 /** A session of `recipe` on `store` (default a new in-memory one) under key s1, its events collected. `adapter`: one
- *  already made (Cursor's own, on its real binary), in place of an ACP adapter of `recipe`. */
-export async function openSession(t, recipe, { store = memorySessionStore(), tools = [], gate, sessionsDir, system = [], options = {}, signal, adapter: made } = {}) {
+ *  already made (Cursor's own, on its real binary), in place of an ACP adapter of `recipe`. `cwd`: the
+ *  session's work directory (the drive's), in place of one in its own folder. */
+export async function openSession(t, recipe, { store = memorySessionStore(), tools = [], gate, sessionsDir, system = [], options = {}, signal, adapter: made, cwd } = {}) {
   const { countFile: _, ...plain } = recipe ?? {};
   const adapter = made ?? acpAdapter({ recipe: plain, sessionsDir: sessionsDir ?? join(scratch(), 'sessions'), ...options });
   const events = [];
@@ -85,6 +97,7 @@ export async function openSession(t, recipe, { store = memorySessionStore(), too
     signal: signal ?? controller.signal,
     onEvent: (event) => events.push(event),
     ...(gate ? { gate } : {}),
+    ...(cwd ? { cwd } : {}),
   };
   const session = await adapter.open({ key: 's1', label: 'root', system, tools, context: 'fresh' }, io);
   t.after(() => session.close());

@@ -1,7 +1,7 @@
 // The janitor against a fake provider: no Docker needed.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ownerLabels, sweep } from "../dist/index.js";
+import { ownerLabels, releaseUnheld, sweep } from "../dist/index.js";
 
 const NOW = new Date("2026-11-06T12:00:00.000Z");
 const at = (ms) => new Date(NOW.getTime() + ms);
@@ -298,4 +298,51 @@ test("sweep() of a provider with sweepLeftovers removes what its computers left 
 	assert.equal(failed.ok, false);
 	assert.deepEqual([failed.error.code, failed.error.vendor], ["vendor", "docker"]);
 	assert.match(failed.error.message, /deleted past.*could not remove what its computers left behind: docker volume rm x failed/);
+});
+
+test("releaseUnheld() records each computer before its release is sent and again once it answers, before the next is sent; one whose record before throws is not released and is named in failed, and one whose release fails is never told released", async () => {
+	const run = { "agentrun.run": "run-1", "agentrun.epoch": "1" };
+	const { provider, calls } = fakeProvider(
+		[
+			{ name: "a", deadline: at(60_000), labels: run },
+			{ name: "b", deadline: at(60_000), labels: run },
+			{ name: "c", deadline: at(60_000), labels: run },
+			{ name: "d", deadline: at(60_000), labels: run },
+		],
+		{ lifetime: "vendor", failRelease: ["d"] },
+	);
+	const swept = await releaseUnheld(provider, "run-1", 1, () => false, {
+		releasing: async ({ ref }) => {
+			calls.push(["releasing", ref.name]);
+			if (ref.name === "b") throw new Error("the store refused the write");
+		},
+		released: async ({ ref, labels }) => {
+			assert.deepEqual(labels, run);
+			calls.push(["released", ref.name]);
+		},
+	});
+	assert.equal(swept.ok, true, JSON.stringify(swept));
+	assert.deepEqual(calls.slice(1), [
+		["releasing", "a"],
+		["release", "a", "delete"],
+		["released", "a"],
+		["releasing", "b"],
+		["releasing", "c"],
+		["release", "c", "delete"],
+		["released", "c"],
+		["releasing", "d"],
+		["release", "d", "delete"],
+	]);
+	assert.deepEqual(swept.value.released.map(({ ref }) => ref.name), ["a", "c"]);
+	assert.deepEqual(swept.value.failed, [
+		{ ref: { id: "id-b", name: "b" }, problem: "its release was not sent, as what books its time could not be saved first: the store refused the write" },
+		{ ref: { id: "id-d", name: "d" }, problem: "cannot remove d" },
+	]);
+});
+
+test("releaseUnheld() ends with the error of a record after a release that throws, the computers after it not released", async () => {
+	const run = { "agentrun.run": "run-1", "agentrun.epoch": "1" };
+	const { provider, calls } = fakeProvider([{ name: "a", deadline: at(60_000), labels: run }, { name: "b", deadline: at(60_000), labels: run }], { lifetime: "vendor" });
+	await assert.rejects(releaseUnheld(provider, "run-1", 1, () => false, { released: async () => { throw new Error("the ledger is gone"); } }), /the ledger is gone/);
+	assert.deepEqual(calls.filter(([op]) => op === "release").map(([, name]) => name), ["a"]);
 });

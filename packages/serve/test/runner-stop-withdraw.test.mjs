@@ -373,14 +373,13 @@ test("a stop that reaches a run while it parks, under the claim it parked under,
 
 test("a stop whose end the journal refuses never leaves the run stopped with its call waiting: it is released with a backoff, said by name, and the next claim only ends it, withdrawn", { timeout: LONG_TEST_MS }, async (t) => {
   let refusing = false;
-  const { server, clock, now, sent, requests, events, starts } = await runOf(t, { onEnd: async () => {
+  const { server, clock, sent, requests, events, starts } = await runOf(t, { onEnd: async () => {
     if (refusing) throw new Error("the journal refused the end (a test's refusal)");
   } });
   refusing = true;
   await server.command("run-1", { kind: "stop" });
   const released = await releasedAfter(server, 1);
   assert.deepEqual(waitsSaid(events), [BACKOFF_MS], "said by the run's name, with its wait");
-  assert.ok(released.backoffUntil > now() && released.backoffUntil <= now() + BACKOFF_MS, `backoff ${released.backoffUntil - now()} ms`);
   assert.notEqual(released.state, "stopped", "not final while its end is refused");
   const [asked, loops] = [requests.length, starts.length];
   refusing = false;

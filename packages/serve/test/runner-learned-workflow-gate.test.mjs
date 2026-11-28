@@ -17,6 +17,7 @@ import { linkHarnesses } from "./support.mjs";
 import { landWorkflows, promoteChecked, startAt } from "./learned-workflow-seed-support.mjs";
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const { OPENCODE_STANDIN_ENV } = await import("../dist/adapters.js");
 const { LEARNED_WORKFLOW_TOOL } = await import("../dist/learned-workflow.js");
@@ -38,16 +39,16 @@ async function callFetch(spec) {
 }
 
 /** pi's spec for a run whose agent learned fetch-one, its revision's tool settings `toolSettings`, the server's `settings`. */
-async function piSpec(t, { toolSettings, settings } = {}) {
+async function piSpec(t, { toolSettings, settings, flows = FLOWS, granted = GRANTED } = {}) {
   const launch = {};
   return specFor(t, {
-    body: { learning: true, tools: GRANTED, ...(toolSettings ? { toolSettings } : {}) },
+    body: { learning: true, tools: granted, ...(toolSettings ? { toolSettings } : {}) },
     ...(settings ? { settings } : {}),
     launch,
     ledger,
     before: async (server, _key, dir) => {
-      launch.learning = startAt(await landWorkflows(dir, AGENT, FLOWS));
-      await promoteChecked(server.settings, AGENT, FLOWS);
+      launch.learning = startAt(await landWorkflows(dir, AGENT, flows));
+      await promoteChecked(server, AGENT, flows);
     },
   });
 }
@@ -67,7 +68,7 @@ async function codexSpec(t, { toolSettings }) {
     rmSync(dir, { recursive: true, force: true });
   });
   const sha = await landWorkflows(dir, AGENT, FLOWS);
-  await promoteChecked(server.settings, AGENT, FLOWS);
+  await promoteChecked(server, AGENT, FLOWS);
   await server.agents.create({ id: AGENT, name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", harness: "codex", tools: GRANTED, learning: true, toolSettings } });
   const launch = { input: { content: "Fetch it." }, title: "t", place: { mode: "runner" }, harness: "codex", model: { provider: "openai", modelId: "gpt-6.1-sol" }, learning: startAt(sha) };
   await server.runs.create({ id: "run-1", agentId: AGENT, revisionId: "rev-1" }, { body: launch });
@@ -80,7 +81,7 @@ async function codexSpec(t, { toolSettings }) {
   await harnessRun.commit((tx) => tx.createRootConversation(), ctx);
   const env = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [STAND_IN] }) };
   const deps = { env, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf: async () => assert.fail("no pi route"), computerForClaim: async () => ({ release: async () => {} }) };
-  built = await cliRunSpecFromLaunch(launch, { harness: harnessRun, registry, setModels: (given) => (models = given), ledger }, deps, claim);
+  built = await cliRunSpecFromLaunch(launch, { redact: heldRedactor((text) => text), harness: harnessRun, registry, setModels: (given) => (models = given), ledger }, deps, claim);
   return built;
 }
 
@@ -115,4 +116,54 @@ test("pi: a tool the server sets to deny after the run was claimed is refused as
   assert.equal(out.isError, true, out.text);
   assert.match(out.text, /The learned workflow fetch-one failed: .*web_fetch/, out.text);
   assert.match(out.text, /deny|denied/i, out.text);
+});
+
+// A call node's arguments are held as the agent's own call of its tool is: a path one names in the folder an MCP tool's
+// file setting files its answers in is refused before the tool runs, in the gate's words (tool-gate.ts filedRefusal), as
+// the agent's own read there is. pdf_pages is the one call node tool that opens a run file.
+const PAGES = { v: 2, name: "pages-one", schemas: { In: { type: "object", properties: { path: { type: "string" } }, required: ["path"] }, Pages: { type: "object" } }, input: { schemaId: "In" }, output: { schemaId: "Pages", path: "pages" }, root: { node: "call", label: "draw", via: "tool", tool: "pdf_pages", args: { path: "{path}" }, out: "Pages", as: "pages", deadline_s: 30 } };
+const FILED_KEY = "mcp:stripe/list_charges";
+const FILED = { [FILED_KEY]: { file: { folder: "stripe/pages", show: ["has_more"] } } };
+
+test("pi: a learned workflow's call node whose path is in a filed folder is refused before its tool runs, in the gate's words; one outside it runs", async (t) => {
+  const { spec } = await piSpec(t, { toolSettings: FILED, flows: [{ name: "pages-one", description: "Draws a PDF's pages", workflow: PAGES }], granted: ["read", "pdf_pages"] });
+  const tool = spec.session.tools.find((one) => one.name === LEARNED_WORKFLOW_TOOL);
+  assert.ok(tool, `the run lists learned_workflow: ${JSON.stringify(spec.session.tools.map(({ name }) => name))}`);
+  const call = (path, id) => tool.call({ name: "pages-one", input: { path } }, { callId: id, signal: new AbortController().signal });
+  for (const [path, id] of [["stripe/pages/list_charges-1.json", "c-1"], ["Stripe/Pages/a.pdf", "c-2"], ["notes/../stripe/pages/a.pdf", "c-3"]]) {
+    const out = await call(path, id);
+    assert.equal(out.isError, true, out.text);
+    assert.match(out.text, new RegExp(`pdf_pages can't be called: ${path.replace(/[.]/g, "\\.")} is in stripe/pages/, the folder this agent's setting for ${FILED_KEY} files that tool's answers in \\(its file setting\\)`), out.text);
+  }
+  // Outside the folder the tool runs: no such PDF here, in pdf_pages' own words.
+  const outside = await call("notes/a.pdf", "c-4");
+  assert.equal(outside.isError, true, outside.text);
+  assert.doesNotMatch(outside.text, /can't be called/, outside.text);
+  assert.match(outside.text, /pdf_pages/, outside.text);
+});
+
+// The gate holds a pdf_pages path as pdf_pages opens it (posix.normalize, then the Workspace's relative path), not as the
+// agent's file tools read one: a `~` or `file:` prefix that normalizes away opens the filed folder, so it is refused; one
+// that stays is a folder of that name, and `@` is no prefix to pdf_pages, so those run; an absolute path is pdf_pages' own
+// refusal.
+test("pi: a learned pdf_pages call node's path is held as pdf_pages opens it: a ~ or file: prefix that normalizes into the filed folder is refused", async (t) => {
+  const { spec } = await piSpec(t, { toolSettings: FILED, flows: [{ name: "pages-one", description: "Draws a PDF's pages", workflow: PAGES }], granted: ["read", "pdf_pages"] });
+  const tool = spec.session.tools.find((one) => one.name === LEARNED_WORKFLOW_TOOL);
+  const call = (path, id) => tool.call({ name: "pages-one", input: { path } }, { callId: id, signal: new AbortController().signal });
+  const refused = ["~skip/../stripe/pages/a.pdf", "file:skip/../stripe/pages/a.pdf", "~/../stripe/pages/a.pdf", "file:/../stripe/pages/a.pdf", "~skip/../Stripe/Pages/a.pdf"];
+  for (const [i, path] of refused.entries()) {
+    const out = await call(path, `p-${i}`);
+    assert.equal(out.isError, true, out.text);
+    assert.match(out.text, new RegExp(`pdf_pages can't be called: ${path.replace(/[.~]/g, "\\$&")} is in stripe/pages/, the folder this agent's setting for ${FILED_KEY} files that tool's answers in \\(its file setting\\)`), out.text);
+  }
+  // pdf_pages opens these outside the folder: it runs, and finds no such PDF here, in its own words.
+  for (const [i, path] of ["~skip/stripe/pages/a.pdf", "file:x/stripe/pages/a.pdf", "@stripe/pages/a.pdf"].entries()) {
+    const out = await call(path, `r-${i}`);
+    assert.equal(out.isError, true, out.text);
+    assert.doesNotMatch(out.text, /can't be called/, out.text);
+    assert.match(out.text, /pdf_pages: no file/, out.text);
+  }
+  // An absolute path pdf_pages never opens: it is refused.
+  const absolute = await call("/workspace/stripe/pages/a.pdf", "a-1");
+  assert.equal(absolute.isError, true, absolute.text);
 });

@@ -5,32 +5,33 @@
 // same OpenRouter key Jev's OpenRouter route reads. A node names its provider (`provider: "parallel"`); one that names
 // none is answered by Jev.
 //
-// The server chooses the keys a run needs (decisionKeysFor) and hands them over once, by name, on an inherited pipe
-// (`DECISION_KEY_FD_ENV` names it), at each launch of the run: its workflow's decision providers' keys, and Parallel's
-// where one of its web tools resolves to Parallel (tool-plane.ts); a run that needs none gets no pipe. The run's process
-// reads them once (handedKeys) into its providers and the web tools' Parallel client (web-fetch.ts), and nowhere else;
-// no provider reads a key from the environment. The TypeSafe and Parallel keys never enter a run's environment, which
-// the run's tools and its model's provider read (`ToolHost.env`, a call node's effect): the server drops the variables
-// from the run's process. On the OpenRouter route the Jev key is also the model gateway's key, which the run's process
-// holds for its model nodes.
-import { closeSync, readFileSync } from "node:fs";
+// The keys a run gets (decisionKeysFor): its workflow's decision providers' keys, Parallel's where one of its web tools
+// resolves to Parallel and TypeSafe's where its web tools run Jev (tool-plane.ts handsParallel, handsJevWeb), and no
+// other. The runner's claim reads them from the store and lays them on the claim's own environment
+// (runner/claim-secrets.ts claimSecrets), the `ToolHost.env` its tools and providers read (parallelKeyOf,
+// decisionProvidersIn, web-run.ts jevWebOf), a fresh object per claim, so no run sees another's. The run's shell is
+// never given it (workspace/hands.ts shellEnv is fixed). On the OpenRouter route the Jev key is also the model
+// gateway's key, which the claim holds for its model nodes.
 import { pathToFileURL } from "node:url";
+import { httpsBase } from "@parcha/agentrun-computer";
 import type { DecisionProvider } from "@parcha/agentrun-dsl";
 import { openRouterApp } from "@parcha/agentrun-kernel/host";
+import { JEV_MODEL } from "@parcha/agentrun-web";
+import { WEB_JEV_OFF_ENV, webJevOff } from "./env-switch.js";
 import { FAUX_ENV } from "./model.js";
 import { keyNeeded } from "./key-words.js";
 
 export const JEV_KEY_ENV = "TYPESAFE_API_KEY";
+/** TypeSafe's base in `env`: TYPESAFE_BASE_URL, else TypeSafe's own, held to the rule for a URL a key goes to
+ *  (httpsBase), which throws in words naming the variable and the URL's origin alone. A run's Jev provider and the key's
+ *  check (key-check.ts) both send TYPESAFE_API_KEY to it, so the key goes where it was checked. */
+export const typesafeBase = (env: NodeJS.ProcessEnv) => httpsBase(env.TYPESAFE_BASE_URL?.trim() || "https://api.typesafe.ai", "TYPESAFE_BASE_URL");
 export const JEV_OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY";
 export const PARALLEL_KEY_ENV = "PARALLEL_API_KEY";
 /** The provider a decision node that names none is answered by. */
 export const DEFAULT_DECISION_PROVIDER = "jev";
 /** The adapter a workflow's typed questions run through. */
 export const DECISION_ADAPTER = "runJudge";
-/** Set on a run's process the server hands decision keys: the descriptor's number, never a key. The keys come as one
- *  JSON object of variable name to value, on the first descriptor after the process's stdio and its secrets pipe:
- *  macOS aborts the parent of a spawn with a pipe at 16 or above. */
-export const DECISION_KEY_FD_ENV = "AGENTRUN_SERVE_DECISION_KEY_FD";
 /** Under --faux only: a module whose default export is the fetch Jev's runner sends through, in place of TypeSafe's
  *  API (the tests' fake). */
 export const FAUX_JEV_ENV = "AGENTRUN_SERVE_FAUX_JEV";
@@ -97,14 +98,30 @@ export function decisionKeysOf(env: NodeJS.ProcessEnv): Record<string, string> {
   };
 }
 
-/** What a run's decision keys are for: the providers of its workflow's typed questions (providersNamed), and whether one
- *  of its web tools resolves to Parallel (tool-plane.ts' handsParallel), whose client reads Parallel's key (web-fetch.ts). */
-export type DecisionNeeds = { providers: readonly string[]; parallelWeb: boolean };
+/** What a run's decision keys are for: the providers of its workflow's typed questions (providersNamed), whether one
+ *  of its web tools resolves to Parallel (tool-plane.ts' handsParallel), whose client reads Parallel's key (web-run.ts
+ *  webOf), and whether one of them runs with Jev ranking its results (web-run.ts handsJevWeb), on TypeSafe's key. */
+export type DecisionNeeds = { providers: readonly string[]; parallelWeb: boolean; jevWeb?: boolean };
+
+/** What capabilities' why says of Jev on `tool` under the server's `env`: on, on TypeSafe's route, naming what the tool
+ *  sends TypeSafe (a search: its objective and each result's URL, title, snippet and published date; a fetch given an objective: the
+ *  page's text and the objective); off by AGENTRUN_WEB_JEV_OFF; off with only an OpenRouter key (the web decider runs
+ *  on TypeSafe's route alone). Nothing with no Jev key at all. */
+export function jevWebWhy(env: NodeJS.ProcessEnv, tool: "web_search" | "web_fetch" = "web_search"): string | undefined {
+  if (webJevOff(env)) return `Jev off (${WEB_JEV_OFF_ENV})`;
+  const route = jevRoute(env);
+  if (route === "typesafe") {
+    return tool === "web_search"
+      ? `Jev (${JEV_MODEL}) ranks results against the objective, or the query when none is given; each search sends that and each result's URL, title, snippet and published date to TypeSafe, billed per request on the server's TypeSafe key`
+      : `a fetch given an objective sends the page's text and the objective to TypeSafe for Jev (${JEV_MODEL}) to pick its chunks, billed per request on the server's TypeSafe key; a fetch with none sends TypeSafe nothing`;
+  }
+  return route === "openrouter" ? "Jev off: no TypeSafe key" : undefined;
+}
 
 /** The decision keys the server hands a run's process for `needs`, of those it holds (decisionKeysOf): Jev's by its route
  *  (TypeSafe's, or OpenRouter's), OpenRouter's for an OpenRouter decision node, Parallel's for a Parallel one or for a
- *  web tool that resolves to Parallel. None else: a run with no decision node and no web tool on Parallel gets no
- *  descriptor at all. */
+ *  web tool that resolves to Parallel, TypeSafe's for web tools Jev ranks (`jevWeb`; on TypeSafe's route only). None
+ *  else: a run with no decision node, no web tool on Parallel and no web tool Jev ranks gets no descriptor at all. */
 export function decisionKeysFor(env: NodeJS.ProcessEnv, needs: DecisionNeeds): Record<string, string> {
   const names = new Set<string>();
   for (const id of needs.providers) {
@@ -114,7 +131,20 @@ export function decisionKeysFor(env: NodeJS.ProcessEnv, needs: DecisionNeeds): R
     if (id === "parallel") { const route = parallelRoute(env); if (route) names.add(route === "parallel" ? PARALLEL_KEY_ENV : JEV_OPENROUTER_KEY_ENV); }
   }
   if (needs.parallelWeb) names.add(PARALLEL_KEY_ENV);
+  if (needs.jevWeb && jevRoute(env) === "typesafe") names.add(JEV_KEY_ENV);
   return Object.fromEntries(Object.entries(decisionKeysOf(env)).filter(([name]) => names.has(name)));
+}
+
+/** A stand-in for the model gateway's key, never a key: what decisionsUseGatewayKey sets in its place. */
+const GATEWAY_KEY_PROBE = "agentrun-gateway-key-probe";
+
+/** Whether decisionKeysFor would lay a key for `needs` from the model gateway's key (JEV_GATEWAY_KEY_ENV), were `env` to
+ *  hold one: asked of decisionKeysFor itself with a stand-in in its place, so the answer is this file's rule
+ *  (openRouterKeyEnv: no OpenRouter key of its own and AGENT_MODEL_BASE_URL on openrouter.ai, for a provider that reads an
+ *  OpenRouter key) and never a copy of it. A claim that lays no model key reads the gateway's only where this holds
+ *  (claim-secrets.ts claimSecrets). */
+export function decisionsUseGatewayKey(env: NodeJS.ProcessEnv, needs: DecisionNeeds): boolean {
+  return Object.values(decisionKeysFor({ ...env, [JEV_GATEWAY_KEY_ENV]: GATEWAY_KEY_PROBE }, needs)).includes(GATEWAY_KEY_PROBE);
 }
 
 /** Why Jev does not run here, naming the variable to set. */
@@ -187,62 +217,39 @@ export function decisionModelsNamed(nodes: readonly Record<string, unknown>[]): 
   return out;
 }
 
-/** The keys a per-run process was handed on its pipe, once read: process-wide on purpose, as that process is one run's.
- *  The runner (one process for many claims) never reads the pipe: each claim's keys are in its own environment
- *  (parallelKeyOf, decisionProvidersIn), so nothing here is shared between claims. */
-let keysHanded: Record<string, string> | undefined;
-/** The keys the server handed the run's process, by name: read at the first call and the descriptor closed, and the
- *  same object at every later one (the decision providers' and the web tools'), so the descriptor is read and closed once
- *  whoever asks first. Empty when none were handed, or when the first read failed. */
-export function handedKeys(env: NodeJS.ProcessEnv): Record<string, string> {
-  if (keysHanded) return keysHanded;
-  keysHanded = {};
-  const fd = Number(env[DECISION_KEY_FD_ENV]);
-  if (!Number.isSafeInteger(fd) || fd < 3) return keysHanded;
-  try {
-    const keys: unknown = JSON.parse(readFileSync(fd, "utf8"));
-    return (keysHanded = Object.fromEntries([JEV_KEY_ENV, JEV_OPENROUTER_KEY_ENV, PARALLEL_KEY_ENV].flatMap((name) => (typeof (keys as Record<string, unknown>)?.[name] === "string" ? [[name, (keys as Record<string, string>)[name]]] : []))));
-  } finally {
-    closeSync(fd);
-  }
+
+/** The Parallel key a call's environment holds: in the claim's own environment, where the runner's claim put it
+ *  (claim-secrets.ts). Read from the environment the call is given each time, so a claim's key is its own. */
+export function parallelKeyOf(env: NodeJS.ProcessEnv): string | undefined {
+  return handedKeyOf(env, PARALLEL_KEY_ENV);
 }
 
-/** The Parallel key a call's environment holds: on the pipe where the server handed a per-run process its keys
- *  (`DECISION_KEY_FD_ENV` set: main's run process, handedKeys), else in the claim's own environment, where the runner's
- *  claim put it (claim-secrets.ts). Read from the environment the call is given each time, so a claim's key is its own. */
-export function parallelKeyOf(env: NodeJS.ProcessEnv): string | undefined {
-  if (env[DECISION_KEY_FD_ENV] !== undefined) return handedKeys(env)[PARALLEL_KEY_ENV];
-  return isSet(env[PARALLEL_KEY_ENV]) ? env[PARALLEL_KEY_ENV] : undefined;
+/** The key in the variable `name`, as a claim holds it: in `env`, the claim's own environment (claim-secrets.ts);
+ *  undefined where it holds none. */
+export function handedKeyOf(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  return isSet(env[name]) ? env[name] : undefined;
 }
 
 /** Under --faux only: the fetch the module `env[name]` names, in place of a provider's API (the tests' fake). */
 export const fauxFetch = async (env: NodeJS.ProcessEnv, name: string) =>
   env[FAUX_ENV] && env[name] ? ((await import(pathToFileURL(env[name]).href)) as { default: typeof fetch }).default : undefined;
 
-/** In a run's process: the decision providers its workflow's typed questions are answered by, on the keys the server
- *  handed it (Jev's, Parallel's), and the one a node that names none gets; undefined when it handed none. Called once per
- *  process, on the keys handedKeys read once for it and the web tools alike. The run's judge (`judgeFromProviders`) and its
- *  checks before any node runs take this one registry, so a node's provider and timeoutMs hold, and a node naming a
- *  provider it lacks is refused before the run instead of being asked of another. Each provider sends a request once: one that fails after it
- *  was sent may have been answered and billed, so the decision escalates as interrupted instead of being asked again. */
-export async function decisionProvidersOf(env: NodeJS.ProcessEnv): Promise<{ providers: Record<string, DecisionProvider>; default: string } | undefined> {
-  return decisionProvidersFrom(handedKeys(env), env);
-}
 
 /** In the runner (one process for many runs): a claim's decision providers, built from the decision keys in its own
- *  environment (claim-secrets.ts read them from the store into it), never from a shared pipe or a process-wide cache. The
- *  same providers decisionProvidersOf builds, on the keys the claim's environment holds (decisionKeysOf). */
+ *  environment (claim-secrets.ts read them from the store into it), never from a shared pipe or a process-wide cache. */
 export async function decisionProvidersIn(env: NodeJS.ProcessEnv): Promise<{ providers: Record<string, DecisionProvider>; default: string } | undefined> {
   return decisionProvidersFrom(decisionKeysOf(env), env);
 }
 
 /** The decision providers on the keys `handed` (by name), with each provider's faux fetch read from `env` under --faux: Jev
  *  (TypeSafe's or OpenRouter's route), Parallel (its own API or OpenRouter), and OpenRouter's Decisions models. Undefined
- *  when `handed` names no provider key. The one builder behind decisionProvidersOf (the per-run pipe) and decisionProvidersIn
- *  (the runner's store), so both routes build the same providers. */
+ *  when `handed` names no provider key. */
 async function decisionProvidersFrom(handed: Record<string, string>, env: NodeJS.ProcessEnv): Promise<{ providers: Record<string, DecisionProvider>; default: string } | undefined> {
   const providers: Record<string, DecisionProvider> = {};
-  const jev = handed[JEV_KEY_ENV] !== undefined ? { apiKey: handed[JEV_KEY_ENV] } : handed[JEV_OPENROUTER_KEY_ENV] !== undefined ? { provider: "openrouter" as const, apiKey: handed[JEV_OPENROUTER_KEY_ENV] } : undefined;
+  // TypeSafe's SDK reads TYPESAFE_BASE_URL from the process's environment when given no base, and sends the key there:
+  // on TypeSafe's route the base is always given, read from `env` by the rule a saved key's check takes it by
+  // (typesafeBase), so the key goes where it was checked.
+  const jev = handed[JEV_KEY_ENV] !== undefined ? { apiKey: handed[JEV_KEY_ENV], baseURL: typesafeBase(env) } : handed[JEV_OPENROUTER_KEY_ENV] !== undefined ? { provider: "openrouter" as const, apiKey: handed[JEV_OPENROUTER_KEY_ENV] } : undefined;
   if (jev) {
     const [{ jevProvider }, faux] = await Promise.all([import("@parcha/agentrun-jev"), fauxFetch(env, FAUX_JEV_ENV)]);
     providers.jev = jevProvider({ ...jev, ...(faux ? { fetch: faux } : {}) });

@@ -101,6 +101,11 @@ export const KINDS = {
    *  entry is how that claim knows the run had one when nothing of the earlier claim's is left to let go (a server's
    *  stop, a park): computer-journal.ts hadComputer. Neither a call nor a message, and never on the Timeline. */
   computerMade: "agentrun.computer.made",
+  /** The run's computer is off for the rest of the run (`computer`: its kind): written on the root by the claim's gate at
+   *  the first deny of a call of that computer's own tools (tool-gate.ts RunGate.computerOff), whose refusal said so. A
+   *  later claim of the run starts no computer and refuses each call of its tools short: computer-journal.ts
+   *  computerTurnedOff. Neither a call nor a message, and never on the Timeline. */
+  computerOff: "agentrun.computer.off",
   /** A grade's feedback round (runner/feedback-round.ts): the run opened again on a grade's words, asked no turn of the
    *  job's; its next end's end-of-run turn reads them (`text`, the `round`, whether the grade said right, the workflow a
    *  revision is asked of). Written on the root by the commit that takes the round's steer row. Neither a call nor a
@@ -117,7 +122,7 @@ export const KINDS = {
   learningMerged: "agentrun.learning.merged",
   /** Why a learning run merged nothing, with the run's end. */
   learningDropped: "agentrun.learning.dropped",
-  /** The learning folder could not be reached: the run parks and tries again after a backoff. */
+  /** The learning could not be reached: the run parks and tries again after a backoff. */
   learningUnavailable: "agentrun.learning.unavailable",
   /** A browser hand-over (pi-browser's browser_request_handoff), on the root. The run's browser host commits the ask, the
    *  whole of it (HandoverAsked); its answer is an entry too (HandoverAnswered): the person's (a browser_hand_back row
@@ -128,6 +133,11 @@ export const KINDS = {
    *  `inClaim: true` with `at` (ms): the run waits for the answer in its claim instead (adapter-loop waitInClaim), from
    *  `at`, its commit carrying the row's ASK_PERSON_WAITING summary; `answered: true` clears that summary. */
   personAsked: "agentrun.person.asked",
+  /** A claim's tool hosts did not finish letting the run go (their beforeRelease) within its bound (loop-contract.ts
+   *  releaseBoundMs), on the root: `bound_ms`, `after_ms`, how many hooks there were and how many finished. What they had
+   *  booked by then stands; what they had not is left to the next claim (a browser session's reserve stays held, and its
+   *  reopen books it). Neither a call nor a message, so the reader passes over it. */
+  releaseCut: "agentrun.release.cut",
 } as const;
 
 /** The run row's summary while it waits on the person's answer to its question (ask_person), parked or in its claim: the
@@ -199,6 +209,9 @@ export interface CallStartData {
   readonly parentCallId?: string;
   readonly tool: string;
   readonly input: unknown;
+  /** An SDK learned_workflow start whose input is stored withheld: the workflow it names, one the run was given, as the
+   *  server kept it apart from the input (sdk/runs.ts SdkInbox.workflow_calls). Never the caller's text otherwise. */
+  readonly workflow?: string;
   /** May run again after a crash (it changes nothing outside the run): the tool registry's own flag. */
   readonly replaySafe: boolean;
   /** Written as its CLI's tool bridge's gate asked about it (adapter-loop.ts bridgeGate), before any answer: nothing is sent
@@ -308,8 +321,10 @@ export interface AnswerData {
 }
 
 /** The calls of a tool a run's journal shows (toolCalls): `ran`, the ids run to a good end, and `unnamed`, those pi
- *  recorded with no id; `ended`, every id with a result of any kind (done, an error, a refusal or a deny). */
-export type ToolCalls = { readonly ran: ReadonlySet<string>; readonly unnamed: number; readonly ended: ReadonlySet<string> };
+ *  recorded with no id; `ended`, every id with a result of any kind (done, an error, a refusal or a deny); `args`, each
+ *  call's arguments by its id, for the calls run to a good end: those its start (a CLI's) or its model's tool call (pi's)
+ *  wrote last before that end, never a later one reusing the id. */
+export type ToolCalls = { readonly ran: ReadonlySet<string>; readonly unnamed: number; readonly ended: ReadonlySet<string>; readonly args: ReadonlyMap<string, unknown> };
 
 /** The calls of `tool` `entries` show: a CLI's (agentrun.call.start and its end) and pi's (a pi.tool-result of it), each
  *  call id once, however many records say it. Run to a good end: a CLI's end done, a pi result that is no error. */
@@ -317,23 +332,38 @@ export function toolCalls(entries: readonly { readonly kind: string; readonly da
   const started = new Set<string>();
   const ran = new Set<string>();
   const ended = new Set<string>();
+  const args = new Map<string, unknown>();
+  // Each id's latest arguments not yet run: those a good end then fixes as the call's own. A call reusing an id that
+  // already ran changes nothing, and one whose id a refused or denied call had reads its own.
+  const asked = new Map<string, unknown>();
+  const done = (id: string) => {
+    ran.add(id);
+    if (!args.has(id) && asked.has(id)) args.set(id, asked.get(id));
+  };
   let unnamed = 0;
   for (const entry of entries) {
-    if (entry.kind === KINDS.callStart && (entry.data as CallStartData).tool === tool) started.add((entry.data as CallStartData).callId);
-    else if (entry.kind === KINDS.callEnd && started.has((entry.data as CallEndData).callId)) {
+    if (entry.kind === KINDS.callStart && (entry.data as CallStartData).tool === tool) {
+      started.add((entry.data as CallStartData).callId);
+      asked.set((entry.data as CallStartData).callId, (entry.data as CallStartData).input);
+    } else if (entry.kind === "pi.assistant") {
+      const content = (entry.model as { content?: unknown }[] | undefined)?.[0]?.content;
+      for (const block of Array.isArray(content) ? (content as { type?: unknown; id?: unknown; name?: unknown; arguments?: unknown }[]) : []) {
+        if (block?.type === "toolCall" && block.name === tool && typeof block.id === "string" && block.id) asked.set(block.id, block.arguments);
+      }
+    } else if (entry.kind === KINDS.callEnd && started.has((entry.data as CallEndData).callId)) {
       ended.add((entry.data as CallEndData).callId);
-      if ((entry.data as CallEndData).status === "done") ran.add((entry.data as CallEndData).callId);
+      if ((entry.data as CallEndData).status === "done") done((entry.data as CallEndData).callId);
     } else if (entry.kind === "pi.tool-result") {
       const result = (entry.model as { toolName?: unknown; toolCallId?: unknown; isError?: unknown }[] | undefined)?.[0];
       if (result?.toolName !== tool) continue;
       const id = typeof result.toolCallId === "string" && result.toolCallId ? result.toolCallId : undefined;
       if (id) ended.add(id);
       if (result.isError === true) continue;
-      if (id) ran.add(id);
+      if (id) done(id);
       else unnamed++;
     }
   }
-  return { ran, unnamed, ended };
+  return { ran, unnamed, ended, args };
 }
 
 /** How many calls of `tool` `entries` show run to a good end (toolCalls): a call refused, denied, failed or not ended is

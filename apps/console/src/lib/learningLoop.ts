@@ -56,8 +56,10 @@ export function markersOf(runs: readonly CostRun[], records: readonly Promotion[
 export const counted = (r: CostRun) => r.path !== "replay";
 
 /** How often the workflow handed the run back since it took over: the server's count over every run since (the cost
- *  summary's `hand_backs`), never the latest runs a read lists. Null before a takeover or with none since. */
-export const handBacksOf = (cost: Pick<LearningCost, "summary"> | null): { ran: number; back: number } | null =>
+ *  summary's `hand_backs`), never the latest runs a read lists. `back` counts only the hand-backs the workflow made
+ *  itself; `cut`, the runs a restart cut mid-call (handed back too, no judgment of the workflow's). Null before a
+ *  takeover or with none since. */
+export const handBacksOf = (cost: Pick<LearningCost, "summary"> | null): { ran: number; back: number; cut: number } | null =>
   cost?.summary.hand_backs?.ran ? cost.summary.hand_backs : null;
 
 /** The newest promotion record of one revision (`workflow` at `digest`): what it is now. */
@@ -86,9 +88,16 @@ export function standingOf(...args: Parameters<typeof standingBase>): Standing {
 }
 
 /** The digest of `workflow` the money rule stopped running first (the cost read's `needs_revision`: over its last runs it
- *  cost as much as the agent by hand), or null. */
+ *  cost as much as the agent by hand, or no run by hand has a known cost to hold it to), or null. */
 export const stoppedOf = (cost: Pick<LearningCost, "workflows"> | null, workflow: string): string | null =>
   cost?.workflows.find((one) => one.workflow === workflow && one.state === "needs_revision")?.digest ?? null;
+
+/** Why the money rule stopped `workflow` running first, in words after "no longer runs first: " (the cost read's
+ *  `reason`). */
+const stopWords = (cost: Pick<LearningCost, "workflows"> | null, workflow: string): string =>
+  cost?.workflows.find((one) => one.workflow === workflow && one.state === "needs_revision")?.reason === "no_by_hand_cost"
+    ? "no run by hand has a known cost to hold it to"
+    : "it cost as much as the agent by hand";
 
 /** What a promotion record was decided on, in a few words beside "Promoted" or "Serving": "checked on 18 inputs · 9
  *  alone" (the inputs of the agent's own runs its one check ran on, and how many it answered alone); null for one still
@@ -147,7 +156,7 @@ export function storyOf(input: {
   const challenger = now?.replaying ? `revision ${now.replaying.slice(0, 7)} is checked on the inputs of its agent's own runs before it serves` : newest?.decided === "hold" && newest.digest !== champion ? `revision ${newest.digest.slice(0, 7)} was held: ${replayLine(newest)}` : null;
   // The champion the money rule stopped running first (the cost read's needs_revision): no promotion record says so.
   const stopped = champion !== null && newest ? stoppedOf(cost, newest.workflow) === champion : false;
-  const stoppedLine = stopped ? `revision ${champion!.slice(0, 7)} no longer runs first: it cost as much as the agent by hand; the agent takes its runs` : null;
+  const stoppedLine = stopped ? `revision ${champion!.slice(0, 7)} no longer runs first: ${stopWords(cost, newest!.workflow)}; the agent takes its runs` : null;
   const servingLine = stoppedLine ? (challenger ? `${stoppedLine}; ${challenger}` : stoppedLine) : champion && challenger ? `revision ${champion.slice(0, 7)} serves; ${challenger}` : null;
   const stages: Stage[] = [];
   stages.push({
@@ -188,7 +197,10 @@ export function storyOf(input: {
     // The after side is the runs the workflow served (alone or handed back), never its replays: said with its count.
     const words = `${level(s.before.mean_usd)} a run by the agent, ${level(s.after.mean_usd)} all-in over the ${s.after.runs === 1 ? "1 run" : `${s.after.runs} runs`} it served since`;
     const ratio = s.times_cheaper;
-    if (ratio !== null && ratio > 1) stages.push({ key: "cheaper", title: "Cheaper", ...cheaperClaim(s, ratio), state: "done" });
+    // A held revision serves no more: its own check is what the card can say of it. A revision its first check held
+    // carries that check on the hold record; one its audits held after it served, on its earlier promotion.
+    const held = newest?.decided === "hold" ? (newest.check?.n ? newest.check : promotions.findLast((p) => p.workflow === newest.workflow && p.digest === newest.digest && p.decided === "promote" && p.check?.n)?.check) : undefined;
+    if (ratio !== null && ratio > 1) stages.push({ key: "cheaper", title: "Cheaper", ...cheaperClaim(s, ratio, held), state: "done" });
     // times_cheaper is rounded by the server (0.03 reads as 0), so the increase comes from the two means.
     else if (ratio !== null) stages.push({ key: "cheaper", title: "Cheaper", value: ratio < 1 ? (s.before.mean_usd > 0 ? `Not cheaper yet: ${timesOf(s.after.mean_usd / s.before.mean_usd)} the cost` : "Not cheaper yet") : "Same cost", detail: words, state: "now" });
     else stages.push({ key: "cheaper", title: "Cheaper", value: `${s.after.runs} served ${s.after.runs === 1 ? "run" : "runs"} so far`, detail: `${words}; how many times cheaper shows after ${CHEAPER_AFTER} runs`, state: "now" });
@@ -201,10 +213,15 @@ export function storyOf(input: {
     stages.push({ key: "cheaper", title: "Cheaper", value: "Not yet", detail: "no served runs yet: once a workflow takes over, the all-in cost of the runs it serves against before (replays are checks, not served runs)", state: "later" });
   }
   if (back) {
-    stages.push({ key: "unsure", title: "Unsure", value: `${Math.round((back.back / back.ran) * 100)}% handed back`, detail: `of ${back.ran} runs it ran first`, state: back.back / back.ran > 0.25 ? "warn" : "watch" });
+    // Unsure is the workflow's own hand-backs (`back`): a run a restart cut mid-call is said apart, never as unsure.
+    stages.push({ key: "unsure", title: "Unsure", value: `${Math.round((back.back / back.ran) * 100)}% handed back`, detail: `of ${back.ran} runs it ran first${cutWords(back.cut)}`, state: back.back / back.ran > 0.25 ? "warn" : "watch" });
   }
   return stages;
 }
+
+/** The served runs a restart cut mid-call (the cost summary's `hand_backs.cut`), after a count: "; 2 cut by a restart",
+ *  or nothing with none. */
+export const cutWords = (cut: number): string => (cut > 0 ? `; ${cut} cut by a restart` : "");
 
 /** Why the cost summary has no times-cheaper figure (its `withheld`): "3 runs' cost unknown, 1 known only as at most". */
 export function withheldWords(w: { unknown: number; at_most: number }): string {
@@ -215,18 +232,20 @@ export function withheldWords(w: { unknown: number; at_most: number }): string {
 export const WITHHELD_NEXT = "how many times cheaper shows once every run's cost is known";
 
 /** The tab's cheaper headline over a ratio above 1: "Nx cheaper", in the one format the cost chart says it (timesOf),
- *  and what its check showed when the serving champion's check cleared (the cost summary's `replay`): it passed the
- *  agreement check, N of the M inputs it answered alone agreeing with the agent against the bar, and what was served
- *  under it. Never "the same accuracy": passing the bar is all it says. Else the ratio alone, and why accuracy is not
- *  claimed. */
-function cheaperClaim(s: LearningCost["summary"], ratio: number): { value: string; detail: string } {
+ *  and what its check showed. A held revision (`held`, its own check): held, so no agreement is claimed now,
+ *  and its check's N of M agreed against the bar. Else, when the serving champion's check cleared (the cost summary's
+ *  `replay`): it passed the agreement check, N of the M inputs it answered alone agreeing with the agent against the
+ *  bar, and what was served under it. Never "the same accuracy": passing the bar is all it says. Else the ratio alone,
+ *  and why agreement is not claimed. */
+function cheaperClaim(s: LearningCost["summary"], ratio: number, held?: Promotion["check"]): { value: string; detail: string } {
   const n = timesOf(ratio);
+  if (held) return { value: `${n} cheaper`, detail: `agreement not claimed: it was held. Its check: ${held.agreed ?? 0} of ${held.alone ?? 0} agreed (bar ${Math.round(held.agree_min * 100)}%)` };
   const r = s.replay;
   const scored = r ? `workflow ${Math.round(r.workflow_pct)}% vs agent ${Math.round(r.agent_pct)}% on ${r.n} inputs` : "";
   if (r?.cleared) {
-    const served = s.hand_backs ? ` · served ${s.hand_backs.ran} ${s.hand_backs.ran === 1 ? "run" : "runs"}, handed back ${s.hand_backs.back}` : "";
+    const served = s.hand_backs ? ` · served ${s.hand_backs.ran} ${s.hand_backs.ran === 1 ? "run" : "runs"}, handed back ${s.hand_backs.back}${cutWords(s.hand_backs.cut)}` : "";
     return { value: `${n} cheaper`, detail: `Passed the agreement check: ${r.agreed} of ${r.alone} agreed (bar ${Math.round(r.agree_min * 100)}%)${served}` };
   }
-  return { value: `${n} cheaper`, detail: `accuracy not claimed: ${r ? `its check was below the bar (${scored})` : "no check yet"}` };
+  return { value: `${n} cheaper`, detail: `agreement not claimed: ${r ? `its check was below the bar (${scored})` : "no check yet"}` };
 }
 

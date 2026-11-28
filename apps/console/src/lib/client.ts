@@ -5,31 +5,15 @@ import type { ConnectorEnrollment, ConnectorEnrollmentCapabilities, RemoteConnec
 import type { Stats } from "./mission";
 import type { Agent, Definition, SaveWarning } from "./agentForm";
 import type { AgentLearning, Corrections, LearningChange, LearningDiff, LearningFile, LearningProblem, RunLearningResultData, Page } from "./learning";
-import type { ComposioTools, McpAuth, McpPreview, McpRefresh, McpServer } from "./mcp";
+import type { ComposioToolkit, ComposioTools, McpAuth, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Capabilities, HarnessKeys, HarnessOfferView, ChatGPTSignOut, ChatGPTStart, ChatGPTView, ClaudeLoginView, ModelGateway, ModelGatewayBody, ModelGatewayTest, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubRepositories, GitHubStatus, ScanStarted, Suggestion, SuggestionCreated, SuggestionDetail, SuggestionsList, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunningComputers, RunLearningRead, LearningAudits, LearningCost, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, RunTrace, RunUsage, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Slack, SlackAttempt, SlackBody, Webhook, WebhookAttempt, WebhookRotated, WebhookSaved, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
+import type { ApiError, ApiKeyMade, ApiKeys, Wrapped, Capabilities, HarnessKeys, HarnessOfferView, ChatGPTSignOut, ChatGPTStart, ChatGPTView, ClaudeLoginSignOut, ClaudeLoginView, LocalModel, ModelGateway, ModelGatewayBody, ModelGatewayTest, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubRepositories, GitHubStatus, ScanStarted, Suggestion, SuggestionCreated, SuggestionDetail, SuggestionsList, InputIssue, McpPrivateHosts, MarketplaceList, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunningComputers, RunLearningRead, LearningAudits, LearningCost, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, RunTrace, RunUsage, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Slack, SlackAttempt, SlackBody, Webhook, WebhookAttempt, WebhookRotated, WebhookSaved, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
 
-/** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
-/** A refusal's issue at one field, as the server names it (with its `fix`, when it says one). Its `reason` is any string, as
- *  ApiError's `code` is: the server also sends reasons its document does not list yet (an MCP server's `url` "redirect"). */
-export type FieldIssue = InputIssue;
-
-export class ClientError extends Error {
-  /** A 422's issues, by field, as the server names them. */
-  fields?: FieldIssue[];
-  /** A retryable refusal's wait before asking again, when the server named one (a busy store). */
-  retryAfterMs?: number;
-  /** What the server says beyond the message (`error.details`): a 409 `agent_not_runnable` names the box it lacks. */
-  details?: Record<string, unknown>;
-  /** A learning write the server's checks refused (400): each check it fails, printable. */
-  problems?: LearningProblem[];
-  constructor(readonly status: number, readonly code: string, message: string, readonly retryable = false, readonly requestId?: string) {
-    super(message);
-    this.name = "ClientError";
-  }
-  toApiError(): ApiError { return { code: this.code, message: this.message, retryable: this.retryable, request_id: this.requestId, ...(this.details ? { details: this.details } : {}) }; }
-}
+// The refusal type lives in its own module (clientError.ts), so a page that only reads a refusal (the share page, through
+// the Timeline) loads none of the client's routes.
+export { ClientError, type FieldIssue } from "./clientError";
+import { ClientError, type FieldIssue } from "./clientError";
 
 /** A failed request as a page says it: a refusal as the server's `code: message`, any other failure by its message. */
 export const problemOf = (e: unknown) => (e instanceof ClientError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e));
@@ -52,14 +36,21 @@ type NoOffer = { offer: false };
 
 /** A runs list's filter (GET /v2/runs's `status`, `archived` and `label`): runs in one status, the archived runs in place
  *  of the others, and runs holding one `<key>:<value>` label (one per request, as the route takes it). */
-export type RunsFilter = { status?: RunStatus; archived?: boolean; label?: string };
+/** `source`: the runs imported from one source (`claude-code`, ...), or `live` for the runs made here (GET /v2/runs only).
+ *  `from` and `to`: the runs started in [from, to), each an instant with its zone (the console's own dates made instants);
+ *  `model`: the runs that used one model, `provider/model` (GET /v2/runs only). */
+export type RunsFilter = { status?: RunStatus; archived?: boolean; label?: string; source?: string; from?: string; to?: string; model?: string };
 
-const runsQuery = (limit: number, cursor: string | null | undefined, { status, archived, label }: RunsFilter = {}) => {
+const runsQuery = (limit: number, cursor: string | null | undefined, { status, archived, label, source, from, to, model }: RunsFilter = {}) => {
   const q = new URLSearchParams({ limit: String(limit) });
   if (cursor) q.set("cursor", cursor);
   if (status) q.set("status", status);
   if (archived) q.set("archived", "true");
   if (label) q.set("label", label);
+  if (source) q.set("source", source);
+  if (from) q.set("from", from);
+  if (to) q.set("to", to);
+  if (model) q.set("model", model);
   return `?${q}`;
 };
 
@@ -142,7 +133,15 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     signOutEverywhere: () => call<{ signed_out: boolean }>("POST", "/auth/sign-out-everywhere", { body: {} }),
     /** Counts and sums from the server's store, for Mission Control (`GET /v2/stats`, a serve extension). */
     stats: () => call<Stats>("GET", "/stats"),
+    /** GET /v2/wrapped: a year of the work under the machine the server runs on (403 from any other server). */
+    wrapped: (year?: number, signal?: AbortSignal) => call<Wrapped>("GET", `/wrapped${year === undefined ? "" : `?year=${year}`}`, { signal }),
     listRuns: (limit = 50, cursor?: string | null, filter?: RunsFilter) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `/runs${runsQuery(limit, cursor, filter)}`),
+    /** Filtered before pagination; never reads a recent-history page as the active fleet. */
+    listFactoryRuns: (scope: import("./v2").FactoryScope, cursor?: string | null, signal?: AbortSignal) => {
+      const q = new URLSearchParams({ scope, limit: "50" });
+      if (cursor) q.set("cursor", cursor);
+      return call<import("./v2").FactoryRunPage>("GET", `/runs?${q}`, { signal });
+    },
     /** `filter`: one status and the archived runs only, or (the agent page's) just `archived`: the archived runs only (an
      *  archived agent's runs are all archived with it). */
     listAgentRuns: (id: string, limit = 50, cursor?: string | null, filter: RunsFilter | boolean = {}) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `${agent(id)}/runs${runsQuery(limit, cursor, typeof filter === "boolean" ? { archived: filter } : filter)}`),
@@ -190,6 +189,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       return { agent: r.body, etag: r.etag };
     },
     listRevisions: (id: string, cursor?: string | null) => call<{ revisions: { revision: string; version: number; current: boolean; note: string | null; created_at: string; kind: string; definition: Definition }[]; next_cursor: string | null }>("GET", `${agent(id)}/revisions${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
+    /** The complete immutable skill file set for the revision being edited. */
+    getRevisionSkills: (id: string, revision: string) => call<{ revision: string; skills: Record<string, string> }>("GET", `${agent(id)}/revisions/${encodeURIComponent(revision)}/skills`),
     setCurrent: async (id: string, revision: string) => { const r = await call<Agent>("POST", `${agent(id)}/current`, { body: { revision } }); created.delete(id); return r; },
     archiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/archive`, { body: {} }),
     unarchiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/unarchive`, { body: {} }),
@@ -254,8 +255,9 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** Grades an ended run's answer right or wrong (PUT /v2/runs/{id}/grade): a later grade replaces it. The answer says
      *  the feedback round it opened the run again on (`feedback`), if any. */
     gradeRun: (id: string, body: GradeBody) => call<GradeAnswer>("PUT", `${run(id)}/grade`, { body }),
-    /** Starts a run. The server answers 202 with the run; the same key with the same body answers with that same run. */
-    startRun: async (agentId: string, body: { input: unknown; revision?: string; effort?: string; max_cost_usd?: number; file_ids?: string[] }, idempotencyKey: string) => {
+    /** Starts a run. The server answers 202 with the run; the same key with the same body answers with that same run.
+     *  `labels`: the caller's own, set once here (a race's lane carries its race's). */
+    startRun: async (agentId: string, body: { input: unknown; revision?: string; effort?: string; max_cost_usd?: number; file_ids?: string[]; labels?: Record<string, string> }, idempotencyKey: string) => {
       const r = await callTagged<Run>("POST", `${agent(agentId)}/runs`, { body, headers: { "idempotency-key": idempotencyKey } });
       return { run: r.body, status: r.status };
     },
@@ -321,6 +323,9 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     turnOffClaudeLogin: () => call<ClaudeLoginView>("DELETE", "/settings/claude-login"),
     /** Starts the CLI's own sign-in on the server's machine, which opens a browser there. */
     startClaudeLogin: () => call<ClaudeLoginView>("POST", "/settings/claude-login/login"),
+    /** Signs out of AgentRun's own login and turns the mode off: whether all of the login is gone (ClaudeLoginSignOut), and
+     *  the view. */
+    signOutClaudeLogin: () => call<ClaudeLoginSignOut>("POST", "/settings/claude-login/sign-out"),
     /** The model gateway in force: the environment's, the one saved here, or none. Never its key. */
     modelGateway: () => call<ModelGateway>("GET", "/settings/model-gateway"),
     /** Saves the gateway and puts it in force, with no restart. */
@@ -329,6 +334,11 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     removeModelGateway: () => call<ModelGateway>("DELETE", "/settings/model-gateway"),
     /** Asks a gateway which models it lists: the form's address and key when given, else the one in force. */
     testModelGateway: (body: { base_url?: string; api_key?: string | null }) => call<ModelGatewayTest>("POST", "/settings/model-gateway/test", { body }),
+    /** This machine, its Ollama, the free local model recommended for them and the pull here (the owner's session alone; 404
+     *  on a server without it). */
+    localModel: () => call<LocalModel>("GET", "/settings/local-model"),
+    /** Starts pulling the recommended `tag` into the Ollama here; its progress is on localModel. */
+    pullLocalModel: (tag: string) => call<LocalModel>("POST", "/settings/local-model/pull", { body: { tag } }),
     /** Each kind of computer, whether this server offers it and why not, and its providers with their keys by name, never a
      *  value. */
     computers: () => call<Computers>("GET", "/computers"),
@@ -354,6 +364,13 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     archilOff: () => call<Archil>("DELETE", "/workspace/archil"),
     /** One listing of the disk's root with the saved key. */
     testArchil: () => call<ArchilTest>("POST", "/workspace/archil/test"),
+    /** The API keys made for this server's apps, never a key (a serve extension). */
+    apiKeys: () => call<ApiKeys>("GET", "/settings/api-keys"),
+    /** Makes a key named `name`: its value is in the answer (`api_key`), this once. No Idempotency-Key: its record would
+     *  keep the key, and a second POST is a second key. */
+    createApiKey: (name: string) => call<ApiKeyMade>("POST", "/settings/api-keys", { body: { name } }),
+    /** Revokes a key (204): it opens nothing from now on. */
+    revokeApiKey: (id: string) => call<unknown>("DELETE", `/settings/api-keys/${encodeURIComponent(id)}`),
     /** The webhook, never its secret (a serve extension). */
     webhook: () => call<Webhook>("GET", "/settings/webhook"),
     /** Sets the webhook's URL; the first PUT makes its secret and answers it, once (`secret`). */
@@ -408,6 +425,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
      *  nothing; a save with no credential in `auth` keeps the sealed one. */
     /** The templates this server offers. */
     listTemplates: () => call<{ templates: TemplateView[] }>("GET", "/templates"),
+    /** The marketplace's templates, as the server read them: always 200, its `state` saying whether it could. */
+    listMarketplaceTemplates: () => call<MarketplaceList>("GET", "/marketplace/templates"),
     /** Makes a template's agent (and its triggers) under one Idempotency-Key: the same request again answers what it did. */
     applyTemplate: (name: string, body: TemplateApply, idempotencyKey: string) =>
       call<TemplateApplied>("POST", `/templates/${encodeURIComponent(name)}/apply`, { body, headers: { "idempotency-key": idempotencyKey } }),
@@ -425,7 +444,9 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** A change that moves a Composio server off Composio answers `composio` beside it: what it removed there. */
     saveMcpServer: (name: string, url: string, auth: McpAuth, kind: { toolkit?: string | null } = {}) => call<McpServer & { composio?: { removed: boolean; note: string } }>("PUT", mcpServer(name), { body: { url, auth, ...kind } }),
     /** The Composio preset: a toolkit's actions, for the picker (the owner's session alone; the key goes to Composio). */
-    composioTools: (api_key: string, toolkit: string) => call<ComposioTools>("POST", "/settings/mcp-servers/composio/tools", { body: { api_key, toolkit } }),
+    composioTools: (api_key: string, toolkit: string, signal?: AbortSignal) => call<ComposioTools>("POST", "/settings/mcp-servers/composio/tools", { body: { api_key, toolkit }, signal }),
+    /** The Composio preset's toolkit picker: the toolkits Composio offers, by name (the owner's session alone). */
+    composioToolkits: (api_key: string, signal?: AbortSignal) => call<{ toolkits: ComposioToolkit[] }>("POST", "/settings/mcp-servers/composio/toolkits", { body: { api_key }, signal }),
     /** Has Composio make a managed MCP server for the chosen actions and saves it as an MCP server; `connect_url` when the
      *  toolkit needs the person's account connected; `not_served` names chosen actions Composio's server left out. */
     saveComposioServer: (name: string, api_key: string, toolkit: string, tools: string[]) => call<{ server: McpServer; connect_url?: string; not_served?: string[]; composio?: { removed: boolean; note: string } }>("PUT", `${mcpServer(name)}/composio`, { body: { api_key, toolkit, tools } }),

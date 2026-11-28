@@ -17,6 +17,30 @@ test("the owner's ready line on a fresh computer: it's a new one, the one before
   }
 });
 
+test("the owner's ready line on a fresh computer whose kept one another runner still holds and ends: it's a new one, and never that the one before is gone", () => {
+  const held = (kind) => `The ${kind} wasn't kept: another runner kept it and couldn't take the run, so that runner ends it.`;
+  for (const kind of ["desktop", "sandbox", "phone"]) {
+    for (const folderKept of [false, true]) {
+      const folder = folderKept ? " The run folder is kept." : "";
+      const ready = computerReadyWords({ provider: "Docker", kind, hello: HELLO, replaced: { kind, folderKept, elsewhere: true } });
+      assert.doesNotMatch(ready, /is gone/, `the one before is still there for its runner to end, so never said gone: ${ready}`);
+      assert.equal(ready, `The ${kind} is ready: Linux (amd64), from Docker. ${held(kind)} It's a new ${kind}; nothing on the one before comes with it.${folder}`);
+      // Its provider refused it too, and that runner, still there, ends it: said as that runner's, the end the same.
+      const both = computerReadyWords({ provider: "Docker", kind, hello: HELLO, replaced: { kind, folderKept, elsewhere: true, refused: true } });
+      assert.equal(both, ready, `refused, and still there for its runner to end: ${both}`);
+    }
+  }
+});
+
+test("the owner's ready line on a fresh computer whose kept one its provider refused: serve's words, never the provider's; a runner gone says so first", () => {
+  for (const kind of ["desktop", "sandbox", "phone"]) {
+    const refused = computerReadyWords({ provider: "Docker", kind, hello: HELLO, replaced: { kind, folderKept: false, refused: true } });
+    assert.equal(refused, `The ${kind} is ready: Linux (amd64), from Docker. The ${kind} wasn't kept: it couldn't be taken back. It's a new ${kind}: the one before is gone, with what was on it.`);
+    const lost = computerReadyWords({ provider: "Docker", kind, hello: HELLO, replaced: { kind, folderKept: false, lost: true, refused: true } });
+    assert.equal(lost, `The ${kind} is ready: Linux (amd64), from Docker. The ${kind} wasn't kept: the runner that kept it is gone. It's a new ${kind}: the one before is gone, with what was on it.`);
+  }
+});
+
 test("the model's note, each kind and mode, exactly", () => {
   const screen = "AgentRun server note: your computer was replaced. The earlier one is gone, with its screen and refs. Look at the screen again before acting.";
   for (const kind of ["desktop", "phone"]) {

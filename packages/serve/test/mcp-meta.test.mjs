@@ -10,9 +10,10 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { after, before, test } from "node:test";
 import { mcpGateway, mcpPinOf } from "../dist/mcp-gateway.js";
+import { keepText } from "../dist/runner/redact.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { agent, answerFlow, flowAgent, follow, retried, serve as serveOf, startInProcessRunner, withEnv } from "./support.mjs";
-import { DatabaseSync } from "node:sqlite";
+import { raw } from "./store-target.mjs";
 import { join } from "node:path";
 import { openSqliteStore } from "../dist/store/index.js";
 import { STORE_FILE } from "../dist/store/sqlite/store.js";
@@ -185,16 +186,19 @@ test("a revision's pin made before the rule, holding a meta tool, refuses its ru
   const listed = (name) => server.tools.find((tool) => tool.name === name);
   const earlier = { composio: { url: server.url, tools: ["GMAIL_SEND_EMAIL", "COMPOSIO_MULTI_EXECUTE_TOOL"].map((name) => ({ name, inputSchema: listed(name)?.input_schema ?? object })) } };
   assert.deepEqual((await store.mcp.pin(runId)).body.composio.tools.map((tool) => tool.name), ["GMAIL_SEND_EMAIL"], "the save pinned the direct tool alone");
-  const db = new DatabaseSync(join(data, STORE_FILE));
-  db.prepare("UPDATE revisions SET mcp_pin = ? WHERE id = (SELECT revision_id FROM runs WHERE id = ?)").run(JSON.stringify(earlier), runId);
-  db.close();
+  const db = await raw(join(data, STORE_FILE));
+  try {
+    await db.run("UPDATE revisions SET mcp_pin = ? WHERE id = (SELECT revision_id FROM runs WHERE id = ?)", JSON.stringify(earlier), runId);
+  } finally {
+    await db.close();
+  }
   // Its launch on a runner is refused at the claim: the run fails in words, and nothing is sent.
   const close = await startInProcessRunner(data);
   t.after(() => close());
   const { last } = await follow(api, runId, ["failed", "completed"], { deadlineMs: 60_000 });
   const view = (await api("GET", `/runs/${runId}`)).body;
   assert.deepEqual([last.status, view.error?.message], ["failed", `mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL can't be granted: ${REASON}`], JSON.stringify(view.error));
-  const gateway = mcpGateway({ pin: { composio: { url: "http://127.0.0.1:9/mcp", tools: [{ name: "COMPOSIO_MULTI_EXECUTE_TOOL", inputSchema: object }] } }, credentials: { composio: { url: "http://127.0.0.1:9/mcp" } }, work: () => data });
+  const gateway = mcpGateway({ redact: keepText, pin: { composio: { url: "http://127.0.0.1:9/mcp", tools: [{ name: "COMPOSIO_MULTI_EXECUTE_TOOL", inputSchema: object }] } }, credentials: { composio: { url: "http://127.0.0.1:9/mcp" } }, work: () => data });
   const said = await gateway.call("composio", "COMPOSIO_MULTI_EXECUTE_TOOL", {}, { signal: new AbortController().signal });
   assert.deepEqual([said.isError, said.content[0].text], [true, `mcp:composio/COMPOSIO_MULTI_EXECUTE_TOOL can't be granted: ${REASON} Nothing was sent.`]);
 });

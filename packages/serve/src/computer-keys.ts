@@ -10,8 +10,10 @@
 // in (workspace/computer-providers.ts makes the computer package's; a test gives stand-ins): a provider with no module
 // here answers that its test is not available. No key is ever in an answer: each value is scrubbed from the provider's
 // words, and the words this module adds name keys only by their names.
-import { PROVIDERS, type ProviderEntry } from "@parcha/agentrun-computer";
+import { type ComputerProvider, PROVIDERS, type ProviderEntry, providerFor, SDK_MISSING } from "@parcha/agentrun-computer";
+import { MIN_SECRET, valueMatcher } from "./learn/secrets.js";
 import { keyShaped } from "./secret-name.js";
+import { hostEnvOf } from "./workspace/computer-providers.js";
 
 /** One key a provider takes: its name in its descriptor, the create() option it fills, and whether it is needed. */
 export interface ProviderKey {
@@ -113,11 +115,34 @@ export function settingOptions(providerId: string, settings: ProviderSettings = 
   return options;
 }
 
-/** `text` with every key value in `values` replaced by "[the key]". */
+/**
+ * Provider `providerId` of the registry, made from what `env` holds by its descriptor's names: its keys (KEY_TABLE, as
+ * providerOptions takes them) and the server's own variables it reads (hostEnv: the gateway a server behind one reaches
+ * the vendor through), as the claim's providers get them (workspace/computer-deps.ts). `fetch` stands in for the
+ * provider's own where it takes one (the tests' fakes under faux). Refused, in words naming what to save, when a required
+ * key is missing; `invalid`, in the provider's words, when it cannot be made from them.
+ */
+export async function providerFromEnv(providerId: string, env: NodeJS.ProcessEnv, { fetch: fetcher }: { fetch?: typeof fetch } = {}): Promise<KeyResult<ComputerProvider>> {
+  const keys = Object.fromEntries((KEY_TABLE.keys[providerId] ?? []).flatMap((key) => (typeof env[key.name] === "string" && env[key.name] !== "" ? [[key.name, env[key.name] as string]] : [])));
+  const options = providerOptions(providerId, keys);
+  if (!options.ok) return options;
+  const names = PROVIDERS.find((one) => one.id === providerId)?.hostEnv;
+  const hostEnv = names ? { env: hostEnvOf(env, names) } : {};
+  try {
+    return { ok: true, value: await providerFor(providerId as never, { ...options.options, ...hostEnv, ...(fetcher ? { fetch: fetcher } : {}) } as never) };
+  } catch (error) {
+    return refused("invalid", scrub(messageOf(error), Object.values(keys)));
+  }
+}
+
+/** `text` with every key value in `values` replaced by "[the key]", or "[the key]" whole where it still holds one of
+ *  MIN_SECRET characters or more in a form no cut in place finds (split by a control character, a terminal sequence, a
+ *  character that shows as a box: the redaction matcher, valueMatcher). */
 function scrub(text: string, values: readonly string[]): string {
   let out = text;
   for (const value of values) if (value.length >= 4) out = out.split(value).join("[the key]");
-  return out;
+  const held = values.filter((value) => value.length >= MIN_SECRET);
+  return held.length > 0 && valueMatcher(held)(out) ? "[the key]" : out;
 }
 
 /** A coded error of a provider's test in plain words: what happened, what to do, and the vendor's own words after. */
@@ -165,6 +190,8 @@ async function builtFrom(providerId: string, keys: Readonly<Record<string, strin
   try {
     return { ok: true, value: { provider: await create(made.options), label, values } };
   } catch (error) {
+    // The vendor's SDK is not installed here: its words name the package and the install step, and nothing else is wrong.
+    if ((error as { code?: unknown } | null)?.code === SDK_MISSING) return refused(SDK_MISSING, scrub(messageOf(error), values));
     return refused("invalid", wordsFor("invalid", providerId, scrub(messageOf(error), values), table));
   }
 }

@@ -12,29 +12,15 @@ const settle = async () => { await act(async () => { await new Promise((r) => se
 const button = (label: string) => [...document.querySelectorAll("button")].find((b) => b.textContent?.trim() === label);
 
 describe("Coding-agent handoffs in the console", () => {
-  it("offers creation destinations directly on the agent list instead of opening the old builder", async () => {
-    const go = vi.fn();
-    const host = document.body.appendChild(document.createElement("div"));
-    root = createRoot(host);
-    await act(async () => { root!.render(createElement(AgentsPage, { v2: { listAgents: async () => ({ agents: [], next_cursor: null }) } as never, archived: false, go })); });
-    expect(button("Build an agent")).toBeDefined();
-    await act(async () => { button("Build an agent")!.click(); });
-    expect(document.querySelector('[role="menu"]')?.textContent).toContain("Codex CLI");
-    expect(document.querySelector('[role="menu"] a')?.getAttribute("href")).toBe("#/playground?operation=create-agent");
-    expect(go).not.toHaveBeenCalled();
-    expect(button("New agent")).toBeUndefined();
-  });
-  it("offers one Connect agent handoff for live connection or history without making an execution request", async () => {
+  it("keeps creation and connection links direct, without sending a request or opening a coding-agent menu", async () => {
     const listAgents = vi.fn(async () => ({ agents: [], next_cursor: null }));
-    const host = document.body.appendChild(document.createElement("div"));
-    root = createRoot(host);
-    await act(async () => { root!.render(createElement(AgentsPage, { v2: { listAgents } as never, archived: false, go: vi.fn() })); });
-    expect(button("Import history")).toBeUndefined();
-    expect(button("Connect agent")).toBeDefined();
-    await act(async () => { button("Connect agent")!.click(); });
-    expect(document.querySelector('[role="menu"]')?.textContent).toContain("Claude Code CLI");
-    expect(document.querySelector('[role="menu"]')?.textContent).toContain("Codex CLI");
+    const go = vi.fn();
+    const host = document.body.appendChild(document.createElement("div")); root = createRoot(host);
+    await act(async () => root!.render(createElement(AgentsPage, { v2: { listAgents } as never, archived: false, go })));
+    expect([...host.querySelectorAll("header a")].map(a => a.getAttribute("href"))).toEqual(["#/agents/connect", "#/agents/new?editor=true"]);
+    expect(host.querySelector('[role="menu"]')).toBeNull();
     expect(listAgents).toHaveBeenCalledTimes(1);
+    expect(go).not.toHaveBeenCalled();
   });
 
   it("hands the edited playground request to the coding agent without sending it", async () => {

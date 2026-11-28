@@ -6,15 +6,29 @@
 // A Linux box with no display (computerd's hello says linux, with files and exec) is a sandbox: in Mode 2 it holds the
 // run's folder as a synced folder in its own /workspace, as a hosted computer that dials does.
 //
-// Its socket is held by the AttachHub of the server's process: a runner in that process (the CLI's start, its runner
-// beside the server) takes it; a runner of its own process cannot reach it and refuses it in ONE_PROCESS_WORDS.
-import { type AttachHub, attachedProvider, type ComputerProvider, type HelloResult, type PairedComputer, SETTING_KIND_NAMES, SETTING_KINDS } from "@parcha/agentrun-computer";
-import type { PairedComputerRow } from "../store/index.js";
+// Its socket is held by the AttachHub of the server's process while no run holds it: a runner in that process (the CLI's
+// start, its runner beside the server) takes it there, its route taken all the same (dial-relay.ts pairedRelayOn over
+// the server's hub, runner/beside.ts), so a runner apart takes it for no other run meanwhile. A runner of its own
+// process with a relay (dial-relay.ts) has the server move the box's socket onto its own hub for the run (PairedRelay,
+// workspace/paired-route.ts); one with no relay cannot reach it and refuses it in ONE_PROCESS_WORDS.
+import { type AttachHub, attachedProvider, type ComputerProvider, fail, type HelloResult, type PairedComputer, RUN_LABEL, runLifetimeMs, SETTING_KIND_NAMES, SETTING_KINDS } from "@parcha/agentrun-computer";
+import type { Claim, PairedComputerRow } from "../store/index.js";
 import type { ComputerSettingKind, KindCapabilities, KindRegistry, ProviderEntry } from "./resolve-computer.js";
 
 /** A paired computer's id starts with this; the rest is lowercase letters and digits, so the whole is an id an agent's
  *  computer setting takes as its provider (lowercase letters, digits and dashes). */
 export const PAIRED_ID_PREFIX = "cmp-";
+
+/** Whether a computer setting names a paired computer as its provider. */
+export const namesPaired = (setting: object | undefined): setting is { readonly provider: string } => {
+  const provider = (setting as { provider?: unknown } | undefined)?.provider;
+  return typeof provider === "string" && provider.startsWith(PAIRED_ID_PREFIX);
+};
+
+/** Why an agent in a workspace (workspace-scope.ts) can't have the paired computer `provider`: a paired computer is a
+ *  machine of this server's own, never a workspace's. Its save is refused in these words, and its run's claim too. The
+ *  words point at what a workspace is served (its capabilities' kinds), never at GET /v2/computers, the operator's list. */
+export const scopedPairedWords = (provider: string): string => `${provider} is a computer paired with this server, which an agent in a workspace can't use: name a provider of this server's own for one of the kinds GET /v2/capabilities offers it (features.computers.kinds), never one whose id begins with ${PAIRED_ID_PREFIX}`;
 
 /** The image a paired computer's spec names: none is made, so this only says what it is. */
 export const ATTACHED_IMAGE = "attached";
@@ -22,24 +36,46 @@ export const ATTACHED_IMAGE = "attached";
 /** How to start a server so its runs can use a paired computer, in one line: the same words wherever it is said. */
 export const ONE_PROCESS_FIX = "start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)";
 
-/** The words a run gets when its agent's computer is a paired computer and its runner is not in the server's process. */
-export const ONE_PROCESS_WORDS = `a paired computer's socket is held by the server process it dialed, and this runner runs in a process of its own: ${ONE_PROCESS_FIX}`;
+/** The fix for a runner in a process of its own that relays no computer's socket: it relays once it has the server's
+ *  public address (dial-relay.ts). */
+export const RELAY_FIX = "give the runner AGENTRUN_PUBLIC_URL (this server's public address)";
+
+/** The words a run gets when its agent's computer is a paired computer and its runner, in a process of its own, keeps
+ *  no relay. */
+export const ONE_PROCESS_WORDS = `a paired computer's socket is held by the server process it dialed, and this runner runs in a process of its own and relays no computer's socket: ${RELAY_FIX}, or ${ONE_PROCESS_FIX}`;
 
 /** What a pairing code, the pair answer and each paired computer say on a server whose runner runs in a process of its
- *  own (--no-runner; the image's server-and-runner): the computer pairs, and no run here can use it. */
-export const RUNNER_APART_WORDS = `no run on this server can use a paired computer: its runner runs in a process of its own, and the computer's socket is held by the server's: ${ONE_PROCESS_FIX}`;
+ *  own (--no-runner; the image's server-and-runner) while no runner relays: the computer pairs, and no run here can use
+ *  it. */
+export const RUNNER_APART_WORDS = `no run on this server can use a paired computer: its runner runs in a process of its own and relays no computer's socket: ${RELAY_FIX}, or ${ONE_PROCESS_FIX}`;
 
 /** What a provider whose machines dial this server (the computer package's connectOf "dial": Fly Machines, Cloudflare,
  *  and E2B, Daytona or Modal set to dial) says on such a server: its row in GET /v2/computers and its test. Its
- *  machines' sockets are taken by the server's attach hub, and a runner of its own process has none, so its create
- *  refuses (the computer package's hosted/provider.ts, naming the same fix). */
-export const dialApartWords = (label: string): string => `no run on this server can use ${label}: its machines dial this server, and its runner runs in a process of its own, with no attach hub to take their socket: ${ONE_PROCESS_FIX}`;
+ *  machines' sockets are taken by the server's attach hub, and a runner of its own process takes them only through its
+ *  relay (dial-relay.ts), which it keeps once it has the server's public address; with none, its create refuses (the
+ *  computer package's hosted/provider.ts, naming the same fixes, the relay's first). */
+export const dialApartWords = (label: string): string => `no run on this server can use ${label}: its machines dial this server, and its runner runs in a process of its own and relays no machine's socket: ${RELAY_FIX}, or ${ONE_PROCESS_FIX}`;
+
+/** A runner's relay of the paired computers (dial-relay.ts pairedRelayOn): its hub, where the server moves a box's
+ *  socket for a run of this runner (a runner apart's own; the server's, for the runner beside it). `bring` routes the
+ *  box here for `run` (its hold's end `until`, ms; under `claim`, the run's claim, so a superseded claim's take throws
+ *  Fenced) and resolves once the box is on the hub; it rejects with code computer_unavailable in words (another run
+ *  holds it, it is not attached, it did not come in time, its claim was cancelled: `signal`, the create's, which drops
+ *  the route it took at once), never hanging past PAIRED_BRING_MS. `letGo` ends `hold` (once every remove or KILL it
+ *  sent has answered), then drops the route where no hold is left. */
+export interface PairedRelay {
+  readonly hub: AttachHub;
+  bring(row: Pick<PairedComputerRow, "id" | "name">, hold: { readonly run: string; readonly until: number; readonly claim?: Claim; readonly signal?: AbortSignal }): Promise<void>;
+  letGo(computer: string, hold?: string, run?: string): Promise<void>;
+}
 
 /** What the claim reads of the paired computers: the store's rows (removed ones left out), and the server's hub where
- *  the runner shares its process (absent: a runner of its own process). */
+ *  the runner shares its process, or the runner's relay where it runs in a process of its own and relays (neither: a
+ *  runner of its own process with no relay). */
 export interface AttachedComputers {
   rows(): Promise<readonly PairedComputerRow[]>;
   readonly hub?: AttachHub;
+  readonly relay?: PairedRelay;
 }
 
 /** The store's row as the hub and attachedProvider take it. */
@@ -133,11 +169,64 @@ export function withPaired<R extends KindRegistry>(registry: R, rows: readonly P
   return { ...registry, PROVIDERS: [...registry.PROVIDERS, ...rows.map((row) => pairedEntry(row, registry))] };
 }
 
-/** The provider of the paired computer `row`: attachedProvider over the hub, or a refusal in ONE_PROCESS_WORDS where this
- *  process holds no hub. */
-export function pairedProvider(row: PairedComputerRow, hub: AttachHub | undefined): ComputerProvider {
-  if (hub === undefined) throw Object.assign(new Error(ONE_PROCESS_WORDS), { code: "computer_unavailable" });
-  return attachedProvider(pairedOf(row), hub);
+/** The provider of the paired computer `row`: over a relay's hub where the runner has one (`relay`: a runner apart's
+ *  own, or the server's for the runner beside it), the box brought there before each create and let go after each
+ *  release (relayedProvider); else attachedProvider over the server's hub (`hub`) with no route; else a refusal in
+ *  ONE_PROCESS_WORDS. `claim`: the run's claim (ClaimLaunch.claim), which the bring's route takes under. */
+export function pairedProvider(row: PairedComputerRow, hub: AttachHub | undefined, relay?: PairedRelay, claim?: Claim): ComputerProvider {
+  if (relay !== undefined) return relayedProvider(row, relay, claim);
+  if (hub !== undefined) return attachedProvider(pairedOf(row), hub);
+  throw Object.assign(new Error(ONE_PROCESS_WORDS), { code: "computer_unavailable" });
+}
+
+/** attachedProvider over a relay's hub: create brings the box to this runner for the run (its labels' run, its
+ *  lifetime's end) and is refused in the bring's words, never hanging; a create that fails after the bring lets the box
+ *  go; release ends the hold, then lets the box go (a run's loop releases in its finally, so a cancelled run or a throw
+ *  in its pass lets the box go as it unwinds). Every other call is attachedProvider's own. */
+function relayedProvider(row: PairedComputerRow, relay: PairedRelay, claim: Claim | undefined): ComputerProvider {
+  const inner = attachedProvider(pairedOf(row), relay.hub);
+  /** The run of each hold this provider made, by its ref's id (`<computer id>.<hold>`). */
+  const runs = new Map<string, string>();
+  return {
+    id: inner.id,
+    get version() {
+      return inner.version;
+    },
+    capabilities: () => inner.capabilities(),
+    check: (spec) => inner.check(spec),
+    async create(spec, context) {
+      const run = spec.labels?.[RUN_LABEL];
+      if (run === undefined) return inner.create(spec, context);
+      try {
+        // The claim's cancel (the create's signal) ends the bring's wait at once, the route it took dropped.
+        await relay.bring(row, { run, until: Date.now() + runLifetimeMs(spec), ...(claim ? { claim } : {}), ...(context.signal ? { signal: context.signal } : {}) });
+      } catch (error) {
+        // A superseded claim (Fenced), and any failure that is not the bring's in words, is the claim's to answer.
+        if ((error as { code?: unknown }).code !== "computer_unavailable") throw error;
+        return fail(context.signal?.aborted ? "aborted" : "refused", (error as Error).message);
+      }
+      const made = await inner.create(spec, context);
+      if (!made.ok) {
+        await relay.letGo(row.id, undefined, run).catch(() => undefined);
+        return made;
+      }
+      runs.set(made.value.id, run);
+      return made;
+    },
+    attach: (asked, context) => inner.attach(asked, context),
+    list: (labels, context) => inner.list(labels, context),
+    network: (asked, policy, context) => inner.network(asked, policy, context),
+    connect: (asked) => inner.connect(asked),
+    async release(asked, how, context) {
+      const done = await inner.release(asked, how, context);
+      if (done.ok && asked.id !== row.id) {
+        const run = runs.get(asked.id);
+        runs.delete(asked.id);
+        await relay.letGo(row.id, undefined, run);
+      }
+      return done;
+    },
+  };
 }
 
 /** Why the paired computer `row` cannot be had now, in words that say what to do, or undefined: it must be attached (its

@@ -1,18 +1,20 @@
 // The learning lane's end-of-run step on the runner (loop-contract.ts EndOfRunTurn): what a run that learns keeps
-// beside its end, with no look-back turn and no grade. Two things, one merge a round on its agent's learning folder:
+// beside its end, with no look-back turn and no grade. Two things, one merge a round on its agent's learning:
 //   - its owner's feedback (a grade's words, a message after its first), appended to corrections.md as one line, with
 //     no model turn;
-//   - its compile turn (learn/compile.ts), when one is due: the job written as a workflow, or a revision of a held one,
+//   - its compile turn (learn/compile.ts), when one is due, told the correction the round takes (a grade's words, say)
+//     beside the owner's others: the job written as a workflow, or a revision of a held one,
 //     checked (`checkDraft`: the workflow checks, its dry run, the secret and hidden-character refusals) and committed
 //     directly, with the compiled record on the run's learning. A compile whose drafts all failed is recorded on the
 //     agent's promotion records (compile once: `compileFailed`), never silent.
-// How it ended is kept beside the run's end (learning_proposals): merged with what it wrote, or dropped with its reason
+// How it ended is kept beside the run's end (learning_proposals): merged with what it wrote (a correction it took kept
+// whole as `correction`, which its replays' check reads: runner/promotion.ts correctionOf), or dropped with its reason
 // and words. What the run must never learn (`refuse`: the host's secrets and what it was handed, its sign-in pointer
 // among them) is refused by the checks and cut from everything the step keeps; a run whose list can't be read learns
 // nothing.
 import { cutStrings } from "../key-refusal.js";
 import { type Problem, redactSecrets } from "../learn/index.js";
-import { type CompileAsk, type CompiledRecord, compileTurn, type DraftChecked } from "../learn/compile.js";
+import { type CompileAsk, type CompiledRecord, COMPILE_TIMEOUT_MS, compileTurn, type DraftChecked } from "../learn/compile.js";
 import type { LearnedFile } from "../learning.js";
 import { correctionsCapOf, said, STOPPED } from "../learning-words.js";
 import type { AlsoRow, EndOfRunKept, EndOfRunTurn } from "./loop-contract.js";
@@ -29,11 +31,12 @@ export type DraftCommit = {
   readonly bases?: Readonly<Record<string, string>>;
 };
 
-/** What a merge landed: the commit (and the correction it left out beside its draft, learn/commit.ts
- *  LearningCommitResult `refusedCorrection`), or why it did not. */
+/** What a merge landed: the commit (the correction it left out beside its draft, and how many of corrections.md's oldest
+ *  lines its kept correction dropped: learn/commit.ts LearningCommitResult `refusedCorrection`, `droppedLines`), or why
+ *  it did not. */
 export type Committed =
-  | { readonly ok: true; readonly commit: string; readonly refusedCorrection?: readonly Problem[] }
-  | { readonly ok: false; readonly reason: "conflict" | "refused" | "unavailable"; readonly problems: readonly Problem[] };
+  | { readonly ok: true; readonly commit: string; readonly refusedCorrection?: readonly Problem[]; readonly droppedLines?: number }
+  | { readonly ok: false; readonly reason: "conflict" | "refused" | "purged" | "unavailable"; readonly problems: readonly Problem[] };
 
 /** What the step reads of the run and the host. */
 export interface ReflectDeps {
@@ -46,22 +49,28 @@ export interface ReflectDeps {
   readonly facts: (runId: string) => Promise<{ learns: boolean; cancelled?: boolean; capReached?: boolean; costUsd: number | null } & ({ capUsd?: undefined } | { capUsd: number; spentUsd: number | null })>;
   /** What the run's owner said of it: a grade's words, and each message they sent after its first, in order. */
   readonly feedback: (runId: string) => Promise<readonly string[]>;
-  /** Why the owner's words would be refused as a line of corrections.md on main now (learn/commit.ts correctionRefused);
-   *  empty when they would be taken. */
+  /** Why the owner's words would be refused as a line of corrections.md (learn/commit.ts correctionRefused: the line
+   *  alone, since a kept line drops the file's oldest lines to fit); empty when they would be taken. */
   readonly correctionRefused: (input: { runId: string; agentId: string; round: number; text: string; refuse: readonly string[] }) => Promise<readonly Problem[]>;
   /** The compile turn's facts (learn/compile.ts CompileAsk), `refuse` cut from what they quote: undefined when the run
-   *  compiles nothing (its job not due, a workflow that answered). Absent, or a read that throws: no compile turn. */
-  readonly compileFacts?: (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[]; round: number }) => Promise<CompileAsk | undefined>;
+   *  compiles nothing (its job not due, a workflow that answered). `correction`: the owner's words this round takes as a
+   *  line of corrections.md (checked already: a refused one is never given), told the compile beside the corrections it
+   *  knows. Absent, or a read that throws: no compile turn. */
+  readonly compileFacts?: (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[]; round: number; correction?: string }) => Promise<CompileAsk | undefined>;
   /** Compile once: a compile turn whose drafts all failed their checks (one answered, none passed) is the compile's
    *  attempt, kept on a promotion record (learning-end.ts recordDraftFailed) that compileFacts reads. Its `workflow` and
    *  `errors` come cut of `refuse`. Absent: none kept. */
   readonly compileFailed?: (input: { runId: string; agentId: string; compile: CompileAsk; workflow: string; errors: readonly string[] }) => Promise<void>;
   /** The compile turn's deadline, every attempt in it. Default learn/compile.ts COMPILE_TIMEOUT_MS. */
   readonly compileDeadlineMs?: number;
+  /** Keeps the run's learning deadline at least `until` (its compile turn's start + that deadline), before the turn asks a
+   *  model (learning-work.ts noteLearningDeadline). A write that fails fails the step: no compile turn without its bound.
+   *  Absent: none kept. */
+  readonly compileStarts?: (input: { runId: string; until: number }) => Promise<void>;
   /** One compile draft through the checks (learning-end.ts checkDraftOf): its errors, else what is committed and its
    *  digest. `revised`: a revision's workflow and the commit of main it was read at, its conflict base. */
   readonly checkDraft: (input: { runId: string; agentId: string; draft: { name: string; text: string }; refuse: readonly string[]; revised?: { readonly workflow: string; readonly base: string } }) => Promise<DraftChecked<DraftCommit>>;
-  /** The round's merge on the agent's learning folder (learning-end.ts commitDirect): its draft and its owner's
+  /** The round's merge on the agent's learning (learning-end.ts commitDirect): its draft and its owner's
    *  correction, one commit by the run. */
   readonly commit: (input: { runId: string; agentId: string; round: number; draft?: DraftCommit; correction?: string; refuse: readonly string[] }) => Promise<Committed>;
   /** Every value the run must never learn: the host's secrets and what the run was handed, its sign-in pointer among
@@ -108,7 +117,7 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
     // What the step's model turns cost: the run's spend once it closed less the job's, unknown when either is. Kept with
     // every end once a compile turn was asked; 0 for an end that asked none. The step's only model turn is its compile
     // turn, so this is the compile's spend: it joins the revision it drafts, or the bill's unattributed when it kept no
-    // draft (store-reads/learning.ts compilesOf, learning-cost.ts amortize), never the run's own.
+    // draft (learn/ledger.ts record and summarize), never the run's own.
     let asked = begun;
     const spent = async () => {
       if (!asked) return { answered_at: answeredAt, job_cost_usd: job, look_back_usd: 0 };
@@ -134,10 +143,11 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
     const refusedCorrection = correction === undefined ? [] : await deps.correctionRefused({ runId: input.runId, agentId: input.agentId, round, text: correction, refuse }).catch((): Problem[] => [{ rule: "encoding", detail: "the owner's correction could not be checked" }]);
     const taken = correction !== undefined && !refusedCorrection.length ? correction : undefined;
     // The compile turn, when one is due and the run's cap has room: a cap it reached, or a spend under it that is unknown,
-    // asks no model turn (the cap keeps no reserve).
+    // asks no model turn (the cap keeps no reserve). It is told the correction this round takes (a grade's words, say),
+    // never one refused.
     const noRoom = facts.capReached ? "no_budget" : facts.capUsd !== undefined && facts.spentUsd === null ? "unknown_cost" : undefined;
     const workflowOnly = input.outcome === "completed" && deps.nothingNew !== undefined && (await deps.nothingNew(input.runId).catch(() => false));
-    const compile = !noRoom && deps.compileFacts ? await deps.compileFacts({ runId: input.runId, agentId: input.agentId, outcome: input.outcome, refuse, round }).catch(() => undefined) : undefined;
+    const compile = !noRoom && deps.compileFacts ? await deps.compileFacts({ runId: input.runId, agentId: input.agentId, outcome: input.outcome, refuse, round, ...(taken !== undefined ? { correction: taken } : {}) }).catch(() => undefined) : undefined;
     let draft: DraftCommit | undefined;
     let compiled: { record: CompiledRecord; draft_errors?: string[] } | undefined;
     // A draft the checks refused: their problems by rule (a draft never answered refused nothing).
@@ -148,6 +158,7 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
       // since), and it is the revised workflow's conflict base in every check of the turn.
       let revised = compile.mode === "revise" && compile.base ? { workflow: compile.workflow, base: compile.base } : undefined;
       let capped = false;
+      await deps.compileStarts?.({ runId: input.runId, until: now() + (deps.compileDeadlineMs ?? COMPILE_TIMEOUT_MS) });
       const result = await compileTurn<DraftCommit>({
         ask: async (prompt, attempt, left) => {
           asked = true;
@@ -189,14 +200,18 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
         const readme = draft?.files.find((file) => file.path.endsWith("/README.md"));
         const json = draft?.files.find((file) => file.path.endsWith("/workflow.json"));
         const workflows: LearnedFile[] = draft && json ? [{ file: json.path, name: draft.name, ...(readme && draft.held?.includes(readme.path) ? { pending: true as const } : {}) }] : [];
-        // The draft and the correction are judged apart: one the merge left out (corrections.md filled during the compile)
-        // is reported as the check before the compile reports one.
+        // The draft and the correction are judged apart: one the merge left out (its line past the cap alone) is reported
+        // as the check before the compile reports one.
         const left = done.refusedCorrection?.length ? done.refusedCorrection : undefined;
         const corrections = taken !== undefined && !left ? 1 : 0;
+        // How many of corrections.md's oldest lines the kept correction pushed out to fit the cap.
+        const dropped = corrections && done.droppedLines ? done.droppedLines : 0;
         const problems = [...refusedCorrection, ...(left ?? []), ...draftProblems];
-        return close(keptRow({ state: "merged", reason: null, merged: done.commit, ...(workflows.length ? { workflows } : {}), ...(corrections ? { corrections } : {}), ...(problems.length ? { problems } : {}), ...compiledFields, detail: said.merged(workflows, corrections, problems) }));
+        return close(keptRow({ state: "merged", reason: null, merged: done.commit, ...(workflows.length ? { workflows } : {}), ...(corrections ? { corrections, correction: taken } : {}), ...(dropped ? { dropped_lines: dropped } : {}), ...(problems.length ? { problems } : {}), ...compiledFields, detail: said.merged(workflows, corrections, problems, dropped) }));
       }
       if (done.reason === "unavailable") return close(dropped("reflect_failed", said.stopped(STOPPED.failed), compiledFields));
+      // A run's purge came after this run's seed: nothing of its merge was written (learn/commit.ts `purged`).
+      if (done.reason === "purged") return close(dropped("purged_since_seed", said.purgedSinceSeed, compiledFields));
       return close(dropped("checker", correctionWords(done.problems), { problems: [...done.problems], ...compiledFields }));
     }
     if (refusedCorrection.length) return close(dropped("checker", correctionWords(refusedCorrection), { problems: [...refusedCorrection, ...draftProblems], ...compiledFields }));

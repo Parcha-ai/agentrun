@@ -7,12 +7,14 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:net";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+// start.sh's server binds the port after the test picked it: one below the ephemeral range, so no listen(0) or outbound
+// connection of the suite's other files takes it in between.
+import { freePort } from "./fixtures/ports.mjs";
 
 const START = fileURLToPath(new URL("../docker/start.sh", import.meta.url));
 
@@ -67,15 +69,6 @@ const exit = process.env["STUB_" + upper + "_EXIT"];
 if (exit !== undefined) setTimeout(() => { log("exits " + exit); server?.close(); clearInterval(keep); process.exit(Number(exit)); }, 300);
 `;
 
-/** A free port on loopback. */
-async function freePort() {
-  const server = createServer().listen(0, "127.0.0.1");
-  await new Promise((resolve) => server.once("listening", resolve));
-  const { port } = server.address();
-  await new Promise((resolve) => server.close(resolve));
-  return port;
-}
-
 /** The script beside the stand-in, in a scratch directory, and its log. */
 async function scratch(t) {
   const dir = await mkdtemp(join(tmpdir(), "image-two-processes-"));
@@ -107,9 +100,18 @@ function start({ script, log, scripts }, args, { secrets, env = {} } = {}) {
   const seen = { out: "", err: "" };
   child.stdout.on("data", (chunk) => (seen.out += chunk));
   child.stderr.on("data", (chunk) => (seen.err += chunk));
+  // "exit" settles at the moment the script exits, so a shutdown check after it reads the processes as they were then.
   const exited = new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })));
+  // What the script wrote, read to the end: its last lines can still be unread at "exit". "close" would wait for the server
+  // and runner it starts, which hold the same pipes, so one left running would hang until the suite's timeout: both
+  // streams ended, or 2 s after the exit.
+  const ended = Promise.all([child.stdout, child.stderr].map((stream) => new Promise((resolve) => stream.once("end", resolve))));
+  const written = exited.then(() => {
+    let timer;
+    return Promise.race([ended, new Promise((done) => (timer = setTimeout(done, 2000)))]).finally(() => clearTimeout(timer));
+  }).then(() => seen);
   scripts.push({ child, exited });
-  return { child, seen, exited };
+  return { child, seen, exited, written };
 }
 
 /** The log's lines, parsed: [role, event, detail]. */
@@ -191,7 +193,7 @@ test("the runner ending on its own stops the server and the script exits 1, even
   assert.equal(code, 1, run.seen.err);
   assert.ok(saw(at.log, "runner", "exits"), "the runner exited");
   assert.ok(saw(at.log, "server", "term") && saw(at.log, "server", "drained"), "the server got SIGTERM and stopped");
-  assert.match(run.seen.err, /the runner exited 0, so the container stops/);
+  assert.match((await run.written).err, /the runner exited 0, so the container stops/);
 });
 
 test("the server ending on its own stops the runner and the script exits with the server's code", async (t) => {
@@ -202,7 +204,7 @@ test("the server ending on its own stops the runner and the script exits with th
   const { code } = await run.exited;
   assert.equal(code, 7, run.seen.err);
   if (up(at.log, "runner")) assert.ok(saw(at.log, "runner", "term") && saw(at.log, "runner", "drained"), "a runner that started got SIGTERM and stopped");
-  assert.match(run.seen.err, /the server exited 7, so the container stops/);
+  assert.match((await run.written).err, /the server exited 7, so the container stops/);
 });
 
 test("a SIGTERM while the server has not answered yet stops the server, starts no runner, and the script exits 0", async (t) => {
@@ -239,7 +241,34 @@ test("server-and-runner refuses options with no --data or no --port, exit 2, sta
     const run = start(at, ["server-and-runner", ...args]);
     const { code } = await run.exited;
     assert.equal(code, 2);
-    assert.match(run.seen.err, why);
+    assert.match((await run.written).err, why);
   }
   assert.equal(lines(at.log).length, 0, "nothing started");
+});
+
+// A volume the host mounts as root's (Fly, a compose file's bind mount) would otherwise fail deep in the store's setup.
+test("a --data directory this user can't write stops server-and-runner in one line naming it, its owner and this uid, before anything starts", { skip: process.getuid?.() === 0 && "root writes anywhere" }, async (t) => {
+  const at = await scratch(t);
+  const data = join(at.script, "..", "..", "data");
+  await mkdir(data, { mode: 0o555 });
+  await chmod(data, 0o555); // empty, so scratch's cleanup removes it even if the test stops before the chmod back
+  const uid = process.getuid();
+  for (const args of [["--data", data, "--port", "7340"], [`--data=${data}`, "--port", "7340", "--no-runner"]]) {
+    // A server that started anyway would end at once and take the script with it, so a miss fails here, not in a hang.
+    const run = start(at, ["server-and-runner", ...args], { env: { STUB_SERVER_EXIT: "0", STUB_HEALTH: "never" } });
+    const { code } = await run.exited;
+    assert.equal(code, 1, run.seen.err);
+    const said = (await run.written).err.trim().split("\n");
+    assert.equal(said.length, 1, run.seen.err);
+    assert.match(said[0], new RegExp(`^agentrun-serve: ${data} is not writable by uid ${uid}\\b.*owned by uid ${uid} with mode 555\\b`));
+  }
+  assert.equal(lines(at.log).length, 0, "nothing started");
+
+  // Writable, or not made yet (the server makes it), it starts as before.
+  await chmod(data, 0o755);
+  for (const dir of [data, join(data, "not-yet")]) {
+    const run = start(at, ["server-and-runner", "--data", dir, "--port", "7340", "--no-runner"], { env: { STUB_SERVER_EXIT: "0" } });
+    assert.equal((await run.exited).code, 0, run.seen.err);
+  }
+  assert.equal(lines(at.log).filter((line) => line.event === "up").length, 2);
 });

@@ -13,6 +13,7 @@ import { strictOptions } from "./strict-options.mjs";
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
+const { heldRedactor, runnerSecrets, secretRedactor } = await import("../dist/runner/redact.js");
 const { runFolder } = await import("../dist/workspace/paths.js");
 const { Uploads } = await import("../dist/uploads.js");
 const { putSealedKey } = await import("../dist/server-keys.js");
@@ -36,15 +37,18 @@ const stubRoute = async () => ({ model: "faux-1", provider: { api: "anthropic-me
  *   keys     server keys saved sealed in the one store (store.sealedKeys), as the settings API saves them
  *   ledger   the run's one ledger as the adapter loop hands it (run.ledger), or none: the learned_workflow tool's model
  *            nodes take the session's proxied models from it
- *   redact   the runner's one redactor as the loop hands it (run.redact), or none: a test's own holds what the claim opens
+ *   redact   the runner's one redactor as the loop hands it (run.redact); by default one over the env's secrets: a test's own holds what the claim opens
  *   before   called with the server's store once the run is made, before the runner claims it (a test arranges the run there),
  *            then the seal key and the run's data dir (where a test lands what the claim reads, e.g. a learning seed)
  *   computer the claim-time computer, as the runner composes it: given { store, sealKey }, it returns { computerForClaim,
  *            computerDeps } (computerDepsFrom's); none by default (a runner place makes no computer)
+ *   journal  called with the claim's Harness once the run's root is made, before the spec is built: what an earlier claim of
+ *            the run left in its journal, written there as that claim wrote it
+ *   watch    called with the runner's store just before the spec is built (a test spies on what the claim reads there)
  */
 export async function specFor(t, options = {}) {
-  strictOptions("specFor", options, ["body", "kind", "monidPin", "skills", "launch", "settings", "routeOf", "uploads", "env", "keys", "ledger", "redact", "before", "computer"]);
-  const { body = {}, kind = "agentic", monidPin, skills, launch = {}, settings, routeOf = stubRoute, uploads = [], env = {}, keys = {}, ledger, redact, before, computer } = options;
+  strictOptions("specFor", options, ["body", "kind", "monidPin", "skills", "launch", "settings", "routeOf", "uploads", "env", "keys", "ledger", "redact", "before", "computer", "journal", "watch"]);
+  const { body = {}, kind = "agentic", monidPin, skills, launch = {}, settings, routeOf = stubRoute, uploads = [], env = {}, keys = {}, ledger, redact, before, computer, journal, watch } = options;
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-spec-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -86,12 +90,14 @@ export async function specFor(t, options = {}) {
   // The run's root conversation (ROOT_CONVERSATION_ID), as the adapter loop makes it when the session opens: a host tool's
   // paid mark commits there (paid-calls.ts), so a test that runs a tool needs it, as a claim on the loop has it.
   await harness.commit((tx) => tx.createRootConversation(), ctx);
-  const run = { harness, registry, setModels: (given) => (models = given), ...(ledger ? { ledger } : {}), ...(redact ? { redact } : {}) };
+  if (journal) await journal(harness);
+  const run = { harness, registry, setModels: (given) => (models = given), ...(ledger ? { ledger } : {}), redact: redact ?? heldRedactor(secretRedactor(runnerSecrets(env))) };
   // The one shared claim-time computer (none for a runner place); a test gives its own, as the runner would.
   const composed = computer?.({ store, sealKey: SEAL_KEY });
   const computerForClaim = composed?.computerForClaim ?? (async () => ({ release: async () => {} }));
   const deps = { env, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf, computerForClaim, ...(composed ? { computerDeps: composed.computerDeps } : {}) };
   const launchBody = launchOf(fileIds);
+  watch?.(store);
   const spec = await adapterRunSpecFromLaunch(launchBody, run, deps, claim);
   return { spec, store, server, claim, dir, run, workFolder };
 }

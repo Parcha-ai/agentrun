@@ -35,7 +35,7 @@ const manifest = directory => ({ name: releasePackageNames[directory], ...(heldP
   homepage: 'https://agentrun.ai', bugs: { url: 'https://github.com/Parcha-ai/agentrun/issues' }, publishConfig: { access: 'public', tag: 'beta' },
   ...(directory === 'agentrun' ? { dependencies: { '@parcha/agentrun-serve': version } } : directory === 'eve'
     ? { dependencies: { '@parcha/agentrun-dsl': version, '@parcha/agentrun-client': version } }
-    : directory === 'dsl' || directory === 'client' || directory === 'computer' || directory === 'pi-browser' || directory === 'import' ? {} : { dependencies: { '@parcha/agentrun-dsl': version } }),
+    : directory === 'dsl' || directory === 'client' || directory === 'computer' || directory === 'pi-browser' || directory === 'import' || directory === 'web' ? {} : { dependencies: { '@parcha/agentrun-dsl': version } }),
 });
 const putJson = (path, value) => writeFile(path, JSON.stringify(value));
 /** Holds `directory` in the checked tree (its manifest says "private": true), whatever this checkout holds, and records the
@@ -84,7 +84,7 @@ async function recordPackages(root) {
   const refused = settled.find((outcome) => outcome.status === 'rejected');
   if (refused) throw refused.reason;
   await putJson(join(root, '.release/verification.json'), { status: 'passed', packages,
-    runtimeSmoke: { core: true, jev: true, browser: true, serve: true, decisions: true, adapters: true, computer: true, import: true, client: true, eve: true, network: 'prohibited' }, audit: { vulnerabilities: { high: 0, critical: 0 } } });
+    runtimeSmoke: { core: true, jev: true, browser: true, serve: true, decisions: true, adapters: true, computer: true, import: true, web: true, client: true, eve: true, network: 'prohibited' }, audit: { vulnerabilities: { high: 0, critical: 0 } } });
 }
 after(async () => { await rm(baseline, { recursive: true, force: true }); });
 async function fixture(fn) {
@@ -126,8 +126,8 @@ test('a failed TypeScript floor rerun replaces stale success evidence', async ()
 test('release plan binds the exact verified tarballs in dependency order', () => fixture(async root => {
   const plan = await preflight(root);
   assert.deepEqual(plan.packages.map(pkg => pkg.directory), releasePackages);
-  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/pi-browser', '@parcha/agentrun-import', '@parcha/agentrun-decisions', '@parcha/agentrun-computer', '@parcha/agentrun-client', '@parcha/agentrun-kernel', '@parcha/agentrun-harness-claude', '@parcha/agentrun-harness-codex', '@parcha/agentrun-harness-acp', '@parcha/agentrun-serve', '@parcha/agentrun']);
-  assert.deepEqual(plan.packages.map(pkg => pkg.filename), [`parcha-agentrun-dsl-${version}.tgz`, `parcha-agentrun-jev-${version}.tgz`, `parcha-pi-browser-${version}.tgz`, `parcha-agentrun-import-${version}.tgz`, `parcha-agentrun-decisions-${version}.tgz`, `parcha-agentrun-computer-${version}.tgz`, `parcha-agentrun-client-${version}.tgz`, `parcha-agentrun-kernel-${version}.tgz`, `parcha-agentrun-harness-claude-${version}.tgz`, `parcha-agentrun-harness-codex-${version}.tgz`, `parcha-agentrun-harness-acp-${version}.tgz`, `parcha-agentrun-serve-${version}.tgz`, 'parcha-agentrun-0.3.0.tgz']);
+  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/pi-browser', '@parcha/agentrun-import', '@parcha/agentrun-web', '@parcha/agentrun-decisions', '@parcha/agentrun-computer', '@parcha/agentrun-client', '@parcha/agentrun-kernel', '@parcha/agentrun-harness-claude', '@parcha/agentrun-harness-codex', '@parcha/agentrun-harness-acp', '@parcha/agentrun-serve', '@parcha/agentrun']);
+  assert.deepEqual(plan.packages.map(pkg => pkg.filename), [`parcha-agentrun-dsl-${version}.tgz`, `parcha-agentrun-jev-${version}.tgz`, `parcha-pi-browser-${version}.tgz`, `parcha-agentrun-import-${version}.tgz`, `parcha-agentrun-web-${version}.tgz`, `parcha-agentrun-decisions-${version}.tgz`, `parcha-agentrun-computer-${version}.tgz`, `parcha-agentrun-client-${version}.tgz`, `parcha-agentrun-kernel-${version}.tgz`, `parcha-agentrun-harness-claude-${version}.tgz`, `parcha-agentrun-harness-codex-${version}.tgz`, `parcha-agentrun-harness-acp-${version}.tgz`, `parcha-agentrun-serve-${version}.tgz`, 'parcha-agentrun-0.3.0.tgz']);
   assert.ok(plan.packages.every(pkg => /^sha512-/.test(pkg.integrity) && /^[a-f0-9]{64}$/.test(pkg.sha256)));
 }));
 test('unlicensed source and inconsistent tags fail before publication', () => fixture(async root => {
@@ -193,6 +193,10 @@ test('a receipt names every installed package smoke, the browser one included, a
   const { import: ____, ...withoutImport } = receipt.runtimeSmoke;
   await putJson(path, { ...receipt, runtimeSmoke: withoutImport });
   await assert.rejects(preflight(root), /All installed package smoke checks/);
+  // The web package's smoke: the Parallel fee for a page, a refusal caught as one, and a page read with no guard refused.
+  const { web: _____, ...withoutWeb } = receipt.runtimeSmoke;
+  await putJson(path, { ...receipt, runtimeSmoke: withoutWeb });
+  await assert.rejects(preflight(root), /All installed package smoke checks/);
   const { eve: ___, ...withoutEve } = receipt.runtimeSmoke;
   await putJson(path, { ...receipt, runtimeSmoke: withoutEve });
   await assert.rejects(preflight(root), /All installed package smoke checks/, 'held extensions still require their installed runtime smoke');
@@ -244,7 +248,7 @@ test('Apache release preserves the approved root license and notices in every ar
   await recordPackages(root);
   const plan = await preflight(root);
   assert.equal(plan.license, 'Apache-2.0');
-  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/pi-browser', '@parcha/agentrun-import', '@parcha/agentrun-decisions', '@parcha/agentrun-computer', '@parcha/agentrun-client', '@parcha/agentrun-kernel', '@parcha/agentrun-harness-claude', '@parcha/agentrun-harness-codex', '@parcha/agentrun-harness-acp', '@parcha/agentrun-serve', '@parcha/agentrun']);
+  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/pi-browser', '@parcha/agentrun-import', '@parcha/agentrun-web', '@parcha/agentrun-decisions', '@parcha/agentrun-computer', '@parcha/agentrun-client', '@parcha/agentrun-kernel', '@parcha/agentrun-harness-claude', '@parcha/agentrun-harness-codex', '@parcha/agentrun-harness-acp', '@parcha/agentrun-serve', '@parcha/agentrun']);
   await writeFile(join(root, 'packages/pi-browser/NOTICE'), `${notice}\nThird-party notice kept after the repository's.\n`);
   await recordPackages(root);
   assert.equal((await preflight(root)).packages.length, releasePackages.length, 'a published package may append third-party notices to the root NOTICE');
@@ -295,7 +299,7 @@ test('the publish set is the explicit release map minus the held packages, and a
 });
 
 test('publication order is dependency order, fixed by the release map and not by directory listing', () => {
-  assert.deepEqual(listedPackages, ['dsl', 'jev', 'pi-browser', 'import', 'decisions', 'computer', 'client', 'eve', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'serve', 'agentrun'], 'dependencies before consumers, including client/DSL before eve and the harness adapters before serve, and the npx command after serve');
+  assert.deepEqual(listedPackages, ['dsl', 'jev', 'pi-browser', 'import', 'web', 'decisions', 'computer', 'client', 'eve', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'serve', 'agentrun'], 'dependencies before consumers, including client/DSL before eve and the harness adapters before serve, and the npx command after serve');
   const names = new Map(listedPackages.map(directory => [releasePackageNames[directory], directory]));
   for (const directory of listedPackages) {
     for (const dependency of Object.keys(repoManifest(directory).dependencies ?? {})) {
@@ -547,13 +551,14 @@ test('a tag that carries no fragment needs a clean tree, as before', () => tagge
   await assert.rejects(checkReleaseTree(root, `v${version}`, version), /These changelogs are not the fold/);
 }));
 
-test('the release workflow folds what its tag carries before it installs, builds or packs anything, and the preflight checks it after', () => {
+test('the release workflow folds what its tag carries after the daemon is built from the tagged tree, before it packs anything, and the preflight checks it after', () => {
   const workflow = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
   const at = text => { const index = workflow.indexOf(text); assert.ok(index > 0, `release.yml runs ${text}`); return index; };
   const foldStep = at('run: node scripts/changes.mjs --fold "${RELEASE_TAG#v}"');
   assert.ok(at('run: node scripts/release-ci-gate.mjs') < foldStep, 'after the tagged commit is known to have passed CI');
-  assert.ok(foldStep < at('- run: npm ci --ignore-scripts'), 'before the install');
-  assert.ok(foldStep < at('- run: npm run build\n'), 'before the build');
+  // Go writes a modified tree into a binary's build info (vcs.modified, a "+dirty" version): the daemon is built before the fold.
+  assert.ok(at('- run: npm run build:daemon -w @parcha/agentrun-computer') < foldStep, 'after the daemon is built');
+  assert.ok(foldStep < at('- run: npm run export:source'), 'before the source is exported');
   assert.ok(foldStep < at('- run: npm run verify:packages -- --console'), 'before the archives are packed and verified');
   assert.ok(at('- run: npm run verify:packages -- --console') < at('- run: node scripts/release-preflight.mjs --tag "$RELEASE_TAG"'), 'the preflight reads the folded tree');
 });

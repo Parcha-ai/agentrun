@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-const { claimBrowserProvider, planeBrowser, releaseOlderBrowsers, resetBrowserComputerHoldings, rewriteConnectUrl } = await import("../dist/browser-computer.js");
+const { claimBrowserProvider, openPlaneBrowser, planeBrowser, raceReleasedSessions, releaseOlderBrowsers, resetBrowserComputerHoldings } = await import("../dist/browser-computer.js");
 
 /** The label a session's custody tag rides on (workspace/computer-for-claim.ts). */
 const TAG_LABEL = "agentrun.session";
@@ -16,8 +16,8 @@ const SPEC = { tag: "ar-run-1-1", maxLifetimeS: 1800, idleTimeoutS: 180, proxies
 const signal = () => new AbortController().signal;
 
 /** A browser computer provider stand-in: `features` its declared browser features (capabilities().browser); each call
- *  kept in `calls`. */
-function stand(features, { createFails, releaseRuns = false, downloads } = {}) {
+ *  kept in `calls`. `made`: its list says each browser was made then. */
+function stand(features, { createFails, releaseRuns = false, downloads, made } = {}) {
   const calls = [];
   const browsers = new Map();
   return {
@@ -42,7 +42,7 @@ function stand(features, { createFails, releaseRuns = false, downloads } = {}) {
       },
       async list(labels) {
         calls.push({ op: "list", labels });
-        return { ok: true, value: [...browsers].filter(([, b]) => b.running && Object.entries(labels).every(([key, value]) => b.labels[key] === value)).map(([id, b]) => ({ ref: { id, name: id }, labels: b.labels, state: "running", network: "open" })) };
+        return { ok: true, value: [...browsers].filter(([, b]) => b.running && Object.entries(labels).every(([key, value]) => b.labels[key] === value)).map(([id, b]) => ({ ref: { id, name: id }, labels: b.labels, state: "running", network: "open", ...(made ? { createdAt: made } : {}) })) };
       },
       async network() { return { ok: true, value: "open" }; },
       async connect(ref) {
@@ -183,6 +183,32 @@ test("a create that failed may have left its browser: the saver's claim stays un
   await assert.rejects(provider.create(other, signal()), /did not answer/, "it opens (and here fails at the stand's create) once nothing carries the tag");
 });
 
+test("a session its tag finds carries when the vendor's list says it was made (madeAt), which pi-browser keeps beside one it releases for another's tag; none where the list does not say", async (t) => {
+  t.after(resetBrowserComputerHoldings);
+  const made = new Date(Date.UTC(2026, 10, 5, 12, 0, 0));
+  const provider = claimBrowserProvider(planeBrowser(stand(ALL, { made }).provider, RUN));
+  const ref = await provider.create(SPEC, signal());
+  assert.deepEqual(await provider.findByTag(SPEC.tag), [{ ...ref, madeAt: made.toISOString() }]);
+  const plain = claimBrowserProvider(planeBrowser(stand(ALL).provider, RUN));
+  const other = await plain.create(SPEC, signal());
+  assert.deepEqual(await plain.findByTag(SPEC.tag), [other], "no time where the list says none");
+});
+
+test("the sessions a release by a tag ended beside its own are charged from the time pi-browser kept for each, else this process's listing's, else from no known time", () => {
+  const listed = { madeAt: (id) => (id === "b2" || id === "b3" ? "2026-11-05T12:00:09.000Z" : null) };
+  const swept = raceReleasedSessions({ tag: "ar-run-1-1", ids: ["b1", "b2", "b3"], madeAt: { b1: "2026-11-05T12:00:01.000Z", b2: "2026-11-05T12:00:02.000Z" } }, listed);
+  assert.deepEqual(swept, {
+    released: [
+      { id: "b1", tag: "ar-run-1-1", createdAt: "2026-11-05T12:00:01.000Z" },
+      { id: "b2", tag: "ar-run-1-1", createdAt: "2026-11-05T12:00:02.000Z" },
+      { id: "b3", tag: "ar-run-1-1", createdAt: "2026-11-05T12:00:09.000Z" },
+    ],
+    failed: [],
+    creating: [],
+  });
+  assert.equal(raceReleasedSessions({ tag: "t", ids: ["b9"] }, {}).released[0].createdAt, null, "unknown, never a made-up time");
+});
+
 test("a saver's create that failed and left no browser is settled before custody's findByTag frees its claim", async (t) => {
   t.after(resetBrowserComputerHoldings);
   const s = stand({ ...ALL, profiles: { settleMs: 5_000 } }, { createFails: { code: "unreachable", message: "stand did not answer" } });
@@ -200,9 +226,30 @@ test("a session a dead claim left (a lower epoch's labels) is released when the 
   const s = stand(ALL);
   const lost = await claimBrowserProvider(planeBrowser(s.provider, { runId: "run-1", epoch: 2 })).create(SPEC, signal());
   const slept = [];
-  await releaseOlderBrowsers(s.provider, RUN, { sleep: async (ms) => void slept.push(ms) });
+  const before = Date.now();
+  const swept = await releaseOlderBrowsers(s.provider, RUN, { sleep: async (ms) => void slept.push(ms) });
   assert.deepEqual(s.calls.filter((call) => call.op === "release").map((call) => call.id), [lost.id]);
+  assert.deepEqual([...swept.keys()], [lost.id], "the ones it released are handed back (ClaimBrowser.sweptOlder), with when it answered");
+  assert.ok(Date.parse(swept.get(lost.id)) >= before && Date.parse(swept.get(lost.id)) <= Date.now());
   assert.deepEqual(slept, [], "a provider that writes no profile back after a session is not waited for");
+});
+
+test("the plane's browser a claim opens carries the older sessions its sweep released, by id with when the sweep answered (sweptOlder), so an owed one is charged to then; one with nothing released, or not swept, carries none", async (t) => {
+  t.after(resetBrowserComputerHoldings);
+  const s = stand(ALL);
+  const lost = await claimBrowserProvider(planeBrowser(s.provider, { runId: "run-1", epoch: 2 })).create(SPEC, signal());
+  const before = Date.now();
+  const browser = await openPlaneBrowser(s.provider, RUN, { sleep: async () => {} });
+  assert.deepEqual(s.calls.filter((call) => call.op === "release").map((call) => call.id), [lost.id]);
+  assert.deepEqual([...(browser.sweptOlder ?? new Map()).keys()], [lost.id], "the swept session rides on the browser the tool opens");
+  const at = Date.parse(browser.sweptOlder.get(lost.id));
+  assert.ok(at >= before && at <= Date.now());
+  assert.equal(browser.provider, planeBrowser(s.provider, RUN).provider, "it is the plane's browser");
+  assert.equal((await openPlaneBrowser(s.provider, RUN, { sleep: async () => {} })).sweptOlder, undefined, "a sweep that released none hands nothing over");
+  await claimBrowserProvider(planeBrowser(s.provider, { runId: "run-1", epoch: 2 })).create({ ...SPEC, tag: "ar-run-1-2" }, signal());
+  const released = s.calls.filter((call) => call.op === "release").length;
+  assert.equal((await openPlaneBrowser(s.provider, RUN, { sweep: false })).sweptOlder, undefined, "not swept: nothing released, nothing handed over");
+  assert.equal(s.calls.filter((call) => call.op === "release").length, released);
 });
 
 test("after it ends a dead claim's session, the plane waits out the provider's settle time, so the next session reads what that one saved", async (t) => {
@@ -214,12 +261,6 @@ test("after it ends a dead claim's session, the plane waits out the provider's s
   await claimBrowserProvider(planeBrowser(s.provider, { runId: "run-1", epoch: 2 })).create(SPEC, signal());
   await releaseOlderBrowsers(s.provider, RUN, { sleep: async (ms) => void slept.push(ms) });
   assert.deepEqual(slept, [5_000]);
-});
-
-test("a Browserbase connect URL moves onto the credential proxy, its signing query kept; another host's is left alone", () => {
-  assert.equal(rewriteConnectUrl("wss://connect.browserbase.com/?sessionId=s&signingKey=k", "https://proxy.example/ws/"), "https://proxy.example/ws/?sessionId=s&signingKey=k");
-  assert.equal(rewriteConnectUrl("ws://127.0.0.1:9/devtools/b1", "https://proxy.example"), "ws://127.0.0.1:9/devtools/b1");
-  assert.equal(rewriteConnectUrl("wss://connect.browserbase.com/?x=1", undefined), "wss://connect.browserbase.com/?x=1");
 });
 
 test("a provider that is no browser, or a browser that declares no features, is refused in browser_unavailable's words", () => {

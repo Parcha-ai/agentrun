@@ -3,15 +3,27 @@
 // runs.update and for the journal's commit (store/journal), which stages the patch and calls this inside its own
 // transaction: the run's end and its outbox rows commit with the journal's last entry, or none of them do. The fence is
 // the first statement: `WHERE id = ? AND epoch = ?` changing no row throws Fenced, and the caller's transaction rolls back.
-import { endedReason, FINAL_STATES, Fenced, type AlsoRow, type Claim, type ImportedFrom, type RunOutcome, type RunLabels, type RunPatch, type RunRow, type RunState } from "../store.js";
+import { CENSUS_UNSCANNED, endedReason, FINAL_STATES, Fenced, RUNNER_STALE_MS, type AlsoRow, type Claim, type ImportedFrom, type RunOutcome, type RunLabels, type RunPatch, type RunRow, type RunState } from "../store.js";
 import { type Dialect, settledBody, SQLITE } from "../dialect.js";
-import type { SqliteExecutor, SqliteValue } from "./connection.js";
+import type { SqliteExecutor, SqliteValue, StoreConnection } from "./connection.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
-import { readableJson, writeLaunch } from "./run-launch.js";
+import { readableJson, readLaunch, writeLaunch } from "./run-launch.js";
+import { record, runEndOfLaunch } from "../../learn/ledger.js";
 
 /** A WHERE condition on `runs`: the run is no built-in learning run (one a kept learning names, queued with it), which no
  *  list of runs names. */
 export const NOT_A_LEARNING_RUN = "id NOT IN (SELECT learning_run_id FROM learning_proposals WHERE learning_run_id IS NOT NULL)";
+
+/** Learning.byHandBefore on both stores (agent, the window's oldest run's start and id, how many): the agent's newest
+ *  rows on the `agent` path (the one by-hand rule, learn/ledger.ts record) before that run, of a known cost, on no named
+ *  disk, neither imported, archived, purged, a learning run nor a workflow revision's run (a standalone workflow's row is
+ *  on the `agent` path, and the window, store-reads/learning.ts ledgerReadOf, leaves those runs out too). It walks
+ *  schema.ts LEARNING_LEDGER_BY_HAND newest first and stops at `limit`: no sort of the agent's ledger. */
+export const BY_HAND_BEFORE = `SELECT l.run_id, l.started_at, l.job_usd FROM learning_ledger l JOIN runs ON runs.id = l.run_id
+  WHERE l.agent_id = ? AND l.path = 'agent' AND (l.started_at, l.run_id) < (?, ?) AND l.cost = 'known' AND l.job_usd IS NOT NULL
+    AND runs.${NOT_A_LEARNING_RUN} AND runs.disk IS NULL AND runs.imported_from IS NULL AND runs.archived_at IS NULL AND runs.purged_at IS NULL
+    AND NOT EXISTS (SELECT 1 FROM revisions WHERE revisions.id = runs.revision_id AND revisions.kind = 'workflow')
+  ORDER BY l.started_at DESC, l.run_id DESC LIMIT ?`;
 
 
 /** The lock a write of a run's sign_in_handed and a sign-in's forget both take (Dialect.lockKey): the forget's check of
@@ -50,7 +62,7 @@ export const runOf = (r: RunRecord): RunRow => ({
  *  `now` (the store's clock, read in the transaction). A final state with no `endedAt` is stamped `now`, and releases the
  *  run in the same statement. `dialect`: the connection's (store/dialect.ts), SQLite's by default. `clock`: the deadlines'
  *  clock (fence.ts storeNow) the fence and left_running_at read; `now` bound by default. */
-export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, claim: Pick<Claim, "runId" | "epoch">, patch: RunPatch, also: readonly AlsoRow[], now: number, dialect: Dialect = SQLITE, clock: StoreNow = storeNow(dialect, () => now)): Promise<RunRow> {
+export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get" | "all">, claim: Pick<Claim, "runId" | "epoch">, patch: RunPatch, also: readonly AlsoRow[], now: number, dialect: Dialect = SQLITE, clock: StoreNow = storeNow(dialect, () => now)): Promise<RunRow> {
   const sets: string[] = [];
   const params: SqliteValue[] = [];
   const set = (column: string, value: SqliteValue) => (sets.push(`${column} = ?`), params.push(value));
@@ -111,7 +123,135 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
         break;
     }
   }
-  return runOf(row);
+  const run = runOf(row);
+  // A run this patch leaves ended has its ledger row and spend rows (learn/ledger.ts record) in this same commit, over
+  // every round its learning kept, this patch's included: an end, a later end after a follow-up and a patch of an ended
+  // run's metrics each write them whole again.
+  if (FINAL_STATES.includes(run.state)) await recordLedger(tx, run, now);
+  return run;
+}
+
+/** Writes run `run`'s ledger row and spend rows (learn/ledger.ts record) through `tx`, from its row and every round its
+ *  learning kept, in place of any it had: the one writer of learning_ledger and learning_spend (a run's end, a heal of
+ *  its cost, an import, and the server's open: backfillLedger). */
+export async function recordLedger(tx: Pick<SqliteExecutor, "run" | "all" | "get">, run: RunRow, now: number): Promise<void> {
+  const rounds = (await tx.all<{ round: number; proposal: string }>("SELECT round, proposal FROM learning_proposals WHERE run_id = ? ORDER BY round", run.id))
+    .map((one) => ({ round: Number(one.round), proposal: JSON.parse(one.proposal) as unknown }));
+  // An audit's shadow is booked on the run its launch audits, whatever its end named (one that failed first names none);
+  // a check's replay is its revision's check (on the key its launch names) whatever its end named; a run whose end named
+  // no path is the agent's when its launch does not learn (learn/ledger.ts runEndOfLaunch).
+  const body = (await readLaunch(tx, run.id).catch(() => undefined))?.body;
+  const { row, spend } = record(runEndOfLaunch(run, rounds, body));
+  await tx.run(
+    `INSERT INTO learning_ledger (run_id, agent_id, started_at, path, workflow, digest, not_served, job_usd, look_back_usd, cost, workflow_calls) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (run_id) DO UPDATE SET agent_id = excluded.agent_id, started_at = excluded.started_at, path = excluded.path, workflow = excluded.workflow, digest = excluded.digest,
+        not_served = excluded.not_served, job_usd = excluded.job_usd, look_back_usd = excluded.look_back_usd, cost = excluded.cost, workflow_calls = excluded.workflow_calls`,
+    row.runId, row.agentId, row.startedAt, row.path, row.workflow, row.digest, row.notServed, row.jobUsd, row.lookBackUsd, row.cost, JSON.stringify(row.workflowCalls),
+  );
+  await tx.run("DELETE FROM learning_spend WHERE run_id = ?", run.id);
+  for (const one of spend) {
+    await tx.run(
+      "INSERT INTO learning_spend (run_id, kind, round, agent_id, of_run, workflow, digest, usd, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      one.runId, one.kind, one.round, one.agentId, one.ofRun, one.workflow, one.digest, one.usd, now,
+    );
+  }
+}
+
+/** A final run, not purged (its purge took its row). */
+const FINAL_KEPT = `state IN (${FINAL_STATES.map((state) => `'${state}'`).join(", ")}) AND purged_at IS NULL`;
+
+/** A final run with no ledger row, not purged: one an earlier build ended. */
+const UNRECORDED = `${FINAL_KEPT} AND NOT EXISTS (SELECT 1 FROM learning_ledger WHERE learning_ledger.run_id = runs.id)`;
+
+/** How many runs backfillLedger records in one transaction. */
+const BACKFILL_PAGE = 64;
+
+/** The next page of runs with no ledger row (UNRECORDED), by id after `?`. */
+const UNRECORDED_PAGE = `SELECT id FROM runs WHERE id > ? AND ${UNRECORDED} ORDER BY id LIMIT ${BACKFILL_PAGE}`;
+
+/** The next page of runs whose learning kept more than one round (a follow-up opened them again), by id after `?`: a walk
+ *  of learning_proposals' primary key (run_id, round) alone, one entry a kept round of a run that learned, so no run that
+ *  never kept a second round, and no journal, is read. Whether each is final and not purged is read again in its page. */
+const REOPENED_PAGE = `SELECT DISTINCT run_id AS id FROM learning_proposals WHERE run_id > ? AND round > 1 ORDER BY run_id LIMIT ${BACKFILL_PAGE}`;
+
+/** Whether a runner of an earlier build is there now: a runners row seen within RUNNER_STALE_MS on the deadlines' clock
+ *  (fence.ts storeNow, as Runners.live reads it) that says no schema version it knows (a build before runners.knows) or
+ *  one below `floor`, the store's runner floor. Such a runner still ends runs until its floor read stops it. */
+async function earlierRunnerThere(connection: Pick<StoreConnection, "all" | "dialect">, now: () => number, floor: number): Promise<boolean> {
+  const d = connection.dialect;
+  const n = storeNow(d, now);
+  const there = await connection.all(`SELECT 1 AS there FROM runners WHERE seen_at >= ${n.sql} - ${d.bigintParam} AND (knows IS NULL OR knows < ${d.bigintParam}) LIMIT 1`, ...n.params, RUNNER_STALE_MS, floor);
+  return there.length > 0;
+}
+
+/** Whether a run is held now by a claim taken before `before` on the store's clock (its attempt row's claimed_at for the
+ *  run's epoch), or by one with no attempt row to say when (a claim before run_attempts, or its row gone). A runner of an
+ *  earlier build stops claiming at its first floor read after the floor rose (every RUNNER_RENEW_EVERY_MS), so every
+ *  claim it holds was taken before the server's open and RUNNER_STALE_MS: this finds it even when a rolling restart's
+ *  runner of this build took its name, and its row is no longer the earlier build's. */
+async function claimHeldFrom(connection: Pick<StoreConnection, "all" | "dialect">, now: () => number, before: number): Promise<boolean> {
+  const d = connection.dialect;
+  const n = storeNow(d, now);
+  const held = await connection.all(
+    `SELECT 1 AS held FROM runs LEFT JOIN run_attempts ON run_attempts.run_id = runs.id AND run_attempts.epoch = runs.epoch WHERE runs.runner IS NOT NULL AND runs.claimed_until >= ${n.sql} AND (run_attempts.claimed_at IS NULL OR run_attempts.claimed_at < ${d.bigintParam}) LIMIT 1`,
+    ...n.params,
+    before,
+  );
+  return held.length > 0;
+}
+
+/** The server's pass over the ledger on either store (backfillLedger), from its store's open on: reads the store's clock
+ *  now, the open's time, and answers the pass that holds the reopened runs' mark on the claims taken before it and
+ *  RUNNER_STALE_MS. The open runs it once, and the server's timer until it answers true (Store.rerecordReopened). */
+export async function ledgerPasses(connection: Pick<StoreConnection, "all" | "dialect" | "get" | "transaction">, now: () => number, floor: () => Promise<number>): Promise<() => Promise<boolean>> {
+  const n = storeNow(connection.dialect, now);
+  const opened = Number((await connection.get<{ at: number | string }>(`SELECT ${n.sql} AS at`, ...n.params))?.at);
+  return () => backfillLedger(connection, now, floor, opened + RUNNER_STALE_MS);
+}
+
+/** The server's pass over the ledger on either store, at its open and on its timer until it answers true (server.ts):
+ *  records every final run that has no ledger row (UNRECORDED), as its end would have (recordLedger), then marks the
+ *  ledger whole (store_meta.ledger_backfilled), after which no pass reads those runs again; and records again every
+ *  final run, not purged, whose learning kept more than one round (REOPENED_PAGE), whose row a build before this split
+ *  (learn/ledger.ts roundsLooked) wrote with its job at its first round's figure. The row is the journal's, so it is
+ *  recorded again, never read two ways. That second pass reads, before it starts, whether a runner of an earlier build
+ *  may still end a run: one is there (earlierRunnerThere, against `floor()`, the store's runner floor), or a run is held
+ *  by a claim taken before `claimedBefore`, the server's open and RUNNER_STALE_MS (claimHeldFrom), which finds an
+ *  earlier runner whose name a rolling restart's runner of this build took. Such a runner, ending its in-flight runs
+ *  until its floor read stops it, writes a reopened run's row under the split before after any pass, so while either
+ *  holds each try records every such run again and leaves the mark (store_meta.ledger_rerecorded) unset, and the first
+ *  try that starts with neither marks it. Answers whether the mark is
+ *  set. Once it is, no pass reads those runs again: each end, heal and import writes its own row, and no reader records
+ *  one. Each pass goes by id, BACKFILL_PAGE runs a transaction, each read again in it; a mark is set only after the last
+ *  page of a pass that may set it, so a stop partway keeps each page it committed and the next try walks again from the
+ *  first id (a run recorded again gets the same row). Each run's row is locked before it is read again (a no-op on
+ *  SQLite's one writer): on Postgres another server's heal or end of it in flight commits first and the read sees its
+ *  row, so a pass never writes over it with what it read before, and two servers trying at once write the same row. */
+export async function backfillLedger(connection: Pick<StoreConnection, "all" | "dialect" | "get" | "transaction">, now: () => number, floor: () => Promise<number>, claimedBefore: number): Promise<boolean> {
+  const marks = await connection.get<{ whole: number; split: number }>("SELECT ledger_backfilled AS whole, ledger_rerecorded AS split FROM store_meta WHERE singleton = 1");
+  if (Number(marks?.whole) !== 1) await recordEach(connection, now, UNRECORDED_PAGE, UNRECORDED, "ledger_backfilled");
+  if (Number(marks?.split) === 1) return true;
+  const held = (await earlierRunnerThere(connection, now, await floor())) || (await claimHeldFrom(connection, now, claimedBefore));
+  await recordEach(connection, now, REOPENED_PAGE, FINAL_KEPT, held ? undefined : "ledger_rerecorded");
+  return !held;
+}
+
+/** One pass of backfillLedger: each page `pick` lists (by id after its one parameter), each run locked, read again where
+ *  `where` still holds and recorded, a transaction a page; then `mark`, when given, set in store_meta. */
+async function recordEach(connection: Pick<StoreConnection, "all" | "dialect" | "transaction">, now: () => number, pick: string, where: string, mark: "ledger_backfilled" | "ledger_rerecorded" | undefined): Promise<void> {
+  for (let after = ""; ;) {
+    const page = await connection.all<{ id: string }>(pick, after);
+    if (page.length === 0) break;
+    await connection.transaction(async (tx) => {
+      for (const { id } of page) {
+        await connection.dialect.lockRow(tx, "runs", "id", id);
+        const row = await tx.get<RunRecord>(`SELECT ${RUN_COLUMNS} FROM runs WHERE id = ? AND ${where}`, id);
+        if (row) await recordLedger(tx, runOf(row), now());
+      }
+    });
+    after = page.at(-1)!.id;
+  }
+  if (mark) await connection.transaction((tx) => tx.run(`UPDATE store_meta SET ${mark} = 1 WHERE singleton = 1`).then(() => undefined));
 }
 
 /** The one reopen a run that ended may take (runs.reopen, and a run's end with a person's message waiting): back to running
@@ -140,7 +280,7 @@ export const reopenableWhere = (d: Dialect): string => `(state = 'ended' OR (sta
  *  while the run looked back: a cancel at it cut the look-back alone and is refused with the rest. Only with a person's
  *  message waiting (the run read as going on from it, as a completed run a message opens again) is a cancel, waiting or
  *  taken in this commit, that message's run's: it ends cancelled, at this commit's time. */
-export async function refuseLeftovers(tx: Pick<SqliteExecutor, "run" | "get">, runId: string, state: RunState | undefined, now: number, dialect: Dialect = SQLITE, keepsEnd = false): Promise<void> {
+export async function refuseLeftovers(tx: Pick<SqliteExecutor, "run" | "get">, runId: string, state: RunState | undefined, now: number, dialect: Dialect = SQLITE, keepsEnd = false, census?: RunPatch["census"]): Promise<void> {
   if (state !== "ended" && state !== "stopped" && state !== "failed") return;
   // A cancel the API accepted (202, not refused) promised a cancelled run, and the view reads cancelled from that 202 on.
   // A normal end that commits with it still waiting is the cancel's: the run is stopped with outcome 'cancelled' (stopEnd's
@@ -160,7 +300,7 @@ export async function refuseLeftovers(tx: Pick<SqliteExecutor, "run" | "get">, r
     if (won) {
       await tx.run("UPDATE commands SET taken_at = ? WHERE run_id = ? AND taken_at IS NULL AND refused IS NULL AND kind = 'cancel'", now, runId);
       await tx.run("UPDATE commands SET taken_at = ?, refused = ? WHERE run_id = ? AND taken_at IS NULL", now, endedReason("stopped"), runId);
-      await tx.run("UPDATE run_launch SET sealed = NULL WHERE run_id = ? AND sealed IS NOT NULL", runId);
+      await eraseLaunchSecrets(tx, runId, census);
       return;
     }
   }
@@ -178,5 +318,14 @@ export async function refuseLeftovers(tx: Pick<SqliteExecutor, "run" | "get">, r
   await tx.run(`UPDATE commands SET taken_at = ?, refused = ?, ${settledBody(dialect)} WHERE run_id = ? AND taken_at IS NULL`, now, endedReason(state), runId);
   // The run is over: the secrets its launch held for its life go with this same commit. A message that opens it again
   // hands its own (runs.reopen).
-  await tx.run("UPDATE run_launch SET sealed = NULL WHERE run_id = ? AND sealed IS NOT NULL", runId);
+  await eraseLaunchSecrets(tx, runId, census);
+}
+
+/** A final run's launch secrets erased, in its end's commit, and what that end knew of where they sat written in their
+ *  place: `census` when it was made under the sealed bytes erased here, else CENSUS_UNSCANNED (an end with none, or one
+ *  whose launch a message sealed anew after the census read it). A launch with no sealed bytes is left as it is: its
+ *  census, if any, is the end's that erased them. */
+async function eraseLaunchSecrets(tx: Pick<SqliteExecutor, "run">, runId: string, census: RunPatch["census"] | undefined): Promise<void> {
+  if (census) await tx.run("UPDATE run_launch SET census = ?, sealed = NULL WHERE run_id = ? AND sealed = ?", census.json, runId, census.sealed);
+  await tx.run("UPDATE run_launch SET census = ?, sealed = NULL WHERE run_id = ? AND sealed IS NOT NULL", CENSUS_UNSCANNED, runId);
 }

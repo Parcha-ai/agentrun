@@ -11,8 +11,22 @@ entries.
 - The host's tools are one loopback MCP server, `agentrun`, given on `session/new`: over HTTP when the recipe declares
   it, else over stdio through a small bridge. Every call runs through the kernel's tool bridge: the host's gate, the
   call's intent in the session's records, then the tool.
-- `session/request_permission` for the agent's own tools goes through the host's gate (allow, deny, park), journaled.
-  The adapter answers `allow_once` or `reject_once`, never an `allow_always`, and never trusts the status ACP reports.
+- `session/request_permission` goes through the host's gate (allow, deny, park), journaled. The adapter answers
+  `allow_once` or `reject_once`, never an `allow_always`, and never trusts the status ACP reports. The host's tools ask
+  nothing: a recipe's `allowFile` (Goose's `.config/goose/permission.yaml`) lists them for the agent at each start, and
+  the gate asks at the MCP call. A recipe that declares `quirks.permissionTie: "title"` (Cursor's, whose allowlist asks
+  for every MCP call, and Antigravity's, since agy asks for every MCP call) has its request for one of the host's announced calls answered `allow_once` without the gate.
+- A request for a tool of the host's MCP server that the agent is not given (one its start does not list, named in its
+  title or name as the agent names the host's tools) is answered `reject_once` at once: no gate, nothing journaled, so
+  nothing parks, and the run gets a notice, `tool "<name>" isn't granted to this agent`. ACP's answer carries no words,
+  so the agent reads its own refusal; the notice is for the person. Such a request a parked run left waiting is
+  refused the same way on the resume, settled, before the agent starts: its title is read against the server name of
+  the start that asked, recorded with it, since Cursor's and agy's recipes name the server per start. A native call of a kind with effects (a shell, an
+  edit) is the gate's whatever its title. An agent that calls such a tool without asking is answered by the MCP server
+  itself, in the same words.
+- An agent's `tool_call` is matched to the MCP call it makes by the tool and the arguments. Which tool it names is read
+  from the field its recipe's `announces` declares (Goose's `_meta.goose.toolCall.toolName`, Cursor's `rawInput`, agy's `name`),
+  never from its title; a call that field names as another tool is the agent's own.
 - `session/load` resumes a session when the recipe declares it and the agent advertises it; the history it replays stays
   off the timeline. With no load, a crash mid-turn restarts the turn on a new agent session with the kernel's recovery
   note, and the conversation so far as a context note.

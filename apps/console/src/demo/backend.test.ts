@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
+import { editBody } from "@/lib/agentForm";
 import { ClientError, createClient, follow } from "@/lib/client";
 import { createDemoFetch, DEMO_REFUSAL, demoCapabilities } from "./backend";
 import { AGENTS, heroes, history } from "./tale";
-import { createWorld } from "./world";
+import { demoUpload } from "./mode";
+import { CORRECTION_MS, createWorld } from "./world";
 
 const OPENED = Date.parse("2026-11-18T15:00:00.000Z");
 
@@ -13,7 +15,8 @@ function demo(now = { ms: OPENED }) {
     const path = new URL(String(input), "http://server.invalid").pathname;
     asked.push(`${init?.method ?? "GET"} ${path}`);
     if (path === "/v2/capabilities") return Response.json({ harnesses: [{ id: "pi", available: false, reason: "pi needs a key.", needs: ["key"], default_model: null }], models: { ready: false, needs: "key" }, tools: [{ name: "browser", available: false, reason: "it needs a key" }], secrets: [{ name: "model:OPENAI_API_KEY", set: true }], switches: { X: { on: true } }, features: { triggers: { routes: false } } });
-    if (path === "/v2/templates") return Response.json({ templates: [{ id: "kyb", bundled: true }, { id: "ours", bundled: false }] });
+    if (path === "/v2/marketplace/templates") return Response.json({ url: "https://marketplace.example", state: "read", read_at: "2026-11-24T00:00:00.000Z", templates: [{ name: "kyb", title: "KYB", tags: [], needs: [], page_url: "https://marketplace.example/templates/kyb/", here: "kyb" }, { name: "ours", title: "Ours", tags: [], needs: [], page_url: "https://marketplace.example/templates/ours/", here: "ours" }, { name: "brief", title: "Brief", tags: [], needs: [], page_url: "https://marketplace.example/templates/brief/" }] });
+    if (path === "/v2/templates") return Response.json({ templates: [{ id: "kyb", bundled: true, model: { tier: "balanced", choices: [{ id: "codex", label: "Codex", model: "openai/gpt-6.1-sol", harness: "codex", warning: null, note: null, secrets: [] }] } }, { id: "ours", bundled: false }] });
     return Response.json({ signed_in: true });
   });
   const world = createWorld({ opened: OPENED, clock: () => now.ms });
@@ -32,7 +35,7 @@ describe("demo mode's backend", () => {
     await v2.listTriggers();
     await v2.agentLearning("refund-desk");
     await v2.listMcpServers();
-    expect(await v2.listSuggestions()).toMatchObject({ github: { connected: false }, suggestions: [] });
+    expect(await v2.listSuggestions()).toMatchObject({ github: { connected: true }, repositories: [{ repo: "larkspur/marketplace", scan: { status: "completed" } }] });
     expect(asked).toEqual([]);
     await v2.session();
     await v2.capabilities();
@@ -54,7 +57,12 @@ describe("demo mode's backend", () => {
     expect((await demo().v2.listTemplates()).templates.map((t) => t.id)).toEqual(["kyb"]);
   });
 
-  it("refuses a write the tour does not make, saying why, and sends none of it to the server", async () => {
+  it("lists the marketplace's templates as the server read them, each marked here only for a template it ships with", async () => {
+    const list = await demo().v2.listMarketplaceTemplates();
+    expect(list.templates.map((t) => [t.name, t.here ?? null])).toEqual([["kyb", "kyb"], ["ours", null], ["brief", null]]);
+  });
+
+  it("refuses a write to the server's own settings, which demo mode hides, and sends none of it to the server", async () => {
     const { v2, asked } = demo();
     const refused = async (write: Promise<unknown>) => {
       const e = await write.then(() => null, (x: unknown) => x);
@@ -63,11 +71,7 @@ describe("demo mode's backend", () => {
       expect((e as ClientError).message).toBe(DEMO_REFUSAL);
     };
     await refused(v2.saveToolKey("openai", { OPENAI_API_KEY: "fake-test-key" }));
-    await refused(v2.archiveAgent("refund-desk"));
-    await refused(v2.applyTemplate("kyb", {}, "key-0"));
     await refused(v2.saveWebhook("https://hooks.example/x"));
-    await refused(v2.deleteTrigger("trg-demo-weekly-brief"));
-    await refused(v2.writeCorrections("refund-desk", "x", '"e"'));
     expect(asked).toEqual([]);
   });
 
@@ -76,15 +80,73 @@ describe("demo mode's backend", () => {
     const made = await v2.createAgent({ definition: { version: 1, name: "Invoice Matcher", description: "Matches invoices to orders.", instructions: "Match them.", harness: "pi", skills: [], tools: ["read"] } });
     expect(made).toMatchObject({ agent_id: "invoice-matcher", kind: "agentic", revisions: 1, definition: { name: "Invoice Matcher", tools: ["read"] } });
     expect((await v2.listAgents()).agents.at(-1)?.agent_id).toBe("invoice-matcher");
-    const edited = await v2.updateDefinition("invoice-matcher", { definition: { description: "Matches each invoice to its order." }, note: "Clearer" }, null);
+    const edited = await v2.updateDefinition("invoice-matcher", { definition: { ...made.definition, description: "Matches each invoice to its order." }, note: "Clearer" }, null);
     expect(edited.agent).toMatchObject({ revisions: 2, definition: { description: "Matches each invoice to its order.", instructions: "Match them." } });
     expect((await v2.listRevisions("invoice-matcher")).revisions.map((r) => [r.version, r.note, r.current])).toEqual([[2, "Clearer", true], [1, null, false]]);
     // A story's agent takes an edit too, and keeps its earlier revisions.
-    expect((await v2.updateDefinition("refund-desk", { definition: { description: "Decides refunds." } }, null)).agent.revisions).toBe(4);
+    expect((await v2.updateDefinition("refund-desk", { definition: { ...(await v2.getAgent("refund-desk")).agent.definition, description: "Decides refunds." } }, null)).agent.revisions).toBe(4);
     const { run } = await v2.startRun("invoice-matcher", { input: { content: "Match invoice 12" } }, "key-9");
     now.ms += 60_000;
     expect((await v2.getRun(run.run_id)).result?.final_answer).toMatch(/Demo mode calls no model/);
     expect(asked).toEqual([]);
+  });
+
+  it("keeps complete skill files by revision and refuses stale edits without touching the server", async () => {
+    const { v2, asked } = demo();
+    const files = { "review/SKILL.md": "Review the change.", "review/rules.md": "Keep the evidence." };
+    const made = await v2.createAgent({ definition: { version: 1, name: "Skill demo", instructions: "Review.", skills: ["review"], tools: [] }, skills: files });
+    expect(await v2.getRevisionSkills(made.agent_id, made.revision!)).toEqual({ revision: made.revision, skills: files });
+    const saved = await v2.updateDefinition(made.agent_id, { definition: made.definition, skills: { ...files, "review/SKILL.md": "Read the rules first." } }, made.home_etag);
+    expect((await v2.getRevisionSkills(made.agent_id, saved.agent.revision!)).skills).toEqual({ ...files, "review/SKILL.md": "Read the rules first." });
+    expect((await v2.getRevisionSkills(made.agent_id, made.revision!)).skills).toEqual(files);
+    await expect(v2.updateDefinition(made.agent_id, { definition: made.definition, skills: {} }, made.home_etag)).rejects.toMatchObject({ status: 412 });
+    await expect(v2.getRevisionSkills("refund-desk", made.revision!)).rejects.toMatchObject({ status: 404 });
+    await v2.setCurrent(made.agent_id, made.revision!);
+    const renamed = await v2.updateDefinition(made.agent_id, { definition: { ...made.definition, description: "Keep the current files." } }, made.home_etag);
+    expect((await v2.getRevisionSkills(made.agent_id, renamed.agent.revision!)).skills).toEqual(files);
+    const empty = await v2.updateDefinition(made.agent_id, { definition: { ...renamed.agent.definition, skills: [] }, skills: {} }, renamed.etag);
+    expect((await v2.getRevisionSkills(made.agent_id, empty.agent.revision!)).skills).toEqual({});
+    expect(asked).toEqual([]);
+  });
+
+  it("clears removed optional settings after saving and reopening, while preserving the original revision", async () => {
+    const { v2, asked, now } = demo();
+    const made = await v2.createAgent({ definition: { version: 1, name: "Reset settings", instructions: "Review.", harness: "pi", model: "test/model", thinking: "high", skills: [], tools: ["read"] } });
+    const body = editBody(made, { thinking: undefined, model: "" }, "Use model defaults");
+    expect(body.definition).not.toHaveProperty("thinking");
+    expect(body.definition).not.toHaveProperty("model");
+    await v2.updateDefinition(made.agent_id, body, made.home_etag);
+    const reopened = (await v2.getAgent(made.agent_id)).agent;
+    expect(reopened.definition).not.toHaveProperty("thinking");
+    expect(reopened.definition).not.toHaveProperty("model");
+    expect(reopened.definition).toMatchObject({ instructions: "Review.", harness: "pi", tools: ["read"] });
+    const { run } = await v2.startRun(made.agent_id, { input: { content: "Review the change." } }, "reset-model");
+    now.ms += 60_000;
+    expect((await v2.runUsage(run.run_id)).lines).toEqual(expect.arrayContaining([expect.objectContaining({ provider: "anthropic", model: "claude-sonnet-5-5" })]));
+    await v2.setCurrent(made.agent_id, made.revision!);
+    expect((await v2.getAgent(made.agent_id)).agent.definition).toMatchObject({ thinking: "high", model: "test/model" });
+    const restored = await v2.startRun(made.agent_id, { input: { content: "Review again." } }, "restored-model");
+    now.ms += 60_000;
+    expect((await v2.runUsage(restored.run.run_id)).lines).toEqual(expect.arrayContaining([expect.objectContaining({ provider: "test", model: "model" })]));
+    expect(asked).toEqual([]);
+  });
+
+  it.each(["save", "restore"] as const)("keeps past run model labels when an agent revision changes through %s", async action => {
+    const { v2, now } = demo();
+    const first = await v2.createAgent({ definition: { version: 1, name: "Model history", instructions: "Review.", harness: "pi", model: "first/model-one", skills: [], tools: [] } });
+    const second = await v2.updateDefinition(first.agent_id, { definition: { ...first.definition, model: "second/model-two" } }, first.home_etag);
+    const { run } = await v2.startRun(first.agent_id, { input: { content: "Review." } }, "historical-model");
+    now.ms += 60_000;
+    const usage = await v2.runUsage(run.run_id), trace = await v2.runTrace(run.run_id);
+    expect(usage.lines).toEqual(expect.arrayContaining([expect.objectContaining({ provider: "second", model: "model-two" })]));
+    expect(trace.spans).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "model", name: "model-two" })]));
+    if (action === "restore") await v2.setCurrent(first.agent_id, first.revision!);
+    else await v2.updateDefinition(first.agent_id, { definition: { ...second.agent.definition, model: "third/model-three" } }, second.etag);
+    expect(await v2.runUsage(run.run_id)).toEqual(usage);
+    expect(await v2.runTrace(run.run_id)).toEqual(trace);
+    const next = await v2.startRun(first.agent_id, { input: { content: "Review again." } }, "next-model");
+    now.ms += 60_000;
+    expect((await v2.runUsage(next.run.run_id)).lines).toEqual(expect.arrayContaining([expect.objectContaining(action === "restore" ? { provider: "first", model: "model-one" } : { provider: "third", model: "model-three" })]));
   });
 
   it("lists connected Claude Code and Codex agents beside the server's own, ready to run", async () => {
@@ -116,11 +178,11 @@ describe("demo mode's backend", () => {
     await expect(v2.readLearningFile("support-triage", "workflows/refund-decision/workflow.json")).rejects.toMatchObject({ status: 404 });
   });
 
-  it("takes the owner's OK on the Refund desk's waiting workflow alone: another agent's workflow is refused, and approves nothing", async () => {
+  it("takes the owner's OK on a workflow that waits for it: one being checked already is refused as the server would, and approves nothing", async () => {
     const { v2 } = demo();
     const pending = async () => (await v2.agentLearning("refund-desk")).workflows.find((w) => w.status === "pending");
     const triage = (await v2.agentLearning("support-triage")).workflows[0];
-    await expect(v2.approveWorkflow("support-triage", triage.readme, triage.etag)).rejects.toMatchObject({ status: 403, code: "demo_mode" });
+    await expect(v2.approveWorkflow("support-triage", triage.readme, triage.etag)).rejects.toMatchObject({ status: 409 });
     const waiting = await pending();
     expect(waiting).toBeDefined();
     await v2.approveWorkflow("refund-desk", waiting!.readme, waiting!.etag);
@@ -256,5 +318,243 @@ describe("the demo's story", () => {
   });
   it("is the same at every load", () => {
     expect(JSON.stringify(history(OPENED))).toBe(JSON.stringify(history(OPENED)));
+  });
+});
+
+// Each write the tour reaches does what the server's would, on the sample data, and none of it reaches the server.
+describe("demo mode's writes", () => {
+  it("takes a grade of an ended run, as the server does, and keeps it beside the run", async () => {
+    const { v2, asked } = demo();
+    const graded = await v2.gradeRun("demo-run-refund-by-agent", { correct: true });
+    expect(graded).toMatchObject({ run_id: "demo-run-refund-by-agent", correct: true, source: "feedback", feedback: null });
+    expect((await v2.runLearning("demo-run-refund-by-agent"))?.graded).toMatchObject({ correct: true, feedback_status: null });
+    expect(asked).toEqual([]);
+  });
+
+  it("runs a wrong grade's correction round to its end, which the run page sees move (its learning) and settle", async () => {
+    const { v2, now } = demo();
+    const graded = await v2.gradeRun("demo-run-refund-by-agent", { correct: false, label: "Quote the order number in the note." });
+    expect(graded).toMatchObject({ correct: false, feedback: "correction" });
+    // The round is under way: the run's learning reads reflecting, so the page reads it again until it settles.
+    expect((await v2.getRun("demo-run-refund-by-agent")).learning?.state).toBe("reflecting");
+    expect((await v2.runLearning("demo-run-refund-by-agent"))?.graded).toMatchObject({ feedback_status: "running" });
+    now.ms += CORRECTION_MS;
+    const run = await v2.getRun("demo-run-refund-by-agent");
+    expect(run.learning).toMatchObject({ state: "merged", detail: "Kept a correction from your grade: Quote the order number in the note." });
+    expect((await v2.runLearning("demo-run-refund-by-agent"))?.graded).toMatchObject({ feedback_status: "ended" });
+    expect((await v2.agentLearning("refund-desk")).corrections).toContain("- Quote the order number in the note.");
+  });
+
+  it("answers a follow-up to an ended run: the run works again, then ends with its answer", async () => {
+    const { v2, now } = demo();
+    const sent = await v2.sendMessage("demo-run-refund-by-agent", "Was the shipping refunded too?", "k1");
+    expect(sent).toMatchObject({ mode: "follow_up", status: "working" });
+    now.ms += 10_000;
+    const run = await v2.getRun("demo-run-refund-by-agent");
+    expect(run).toMatchObject({ status: "completed", state: "idle" });
+    expect(run.result?.final_answer).toMatch(/^On your follow-up/);
+    const rows = (await v2.getTimeline("demo-run-refund-by-agent")).rows;
+    expect(rows.some((r) => r.kind === "user_message" && r.text === "Was the shipping refunded too?")).toBe(true);
+    expect(rows.at(-1)?.kind).toBe("usage");
+  });
+
+  it("takes a message while a run works as a steer, shown on its timeline", async () => {
+    const { v2 } = demo();
+    const { run } = await v2.startRun("support-triage", { input: { content: "Ticket: my parcel is late" } }, "k2");
+    expect(await v2.sendMessage(run.run_id, "Mark it urgent", "k3")).toMatchObject({ mode: "steer" });
+    expect((await v2.getTimeline(run.run_id)).rows.some((r) => r.text === "Mark it urgent")).toBe(true);
+  });
+
+  it("lets a run stopped at its spend cap go on once the cap is raised, and finish", async () => {
+    const { v2, now } = demo();
+    expect((await v2.getRun("demo-run-review-capped")).stopped_for).toBe("budget");
+    expect(await v2.raiseCap("demo-run-review-capped", 3)).toMatchObject({ resumed: true, max_cost_usd: 3, status: "working" });
+    now.ms += 10_000;
+    const run = await v2.getRun("demo-run-review-capped");
+    expect(run).toMatchObject({ status: "completed", error: null, stopped_for: null, cost: { cap_usd: 3 } });
+    expect(run.result?.final_answer).toMatch(/^Reviewed PR #2210/);
+  });
+
+  it("pauses a workflow run's graph where it stands, and resumes it from there", async () => {
+    const { v2, now } = demo();
+    now.ms += 3_000;
+    expect(await v2.pauseRun("demo-run-certificates-live")).toMatchObject({ paused: true });
+    const held = await v2.getRunGraph("demo-run-certificates-live");
+    now.ms += 60_000;
+    const later = await v2.getRunGraph("demo-run-certificates-live");
+    expect(later.run.paused).toBe(true);
+    expect({ ...later, read_at: null }).toEqual({ ...held, read_at: null });
+    expect(await v2.resumeRun("demo-run-certificates-live")).toMatchObject({ paused: false });
+    now.ms += 5_000;
+    expect((await v2.getRunGraph("demo-run-certificates-live")).decisions.length).toBeGreaterThan(held.decisions.length);
+  });
+
+  it("makes, edits, rotates and deletes a trigger", async () => {
+    const { v2 } = demo();
+    const made = await v2.createTrigger({ name: "Nightly refunds", source: { kind: "schedule", cron: "0 2 * * *", timezone: "UTC" }, target: { kind: "start_run", agent_id: "refund-desk", input: { content: "Clear the queue" } } }, "k4");
+    expect(made).toMatchObject({ name: "Nightly refunds", enabled: true, target: { agent_id: "refund-desk" } });
+    expect((await v2.listTriggers()).triggers.map((t) => t.id)).toContain(made.id);
+    expect(await v2.updateTrigger(made.id, { name: "Nightly refund queue", enabled: false })).toMatchObject({ name: "Nightly refund queue", enabled: false });
+    expect((await v2.rotateTriggerSecret("trg-demo-helpdesk-refunds")).signing_secret).toMatch(/^whsec_demo_/);
+    expect(await v2.deleteTrigger(made.id)).toMatchObject({ deleted: true });
+    expect((await v2.listTriggers()).triggers.map((t) => t.id)).not.toContain(made.id);
+  });
+
+  it("keeps an agent's edits: its corrections, a workflow retired and restored, an earlier revision made current, an archive", async () => {
+    const { v2 } = demo();
+    const before = await v2.corrections("refund-desk");
+    await v2.writeCorrections("refund-desk", `${before.text}- Always quote the order number.\n`, before.etag);
+    expect((await v2.corrections("refund-desk")).text).toMatch(/Always quote the order number/);
+    const serving = (await v2.agentLearning("refund-desk")).workflows.find((w) => w.status === "serving")!;
+    await v2.retireWorkflow("refund-desk", serving.readme, serving.etag);
+    expect((await v2.agentLearning("refund-desk")).workflows.find((w) => w.name === serving.name)?.status).toBe("retired");
+    const retired = (await v2.agentLearning("refund-desk")).workflows.find((w) => w.name === serving.name)!;
+    await v2.restoreWorkflow("refund-desk", retired.readme, retired.etag);
+    expect((await v2.agentLearning("refund-desk")).workflows.find((w) => w.name === serving.name)?.status).toBe("serving");
+    const revisions = (await v2.listRevisions("refund-desk")).revisions;
+    const first = revisions.at(-1)!;
+    await v2.setCurrent("refund-desk", first.revision);
+    expect((await v2.listRevisions("refund-desk")).revisions.find((r) => r.current)?.version).toBe(first.version);
+    await v2.archiveAgent("pr-reviewer");
+    expect((await v2.listAgents({ archived: true })).agents.map((a) => a.agent_id)).toEqual(["pr-reviewer"]);
+    expect((await v2.listAgents()).agents.map((a) => a.agent_id)).not.toContain("pr-reviewer");
+    await v2.unarchiveAgent("pr-reviewer");
+    expect((await v2.listAgents({ archived: true })).agents).toEqual([]);
+  });
+
+  it("applies a bundled template: makes its agent in the page, reading only the catalogue from the server", async () => {
+    const { v2, asked } = demo();
+    const applied = await v2.applyTemplate("kyb", {}, "k5");
+    expect(applied).toMatchObject({ template: "kyb", agent_change: "made", triggers: [] });
+    expect((await v2.listAgents()).agents.map((a) => a.agent_id)).toContain(applied.agent_id);
+    expect(asked).toEqual(["GET /v2/templates"]);
+  });
+
+  it("suggests agents from the sample repository: create one, discard and restore another, scan again", async () => {
+    const { v2, now } = demo();
+    const [first, second] = (await v2.listSuggestions()).suggestions;
+    expect((await v2.getSuggestion(first.id)).files.length).toBeGreaterThan(0);
+    const created = await v2.createSuggestedAgent(first.id);
+    expect(created).toMatchObject({ status: "created", created: { branch: `agentrun/${first.key}` } });
+    expect((await v2.listAgents()).agents.map((a) => a.agent_id)).toContain(created.created!.agent_id);
+    expect(await v2.discardSuggestion(second.id)).toMatchObject({ status: "discarded" });
+    expect(await v2.restoreSuggestion(second.id)).toMatchObject({ status: "open" });
+    expect(await v2.scanRepository("larkspur/marketplace")).toMatchObject({ status: "running", already_running: false });
+    expect((await v2.listSuggestions()).repositories[0].scan.status).toBe("running");
+    now.ms += 10_000;
+    expect((await v2.listSuggestions()).repositories[0]).toMatchObject({ scan: { status: "completed" }, counts: { created: 1, open: 2 } });
+  });
+
+  it("connects a Claude Code setup found on the demo's laptop as an agent, and enrolls a connector", async () => {
+    const { v2 } = demo();
+    const found = await v2.discoverNative("~/code/larkspur-web");
+    expect(found.targets.map((t) => t.runtime)).toEqual(["claude-code", "codex"]);
+    const { agent, native } = await v2.connectNative({ project: "~/code/larkspur-web", runtime: "claude-code", selector: { kind: "project" } });
+    expect(native).toMatchObject({ runtime: "claude-code", state: "ready", connected: true });
+    expect((await v2.getAgent(agent.agent_id)).agent.native_status).toMatchObject({ project: "~/code/larkspur-web" });
+    expect(await v2.enrollConnector("Build laptop")).toMatchObject({ workspace_id: "local" });
+  });
+
+  it("disconnects a connected agent, which then starts no run, and connects the same setup again", async () => {
+    const { v2 } = demo();
+    const { agent } = await v2.connectNative({ project: "~/code/larkspur-web", runtime: "codex", selector: { kind: "project" } });
+    expect((await v2.disconnectNative(agent.agent_id)).native).toMatchObject({ connected: false });
+    expect((await v2.getAgent(agent.agent_id)).agent.native_status).toMatchObject({ connected: false });
+    await expect(v2.startRun(agent.agent_id, { input: { content: "Fix the build" } }, "k6")).rejects.toMatchObject({ status: 409 });
+    const again = await v2.connectNative({ project: "~/code/larkspur-web", runtime: "codex", selector: { kind: "project" } });
+    expect(again).toMatchObject({ agent: { agent_id: agent.agent_id }, native: { connected: true } });
+  });
+
+  it("makes an edit saved after an earlier revision was made current the current one", async () => {
+    const { v2 } = demo();
+    const first = (await v2.listRevisions("refund-desk")).revisions.at(-1)!;
+    await v2.setCurrent("refund-desk", first.revision);
+    await v2.updateDefinition("refund-desk", { definition: { ...(await v2.getAgent("refund-desk")).agent.definition, description: "Decides refunds, quoting the policy line." } }, null);
+    const revisions = (await v2.listRevisions("refund-desk")).revisions;
+    expect(revisions[0]).toMatchObject({ current: true });
+    expect((await v2.getAgent("refund-desk")).agent.definition.description).toBe("Decides refunds, quoting the policy line.");
+  });
+
+  it("puts a picked file in the inputs/ of the run it starts", async () => {
+    const { v2 } = demo();
+    const file = await demoUpload(new File(["# Notes\nCall the buyer first.\n"], "notes.md", { type: "text/markdown" }), () => {}, new AbortController().signal);
+    const { run } = await v2.startRun("support-triage", { input: { content: "Ticket: my parcel is late" }, file_ids: [file.file_id] }, "k7");
+    expect(run.file_ids).toEqual([file.file_id]);
+    expect((await v2.listFiles(run.run_id)).files.map((f) => f.path)).toContain("inputs/notes.md");
+    expect(await v2.readFile(run.run_id, "inputs/notes.md")).toBe("# Notes\nCall the buyer first.\n");
+    await expect(v2.startRun("support-triage", { input: { content: "x" }, file_ids: ["file_demo_gone"] }, "k8")).rejects.toMatchObject({ status: 422 });
+  });
+
+  it("links each scan of the sample repository to a run that opens, working while the scan does", async () => {
+    const { v2, now } = demo();
+    const done = (await v2.listSuggestions()).repositories[0].scan;
+    expect(await v2.getRun(done.run_id)).toMatchObject({ agent_id: done.agent_id, status: "completed" });
+    const scan = await v2.scanRepository("larkspur/marketplace");
+    expect(scan.run_id).not.toBe(done.run_id);
+    expect((await v2.getRun(scan.run_id)).status).toBe("working");
+    now.ms += 10_000;
+    expect((await v2.getRun(scan.run_id)).status).toBe("completed");
+    expect((await v2.listSuggestions()).repositories[0].scan).toMatchObject({ run_id: scan.run_id, status: "completed" });
+  });
+
+  it("cancels a paused workflow run where its graph stood, however long after its pause", async () => {
+    const { v2, now } = demo();
+    now.ms += 3_000;
+    await v2.pauseRun("demo-run-certificates-live");
+    const held = await v2.getRunGraph("demo-run-certificates-live");
+    now.ms += 60 * 60_000;
+    await v2.cancel("demo-run-certificates-live");
+    const run = await v2.getRun("demo-run-certificates-live");
+    expect(run).toMatchObject({ status: "cancelled", state: "idle" });
+    expect(run.ended_at).toBe(new Date(now.ms).toISOString());
+    const graph = await v2.getRunGraph("demo-run-certificates-live");
+    expect(graph.run.status).toBe("cancelled");
+    expect(graph.decisions).toEqual(held.decisions);
+  });
+
+  it("starts a trigger's run now with the input it saved, and says when a schedule fires next", async () => {
+    const { v2 } = demo();
+    const made = await v2.createTrigger({ name: "Nightly refunds", source: { kind: "schedule", cron: "0 2 * * *", timezone: "UTC" }, target: { kind: "start_run", agent_id: "refund-desk", input: { content: "Clear the refund queue" } } }, "k9");
+    expect(made.next_at).toBe("2026-11-19T02:00:00.000Z");
+    const fired = await v2.fireTrigger(made.id, "k10");
+    expect((await v2.getRun(fired.run_id!)).input).toEqual({ content: "Clear the refund queue" });
+    // 09:30 in New York is 14:30Z, already gone on Wednesday the 18th at 15:00Z: next on Thursday.
+    const moved = await v2.updateTrigger(made.id, { source: { kind: "schedule", cron: "30 9 * * 1-5", timezone: "America/New_York" } });
+    expect(moved.next_at).toBe("2026-11-19T14:30:00.000Z");
+    expect((await v2.updateTrigger(made.id, { enabled: false })).next_at).toBeNull();
+  });
+
+  it("puts two picked files of one name at free names, and never over the run's message", async () => {
+    const { v2 } = demo();
+    const pick = (text: string, name: string) => demoUpload(new File([text], name, { type: "text/markdown" }), () => {}, new AbortController().signal);
+    const ids = [(await pick("first", "notes.md")).file_id, (await pick("second", "notes.md")).file_id, (await pick("mine", "message.md")).file_id];
+    const { run } = await v2.startRun("support-triage", { input: { content: "Ticket: my parcel is late" }, file_ids: ids }, "k13");
+    expect(await v2.readFile(run.run_id, "inputs/notes.md")).toBe("first");
+    expect(await v2.readFile(run.run_id, "inputs/notes-2.md")).toBe("second");
+    expect(await v2.readFile(run.run_id, "inputs/message-2.md")).toBe("mine");
+    expect(await v2.readFile(run.run_id, "inputs/message.md")).toBe("Ticket: my parcel is late");
+  });
+
+  it("says a scan whose run was cancelled was cancelled, not completed", async () => {
+    const { v2, now } = demo();
+    const scan = await v2.scanRepository("larkspur/marketplace");
+    await v2.cancel(scan.run_id);
+    now.ms += 10_000;
+    expect((await v2.listSuggestions()).repositories[0].scan).toMatchObject({ run_id: scan.run_id, status: "cancelled", found: 0 });
+  });
+
+  it("starts each demo from the story as told: a change in one world is not the next one's", async () => {
+    const { v2 } = demo();
+    await v2.disconnectNative(AGENTS.find((a) => a.native)!.id);
+    const fresh = demo().v2;
+    expect((await fresh.getAgent(AGENTS.find((a) => a.native)!.id)).agent.native_status).toMatchObject({ connected: true });
+  });
+
+  it("applies a template with the install form's choices: a model choice and its harness, and approvals", async () => {
+    const { v2 } = demo();
+    const chose = await v2.applyTemplate("kyb", { overrides: { choice: "codex", approvals: "never" } }, "k11");
+    expect((await v2.getAgent(chose.agent_id)).agent.definition).toMatchObject({ model: "openai/gpt-6.1-sol", harness: "codex", approvals: "never" });
+    const own = await v2.applyTemplate("kyb", { overrides: { model: "openai/gpt-6-luna" } }, "k12");
+    expect((await v2.getAgent(own.agent_id)).agent.definition).toMatchObject({ model: "openai/gpt-6-luna" });
   });
 });

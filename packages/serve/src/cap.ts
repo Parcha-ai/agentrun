@@ -247,6 +247,17 @@ export type Meters = { tools: number | null; tokens: number | null; browser: { u
  *  as every paid tool's on the runner: a TOOL_COST beside it would count the same charge twice. Its seconds are the
  *  browser_time meter's (meterFiguresFrom). */
 export const BROWSER_CHARGED = "agentrun.browser_charged";
+/** The tag prefix of a BROWSER_CHARGED record for a browser a create race left running that the run never held
+ *  (browser-cost.ts unheldTag): its time is booked on the run's ledger and absorbed, never billed (run-usage.ts). */
+export const UNHELD_BROWSER_TAG = "unheld:";
+/** Whether a browser charge's tag is one a create race left (UNHELD_BROWSER_TAG). */
+export const unheldBrowserTag = (tag: unknown): boolean => typeof tag === "string" && tag.startsWith(UNHELD_BROWSER_TAG);
+/** The one booking a browser charge (BROWSER_CHARGED) names on the ledger, its ref: its session, its time, and whether
+ *  it was the session's last. A browser a create race left (UNHELD_BROWSER_TAG) is charged once whatever ended it, so its
+ *  booking is its tag alone. The booking (browser-cost.ts) and the usage read that matches a booking to its charge
+ *  (run-usage.ts) both name it by this. */
+export const browserChargeRef = (data: { tag: string; at: unknown; final?: unknown }): string =>
+  unheldBrowserTag(data.tag) ? `browser:${data.tag}/final` : `browser:${data.tag}@${String(data.at)}${data.final ? "/final" : ""}`;
 
 /** /usage's meter figures from a run's entries by conversation, in log order, and beside them each meter's known dollars:
  *  its settled charges' figures, whether or not another of its charges is unknown (a hold, a call cut or never settled, is

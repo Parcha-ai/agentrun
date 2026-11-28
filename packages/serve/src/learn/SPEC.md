@@ -1,42 +1,51 @@
-# An agent's learning folder: the contract
+# An agent's learning: the contract
 
-An agent's learning is a folder kept by its host: its owner's standing corrections, one file, and the workflows its
+An agent's learning is kept by its host, as versioned rows in its store: its owner's standing corrections, one file, and the workflows its
 runs compiled. Every run reads the corrections whole in its instructions, under `# Learned`, and its learned workflows
-as tools. This page is the contract: the folder, the corrections, the workflow draft a compile turn gives, the checks,
-the caps and the commit. The code is the server's own, beside this page: `corrections.ts` (the corrections file),
+as tools. This page is the contract: the rows, the corrections, the workflow draft a compile turn gives, the checks,
+the caps and the save. The code is the server's own, beside this page: `corrections.ts` (the corrections file),
 `check.ts` (the checks), `workflow-draft.ts` (a draft's files and dry run), `compile.ts` (the compile turn's prompt and
-the parser of its answer), `promote.ts` (the promotion record) and `commit.ts` (the writes). None of it runs git or
-calls a model: the rest of the server does both.
+the parser of its answer), `promote.ts` (the promotion record), `rows.ts` (the reads and the save) and `commit.ts` (the writes). None of
+it calls a model: the rest of the server does.
 
 The risk it is built against: an agent reads untrusted pages, and what it learns reaches every later run without a
 person. So nothing a run worked out is served as words: a correction is its owner's own words, and a run's own
 learning is a workflow, checked in code and then replayed against the agent's own answers before it serves.
 
-## The folder
+## The rows
+
+The agent's learning reads as a folder, paths and all, but is kept as rows in the store (SQLite or Postgres:
+`store/sqlite/learning-rows.ts`, the tables `learning_saves`, `learning_items` and `learning_records`):
 
 ```
-corrections.md                    the owner's standing corrections, one per line, served whole under # Learned
-workflows/find-policies/          a workflow draft: its workflow.json and its README.md, together
-audits.jsonl                      the audit ledger: a started line and a row per audit of a served run, host-written
+corrections.md                    the owner's standing corrections, one per line (one note item a line), served whole
+                                  under # Learned
+workflows/find-policies/          a workflow draft (one workflow item): its workflow.json and its README.md, together
 ```
 
-The folder is plain git with one branch, `main`; git is its history and its undo. The host is its only writer: no run
-writes it, and nothing in it runs.
+Each save is one version of the agent's learning, with a random id (a run's seed, the log's `commit`), its kind (`init`,
+`run`, `person`, `purged`), who made it and why. An item is never updated: each save writes the items it changed as
+new versions, and the item at a version is its newest row at or before it. The promotion records, grades and audit
+ledger are records beside them (`learning_records`). The host is the only writer: no run writes them, and nothing in
+them runs.
 
 ## Corrections
 
 `corrections.md` is a markdown list, one correction a line, in its owner's words (`correctionLine`: `- ` and the words,
 whitespace folded to single spaces). A run is served the file whole under `# Learned`, after one line saying what it
 is (`Your owner's standing corrections from earlier runs, one per line. Follow each one that applies.`). Nothing
-picks, ranks or summarizes it: the cap keeps it whole.
+picks, ranks or summarizes it: the cap keeps it short, oldest lines out first.
 
 - An owner's feedback on a run (a grade's words, or a message they sent after the job's first) appends one line, at
   the run's end, in the same commit as anything the run compiled (`LearningChange.correction`). The run is a feedback
-  round, `correction`.
+  round, `correction`. A compile the same round asks is told that line, on every attempt, after the corrections it
+  already knows; a line the checks refuse is never told.
 - A person replaces the file whole over v2 (`PUT /v2/agents/{id}/learning/corrections`, under the ETag its GET
   gave); an empty body empties it.
-- Over `CORRECTIONS_CAP`, 2048 bytes, a write is refused whole, never cut, and the run's learning says why. So is one
-  holding what must never be stored (below).
+- `CORRECTIONS_CAP` is 8192 bytes. A run's correction that would take the file past it drops the file's oldest lines
+  until it fits: the newest correction wins, and the run's learning says how many lines went (`dropped_lines`). A
+  correction whose line alone is past the cap, or a person's whole text past it, is refused whole, never cut, and says
+  why. So is one holding what must never be stored (below).
 
 ## A workflow draft
 
@@ -92,9 +101,9 @@ through the compile turn alone.
 
 Its answer is one ` ````workflow <name> ` block (four backticks, so a code block inside it stays in it): front matter
 with its `description:` and `example:`, then the JSON. The host reads nothing else: no file the run wrote, in its copy
-of the folder or anywhere, is ever read. The draft's files go to the checks as changes against the commit the run
-started from (a revision's against the commit its text was read at). What they refuse goes back to the model, as data,
-and the turn answers again, up to `COMPILE_RETRIES` (3) times. A draft that passes is committed to main directly
+of the folder or anywhere, is ever read. The draft's files go to the checks as changes against the save the run
+started from (a revision's against the save its text was read at). What they refuse goes back to the model, as data,
+and the turn answers again, up to `COMPILE_RETRIES` (3) times. A draft that passes is saved directly
 (`commitDirect`): nothing grades it, and its promotion check (below) decides whether it serves.
 
 A job compiles once: a turn whose drafts all fail their checks is the compile's attempt all the same, kept as a
@@ -105,16 +114,53 @@ them). A first compile's earns the one recompile, as a check's hold does; a reco
 
 A new revision is checked once before it serves (`runner/promotion.ts` startCheck, settleCheck). The first run that
 lays it replays it on the inputs of the agent's last `compile_after` completed runs it fits (one replay run each, at
-workflow cost, one check at a time), and the agent takes the runs meanwhile. Each input is scored against the agent's
-own recorded answer to it (`sameAnswer`): no grade and no teacher is read. The two answers are compared on the fields
+workflow cost, one check at a time), and the agent takes the runs meanwhile. The check judges the draft field by field
+(`learn/field-check.ts` check): each field of each input it answered alone against that field's best known answer, the
+expected answer of the agent run's newest grade (`Grade.expected`), else the agent's own recorded answer to it; no teacher is read. Fields are split only where the definition names them (agree_on, the
+owner's own names): there each path is judged against the grade's value at that path. With no agree_on there is one
+field, the whole answer (`answer`), judged against the agent's answer with the grade's expected keys written over it
+when both are JSON objects, else against the grade's expected answer whole (`learn/promote.ts` knownAnswerText: equal,
+or the same decision by the grader's verdict on the draft and that answer, which the replay run asks; the grade says
+whether the agent's own answer was right). The agent said `{"answer":42,"note":"checked"}` and the grade expects
+`{"answer":41}`: a draft of `{"answer":41,"note":"checked"}` is right. A disagreement still shows the recompile the
+grade's own expected answer. With no grade, it is judged against the agent's answer (equal, or the grader's same
+decision). A run its owner corrected by message (no grade's expected answer, nor a grade that said right) keeps its recorded answer, never written over: the replay's grader is shown it with the owner's correction beside it (kept on the run's learning row as `correction`, and on the verdict as `replay.compared.corrected`), the correction winning where they differ; the agent's answer counts as wrong, and only a verdict asked with the correction counts: its same decision is right, equal answers or not (equal ones ask it too; with no verdict kept the input is unjudged: a message may be a question or thanks, not a correction), and a disagreement shows the owner's words as known `correction`; under agree_on it changes nothing. No field name is ever taken from a
+grade's keys: they are a person's data, and a run's purge leaves them nowhere in the record. A grade with no expected answer still says something: not
+correct, on the whole answer, makes a draft that repeats it wrong there, and leaves any other answer unjudged (under
+agree_on it names no field, so it changes nothing); correct changes nothing (the agent's answer is known as with no
+grade, at the same bar: a thumbs-up never makes the check stricter). A draft whose answer is the one a grade marked
+wrong (sameAnswer: equal as JSON or trimmed text, in any dress) is never right on that input, whatever the grader says. A
+grade that contradicts itself (marked wrong, yet its expected answer written over the agent's is the agent's answer)
+gives that input no known answer: unjudged. Each replay's record keeps the grade it was judged with
+(`replay.compared.graded`, null for none; with equal answers too, where no model is asked), and the check judges that
+input on it: a grade given after the replay ended counts from the next check, never makes this one's pair stale. A
+learning reset deletes the grades and keeps the replay runs: their records and journals keep the grade content they
+were judged with, as their grader prompts already did. An unjudged input is never right: not on every field at once, and a field judged on fewer than `alone_min` of
+the inputs that carried it fails. A field passes on all its known inputs pooled, wherever each one's known answer came
+from: at least `agree_min` of them right. Its graded inputs keep their own bar too: at least `agree_min` of them right,
+and within 0.02 of the agent's own accuracy there, one miss always allowed in each (misses at most
+max(1, floor((1 - agree_min) n)); a correction, where the agent was wrong, is no free pass). So agent-known inputs never
+carry graded ones the draft got wrong: 80 agent-known right and 20 graded wrong hold, while one graded input missed
+among 19 the agent knows serves. `check.fields.<f>.by` keeps each source's counts. It serves when at least `alone_min` of the inputs were answered alone, at least
+`agree_min` of those were right on every field at once (the joint floor: misses spread over several fields add up; its
+verdict kept as `check.joint`, which a hold's words and the cost summary's `cleared` read), and every field passes; a hold names the failing fields (`check.fields`, each with its counts and reason), or its fields
+together when only the joint floor fell short, and each disagreement the fields it had wrong, with the known answer of
+each a grade gave (`expected`, its value cut and redacted, and its source), which the recompile is asked to
+say. An unjudged input is listed too, its field marked with no value: `unknown`, the recompile told the owner marked
+the agent's answer wrong without giving the right one, or `contradicts`, told the owner's grade contradicts itself
+(marked it wrong, yet the right answer it gave is the agent's) and there is no known answer there. A purge blanks each value and keeps the field and source. The recompile prompt is not reached: it quotes each disagreement's input, the agent's answer and the grade's expected value, and it is asked in the agent's next user run, whose journal keeps it; purging the graded run leaves that copy, as it leaves the traces of other runs a compile prompt quotes. Phase 4d moves the compile turn into a learning run of its own, made from the runs it quotes, so a purge of any of them deletes it. The record counts
+the agent's side too (`check.agent_agreed`: of the inputs answered alone, those the agent's own answers had right on
+every field against the same known answers), which the cost summary's `agent_pct` and a replay's `agent_acc` read. No
+agree_on path may hold a `__proto__` segment, on a write or a read, nor a grade's expected answer a `__proto__` key.
+Against the agent, the answers are compared on the fields
 that say the decision, as the definition declares them in `learning.agree_on` (`learning-setting.ts` agreeOnOf): dotted
 paths into the answer's JSON object (`verdict.decision`, `["mcc", "riskTier"]`), each segment an object's own key; each
 path must resolve in both answers' values (bare JSON, a whole fence, or the last fenced json block) to equal values, and
 a path that resolves in neither or in only one (a key missing, a segment through an array, text or null) disagrees.
 Without it, two answers equal as JSON or as trimmed text agree with no model call, and two that differ are read by the
 grader (`learn/promote.ts` gradeAnswers, `runner/compare-end.ts`): the agent's fast model (its `model_tiers.fast`, else
-AGENT_MODEL_FAST), asked once by the replay run itself at its end whether its answer and the agent's reach the same
-decision, its system text GRADER_PROMPT and its reply `{"same": boolean, "differs_on": string | null}`. Its request goes
+AGENT_MODEL_FAST), else, with neither set, the agent's own model (`runner/adapter-run-spec.ts` graderRouteOf), asked once by the replay run itself at its end whether its answer and the known one (the agent's, or
+for a graded run the known answer above) reach the same decision, its system text GRADER_PROMPT and its reply `{"same": boolean, "differs_on": string | null}`. Its request goes
 through the run's own session on a tier proxy of its own (route `grader`), judged by the run's cap before it leaves and
 booked as the run's spend, so it is the check's cost (`check_usd`); a cap refusal never parks the run. It is asked once
 more on a transport failure alone. Its wait is raced, as the end-of-run turn's is, against the run's stop or cancel, a
@@ -123,31 +169,38 @@ asked no more; what it spent before is booked as any cut request is, and a stopp
 not the verdict, a request that failed twice, one cut by its deadline, and a cap refusal differ, never agree by default,
 in words ("the comparison could not be read: ...", "the cap held the comparison"). The verdict is a root journal entry
 (`agentrun.learning.compared`) that the run's metrics keep (`replay.compared`), naming the two answers it read (`pair`,
-a digest of both); the check reads it through compareAnswers, the one comparison the audit makes too. A verdict whose
+a digest of both); the check reads it through checkInputOf (compareAnswers on a whole answer), the one comparison the
+audit makes too (answerJudged). A verdict whose
 pair is not the two answers read at the check (the agent's run answered again after its replay was compared: a
 follow-up) is stale, and that input differs ("the comparison read an earlier answer: ..."), as one with no verdict
 does: no claim asks the grader again. The record keeps `check.grader` (the
 model) and each disagreement's `differs_on` (cut to CHECK_TEXT_MAX), its reason says "compared by the fast model
-(<model>)", and a hold says "its answers reached a different decision from the agent's on k of n (for example:
-<differs_on>)". With no fast model the whole answer decides, and a hold that answered some inputs alone and agreed on
-none says "its answers never matched the agent's word for word, and no fast model compared their decisions (...); name
-the fields that carry the decision (learning.agree_on)". No field is read off the `output_schema`: its enum can be an echo of the owner's setting (kyb's
+(<model>)", or "compared by the agent's own model (<model>; no fast model is set)", and a hold says "its answers reached a different decision from the agent's on k of n (for example:
+<differs_on>)". When no grader's verdict was kept (no route to it could be made) the whole answer decides, and a hold that answered
+some inputs alone and agreed on none says "its answers never matched the agent's word for word, and no model compared
+their decisions (...); name the fields that carry the decision (learning.agree_on)". No field is read off the `output_schema`: its enum can be an echo of the owner's setting (kyb's
 `risk_appetite`) while the decision sits deeper (`verdict.decision`), and a default that promotes on the wrong field is
 worse than one that never promotes. A shipped template whose answer carries a decision declares it (kyb, inbound-lead),
 each path a required property of its output schema at every level (`templates.ts` readPackage refuses one an answer may
-leave out); one whose answer is generated text (market-monitor, release-notes) goes to the grader, or the whole answer
-with no fast model. The record keeps `check.agree_on` when it compared paths, and its reason says "said what the agent
+leave out); one whose answer is generated text (market-monitor, release-notes) goes to the grader. The record keeps `check.agree_on` when it compared paths, and its reason says "said what the agent
 said on mcc and riskTier": agree_on asks no model, free and exact where the definition can name the fields. Of the
 inputs it ran on, `alone` is the share
 it answered with no escalate and no failed step (a replay obeys an escalate, so an input one of them hands back is no
-answer alone), and `agreement` the share of those that say what the agent said. A newer revision that comes while a
+answer alone), and `agreed` counts those right on every field. A newer revision that comes while a
 check runs waits and records nothing; the claim after the running check is decided starts the newest. It is promoted
-when agreement is at least `learning.agree_min` (0.8) and alone at least `learning.alone_min` (0.7). Under either bar
+when alone is at least `learning.alone_min` (0.7), `agreed` is at least `learning.agree_min` (0.8) of `alone`, and
+every field passes (above). Otherwise
 it is held, and the agent's next run it fits asks one revision with the inputs it did not agree on as data (each one's
 input, the agent's answer, and the draft's answer or why it handed it back); that revision is checked the same way.
-Held again, it stops (`check.stopped`): the agent keeps the runs and nothing compiles again until a hold or its owner
-acts. The record keeps `check`: the bar it was held to, `n`, `agreed`, `alone`, the runs it read, the tools that stopped
-skipped inputs (`skipped_tools`) and, on a hold, the disagreements. A promotion by check is never moved by grades. The
+Held again, it stops (`check.stopped`): the agent keeps the runs and nothing compiles again until new evidence after the
+stop restarts it (`runner/learning-end.ts` compileAskOf): a correction merged into `corrections.md` after it (a run's or a
+person's save), or `compile_after` of the agent's own completed runs started after it, the ending one counted. A
+restart is a first compile again: the stopped revision's revise (or, after a first compile's failed drafts, a new
+compile) is attempt 1, and its one recompile attempt 2, which stops again (`reviseAttemptOf`, `newCompileAttempt`).
+Evidence from before the newest stop restarts nothing, so each restart costs at most two compiles. A stop with nothing
+checked and a recompile's failed draft restart the same way. The record keeps `check`: the bar it was held to, `n`, `agreed`, `alone`, the runs it read, the tools that stopped
+skipped inputs (`skipped_tools`), each field's verdict (`fields`) and, on a hold, the disagreements. A promotion by
+check is never moved by its served runs' grades. The
 inputs are the agent's last `compile_after` runs of its own picked first, however many runs its workflow served since.
 Every reserved input counts in `n`: one whose replay run was never created, or never ended, by the check's deadline is a
 failed input, never left out, in `n` and in `outcomes` alike (the record's `unstarted` counts the never created; every
@@ -166,7 +219,7 @@ check's replay skips writes by (`auditWriterOf`: an MCP tool by its pinned `read
 computer's tools among them): an agent that can call a write is never audited, and the promotions read says why
 (`audits_off`, "audits off: <tool> can write"), since a shadow would do that write a second time. A drawn run, at its
 end (`runner/audit.ts` withAudit, before the end commits, the workflow read from its journal), first appends a started
-line to `audits.jsonl` (`{source: "started", run, shadow_run, workflow, digest, promoted_at, turn, at}`, `turn` the id
+record to the audit ledger (`{source: "started", run, shadow_run, workflow, digest, promoted_at, turn, at}`, `turn` the id
 of the run's newest answer row then: the answer audited), then starts its shadow run (startAudit). A capped run's shadow is capped at what the served run's cap left: its cap now, less what it
 spent under it (`runner/learning-end.ts` auditRoomOf), so the two never spend past the
 served run's cap; the served run's later gates count the shadow beside it (shadowBesideOf: its cost once it ended, its cap
@@ -182,46 +235,55 @@ naming the run it audits; a shadow whose line could not be written is never crea
 list, sends no webhook, is no run of the stats, GET /runs/{id} reads it with `audit_of` and `path` `audit`, and its cost
 is the served run's learning (its `cost.learning_usd` and its learning cost in the cost series; `cost.usd` stays the
 served run's own spend). While the shadow is queued or running the served run's all-in is unknown, never $0
-(`store-reads/learning.ts` shadowSpendOf): its `cost.learning_usd`, `cost.all_in_usd` and learning cost read null until
+(`learn/ledger.ts` shadowCostOf): its `cost.learning_usd`, `cost.all_in_usd` and learning cost read null until
 the shadow ends. Each claim of a run that learns first settles the open audits (started lines with no row yet), reading
 each one's two runs by id, never a window of newest runs: once both ended it writes the row `{run, shadow_run, workflow,
-digest, promoted_at, source: "shadow", agreed, served_cost, shadow_cost, turn, at}`, `agreed` by compareAnswers of the
-shadow's answer and the served run's answer row `turn`, compared as its check compares (its revision's
-`learning.agree_on`; else the grader's verdict, which the shadow asked at its own end on its own cap, so its request is
-the served run's learning cost, kept in its metrics as `audit.compared`; else whole), read from the run by that id (null when either answer is
-missing or a run is gone, never counted): a follow-up's answer since is never the one compared, for the verdict or a
-hold's disagreement. An owner's grade of a run the workflow answered alone is a row too (`source: "grade"`, `agreed` the
-grade, `turn` the answer graded). `promoted_at` names the promotion the line counts for: the `at` of the
+digest, promoted_at, source: "shadow", agreed, served_cost, shadow_cost, turn, at}`, `agreed` by judging the served
+run's answer row `turn` against the shadow's answer as its check judges a draft against the agent's
+(`runner/promotion.ts` answerJudged: its revision's `learning.agree_on`; else the grader's verdict, which the shadow
+asked at its own end on its own cap, so its request is the served run's learning cost, kept in its metrics as
+`audit.compared`; else whole), read from the run by that id (null when either answer is missing or a run is gone, never
+counted): a follow-up's answer since is never the one compared, for the verdict or a hold's disagreement. An owner's
+grade of a run the workflow answered alone is a row too (`source: "grade"`, `turn` the answer graded): `agreed` the
+grade's `correct`, the owner's verdict on the served answer itself, however an `expected` answer words it; but a
+grade that marks it wrong under the revision's `agree_on`, with an `expected` answer, is judged on those fields alone,
+each against the expected answer's value where it gives one, so a correction of what no `agree_on` field says is no
+disagreement. The check and the audit read one ground
+truth: a served run with a grade's row is counted by that row alone, never by its shadow's (the agent's answer again,
+which the grade may have corrected). `promoted_at` names the promotion the line counts for: the `at` of the
 promote record that began the digest's newest run of promote records (`learn/promote.ts` promotionStartOf) when the
-shadow started or the grade was given. The host alone appends to the ledger, one commit a write with a `host:` subject
-and no trailer (no change a person or a run made), and keeps its newest 2,000 rows with their started lines and every
-open one, each claim's batch oldest served run first. GET .../learning/audits reads the rows. The hold is a function of
+shadow started or the grade was given. The host alone appends to the ledger, one record a line, each
+claim's batch oldest served run first. GET .../learning/audits reads the rows. The hold is a function of
 the ledger: every such claim applies the rule again over the rows as they are, rows added or not, so a hold a crash lost
 after its rows were committed is made at the next claim. The hold rule (`applyHold`) reads the newest
 `learning.hold_window` (10) rows with a verdict of the serving revision's current promotion (so a revision its owner's
 replay promotes again after a hold starts on none): `learning.hold_disagree` (3) disagreements or more hold it (a hold
 record carrying `audit`, keeping the bar, the rows read and each disagreement's served run, shadow run, input, the
-agent's answer and the workflow's, each text cut of the host's secrets whole before it is shortened to 1,200 characters,
-`learn/secrets.ts` excerptShown, as a check's are). The agent takes the runs, and its next run it fits asks one recompile with those
-disagreements as data; S3a's check decides it on its usual inputs plus the disagreeing ones. A second audit hold within
-`learning.stop_window` (100) served runs of the first stops it instead (`audit.stopped`, reason "stopped: the workflow
-disagreed with the agent twice"): no compile is asked. The graded hold is gone: a grade is one more row. The money rule
+agent's answer and the workflow's, and a grade's right answer (`expected`) where it gave one, each text cut of the host's
+secrets whole before it is shortened to 1,200 characters, `learn/secrets.ts` excerptShown, as a check's are). The agent
+takes the runs, and its next run it fits asks one recompile with those disagreements as data, asking for the known
+answer (a grade's where one was given, else the agent's); S3a's check decides it on its usual inputs plus the
+disagreeing shadows' ones. A second audit hold within `learning.stop_window` (100) served runs of the first stops it
+instead (`audit.stopped`, reason "stopped: the workflow disagreed with the known answer twice"): no compile is asked. The graded hold is gone: a grade is one more row. The money rule
 still stops a workflow that costs more than the agent by hand.
 
 ## The caps
 
-Over a cap is refused, never cut.
+Over a cap is refused, never cut, with one exception: a run's correction (a round's line, a feedback or a grade's
+words) appended to `corrections.md` that would take the file past its cap drops the file's oldest lines to fit, so the
+newest correction wins (`dropped_lines` on the run's learning). A correction whose line alone is past the cap, and a
+person's whole-file edit past it, are refused, nothing dropped.
 
 | What | Cap |
 | --- | --- |
-| `corrections.md` | 2048 bytes |
+| `corrections.md` | 8192 bytes (a run's correction drops the oldest lines to fit) |
 | A draft's `workflow.json` | 16384 bytes |
 | A draft's `README.md` | 1024 bytes |
 | Workflow drafts one turn adds or changes | 1 |
 
 ## The checks
 
-`checkDraft` refuses, before anything is written to git:
+`checkDraft` refuses, before anything is saved:
 
 | Rule | Meaning |
 | --- | --- |
@@ -230,7 +292,7 @@ Over a cap is refused, never cut.
 | `file_mode` | a link, a folder or anything else that is not a regular file |
 | `encoding` | not UTF-8, in a file or its name |
 | `deleted` | a draft's file that was there, gone |
-| `too_large` | a draft's JSON over 16384 bytes, its README over 1024, or `corrections.md` past 2048 |
+| `too_large` | a draft's JSON over 16384 bytes, its README over 1024, or `corrections.md` past 8192 (a person's whole-file edit, or one correction's line alone; an appended correction drops the oldest lines instead) |
 | `invisible_unicode` | a character a reader does not see, by code point |
 | `secret_shape` | text shaped like a secret, by kind, in a file or its name |
 | `secret_value` | a value the host holds as secret, in a file or its name |
@@ -332,35 +394,87 @@ Over a cap is refused, never cut.
 - Every problem is `{ rule, path?, detail }`, printable as it is: its path and detail are cut of the host's values and
   of secret shapes, and a field over 4096 bytes prints whole as `[redacted]`, never scanned.
 
-## The commit
+## The save
 
-One commit on `main` per round by the learning script (`learning.sh`, one exec through the folder's Workspace:
-`folder.ts` `writeLearning`): the passing draft's files added or changed (a held one with `status: pending`) and the
-owner's correction appended to `corrections.md`. Its message is `learning: <run id>: merged`, the reason, and a
-`Run-Id: <run id>` trailer. A round merges once: the script creates `refs/agentrun/runs/<run>` (`<run>.r<n>` for a
-later round) in the same ref transaction as `main`'s compare and swap, so a second merge of it, however it raced the
-first (a reclaimed run's two claims), writes nothing and reads the first's. A draft file that is not on
-main as it was on the run's seed (or the commit a revision read it at) is a conflict, never written over. `main` moves
-only from the commit the change was made on (the script's compare and swap; a lost race writes nothing and the change
-is computed again), and the same exec writes the run's diff (`.agentrun/diffs/<run>.json`) and, last, the folder's
-snapshot (`.agentrun/snapshot.json`, what every read reads). A stop between the merge and its diff leaves the run's
-ref with no diff: the next read of the round's merge (the end step's, or a second merge's) writes it from the ref. A person's replace of `corrections.md` is one commit the
-same way, under the ETag they read. A workflow is never deleted by a run: a retired one stays in the folder and
-serves no run.
+One save per round (`rows.ts` `writeLearning`, over `Store.learning.save`, one transaction): the passing draft's files
+added or changed (a held one with `status: pending`) and the owner's correction appended to `corrections.md`, its
+reason `learning: <run id>: merged` and the reason given. A round saves once: its merge key (`<run>`, `<run>.r<n>`
+for a later round) is unique for the agent, so a second save of it, however it raced the first (a reclaimed run's two
+claims), writes nothing and reads the first's. A draft file that is not as it was on the run's seed (or the save a
+revision read it at) is a conflict, never written over. The save lands only on the version the change was computed
+on (compare and swap; a lost race writes nothing and the change is computed again). A run's diff
+(`GET /runs/{id}/learning/diff`) is read from its save: each item it wrote, before and at it. A person's replace of
+`corrections.md` is one save the same way, under the ETag they read. A run's merge writes each workflow it touches
+whole: its version holds the files the run gave. Each file has a writer: the run whose merge changed it to its text. A
+merge that gives a file as the version before held it, and a person's edit of a file, keep the writer before; a
+person's new file is no run's. A workflow's run (what the view's `run` names) is its `workflow.json`'s writer. A
+workflow is never deleted by a run: a retired one stays and serves no run.
+
+A run's purge deletes its rows in the same transaction as its own (`Store.learning.purgeRun`), its agent's alone: its
+notes and every other item of it but a workflow (a `label`, which the schema allows and no code writes yet, too), its
+grades and audits, and in every version of each workflow, each file it wrote back to its text before (a
+person's edit of that text with it; a file it deleted there again), so a later run's copy of its bytes goes too and a
+later run's own change of a file stays. A person's retire, and a person's restore, of a version that held its text
+stays on the version that comes back, so the owner's newest decision stands; a person's approve does not (it approved
+the run's text, and the text that comes back is one the owner never approved: it comes back held, and its owner
+approves it again). The promotion and audit records of each digest no version holds after go, and so do the run's own
+records (its grades, a failed draft's hold). Before such a revision's promotions go, its workflow, digest and K (its
+newest promotion's check `compile_after`) are kept in the agent's reset ledger, as a reset keeps them, when another run
+is still billed against it (its ledger row, a compile or check spend row of it, or the metrics of a run with no ledger
+row name it), so the runs that carry its spend read the same share after; when none is, nothing of it is kept, since a
+gone workflow's name is the purged run's words. For the same reason a ledger entry goes with the purge of the last run
+billed against it. Every other promotion's copies of the run (a check's or an audit's
+disagreement naming it) are blanked, its decision, numbers and run ids kept. Its saves stay as facts with no words (their merge keys still taken), and so does a
+person's save left with no item. No other save, a run's or a person's, names a path only it wrote (no version holds it
+after) in its files, its file or its reason, nor a workflow gone with it in its reason.
+
+A purge that changed a row is a save too: the host's (kind `purged`, no item, no words) at the agent's newest version
+plus one, in the purge's transaction and under the agent's learning lock, as every save. So:
+
+- a save computed on a version read before the purge (a person's change, a run's merge) is stale, and is computed again
+  on the rewritten rows: none writes the purged text back;
+- a run's merge read at a save before the purge (its seed, or the save its compile turn read a workflow at) is refused
+  whole, nothing written, its learning dropped `purged_since_seed`. The purge rewrote what that run started from in
+  place, so a file it gives back unchanged from its seed can't be told apart from the purged run's bytes. Purges are
+  rare; losing such a run's learning is the safe side. A run seeded after the purge merges as ever, and so does a merge
+  that gives no file (an owner's correction alone: its line is the owner's new words, appended to the newest
+  corrections.md, and copies nothing from the seed);
+- every promotion and audit record write checks, in its own transaction (under the agent's records lock, which the purge
+  takes before it changes a version), that a version of its workflow still holds its digest, and every record write
+  that its run is not purged; if not, it writes nothing (`LearningRecordRefused`; a promotion's write is not won). A
+  failed draft's record, whose digest is its run's and is held by no version, is the one exception to the digest check;
+  it is written as its run's, so it goes with its run's purge and a write after that purge writes nothing. A promotion
+  written is kept with each purged run's copies blanked and with its `commit` a save that holds its digest. A grade checks its
+  run alone, never its digest: the purge keeps a live run's grade whatever revision served it, so a later grade of that
+  run is kept the same way;
+- a promotion the purge keeps (another run's version holds its digest) is moved to the save of the newest version that
+  holds it when the save it named holds it no more: a shared champion goes on serving;
+- a reader that reads a text and its writer apart (an SDK start's workflows and the runs its receipt names) reads both
+  again when a purge save landed between them (a normal save rewrites nothing it read), so it never delivers the purged
+  run's text as no run's;
+- an SDK run's inbox keeps the workflows its start delivered, and its writers are every run that wrote one of their
+  files (a README.md's description as well as a workflow.json's text): a run's DELETE empties every inbox whose writers
+  name it, after its purge commits, and a start checks its writers after its inbox is written, so none keeps the purged
+  text.
+
+A purge that finds nothing of the run's (a run that learned nothing, a second purge) changes no row and adds no save.
+An agent's reset, its delete and its purge take the agent's learning lock and then its records lock, the order a run's
+purge takes them, so a records write that began before one of them is in before it, never written after.
+
+Notes are the owner's: an owner can edit a run's correction line, and the edit counts as a known answer, the owner's
+own words. A run's purge deletes the run's note rows, never a person's edit of one.
 
 ## The reset
 
-`DELETE /v2/agents/{id}/learning` (`learning-reset.ts`) deletes the folder whole, its git history and audit ledger
-included, on this server and on every Archil disk the agent's runs used (a Mode 2 run's end writes the folder on the
-disk its claim mounted: the agent's own, or one its launch named; `archil-routes.ts` removeLearningFolder, 503 while a
-disk can't be reached; `learning-of.ts` namedDisksOf: each disk a run of the agent named, a purged run's included),
-then the agent's promotions and grades (`delete.ts` deleteLearning); the agent and its runs stay. The agent's delete
-takes the same step on the launch-named disks; its own disk goes whole there. It cancels the runs that exist only for
+`DELETE /v2/agents/{id}/learning` (`learning-reset.ts`) deletes every learning row of the agent: its saves, items,
+promotions, grades and audit ledger (`delete.ts` deleteLearning, `Store.learning.reset`); the agent and its runs stay.
+It cancels the runs that exist only for
 learning (replays, audit shadows) and waits for them; a run of the agent's own still going refuses it (409
 `learning_busy`), since its learning lives in it, and nothing is deleted. Before the records go, each revision they
 name is kept in the agent's reset ledger (`learning.reset-ledger.<agent>`: workflow, digest and K alone), so a kept
-served run's cost still carries its revision's compile and check; an agent's delete removes the ledger. Each run's
-diff (`.agentrun/diffs/`) goes with the folder. The folder's next write starts a new history.
+served run's cost still carries its revision's compile and check; a run's purge keeps the revisions it deletes there too
+while other runs carry their spend; an agent's delete removes the ledger. Each run's
+diff goes with its save. The next save starts a new history.
 
 A run on a disk its launch named learns nothing (`learning-of.ts`): its start reads no seed (`other_disk`), the runner
 drops any seed and workflow from its launch, and with no seed it stops before its compile. So the agent's records are
@@ -372,11 +486,8 @@ runs after it (`compile.ts` sinceReset): a run that started at or before it, or 
 (its launch's `seededAt`, read in the same queue as the reset), counts toward no compile_after and is no compile's
 trace, no check's or owner's replay input, no audit's draw and no past run of the money rule, and the loop view lists
 none of its compiles. A run seeded before the reset whose row was made after it learns nothing: its learning end drops it at its entry
-(reason `reset`), before any look-back, merge, compile or record. That check reads time alone: a Mode 2 run's end
-writes the folder on its disk, which never held the seed the server read from its own, so a commit missing there says
-nothing of a reset. The learning script is a second wall: once the agent was reset, a run whose folder holds its seed
-at its end's entry names it on its merge (`seed <commit>`), which the script refuses when the folder no longer holds
-it, a correction alone included. A grade of a run before the reset is kept, but writes no audit row (`runner/audit.ts`
+(reason `reset`), before any look-back, merge, compile or record. The store is a second wall: a run's save names its
+seed, which the store refuses when the agent's learning no longer holds it, a correction alone included. A grade of a run before the reset is kept, but writes no audit row (`runner/audit.ts`
 gradeRow), so a promotion of the same digest after the reset is never held by what came before it. An SDK start is
 admitted (its check reserved, its inbox and run row made) in the same queue (`sdk/runs.ts`): a start whose seed was read
 before the reset is refused (`503 unavailable`, start it again), so no check of a draft the reset deleted is reserved.

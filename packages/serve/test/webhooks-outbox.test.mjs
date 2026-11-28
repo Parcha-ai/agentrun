@@ -5,10 +5,12 @@
 // first ones watch the process's unhandled rejections or set its clock, so they run alone.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, test } from "node:test";
 import { ATTEMPTS_KEPT, Webhooks } from "../dist/webhooks.js";
+import { raw } from "./store-target.mjs";
 import { client, FAUX, follow, scratch, secretWritePath, serve, startRun } from "./support.mjs";
 import {
   askerStore, endedInStore, meetsDocument, endNotice, endParked, hadWebhook, killed, logged, noticed, noticeId, nothingPending, ofType, onDisk, outboxOf, parkedOnQuestion,
@@ -210,14 +212,14 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     const writer = await askerStore(t, data);
     // Run A's journal records are made unreadable (not JSON, on a connection of the test's own that skips the check) before
     // its end is written, so reading its end throws; run B ends after it, so B's change comes after A's in the store's feed.
-    const db = new DatabaseSync(join(data, "store.sqlite"), { timeout: 10_000 });
+    const db = await raw(join(data, "store.sqlite"), { timeout: 10_000 });
     t.after(() => db.close());
-    db.exec("PRAGMA ignore_check_constraints = ON");
+    await db.exec("PRAGMA ignore_check_constraints = ON");
     let records;
     await endedInStore(writer, "asker", "run-unreadable", {
       beforeEnd: async () => {
-        records = db.prepare("SELECT id, record FROM pi_entries WHERE run_id = ?").all("run-unreadable");
-        db.prepare("UPDATE pi_entries SET record = '{not json' WHERE run_id = ?").run("run-unreadable");
+        records = await db.all("SELECT id, record FROM pi_entries WHERE run_id = ?", "run-unreadable");
+        await db.run("UPDATE pi_entries SET record = '{not json' WHERE run_id = ?", "run-unreadable");
       },
     });
     await endedInStore(writer, "asker", "run-readable");
@@ -226,7 +228,7 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     await log.when("condition=run_notice_unread", "run-unreadable");
     assert.equal(endsOf("run-unreadable").length, 0, "the unreadable end is not told");
     // Readable again: told, once, and said once only.
-    for (const { id, record } of records) db.prepare("UPDATE pi_entries SET record = ? WHERE run_id = ? AND id = ?").run(record, "run-unreadable", id);
+    for (const { id, record } of records) await db.run("UPDATE pi_entries SET record = ? WHERE run_id = ? AND id = ?", record, "run-unreadable", id);
     await hook.when(() => endsOf("run-unreadable").length === 1, "the run.ended of run run-unreadable, once it reads", data);
     await settled(data);
     assert.deepEqual([endsOf("run-unreadable").length, endsOf("run-readable").length], [1, 1]);
@@ -355,9 +357,15 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     t.after(() => stopped || first.close());
     let api = client(first.baseUrl, first.token);
     assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
-    const run = await startRun(api, "soon", "Answer soon.");
+    // The run answers only once the case makes `gate`, so it is working whenever the first read comes. Before, it answered
+    // 1.5 s in on its own, and a starved runner's first read (CI under load) found it already completed, never working.
+    const gate = join(await scratch(t), "answer");
+    const run = await startRun(api, "soon", `Answer once ${gate} exists.`);
+    // The first read comes late, as on a starved runner: the run is still working then.
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
     await follow(api, run.run_id, ["working"]);
     // The stop drains the run's turn: it answers, and is carried back, while the server closes.
+    writeFileSync(gate, "");
     await first.close();
     stopped = true;
     const next = await startWithRunner(t, { data, port: 0, faux: FAUX, drainTimeout: "5s" });

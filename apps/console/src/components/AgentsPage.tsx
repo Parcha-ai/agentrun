@@ -1,17 +1,19 @@
 import { cliLearningOf } from "@/lib/cliLearning";
 import { useEffect, useRef, useState } from "react";
-import { AgentEditor, type EditorCaps, type Revision } from "@/components/AgentEditor";
+import { AgentEditor, type EditorCaps, type EditorProps, type Revision } from "@/components/AgentEditor";
 import { agentHash } from "@/components/AgentPage";
+import { goBack } from "@/lib/back";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { Banner } from "@/components/ui";
 import { backendSdkOf } from "@/lib/backendSdk";
 import { editAgentPrompt } from "@/lib/codingAgentPrompts";
 import { useObservations } from "@/lib/observations";
 import { AgentsList } from "@/components/AgentsList";
-import { ConnectExistingAgents } from "@/components/NativeConnections";
+import { buttonVariants } from "@/components/ui/button";
+import { Plug } from "lucide-react";
 import { type Agent, createBody, editBody, saveError } from "@/lib/agentForm";
 import { allPages, type Client, ClientError } from "@/lib/client";
-import type { McpServer } from "@/lib/mcp";
+import { useMcpServers } from "@/lib/useMcpServers";
 import type { ToolChoice, ToolGate } from "@/lib/toolSettings";
 import type { ComputerKindView, ToolSettings } from "@/lib/v2";
 
@@ -22,14 +24,34 @@ export function AgentsPage({ v2, archived, go, learning }: { v2: Client; archive
   const observations = useObservations(v2, { active: !archived });
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [unarchiving, setUnarchiving] = useState<ReadonlySet<string>>(new Set());
+  const [unarchiveProblem, setUnarchiveProblem] = useState<string | null>(null);
   const asked = useRef(0);
-  const load = () => {
-    // Only the newest request lands: a slower answer for the other view never replaces this one.
+  const load = ({ quiet = false } = {}) => {
+    // Only the newest request lands: a slower answer for the other view never replaces this one. A quiet read keeps the
+    // list on screen until it answers.
     const n = ++asked.current;
-    setAgents(null); setError(null);
+    if (!quiet) { setAgents(null); setError(null); setUnarchiveProblem(null); }
     allPages((cursor) => v2.listAgents({ archived, cursor }), (p) => p.agents)
-      .then((a) => { if (n === asked.current) setAgents(a); })
+      .then((a) => { if (n === asked.current) { setAgents(a); setError(null); } })
       .catch((e) => { if (n === asked.current) setError(problemOf(e).message); });
+  };
+  // The view shown now, for a write's answer that lands after the person moved between Active and Archived.
+  const shown = useRef({ archived, load });
+  shown.current = { archived, load };
+  // An archived card's Unarchive: the agent leaves the Archived list once the server says so, and the list shown then is
+  // read again, which no read started before the answer replaces. A refusal says why above.
+  const unarchive = (id: string) => {
+    if (unarchiving.has(id)) return;
+    setUnarchiving((s) => new Set(s).add(id)); setUnarchiveProblem(null);
+    v2.unarchiveAgent(id)
+      .then(() => {
+        const now = shown.current;
+        if (now.archived) setAgents((list) => list?.filter((a) => a.agent_id !== id) ?? list);
+        now.load({ quiet: true });
+      })
+      .catch((e) => setUnarchiveProblem(problemOf(e).message))
+      .finally(() => setUnarchiving((s) => { const next = new Set(s); next.delete(id); return next; }));
   };
   useEffect(() => {
     load();
@@ -40,21 +62,21 @@ export function AgentsPage({ v2, archived, go, learning }: { v2: Client; archive
   }, [v2, archived]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <AgentsList observations={observations} agents={agents} archived={archived} onArchivedChange={(on) => go(on ? "#/agents?archived=true" : "#/agents")} error={error} learning={learning}
-      handoff={<ConnectExistingAgents />}
+      handoff={<a href="#/agents/connect" className={buttonVariants({ size: "sm" })}><Plug aria-hidden />Connect agent</a>}
       actions={{
         onOpen: (id) => go(agentHash(id)),
-        onEdit: (id) => go(agentHash(id, "edit")),
+        onEdit: (id) => go(agentHash(id, "settings")),
         onNew: () => go("#/agents/new"),
         onRuns: (id) => go(agentHash(id, "runs")),
         onLearning: (id) => go(agentHash(id, "learning")),
-        onArchive: async (id, archive) => { try { await (archive ? v2.archiveAgent(id) : v2.unarchiveAgent(id)); load(); } catch (e) { setError(problemOf(e).message); } },
+        ...(archived ? { onUnarchive: unarchive, unarchiving, unarchiveProblem } : {}),
       }} />
   );
 }
 
 /** One agent's editor on the live server. Each save is made on the revision the editor loaded (its ETag as If-Match):
  *  when another save landed first, the server refuses it and the editor shows the conflict. */
-export function AgentEditPage({ v2, caps, choices = [], gates = [], focusTool, agentId, go }: { v2: Client; caps: EditorCaps; choices?: ToolChoice[]; gates?: ToolGate[]; focusTool?: string; agentId: string | null; go: (hash: string) => void }) {
+export function AgentEditPage({ v2, caps, choices = [], gates = [], focusTool, initialStep, agentId, go, embedded, onAgent, onEditPromptChange, initialInstructions }: { v2: Client; caps: EditorCaps; choices?: ToolChoice[]; gates?: ToolGate[]; focusTool?: string; initialStep?: EditorProps["step"]; embedded?: boolean; onAgent?: (agent: Agent) => void; onEditPromptChange?: EditorProps["onEditPromptChange"]; initialInstructions?: string; agentId: string | null; go: (hash: string) => void }) {
   const [agent, setAgent] = useState<Agent | null>(null);
   const [etag, setEtag] = useState<string | null>(null);
   const [revisions, setRevisions] = useState<Revision[]>([]);
@@ -63,6 +85,24 @@ export function AgentEditPage({ v2, caps, choices = [], gates = [], focusTool, a
   const [version, setVersion] = useState(0);
   // The revision the form was loaded from: an action that finds another current revision reloads the form with it.
   const [formRevision, setFormRevision] = useState<string | null>(null);
+  const [skillRead, setSkillRead] = useState<{ agentId: string; revision: string; files?: Record<string, string>; error?: string } | null>(null);
+  const [skillsRetry, setSkillsRetry] = useState(0);
+  // Load the exact form revision: the update API replaces the complete map, including support files.
+  useEffect(() => {
+    if (!agent || agent.definition.native || backendSdkOf(agent.definition) || cliLearningOf(agent.definition)) return;
+    let live = true;
+    const key = { agentId: agent.agent_id, revision: agent.revision };
+    setSkillRead(previous => previous?.agentId === key.agentId && previous.revision === key.revision && previous.files ? previous : key);
+    v2.getRevisionSkills(key.agentId, key.revision).then(result => {
+      if (result.revision !== key.revision) throw new Error("The skill files do not match the revision being edited.");
+      if (live) setSkillRead({ ...key, files: result.skills });
+    }).catch(error => {
+      if (live) setSkillRead(previous => ({ ...key, ...(previous?.agentId === key.agentId && previous.revision === key.revision ? previous : {}), error: problemOf(error).message }));
+    });
+    return () => { live = false; };
+  }, [v2, agent?.agent_id, agent?.revision, skillsRetry]); // eslint-disable-line react-hooks/exhaustive-deps
+  const skillFiles = skillRead?.agentId === agent?.agent_id && skillRead?.revision === agent?.revision ? skillRead?.files : undefined;
+  const skillFilesError = skillRead?.agentId === agent?.agent_id && skillRead?.revision === agent?.revision ? skillRead?.error : undefined;
   // Whether this page is still shown: a save's answer that lands after the person left it moves nowhere.
   const shown = useRef(true);
   // Set in the setup too: StrictMode (main.tsx) sets an effect up, cleans it up and sets it up again.
@@ -73,6 +113,7 @@ export function AgentEditPage({ v2, caps, choices = [], gates = [], focusTool, a
     try {
       const [{ agent: a, etag: t }, r] = await Promise.all([v2.getAgent(agentId), revisionsOf(agentId)]);
       setAgent(a); setEtag(t); setRevisions(r); setFormRevision(a.revision); setVersion((n) => n + 1); setNotice(null); setLoadError(null);
+      onAgent?.(a);
     } catch (e) {
       // A reload of an agent already on the page keeps the editor, its form and its Reload: the failure is said beside it.
       if (agent) setNotice(`The agent could not be reloaded: ${problemOf(e).message}`);
@@ -97,16 +138,7 @@ export function AgentEditPage({ v2, caps, choices = [], gates = [], focusTool, a
     return () => { live = false; };
   }, [v2]);
   // The saved MCP servers, for the Tools step's MCP groups.
-  const [mcpServers, setMcpServers] = useState<McpServer[] | null | "failed">(null);
-  // Only the newest read lands: an older one's late answer (a failure most of all) never replaces it.
-  const mcpAsked = useRef(0);
-  const loadMcp = () => {
-    if (!caps.mcp) return;
-    const n = ++mcpAsked.current;
-    setMcpServers(null);
-    v2.listMcpServers().then((r) => { if (n === mcpAsked.current) setMcpServers(r.servers); }, () => { if (n === mcpAsked.current) setMcpServers("failed"); });
-  };
-  useEffect(loadMcp, [v2, caps.mcp]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [mcpServers, loadMcp] = useMcpServers(v2, !!caps.mcp);
   // An action (archive, make current): its write and the page's refresh after it fail apart, so a committed write never
   // reads as failed. The page shows the write's own answer; the refresh brings the ETag and the history. When the refresh
   // finds another current revision (made current here, or saved in another tab), the form reloads with it, so a later save
@@ -114,11 +146,11 @@ export function AgentEditPage({ v2, caps, choices = [], gates = [], focusTool, a
   const act = async (what: string, run: () => Promise<Agent>) => {
     let done: Agent;
     try { done = await run(); } catch (e) { setNotice(`${what} did not finish: ${problemOf(e).message}`); return; }
-    setAgent(done);
+    setAgent(done); onAgent?.(done);
     try {
       const { agent: now, etag: t } = await v2.getAgent(done.agent_id);
       const r = await revisionsOf(done.agent_id).catch(() => revisions);
-      setAgent(now); setEtag(t); setRevisions(r);
+      setAgent(now); setEtag(t); setRevisions(r); onAgent?.(now);
       if (now.revision !== formRevision) {
         setFormRevision(now.revision); setVersion((n) => n + 1);
         setNotice(what === "Make current" ? null : `${what} done. This agent changed since you opened it: the form now shows its current revision.`);
@@ -134,25 +166,28 @@ export function AgentEditPage({ v2, caps, choices = [], gates = [], focusTool, a
       <Banner>{cliLearningOf(agent.definition) ? "This agent runs in your CLI. Edit its original project configuration; manage self-improving in its Learning tab." : "This agent runs in your backend. Edit its application code with your coding agent; manage self-improving in its Learning tab."}</Banner>
       <CodingAgentAction label="Edit agent" prompt={editAgentPrompt(location.origin, agent.agent_id, false, backendSdkOf(agent.definition), cliLearningOf(agent.definition)?.runtime)} />
       <a href={agentHash(agent.agent_id)} className="block text-body underline underline-offset-2">Back to agent</a>
-    </section> : <AgentEditor key={`${agent?.agent_id ?? "new"}:${version}`} agent={agent} revisions={revisions} caps={{ ...caps, computers }} providerChoices={choices} permissionGates={gates} mcpServers={mcpServers} serverToolSettings={serverTools} onRetryMcp={loadMcp} {...(focusTool ? { focusTool, step: "tools" as const } : {})} notice={notice} validate={v2.validateWorkflow} onBack={() => go("#/agents")} onReload={() => { void load(); loadMcp(); }}
+    </section> : <AgentEditor skillFiles={skillFiles} skillFilesError={skillFilesError} onRetrySkills={() => setSkillsRetry(n => n + 1)} embedded={embedded} onEditPromptChange={onEditPromptChange} initialInstructions={initialInstructions} key={`${agent?.agent_id ?? "new"}:${version}`} agent={agent} revisions={revisions} caps={{ ...caps, computers }} providerChoices={choices} permissionGates={gates} mcpServers={mcpServers} serverToolSettings={serverTools} onRetryMcp={loadMcp} focusTool={focusTool} step={focusTool ? "tools" : initialStep} notice={notice} validate={v2.validateWorkflow} onBack={() => goBack(agentId ? agentHash(agentId) : "#/agents")} onReload={() => { void load(); loadMcp(); }}
       onSave={async (fields, note) => {
         let saved;
         try {
           if (!agent) {
-            const made = await v2.createAgent(createBody({ name: fields.name ?? "", description: fields.description ?? "", instructions: fields.instructions ?? "", harness: fields.harness ?? "pi", tools: fields.tools ?? [], approvals: fields.approvals, tool_settings: fields.tool_settings, thinking: fields.thinking, model: fields.model, computer: fields.computer, learning: fields.learning, max_cost_usd: fields.max_cost_usd, decisionProvider: caps.decisionProvider }));
+            const made = await v2.createAgent(createBody({ name: fields.name ?? "", description: fields.description ?? "", instructions: fields.instructions ?? "", harness: fields.harness ?? "pi", tools: fields.tools ?? [], approvals: fields.approvals, tool_settings: fields.tool_settings, thinking: fields.thinking, model: fields.model, computer: fields.computer, learning: fields.learning, max_cost_usd: fields.max_cost_usd, skillFiles: fields.skillFiles, decisionProvider: caps.decisionProvider }));
             // A new agent lands on its own page; a workflow agent (Decision, Workflow) on its Workflow tab.
             // Only while this page is still the one shown: a Create that answers after the person left moves nowhere.
             if (!shown.current) return null;
             go(agentHash(made.agent_id, made.kind === "workflow" ? "workflow" : undefined));
             return null;
           }
-          const body = editBody(agent, fields, note);
+          const body = editBody(agent, fields, note, skillFiles);
           if (body.unchanged) return { kind: "other" as const, message: "Nothing to save: the definition is the current revision's, and a note alone makes no new revision." };
           const { unchanged: _u, ...send } = body;
           saved = await v2.updateDefinition(agent.agent_id, send, etag);
         } catch (e) { return problemOf(e); }
         // The revision is committed: a failed history refresh after it does not make the save look failed.
         setAgent(saved.agent); setEtag(saved.etag); setFormRevision(saved.agent.revision);
+        const savedSkills = fields.skillFiles ?? skillFiles;
+        if (savedSkills) setSkillRead({ agentId: saved.agent.agent_id, revision: saved.agent.revision, files: savedSkills });
+        onAgent?.(saved.agent);
         // What its tools resolve to (`tools`) only GET /agents/{id} says: read for the revision just saved.
         v2.getAgent(saved.agent.agent_id).then((r) => setAgent((cur) => (cur && cur.revision === r.agent.revision ? { ...cur, tools: r.agent.tools } : cur))).catch(() => {});
         revisionsOf(saved.agent.agent_id).then(setRevisions).catch(() => setNotice("Saved. The history could not be refreshed; reload to see it."));

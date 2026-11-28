@@ -9,16 +9,35 @@ export const CLOUD_CONSOLE = "https://console.agentrun.ai";
 /** The API base of a server's address, the one rule every command takes it by: the address without its trailing
  *  slashes, with /v2 added when its path holds no v2 segment, so `https://host/prefix` is `https://host/prefix/v2` and
  *  `https://host/v2/` is `https://host/v2`. Only the path's end changes: the string is never re-serialized, so the
- *  origin is the given one, byte for byte. The caller checks the address first (cli.mjs baseOf). */
+ *  origin is the given one, byte for byte. The caller checks the address first (checkedBase). */
 export function apiBase(given) {
   const url = given.replace(/\/+$/, "");
   const path = URL.canParse(url) ? new URL(url).pathname : "";
   return path.split("/").includes("v2") ? url : `${url}/v2`;
 }
 
+/** The API base (apiBase) of an address a token may be sent to: http or https, with no query, fragment, user or
+ *  password, which would carry the token elsewhere or swallow the path appended to it. Undefined for any other; the
+ *  caller refuses it without echoing it, as it may hold a password. */
+export function checkedBase(given) {
+  const url = typeof given === "string" && URL.canParse(given) ? new URL(given) : undefined;
+  if (!url || !/^https?:$/.test(url.protocol) || /[?#]/.test(given) || url.username || url.password) return undefined;
+  return apiBase(given);
+}
+
 /** The API base a `--to` names: `cloud` is AGENTRUN_CLOUD_URL, else CLOUD_URL; any other address is taken as every
- *  command takes one (apiBase). The caller checks the result as every base URL is checked (cli.mjs baseOf), so a query,
+ *  command takes one (apiBase). The caller checks the result as every base URL is checked (checkedBase), so a query,
  *  fragment, user or password is refused there. */
 export function toUrl(given, env) {
   return apiBase(given === "cloud" ? env.AGENTRUN_CLOUD_URL || CLOUD_URL : given);
+}
+
+/** A share host's address (`agentrun login --share`, `agentrun share --to`): http or https with no query, fragment, user
+ *  or password, as checkedBase takes a server's, written as its origin and path without trailing slashes. A link under
+ *  its /r/ (or its API's /r/v2) names the same host: a share host serves everything under /r/, so the address is what
+ *  comes before it. Undefined for any other; the caller refuses it without echoing it. */
+export function shareBase(given) {
+  const url = typeof given === "string" && URL.canParse(given) ? new URL(given) : undefined;
+  if (!url || !/^https?:$/.test(url.protocol) || /[?#]/.test(given) || url.username || url.password) return undefined;
+  return `${url.origin}${url.pathname.replace(/\/+$/, "").replace(/\/r(?:\/v2)?$/, "")}`;
 }

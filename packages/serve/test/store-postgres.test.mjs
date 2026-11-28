@@ -741,7 +741,9 @@ test("a runner refuses a schema not set up yet, and one a later build migrated p
   await sql(schema, "INSERT INTO schema_migrations (version, name, sha256, applied_at) VALUES ($1, 'later', 'x', 0)", known + 1);
   // Additive (unmarked): the runner floor stays, and a runner of this build runs on the schema ahead of it.
   const runner = await openPostgresStore({ url: PG_URL, schema, role: "runner" });
-  assert.deepEqual(await runner.schemaState(), { version: known + 1, runnerFloor: LAST_UNMARKED, known });
+  // The floor this build's migrations hold: the newest marked breaking, or LAST_UNMARKED.
+  const floor = Math.max(...migrationsIn().filter((m) => m.breaking || m.version <= LAST_UNMARKED).map((m) => m.version));
+  assert.deepEqual(await runner.schemaState(), { version: known + 1, runnerFloor: floor, known });
   await runner.close();
   await assert.rejects(openPostgresStore({ url: PG_URL, schema, role: "server" }), SchemaVersionUnknown, "the server does not open a later build's schema");
   // Breaking (marked): the floor rises past this build, and its runner is refused, as a schema it does not know.
@@ -787,12 +789,12 @@ test("a migration that fails leaves nothing of it: the schema's version is uncha
   assert.deepEqual(await sql(schema, "SELECT to_regclass('half_made') AS t"), [{ t: null }], "its table not made");
 });
 
-test("an applied migration whose file changed since is refused at the server's open, naming the file", ONLY, async (t) => {
+test("an applied migration whose file changed since is refused at the server's open, naming the applied file and this build's", ONLY, async (t) => {
   const schema = await schemaFor(t);
   const store = await openPostgresStore({ url: PG_URL, schema });
   await store.close();
   await sql(schema, "UPDATE schema_migrations SET sha256 = 'edited' WHERE version = 1");
-  await assert.rejects(openPostgresStore({ url: PG_URL, schema }), /0001_initial\.sql with other text than this build's/);
+  await assert.rejects(openPostgresStore({ url: PG_URL, schema }), /applied 0001_initial\.sql \(sha256 edited\) where this build has 0001_initial\.sql \(sha256 [0-9a-f]{12}\)/);
 });
 
 test("a store holding two answers to one approval is refused migration 0003 in words: the run, the call, its commands, and what to do", ONLY, async (t) => {
@@ -803,7 +805,8 @@ test("a store holding two answers to one approval is refused migration 0003 in w
   // The store as a build before 0003 left it, after an approve and a deny of call-1 raced and both were written; call-2 has
   // one answer, which the migration keeps as it is. Every migration from 0003 on is unrecorded, so the open applies them
   // again from 0003 (0004 on runs.outcome's check, 0007's computer_viewers.host, 0008's tables, 0010's imported_templates, 0011's
-  // revisions.mcp_pin, 0015's runs.labels and 0021's purge times, made only where missing, run twice unharmed; 0009's column and 0020's runners
+  // revisions.mcp_pin, 0015's runs.labels and 0021's purge times, made only where missing, and 0030's ledger repair, run only
+  // while learning_ledger.epoch is there, run twice unharmed (store-migration-lint.test.mjs); 0009's column and 0020's runners
   // table are dropped, as a build before them left the store: 0020 renames the runner_relays 0019 makes).
   await sql(schema, "DROP INDEX commands_one_answer");
   await sql(schema, "ALTER TABLE commands DROP COLUMN answer");

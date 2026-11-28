@@ -14,6 +14,7 @@ import { capRun, quiet } from "./adapter-pi-cap-support.mjs";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { routeOf } = await import("../dist/runner/model-route.js");
 const { capModelOf, PI_WIRES } = await import("../dist/runner/adapter-run-spec.js");
 const { journalSessions } = await import("../dist/runner/sessions.js");
@@ -66,7 +67,7 @@ async function bookedUsd(store) {
 
 /** pi on `route` (its fetch, or `upstream` when the route sends to the network), with the host tool `note`. */
 const specOn = (route, upstream, calls = [], tools = { note: { name: "note", replaySafe: true, run: async () => (calls.push("note"), "noted") } }) => (_claim, run) => ({
-  adapter: piAdapter({ run, model: route.model, provider: route.provider, ...(route.like ? { like: route.like } : {}), price: route.price, fetch: route.fetch ?? upstream }),
+  adapter: piAdapter({ redact: heldRedactor((text) => text), run, model: route.model, provider: route.provider, ...(route.like ? { like: route.like } : {}), price: route.price, fetch: route.fetch ?? upstream }),
   session: { key: "root", label: "root", system: ["Follow the script."], tools: hostTools(tools), context: "fresh" },
   input: "Follow the script.",
   hooks: quiet,

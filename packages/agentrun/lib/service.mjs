@@ -3,10 +3,10 @@
 // unit on Linux; never a system service, never sudo. The service runs the installer's command (~/.agentrun/bin/agentrun,
 // install.sh), which brings its own Node, with --no-open and the interactive launcher's rules for the data directory and
 // port, and writes to ~/.agentrun/logs/agentrun.log. With --tailscale it is also served on the person's tailnet
-// (tailscale.mjs); with --env, on a local model or with a start-time switch on (SERVICE_ENV). `agentrun stop` stops the AgentRun the installer starts in the
+// (tailscale.mjs); with --env, on a model gateway, an Ollama off its default address or with a start-time switch on (SERVICE_ENV). `agentrun stop` stops the AgentRun the installer starts in the
 // background where there is no service manager (a container): its pid is in ~/.agentrun/agentrun.pid.
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,15 +19,19 @@ export const INSTALL_COMMAND = "curl -fsSL https://agentrun.ai/install | sh";
 /** How long a start waits for the server to answer /health before it says it did not. */
 export const HEALTH_WAIT_MS = 90_000;
 /** How long `agentrun stop` waits for the background AgentRun to end after its SIGTERM before it sends a SIGKILL: past the
- *  server's own drain (--drain-timeout, 30 s by default), so a busy run gets its turn and the server cleans up. */
-export const STOP_WAIT_MS = 45_000;
+ *  close of the runner beside the server (55 s with its 30 s --drain-timeout: the drain, then the loops' stop), so a busy
+ *  run gets its turn and its end and release are written. */
+export const STOP_WAIT_MS = 60_000;
 const INSTALLER = fileURLToPath(new URL("../install.sh", import.meta.url));
 
 const xml = (text) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const unxml = (text) => text.replace(/&quot;/g, '"').replace(/&gt;/g, ">").replace(/&lt;/g, "<").replace(/&amp;/g, "&");
 
 /** The LaunchAgent: started at login (RunAtLoad), started again when it exits with a failure (KeepAlive), its output in
- *  `log`, with the PATH of the shell that installed it (launchd's own has no Homebrew, so no docker) and `env`. */
+ *  `log`, with the PATH of the shell that installed it (launchd's own has no Homebrew, so no docker) and `env`. A stop
+ *  gets 60 s before launchd's SIGKILL (ExitTimeOut; its default is 20 s), as `agentrun stop` waits (STOP_WAIT_MS): the
+ *  runner beside the server closes in up to 55 s (its 30 s drain, then the loops' stop), which outlasts a signed-in
+ *  server's 27 s stop and a ChatGPT renewal its runner sends. */
 export function plistText({ program, args, path, log, env = {} }) {
   const strings = [program, ...args].map((arg) => `    <string>${xml(arg)}</string>`).join("\n");
   const vars = Object.entries({ PATH: path, ...env }).map(([key, value]) => `    <key>${xml(key)}</key>\n    <string>${xml(value)}</string>`).join("\n");
@@ -52,6 +56,8 @@ ${vars}
     <key>SuccessfulExit</key>
     <false/>
   </dict>
+  <key>ExitTimeOut</key>
+  <integer>60</integer>
   <key>StandardOutPath</key>
   <string>${xml(log)}</string>
   <key>StandardErrorPath</key>
@@ -114,10 +120,14 @@ export const unitEnv = (text) =>
 /** The variables `service install --env` sets, and an installed service keeps through a re-install: each name, with the
  *  values it takes alone, or null for any value. `KEY=` removes one. Never a model key: a unit file is plain text, and keys
  *  are sealed in the console.
- *  - A local model's (AGENT_MODEL_BASE_URL in front of a gateway such as Ollama's), and its key at `none`: a server that
- *    holds no key for its gateway refuses each run that brings none (run-model-key.ts, model_key_required).
+ *  - A model gateway's (AGENT_MODEL_BASE_URL and the models it names; its key is saved in the console), and where Ollama
+ *    listens (OLLAMA_HOST, read as the ollama CLI reads it), for an Ollama off its default address.
+ *    OLLAMA_CONTEXT_LENGTH, Ollama's own too: a person's lower context, which caps each request's num_ctx below 65,536
+ *    as it caps Ollama's.
  *  - The start-time switches (the server's start-switches.ts), on at `1` alone, for a machine its owner alone uses. A
  *    server reads them at its start, so the service restarts.
+ *  - The marketplace the server reads (AGENTRUN_MARKETPLACE, serve's marketplace.ts): `off`, or another site's address in
+ *    place of marketplace.agentrun.ai. The server checks the value at its start and refuses one that is neither.
  *  - The usage counts' switches (docs/telemetry.md). A service never sees the shell that installed it, so install writes
  *    these into it as that shell set them, and AGENTRUN_TELEMETRY=0 under CI. */
 export const SERVICE_ENV = {
@@ -125,15 +135,76 @@ export const SERVICE_ENV = {
   AGENT_MODEL_GATEWAY_IDS: null,
   AGENT_MODEL: null,
   AGENT_MODEL_PRICE: null,
-  AGENT_MODEL_API_KEY: ["none"],
+  OLLAMA_HOST: null,
+  OLLAMA_CONTEXT_LENGTH: null,
   AGENTRUN_MCP_ALLOW_LOOPBACK: ["1"],
   AGENTRUN_WEBHOOK_PRIVATE_TARGETS: ["1"],
+  AGENTRUN_MARKETPLACE: null,
   AGENTRUN_TELEMETRY: null,
   DO_NOT_TRACK: null,
 };
 const SERVICE_NAMES = Object.keys(SERVICE_ENV);
+/** The move off a model gateway that was Ollama on this machine (changes' ollama-walks): the gateway's variables
+ *  removed. AgentRun then lists Ollama itself, and the model is picked as ollama/<tag>. */
+export const GATEWAY_REMOVAL = "agentrun service install --env AGENT_MODEL_BASE_URL= --env AGENT_MODEL_GATEWAY_IDS= --env AGENT_MODEL= --env AGENT_MODEL_PRICE=";
+const GATEWAY_LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]); // key-gate: loopback-rule a model gateway on this machine is told it may be Ollama, which AgentRun lists itself
+/** Whether the gateway address `url` (AGENT_MODEL_BASE_URL) is on this machine. */
+const gatewayHere = (url) => {
+  try {
+    const host = new URL(url).hostname;
+    return GATEWAY_LOOPBACK.has(host) || /^127(\.\d{1,3}){3}$/.test(host);
+  } catch {
+    return false;
+  }
+};
+/** The port of the gateway address `url`, its scheme's default where it names none. */
+const portOf = (url) => {
+  try {
+    const at = new URL(url);
+    return at.port || (at.protocol === "https:" ? "443" : "80");
+  } catch {
+    return undefined;
+  }
+};
+/** What a service with AGENT_MODEL_BASE_URL `url` (none: no gateway) does now that it takes no AGENT_MODEL_API_KEY. The
+ *  key's value is never in it. `shared`: the service has a public address (--tailscale, --public-url), so it lists Ollama
+ *  only where OLLAMA_HOST names it; `ollamaHost`: the service's OLLAMA_HOST, if it sets one. Without one, a shared service,
+ *  a gateway elsewhere or one off Ollama's port 11434 (an Ollama elsewhere, or on a port of its own) needs OLLAMA_HOST
+ *  added, or the move loses Ollama's address. */
+const keyMove = (url, { shared = false, ollamaHost } = {}) => {
+  if (url === undefined) return "AgentRun takes no model key in a service file: a key goes in the console (Settings → Model keys), and Ollama takes none.";
+  const host = !ollamaHost && (shared || !gatewayHere(url) || portOf(url) !== "11434");
+  const move = `remove AGENT_MODEL_BASE_URL${host ? " and add --env OLLAMA_HOST=<host:port> (Ollama's address)" : ""}; AgentRun lists Ollama itself.`;
+  return `${gatewayHere(url) ? "The model gateway at AGENT_MODEL_BASE_URL is on this machine:" : "If the model gateway at AGENT_MODEL_BASE_URL is Ollama,"} ${move} Run ${GATEWAY_REMOVAL}${host ? " --env OLLAMA_HOST=<host:port>" : ""}, start Ollama, and pick the model as ollama/<tag>. A key for any other gateway goes in the console (Settings → Model keys).`;
+};
 /** The usage counts' two switches in SERVICE_ENV, which install also copies from its own shell. */
 const TELEMETRY_NAMES = ["AGENTRUN_TELEMETRY", "DO_NOT_TRACK"];
+
+/** Whether the gateway address `value` carries a user name or password, read as a URL parser reads it (an
+ *  `https:/user@host` with one slash too), or as an address with no scheme: an `@` before its first `/`, `?` or `#`. */
+function hasUserinfo(value) {
+  if (/^\s*(?:[a-z][a-z0-9+.-]*:\/\/)?[^/?#\s]*@/i.test(value)) return true;
+  try {
+    const url = new URL(value.trim());
+    return url.username !== "" || url.password !== "";
+  } catch {
+    return false;
+  }
+}
+
+/** Writes the service file `file` whole or not at all, readable by its owner alone (0600): a temporary file beside it,
+ *  made new with that mode, renamed over it. A crash mid-write leaves the service as it was, never half a file. */
+function writeService(file, text) {
+  const temp = `${file}.${process.pid}.tmp`;
+  rmSync(temp, { force: true });
+  try {
+    writeFileSync(temp, text, { mode: 0o600, flag: "wx" });
+    renameSync(temp, file);
+  } catch (error) {
+    rmSync(temp, { force: true });
+    throw error;
+  }
+}
 
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
@@ -316,6 +387,22 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
     return manager;
   };
   const installed = () => manager !== undefined && existsSync(manager.file);
+  /** The AGENT_MODEL_BASE_URL a service would have after `sets`: the last one they give (empty: none), else the installed
+   *  service's. */
+  /** The installed service's variables, or none. */
+  const installedEnv = () => {
+    try {
+      return installed() ? manager.env(readFileSync(manager.file, "utf8")) : {};
+    } catch {
+      return {};
+    }
+  };
+  /** The value `name` has once `sets` (--env pairs) apply to the installed service: the last one given (empty: none),
+   *  else the service's own. */
+  const serviceVar = (sets, name) => {
+    const given = sets.findLast((pair) => pair.startsWith(`${name}=`));
+    return given !== undefined ? given.slice(name.length + 1) || undefined : installedEnv()[name];
+  };
   const needInstalled = () => {
     if (!installed()) throw fail(3, "AgentRun's service is not installed: agentrun service install installs it.");
     return manager;
@@ -428,10 +515,21 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
       if (port !== undefined && !/^\d+$/.test(port)) throw fail(2, `--port takes a port number, not ${port}.`);
       const changes = sets.map((pair) => {
         const at = pair.indexOf("=");
-        if (at < 1) throw fail(2, `--env takes KEY=VALUE, not ${pair}.`);
+        // Never echoed: a pair with no name may be a key itself (--env sk-or-..., --env =sk-or-...).
+        if (at < 1) throw fail(2, `--env takes KEY=VALUE, and one --env has ${at < 0 ? "no =" : "no name before ="}.`);
         const key = pair.slice(0, at);
+        // AGENT_MODEL_API_KEY=none once reached Ollama through a gateway; its refusal names the move, never the value.
+        if (key === "AGENT_MODEL_API_KEY") {
+          // Shared as far as this install says: a public address given now, or the service's own unless --no-tailscale.
+          const own = installedEnv();
+          const shared = tailscale === true || given !== undefined || (tailscale !== false && installed() && (argsNow().includes("--public-url") || own.AGENTRUN_PUBLIC_URL !== undefined));
+          throw fail(2, `--env takes no AGENT_MODEL_API_KEY. ${keyMove(serviceVar(sets, "AGENT_MODEL_BASE_URL"), { shared, ollamaHost: serviceVar(sets, "OLLAMA_HOST") })}`);
+        }
         if (!Object.hasOwn(SERVICE_ENV, key)) throw fail(2, `--env takes ${SERVICE_NAMES.slice(0, -1).join(", ")} or ${SERVICE_NAMES.at(-1)}, not ${key}: a key goes in the console (Settings → Model keys), never in a service file.`);
         if (/[\0-\x1f]/.test(pair)) throw fail(2, `${key}'s value has a line break or another control character.`);
+        // A user or password in the gateway's address is a key in a service file: refused, and never echoed.
+        // Read past leading space and with or without a scheme, as an address before its first /, ? or #.
+        if (key === "AGENT_MODEL_BASE_URL" && hasUserinfo(pair.slice(at + 1))) throw fail(2, "AGENT_MODEL_BASE_URL takes the gateway's address with no user name or password in it: a key goes in the console (Settings → Model keys), never in a service file.");
         const takes = SERVICE_ENV[key];
         // The value is never echoed: it may be a key.
         if (takes && pair.slice(at + 1) !== "" && !takes.includes(pair.slice(at + 1))) throw fail(2, `${key} takes ${takes.join(" or ")} alone, or nothing to remove it: a model key goes in the console (Settings → Model keys), never in a service file.`);
@@ -445,9 +543,10 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
       if (!existsSync(program)) throw fail(1, `AgentRun's service runs the installed command, ${program}, and it is not there. Install it first: ${INSTALL_COMMAND}`);
       const why = manager.available();
       if (why !== undefined) throw fail(1, `AgentRun can't run as a service here: ${why}. Start it in a terminal with ${program}.`);
-      // An installed service keeps its local model's variables, its start-time switches and its usage counts' switches; the switches set in this
+      // An installed service keeps its model variables, its start-time switches and its usage counts' switches; the switches set in this
       // shell reach it (and under CI, AGENTRUN_TELEMETRY=0), then --env KEY=VALUE sets one and KEY= removes it.
-      const model = installed() ? Object.fromEntries(Object.entries(manager.env(readFileSync(manager.file, "utf8"))).filter(([key]) => Object.hasOwn(SERVICE_ENV, key))) : {};
+      const was = installed() ? manager.env(readFileSync(manager.file, "utf8")) : {};
+      const model = Object.fromEntries(Object.entries(was).filter(([key]) => Object.hasOwn(SERVICE_ENV, key)));
       for (const key of TELEMETRY_NAMES) if ((env[key] ?? "") !== "" && !/[\0-\x1f]/.test(env[key])) model[key] = env[key];
       if (env.CI && model.AGENTRUN_TELEMETRY === undefined) model.AGENTRUN_TELEMETRY = "0";
       for (const [key, value] of changes) {
@@ -481,7 +580,10 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
       const vars = { ...model, ...(at ? { AGENTRUN_PUBLIC_URL: at.url, AGENTRUN_TRUSTED_PROXIES: "loopback" } : {}) };
       mkdirSync(join(root, "logs"), { recursive: true, mode: 0o700 });
       mkdirSync(join(manager.file, ".."), { recursive: true });
-      writeFileSync(manager.file, manager.text({ program, args, path: env.PATH ?? "/usr/bin:/bin", log, env: vars }));
+      writeService(manager.file, manager.text({ program, args, path: env.PATH ?? "/usr/bin:/bin", log, env: vars }));
+      // A service from before keeps every variable it may hold but AGENT_MODEL_API_KEY, which is said in one line once
+      // the file is written without it (a refused install says nothing of it).
+      if (Object.hasOwn(was, "AGENT_MODEL_API_KEY")) say(`This re-install drops AGENT_MODEL_API_KEY from the service. ${keyMove(model.AGENT_MODEL_BASE_URL, { shared: share || publicUrl !== undefined, ollamaHost: model.OLLAMA_HOST })}`);
       const since = Date.now();
       manager.install();
       say(`Installed AgentRun's service (${manager.file}): it keeps running after this terminal closes, and starts again at login.`);
@@ -636,7 +738,7 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
 }
 
 const VERBS = [
-  ["install", "Install AgentRun as a service of this user and start it: it keeps running after the terminal closes and starts again at login", [["--port N", "the port to listen on (default: the first free from 7340; 7340 with --tailscale)"], ["--data DIR", "the data directory (default ~/.agentrun)"], ["--tailscale", "also serve it over HTTPS on your own tailnet only (tailscale serve, never Funnel); --no-tailscale takes it off"], ["--env KEY=VALUE", `a local model's variable for the server, a start-time switch or the usage counts' switch: ${Object.entries(SERVICE_ENV).map(([name, takes]) => (takes ? `${name} (${takes.join(" or ")})` : name)).join(", ")}; kept until KEY= removes it; repeatable`], ["--public-url URL", "the https address people open it at, through a proxy you run in front of it (your own tailscale serve, a reverse proxy); kept for every restart"]], { port: { type: "string" }, tailscale: { type: "boolean" }, env: { type: "string", multiple: true }, "public-url": { type: "string" } }],
+  ["install", "Install AgentRun as a service of this user and start it: it keeps running after the terminal closes and starts again at login", [["--port N", "the port to listen on (default: the first free from 7340; 7340 with --tailscale)"], ["--data DIR", "the data directory (default ~/.agentrun)"], ["--tailscale", "also serve it over HTTPS on your own tailnet only (tailscale serve, never Funnel); --no-tailscale takes it off"], ["--env KEY=VALUE", `a model gateway's variable or where Ollama listens, a start-time switch, the marketplace the server reads or the usage counts' switch: ${Object.entries(SERVICE_ENV).map(([name, takes]) => (takes ? `${name} (${takes.join(" or ")})` : name)).join(", ")}; kept until KEY= removes it; repeatable`], ["--public-url URL", "the https address people open it at, through a proxy you run in front of it (your own tailscale serve, a reverse proxy); kept for every restart"]], { port: { type: "string" }, tailscale: { type: "boolean" }, env: { type: "string", multiple: true }, "public-url": { type: "string" } }],
   ["status", "Say whether the service is installed and running, the console's address and its health (exit 0 healthy, 1 not, 3 not installed)", [], {}],
   ["start", "Start the service and wait until it answers", [], {}],
   ["stop", "Stop the service (it starts again at the next login)", [], {}],

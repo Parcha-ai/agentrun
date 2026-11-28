@@ -29,7 +29,7 @@ const view = (extra: Partial<AgentLearning> = {}): AgentLearning => ({
   ...extra,
 });
 const none = () => view({ corrections: "", workflows: [] });
-const runOf = (id: string, title: string, learning: Run["learning"]): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" },
+const runOf = (id: string, title: string, learning: Run["learning"]): Run => ({ sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" }, learning_work: { state: "none", runs: [], ended_at: null, deadline_at: null },
   run_id: id, agent_id: "refunds", agent_version: 1, revision: "rv1", kind: "agentic", status: "completed", state: "idle", title,
   created_at: "2026-11-03T16:52:00Z", ended_at: "2026-11-03T16:52:09Z", result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null, learning,
 });
@@ -59,8 +59,8 @@ async function open(a: Agent, fake: Fake = {}, props: Partial<LearningProps> = {
   const v2 = {
     agentLearning: async (id: string) => { calls.push(`learning ${id}`); return (fake.learning ?? (async () => view()))(); },
     listAgentRuns: async (id: string) => { calls.push(`runs ${id}`); return { runs: fake.runs ?? RUNS, next_cursor: null }; },
-    corrections: async () => { calls.push("corrections"); return (fake.corrections ?? (async () => ({ text: TEXT, etag: '"c-v1"', cap_bytes: 2048 })))(); },
-    writeCorrections: async (_id: string, text: string, etag: string) => { calls.push(`write ${etag} ${JSON.stringify(text)}`); return (fake.write ?? (async () => ({ text, etag: '"c-v2"', cap_bytes: 2048 })))(text, etag); },
+    corrections: async () => { calls.push("corrections"); return (fake.corrections ?? (async () => ({ text: TEXT, etag: '"c-v1"', cap_bytes: 8192 })))(); },
+    writeCorrections: async (_id: string, text: string, etag: string) => { calls.push(`write ${etag} ${JSON.stringify(text)}`); return (fake.write ?? (async () => ({ text, etag: '"c-v2"', cap_bytes: 8192 })))(text, etag); },
     readLearningFile: async (_id: string, file: string) => { calls.push(`read ${file}`); return (fake.read ?? (async () => ({ text: '{"v": 2, "name": "check-refunds"}\n', etag: `"v-${file}"` })))(file); },
     retireWorkflow: async (_id: string, file: string, etag: string) => { calls.push(`retire ${file} ${etag}`); return (fake.retire ?? (async () => ({ text: "", etag: '"v3"' })))(file, etag); },
     approveWorkflow: async (_id: string, file: string, etag: string) => { calls.push(`approve ${file} ${etag}`); return (fake.approve ?? (async () => ({ text: "", etag: '"v4"' })))(file, etag); },
@@ -309,7 +309,7 @@ describe("the corrections", () => {
     expect(t.calls).toContain("corrections");
     const body = t.editor()!.querySelector("textarea")!;
     expect(body.value).toBe(TEXT);
-    expect(t.editor()!.textContent).toContain(`${new TextEncoder().encode(TEXT).length} of 2048 bytes`);
+    expect(t.editor()!.textContent).toContain(`${new TextEncoder().encode(TEXT).length} of 8192 bytes`);
     await t.type(body, `${TEXT}- Prices in the shop's currency.\n`);
     await t.key(body, "Enter", { ctrlKey: true });
     expect(t.calls).toContain(`write "c-v1" ${JSON.stringify(`${TEXT}- Prices in the shop's currency.\n`)}`);
@@ -347,8 +347,8 @@ describe("the corrections", () => {
   it("a file changed since it was opened is not written over: it says so, loads the newest and keeps the edit to copy", async () => {
     let reads = 0;
     const t = await open(agent(true), {
-      corrections: async () => (++reads === 1 ? { text: TEXT, etag: '"c-v1"', cap_bytes: 2048 } : { text: "# Learned\n\n- A run's newest correction.\n", etag: '"c-v2"', cap_bytes: 2048 }),
-      write: async (_text, etag) => { if (etag === '"c-v1"') throw new ClientError(412, "precondition_failed", "corrections.md changed since it was read."); return { text: "", etag: '"c-v3"', cap_bytes: 2048 }; },
+      corrections: async () => (++reads === 1 ? { text: TEXT, etag: '"c-v1"', cap_bytes: 8192 } : { text: "# Learned\n\n- A run's newest correction.\n", etag: '"c-v2"', cap_bytes: 8192 }),
+      write: async (_text, etag) => { if (etag === '"c-v1"') throw new ClientError(412, "precondition_failed", "corrections.md changed since it was read."); return { text: "", etag: '"c-v3"', cap_bytes: 8192 }; },
     });
     await t.click(/^Edit corrections$/);
     await t.type(t.editor()!.querySelector("textarea")!, "- My edit.\n");
@@ -373,17 +373,17 @@ describe("the corrections", () => {
   });
 
   it("any other refusal says the corrections were not saved, and stays open", async () => {
-    const t = await open(agent(true), { write: async () => { throw new ClientError(413, "payload_too_large", "corrections.md holds at most 2048 bytes."); } });
+    const t = await open(agent(true), { write: async () => { throw new ClientError(413, "payload_too_large", "corrections.md holds at most 8192 bytes."); } });
     await t.click(/^Edit corrections$/);
     await t.click(/^Save$/);
     expect(t.text()).toContain("The corrections were not saved.");
-    expect(t.text()).toContain("corrections.md holds at most 2048 bytes.");
+    expect(t.text()).toContain("corrections.md holds at most 8192 bytes.");
     expect(t.editor()).not.toBeNull();
   });
 
   it("a read that fails says so, and Try again reads it", async () => {
     let reads = 0;
-    const t = await open(agent(true), { corrections: async () => { if (reads++ === 0) throw new ClientError(503, "unavailable", "The server is restarting."); return { text: TEXT, etag: '"c-v1"', cap_bytes: 2048 }; } });
+    const t = await open(agent(true), { corrections: async () => { if (reads++ === 0) throw new ClientError(503, "unavailable", "The server is restarting."); return { text: TEXT, etag: '"c-v1"', cap_bytes: 8192 }; } });
     await t.click(/^Edit corrections$/);
     expect(t.editor()!.querySelector("textarea")).toBeNull();
     expect(t.button(/^Save$/)!.disabled).toBe(true);
@@ -392,7 +392,7 @@ describe("the corrections", () => {
   });
 
   it("an agent with none says how one is given, and Edit starts it", async () => {
-    const t = await open(agent(true), { learning: async () => none(), corrections: async () => ({ text: "", etag: '"c-v0"', cap_bytes: 2048 }) });
+    const t = await open(agent(true), { learning: async () => none(), corrections: async () => ({ text: "", etag: '"c-v0"', cap_bytes: 8192 }) });
     const section = t.host.querySelector('section[aria-label="Corrections"]')!;
     expect(section.textContent).toContain("None yet. A correction you give with a run's grade is kept here, one line each; every later run is given them whole.");
     await t.click(/^Edit corrections$/);
@@ -444,7 +444,8 @@ describe("the before and after", () => {
     const t = await open(agent(true), { learning: async () => view({ impact: IMPACT }) });
     const card = t.host.querySelector('section[aria-label^="Since it learned"]')!;
     expect(card.getAttribute("aria-label")).toBe("Since it learned (medians of 4 runs started from what it learned): answers in 12s instead of 18s");
-    expect(card.textContent).toContain("Answers in12sinstead of 18s−33%");
+    // A figure cell like the four at the top: its label, its time, the change in the band under it, then what it was.
+    expect(card.textContent).toContain("Answers in12s−33%instead of 18s");
     // A run's cost is the cost card's all-in before and after, learning included: a median of the job's own cost here
     // left learning out and read -86% beside the cost card's 2.0x cheaper.
     expect(card.textContent).not.toContain("A run costs");
@@ -456,10 +457,10 @@ describe("the before and after", () => {
     // Learning's cost is the bill's: the impact has no figure of its own (its old median of mostly-zero rows read $0).
     const t = await open(agent(true), { cost, learning: async () => view({ impact: { before: { runs: 2, median_duration_s: 1.2 }, after: { runs: 4, median_duration_s: 1.3 } } }) });
     const card = t.host.querySelector('section[aria-label^="Since it learned"]')!;
-    expect(card.textContent).toContain("Learning itself$0.0075 a run, booked");
+    expect(card.textContent).toContain("Learning itself$0.0075a run, booked");
     expect(card.textContent).not.toContain("$0.0000");
-    const up = [...card.querySelectorAll("span")].find((x) => x.textContent === "+8%")!;
-    expect(card.textContent).toContain("Answers in1.3sinstead of 1.2s+8%");
+    const up = [...card.querySelectorAll("span")].filter((x) => x.textContent === "+8%").at(-1)!;
+    expect(card.textContent).toContain("Answers in1.3s+8%instead of 1.2s");
     expect(up.className).toContain("text-warning-text");
   });
   it("renders for an agent that learned only a workflow", async () => {
@@ -900,7 +901,7 @@ describe("the loop on the Learning tab", () => {
     expect(t.host.querySelector('[data-testid="stage-compiled"]')!.textContent).toContain("150 of 200 completed runs");
   });
   it("the cheaper stage: 'N times cheaper' (the chart's ratio) over the agreement check it passed (N of M agreed, its bar) when the serving check cleared, never 'the same accuracy'; the reason in its place when a run's cost isn't all known", async () => {
-    const took = { takeover: { n: 19, run_id: "r19" }, before: { runs: 18, mean_usd: 0.89 }, after: { runs: 59, mean_usd: 0.127 }, after_state: "priced" as const, hand_backs: { ran: 59, back: 3 } };
+    const took = { takeover: { n: 19, run_id: "r19" }, before: { runs: 18, mean_usd: 0.89 }, after: { runs: 59, mean_usd: 0.127 }, after_state: "priced" as const, hand_backs: { ran: 59, back: 3, cut: 0 } };
     const costOf = (over: Partial<LearningCost["summary"]>) => async (): Promise<LearningCost> => ({ agent: "refunds", runs: [], total_runs: 77, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { ...took, times_cheaper: 7, withheld: null, replay: { n: 40, workflow_pct: 80, agent_pct: 100, cleared: true, agreed: 32, alone: 40, agree_min: 0.8 }, ...over }, workflows: [], bill: EMPTY_BILL });
     const t = await open(agent(true), { cost: costOf({}) });
     const stage = t.host.querySelector('[data-testid="stage-cheaper"]')!;
