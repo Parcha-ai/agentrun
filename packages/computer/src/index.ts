@@ -41,6 +41,8 @@ export { type DockerVolume, VOLUME_SUBPATH_ENGINE } from "./docker/volume.js";
 export {
 	DEFAULT_DOCKER_IMAGE,
 	DOCKER_BASE,
+	DOCKER_NODE_SHA256,
+	DOCKER_NODE_VERSION,
 	DOCKER_RECIPE,
 	DOCKER_RECIPE_HAS,
 	ensureImage,
@@ -56,6 +58,7 @@ export {
 } from "./docker/image.js";
 export { ADB_ENV_NAMES, adbEnv, BASE_ENV_NAMES, CHROME_ENV_NAMES, childEnv, chromeEnv, DOCKER_ENV_NAMES, dockerEnv, type HostEnv } from "./child-env.js";
 export { containerSigns, EGRESS_IMAGE, EGRESS_LABEL, EGRESS_MOUNT, EGRESS_SOCKET } from "./docker/egress.js";
+export { DEFAULT_MAX_TUNNELS, MAX_TUNNELS_CEILING, maxTunnelsOf } from "./docker/egress-proxy.js";
 export {
 	ARCHIL_HELPER,
 	ARCHIL_SYNC_SOCKET,

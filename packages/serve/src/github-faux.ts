@@ -85,6 +85,8 @@ export async function startFauxGitHub({ webDir }: { webDir?: string } = {}): Pro
   const state = { branches: new Map<string, string>([["main", BASE]]), trees: new Map<string, unknown>(), commits: new Map<string, unknown>(), pulls: [] as { number: number; title: string; head: string; base: string; body: string; html_url: string; repo: string }[] };
   /** Each token minted, by its value: the repositories it was narrowed to (by name), or every one the installation covers. */
   const tokens = new Map<string, string[] | undefined>();
+  /** How many tokens were minted, revoked ones too: what a test reads to see the App was never used. */
+  let minted = 0;
   const covered = (names: string[] | undefined) => FAUX_GITHUB.repositories.filter((full) => !names || names.includes(full.split("/")[1]!));
   const answer = (res: ServerResponse, status: number, doc?: unknown) => {
     res.writeHead(status, doc === undefined ? {} : { "content-type": "application/json" });
@@ -105,6 +107,7 @@ export async function startFauxGitHub({ webDir }: { webDir?: string } = {}): Pro
       if (names && covered(names).length !== names.length) return answer(res, 422, { message: "There is at least one repository that does not exist or is not accessible to the parent installation." });
       const token = `faux-installation-token-${randomBytes(16).toString("hex")}`;
       tokens.set(token, names);
+      minted++;
       return answer(res, 201, { token, expires_at: new Date(Date.now() + TOKEN_MS).toISOString(), permissions: { ...installation.permissions }, repository_selection: "selected" });
     }
     const bearer = String(req.headers.authorization ?? "").replace(/^Bearer /, "");
@@ -120,7 +123,7 @@ export async function startFauxGitHub({ webDir }: { webDir?: string } = {}): Pro
     const repo = /^\/repos\/([^/]+)\/([^/]+)\/installation$/.exec(path);
     if (req.method === "GET" && repo) return FAUX_GITHUB.repositories.includes(`${repo[1]}/${repo[2]}`) ? answer(res, 200, installation) : answer(res, 404, { message: "Not Found" });
     // What a test or a demo reads and sets of the fake: everything written, and the installation's permissions.
-    if (req.method === "GET" && path === "/_faux/state") return answer(res, 200, { permissions: installation.permissions, branches: Object.fromEntries(state.branches), commits: Object.fromEntries(state.commits), trees: Object.fromEntries(state.trees), pulls: state.pulls });
+    if (req.method === "GET" && path === "/_faux/state") return answer(res, 200, { permissions: installation.permissions, branches: Object.fromEntries(state.branches), commits: Object.fromEntries(state.commits), trees: Object.fromEntries(state.trees), pulls: state.pulls, minted });
     if (req.method === "POST" && path === "/_faux/permissions") {
       try {
         installation.permissions = { ...installation.permissions, ...(JSON.parse(body || "{}") as Record<string, string>) };

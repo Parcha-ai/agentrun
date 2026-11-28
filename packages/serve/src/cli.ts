@@ -3,6 +3,7 @@
 // First: the secrets the launcher hands over, read and its pipe closed before anything else runs (secrets.ts). It loads
 // nothing but node:fs and node:os.
 import { secret } from "./secrets.js";
+import { ON_DATA_WITH_SERVER } from "./template-eval-words.js";
 // Then, before anything loads node:sqlite, the filter for its ExperimentalWarning (quiet-sqlite-warning.ts).
 import "./quiet-sqlite-warning.js";
 import { parseArgs } from "node:util";
@@ -16,7 +17,7 @@ import { banner } from "./print.js";
 import { type ApiToken, parseTokens } from "./api-token.js";
 import type { LearningMode } from "./learning.js";
 import type { Serve, ServeOptions } from "./server.js";
-import { API_ONLY_ENV, API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV, SHARE_HOST_ENV, switchFrom, WEB_JEV_OFF_ENV } from "./env-switch.js";
+import { API_ONLY_ENV, API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, NO_COST_WORDS_ENV, RUN_KEYS_ENV, SHARE_HOST_ENV, switchFrom, WEB_JEV_OFF_ENV } from "./env-switch.js";
 import { WORKSPACE_TOKENS_ENV, workspaceTokenIds } from "./workspace-scope.js";
 import { harnessModulesOf, harnessRecipesOf } from "./harness-table.js";
 import { hookOrigin, LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV, type LaunchHook, launchHookFrom } from "./trigger-launch-hook.js";
@@ -42,7 +43,7 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
        agentrun-serve sign-in-harness --recipe FILE [--data DIR]
        agentrun-serve check-harness --recipe FILE [--model PROVIDER/MODEL] [--data DIR] [--report FILE] [--cap USD]
        agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL | --on-data DIR] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
-       agentrun-serve import [--data DIR] [--from claude-code,codex,pi,opencode,copilot] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
+       agentrun-serve import [--data DIR] [--from claude-code,codex,pi,opencode,copilot,cursor] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
        agentrun-serve learning connect|status|disconnect|retry --project PATH --runtime codex|claude-code [--url URL] [--data DIR] [--no-sync]
        agentrun-serve runner --data DIR [--loops N] [--drain-timeout D] [--name NAME]
        agentrun-serve runner --check --data DIR [--name NAME]
@@ -155,16 +156,17 @@ start: set it only on a machine you alone use, since loopback is this machine's 
 process reaches one only with the variable set in its own environment, on its own loopback (its own machine or
 container), never at a server's own port (${DEFAULT_PORT}, or where the server says it listens).
 
-\`agentrun-serve import\` reads the Claude Code, Codex, pi, OpenCode and Copilot CLI sessions in your own home
-(~/.claude/projects, ~/.codex/sessions, ~/.pi/agent/sessions, ~/.local/share/opencode, ~/.copilot/session-state) into
-the data directory, once: each project directory an agent, with its CLAUDE.md or AGENTS.md and its skill folders, and
-each session a run you can read but not continue. Nothing leaves this machine; the values of key-shaped environment
-variables are cut out of what is written. --dry-run lists what it would import; run again, it imports only what it has
-not. Sessions written in the last 10 minutes wait for the next import. What is left out is counted by why; --verbose
-lists each file. --include-deleted keeps projects whose directory is gone (a deleted worktree's); --all keeps those and
-temporary ones too. Each run keeps what its session used (tokens, requests, tools, time at work), priced at the
-catalog's list prices when its source did not price it. Both end with a summary of every session found, those imported
-before included, and the address to open the console at (--port as the server takes it).
+\`agentrun-serve import\` reads the Claude Code, Codex, pi, OpenCode, Copilot CLI and Cursor CLI sessions in your own
+home (~/.claude/projects, ~/.codex/sessions, ~/.pi/agent/sessions, ~/.local/share/opencode, ~/.copilot/session-state,
+~/.cursor/chats) into the data directory, once: each project directory an agent, with its CLAUDE.md or AGENTS.md and
+its skill folders, and each session a run you can read but not continue. Nothing leaves this machine; the values of
+key-shaped environment variables are cut out of what is written. --dry-run lists what it would import; run again, it
+imports only what it has not. Sessions written in the last 10 minutes wait for the next import. What is left out is
+counted by why; --verbose lists each file. --include-deleted keeps projects whose directory is gone (a deleted
+worktree's); --all keeps those and temporary ones too. Each run keeps what its session used (tokens, requests, tools,
+time at work), priced at the catalog's list prices when its source did not price it; Cursor keeps no tokens on the
+machine, so a Cursor run's are unknown. Both end with a summary of every session found, those imported before
+included, and the address to open the console at (--port as the server takes it).
 
 \`agentrun-serve store-schema\` prints, as one line of JSON, the store's schema version and runner floor (the oldest version
 a runner's build must know to run on it) beside the version this build knows, and what this build's server and runner do
@@ -397,8 +399,6 @@ if (process.argv[2] === "validate-template") {
 class EvalTemplateUsage extends Error {}
 
 async function evalTemplateCommand(): Promise<number> {
-  const { CaseError, evalTemplate, exitCodeOf, markdownReport, ON_DATA_WITH_SERVER } = await import("./template-eval.js");
-  const { PackageError } = await import("./templates.js");
   const usage = (message: string): never => {
     throw new EvalTemplateUsage(`agentrun-serve eval-template: ${message}\n\n${USAGE}`);
   };
@@ -434,6 +434,9 @@ async function evalTemplateCommand(): Promise<number> {
     })();
     if (!writable) usage(`--report's folder ${folder} is not a folder this command can write in, or the report's path is a folder or a file it can't write.`);
   }
+  // The eval's modules once its flags are checked: a refused call never waits on loading them.
+  const { CaseError, evalTemplate, exitCodeOf, markdownReport } = await import("./template-eval.js");
+  const { PackageError } = await import("./templates.js");
   // The first Ctrl-C (or a stop) cancels the run in progress and cleans up what the eval made, as its end does: a run
   // left going would go on spending. A second one leaves at once (stop-signals.ts stopOnce).
   const stop = stopOnce(() => console.error("agentrun-serve eval-template: stopping: cancelling the run in progress and cleaning up (again to leave now)"));
@@ -593,11 +596,13 @@ if (process.argv[2] === "eval-template") {
   process.on("SIGTERM", signalled);
   // AGENTRUN_API_ONLY=1: the run routes alone (api-only.ts), and no owner; a value that is neither on nor off stops here.
   // AGENTRUN_RUN_KEYS=1: each run brings the tool keys this server does not hold (run-keys.ts), read the same way.
+  // AGENTRUN_NO_COST_WORDS=1: a served Timeline row's words say no cost; its usage alone carries it (timeline.ts costWords).
   // AGENTRUN_WEB_JEV_OFF=1: the web tools run without Jev (web-run.ts jevWebOf); read where each run's Web is made, and
   // only checked here.
   // AGENTRUN_API_ONLY_MCP_ORIGINS: the MCP origins its token may save a per_run server at (api-only.ts), read with it alone.
   let apiOnly: boolean;
   let runKeys: boolean;
+  let noCostWords: boolean;
   // --share-host, or AGENTRUN_SHARE_HOST=1: shares under /r/ alone (share-host.ts), with no runner beside the server.
   let shareHost: boolean;
   let apiOnlyMcpOrigins: string[];
@@ -606,6 +611,7 @@ if (process.argv[2] === "eval-template") {
   try {
     apiOnly = switchFrom(API_ONLY_ENV);
     runKeys = switchFrom(RUN_KEYS_ENV);
+    noCostWords = switchFrom(NO_COST_WORDS_ENV);
     shareHost = values["share-host"] === true || switchFrom(SHARE_HOST_ENV);
     switchFrom(WEB_JEV_OFF_ENV);
     apiOnlyMcpOrigins = apiOnly ? apiOnlyMcpOriginsFrom(process.env[API_ONLY_MCP_ORIGINS_ENV]) : [];
@@ -687,7 +693,7 @@ if (process.argv[2] === "eval-template") {
       ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), log: (line) => void process.stdout.write(`${line}\n`),
       // The public address is the server's with accounts on or off: the Host names it serves, the webhook URLs it gives.
       ...(publicUrl && publicName ? { publicUrl, publicUrlFrom: publicName } : {}),
-      ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true } : {}), ...(apiOnly ? { apiOnly } : {}), ...(shareHost ? { shareHost } : {}), ...(launchHook ? { launchHook } : {}), ...(runKeys ? { runKeys } : {}),
+      ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true } : {}), ...(apiOnly ? { apiOnly } : {}), ...(shareHost ? { shareHost } : {}), ...(launchHook ? { launchHook } : {}), ...(runKeys ? { runKeys } : {}), ...(noCostWords ? { noCostWords } : {}),
       ...(apiOnlyMcpOrigins.length ? { apiOnlyMcpOrigins } : {}),
       // The proxies whose X-Forwarded-For the sign-in limit reads (comma-separated); none unless set.
       ...(trustedProxies.length ? { trustedProxies } : {}),

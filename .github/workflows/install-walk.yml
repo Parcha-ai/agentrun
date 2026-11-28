@@ -1,9 +1,11 @@
 name: Install walk
+run-name: ${{ github.event_name == 'workflow_run' && format('Install walk at {0}', github.event.workflow_run.head_branch) || ' ' }}
 
 # The installer (packages/agentrun/install.sh) and `agentrun service` on fresh machines with no Node.js on PATH
 # (packages/agentrun/test/install-walk.sh): an Ubuntu container with no service manager, x64 and arm64; an Ubuntu VM with a
 # systemd user session; a macOS runner with launchd in its Aqua session. On a pull request or push it installs this
-# checkout's launcher, packed; after a release, the published one. The container also walks --tailscale with a fake
+# checkout's launcher, packed; after a release, the published one, from the tag's scripts (each checkout falls back to the
+# publish's commit), and the run is named for the tag. The container also walks --tailscale with a fake
 # tailscale (packages/agentrun/test/fake-tailscale.sh): no tailnet, no secret. No model is called. Not a required check.
 # The first-run jobs walk the setup prompt's own lines (docs/SKILL.md) from the installer to a finished first run on a
 # local model (walk-model.mjs, a fake Ollama the server lists and runs itself), the time against the bar (5 minutes) in the job summary: a
@@ -52,12 +54,17 @@ on:
   workflow_dispatch:
   # The daily walk (ways-in-daily.yml): the whole walk, on main's launcher.
   workflow_call:
+    inputs:
+      # The commit to walk: the daily walk hands it the release tag's after a publish. Empty: the event's own.
+      ref:
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-install-walk-${{ github.event.pull_request.number || github.sha }}
+  group: ${{ github.workflow }}-install-walk-${{ github.event.pull_request.number || github.sha }}${{ inputs.ref && format('-{0}', inputs.ref) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -70,6 +77,8 @@ jobs:
       package: ${{ steps.pack.outputs.package }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.event.workflow_run.head_sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: '24.22.3'
@@ -110,6 +119,8 @@ jobs:
     container: buildpack-deps:noble-curl
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.event.workflow_run.head_sha }}
       - uses: actions/download-artifact@v4
         if: ${{ needs.pack.outputs.package != '' }}
         with:
@@ -135,6 +146,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.event.workflow_run.head_sha }}
       - name: Walk
         env:
           BUILD: ${{ github.event_name != 'workflow_run' && '--build' || '' }}
@@ -161,6 +174,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.event.workflow_run.head_sha }}
       - uses: actions/download-artifact@v4
         if: ${{ needs.pack.outputs.package != '' }}
         with:

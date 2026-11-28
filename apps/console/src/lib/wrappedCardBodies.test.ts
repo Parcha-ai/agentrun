@@ -8,17 +8,22 @@ import type { Wrapped } from "./v2";
 // wait it has is met and the year has sessions; no number on a card is one the year does not give.
 const YEAR: Wrapped = {
   year: 2025, sessions: 12, turns: 40, requests: 300, tokens: { input: 1_000_000, output: 200_000, cache_read: 5_000_000, cache_write: 100_000 },
-  cost_usd: 42.5, unpriced_requests: 3, unread_files: 0,
+  cost_usd: 42.5, unpriced_requests: 3, tokens_unknown_requests: 0, time_unknown_requests: 0, unread_files: 0,
   days: [{ day: "2025-03-02", requests: 100, tokens: 4_000_000 }, { day: "2025-03-03", requests: 200, tokens: 2_300_000 }],
   hours: Array.from({ length: 24 }, (_, h) => (h === 14 ? 120 : h === 9 ? 80 : 4)), weekdays: [0, 200, 100, 0, 0, 0, 0], active_ms: 7_200_000,
-  harnesses: [{ harness: "claude-agent", sessions: 10, requests: 250, tokens: 6_000_000, sources: ["claude-code"] }, { harness: "pi", sessions: 2, requests: 50, tokens: 300_000, sources: ["gemini", "pi"] }],
-  models: [{ model: "anthropic/claude-sonnet", requests: 250, tokens: 6_000_000, cost_usd: 40, unpriced_requests: 3 }, { model: "openai/gpt", requests: 50, tokens: 300_000, cost_usd: 2.5, unpriced_requests: 0 }],
+  harnesses: [{ harness: "claude-agent", sessions: 10, requests: 250, tokens: 6_000_000, tokens_unknown_requests: 0, sources: ["claude-code"] }, { harness: "pi", sessions: 2, requests: 50, tokens: 300_000, tokens_unknown_requests: 0, sources: ["gemini", "pi"] }],
+  models: [{ model: "anthropic/claude-sonnet", requests: 250, tokens: 6_000_000, cost_usd: 40, unpriced_requests: 3, tokens_unknown_requests: 0 }, { model: "openai/gpt", requests: 50, tokens: 300_000, cost_usd: 2.5, unpriced_requests: 0, tokens_unknown_requests: 0 }],
   sources: [{ source: "claude-code", sessions: 10, requests: 250 }, { source: "codex", sessions: 2, requests: 50 }],
   imported: [{ source: "claude-code", runs: 7 }, { source: "gemini", runs: 4 }],
   cache: { runs: 6, hit_rate: 0.8812, breaks: { model: 2, idle: 30, compaction: 5, edited: 0, sidechain: 0, unknown: 3 }, extra_cost_usd: { model: 0.5, idle: 12.25, compaction: 1.5, edited: 0, sidechain: 0, unknown: 0.75 }, unpriced_breaks: 4 },
   secrets: { runs: 9, runs_holding: 2, removed: 3 },
 };
 const NO_CACHE: Wrapped = { ...YEAR, cache: null };
+const CURSOR_YEAR: Wrapped = { ...YEAR, sessions: 1, turns: 2, requests: 3, tokens: { input: 0, output: 0, cache_read: 0, cache_write: 0 }, tokens_unknown_requests: 3, time_unknown_requests: 3, cost_usd: 0, unpriced_requests: 3,
+  days: [{ day: "2025-07-10", requests: 3, tokens: 0 }], hours: Array.from({ length: 24 }, (_, h) => (h === 4 ? 3 : 0)), weekdays: [0, 0, 0, 0, 0, 3, 0], active_ms: 0,
+  harnesses: [{ harness: "cursor", sessions: 1, requests: 3, tokens: 0, tokens_unknown_requests: 3, sources: ["cursor"] }],
+  models: [{ model: "unknown", requests: 3, tokens: 0, cost_usd: 0, unpriced_requests: 3, tokens_unknown_requests: 3 }],
+  sources: [{ source: "cursor", sessions: 1, requests: 3 }], imported: [{ source: "cursor", runs: 1 }] };
 const PRICED: Wrapped = { ...YEAR, unpriced_requests: 0, models: YEAR.models.map((m) => ({ ...m, unpriced_requests: 0 })) };
 const UNPRICED: Wrapped = { ...YEAR, cost_usd: 0, unpriced_requests: 300 };
 const EMPTY: Wrapped = { ...YEAR, sessions: 0, turns: 0, requests: 0, tokens: { input: 0, output: 0, cache_read: 0, cache_write: 0 }, cost_usd: 0, unpriced_requests: 0, days: [], hours: new Array(24).fill(0), weekdays: new Array(7).fill(0), active_ms: 0, harnesses: [], models: [] };
@@ -54,11 +59,15 @@ describe("the cards drawn now", () => {
     for (const id of ["laptop", "type", "launch"]) expect(drawnBody(card(id), YEAR, new Set<CardWait>(["race-card-renderer", "cache-analyzer", "secret-count", "opt-in", "benchmark", "derived"]))).toBeNull();
   });
 
-  it("draws no card for an empty year: no sessions, or no requests", () => {
+  it("draws no card for an empty year (no sessions, or no requests) but those the store keeps: cache and leak, from the imported runs, while it keeps them", () => {
+    // EMPTY is a year whose session files are gone: nothing read from disk, the store's cache and keys cut still there.
+    const kept = new Set(["cache", "leak"]);
     for (const c of WRAPPED_CARDS) {
-      expect(toBody(c, EMPTY), c.id).toBeNull();
-      expect(toBody(c, { ...YEAR, sessions: 0 }), c.id).toBeNull();
-      expect(toBody(c, { ...YEAR, requests: 0 }), c.id).toBeNull();
+      for (const year of [EMPTY, { ...YEAR, sessions: 0 }, { ...YEAR, requests: 0 }]) {
+        if (kept.has(c.id)) expect(toBody(c, year), c.id).not.toBeNull();
+        else expect(toBody(c, year), c.id).toBeNull();
+      }
+      expect(toBody(c, { ...EMPTY, cache: null, secrets: null }), `${c.id}: nothing kept`).toBeNull();
     }
   });
 
@@ -151,8 +160,8 @@ describe("split", () => {
   it("folds the harnesses and models past what fits into one exact other bar", () => {
     const year: Wrapped = {
       ...YEAR,
-      harnesses: many(8).map(({ name, tokens }) => ({ harness: name, sessions: 1, requests: 1, tokens, sources: [] })),
-      models: many(7).map(({ name, tokens }) => ({ model: `p/${name}`, requests: 1, tokens, cost_usd: 0, unpriced_requests: 0 })),
+      harnesses: many(8).map(({ name, tokens }) => ({ harness: name, sessions: 1, requests: 1, tokens, tokens_unknown_requests: 0, sources: [] })),
+      models: many(7).map(({ name, tokens }) => ({ model: `p/${name}`, requests: 1, tokens, cost_usd: 0, unpriced_requests: 0, tokens_unknown_requests: 0 })),
     };
     const b = body("split", year)!;
     expect(chartCapacity(b)).toEqual([6, 6]);
@@ -214,8 +223,48 @@ describe("hours", () => {
     expect(body("hours", { ...YEAR, hours: Array.from({ length: 24 }, (_, i) => (i === 3 || i === 20 ? 9 : 1)) })!.figure!.value).toBe("3 am");
   });
 
+  it("says a Cursor-only year's time at work as unknown, never 0.0 h", () => {
+    expect(body("hours", CURSOR_YEAR)!.rows).toContainEqual({ label: "Time at work", value: "Unknown" });
+    expect(body("hours", { ...YEAR, time_unknown_requests: 1 })!.rows).toContainEqual({ label: "Time at work", value: "2.0 h" });
+  });
+
   it("groups a long year's hours at work", () => {
     expect(body("hours", { ...YEAR, active_ms: 7_849_440_000 })!.rows![1]).toEqual({ label: "Time at work", value: "2,180.4 h" });
+  });
+});
+
+describe("tokens a session does not record", () => {
+  it("says a Cursor-only year's tokens as unknown on the cover and the summary, never 0, with the requests they leave out", () => {
+    for (const id of ["cover", "summary"]) {
+      const drawn = body(id, CURSOR_YEAR)!;
+      expect(drawn.figure, id).toEqual({ value: "Unknown", unit: "tokens" });
+      expect(drawn.rows, id).toContainEqual({ label: "Tokens not recorded", value: "3 requests" });
+      expect(drawn.rows, id).toContainEqual({ label: "At list price", value: "Unknown" });
+    }
+  });
+
+  it("keeps the known tokens as the figure when only some requests' are unknown, and counts those beside it", () => {
+    for (const id of ["cover", "summary"]) {
+      const drawn = body(id, { ...YEAR, tokens_unknown_requests: 1 })!;
+      expect(drawn.figure, id).toEqual({ value: "6.3M", unit: "tokens" });
+      expect(drawn.rows, id).toContainEqual({ label: "Tokens not recorded", value: "1 request" });
+    }
+    expect(body("cover")!.rows!.some((r) => r.label === "Tokens not recorded"), "none unknown: no row").toBe(false);
+  });
+
+  it("a year with requests of unknown tokens and others of no known price draws every price and token row on the cover and the summary", () => {
+    // 3 requests with no tokens (Cursor's) and 4 more whose model has no listed price: both rows, and the price, fit on
+    // the card as drawn (its alt is what it draws), never cut from its end.
+    const mixed: Wrapped = { ...YEAR, tokens_unknown_requests: 3, unpriced_requests: 7 };
+    const want = { cover: ["Sessions", "Prompts", "Model requests", "Tokens not recorded", "At list price", "No known price"], summary: ["Tokens not recorded", "At list price", "No known price", "Top harness", "Top model", "Busiest hour"] };
+    for (const id of ["cover", "summary"] as const) {
+      const drawn = body(id, mixed)!;
+      expect(drawn.rows!.map((r) => r.label), id).toEqual(want[id]);
+      const { alt } = renderCard(drawn);
+      for (const words of ["Tokens not recorded", "3 requests", "No known price", "4 requests", "At list price", ...(id === "summary" ? ["Busiest hour"] : [])]) expect(alt, `${id}: ${words}`).toContain(words);
+    }
+    expect(body("cover")!.rows!.map((r) => r.label), "a year that fits keeps its days").toContain("Days at work");
+    expect(body("summary")!.rows!.map((r) => r.label), "a year that fits keeps its days").toContain("Days at work");
   });
 });
 

@@ -504,6 +504,8 @@ test("Orgo Linux: an attach that finds an agent's computer's daemon of another v
 	assert.equal(upgraded.ok, true, JSON.stringify(upgraded));
 	assert.equal(box.stopped, 1, "the old init stopped");
 	assert.equal(uploads(), 2, "the daemon uploaded again");
+	const stopAt = channel.calls.findIndex((call) => call.kind === "orgo-stop-init");
+	assert.ok(channel.calls.slice(stopAt).some((call) => call.kind === "orgo-primary-sync"), "a desktop booted again from its disk runs Orgo's PRIMARY autocutsel again: the replace ends it too");
 	assert.deepEqual([box.init.version, box.init.max], [undefined, OWNED_MAX], "a new init, this version, no most in practice");
 	assert.match(upgraded.value.notes[0], /daemon in .* was replaced .* its disk kept, since its daemon was version 0\.0\.1/);
 	assert.deepEqual([upgraded.value.id, api.computers.get(ref.id).status, JSON.parse(box.labels).labels["agentrun.epoch"]], [ref.id, "running", "1"], "the same computer, its labels file carrying the claim");

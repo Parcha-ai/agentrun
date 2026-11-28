@@ -8,7 +8,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { describe } from "node:test";
 import { main } from "../dist/conformance/cli.js";
 import { checkExecStream, EXEC_STREAM_CHECKS, EXEC_STREAM_FACTS, formatExecStream, PID_STATE_SCRIPT, randomText, readFacts, tcpListeners, textProblem } from "../dist/conformance/exec-stream.js";
 import { fakeExecHost } from "./fake-exec-host.mjs";
@@ -26,6 +26,16 @@ async function run(options = {}, checkOptions = {}) {
 	}
 }
 
+/**
+ * The tests whose time is the pre-check's own bounds (each step a broken exec sits out, the unread window, the silent
+ * sleep), each with its bounds and assertions as written, gathered here and run eight at a time by the group at the end
+ * of the file. Eight keeps the slowest step of a passing check under a quarter of its 3 s on four busy CPUs; all at once
+ * took it to three quarters. A test that changes what the whole process reads (Date.now) or holds its event loop
+ * (spawnSync) runs alone, before the group.
+ */
+const atOnce = [];
+const concurrent = (name, fn) => atOnce.push([name, fn]);
+
 const failed = (report) => report.checks.filter((check) => check.status === "fail").map((check) => check.id);
 
 /** One run on an exec that breaks nothing, made once and read by each test about it: which check each exec call was. */
@@ -42,7 +52,7 @@ const goodRun = () =>
 		}
 	})());
 
-test("a live, two-way exec that keeps text intact, with no timeout, passes every check, and the pre-check calls exec alone", async () => {
+concurrent("a live, two-way exec that keeps text intact, with no timeout, passes every check, and the pre-check calls exec alone", async () => {
 	const { report, host } = await goodRun();
 	assert.deepEqual(failed(report), [], formatExecStream(report));
 	assert.equal(report.pass, true);
@@ -54,7 +64,7 @@ test("a live, two-way exec that keeps text intact, with no timeout, passes every
 	assert.match(formatExecStream(report), /exec PASS/);
 });
 
-test("every command the pre-check starts, each check's and the probe's, stays at or under 32 KiB of argv, so a vendor with a 64 KiB cap runs it", async () => {
+concurrent("every command the pre-check starts, each check's and the probe's, stays at or under 32 KiB of argv, so a vendor with a 64 KiB cap runs it", async () => {
 	// The size as a vendor counts it: each argument's UTF-8 bytes, summed, no separator. Modal refuses 64 KiB or more.
 	const size = (argv) => argv.reduce((sum, word) => sum + Buffer.byteLength(word, "utf8"), 0);
 	const { report, host, ended } = await goodRun();
@@ -90,7 +100,7 @@ test("kill's probe reads the same under busybox sh, where a machine has it", asy
 	assert.equal(probe(2 ** 22 + 1), "gone", "a pid past the kernel's limit is no process");
 });
 
-test("an exec on a terminal, whose \\n comes back as \\r\\n, fails the text checks, and says which character and why", async () => {
+concurrent("an exec on a terminal, whose \\n comes back as \\r\\n, fails the text checks, and says which character and why", async () => {
 	const { report, byId } = await run({ tty: true });
 	assert.equal(report.pass, false);
 	assert.deepEqual(failed(report), ["stdout-text", "stdin-text", "large", "stdin-live"]);
@@ -98,7 +108,7 @@ test("an exec on a terminal, whose \\n comes back as \\r\\n, fails the text chec
 	assert.match(formatExecStream(report), /exec FAIL: 4 of 10 checks failed/);
 });
 
-test("an exec that decodes each piece of output as text on its own fails stdout-text on the U+FEFF it drops, and large on the U+FFFD a split character became", async () => {
+concurrent("an exec that decodes each piece of output as text on its own fails stdout-text on the U+FEFF it drops, and large on the U+FFFD a split character became", async () => {
 	const { byId } = await run({ decodePieces: true });
 	assert.match(byId["stdout-text"].words, /^U\+FEFF \(at byte 0\) came back on stdout as 01 02 03 04: your exec drops a U\+FEFF that starts its text/);
 	assert.equal(byId.large.status, "fail");
@@ -106,7 +116,7 @@ test("an exec that decodes each piece of output as text on its own fails stdout-
 	assert.match(byId.large.words, /came back through cat as ef bf bd( [0-9a-f]{2})?: U\+FFFD \(ef bf bd\), as a decoder makes of half a character/);
 });
 
-test("an exec that holds output until the process exits fails stdout-live in those words", async () => {
+concurrent("an exec that holds output until the process exits fails stdout-live in those words", async () => {
 	// large, unread here, would otherwise wait out QUICK's 20 s for output that comes only at the exit.
 	const { byId } = await run({ bufferOutput: true }, { largeMs: 3_000 });
 	assert.equal(byId["stdout-live"].status, "fail");
@@ -115,13 +125,13 @@ test("an exec that holds output until the process exits fails stdout-live in tho
 	assert.equal(byId["stdout-text"].status, "pass");
 });
 
-test("an exec whose stdout ends after the first output, while the process still runs, fails stdout-live", async () => {
+concurrent("an exec whose stdout ends after the first output, while the process still runs, fails stdout-live", async () => {
 	const { byId } = await run({ closeStdoutEarly: true });
 	assert.equal(byId["stdout-live"].status, "fail");
 	assert.match(byId["stdout-live"].words, /^stdout ended right after "early", while the process still slept/);
 });
 
-test("large holds one deadline across its writes: slow writes fail it once largeMs passes, not a step per write later", async () => {
+concurrent("large holds one deadline across its writes: slow writes fail it once largeMs passes, not a step per write later", async () => {
 	const started = Date.now();
 	const { byId } = await run({ slowWriteMs: 400 }, { largeMs: 1_000 });
 	assert.equal(byId.large.status, "fail");
@@ -146,7 +156,7 @@ test("large says its deadline ran out even when the timer the deadline cut short
 	}
 });
 
-test("large stopped by the caller during a write its deadline bounds says it was stopped, never that the deadline ran out", async () => {
+concurrent("large stopped by the caller during a write its deadline bounds says it was stopped, never that the deadline ran out", async () => {
 	const stop = new AbortController();
 	const host = fakeExecHost({ slowWriteMs: 400 });
 	const exec = host.exec.bind(host);
@@ -175,7 +185,7 @@ test("large stopped by the caller during a write its deadline bounds says it was
 	}
 });
 
-test("an exec that holds stdin until end() fails stdin-live, and names stdin since output streams", async () => {
+concurrent("an exec that holds stdin until end() fails stdin-live, and names stdin since output streams", async () => {
 	// large, unread here, would otherwise wait out QUICK's 20 s for writes held until an end() it never makes.
 	const { byId } = await run({ holdStdin: true }, { largeMs: 3_000 });
 	assert.equal(byId["stdout-live"].status, "pass");
@@ -185,31 +195,31 @@ test("an exec that holds stdin until end() fails stdin-live, and names stdin sin
 	assert.match(byId["stdin-text"].words, /^only 0 of \d+ bytes of text came back through cat within 3 s of the last write: your exec holds stdin/);
 });
 
-test("an exec that merges stderr into stdout fails stderr", async () => {
+concurrent("an exec that merges stderr into stdout fails stderr", async () => {
 	const { byId } = await run({ mergeStderr: true });
 	assert.equal(byId.stderr.status, "fail");
 	assert.match(byId.stderr.words, /merges the two streams/);
 });
 
-test("an exec with a command timeout fails no-timeout", async () => {
+concurrent("an exec with a command timeout fails no-timeout", async () => {
 	const { byId } = await run({ commandTimeoutMs: 500 });
 	assert.equal(byId["no-timeout"].status, "fail");
 	assert.match(byId["no-timeout"].words, /command timeout/);
 });
 
-test("a wait() that answers 0 for every process fails exit-code", async () => {
+concurrent("a wait() that answers 0 for every process fails exit-code", async () => {
 	const { report, byId } = await run({ exitCode: 0 });
 	assert.deepEqual(failed(report), ["exit-code"]);
 	assert.match(byId["exit-code"].words, /gave 0 from wait\(\), not 7/);
 });
 
-test("a kill() that lets go of the streams and leaves the process running fails kill", async () => {
+concurrent("a kill() that lets go of the streams and leaves the process running fails kill", async () => {
 	const { byId } = await run({ killDetaches: true });
 	assert.equal(byId.kill.status, "fail");
 	assert.match(byId.kill.words, /still runs in the machine/);
 });
 
-test("an exec that rejects fails every check with its own words, and one that throws at once is read the same", async () => {
+concurrent("an exec that rejects fails every check with its own words, and one that throws at once is read the same", async () => {
 	const refusing = {
 		descriptor: { id: "refusing" },
 		exec: async () => {
@@ -250,14 +260,14 @@ test("randomText is valid UTF-8 of the length asked, with characters of every wi
 	assert.ok(!decoded.includes("\0"));
 });
 
-test("an exec whose stdin waits on stdout being read, and never goes on once it is, fails stdout-unread in those words", async () => {
+concurrent("an exec whose stdin waits on stdout being read, and never goes on once it is, fails stdout-unread in those words", async () => {
 	const { byId } = await run({ stdinWaitsOnStdout: true });
 	assert.equal(byId["stdout-unread"].status, "fail");
 	assert.match(byId["stdout-unread"].words, /^write \d+ to cat, made while its stdout was left unread, still had no answer 3 s after stdout was read again \(\d+ bytes written\): your exec's stdin waits for stdout to be read and does not go on once it is/);
 	assert.equal(byId["stdin-live"].status, "pass", "a reader that keeps up never stalls it");
 });
 
-test("an exec whose stdin waits while stdout is unread, and goes on once it is read, passes stdout-unread with every write", async () => {
+concurrent("an exec whose stdin waits while stdout is unread, and goes on once it is read, passes stdout-unread with every write", async () => {
 	const { byId } = await run({ stdinWaitsForReader: true });
 	assert.equal(byId["stdout-unread"].status, "pass", byId["stdout-unread"].words);
 	assert.equal(byId["stdout-unread"].words, "4194304 bytes written to cat while its stdout was left unread for 0.2 s all came back, in order, once it was read");
@@ -277,7 +287,7 @@ function shadowed(host, programs) {
 
 const factsOf = (report) => Object.fromEntries(report.facts.map((fact) => [fact.id, fact]));
 
-test("after the checks, the report carries what the machine offers, read through exec: this machine's uid, arch, kernel and listeners", async () => {
+concurrent("after the checks, the report carries what the machine offers, read through exec: this machine's uid, arch, kernel and listeners", async () => {
 	const { report } = await goodRun();
 	assert.equal(report.pass, true);
 	assert.equal(report.factsProblem, undefined);
@@ -299,7 +309,7 @@ test("after the checks, the report carries what the machine offers, read through
 	assert.match(text, /\nexec PASS: .*\n$/, "the verdict is still the last line");
 });
 
-test("an exec whose unshare fails, both ways, says no netns and what it means; gVisor in dmesg is named; the facts never fail exec", async () => {
+concurrent("an exec whose unshare fails, both ways, says no netns and what it means; gVisor in dmesg is named; the facts never fail exec", async () => {
 	const host = fakeExecHost();
 	const restore = shadowed(host, { unshare: 'echo "unshare: unshare failed: Operation not permitted" >&2; exit 1', dmesg: 'echo "[    0.000000] Starting gVisor..."' });
 	try {
@@ -358,13 +368,13 @@ test("readFacts never reads a table it could not open as no listeners, nor a dme
 	assert.doesNotMatch(neither.kernel.means, /Docker/);
 });
 
-test("a probe whose sh exits other than 0 is a facts problem, never facts read from what it printed", async () => {
+concurrent("a probe whose sh exits other than 0 is a facts problem, never facts read from what it printed", async () => {
 	const { report } = await run({ exitCode: 3 });
 	assert.deepEqual(report.facts, []);
 	assert.equal(report.factsProblem, "the probe's sh exited 3 (stderr: none)");
 });
 
-test("the CLI's --exec-stream builds the host with the module's createHost and runs the pre-check alone; --quick shortens the long check", async () => {
+concurrent("the CLI's --exec-stream builds the host with the module's createHost and runs the pre-check alone; --quick shortens the long check", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "computer-exec-stream-"));
 	try {
 		const module = join(dir, "vendor.mjs");
@@ -381,7 +391,8 @@ export function createHost(options) { given.push(options); return options.broken
 		const out = [];
 		const err = [];
 		const started = Date.now();
-		const code = await main(["--provider", module, "--exec-stream", "--machine", "box-7", "--quick", "--json"], { stdout: output(out), stderr: output(err), providerOptions: { env: {} } });
+		// stdout is left unread QUICK's 200 ms, not 10 s: --quick still sets the long check's sleep.
+		const code = await main(["--provider", module, "--exec-stream", "--machine", "box-7", "--quick", "--json"], { stdout: output(out), stderr: output(err), providerOptions: { env: {} }, execStreamBounds: { unreadMs: QUICK.unreadMs } });
 		assert.equal(code, 0, err.join(""));
 		const report = JSON.parse(out.join(""));
 		assert.equal(report.machine, "box-7");
@@ -411,4 +422,8 @@ test("the CLI refuses --exec-stream without --machine, beside a suite flag, and 
 	err.length = 0;
 	assert.equal(await main(["--provider", "docker", "--exec-stream", "--machine", "m"], { stdout: sink, stderr: errs }), 2);
 	assert.match(err.join(""), /does not export createHost\(options\)/);
+});
+
+describe("the pre-check on fake execs, eight at a time", { concurrency: 8 }, () => {
+	for (const [name, fn] of atOnce) test(name, fn);
 });

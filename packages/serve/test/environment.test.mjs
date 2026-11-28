@@ -43,3 +43,9 @@ test("a zone this server does not know is told as UTC, named UTC", async () => {
   assert.equal(environmentLine(NOW, "Mars/Olympus"), `Today is Monday 16 November 2026 (UTC).${TAIL}`);
   assert.equal(await runZone(storeWith({ kind: "schedule", cron: "0 9 * * *", timezone: "Mars/Olympus" }), fromTrigger), "UTC");
 });
+
+test("a folder given is named by its absolute name, and the run is told to save what it keeps there, not in its home", () => {
+  const line = environmentLine(NOW, "UTC", "/workspace");
+  assert.equal(line, "Today is Monday 16 November 2026 (UTC). You are running on AgentRun; your workspace is your working directory, /workspace, and file paths are relative to it. Only files under /workspace are the run's files: save what the run keeps there, not in your home directory.");
+  assert.equal(environmentLine(NOW, "UTC"), `Today is Monday 16 November 2026 (UTC).${TAIL}`, "no folder: the line names no path");
+});

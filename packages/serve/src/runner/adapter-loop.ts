@@ -66,7 +66,7 @@ import { answerOnce, HAND_BACK, handBackOf } from "./hand-back.js";
 import { isComputerCommand, type JournalHold, journalHold } from "./computer-journal.js";
 import { type HeldSpec, isHeldCommand, type JournalHeld, journalHeld } from "./held-run.js";
 import { HELD_KIND, heldWords } from "../computer-held.js";
-import { CALL_KIND, CALL_MS, COMPUTER_CALL } from "../computer-channel.js";
+import { CALL_KIND, COMPUTER_CALL, callBudgetMs } from "../computer-channel.js";
 import { COMPUTER_CALLS, type ComputerCallRecord, recordingCalls } from "../computer-calls.js";
 import { channelCallOf, type LoopComputer, runChannelCall } from "./computer-channel.js";
 import type { ParkCause } from "../workspace/computer-kept.js";
@@ -257,6 +257,12 @@ export interface AdapterRunSpec {
    *  server's row (COMPUTER_NOTE, marked `files`) once a request carrying it is answered; read at each claim, so a resume
    *  never tells it again. Absent: the run's folder is mounted in its computer, or it has no desktop or phone. */
   readonly computerFilesNote?: string;
+  /** What the model is told once in its run when its computer reaches less than the internet (computer-deps.ts
+   *  computerReachNote: nowhere, or the hosts of its list): placed as the replaced computer's note is, after it and before
+   *  the files note, so the first request carries it, and written as the server's row (COMPUTER_NOTE, marked `reach`) once
+   *  a request carrying it is answered; read at each claim, so a resume never tells it again. Absent: the computer's
+   *  network is open, or there is no computer. */
+  readonly computerReachNote?: string;
   /** The run's computer held for its owner (a run started with `hold: true`, computer-held.ts): the agent's first input
    *  waits for the owner's start, and the run's end waits for the owner's release (runner/held-run.ts). */
   readonly held?: HeldSpec;
@@ -490,6 +496,10 @@ export interface RunLedger {
    *  step asked then waits for the spec, so a step the build itself waits on (a computer's hold before its create,
    *  compute-cost.ts) is not asked until this is true. Absent: it always can. */
   judges?(): boolean;
+  /** Settles once `judges` is true (the spec built), and fails as the spec's build fails: how a reader in another process
+   *  (the runner's computer meter for a run's own process, run-child-deps.ts) learns it, where `judges` can't be asked at
+   *  once. Absent: it always can. */
+  judged?(): Promise<void>;
 }
 
 /** pi's retry of a model request that failed in a way it retries (a provider's 429, overload or 5xx, a dropped connection,
@@ -545,9 +555,9 @@ const DELIVER_NOW_MS = 5_000;
  *  (ModelPort.noteReturned): this is only the backstop for a path that never does. A proxy's token count and admission
  *  take well under it. Once admitted, the request holds the note until it ends, however long it streams. */
 const WRAP_UP_OFFER_MS = 30_000;
-/** A server note a request may carry: the replaced computer's (no field), where the run's files are (`files`), the cap's
- *  wrap-up (`cap`) or the free limit's (`freeLimit`). */
-type ServerNote = { words: string; files?: true; cap?: { leftUsd: number; capUsd: number }; freeLimit?: number };
+/** A server note a request may carry: the replaced computer's (no field), where the computer reaches (`reach`), where
+ *  the run's files are (`files`), the cap's wrap-up (`cap`) or the free limit's (`freeLimit`). */
+type ServerNote = { words: string; reach?: true; files?: true; cap?: { leftUsd: number; capUsd: number }; freeLimit?: number };
 
 /** A note the model was told (it begins with SERVER_NOTE_LABEL) as the server's row for it says it: the words after the
  *  label, their first letter a capital, since the row is the server's already ("AgentRun: …", timeline.ts CAP_WRAPUP). */
@@ -1111,10 +1121,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  way and those after it, and writes the cut on the run's root (KINDS.releaseCut), so a release that did not finish is
    *  never silent. What the hooks booked before the cut stands; a hook still running then writes nothing more on a
    *  shutdown (the seal stands again). Before the cut is written each host's releaseCut books what it knows of the time
-   *  it could not let go (a browser session's, through now), within RELEASE_MARGIN_MS. A runner's close bounds the
-   *  release by its own window too (LoopDeps.releaseBy), whichever ends first, and a release already under way when the
-   *  shutdown comes (one a run began in the close's drain) takes both from then: its cut is set again by the window, and
-   *  its commits, the cut's charge and record among them, are taken through the seal the shutdown makes. */
+   *  it could not let go (a browser session's, through now), within the release's margin (LoopDeps.releaseMarginMs). A
+   *  runner's close bounds the release by its own window too (LoopDeps.releaseBy), whichever ends first, and a release
+   *  already under way when the shutdown comes (one a run began in the close's drain) takes both from then: its cut is set
+   *  again by the window, and its commits, the cut's charge and record among them, are taken through the seal the
+   *  shutdown makes. */
   const releaseHost = async (on: Harness | undefined): Promise<void> => {
     try {
       await releaseHostNow(on);
@@ -1163,7 +1174,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       if (books.length > 0) {
         let bookTimer: NodeJS.Timeout | undefined;
         const booking = Promise.all(books.map((book) => Promise.resolve().then(() => book(on)).catch((error: unknown) => console.warn(`[runner] a tool host's releaseCut failed: ${(error as Error)?.message ?? String(error)}`))));
-        await Promise.race([booking, new Promise<void>((resolve) => (bookTimer = setTimeout(resolve, RELEASE_MARGIN_MS)))]);
+        await Promise.race([booking, new Promise<void>((resolve) => (bookTimer = setTimeout(resolve, deps.releaseMarginMs ?? RELEASE_MARGIN_MS)))]);
         clearTimeout(bookTimer);
       }
       await on.commit((tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: KINDS.releaseCut, data }), BACKGROUND_CONTEXT).catch((error: unknown) => console.warn(`[runner] the release's cut could not be written: ${(error as Error)?.message ?? String(error)}`));
@@ -1197,6 +1208,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** The current pass's spec's release, until it is called (closeSession). */
   let releaseNow: AdapterRunSpec["release"];
   const projectWork = new ProjectDrain();
+  /** Aborted when the run's end begins (writeEnd), after a stop that kept the computer has waited out its hold: an owner's
+   *  channel call still running is cut then, so the end, a project checkpoint's drain among it, never waits out a call's
+   *  own time, and a call that comes after it is refused. */
+  const callsEnd = new AbortController();
+  /** Channel calls in flight now: a call the end cuts may still be stopping on the computer (its client answers the
+   *  cancel at once), so an end that cut one keeps an uncertain project checkpoint rather than a snapshot. */
+  let liveCalls = 0;
   const projectCall = <T>(call: () => Promise<T>, strict = !!specNow?.projectCheckpoint): Promise<T> => strict ? projectWork.run(call) : call();
   /** The current pass ended in a park that keeps its computer (keepAtPark), for this cause, until its release reads it. */
   let parkedNow: ParkCause | undefined;
@@ -1510,7 +1528,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   const channelCommand = async (command: Command): Promise<CommandOutcome> => {
     await Promise.race([ready, (finished ?? new Promise<never>(() => {})).then(() => undefined, () => undefined)]);
     const [theGate, pass, theHeld] = [gate, channelNow, heldNow];
-    if (!theGate || theGate.sealed || projectWork.closed) return { refused: "The run's computer is not up now: the run is starting, parking or ending." };
+    if (!theGate || theGate.sealed || projectWork.closed || callsEnd.signal.aborted) return { refused: "The run's computer is not up now: the run is starting, parking or ending." };
     if (!pass) return { refused: specNow?.computer ? "The run's computer is not up now: the run is starting, parking or ending." : "This run has no computer that takes protocol calls: none, or a browser." };
     const refusal = theHeld?.refusesCall();
     if (refusal) return { refused: refusal };
@@ -1519,10 +1537,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     void (async () => {
       // The hold's idle count stands still while the call runs, and starts again when the last one ends.
       theHeld?.callStarted();
+      liveCalls += 1;
       let done: Awaited<ReturnType<typeof runChannelCall>>;
       try {
-        done = await projectCall(() => runChannelCall(pass.computer, call, AbortSignal.any([deps.signal, AbortSignal.timeout(CALL_MS)]), now));
+        done = await projectCall(() => runChannelCall(pass.computer, call, AbortSignal.any([deps.signal, AbortSignal.timeout(callBudgetMs(call))]), now, callsEnd.signal));
       } finally {
+        liveCalls -= 1;
         theHeld?.callEnded(now());
       }
       unsettledCalls.add(async () => {
@@ -2012,6 +2032,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           },
           flush: () => deps.flush(),
           judges: () => capJudges,
+          judged: () => specSet,
         };
         // A phase of the host's, on the run's timeline while its step runs. Said before the root exists (the claim's computer
         // waiting on its image build, inside specOf), it makes the root then, the row in its creating commit (above), so a
@@ -2359,13 +2380,18 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         };
         let bookingNow: ModelBooking | undefined;
         // The computer's notes, in order, each until a request carrying it is answered: the replaced computer's
-        // (spec.computerNote), then where the run's files are (spec.computerFilesNote), unless a COMPUTER_NOTE row marked
-        // `files` says an earlier claim told it. One note per request: the replaced computer's goes before the wrap-up, so
-        // the wrap-up waits a request; the files note goes after a wrap-up that is due, so it never holds one back.
-        const filesTold = spec.computerFilesNote !== undefined && (await entriesOf(gate.journal, wrapUpRoot.id, context))
-          .some((entry) => entry.kind === COMPUTER_NOTE && (entry.data as { files?: unknown } | undefined)?.files === true);
+        // (spec.computerNote), then where it reaches (spec.computerReachNote), then where the run's files are
+        // (spec.computerFilesNote); the last two unless a COMPUTER_NOTE row marked `reach` or `files` says an earlier claim
+        // told it. One note per request: the replaced computer's and the reach note go before the wrap-up, so the wrap-up
+        // waits a request; the files note goes after a wrap-up that is due, so it never holds one back.
+        const toldRows = spec.computerReachNote !== undefined || spec.computerFilesNote !== undefined
+          ? (await entriesOf(gate.journal, wrapUpRoot.id, context)).filter((entry) => entry.kind === COMPUTER_NOTE).map((entry) => entry.data as { files?: unknown; reach?: unknown } | undefined)
+          : [];
+        const filesTold = toldRows.some((data) => data?.files === true);
+        const reachTold = toldRows.some((data) => data?.reach === true);
         const computerNotes: ServerNote[] = [
           ...(spec.computerNote !== undefined ? [{ words: spec.computerNote }] : []),
+          ...(spec.computerReachNote !== undefined && !reachTold ? [{ words: spec.computerReachNote, reach: true as const }] : []),
           ...(spec.computerFilesNote !== undefined && !filesTold ? [{ words: spec.computerFilesNote, files: true as const }] : []),
         ];
         // The server's note a request carries (the replaced computer's, else the cap's wrap-up; `cap` says the wrap-up's
@@ -2398,8 +2424,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           } else if (told.cap === undefined) {
             if (computerNotes[0]?.words === told.words) computerNotes.shift();
             kind = COMPUTER_NOTE;
-            data = { words: rowWords(told.words), ...(told.files ? { files: true } : {}) };
-            what = told.files ? "the computer files note's row" : "the replaced computer's note row";
+            data = { words: rowWords(told.words), ...(told.files ? { files: true } : {}), ...(told.reach ? { reach: true } : {}) };
+            what = told.files ? "the computer files note's row" : told.reach ? "the computer reach note's row" : "the replaced computer's note row";
           } else {
             const { leftUsd, capUsd } = told.cap;
             if (toldAt(capUsd)) return undefined;
@@ -4125,6 +4151,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   }
 
   /** The session and its Harness closed behind the journal's seal: nothing they write after reaches the store. */
+  /** The CLI's session closed, at most CLOSE_MS, before its run's end lets the claim go (writeEnd); closeSession then
+   *  finds none to close. A message taken after it waits for the next claim, as one taken while the run stops does. */
+  async function closeCliSession(): Promise<void> {
+    const open = session;
+    if (!open) return;
+    session = undefined;
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([open.close().catch(() => {}), new Promise<void>((resolve) => (timer = setTimeout(resolve, CLOSE_MS)))]);
+    clearTimeout(timer);
+  }
+
   async function closeSession(): Promise<void> {
     gate?.seal(new Interrupted("the Session is closing"));
     endWait();
@@ -4519,6 +4556,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         take = [...take, later.commandId];
       }
     }
+    const cutCalls = liveCalls > 0;
+    callsEnd.abort(new Error("the run ended before the call did"));
     // The end is the run's release: nothing of this claim lands after it, so the tool host is let go first (its writes in
     // their own commits, the end's patch reading the cost they book), and its requests' bookings come first.
     await releaseHost(on);
@@ -4529,15 +4568,21 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       const signal = AbortSignal.any([deps.signal, AbortSignal.timeout(project.timeoutMs ?? 60_000)]);
       try {
         await projectWork.close(signal);
+        // A channel call the end cut may still be writing on the computer: its outcome is unknown, so no snapshot.
         // Abort asks the bounded backend operations to stop; it is not evidence that they stopped. Keep the actual
         // capture promise through its cleanup before teardown/end. A capability that ignores cancellation leaves
         // this claim unresolved, never a published candidate or a falsely completed release.
-        projectCheckpoint = await project.capture(signal);
+        projectCheckpoint = cutCalls ? project.uncertain() : await project.capture(signal);
         signal.throwIfAborted();
       } catch { projectCheckpoint = project.uncertain(); }
     }
     // The pull request's checkout goes before the end is committed: a run that reads final never still holds its code.
     await specNow?.endCheckout?.();
+    // A CLI's own session goes before the end is committed, as its checkout does: the end lets the claim go (an ending
+    // patch clears its runner), and a message sent the moment the run reads ended reopens it onto a new session on the
+    // same thread, never beside this one still closing. Closed before the end's patch and its late stop are read, so a
+    // stop that comes while it closes is this end's; what its close writes (a turn it halts) lands above the end.
+    if (cliRecord) await closeCliSession();
     const patch = await endPatchOf(base);
     // A person's stop that came while the end waited (its host's release, its bookings, its patch's reads, up to
     // END_PATCH_MS on a busy store) is this end's, as a stop during any earlier await of the end path is: the run ends

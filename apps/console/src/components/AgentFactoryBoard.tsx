@@ -1,7 +1,7 @@
 import { ArrowUpRight, ChevronDown, Factory, LayoutGrid, List, RefreshCw } from "lucide-react";
-import { useId, useState } from "react";
-import { Banner, Button, Chip, Field, pageTitleClass, pageToolbarClass, Picker, Segmented, Spinner, type ChipTone, type PickerOption, type SegmentedOption } from "@/components/ui";
-import { FACTORY_POLL_MS } from "@/lib/factory";
+import { type ReactNode, useId, useState } from "react";
+import { Banner, Button, buttonVariants, Chip, Field, pageTitleClass, pageToolbarClass, Picker, Segmented, Spinner, type ChipTone, type PickerOption, type SegmentedOption } from "@/components/ui";
+import { FACTORY_POLL_MS, type FactoryFilters, NO_FACTORY_FILTERS } from "@/lib/factory";
 import { when } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -18,6 +18,8 @@ export type FactoryCard = {
   stateLabel: string;
   sourceLabel: string;
   controlLabel: FactoryControl;
+  /** What a person does next for a session that waits on them: the word on the button that opens it. */
+  action?: "Answer" | "Review";
   repo: string | null;
   githubLinks: { label: string; url: string }[];
   activityAt: string | null;
@@ -41,6 +43,16 @@ export type AgentFactoryBoardProps = {
   onRefresh: () => void;
   view: FactoryView;
   onView: (view: FactoryView) => void;
+  /** The filters, when the page keeps them in its address. Alone (a story, a test) the board holds its own. */
+  filters?: FactoryFilters;
+  onFilters?: (next: FactoryFilters) => void;
+  /** Where a session opens: beside the board, in the page's panel. Without it, a session opens its run's own page. */
+  sessionHref?: (runId: string) => string;
+  /** The run whose session is open in the panel: its card and its row say so. */
+  openSession?: string;
+  /** The open session, drawn over the board's right side, or over all of it on a narrow page. The board keeps its
+   *  place, its filters and its scroll under it. */
+  panel?: ReactNode;
 };
 
 const LANES: { id: FactoryCard["lane"]; label: string; note: string; tone: ChipTone }[] = [
@@ -87,10 +99,16 @@ function filterOptions(cards: FactoryCard[], repository: string): { repositories
  *  complete fleet. The same sessions read as cards in a lane for each state, or as one row each under a heading for
  *  each state.
  *  The page owns reads, pagination, lifecycle classification and the view its browser keeps. */
-export function AgentFactoryBoard({ cards, review, loading, refreshing, error, updatedAt, hasMore, onLoadMore, onRefresh, view, onView }: AgentFactoryBoardProps) {
+export function AgentFactoryBoard({ cards, review, loading, refreshing, error, updatedAt, hasMore, onLoadMore, onRefresh, view, onView, filters, onFilters, sessionHref, openSession, panel }: AgentFactoryBoardProps) {
   const id = useId();
-  const [repository, setRepository] = useState("all");
-  const [control, setControl] = useState("all");
+  const [held, setHeld] = useState<FactoryFilters>(NO_FACTORY_FILTERS);
+  const { repository, control } = filters ?? held;
+  const setFilters = (next: FactoryFilters) => (onFilters ?? setHeld)(next);
+  const setRepository = (value: string) => setFilters({ repository: value, control });
+  const setControl = (value: string) => setFilters({ repository, control: value });
+  // A session's links: the panel beside the board where the page has one, else the run's own page. A child's card
+  // opens its parent's run (it has none of its own), so only the run's own card is the open one.
+  const link: SessionLink = { href: (card) => sessionHref ? sessionHref(card.runId) : runHref(card.runId), own: sessionHref ? (card) => runHref(card.runId) : undefined, open: (card) => openSession === card.runId && card.id === card.runId };
   const busy = loading || refreshing;
   const hasSnapshot = updatedAt !== null || cards.length > 0 || review.length > 0;
   const available = hasSnapshot || (!loading && !error);
@@ -103,7 +121,7 @@ export function AgentFactoryBoard({ cards, review, loading, refreshing, error, u
   // that empties the list and a look at the cards all leave a folded state folded.
   const [folded, setFolded] = useState<ReadonlySet<string>>(() => new Set());
   const fold = (key: string) => setFolded((held) => { const next = new Set(held); if (!next.delete(key)) next.add(key); return next; });
-  const clearFilters = () => { setRepository("all"); setControl("all"); };
+  const clearFilters = () => setFilters(NO_FACTORY_FILTERS);
 
   return (
     // The page's frame is Mission Control's and Runs': a bar with the place's icon and name in caps, then the content
@@ -113,7 +131,12 @@ export function AgentFactoryBoard({ cards, review, loading, refreshing, error, u
       <header className={cn(pageToolbarClass, "px-5 md:px-6")}>
         <h1 className={pageTitleClass}><Factory className="size-4" aria-hidden />Agent Factory</h1>
       </header>
-      <div className="min-h-0 flex-1 overflow-auto">
+      {/* The sessions, and over their right side the one that is open: the board keeps its place under the panel.
+          Below xl the panel covers the whole board: there the board is hidden from the keyboard and a screen reader
+          (invisible, so still laid out and still at its scroll), or Shift+Tab from the panel would land on a control
+          nobody can see. Beside the panel, at xl, it stays in reach. */}
+      <div className="relative flex min-h-0 flex-1 flex-col">
+      <div data-factory-pane className={cn("min-h-0 flex-1 overflow-auto", !!panel && "max-xl:invisible")}>
       <div className="mx-auto w-full max-w-page-wide space-y-6 p-5 md:p-8">
 
       {error && <Banner tone="error" title={hasSnapshot ? "Could not refresh Agent Factory" : "Could not load Agent Factory"}
@@ -166,7 +189,7 @@ export function AgentFactoryBoard({ cards, review, loading, refreshing, error, u
         {!cards.length && <Banner>{hasMore ? "No active sessions in the loaded results. Load more to check further results." : "No active sessions reported."}</Banner>}
         {filtered && !shown.length && !shownReview.length && <Banner>No loaded sessions match these filters.</Banner>}
 
-        {view === "list" ? (shown.length > 0 ? <SessionTable label="Active agent sessions" scope="active" groups={byLane(shown)} folded={folded} onFold={fold} /> : <p className="py-4 text-small text-muted-foreground">No matching sessions</p>)
+        {view === "list" ? (shown.length > 0 ? <SessionTable label="Active agent sessions" scope="active" groups={byLane(shown)} folded={folded} onFold={fold} link={link} /> : <p className="py-4 text-small text-muted-foreground">No matching sessions</p>)
         : <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-2 lg:grid-cols-4" aria-label="Active agent sessions">
           {LANES.map((lane) => {
             const laneCards = shown.filter((card) => card.lane === lane.id);
@@ -177,7 +200,7 @@ export function AgentFactoryBoard({ cards, review, loading, refreshing, error, u
               </div>
               <p className="mb-4 mt-2 text-small text-muted-foreground">{lane.note}</p>
               <div className="space-y-3">
-                {laneCards.map((card) => <SessionCard key={card.id} card={card} tone={lane.tone} />)}
+                {laneCards.map((card) => <SessionCard key={card.id} card={card} tone={lane.tone} link={link} />)}
                 {!laneCards.length && <p className="py-4 text-small text-muted-foreground">No matching sessions</p>}
               </div>
             </section>;
@@ -189,43 +212,61 @@ export function AgentFactoryBoard({ cards, review, loading, refreshing, error, u
             <div><h2 className="text-lg font-semibold">Ended runs needing attention</h2><p className="mt-1 text-small text-muted-foreground">Excluded from active session totals.</p></div>
             <p className="font-mono text-small text-muted-foreground">{shownReview.length} of {review.length} loaded ended runs match</p>
           </div>
-          {view === "list" ? shownReview.length > 0 && <SessionTable label="Ended runs" scope="ended" groups={byState(shownReview)} folded={folded} onFold={fold} />
+          {view === "list" ? shownReview.length > 0 && <SessionTable label="Ended runs" scope="ended" groups={byState(shownReview)} folded={folded} onFold={fold} link={link} />
           : <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
-            {shownReview.map((card) => <SessionCard key={card.id} card={card} tone="warning" />)}
+            {shownReview.map((card) => <SessionCard key={card.id} card={card} tone="warning" link={link} />)}
           </div>}
           {!shownReview.length && <p className="text-small text-muted-foreground">No ended runs match these filters.</p>}
         </section>}
 
         {hasMore && <Button onClick={onLoadMore} disabled={busy} aria-busy={loading}>{loading ? "Loading more" : "Load more"}</Button>}
         <footer className="flex flex-wrap justify-between gap-3 border-t pt-4 font-mono text-small text-muted-foreground">
-          <p>{view === "list" ? "One row is one session." : "One card is one session."} Open a run for its supported controls.</p>
+          <p>{view === "list" ? "One row is one session." : "One card is one session."} {sessionHref ? "Open one to see its latest activity and act on it." : "Open a run for its supported controls."}</p>
           <p>{validTime(updatedAt) ? <>Last successful refresh <time dateTime={updatedAt}>{when(updatedAt)}</time>{error ? " · stale" : ""}</> : "Refresh time not reported"}</p>
         </footer>
       </>}
       </div>
       </div>
+      {panel}
+      </div>
     </section>
   );
 }
 
+const runHref = (runId: string) => `#/runs/${encodeURIComponent(runId)}`;
+/** Where a session's name leads, where its run's own page is when the name leads elsewhere, and whether it is the one open. */
+type SessionLink = { href: (card: FactoryCard) => string; own?: (card: FactoryCard) => string; open: (card: FactoryCard) => boolean };
+/** A session's identity ("run 9644d8ab"): a link to its run's own page where its name opens the panel instead. */
+function SessionRef({ card, link }: { card: FactoryCard; link: SessionLink }) {
+  return link.own ? <a href={link.own(card)} title={card.id} className="underline underline-offset-2 hover:text-foreground">{card.ref}</a> : <span title={card.id}>{card.ref}</span>;
+}
+/** The way in for a session that waits on a person, named for what they do there. */
+function NextStep({ card, link }: { card: FactoryCard; link: SessionLink }) {
+  return card.action ? <a data-factory-action href={link.href(card)} aria-label={`${card.action}: ${card.agentName}`} className={buttonVariants({ size: "xs" })}>{card.action}</a> : null;
+}
+
 /** One session: who works, on what, where it runs and which session it is, its state, then its repository and its
  *  last activity and cost. The whole run id is in the link and on the label's hover, never a line of its own. */
-function SessionCard({ card, tone }: { card: FactoryCard; tone: ChipTone }) {
+function SessionCard({ card, tone, link }: { card: FactoryCard; tone: ChipTone; link: SessionLink }) {
+  const open = link.open(card);
   return (
-    <article className="min-w-0 space-y-2 border bg-card p-4">
+    <article aria-current={open ? "true" : undefined} className={cn("min-w-0 space-y-2 border bg-card p-4", open && "border-border-strong")}>
       <h3 className="min-w-0">
-        <a href={`#/runs/${encodeURIComponent(card.runId)}`} className="block break-words text-left hover:text-primary-text">
-          {/* A child is named by the task its parent gave it, which can run long: two lines here, whole on hover. */}
-          <span className="line-clamp-2 text-prose font-semibold underline underline-offset-2" title={card.agentName}>{card.agentName}</span>
+        <a href={link.href(card)} className="group block break-words text-left hover:text-primary-text">
+          {/* A child is named by the task its parent gave it, which can run long: two lines here, whole on hover.
+              The name is its card's heading, bold, with no underline at rest: one under every card made the board busy.
+              Under the pointer, or with the keyboard on the link, it is underlined as a list's names are elsewhere. */}
+          <span className="line-clamp-2 text-prose font-semibold underline-offset-2 group-hover:underline group-focus-visible:underline" title={card.agentName}>{card.agentName}</span>
           <span className="mt-1 line-clamp-2 text-body font-normal" title={card.title}>{card.title}</span>
         </a>
       </h3>
-      <p className="break-words font-mono text-small text-muted-foreground">{card.sourceLabel} · <span title={card.id}>{card.ref}</span></p>
+      <p className="break-words font-mono text-small text-muted-foreground">{card.sourceLabel} · <SessionRef card={card} link={link} /></p>
       <div className="flex min-w-0 flex-wrap gap-2">
         <Chip tone={tone} label title={card.stateLabel}>{card.stateLabel}</Chip>
         <Chip label title={card.controlLabel}>{card.controlLabel}</Chip>
       </div>
       {card.reason && <p className="break-words text-body">{card.reason}</p>}
+      {card.action && <p><NextStep card={card} link={link} /></p>}
       {card.parentLabel && <p className="break-words text-small text-muted-foreground">Parent: {card.parentLabel}</p>}
       {card.githubLinks.length > 0 ? <GithubLinks links={card.githubLinks} /> : <p className="break-words text-small text-muted-foreground">{card.repo ?? "Repository not reported"}</p>}
       <p className="flex flex-wrap gap-x-3 text-small text-muted-foreground">
@@ -277,7 +318,7 @@ function byState(cards: FactoryCard[]): Group[] {
  *  it means, as a lane's header does. Inside a state the rows keep their loaded order, so a child stays under the
  *  session that started it where both are in that state. A heading folds its rows away and back: its whole band is the
  *  target, and its button says which way it stands to a keyboard and a screen reader. A folded state keeps its count. */
-function SessionTable({ label, scope, groups, folded, onFold }: { label: string; scope: string; groups: Group[]; folded: ReadonlySet<string>; onFold: (key: string) => void }) {
+function SessionTable({ label, scope, groups, folded, onFold, link }: { label: string; scope: string; groups: Group[]; folded: ReadonlySet<string>; onFold: (key: string) => void; link: SessionLink }) {
   return (
     <table aria-label={label} className="w-full table-fixed border-collapse border bg-card text-body">
       <thead className="hidden lg:table-header-group">
@@ -303,14 +344,14 @@ function SessionTable({ label, scope, groups, folded, onFold }: { label: string;
             {/* The heading's band runs the row's whole width: an empty cell under each other column that shows. */}
             {(["control", "repository", "activity", "cost"] as const).map((column) => <td key={column} aria-hidden className={COLUMNS[column]} />)}
           </tr>
-          {open && group.cards.map((card) => <SessionRow key={card.id} card={card} group={group} />)}
+          {open && group.cards.map((card) => <SessionRow key={card.id} card={card} group={group} link={link} />)}
         </tbody>;
       })}
     </table>
   );
 }
 
-function SessionRow({ card, group }: { card: FactoryCard; group: Group }) {
+function SessionRow({ card, group, link }: { card: FactoryCard; group: Group; link: SessionLink }) {
   // A child whose parent is a row of this same state sits under it, set in; one whose parent is elsewhere is a row like
   // any other. Either way it names its parent.
   const nested = card.parentLabel !== undefined && group.cards.some((each) => each.id === card.runId && each.parentLabel === undefined);
@@ -319,14 +360,15 @@ function SessionRow({ card, group }: { card: FactoryCard; group: Group }) {
   const activity = validTime(card.activityAt) ? <time dateTime={card.activityAt}>{when(card.activityAt)}</time> : null;
   const repository = card.githubLinks.length > 0 ? <GithubLinks links={card.githubLinks} /> : card.repo;
   return (
-    <tr className="border-b" data-factory-row={card.id} {...(nested ? { "data-factory-child": "" } : {})}>
+    <tr className={cn("border-b", link.open(card) && "bg-accent")} aria-current={link.open(card) ? "true" : undefined} data-factory-row={card.id} {...(nested ? { "data-factory-child": "" } : {})}>
       <td className={cn(CELL, COLUMNS.session, nested && "pl-8")}>
-        <a href={`#/runs/${encodeURIComponent(card.runId)}`} className="block break-words text-left hover:text-primary-text">
-          <span className="line-clamp-1 font-semibold underline underline-offset-2" title={card.agentName}>{card.agentName}</span>
+        <a href={link.href(card)} className="group block break-words text-left hover:text-primary-text">
+          <span className="line-clamp-1 font-semibold underline-offset-2 group-hover:underline group-focus-visible:underline" title={card.agentName}>{card.agentName}</span>
           <span className="line-clamp-2 lg:line-clamp-1" title={card.title}>{card.title}</span>
         </a>
-        <p data-factory-meta className="mt-1 break-words font-mono text-small text-muted-foreground">{card.sourceLabel} · <span title={card.id}>{card.ref}</span>{said && <> · {card.stateLabel}</>}</p>
+        <p data-factory-meta className="mt-1 break-words font-mono text-small text-muted-foreground">{card.sourceLabel} · <SessionRef card={card} link={link} />{said && <> · {card.stateLabel}</>}</p>
         {card.reason && <p className="mt-1 break-words">{card.reason}</p>}
+        {card.action && <p className="mt-2"><NextStep card={card} link={link} /></p>}
         {card.parentLabel && <p className="mt-1 break-words text-small text-muted-foreground">Parent: {card.parentLabel}</p>}
         {/* Narrower than its columns, a row says them here. */}
         <p className="mt-1 flex flex-wrap gap-x-3 font-mono text-small text-muted-foreground xl:hidden">

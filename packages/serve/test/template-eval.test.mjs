@@ -47,7 +47,7 @@ const graderOf = (run, file) => run.graders.find((g) => g.grader === file);
 
 test("every shipped package's cases load, and each case's fake MCP servers serve their fixtures", { timeout: 120_000 }, async () => {
   const packages = readPackages(TEMPLATES_DIR);
-  assert.deepEqual(packages.map((p) => p.name), ["agent-scout", "code-review", "inbound-lead", "kyb", "market-monitor", "release-notes"]);
+  assert.deepEqual(packages.map((p) => p.name), ["agent-scout", "code-review", "code-review-composio", "inbound-lead", "kyb", "market-monitor", "release-notes"]);
   for (const p of packages) {
     const { cases } = readCases(join(TEMPLATES_DIR, p.name));
     assert.deepEqual(cases.map((c) => c.name), p.evals, `${p.name}: every case reads`);
@@ -1070,8 +1070,8 @@ test("a run a runner took before the queued bound, whose view later reads queued
 test("a run once held whose claim then stays gone for the whole queued bound is cancelled as queued, and a read that finds it held again starts that bound over", { timeout: 180_000 }, async (t) => {
   // As the held cases above, the run is claimed and holds in its turn, and the proxy serves each timeline page as queued
   // once it is. The run reads the eval makes answer held, unclaimed, held, then unclaimed from there on, as a runner that
-  // let the run go would leave it. With a 1 s bound and a read every CLAIM_READ_EVERY_MS (5 s), two unclaimed reads in a
-  // row span the bound: the eval cancels at the fifth read. It would cancel at the fourth if the held third read did not
+  // let the run go would leave it. With a 1 s bound, the read after an unclaimed one comes as that bound ends (a held one's,
+  // CLAIM_READ_EVERY_MS later), so two unclaimed reads in a row span the bound: the eval cancels at the fifth read. It would cancel at the fourth if the held third read did not
   // start the bound over (the second's lapse still counted), and never if a run once held were waited for to its deadline.
   const holding = join(await scratch(t), "holding");
   process.env.AGENTRUN_TEST_EVAL_HOLD = holding;
@@ -1243,9 +1243,9 @@ test("an answer that is one JSON object and nothing else is its json block: for 
 });
 
 test("the output check agrees with ajv on the shipped packages' output schemas", () => {
-  const ajv = new Ajv2020({ strict: false, allErrors: true, validateFormats: false });
   for (const p of readPackages(TEMPLATES_DIR)) {
-    const check = ajv.compile(p.outputSchema);
+    // One ajv per package: two packages may answer in one schema (code-review and code-review-composio share its $id).
+    const check = new Ajv2020({ strict: false, allErrors: true, validateFormats: false }).compile(p.outputSchema);
     for (const value of [{}, [], null, "x", { findings: [] }]) {
       const ours = "value" in structuredAnswer(`\`\`\`json\n${JSON.stringify(value)}\n\`\`\``, p.outputSchema);
       assert.equal(ours, check(value), `${p.name}: ${JSON.stringify(value)}`);
@@ -1332,11 +1332,12 @@ test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fa
   assert.match(seen.err, /stopping: cancelling the run in progress[\s\S]*stopped; no report\./);
   assert.throws(() => readFileSync(join(dir, "stopped.json")), { code: "ENOENT" });
 
-  // A report path that exists and can't be written: refused before anything runs.
+  // A report path that exists and can't be written: refused before anything runs. Each refusal is its own command that
+  // writes nothing, so they run at once.
   const readOnly = join(dir, "read-only.json");
   writeFileSync(readOnly, "{}");
   chmodSync(readOnly, 0o444);
-  for (const [args, said] of [
+  await Promise.all([
     [[PKG, "--case", "nope", "--faux", FAUX], /evals\/nope: no such case \(the package's are all-fail, all-pass, asks, flaky, held, learned, mcp-filed, mcp-match, mcp-mismatch\)/],
     [[PKG, "--runs", "0"], /--runs takes a whole number/],
     [[PKG, "--server", "https://agentrun.invalid", "--faux", FAUX], /--faux is the model of the server it starts itself/],
@@ -1346,12 +1347,12 @@ test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fa
     [[], /it takes one package folder/],
     [[PKG, "--faux", FAUX, "--report", join(dir, "no-such-folder", "report.json")], /--report's folder .*no-such-folder is not a folder this command can write in/],
     [[PKG, "--faux", FAUX, "--report", readOnly], /--report's folder .* or a file it can't write/],
-  ]) {
+  ].map(async ([args, said]) => {
     const refused = await run(args);
     assert.equal(refused.code, 2, `${args.join(" ")}: ${refused.err}`);
     assert.match(refused.err, said);
     assert.equal(refused.out, "");
-  }
+  }));
 });
 
 test("a fake's answer keyed by a list of whens is taken when any one matches; one no answer matches falls to its search, then its default", () => {
@@ -1530,6 +1531,48 @@ test("a run's wait past its deadline sends no read: the run is cancelled at once
     assert.equal(ended.status, "timed_out", `${cancel}: ${JSON.stringify(ended)}`);
     assert.deepEqual(seen, ["POST /runs/run-1/cancel"], cancel);
   }
+});
+
+test("a queued run's page read waits no longer than its next claim read is due: the read that cancels it comes as its queued bound ends", async () => {
+  // Each page answers at once, unchanged and queued, and each claim read finds no runner: the page's wait_ms is what the
+  // eval asked the server to hold it for, never past the bound's end (a server that held it 5 s would delay the cancel).
+  const waits = [];
+  const api = async (method, path) => {
+    if (method === "POST") return { status: 202, body: {} };
+    if (path.includes("/timeline")) {
+      waits.push(Number(new URL(path, "http://x").searchParams.get("wait_ms")));
+      return { status: 200, body: { status: "queued", state: "queued", unchanged: waits.length > 1, rows: [] } };
+    }
+    return { status: 200, body: { claim: null } };
+  };
+  const ended = await settles(waitRun(api, "run-1", Date.now() + 60_000, undefined, 1_000), 10_000);
+  assert.equal(ended.status, "timed_out", JSON.stringify(ended));
+  assert.match(ended.why, /^the run stayed queued for 1 s with no runner holding it/);
+  assert.equal(waits[0], 5_000, "the first page, before any page read queued: the whole wait");
+  assert.ok(waits.slice(1).every((ms) => ms <= 1_001), `each queued page's wait ends by the bound: ${waits.join(", ")}`);
+});
+
+test("a queued page that changed asks whether a runner holds the run at once, not a cadence after the last read: a server's page changes when a claim lapses", async () => {
+  // The run shows (working), then reads queued: the first queued page asks (held), the next unchanged one waits toward
+  // the next read due CLAIM_READ_EVERY_MS on, and a changed one asks again at once. The eval is stopped after that read.
+  const stop = new AbortController();
+  const waits = [];
+  let reads = 0;
+  const pages = [{ status: "working", unchanged: false }, { status: "queued", unchanged: true }, { status: "queued", unchanged: true }, { status: "queued", unchanged: false }];
+  const api = async (method, path) => {
+    if (method === "POST") return { status: 202, body: {} };
+    if (path.includes("/timeline")) {
+      waits.push(Number(new URL(path, "http://x").searchParams.get("wait_ms")));
+      return { status: 200, body: { state: "working", rows: [], ...(pages.shift() ?? { status: "queued", unchanged: true }) } };
+    }
+    if (++reads === 2) stop.abort();
+    return { status: 200, body: { claim: { runner: "r1" } } };
+  };
+  const started = Date.now();
+  await assert.rejects(settles(waitRun(api, "run-1", Date.now() + 60_000, stop.signal, 1_000), 10_000), { name: "AbortError" });
+  assert.equal(reads, 2, "a read at the first queued page, and one at the page that changed");
+  assert.ok(Date.now() - started < 4_000, "the second read came with the changed page, not CLAIM_READ_EVERY_MS after the first");
+  assert.ok(waits[2] > 4_000 && waits[2] <= 5_000, `the unchanged page after a held read waits toward the next read due: ${waits.join(", ")}`);
 });
 
 test("an eval's run and queue timeouts are milliseconds over 0: any other (NaN, 0, below) is refused before anything runs", async () => {

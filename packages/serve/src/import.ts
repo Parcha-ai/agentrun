@@ -1,20 +1,20 @@
-// `agentrun-serve import`: the Claude Code, Codex, pi and Copilot CLI sessions under a person's own home, into this server's agent
-// store, once, when asked. Each project directory is one agent; each harness seen in it one revision of that agent, its
-// instructions the project's CLAUDE.md or AGENTS.md and its skills the project's skill folders; each session one run,
-// ended as it ended, its transcript the run's timeline. An imported run is history: it takes no message, stop or cancel.
-// Nothing leaves the machine, every string written has the environment's key values cut out, and every file written is
-// the owner's only. Read again, it imports only the sessions it has not.
+// `agentrun-serve import`: the Claude Code, Codex, pi, OpenCode, Copilot CLI and Cursor CLI sessions under a person's
+// own home, into this server's agent store, once, when asked. Each project directory is one agent; each harness seen in
+// it one revision of that agent, its instructions the project's CLAUDE.md or AGENTS.md and its skills the project's
+// skill folders; each session one run, ended as it ended, its transcript the run's timeline. An imported run is
+// history: it takes no message, stop or cancel. Nothing leaves the machine, every string written has the environment's
+// key values cut out, and every file written is the owner's only. Read again, it imports only the sessions it has not.
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, type Stats } from "node:fs";
-import { lstat, open, realpath, stat } from "node:fs/promises";
+import { lstat, open, readFile, realpath, stat } from "node:fs/promises";
 import { availableParallelism, homedir, tmpdir } from "node:os";
-import { basename, join, sep } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { parseArgs } from "node:util";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { AssistantEntry, ROOT_CONVERSATION_ID, type StorageWrite, ToolResultEntry, UserEntry } from "@earendil-works/pi-durable";
 import { type EntryLike, REQUEST_COST, type RunMetrics, runMetricsOf } from "./timeline/index.js";
 import { defaultData } from "./files.js";
-import { type Answer, CACHE_SOURCES, cacheTotals, childrenOf, conversationOf, fileCache, HARNESS_OF, inOrder, type JoinedFile, type Locator, locatorKey, locatorOf, locatorParent, type LocatorSize, locatorSize, mirroredIn, mostEffortOf, ownRequests, priceRequests, READERS, readSession, type Session, SOURCE_NAMES, SOURCES, type Source, sessionKey, sessionLocators, type Turn, sessionBreaks, withSubagentCosts } from "@parcha/agentrun-import";
+import { type Answer, CACHE_SOURCES, cacheTotals, childrenOf, conversationOf, cursorSessionId, fileCache, HARNESS_OF, inOrder, type JoinedFile, type Locator, locatorKey, locatorOf, locatorParent, type LocatorSize, locatorSize, mirroredIn, mostEffortOf, ownRequests, priceRequests, READERS, readSession, type Session, SOURCE_NAMES, SOURCES, type Source, sessionKey, sessionLocators, type Turn, sessionBreaks, withSubagentCosts } from "@parcha/agentrun-import";
 import { type Found, hoursOf, type OpenAt, summaryLines } from "./import-summary.js";
 import { stopOnce } from "./stop-signals.js";
 import { catalogPrices, type Listed, providerModels } from "./model.js";
@@ -57,8 +57,8 @@ export async function exportRemoteHistory(
   const project=await realpath(target.project), selected:Pick<Session,'source'|'id'|'file'|'within'>[]=[], skipped=new Map<string,number>(),stamps=new Map<string,string>();
   const sourceEnv=options.env??process.env, lookups=new Map<string,unknown>();
   const skip=(reason:string)=>skipped.set(reason,(skipped.get(reason)??0)+1);
-  for(const {locator,stats} of await inOrder(await sessionLocators(options.home??homedir(),target.runtime,{env:sourceEnv}),target.runtime)){
-    const file=locator.file;
+  for(const {locator,stats:listed} of await inOrder(await sessionLocators(options.home??homedir(),target.runtime,{env:sourceEnv}),target.runtime)){
+    const file=locator.file,stats=await fileStats(file,listed);
     if(stats.size>MAX_SESSION_BYTES){skip('Source session project could not be checked: file exceeds the metadata limit.');continue;}
     // Stop once a complete metadata record names its project. An opening prompt may itself be over 128 KiB;
     // the probe is bounded by the same byte limit as a remotely importable session, without scanning its secrets.
@@ -83,7 +83,7 @@ export async function exportRemoteHistory(
   for(;index<groups.length && sessions.length<20;index++){
     const parts:Session[]=[],seen=new Set<string>();let changed=false,child=false;
     for(const listed of groups[index]!){
-      const before=await stat(listed.file).catch(()=>undefined);
+      const before=await fileStats(listed.file);
       const approvedStamp=stamps.get(locatorKey(locatorOf(listed)));
       if(!before || remoteHistoryStamp(before)!==approvedStamp || now-before.mtimeMs<LIVE_MS || before.size>REMOTE_HISTORY_SOURCE_BYTES){changed=true;break;}
       const part=await readSession(locatorOf(listed),target.runtime,{seen,lookups}).catch(()=>undefined),after=await stat(listed.file).catch(()=>undefined);
@@ -119,6 +119,7 @@ const REMOTE_HISTORY_SOURCE_BYTES = 8_000_000;
  * id, project and child status under its approved file stamp. Preview counts candidates, not guaranteed exports.
  * Keep at most one bounded JSONL record and never read past the remote source limit, even if a file grows. */
 async function remoteHistoryMetadata(file: string, source: Source): Promise<{id:string;cwd:string;child:boolean}|undefined> {
+  if(source==='cursor')return cursorMetadata(file);
   const handle = await open(file, 'r');
   // The id the reader gives a session no record names: Claude Code's always (its file's name), the others' when no
   // record named one, which is known only at EOF.
@@ -173,6 +174,19 @@ async function remoteHistoryMetadata(file: string, source: Source): Promise<{id:
   } finally { await handle.close(); }
 }
 
+/** The most of a Cursor chat's meta.json read: a few fields, as cursor-agent writes it. */
+const CURSOR_META_BYTES = 64 * 1024;
+
+/** A Cursor chat's candidate identity, from the meta.json beside its store: its id as readSession reads it
+ *  (cursorSessionId), and its workspace. Whether it is a subagent's is in the store, which the full read opens. */
+async function cursorMetadata(file: string): Promise<{id:string;cwd:string;child:boolean}|undefined> {
+  const meta=join(dirname(file),'meta.json');
+  if((await stat(meta)).size>CURSOR_META_BYTES)return undefined;
+  const row=JSON.parse(await readFile(meta,'utf8')) as unknown;
+  const cwd=row && typeof row==='object' && !Array.isArray(row) && typeof (row as {cwd?:unknown}).cwd==='string' ? (row as {cwd:string}).cwd : '';
+  return cwd?{id:cursorSessionId(file),cwd,child:false}:undefined;
+}
+
 /** In the data directory while an import the owner asked for at setup has not ended: the server's next start goes on with it. */
 export const IMPORT_ASKED = ".import-at-setup";
 /** A session file written to this recently may still be running: it is left for a later import. */
@@ -199,13 +213,16 @@ export function wrappedReading(cores = availableParallelism()): { threads: numbe
 export const MAX_FILE_BYTES = 256 * 1024;
 export const MAX_SKILL_BYTES = 1024 * 1024;
 /** The project's skill folders, each `<dir>/<name>/` with its SKILL.md, by where each harness keeps them. OpenCode reads
- *  `skill/` and `skills/` in each of its config folders, the project's `.opencode` among them. A home's own folders (its
+ *  `skill/` and `skills/` in each of its config folders, the project's `.opencode` among them. Cursor's CLI reads
+ *  `.cursor/skills` besides `.agents/skills`. A home's own folders (its
  *  ~/.config/opencode, ~/.claude) are no project's, and none is read. */
-export const SKILL_DIRS = [".agents/skills", ".claude/skills", ".codex/skills", ".pi/skills", ".opencode/skills", ".opencode/skill"];
+export const SKILL_DIRS = [".agents/skills", ".claude/skills", ".codex/skills", ".pi/skills", ".opencode/skills", ".opencode/skill", ".cursor/skills"];
 const INSTRUCTIONS: Record<string, string[]> = {
   "claude-agent": ["CLAUDE.md", "AGENTS.md"],
   codex: ["AGENTS.md", "CLAUDE.md"],
   pi: ["AGENTS.md", "CLAUDE.md"],
+  // Cursor's CLI reads AGENTS.md, then CLAUDE.md, beside its own .cursor/rules.
+  cursor: ["AGENTS.md", "CLAUDE.md"],
   // OpenCode's rules file is AGENTS.md, CLAUDE.md where there is none.
   opencode: ["AGENTS.md", "CLAUDE.md"],
 };
@@ -318,6 +335,20 @@ export function candidatesOf(plan: Pick<Plan, "projects">, env?: NodeJS.ProcessE
  *  and different for each id, so two such sessions stay two runs and a later import finds each one's. The plan and the
  *  import keep it from the same keys, or a later import would not find the run an earlier one made. */
 const redactedId = (id: string) => `redacted-${hash(id).slice(0, 16)}`;
+/** What a session file's checks go by: its size and last write, with the rest of its stat. */
+type FileStats = Pick<Stats, "dev" | "ino" | "size" | "mtimeMs" | "ctimeMs">;
+/** A session file's stat, with its SQLite write-ahead log's (`<file>-wal`) where it has one: a database being written
+ *  appends to its log, its own size and mtime unchanged until a checkpoint, so the size is the two's sum and the last
+ *  write the later of the two; the rest is the file's own. What every live check, size cap and saved stamp here goes by,
+ *  so each sees a write to the log. `listed`: the file's stat as its listing took it, not taken again (only the log's
+ *  is), so a listing's checks and stamps go by the one stat it made of each file. null: the file is gone. */
+function fileStats(file: string, listed: FileStats): Promise<FileStats>;
+function fileStats(file: string): Promise<FileStats | null>;
+async function fileStats(file: string, listed?: FileStats): Promise<FileStats | null> {
+  const [own, wal] = await Promise.all([listed ?? stat(file).catch(() => null), stat(`${file}-wal`).catch(() => null)]);
+  if (!own) return null;
+  return { dev: own.dev, ino: own.ino, ctimeMs: own.ctimeMs, size: own.size + (wal?.size ?? 0), mtimeMs: Math.max(own.mtimeMs, wal?.mtimeMs ?? 0) };
+}
 /** A file's size and time, as an import read it: the same after means the same content was read. */
 const stampOf = (size: LocatorSize) => `${size.bytes}:${size.mtimeMs}`;
 /** A listed session's own size and last write (locatorSize): its file's, or its own rows' in a database of many. What
@@ -327,7 +358,7 @@ const sizeOf = (listed: Pick<Session, "file" | "within" | "source">) => sizeNow(
  *  any, says why). */
 const sizeNow = (locator: Locator, source: Source) => locatorSize(locator, source).catch(() => null);
 /** Bind remote consent to the enumerated source, including archive replacements that preserve size and mtime. */
-const remoteHistoryStamp = (stats: Stats) => `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeMs}:${stats.ctimeMs}`;
+const remoteHistoryStamp = (stats: FileStats) => `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeMs}:${stats.ctimeMs}`;
 const keptId = (envs: readonly NodeJS.ProcessEnv[], own: readonly string[] = []) => {
   const { text, add } = secretCut(envs, SECRET_NAMES);
   add(own);
@@ -875,6 +906,17 @@ async function neverKind(locator: Locator, now: number, temps: readonly string[]
  *  (`mirrors`) counts in that run. */
 const NEVER_IN = new Set<LeftOut>(["large", "unread", "no-words", "temp", "gone", "no-project"]);
 const LIVE_CHILD: Pick<Skipped, "why" | "kind"> = { why: "a subagent of it was written in the last 10 minutes: it comes in with it", kind: "live" };
+/** A file written within LIVE_MS of the import, left out: its session may still be running (resumed after the plan judged
+ *  it), and an import after it ages takes it. */
+const stillLive = (what: string): Skipped => ({ what, why: "written in the last 10 minutes: it may still be running", kind: "live" });
+/** The records a run's read adds, over those the import holds (`base`), added to `base` by `commit` once the run is
+ *  written. A run left out after its read (live, over the cap) holds none of them: a later session that copies them
+ *  keeps them, as none of them was saved. */
+function staged(base: Set<string>): { seen: Set<string>; commit(): void } {
+  const added = new Set<string>();
+  const seen = { has: (record: string) => added.has(record) || base.has(record), add: (record: string) => added.add(record) } as Set<string>;
+  return { seen, commit: () => added.forEach((record) => base.add(record)) };
+}
 const LARGE_CHILD: Pick<Skipped, "why" | "kind"> = { why: `a subagent of it is over ${MAX_SESSION_BYTES} bytes`, kind: "large" };
 
 /** A run's subagents, theirs, and so on down, each once (the import's children relation, as readChildren walks it):
@@ -1359,6 +1401,7 @@ type Place = { project: ProjectPlan; line: ImportReport["agents"][number]; revis
 /** The plan, into `store`: the agents it does not hold, and the runs it does not. Each run is written whole in one atomic
  *  `importRun` (its row, its launch and its transcript's journal), so a stop between two runs leaves no partial run. */
 export async function runImport(store: ImportStore, plan: Plan, options: ImportOptions): Promise<ImportReport> {
+  const now = options.now ?? Date.now();
   const cut = secretCut([options.env, options.stored ?? {}], SECRET_NAMES);
   const { text, json } = cut;
   // Each key found is the import's to cut, and the CLI's to cut out of what it prints.
@@ -1404,8 +1447,13 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
       report.skipped.push(tooLarge(listed));
       return;
     }
+    // What its read adds to the records the import holds, kept only once the run is written.
+    const run = staged(seen(listed.source));
     const budget = budgetOf();
     let over = false;
+    // A file written since the plan judged it (its session resumed while others were read) leaves the session out as
+    // live, as the plan would now: never imported as done, which a later import would hold as unchanged.
+    let live = false;
     // Each of its files, in order. The first's size and time before its read: a file that changes during it is read
     // again next time.
     const parts: Session[] = [];
@@ -1420,11 +1468,16 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
       const { file } = entry;
       const key = locatorKey(locatorOf(entry));
       const stats = await sizeOf(entry);
+      if (stats && now - stats.mtimeMs < LIVE_MS) {
+        report.skipped.push(stillLive(key));
+        live = true;
+        break;
+      }
       if (stats && !fits(budget, stats.bytes)) {
         over = true;
         break;
       }
-      const part = stats ? await readSession(locatorOf(entry), listed.source, { seen: seen(listed.source), lookups: lookupsOf(plan), ...(cached(listed.source) ? { chain: true } : {}) }).catch((error: unknown) => void report.skipped.push(unread(file, error))) : void report.skipped.push({ what: file, why: "gone since it was listed", kind: "vanished" });
+      const part = stats ? await readSession(locatorOf(entry), listed.source, { seen: run.seen, lookups: lookupsOf(plan), ...(cached(listed.source) ? { chain: true } : {}) }).catch((error: unknown) => void report.skipped.push(unread(file, error))) : void report.skipped.push({ what: file, why: "gone since it was listed", kind: "vanished" });
       if (!part || !stats) continue;
       searched.push(part);
       if (part.sourceTitle !== undefined && (!titled || stats.mtimeMs >= titled.at)) titled = { at: stats.mtimeMs, title: part.sourceTitle };
@@ -1437,6 +1490,7 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
       parts.push(part);
       if (scannedAs.get(key) !== stampOf(stats)) changed = true;
     }
+    if (live) return;
     if (over) {
       report.skipped.push(tooLarge(listed));
       return;
@@ -1457,13 +1511,24 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
       // holding a key counts among the keys removed.
       const keptAs = text(session.id) === session.id ? session.id : redactedId(session.id);
       session.id = keptAs;
-      const subagents = await readChildren(plan, session, searched, seen(listed.source), budget, cached(listed.source)).catch((error: unknown) => {
+      const subagents = await readChildren(plan, session, searched, run.seen, budget, cached(listed.source)).catch((error: unknown) => {
         if (!(error instanceof RunTooLarge)) throw error;
         report.skipped.push(tooLarge(listed));
       });
       if (!subagents) return;
       for (const child of subagents) settled(child, mirrored);
-      const moved = await Promise.all(subagents.map(async (child) => scannedAs.get(locatorKey(locatorOf(child))) !== stampOf((await sizeOf(child)) ?? { bytes: -1, mtimeMs: -1 })));
+      // Every file of the run, its own and its subagents', once all of it is read: one written since the plan, or while
+      // it was read, leaves the run out as live, never saved as done.
+      const childSizes = await Promise.all(subagents.map((child) => sizeOf(child)));
+      const ownSizes = await Promise.all(files.map((entry) => sizeOf(entry)));
+      const all = [...files, ...subagents];
+      const sizes = [...ownSizes, ...childSizes];
+      const liveAt = all.findIndex((_, i) => sizes[i] && now - sizes[i]!.mtimeMs < LIVE_MS);
+      if (liveAt >= 0) {
+        report.skipped.push(stillLive(locatorKey(locatorOf(all[liveAt]!))));
+        return;
+      }
+      const moved = subagents.map((child, i) => scannedAs.get(locatorKey(locatorOf(child))) !== stampOf(childSizes[i] ?? { bytes: -1, mtimeMs: -1 }));
       if (moved.some(Boolean)) add(await keysInSessions(subagents));
       // The transcript as the store's own write batches, each string cut; its subagents' requests marked after its turns,
       // so its timeline's usage row counts what its metrics do, one number for the run.
@@ -1498,6 +1563,7 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
         endedAt: Date.parse(session.endedAt ?? session.startedAt ?? epoch0),
         transcript: batches,
       });
+      run.commit();
       line.runs += 1;
       // Saved: a request another run leaves to it (`mirrors`) is its from now on.
       saved.add(`${listed.source}:${listed.id}`);

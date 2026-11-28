@@ -14,6 +14,8 @@ export const WEBHOOK_PRIVATE_TARGETS_ENV = "AGENTRUN_WEBHOOK_PRIVATE_TARGETS";
 export const BOX_CPUS_ENV = "AGENTRUN_BOX_CPUS";
 export const BOX_MEMORY_ENV = "AGENTRUN_BOX_MEMORY";
 export const BOX_PIDS_ENV = "AGENTRUN_BOX_PIDS";
+/** How many connections a Docker computer's egress proxy holds open at once (workspace/computer-deps.ts boxMaxTunnelsOf). */
+export const BOX_MAX_TUNNELS_ENV = "AGENTRUN_BOX_MAX_TUNNELS";
 
 /** Where a switch that opens this machine to every caller of the API is for. */
 export const ALONE_WORDS = "only on a machine you alone use";
@@ -44,6 +46,7 @@ export function startSwitches(env: NodeJS.ProcessEnv, { mcpLoopback, webhookPriv
     [BOX_CPUS_ENV]: size(BOX_CPUS_ENV, "A Docker computer's CPUs, such as 2 or 1.5. Unset, the Docker provider's default."),
     [BOX_MEMORY_ENV]: size(BOX_MEMORY_ENV, "A Docker computer's memory, swap included, such as 512m or 4g. Unset, the Docker provider's default."),
     [BOX_PIDS_ENV]: size(BOX_PIDS_ENV, "How many processes and threads a Docker computer may hold at once, such as 1024. Unset, the Docker provider's default."),
+    [BOX_MAX_TUNNELS_ENV]: size(BOX_MAX_TUNNELS_ENV, "How many connections a Docker computer's egress proxy holds open at once, from 1 to 256, such as 128; past that a new one is refused with 429. Unset, the proxy's default, 64."),
     // Its origins are withheld: every caller of an API-only server is its token, which learns only whether an origin it
     // saves at is listed (the save's 404 or not). A full server holds no list: off.
     [API_ONLY_MCP_ORIGINS_ENV]: { on: apiOnlyMcpOrigins.length > 0, value: null, allows: "On an API-only server (AGENTRUN_API_ONLY=1), the exact origins (scheme, host and port) its token may save a per_run MCP server at, which keeps no credential: a comma list of https origins, or http ones for a loopback host alone (127.0.0.0/8, ::1, localhost), which also needs AGENTRUN_MCP_ALLOW_LOOPBACK=1. Unset, none. The server keeps the list it started with in its store, and each run's claim of a server the token saved checks it. The list itself is never shown here." },

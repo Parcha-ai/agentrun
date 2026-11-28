@@ -7,7 +7,7 @@ import { guardPage, type InjectionVerdict, type PageGuard, type WallVerdict } fr
 import { decisionPay, type DecisionRecord, heldOnRefusal, type Sift, type StepOptions } from "./decide/record.js";
 import { type DecidePolicy, policyOf, siftSearch } from "./decide/search.js";
 import { missesOf, pageKey, type Pages, type Readers, sharedRead, type WebLog, type WebRead, webFetchText, webPart, webRead } from "./fetch.js";
-import { type Fee, type Pay, unmetered, unsentOf } from "./fees.js";
+import { chargedSaid, type Fee, type Pay, unmetered, unsentOf } from "./fees.js";
 import type { Guard, GuardOptions } from "./guard.js";
 import { askedUrl, type Page, type Part, partProblem } from "./page.js";
 import { holdingWords, type NativeSearch, type ProviderRun, readerOf, type WebClient } from "./provider.js";
@@ -240,6 +240,10 @@ export function createWeb(config: WebConfig): Web {
       settled?.(landed);
     });
     if (lines && at >= 0 && unsent !== undefined) lines[at] = booked ? { ...fee, usd: 0, basis: `not billed (not sent: ${unsent})` } : { ...fee, basis: `${fee.basis}; its settle failed, so the hold stands, not $0 (not sent: ${unsent})` };
+    // A provider that reports what an answer cost (keyed.ts chargeOf): the line is that charge, in its words, once the
+    // cap's settle is written; a settle that failed leaves it at the hold.
+    const said = unsent === undefined ? chargedSaid(charged) : undefined;
+    if (lines && at >= 0 && said !== undefined && charged) lines[at] = booked ? { ...fee, usd: Math.min(charged(), fee.usd), basis: said } : { ...fee, basis: `${fee.basis}; its settle failed, so the hold stands (${said})` };
     return answer;
   };
 
@@ -304,8 +308,9 @@ export function createWeb(config: WebConfig): Web {
       const said = [asked.objective, asked.query].find((one): one is string => typeof one === "string") ?? "";
       // A copy: a sift this call stopped waiting for may still pay, and its fee is not on this receipt.
       const spent = [...lines];
-      // An empty search's receipt keeps the words it was given.
-      const receipt: Receipt = { op: "search", asked: ask.objective || said, queries: ask.queries, provider: "error" in answer ? null : answer.provider, tries, classifier, ...unjudged, out: outOf(searchText(answer)), cost: { usd: usd(spent), lines: spent }, ...unsifted(() => searchText(fitSearch(found))) };
+      // An empty search's receipt keeps the words it was given. One whose provider found nothing while another was held
+      // answers an error (searchInTurn), and its receipt still names the provider asked.
+      const receipt: Receipt = { op: "search", asked: ask.objective || said, queries: ask.queries, provider: "error" in answer ? ((tries.find(({ outcome }) => outcome === "empty")?.provider as Receipt["provider"] | undefined) ?? null) : answer.provider, tries, classifier, ...unjudged, out: outOf(searchText(answer)), cost: { usd: usd(spent), lines: spent }, ...unsifted(() => searchText(fitSearch(found))) };
       return { answer, receipt };
     },
     // Only the call's part, resolver, transport, signal, task, objective and session are read: the guard, its bound, the order

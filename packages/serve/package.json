@@ -1,6 +1,6 @@
 {
   "name": "@parcha/agentrun-serve",
-  "version": "0.1.0-beta.67",
+  "version": "0.1.0-beta.68",
   "description": "The AgentRun server: the /v2 API and console over one store, with runners that run your agents; the deployable process of the AgentRun platform.",
   "keywords": [
     "agentrun",
@@ -74,17 +74,17 @@
     "@opentelemetry/exporter-trace-otlp-http": "0.301.2",
     "@opentelemetry/resources": "3.1.1",
     "@opentelemetry/sdk-trace": "3.1.1",
-    "@parcha/agentrun-computer": "0.1.0-beta.67",
-    "@parcha/agentrun-decisions": "0.1.0-beta.67",
-    "@parcha/agentrun-dsl": "0.1.0-beta.67",
-    "@parcha/agentrun-harness-acp": "0.1.0-beta.67",
-    "@parcha/agentrun-harness-claude": "0.1.0-beta.67",
-    "@parcha/agentrun-harness-codex": "0.1.0-beta.67",
-    "@parcha/agentrun-import": "0.1.0-beta.67",
-    "@parcha/agentrun-jev": "0.1.0-beta.67",
-    "@parcha/agentrun-kernel": "0.1.0-beta.67",
-    "@parcha/agentrun-web": "0.1.0-beta.67",
-    "@parcha/pi-browser": "0.1.0-beta.67",
+    "@parcha/agentrun-computer": "0.1.0-beta.68",
+    "@parcha/agentrun-decisions": "0.1.0-beta.68",
+    "@parcha/agentrun-dsl": "0.1.0-beta.68",
+    "@parcha/agentrun-harness-acp": "0.1.0-beta.68",
+    "@parcha/agentrun-harness-claude": "0.1.0-beta.68",
+    "@parcha/agentrun-harness-codex": "0.1.0-beta.68",
+    "@parcha/agentrun-import": "0.1.0-beta.68",
+    "@parcha/agentrun-jev": "0.1.0-beta.68",
+    "@parcha/agentrun-kernel": "0.1.0-beta.68",
+    "@parcha/agentrun-web": "0.1.0-beta.68",
+    "@parcha/pi-browser": "0.1.0-beta.68",
     "@secretlint/core": "14.1.0",
     "@secretlint/profiler": "14.1.0",
     "croner": "11.0.0",
@@ -107,9 +107,13 @@
     "@earendil-works/chord": "1.5.2",
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-durable": "1.5.2",
+    "@pydantic/monty": "1.6.0",
     "opencode-ai": "1.19.5"
   },
   "peerDependenciesMeta": {
+    "@pydantic/monty": {
+      "optional": true
+    },
     "opencode-ai": {
       "optional": true
     }
@@ -118,6 +122,7 @@
     "@earendil-works/chord": "1.5.2",
     "@earendil-works/pi-ai": "1.5.2",
     "@earendil-works/pi-durable": "1.5.2",
+    "@pydantic/monty": "1.6.0",
     "@types/pg": "8.23.1",
     "@types/proxy-addr": "2.0.3",
     "@types/ws": "8.18.2",

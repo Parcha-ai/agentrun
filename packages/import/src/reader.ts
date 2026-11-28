@@ -98,6 +98,9 @@ export type Reader<S extends string = string, C = unknown> = {
   /** The session the locator's ran under, from a bounded head of its file, never the rest (Codex's first line): what ties
    *  a subagent a caller will not read (over its cap) to its run. None: no parent named there. */
   parentOf?: (locator: Locator) => Promise<string | undefined>;
+  /** The source keeps no time for each request: the read dates every request at its session's start (Cursor). Wrapped
+   *  counts those requests' time as unknown and adds none of it to the time at work. */
+  untimed?: true;
   /** Subagents' sessions that name no parent themselves, each with the session it ran under (`of`). */
   children?: (home: string, env?: Env) => Promise<{ locator: Locator; of: Locator }[]>;
 };

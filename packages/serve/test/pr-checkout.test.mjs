@@ -7,7 +7,8 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { mkdir, mkdtemp, open, readdir, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readdir, readFile, realpath, rm, stat } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -197,11 +198,11 @@ const SCRIPTS = {
   repository: { run: (options, server) => repoCheckout({ ...options, repo: "acme/private", web: server.url }), at: (pull) => pull.base },
 };
 
-/** A git server holding acme/private (60 commits behind, so the pull request's checkout deepens), which takes only the
- *  App's token's header, and a mint that gives that token. */
-async function privateServer(t, dir) {
+/** A git server holding acme/private (60 commits behind, so the pull request's checkout deepens; `shape` is pullRepo's),
+ *  which takes only the App's token's header, and a mint that gives that token. */
+async function privateServer(t, dir, shape = { shared: 4, ahead: 2, behind: 60 }) {
   const gh = join(dir, "gh");
-  const pull = pullRepo(gh, "acme/private", { shared: 4, ahead: 2, behind: 60 });
+  const pull = pullRepo(gh, "acme/private", shape);
   const token = `ghs_${"H".repeat(36)}`;
   const authorization = `Basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`;
   const server = await gitHttp(t, gh, { authorization });
@@ -264,12 +265,140 @@ for (const [kind, script] of Object.entries(SCRIPTS)) {
       assert.equal(call.header, network.has(call.command), `the header is in ${call.command}'s environment only if it reaches GitHub: ${call.args}`);
       assert.equal(call.count, network.has(call.command), `GIT_CONFIG_COUNT likewise: ${call.args}`);
       assert.match(` ${call.args} `, / -c core\.hooksPath=\/dev\/null /, `hooks off: ${call.args}`);
+      if (network.has(call.command)) {
+        assert.match(` ${call.args} `, / -c http\.sslVerify=true /, `TLS verified on a call that reaches GitHub: ${call.args}`);
+        assert.match(` ${call.args} `, / -c http\.proxy= /, `no proxy on a call that reaches GitHub: ${call.args}`);
+      }
     }
     const init = calls.find((call) => call.command === "init");
     assert.match(` ${init?.args} `, / --template= /, "git init copies no template");
     assert.ok(!existsSync(marks), `no hook ran: ${existsSync(marks) ? readFileSync(marks, "utf8") : ""}`);
     await made.end();
   });
+
+  test(`checkout ${kind}, run: a proxy, sslVerify=false and an insteadOf, generic and for the fetch's own URL, that another writer of the run's folder puts in its ${CHECKOUT_DIR}/.git/config before the fetch are never read by a git that reaches GitHub: the fetch runs in a private folder and goes to GitHub itself`, { timeout: 120_000 }, async (t) => {
+    const dir = await scratch(t);
+    const server = await privateServer(t, dir);
+    const { folder, workspace } = await runFolder(dir);
+    // A proxy that keeps the requests for the repository sent to it (an absolute URL, CONNECT, or the repository's own
+    // paths, as an insteadOf would send them), and answers none. Anything else that dials a new loopback port is not counted.
+    const reached = [];
+    const proxy = createServer((socket) => {
+      socket.once("data", (chunk) => {
+        const line = chunk.toString("latin1").split("\r\n")[0];
+        if (/^(?:CONNECT \S+|[A-Z]+ https?:\/\/\S+|[A-Z]+ \S*(?:info\/refs|git-upload-pack)\S*) HTTP\//.test(line)) reached.push(line);
+        socket.destroy();
+      });
+      socket.on("error", () => {});
+    });
+    await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+    t.after(() => new Promise((resolve) => proxy.close(resolve)));
+    const at = `http://127.0.0.1:${proxy.address().port}`;
+    // A git in front of the run's PATH. Once the remote is added, it writes the keys into the run folder's
+    // ${CHECKOUT_DIR}/.git/config, as a writer to the shared folder could before the fetch: the generic ones, the fetch URL's
+    // own (which beat a generic -c), and an insteadOf. Each call that reaches GitHub logs its folder and the proxy and
+    // sslVerify keys git reads there.
+    const spy = join(dir, "spy");
+    const planted = join(dir, "planted");
+    const seen = join(dir, "seen.log");
+    await mkdir(spy);
+    const target = join(folder, CHECKOUT_DIR, ".git");
+    const config = `[http]\\n\\tproxy = ${at}\\n\\tsslVerify = false\\n[http "${server.url}/"]\\n\\tproxy = ${at}\\n\\tsslVerify = false\\n[url "${at}/"]\\n\\tinsteadOf = ${server.url}/\\n`;
+    writeFileSync(
+      join(spy, "git"),
+      [
+        `#!${system("sh")}`,
+        `case " $* " in *" fetch "*|*" ls-remote "*) { printf 'cwd %s\\n' "$PWD"; '${system("git")}' config --get-regexp '(proxy|sslverify|insteadof)$'; } >> '${seen}' 2>/dev/null ;; esac`,
+        `'${system("git")}' "$@"; code=$?`,
+        `case " $* " in *" remote add origin "*) mkdir -p '${target}' && printf '${config}' >> '${target}/config' && : > '${planted}' ;; esac`,
+        "exit $code",
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    const spied = Object.create(workspace);
+    spied.exec = (argv, options) => workspace.exec(argv, { ...options, env: { ...options.env, PATH: `${spy}:${options.env.PATH}` } });
+    const made = await script.run({ workspace: spied, mint: server.mint }, server);
+    assert.deepEqual(reached, [], `no request went to the planted address: ${made.note}`);
+    assert.ok(existsSync(planted), "the keys were planted before the fetch");
+    const log = readFileSync(seen, "utf8");
+    assert.ok(!log.includes(at), `no git that reaches GitHub read the planted keys: ${log}`);
+    const folders = [...log.matchAll(/^cwd (.*)$/gm)].map(([, cwd]) => cwd);
+    assert.ok(folders.length > 0, "the calls that reach GitHub were logged");
+    for (const cwd of folders) {
+      assert.ok(!cwd.startsWith(folder), `the fetch ran outside the run's folder: ${cwd}`);
+      assert.equal(existsSync(cwd), false, `the private folder ${cwd} is gone`);
+    }
+    assert.equal(git(join(folder, CHECKOUT_DIR), "rev-parse", "HEAD"), script.at(server.pull), made.note);
+    assert.ok(!readFileSync(join(target, "config"), "utf8").includes(at), "the checkout's config is the one the script wrote");
+    assert.ok(server.seen.length > 0, "the fetch reached GitHub itself");
+    await made.end();
+  });
+
+  test(`checkout ${kind}, run: the repository moved into ${CHECKOUT_DIR}/ is whole: its own .git with the refs, the shallow file and the owner file, no worktree pointing elsewhere, and git status and merge-base work there`, { timeout: 120_000 }, async (t) => {
+    const dir = await scratch(t);
+    // A history longer than the deepened fetches, so both kinds end shallow and a .git/shallow is there to move.
+    const server = await privateServer(t, dir, { shared: 200, ahead: 2, behind: 60 });
+    const { folder, workspace } = await runFolder(dir);
+    const made = await script.run({ workspace, mint: server.mint }, server);
+    const repo = join(folder, CHECKOUT_DIR);
+    assert.equal(git(repo, "rev-parse", "HEAD"), script.at(server.pull), made.note);
+    assert.ok((await stat(join(repo, ".git"))).isDirectory(), ".git is a folder, not a gitdir file");
+    assert.equal(git(repo, "rev-parse", "--show-toplevel"), await realpath(repo), "the work tree is the checkout's own folder");
+    assert.throws(() => git(repo, "config", "--get", "core.worktree"), undefined, "no core.worktree");
+    assert.ok(readFileSync(join(repo, ".git", "shallow"), "utf8").trim().length > 0, "the shallow file came with it");
+    assert.ok(readFileSync(join(repo, ".git", "agentrun-claim"), "utf8").trim().length > 0, "the owner file came with it");
+    assert.ok(Number(git(repo, "rev-list", "--count", "--all")) > 0, "every ref's history walks to its shallow edges");
+    assert.equal(git(repo, "status", "--porcelain"), "", "git status works, and the checkout is clean");
+    if (kind === "pull_request") {
+      for (const ref of ["pr/head", "pr/base", "pr/merge-base"]) git(repo, "rev-parse", "--verify", `refs/${ref}`);
+      assert.equal(git(repo, "merge-base", "refs/pr/base", "refs/pr/head"), git(repo, "rev-parse", "refs/pr/merge-base"), "merge-base works over the shallow history");
+    } else {
+      assert.equal(git(repo, "merge-base", "HEAD", "refs/repo/head"), git(repo, "rev-parse", "refs/repo/head"), "merge-base works, at refs/repo/head");
+    }
+    await made.end();
+    assert.deepEqual(await readdir(folder), [], "the end removed it");
+  });
+
+  for (const [how, stop] of [["a disk error", `printf 'mv: write error: No space left on device\\n' >&2; exit 1`], ["a stop (the script killed)", "kill -KILL $PPID; exit 1"]]) {
+    test(`checkout ${kind}, run: a move into ${CHECKOUT_DIR}/ that copies across filesystems and is cut short by ${how} after the objects are copied leaves no repository data, and the run is told there is no ${CHECKOUT_DIR}/ folder only when none is left`, { timeout: 120_000 }, async (t) => {
+      const dir = await scratch(t);
+      const server = await privateServer(t, dir);
+      const { folder, workspace } = await runFolder(dir);
+      // An mv in front of the run's PATH that moves as mv does between two filesystems (/tmp and the run's mount): each
+      // source copied, then removed. Once it has copied the repository's objects it ends, by ${how}.
+      const spy = join(dir, "spy");
+      const copied = join(dir, "copied");
+      await mkdir(spy);
+      writeFileSync(
+        join(spy, "mv"),
+        [
+          `#!${system("sh")}`,
+          'eval "dest=\\${$#}"',
+          "n=$# i=0",
+          `stop() { : > '${copied}'; ${stop}; }`,
+          'for src in "$@"; do',
+          '  i=$((i + 1)); [ "$i" -lt "$n" ] || break',
+          '  if [ -d "$dest" ]; then to="$dest/$(basename "$src")"; else to=$dest; fi',
+          '  if [ -d "$src/objects" ]; then mkdir -p "$to" && cp -R "$src/objects" "$to/objects"; stop',
+          '  elif [ "$(basename "$src")" = objects ]; then cp -R "$src" "$to"; stop',
+          '  else cp -R "$src" "$to" && rm -rf "$src" || exit 1; fi',
+          "done",
+          "",
+        ].join("\n"),
+        { mode: 0o755 },
+      );
+      const argvs = [];
+      const spied = Object.create(workspace);
+      spied.exec = (argv, options) => (argvs.push(argv), workspace.exec(argv, { ...options, env: { ...options.env, PATH: `${spy}:${options.env.PATH}` } }));
+      const made = await script.run({ workspace: spied, mint: server.mint }, server);
+      assert.ok(existsSync(copied), `the move was cut short after copying the objects: ${made.note}`);
+      assert.match(made.note, new RegExp(`there is no ${CHECKOUT_DIR}/ folder`), made.note);
+      assert.deepEqual(await readdir(folder), [], `the interrupted copy is gone, as the note says: ${made.note}`);
+      assert.equal(existsSync(join("/tmp", `agentrun-checkout-${argvs[0].at(-1)}`)), false, "the private repository is gone");
+      await made.end();
+    });
+  }
 
   test(`checkout ${kind}, run: sh, git and every program the script runs are the system's (/usr/bin, /bin), never one a folder ahead of them on the run's PATH holds (/usr/local/bin, which an image or a root agent may fill)`, { timeout: 120_000 }, async (t) => {
     const dir = await scratch(t);
@@ -318,7 +447,7 @@ test("with no App, a public repository is fetched anonymously; a private one is 
 });
 
 test("a run in a workspace on a server whose GitHub App is connected: a private repository's checkout, of its pull request or the repository it names, says the run doesn't use the server's App, never that the server has none", { timeout: 120_000 }, async (t) => {
-  const IN_WORKSPACE = "a run in a workspace doesn't use this server's GitHub App, so only public repositories are read";
+  const IN_WORKSPACE = "a workspace doesn't use this server's GitHub App, so only public repositories are read";
   const { storeOn } = await import("./store-helpers.mjs");
   const { seal } = await import("../dist/sealing.js");
   const { store } = await storeOn(t);
@@ -360,7 +489,7 @@ test("a head the repository does not have, a run no pull request started, and a 
   assert.deepEqual(await readdir(folder), []);
 });
 
-test("a fetch cut short by the claim's signal (a person's stop) ends at once and leaves its folder to the removal it handed the claim before it started", { timeout: 60_000 }, async (t) => {
+test("a fetch cut short by the claim's signal (a person's stop) ends at once: no repo/ in the run's folder, and the private repository it was fetching into goes with the removal it handed the claim before it started", { timeout: 60_000 }, async (t) => {
   const { createServer } = await import("node:http");
   const dir = await scratch(t);
   // GitHub that never answers: the fetch waits until the signal ends it.
@@ -369,18 +498,25 @@ test("a fetch cut short by the claim's signal (a person's stop) ends at once and
   await new Promise((resolve) => silent.listen(0, "127.0.0.1", resolve));
   t.after(() => { for (const req of asked) req.socket.destroy(); return new Promise((resolve) => silent.close(resolve)); });
   const { folder, workspace } = await runFolder(dir);
+  // The checkout's id is the script's last argument; its private repository is named by it.
+  const argvs = [];
+  const seen = Object.create(workspace);
+  seen.exec = (argv, options) => (argvs.push(argv), workspace.exec(argv, options));
   const stop = new AbortController();
   const held = [];
   const started = Date.now();
-  const made = prCheckout({ workspace, fromGitHub: true, input: firing("acme/widgets", { head: "a".repeat(40), base: "b".repeat(40) }), web: `http://127.0.0.1:${silent.address().port}`, signal: stop.signal, held: (part) => held.push(part) });
+  const made = prCheckout({ workspace: seen, fromGitHub: true, input: firing("acme/widgets", { head: "a".repeat(40), base: "b".repeat(40) }), web: `http://127.0.0.1:${silent.address().port}`, signal: stop.signal, held: (part) => held.push(part) });
   while (asked.length === 0) await new Promise((resolve) => setTimeout(resolve, 20));
   stop.abort(new Error("stopped by a person"));
   await assert.rejects(made, /stopped by a person/);
   assert.ok(Date.now() - started < 30_000, "the stop did not wait for the fetch");
   assert.equal(held.length, 1, "its removal was the claim's before the fetch started");
-  assert.ok((await readdir(folder)).includes(CHECKOUT_DIR), "the cut fetch left its folder");
+  assert.deepEqual(await readdir(folder), [], "the cut fetch left nothing in the run's folder");
+  const fetching = join("/tmp", `agentrun-checkout-${argvs[0].at(-1)}`);
+  assert.ok(existsSync(join(fetching, ".git")), `the stop killed the script before it could remove ${fetching}`);
   await held[0].end();
-  assert.deepEqual(await readdir(folder), [], "the claim's release removed it");
+  assert.equal(existsSync(fetching), false, "the claim's release removed the private repository");
+  assert.deepEqual(await readdir(folder), []);
 });
 
 test("an agent's definition takes checkout pull_request on an agentic revision, none to clear it, and nothing else; its body keeps pull_request alone", async () => {

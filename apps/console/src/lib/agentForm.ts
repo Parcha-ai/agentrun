@@ -172,7 +172,7 @@ export function runsOn(harness: string, tool: string, offers: ToolOffer[], { mcp
 }
 
 /** A harness by the name the Harness step shows ("Claude" for claude-agent); one the console doesn't name, by its id. */
-export const harnessLabel = (id: string): string => (LABEL as Record<string, string>)[id] ?? id;
+export const harnessLabel = (id: string): string => (LABEL as Record<string, string>)[id] ?? NAMED_ONLY[id] ?? id;
 const named = (ids: readonly string[]) => ids.map(harnessLabel).join(" and ");
 
 /** Why a granted tool doesn't run on `harness` here (runsOn says it doesn't): the harnesses that do run it, by their names. */
@@ -248,6 +248,8 @@ export const WEB_TOOLS: readonly string[] = ["web_fetch", "web_search"];
 export const reachesWeb = (tools: readonly string[]) => tools.some((t) => WEB_TOOLS.includes(t));
 
 const LABEL: Record<HarnessId, string> = { pi: "Pi", "claude-agent": "Claude", codex: "Codex", opencode: "OpenCode" };
+/** Harnesses the console names but does not offer: Cursor's, whose chats the import reads (Wrapped's harness rows). */
+const NAMED_ONLY: Record<string, string> = { cursor: "Cursor" };
 const ORDER: HarnessId[] = ["pi", "claude-agent", "codex", "opencode"];
 
 /** The harness choices: pi, Claude, Codex and OpenCode as the server lists them (`GET /v2/capabilities` `harnesses`), then

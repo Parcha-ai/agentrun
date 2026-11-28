@@ -89,19 +89,19 @@ test("keyed Exa's and keyless Exa's wire bodies: the objective as their query, t
   assert.deepEqual(free.calls, [{ name: "web_search_exa", arguments: { query: OBJECTIVE, numResults: 4 } }], "keyless Exa is sent the objective as its query");
 });
 
-test("keyed Firecrawl's wire bodies: up to 3 of the queries at once, each limit ceil(n/k) with scrapeOptions markdown and main content only; the results deduped by url in first-seen order, cut at n, each snippet its page's markdown", async () => {
+test("keyed Firecrawl's wire bodies: up to 3 of the queries at once, each limit ceil(n/k), no scrape of the results asked; the results deduped by url in first-seen order, cut at n, each snippet its page's markdown", async () => {
   const answers = { [QUERIES[0]]: [row("a"), row("b")], [QUERIES[1]]: [row("b"), row("c", { markdown: undefined })], [QUERIES[2]]: [row("d"), row("a")] };
   const fc = keyed((_path, body) => firecrawlRows(answers[body.query]));
   const w = web.createWeb({ order: { search: ["firecrawl"], fetch: [] }, keys: { firecrawl: KEY }, send: { firecrawl: fc.send } });
   const { answer, receipt } = await w.search({ objective: OBJECTIVE, queries: QUERIES }, { n: 4 });
-  assert.deepEqual(fc.sent.map(({ path, body }) => [path, body]), QUERIES.slice(0, 3).map((query) => ["/v2/search", { query, limit: 2, scrapeOptions: SCRAPE }]), "Firecrawl is sent the first 3 queries, each limit ceil(4/3) with scrapeOptions");
+  assert.deepEqual(fc.sent.map(({ path, body }) => [path, body]), QUERIES.slice(0, 3).map((query) => ["/v2/search", { query, limit: 2 }]), "Firecrawl is sent the first 3 queries, each limit ceil(4/3), no scrapeOptions");
   assert.equal(fc.seen.most, 3, "the 3 requests are in flight at once");
   assert.deepEqual(answer.results.map((hit) => hit.url), ["a", "b", "c", "d"].map((letter) => `https://${letter}.example/`), "Firecrawl's results deduped by url, first seen first, cut at n");
   assert.deepEqual(answer.results.map((hit) => hit.snippet), ["# Page a The whole of page a.", "# Page b The whole of page b.", "About c.", "# Page d The whole of page d."], "each snippet the page's markdown, its description where it has none");
-  assert.deepEqual(receipt.cost.lines.map((fee) => fee.basis), Array(3).fill("Firecrawl's list price for a search of 2 results, each scraped: 4 credits at the key's plan price"), "each request priced as a scraping search");
+  assert.deepEqual(receipt.cost.lines.map((fee) => fee.basis), Array(3).fill("the hold, 2 credits; Firecrawl reported no credit count"), "each request held at 2 credits per 10 results, charged its hold where Firecrawl reports no credits");
   const one = keyed(() => firecrawlRows([row("a"), row("b"), row("c")]));
   await web.createWeb({ order: { search: ["firecrawl"], fetch: [] }, keys: { firecrawl: KEY }, send: { firecrawl: one.send } }).search({ objective: OBJECTIVE, queries: ["widgets"] }, { n: 2 });
-  assert.deepEqual(one.sent.map(({ body }) => body), [{ query: "widgets", limit: 2, scrapeOptions: SCRAPE }], "one query: one request of limit n");
+  assert.deepEqual(one.sent.map(({ body }) => body), [{ query: "widgets", limit: 2 }], "one query: one request of limit n");
 });
 
 test("keyed Firecrawl's failures: some requests failing answers the merged rest and hands the quota met to the breaker; every one failing, a limit among them, answers the breaker's words, the receipt the first, typed", async () => {
@@ -131,7 +131,8 @@ test("Firecrawl, keyed and keyless: two queries answering and one rate-limited p
     assert.deepEqual([first.answer.provider, (first.answer.results ?? []).map((hit) => hit.url)], [provider, ["https://a.example/", "https://b.example/"]], `${provider}: the two queries' hits are answered, not dropped for the third's long rate limit`);
     assert.deepEqual([asked(), first.receipt.tries[0]?.limit], [3, { kind: "rate", retryAfter: wait }], `${provider}: three requests sent, the long rate limit on the receipt`);
     const again = await w.search({ objective: OBJECTIVE, queries: QUERIES.slice(0, 3) }, { n: 3 });
-    assert.deepEqual([again.answer, asked()], [{ error: SEARCH_UNAVAILABLE }, 3], `${provider}: the long rate limit still holds the next search: it is not sent`);
+    assert.match(again.answer.error ?? "", new RegExp(`^search is unavailable: ${provider} is rate-limited until \\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ; answer from what you have$`), `${provider}: the long rate limit still holds the next search: it is not sent`);
+    assert.equal(asked(), 3, `${provider}: the long rate limit still holds the next search: it is not sent`);
   }
 });
 
@@ -152,7 +153,8 @@ test("Firecrawl, keyed and keyless: of two rate limits a search's queries meet, 
     const first = await w.search({ objective: OBJECTIVE, queries: QUERIES.slice(0, 3) }, { n: 3 });
     assert.deepEqual([(first.answer.results ?? []).map((hit) => hit.url), first.receipt.tries[0]?.limit], [["https://a.example/"], { kind: "rate", retryAfter: wait }], `${provider}: the answering query's hits, and the longer of the two rate limits (${LONG} s, not ${SHORT} s) on the receipt`);
     const again = await w.search({ objective: OBJECTIVE, queries: QUERIES.slice(0, 3) }, { n: 3 });
-    assert.deepEqual([again.answer, asked()], [{ error: SEARCH_UNAVAILABLE }, 3], `${provider}: the breaker holds the ${LONG} s wait: the next search is not sent`);
+    assert.match(again.answer.error ?? "", new RegExp(`^search is unavailable: ${provider} is rate-limited until \\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ; answer from what you have$`), `${provider}: the breaker holds the ${LONG} s wait: the next search is not sent`);
+    assert.equal(asked(), 3, `${provider}: the breaker holds the ${LONG} s wait: the next search is not sent`);
   }
   // A quota met by a later query wins over a longer rate limit met by an earlier one.
   const paidQuota = keyed((_path, body) => (body.query === QUERIES[0] ? json({ error: "slow" }, 429, { "retry-after": String(LONG) }) : body.query === QUERIES[1] ? json({ error: "credits" }, 402) : firecrawlRows([row("c")])));

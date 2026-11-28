@@ -1408,6 +1408,11 @@ export function mcpSetUp(need: Pick<McpNeed, "source" | "toolkit" | "tools">): s
     : `Add the MCP server that serves ${tools} in Settings → MCP servers and set its toolkit to ${need.toolkit}, then apply the template again.`;
 }
 
+/** A need's source and toolkit in words, the toolkit left out where it is the source's own name (github/github). */
+export function mcpNeedName(need: Pick<McpNeed, "source" | "toolkit">): string {
+  return need.source === need.toolkit ? need.source : `${need.source} ${need.toolkit}`;
+}
+
 /** A saved MCP server as an apply matches it: its name and the source and toolkit it records (mcp-sources.ts). */
 export type SavedSource = { name: string; source: McpSource; toolkit: string | null };
 
@@ -1420,8 +1425,8 @@ export function serversFor(p: Package, saved: readonly SavedSource[], picks: Rea
   const mapped = p.mcp.map((need) => {
     const candidates = saved.filter((one) => one.source === need.source && one.toolkit === need.toolkit).map((one) => one.name).sort();
     const pick = Object.hasOwn(picks, need.toolkit) ? picks[need.toolkit] : undefined;
-    if (pick !== undefined && !candidates.includes(pick)) issues.push({ field: `servers.${need.toolkit}`, reason: "not_an_option", message: `${pick} is not a saved MCP server that is ${need.source} ${need.toolkit}: ${candidates.length ? `${candidates.join(", ")} ${candidates.length === 1 ? "is" : "are"}` : "none is saved here"}.` });
-    else if (pick === undefined && candidates.length > 1) issues.push({ field: `servers.${need.toolkit}`, reason: "missing", message: `Saved MCP servers ${new Intl.ListFormat("en", { type: "conjunction" }).format(candidates)} are each ${need.source} ${need.toolkit}: servers.${need.toolkit} says which one the agent uses.` });
+    if (pick !== undefined && !candidates.includes(pick)) issues.push({ field: `servers.${need.toolkit}`, reason: "not_an_option", message: `${pick} is not a saved MCP server that is ${mcpNeedName(need)}: ${candidates.length ? `${candidates.join(", ")} ${candidates.length === 1 ? "is" : "are"}` : "none is saved here"}.` });
+    else if (pick === undefined && candidates.length > 1) issues.push({ field: `servers.${need.toolkit}`, reason: "missing", message: `Saved MCP servers ${new Intl.ListFormat("en", { type: "conjunction" }).format(candidates)} are each ${mcpNeedName(need)}: servers.${need.toolkit} says which one the agent uses.` });
     const server = pick ?? (candidates.length === 1 ? candidates[0]! : null);
     return { need, server, candidates };
   });

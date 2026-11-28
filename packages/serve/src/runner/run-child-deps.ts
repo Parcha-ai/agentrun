@@ -4,6 +4,7 @@
 import { readBackOf } from "@parcha/agentrun-computer";
 import { recordedClient } from "../computer-calls.js";
 import { heldInstall, type HeldComputerAsk, type Held } from "./held.js";
+import type { ComputeLedger } from "../compute-cost.js";
 import type { Claim, Journal } from "./loop-contract.js";
 import { routeOf } from "./model-route.js";
 import type { Channel } from "./run-channel.js";
@@ -34,6 +35,8 @@ export interface ChildInit {
   readonly traced?: true;
   /** The runner's bound on the claim's tool hosts' release (LoopDeps.releaseBoundMs), when it sets one. */
   readonly releaseBoundMs?: number;
+  /** The runner's margin on that release and its cut's booking (LoopDeps.releaseMarginMs), when it sets one. */
+  readonly releaseMarginMs?: number;
   /** The plane the runner capped and chose this process's keys by (run-child-host.ts): the claim's, as it is. */
   readonly plane?: AdapterSpecDeps["claimedPlane"];
 }
@@ -128,8 +131,14 @@ export async function computerHere(got: ClaimComputer): Promise<ClaimComputer> {
 export function childDeps(init: ChildInit, store: Store, journal: Journal, held: Held, channel: Pick<Channel, "post" | "call">): AdapterSpecDeps {
   const computerForClaim = (async (_launch: unknown, _store: unknown, given: Record<string, unknown>) => {
     const recordings = given.recordings as { say?: (words: string) => void } | undefined;
+    // The run's ledger is this process's: handed to the runner, whose meter books the claim's computers' time on it. Its
+    // admit and settle alone, never its sums.
+    const ledger = (given.compute as { ledger?: ComputeLedger } | undefined)?.ledger;
+    const paid = ledger?.paid;
     const ask: HeldComputerAsk = {
       hadComputer: given.hadComputer as () => Promise<boolean>,
+      ...(paid ? { compute: { paid: { admit: (request) => paid.admit(request), settle: (id, usd, options) => paid.settle(id, usd, options) }, ...(ledger.pause ? { pause: ledger.pause } : {}), judged: () => ledger.judged?.() ?? Promise.resolve() } } : {}),
+      ...(typeof given.stopRun === "function" ? { stopRun: given.stopRun as HeldComputerAsk["stopRun"] } : {}),
       ...(typeof given.turnedOff === "string" ? { turnedOff: given.turnedOff } : {}),
       ...(given.signal instanceof AbortSignal ? { signal: given.signal } : {}),
       ...(recordings?.say ? { say: recordings.say } : {}),

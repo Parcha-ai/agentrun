@@ -614,6 +614,7 @@ AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1 to allow it, only on a machine you alone use`
 | `AGENTRUN_PRIVATE_HOSTS` | Bounds the private-network hosts an owner may allow an MCP server or a calendar on (Settings → MCP servers): `none` allows none (and only an empty list can be saved), or a comma list of address ranges (`10.20.0.0/16,fd12:3456::/32`) every listed host's address must also fall in. Loopback, link-local (cloud metadata) and this machine's addresses stay refused whatever it says. A value that is neither reads as `none` | unset: the owner's list holds | On a server or runner many customers share, an owner's list would reach the operator's own private network: set `none` there, on the server and on each runner (each process holds to its own) |
 | `AGENTRUN_BOX_ALLOW` | The hosts a run's computer may reach: a comma list, or `none` ([A run in a Docker box](#a-run-in-a-docker-box)) | the package registries and GitHub | A run's network is the operator's policy, not a caller's |
 | `AGENTRUN_BOX_CPUS`, `AGENTRUN_BOX_MEMORY`, `AGENTRUN_BOX_PIDS` | A Docker computer's size ([Computers](#computers)) | 2 CPUs, 4 GiB, 1,024 processes | The machine's capacity is the operator's |
+| `AGENTRUN_BOX_MAX_TUNNELS` | How many connections a Docker computer's egress proxy holds open at once, from 1 to 256; past that a new one is answered 429 ([Computers](#computers)) | 64 | The machine's capacity is the operator's |
 
 On a server the installer runs as a service, `agentrun service install --env AGENTRUN_MCP_ALLOW_LOOPBACK=1 --env
 AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` saves the two yes-or-no switches in the service and restarts it; `--env KEY=` takes
@@ -624,7 +625,7 @@ one off.
 A sandbox agent's `bash` runs in a box, a machine apart from this server. Docker is the default box and the only one offered
 with no setup: a Docker container made for each run, which binds the run's `work/` and nothing else. Every other provider
 whose sandbox can hold the run's folder is a box too: `daytona`, `modal`, `e2b`, `agent37`, `morph`, `cloudflare`, `fly`,
-`boxd`, `groundbox` and `vercel`. Such a box runs on a sandbox computer from that provider, offered once `AGENTRUN_BOXES` lists it
+`boxd`, `groundbox`, `vercel`, `sprites` and `instabox`. Such a box runs on a sandbox computer from that provider, offered once `AGENTRUN_BOXES` lists it
 and the keys its computer provider needs are set (the environment, or Settings → Computers): `AGENTRUN_BOXES=docker,e2b`
 with `E2B_API_KEY` set offers both. A box is a provider that serves a sandbox, takes the run's folder (a bind, an Archil
 mount or a synced folder), starts with no image named and keeps to the allow-list or has no network; Orgo (desktops), the
@@ -1036,7 +1037,7 @@ Settings → Computers. The kind says what the agent is given, and the provider 
 | Kind | What the agent gets | Providers |
 |---|---|---|
 | `none` | The run's folder alone: no computer, and no provider (`{"kind": "none"}`) | |
-| `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b`, `boxd`, `smolcloud`, `groundbox`, `vercel`, `cloudflare` (through a relay Worker you deploy) |
+| `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b`, `boxd`, `smolcloud`, `groundbox`, `vercel`, `sprites`, `instabox`, `cloudflare` (through a relay Worker you deploy) |
 | `desktop` | The computer's tools (`computer_observe`, `computer_act`, `computer_screenshot`), the computer as `codemode`'s `computer`, and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo`, `boxd`, `groundbox`, or [a paired computer](#a-persons-own-computer) by its id |
 | `phone` | A rented Android, through the same computer tools | `phone-harness` |
 | `browser` | A hosted browser (the browser tools) | `browserbase`, `kernel` |
@@ -1106,14 +1107,15 @@ run's hold), newest first. The runs list carries no computer, so this is the one
 across runs and agents; the console's Settings → Computers shows it as Running now. An agent's own computer kept
 between runs is on the agent's read (`own_computer`), and a paired computer under `paired` in `GET /v2/computers`. The keys are
 `DAYTONA_API_KEY` (with `DAYTONA_API_URL` and `DAYTONA_TARGET` optional), `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`,
-`E2B_API_KEY`, `AGENT37_API_KEY` (with `AGENT37_SSH_KEY` optional: unset, the server makes its own SSH key on first use,
+`E2B_API_KEY` (with `AGENTRUN_E2B_DOMAIN`, `AGENTRUN_E2B_API_URL` and `AGENTRUN_E2B_TEMPLATE` optional, below),
+`AGENT37_API_KEY` (with `AGENT37_SSH_KEY` optional: unset, the server makes its own SSH key on first use,
 seals it in its store as every saved key under `AGENTRUN_SEAL_KEY`, and registers it on the workspace as
 `agentrun-<hash>`, one key per store even when claims or servers reach first use together; without a seal key, a new
 key each restart, the old one left on the workspace), `MORPH_API_KEY`, `ORGO_API_KEY`, `PHONE_HARNESS_API_KEY`,
 `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, `KERNEL_API_KEY`, `BOXD_API_KEY` (with `BOXD_ORG` and
 `BOXD_REGION` optional), `SMOLCLOUD_API_KEY`, `GROUNDBOX_API_KEY`, `CLOUDFLARE_RELAY_URL` and `CLOUDFLARE_RELAY_TOKEN` (the relay Worker's,
-`packages/computer/relays/cloudflare`), `FLY_API_TOKEN` and `FLY_APP`, `RENDER_API_KEY` and `RENDER_WORKSPACE_ID`, and `VERCEL_TOKEN` with `VERCEL_TEAM_ID`
-and `VERCEL_PROJECT_ID`; Docker takes none.
+`packages/computer/relays/cloudflare`), `FLY_API_TOKEN` and `FLY_APP`, `RENDER_API_KEY` and `RENDER_WORKSPACE_ID`, `VERCEL_TOKEN` with `VERCEL_TEAM_ID`
+and `VERCEL_PROJECT_ID`, `SPRITES_TOKEN`, and `INSTABOX_API_KEY`; Docker takes none.
 `GET /v2/computers/running` lists every run still going (queued, working, paused or waiting on its person) whose agent
 has a computer, newest first, each as `GET /v2/runs/{run_id}` answers it: its `computer` says the kind and provider,
 `starting`, `ready` or `taken_over` while its owner drives it, and a held run's hold. The runs list carries no
@@ -1132,6 +1134,12 @@ and the Docker provider runs the container with them (`--cpu-quota`, `--memory` 
 They apply to Docker computers only: a vendor's computer (Daytona, Modal, E2B, Orgo, a phone, a hosted browser) is the
 size its provider makes it, and is never given them. A value the Docker provider refuses stops the server's start, in
 the provider's words.
+
+**A Docker computer's egress connections.** A Docker computer whose network is open or a list reaches it through its
+own egress proxy, which holds 64 connections open at once and answers a new one past that with 429.
+`AGENTRUN_BOX_MAX_TUNNELS` sets the cap, a whole number from 1 to 256 (the proxy's 1024 open files hold two per
+connection); the claim gives it to the Docker provider as `egress.maxTunnels`, which a running proxy keeps. Any other
+value stops the server's start, in words naming the setting.
 
 **What a sandbox needs.** A sandbox may list the programs its agent's work needs on the box's PATH:
 `"computer": {"kind": "sandbox", "provider": "docker", "needs": ["chrome", "ffmpeg", "ffprobe", "hyperframes"]}`, 1 to
@@ -1385,6 +1393,22 @@ DAYTONA_API_KEY=... python3 packages/computer/box/build-daytona.py   # prints sn
 A Daytona computer mounts the run's folder only where `DAYTONA_ARCHIL_EGRESS` names a self-hosted target's Archil
 egress relay (see Mode 2 above), and then it needs this snapshot. A changed recipe is a new name, so build again after
 an upgrade that changes `box/`. A Daytona [box](#sandbox) never reads it.
+
+**An E2B computer's cloud and template.** Three optional settings beside `E2B_API_KEY`, each set in the environment or
+saved in Settings → Computers as the keys are, and none a secret:
+
+- `AGENTRUN_E2B_DOMAIN`: the domain of a cloud that speaks E2B's API. Each sandbox is under it, and the API is
+  `https://api.<domain>`. Unset, `e2b.app`.
+- `AGENTRUN_E2B_API_URL`: the API's URL, for a cloud whose API is not `https://api.<domain>`. It must be https, with no
+  login, query or fragment, since the key goes to it; another is refused, naming the setting, before any call. Unset,
+  `https://api.<domain>`.
+- `AGENTRUN_E2B_TEMPLATE`: the template every E2B computer starts from, sandbox or desktop, in place of the box template,
+  as `AGENTRUN_DAYTONA_SNAPSHOT` names Daytona's snapshot. An agent's `computer.image` may name it. A Mode 2 folder is an
+  Archil mount in it, so it needs `box/Dockerfile`'s Archil client (`box/build-e2b.mjs` builds one).
+
+`E2B_API_KEY` holds the key of whichever cloud the domain names, and the proxy (`HTTPS_PROXY`, `NO_PROXY`) is decided for
+that domain and the API URL's host. The computer package's README lists the clouds that speak E2B's API and the settings
+each needs ([E2B: other clouds](../computer/README.md#other-clouds-and-the-operators-template)).
 
 **Before unsetting `DAYTONA_ARCHIL_EGRESS` on a server with open runs.** Each open run's folder moves from the Archil
 mount to a synced folder at its next claim. The synced claim reads the folder through Archil's file API, which lists a
@@ -1717,6 +1741,15 @@ which may spend. The skip's warning names the trigger and says how to turn it of
 is saved, before any run, so a template that grants them is still refused at its apply (409 at
 `secrets.MONID_API_KEY`) where the server has none. A run can still bring its own monid key to use in place of the
 server's.
+
+**Timeline rows without cost words: `AGENTRUN_NO_COST_WORDS=1`.** For a backend that prices runs its own way. Off, a
+run's Timeline says its cost in words, as before: "Cost: $0.0624 over 2 model requests and 1 paid tool call", "Tool
+cost: fal charged $0.0600 for mcp:fal/run_model", "Spent $0.06, $0.02 over the run's cap of $0.04". With `1`, the
+served Timeline (`GET /v2/runs/{id}/timeline`, its stream, and the run's export) says the same rows with no figure:
+"2 model requests and 1 paid tool call", "mcp:fal/run_model via fal", "Over the run's cap", and a reply the cap cut
+short "…: all that was left of the run's cap could buy.". A dollar cap's wrap-up note reads "Near this run's spend cap;
+the model was told to wrap up." (the model is told the note with its amount, as before). Each row's `usage` is
+unchanged either way, so a reader that shows a cost reads it there.
 
 ### Direct Particle-1
 
@@ -2180,6 +2213,20 @@ them. None of them goes around the run's tool settings:
   call runs once (or is refused), its outcome is the script's answer, and the rest of the script does not run. The
   answer lists each call before it with its result as the script read it: a JSON value as itself, never quoted. A
   refused call ends the script with the refusal. A call cut off by a crash is told as possibly done and never run again.
+- `codemode {script, language: "python"}` runs a Python script by the same rules, in
+  [Monty](https://github.com/pydantic/monty) (`@pydantic/monty`, a Python 3 subset written in Rust, in a worker
+  subprocess of its own). The run's tools are the module `tools` (already imported): `await tools.<name>(args)` or
+  `await tools.<name>(key=value)`; `ALL_TOOLS` lists them, a failed call raises, `print()` output and the value of a
+  top-level `return` (or of the last expression) are the answer, and `image(value)` shows an image. Its clock reads the
+  call's first start, its `random` takes the first run's seed, and `time.sleep` returns at once, so a rerun makes the
+  same calls.
+  It runs at most 10 minutes (its calls' time included: the tool call it waits on is cut at the deadline too) in 256
+  MiB, prints at most 120,000 characters (the host's tool-result bound), and makes at most 1,000 tool calls. A Python
+  script gets no `computer`: it calls the computer's tools among its `tools`. Python is opt-in: `@pydantic/monty` is
+  an exact optional peer of the server, which npm leaves out (it adds about 70 MB), loaded on the first Python script.
+  `npm i @pydantic/monty@1.6.0` beside the server adds it; with npx, `npx -p @parcha/agentrun -p
+  @pydantic/monty@1.6.0 agentrun`. It has builds for glibc Linux and macOS, x64 or arm64, and Windows x64, none for
+  musl. An install without it runs JavaScript scripts, and a Python one answers that line, with nothing run.
 
 A paid call made through `tools_call` or a script is held at its price before it is sent and settled once, as a direct
 call is, so the cap holds it. A run with a desktop or a phone has this same `codemode`, its computer's tools among
@@ -2900,7 +2947,8 @@ What can go wrong, told apart:
   owner's console saves, or saved over or deleted a server the token did not save (the owner's, sealing a credential or
   not), which only the owner's console changes or deletes. The link opens Settings → MCP servers with the form filled in
   (name, URL, kind of credential, toolkit; for a saved server, its Change form), never the credential. A URL that could
-  hold one is left out.
+  hold one is left out. An [API-only](#api-only) server has no owner's session and serves no console: its `403` has no
+  `details.console_url`, and a save over or delete of a server the token did not save says to use another name.
 - `412 precondition_failed`: the server changed while the save or delete ran (another save, a sign-in, a removal), so
   nothing was written over it: read it again and try again. An owner's save that lands while the token's save or delete
   of a server it saved is under way makes the server the owner's, and the token's is this `412`.
@@ -3610,9 +3658,11 @@ An agent whose definition says `checkout: pull_request` starts each run a GitHub
 checkout of it, made by the server at each claim before the first turn ([runner/pr-checkout.ts](src/runner/pr-checkout.ts)).
 It reads the repository, number, head and base from the server's own payload tag, only on a run a github trigger started
 (its launch's input origin) and never from anyone's words, and runs one
-command on the run's folder (a process here in Mode 1, Archil's exec in Mode 2): `git init repo`, a fetch of the head and
-the base 50 commits deep, deepened until their merge base is in (about 3,200 commits at most), then a detached checkout
-of the head, with refs `pr/head`, `pr/base` and `pr/merge-base`. The fetch takes an installation token minted for that
+command on the run's folder (a process here in Mode 1, Archil's exec in Mode 2): `git init` in a private folder of that
+machine's own `/tmp`, a fetch of the head and the base 50 commits deep, deepened until their merge base is in (about
+3,200 commits at most), then the repository moved into `repo/` and a detached checkout of the head, with refs `pr/head`,
+`pr/base` and `pr/merge-base`. The fetch never runs in the run's folder, so no `.git/config` there decides where it
+goes, and it always verifies TLS and goes through no proxy. The fetch takes an installation token minted for that
 one repository with `permissions: {contents: "read"}` alone, handed to the command on its stdin and turned there into an
 `Authorization` header in git's environment, scoped to GitHub's site; it is never in argv, `.git/config`, the remote's
 URL (`https://github.com/<owner>/<repo>.git`), the run's folder, the agent's environment or a log line, and it is revoked
@@ -3989,16 +4039,22 @@ serves these routes alone:
   the API with the keys and budget it sends, a trigger the agent had before the profile included; the unarchive turns
   them on again. Without the hook it makes neither (`not_set_up_here`: set the hook, or start those runs through the
   API), and a trigger the agent already had stays as it was: an enabled one still fires here, on this server's keys,
-  until it is turned off (below) or the agent is archived, and the skip's warning says so. A webhook, GitHub, Composio or email trigger is never made here, hook
-  or not, since this profile refuses the hook or setting each needs (`not_an_option`). Each skipped trigger is a warning
-  under `warnings` (`triggers.<i>`), and the dry run (`dry_run: true`) plans it as `skip` in the same words;
+  until it is turned off (below) or the agent is archived, and the skip's warning says so. An apply makes no webhook
+  trigger, in a workspace or not (`not_an_option`), since its answer shows no signing secret: one is made with
+  `POST /triggers` in a workspace (`AgentRun-Workspace`) alone, whose first answer shows it once
+  ([Workspaces](#workspaces)). It fires on a signed request to its own hook (`POST /hooks/{trigger_id}`, no token),
+  which this profile serves only with the launch hook set and only for a webhook trigger whose firings start a run. A
+  GitHub, Composio or email trigger is never made here, hook or not, since this profile refuses the hook or setting each
+  needs (`not_an_option`).
+  Each skipped trigger is a warning under `warnings` (`triggers.<i>`), and the dry run (`dry_run: true`) plans it as
+  `skip` in the same words;
 - the triggers, for a backend to see one that is off and turn it on again: their list (`GET /triggers`), one
   (`GET /triggers/{id}`), its firings (`GET /triggers/{id}/firings`), and its turn on or off
   (`PATCH /triggers/{id}` with `{"enabled": true}` or `{"enabled": false}`; from the CLI,
   `agentrun triggers update <id> --enabled` or `--no-enabled`). A trigger whose firings failed 5 times in
   a row turns itself off (`disabled.reason` `auto_paused`), and there is no console here to turn it on in. The PATCH
-  takes `enabled` alone (any other field is `422 not_allowed`), and turns on only what the apply would make: a schedule
-  or a feed, with the launch hook set (`422` under `enabled` otherwise, since its firings would start runs on this
+  takes `enabled` alone (any other field is `422 not_allowed`), and turns on only a schedule, a feed or a webhook
+  (made in a workspace), with the launch hook set (`422` under `enabled` otherwise, since its firings would start runs on this
   server's keys or wait on a hook this profile refuses). Turning one off always works. Making, deleting or firing a
   trigger, and its secret, stay refused;
 - a Composio server's save (a new name, or a server the token saved) and the delete of a server the token saved, for a
@@ -4096,8 +4152,8 @@ Here a run's computer routes take the server's token. `POST /runs/{id}/computer/
 `AGENTRUN_PUBLIC_URL` that opens that run's live page and socket until the run ends (API doc).
 
 Every other address is `404 not_found`, answered before the request is read further: the console at `/` and its
-assets, sign-in and setup, every other `/settings` route, `POST /mcp`, every other trigger route and the triggers'
-`POST /hooks/{id}`, the agents list, an agent made or edited through `/agents`, the templates list and every other
+assets, sign-in and setup, every other `/settings` route, `POST /mcp`, every other trigger route, the triggers'
+`POST /hooks/{id}` without the launch hook and any path under a hook, the agents list, an agent made or edited through `/agents`, the templates list and every other
 template route, `/openapi.json`, `/llms.txt` and a browser's live view. It has no accounts: there is no page to sign in
 to, so no setup code is printed. The token works as it does on every route served. Unset, `0` or `false` serve the
 whole server, as before; any value other than these and `1` or `true` stops the start, in words.
@@ -4115,16 +4171,22 @@ ids of the tokens whose every request must carry it (comma-separated): such a to
 backend that forgot the header is refused rather than handed every tenant's rows. A request with no header is served
 as before.
 
-A request in a workspace is served only: the runs' reads and lists (`GET /runs`, `/runs/{id}`, its timeline, files and
-export), a run's message, stop and cancel; the agents' list, read, create, revisions, definition and current revision,
-archive, unarchive and delete, a run started on one, and its Archil disk (`/agents/{id}/archil`, read and removed); the
-computers this server offers (`GET /computers`, never a paired computer of the operator's) and the runs of the
-workspace's own going on one (`GET /computers/running`); the templates' list, read, import, apply and delete (a bundled
-package stays `403`); the marketplace's list (`/marketplace/templates`, each entry's `here` naming only a package the
-workspace sees); the uploaded files' create, upload, list, read and delete (`/files`); the triggers' list, read,
-firings, create, edit, delete and run now (`/triggers`); and `/capabilities`, `/health` and `/openapi.json`. Every
-other route is `403 forbidden` with
-`details.reason: "not_scoped"`. In it, an agent, run, imported template package or file of another workspace (or of none)
+A request in a workspace is served only: the runs' reads and lists (`GET /runs`, `/runs/{id}`, its timeline, files,
+export, graph and trace), a run's message, stop, cancel, cap raise, pause, resume, archive, unarchive, grade, held start
+and purge (`DELETE /runs/{id}`); the agents' list, read, create, revisions, definition and current revision,
+archive, unarchive, delete and package, a revision's skills, its home's list, reads and removals (not a write: nothing
+bounds a home's size on a disk the workspaces share), a run started on one, and its Archil disk (`/agents/{id}/archil`,
+read and removed); the computers this server offers (`GET /computers`, never a paired computer of the operator's) and the
+runs of the workspace's own going on one (`GET /computers/running`); a workflow's check (`POST /workflows/validate`); the
+templates' list, read, import, apply and delete (a bundled package stays `403`); the marketplace's list
+(`/marketplace/templates`, each entry's `here` naming only a package the workspace sees); the uploaded files' create,
+upload, list, read and delete (`/files`); the triggers' list, read, firings, create, edit, delete, run now and a
+webhook's new secret (`/triggers`); the MCP servers' list, names, read, preview, save, Composio save, refresh and delete
+(`/settings/mcp-servers`); and `/capabilities`, `/health` and `/openapi.json`. Every other route is `403 forbidden` with
+`details.reason: "not_scoped"`, a sign-in's removal among them (removing a secret takes the owner's session). An agent's
+package in a workspace reads the workspace's own MCP servers alone: a shared one is not the workspace's to read, so a
+granted tool of one is blocked as a server saved nowhere. In it, an agent, run, imported template package or file of
+another workspace (or of none)
 answers the same `404` as an id no row has, and every list holds the workspace's rows alone, paged within them; bundled
 template packages are every workspace's. What it makes is the workspace's: an agent (made or applied), an imported
 package (its name is the workspace's own: another workspace imports the same name as its own package), a file. A run is its agent's workspace's,
@@ -4132,11 +4194,38 @@ whoever started it, so a run a request with no header starts on that agent is th
 take the workspace's files alone: one out of it reads as no file. An `Idempotency-Key` is the workspace's own: the same
 key in another workspace starts afresh. A trigger is its agent's workspace's: another's answers the same `404` as an id
 no trigger has, and a new one naming another workspace's agent or run is refused in the words an unknown one gets. A
-request in a workspace makes what an apply here makes, a schedule or a feed that starts runs, with the launch hook set;
-any other source or target, or no hook, is `422` and nothing is made. Its edit is `enabled` alone, as above, and its run
-now (`POST /triggers/{id}/fire`) is served only for a trigger that may be on here, so the firing goes to the backend
-through the launch hook. A request with no header reads, imports, applies and deletes the packages of no workspace
-alone: its import of a name a workspace holds is a package of its own, never replacing that workspace's.
+request in a workspace makes a schedule, a feed or a webhook that starts runs, with the launch hook set; any other
+source or target, or no hook, is `422` and nothing is made. A webhook's signing secret is in its make's `201` alone, as
+`signing_secret`: a replay under the same `Idempotency-Key`, a read and a list show none, and the key's record keeps
+none. `POST /triggers/{id}/secret` in the workspace makes a new one and shows it once, and the old one signs nothing
+from then on. The backend in front of the server decides who among its tenant's people is shown it, and keeps none. Its
+edit is `enabled` alone, as above, and its run now (`POST /triggers/{id}/fire`) is served only for a trigger that may be
+on here, so the firing goes to the backend through the launch hook. A request with no header reads, imports, applies
+and deletes the packages of no workspace alone: its import of a name a workspace holds is a package of its own, never
+replacing that workspace's.
+
+A workspace's MCP servers are its own, beside the install's shared ones (saved with no header). In it, the list and the
+reads, saves, refreshes and deletes reach the workspace's servers alone: another workspace's server of a name answers the
+same `404` as a name never saved, a save of that name makes the workspace's own and leaves the other's as it was, and a
+shared server is not the workspace's to read, change or delete. `GET /settings/mcp-server-names` holds its own servers'
+names and the shared ones', what its agents may grant; with no header, the shared ones alone. An agent of the workspace
+reaches its own server of a name before the shared one, at its save and at each run's claim; one that reaches neither is
+refused as a server never saved. A save in a workspace is of an address at the operator's MCP origins
+(`AGENTRUN_API_ONLY_MCP_ORIGINS`): `per_run` (each run hands its own in `mcp_auth`), or `headers` or `bearer`, whose
+credential is sealed in the workspace's own row and sent by its own agents' runs alone (a re-save that sends none keeps
+it); or a per-run Composio save (`user_id: "per_run"`, no `auth_config_id`, else `422 not_allowed`) whose key the install
+names (`api_key_env`). Anything else is the refused route's `404`, before anything is sent. A save or delete over a row
+of its name that its token did not save is `403`, in the words every token write over a saved server gets: they name the
+server and say the token did not save it. The token with no header still
+writes no credential. One of a workspace's sealed servers at an origin taken off the list can't be used, as a token's
+`per_run` one can't: a run already going when the list changes stops sending its credential at its next call, and its
+preview or refresh by name is the refused route's `404`, nothing sent. A run started on a workspace's agent, by its
+request or the token with no header, checks its `mcp_auth` against that workspace's servers. The owner's shared
+servers still guard it: a workspace's save never stands on an auth config one of them stands on, and its run never binds
+the owner's Composio user. A workspace's server is kept as `<workspace>/<name>`, its sealed credential bound to that row,
+so a credential copied to another workspace's row does not open. A preview is of its own server by name, or of an address at the
+operator's MCP origins (`AGENTRUN_API_ONLY_MCP_ORIGINS`), any other `404` before anything is sent. A sign-in
+(`/oauth/start`) and the Composio triggers' routes stay unscoped.
 
 Launch disks (`archil_disk` on a run's start) are the backend's to map to its tenants: the server keeps no record of which
 tenant a disk it did not make is for, and a run in a workspace may name any of them. It names no agent's own disk
@@ -4769,9 +4858,16 @@ server's own origin, under a CSP that allows that origin only, but for the provi
   the coding-agent selector; the page refreshes when you return from your coding agent.
 - **Agent Factory** (`#/factory`): a kanban of sessions reported to this server, including parallel runs of one agent,
   reported active child conversations, an audit's shadow run while it runs, and sessions without a repository. Waiting, Working, Needs you and Unknown
-  describe execution; a completed run does not prove that its GitHub change passed checks or merged. Cards open the
-  existing run viewer for activity and supported controls. GitHub links come from launch or trusted trigger provenance.
-  Native connector health and missing SDK freshness are explicit; observed sessions do not acquire controls here.
+  describe execution; a completed run does not prove that its GitHub change passed checks or merged. A card's name opens
+  its session in a panel over the board (`#/factory?session=<run id>`): the run's own live view, where its question is
+  answered, a tool call allowed or denied, a working run steered, a follow-up asked and the run stopped or cancelled,
+  with the board still in place under it. A session that waits on a person names the step on its card (**Answer**,
+  **Review**); a card's run label and the panel's **Open run** lead to the run's own page. The board reads again as
+  soon as something done in the panel is read back. The address also keeps the filters (`repo`, `control`), so a
+  reload, a link and the way back from a run open the same board. GitHub links come from launch or trusted trigger
+  provenance. Native connector health and missing SDK freshness are explicit; observed sessions do not acquire controls
+  here: the panel offers what the run's own page offers, and an SDK's or a connected CLI's session has no message box
+  and no stop.
   Archived active runs remain visible, imported history is excluded, and ended attention is separate from active counts.
   The board refreshes every ten seconds after a read settles. It reads bounded pages and offers **Load more** with
   partial-coverage counts; failures preserve the last-known cards with a stale notice.
@@ -4898,8 +4994,8 @@ Never bypass the store lock. This local-store operation has no server endpoint t
 machine; importing into a different local store does not populate a remote console. Build, edit, run, query and
 connection handoffs use the shared coding-agent selector and target this server's matching skill, MCP endpoint and API.
 
-`agentrun-serve import --data DIR` reads the Claude Code, Codex, pi, OpenCode and Copilot CLI sessions in your own home
-(`~/.claude/projects`, `~/.codex/sessions`, `~/.pi/agent/sessions`, `~/.local/share/opencode`, `~/.copilot/session-state`) into the data directory,
+`agentrun-serve import --data DIR` reads the Claude Code, Codex, pi, OpenCode, Copilot CLI and Cursor CLI sessions in your own home
+(`~/.claude/projects`, `~/.codex/sessions`, `~/.pi/agent/sessions`, `~/.local/share/opencode`, `~/.copilot/session-state`, `~/.cursor/chats`) into the data directory,
 once. Each project folder becomes an agent, with its
 CLAUDE.md or AGENTS.md and its skill folders, and each session becomes a run you can read but not continue. Nothing leaves
 this machine, and the values of key-shaped environment variables are cut out of what it writes. Run it again and it takes
@@ -4908,10 +5004,12 @@ only what it has not taken already. Sessions written in the last 10 minutes wait
 A run's cost is what its source recorded (Claude Code's, pi's and OpenCode's). A session its source did not price, such as a Codex or Copilot CLI
 session, keeps the model catalog's estimate for its tokens beside an unknown cost, and every place that shows a run's
 cost reads that estimate, as an estimate: the run (`cost.usd`, basis `estimate`), its usage row, `GET /stats` and its
-analytics, and `GET /usage`. A session on a model the catalog does not price stays unknown.
+analytics, and `GET /usage`. A session on a model the catalog does not price stays unknown. Cursor keeps no tokens or
+cost on the machine (its usage is on Cursor's server): a Cursor run's requests are counted, and its tokens and cost stay
+unknown.
 
 - `--dry-run` lists what it would import and writes nothing.
-- `--from claude-code,codex,pi,opencode,copilot` picks the sources.
+- `--from claude-code,codex,pi,opencode,copilot,cursor` picks the sources.
 - `--include-deleted` also imports the sessions of project folders that no longer exist, such as a git worktree you
   deleted. Each such folder is still its own agent, with no instructions or skills to read.
 - `--all` keeps those too, as well as sessions of temporary folders and sessions with no message of yours.
@@ -5648,7 +5746,7 @@ step is sent only when the run's spend plus that step's least (its whole input b
 1,024-token answer) fits. So a small cap pauses a run well before it has spent it. Measured on a pi desktop run on Sonnet
 ($3 / $15, cache write $3.75, cache read $0.30 a million) through the dispatch's own system prompt and tools (read,
 write, edit, the desktop's and `codemode`, with the desktop skill named in the system prompt), five requests (four
-screenshots, then the answer), spending about $0.04 in all. Through a gateway the first request's byte bound is 10,445
+screenshots, then the answer), spending about $0.04 in all. Through a gateway the first request's byte bound is 10,703
 tokens, the server's note that the desktop's disk is not the run's files among them, so it needs $0.055; each later request is bounded by the last one's bill and the bytes it adds, so the whole run
 needs $0.082;
 straight to Anthropic the count is one recorded from a real desktop run on Sonnet (3,146 tokens at first), and the note,

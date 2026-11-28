@@ -22,6 +22,9 @@ const real = (...args) => execFileSync("docker", args, { encoding: "utf8", stdio
 const ENGINE = LIVE ? Number(/^(\d+)\./.exec(real("version", "--format", "{{.Server.Version}}").trim())?.[1] ?? 0) : 0;
 /** How long the slowed `docker run` of the early case takes to make its container. */
 const SLOW_SECONDS = 8;
+/** How long each slowed `docker rm` of the slow-rm case takes before it runs: under the 30 s look-again window for one
+ *  container, over it for the epoch file's five removed one after another. */
+const RM_SECONDS = 8;
 const exists = (name) => {
 	try {
 		real("inspect", "--type", "container", name);
@@ -57,9 +60,9 @@ const FILES = [
 ];
 
 /** The docker a case's run finds first on PATH: it logs what a docker command is about to make to `log`, then runs the
- *  real docker. Its log, the real docker and the slowed create's seconds are written into it, not read from its
- *  environment: the provider starts docker with only the names docker reads (DOCKER_ENV_NAMES). */
-const wrapperOf = ({ log, real: realDocker, slow }) => `#!/usr/bin/env bash
+ *  real docker. Its log, the real docker and the slowed create's and remove's seconds are written into it, not read from
+ *  its environment: the provider starts docker with only the names docker reads (DOCKER_ENV_NAMES). */
+const wrapperOf = ({ log, real: realDocker, slow, slowRm }) => `#!/usr/bin/env bash
 if [ "\${1:-}" = "run" ] || [ "\${1:-}" = "create" ]; then
   prev=""
   for arg in "$@"; do
@@ -70,6 +73,9 @@ if [ "\${1:-}" = "run" ] || [ "\${1:-}" = "create" ]; then
   sleep ${slow}
 elif [ "\${1:-}" = "volume" ] && [ "\${2:-}" = "create" ]; then
   printf 'v %s\\n' "\${@: -1}" >> ${JSON.stringify(log)}
+elif [ "\${1:-}" = "rm" ]; then
+  # A slowed remove, as a loaded Docker host's: each docker rm takes this long more.
+  sleep ${slowRm}
 fi
 exec ${JSON.stringify(realDocker)} "$@"
 `;
@@ -135,12 +141,13 @@ describe("a test file that is cut off leaves no container or volume it made", { 
 		return { containers: lines.filter((line) => line.startsWith("c ")).map((line) => line.slice(2)), volumes: lines.filter((line) => line.startsWith("v ")).map((line) => line.slice(2)) };
 	};
 
-	/** Runs `file` as `node --test` does, cuts it off once one of its containers exists, and answers what is left. */
-	async function cutOff(file, how) {
+	/** Runs `file` as `node --test` does, cuts it off once one of its containers exists and it has logged at least `logged`
+	 *  container names, and answers what is left and the names logged at the cut-off. */
+	async function cutOff(file, how, logged = 1) {
 		const log = join(dir, `${file}-${how}.log`);
 		const early = how === "early";
 		const bin = mkdtempSync(join(dir, `${file}-${how}-bin-`));
-		writeFileSync(join(bin, "docker"), wrapperOf({ log, real: realDocker, slow: early ? SLOW_SECONDS : 0 }));
+		writeFileSync(join(bin, "docker"), wrapperOf({ log, real: realDocker, slow: early ? SLOW_SECONDS : 0, slowRm: how === "slow-rm" ? RM_SECONDS : 0 }));
 		chmodSync(join(bin, "docker"), 0o755);
 		// DOCKER_NAME_LOG and REAL_DOCKER are the crash preload's, which runs in the file's own process.
 		const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, DOCKER_NAME_LOG: log, REAL_DOCKER: realDocker, AGENTRUN_COMPUTER_LIVE_DOCKER: "1" };
@@ -156,12 +163,14 @@ describe("a test file that is cut off leaves no container or volume it made", { 
 		const bound = Date.now() + 240_000;
 		let seen = false;
 		let notYet = false;
+		let atCut = [];
 		while (!finished && Date.now() < bound) {
 			const names = namesIn(log).containers;
 			// Early: cut off as soon as a name is logged, while the slowed `docker run` has not made its container yet.
-			if (early ? names.length > 0 : names.some(exists)) {
+			if (early ? names.length > 0 : names.length >= logged && names.some(exists)) {
 				seen = true;
 				notYet = !names.some(exists);
+				atCut = names;
 				break;
 			}
 			await sleep(200);
@@ -180,7 +189,7 @@ describe("a test file that is cut off leaves no container or volume it made", { 
 		const gone = () => made.containers.every((name) => !exists(name)) && made.volumes.every((name) => !volumeExists(name));
 		for (const until = Date.now() + 30_000; !gone() && Date.now() < until; ) await sleep(500);
 		// A file that exits by itself may be over before a look finds its container: what it logged it made.
-		return { notYet, seen: seen || (how === "crash" && made.containers.length > 0), exit, made, left: { containers: made.containers.filter(exists), volumes: made.volumes.filter(volumeExists) } };
+		return { notYet, seen: seen || (how === "crash" && made.containers.length > 0), atCut, exit, made, left: { containers: made.containers.filter(exists), volumes: made.volumes.filter(volumeExists) } };
 	}
 
 	for (const file of FILES) {
@@ -193,6 +202,17 @@ describe("a test file that is cut off leaves no container or volume it made", { 
 			assert.deepEqual(left, { containers: [], volumes: [] }, `left behind by ${file} (made ${JSON.stringify(made)})`);
 		});
 	}
+
+	// The epoch file makes five computers at once. On a loaded host each docker rm takes seconds, and five of them one after
+	// another outlast the window a single one fits in (CI run 46102077735 left three of the five). The cut waits for all
+	// five names: cut off after fewer, the file never starts the rest, and that many slowed removals in a row fit the window.
+	it(`epoch: with each docker rm slowed by ${RM_SECONDS} s, after SIGTERM to node --test none of its five containers remains`, async () => {
+		const { seen, atCut, exit, made, left } = await cutOff("epoch", "slow-rm", 5);
+		assert.equal(seen, true, `epoch did not log five container names, one of them made, within the bound (exit ${JSON.stringify(exit)}); it names ${JSON.stringify(made)}`);
+		assert.equal(atCut.length, 5, `epoch had logged ${JSON.stringify(atCut)} at the cut-off, not its five computers`);
+		assert.notEqual(exit, undefined, "epoch did not end within 120 s of the SIGTERM");
+		assert.deepEqual(left, { containers: [], volumes: [] }, `left behind by epoch with a slow docker rm (made ${JSON.stringify(made)})`);
+	});
 
 	it("run-command: cut off before its container exists, the container made late is removed too", async () => {
 		const { notYet, seen, exit, made, left } = await cutOff("run-command", "early");

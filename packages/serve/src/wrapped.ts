@@ -41,14 +41,16 @@ export function wrappedView(wrapped: Wrapped, imported: readonly { source: strin
     tokens: { input, output, cache_read: cacheRead, cache_write: cacheWrite },
     cost_usd: wrapped.cost,
     unpriced_requests: wrapped.unpricedRequests,
+    tokens_unknown_requests: wrapped.tokensUnknownRequests,
+    time_unknown_requests: wrapped.timeUnknownRequests,
     days: wrapped.days,
     hours: wrapped.hours,
     weekdays: wrapped.weekdays,
     active_ms: wrapped.activeMs,
     // The sources behind each harness (several can share one), so the console links a harness's numbers to their runs
     // without a copy of the table, in the order of `sources`: a source of a reader outside it is its own harness, as wrappedHome counts it.
-    harnesses: wrapped.harnesses.map((h) => ({ ...h, sources: wrapped.sources.map((s) => s.source).filter((source) => ((HARNESS_OF as Record<string, string | undefined>)[source] ?? source) === h.harness) })),
-    models: wrapped.models.map(({ model, requests, tokens, cost, unpricedRequests }) => ({ model, requests, tokens: total(tokens), cost_usd: cost, unpriced_requests: unpricedRequests })),
+    harnesses: wrapped.harnesses.map(({ harness, sessions, requests, tokens, tokensUnknownRequests }) => ({ harness, sessions, requests, tokens, tokens_unknown_requests: tokensUnknownRequests, sources: wrapped.sources.map((s) => s.source).filter((source) => ((HARNESS_OF as Record<string, string | undefined>)[source] ?? source) === harness) })),
+    models: wrapped.models.map(({ model, requests, tokens, cost, unpricedRequests, tokensUnknownRequests }) => ({ model, requests, tokens: total(tokens), cost_usd: cost, unpriced_requests: unpricedRequests, tokens_unknown_requests: tokensUnknownRequests })),
     sources: wrapped.sources,
     imported: imported.map(({ source, runs }) => ({ source, runs })),
     unread_files: unreadFiles,

@@ -70,6 +70,10 @@ export default {
     await rows.nth(3).getByRole("button").click();
     await page.locator("aside[aria-label='Call details']").waitFor();
 
+    // Beside the table the panel is a drawer: a soft shadow cast to its left only says it is above the table.
+    const cast = () => page.evaluate(() => getComputedStyle(document.querySelector("aside[aria-label='Call details']")).boxShadow);
+    check(/rgba\(0, 0, 0, 0\.\d+\) -\d+px 0px \d+px -\d+px$/.test(await cast()), `1920: the panel beside the table casts ${await cast()}, not the drawer's shadow to its left`);
+
     // The panel beside the table: nothing scrolls sideways and the table fits its box, at every width.
     for (const width of [1280, 1400, 1535, 1536, 1538, 1600, 1650, 1707, 1800, 1920]) {
       await page.setViewportSize({ width, height: 900 });
@@ -98,6 +102,7 @@ export default {
     await page.setViewportSize({ width: 1024, height: 900 });
     const under = await page.evaluate(measure);
     check(!under.beside, "1024: the panel is beside the table");
+    check((await cast()) === "none", `1024: under the table the panel casts ${await cast()}, not nothing`);
     check(under.table > under.box, `1024: the table (${under.table} px) fits its box (${under.box}), so this says nothing of a table that scrolls`);
     check(under.sideways.join() === "table", `1024: what scrolls sideways is ${under.sideways.join(", ") || "nothing"}, not the table alone`);
     check(under.page <= 0, `1024: the page is ${under.page} px wider than the window`);

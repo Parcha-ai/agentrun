@@ -46,7 +46,7 @@ const TOKENS_TITLE = "The run's model requests' tokens, as the provider or gatew
  *  Raise the cap button then takes the person to that form instead of opening a second one above it. */
 /** `readUsage`: reads the run's cost line by line (GET /v2/runs/{id}/usage), where the header finds the model an agentic run
  *  ran on (runModel): read again as its requests grow, so a run on the host's default model names it too. */
-export function RunHeader({ run, agentName, actions = {}, costText, raiseBelow, readUsage }: { run: Run; agentName: string; actions?: RunActions; costText?: string; raiseBelow?: () => void; readUsage?: () => Promise<RunUsage> }) {
+export function RunHeader({ run, agentName, embedded = false, actions = {}, costText, raiseBelow, readUsage }: { run: Run; agentName: string; embedded?: boolean; actions?: RunActions; costText?: string; raiseBelow?: () => void; readUsage?: () => Promise<RunUsage> }) {
   // Where it ran, as its start resolved it.
   const sdk = backendSdkOf(run);
   const cli = cliRunOf(run);
@@ -64,13 +64,15 @@ export function RunHeader({ run, agentName, actions = {}, costText, raiseBelow, 
   const raisable = !sdk && !cli && !!actions.onRaiseCap && !view.final && typeof cap === "number" && !waitsOnOther;
   const [raising, setRaising] = useState(false);
   const budget = run.pending?.kind === "budget" ? run.pending : null;
+  const Title = embedded ? "h2" : "h1";
   const onPlan = !!planOf(run.cost);
   // ChatGPT's usage page is for a ChatGPT plan's run only.
   const chatGPTPlan = onPlan && planOf(run.cost)?.on !== "claude_code";
   return (
     <header>
-      {/* The breadcrumb is the page's top bar, so its edge is level with the one under the navigation's logo. */}
-      <nav className={cn(pageToolbarClass, "caps min-w-0 gap-2 px-5 text-label text-muted-foreground md:px-8")} aria-label="Breadcrumb">
+      {/* The breadcrumb is the page's top bar, so its edge is level with the one under the navigation's logo. Beside
+          another page (`embedded`) that page's panel has the way back and names the run, so there is none here. */}
+      {!embedded && <nav className={cn(pageToolbarClass, "caps min-w-0 gap-2 px-5 text-label text-muted-foreground md:px-8")} aria-label="Breadcrumb">
         {/* Back where the person came from in the console (the runs list, the agent's page), else to the run's agent. */}
         <button type="button" aria-label="Back" title="Back" onClick={() => goBack(agentHash(run.agent_id))} className="-m-1.5 shrink-0 p-1.5 hover:text-foreground">
           <ArrowLeft className="size-3.5" aria-hidden />
@@ -78,7 +80,7 @@ export function RunHeader({ run, agentName, actions = {}, costText, raiseBelow, 
         <a href={agentHash(run.agent_id)} className="-my-1 truncate py-1 hover:text-foreground hover:underline">{agentName}</a>
         <span aria-hidden>/</span>
         <span className="truncate">Run {runLabel(run.run_id)}</span>
-      </nav>
+      </nav>}
       <div data-title-block className="border-b px-5 py-4 max-sm:py-3 md:px-8">
       {/* On a phone the title's column and the facts' box step aside (display: contents), so the facts and the actions
           share one wrapping row under a two-line title. 640 px and up keep the column and the actions beside it. */}
@@ -87,7 +89,8 @@ export function RunHeader({ run, agentName, actions = {}, costText, raiseBelow, 
             their own row (a Playground's half page at 1500 px, four actions while the run works). */}
         <div className="min-w-0 flex-1 self-stretch max-sm:contents sm:basis-64">
           {/* A workflow run's title can be its input as JSON: then the agent's name reads better. */}
-          <h1 className="line-clamp-2 break-words text-2xl font-semibold leading-tight max-sm:basis-full max-sm:text-lg" title={runTitle(run)}>{run.kind === "workflow" && /^[[{]/.test(run.title.trim()) ? agentName : runTitle(run)}</h1>
+          {/* The page's one h1 is this title on the run's own page; beside another page it is a section's heading. */}
+          <Title className="line-clamp-2 break-words text-2xl font-semibold leading-tight max-sm:basis-full max-sm:text-lg" title={runTitle(run)}>{run.kind === "workflow" && /^[[{]/.test(run.title.trim()) ? agentName : runTitle(run)}</Title>
           <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-small text-muted-foreground max-sm:contents">
             <StatusBadge run={run} />
             {archived && <Chip tone="muted">Archived</Chip>}

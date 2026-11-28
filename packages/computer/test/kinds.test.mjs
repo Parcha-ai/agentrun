@@ -33,6 +33,8 @@ import { MorphProvider } from "../dist/morph.js";
 import { BoxdProvider } from "../dist/boxd.js";
 import { GroundboxProvider } from "../dist/groundbox.js";
 import { VercelProvider } from "../dist/vercel.js";
+import { SpritesProvider } from "../dist/sprites.js";
+import { InstaboxProvider } from "../dist/instabox.js";
 import { keyPair } from "./fake-agent37.mjs";
 import { BrowserbaseProvider } from "../dist/browserbase.js";
 import { E2BProvider } from "../dist/e2b.js";
@@ -113,9 +115,9 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	// How E2B's, Modal's and Daytona's machines are reached: the provider's exec unless a server's settings say dial.
 	assert.deepEqual(extra.e2b.settings, [{ name: "e2bConnect", option: "connect" }]);
 	assert.deepEqual(extra.daytona.settings, [{ name: "daytonaConnect", option: "connect" }]);
-	// Daytona's image is the operator's snapshot when the server names one (an Archil mount needs box/Dockerfile's); no
-	// other provider declares one.
-	assert.deepEqual(Object.entries(extra).filter(([, one]) => one.imageEnv !== undefined).map(([id, one]) => [id, one.imageEnv]), [["daytona", "AGENTRUN_DAYTONA_SNAPSHOT"]]);
+	// Daytona's image is the operator's snapshot when the server names one (an Archil mount needs box/Dockerfile's), and
+	// E2B's the operator's template; no other provider declares one.
+	assert.deepEqual(Object.entries(extra).filter(([, one]) => one.imageEnv !== undefined).map(([id, one]) => [id, one.imageEnv]), [["daytona", "AGENTRUN_DAYTONA_SNAPSHOT"], ["e2b", "AGENTRUN_E2B_TEMPLATE"]]);
 	assert.deepEqual(extra["phone-harness"].ledger, { option: "ledger" });
 	assert.deepEqual(extra.orgo.ledger, { option: "ledger" });
 	// Local Chrome reads where Chrome is from the server's own environment: the names its findChrome reads, then what
@@ -159,7 +161,7 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	assert.deepEqual(PROVIDERS.find((entry) => entry.id === "docker").kinds, ["sandbox", "desktop"]);
 	const mounts = Object.fromEntries(PROVIDERS.map((entry) => [entry.id, entry.mounts]));
 	assert.deepEqual(mounts.docker, ["bind"]);
-	for (const id of ["morph", "boxd", "groundbox", "vercel"]) assert.deepEqual(mounts[id], ["sync"], id);
+	for (const id of ["morph", "boxd", "groundbox", "vercel", "sprites", "instabox"]) assert.deepEqual(mounts[id], ["sync"], id);
 	for (const id of ["orgo", "phone-harness", "browserbase", "kernel", "local-chrome", "smolcloud"]) assert.deepEqual(mounts[id], [], id);
 });
 
@@ -193,6 +195,8 @@ test("PROVIDERS' default images: each kind is one of the entry's own, and each v
 		boxd: { sandbox: all.BOXD_DEFAULT_IMAGE },
 		groundbox: undefined,
 		vercel: undefined,
+		sprites: { sandbox: all.SPRITES_IMAGE },
+		instabox: { sandbox: all.INSTABOX_IMAGE },
 	};
 	for (const [id, images] of Object.entries(expected)) {
 		assert.deepEqual(PROVIDERS.find((entry) => entry.id === id)?.defaultImage, images, `${id}: its default images are its modules' constants`);
@@ -204,6 +208,8 @@ test("PROVIDERS' default images: each kind is one of the entry's own, and each v
 	);
 	assert.equal(all.BOXD_DEFAULT_IMAGE, "default");
 	assert.equal(all.GROUNDBOX_OWN_IMAGE, "default");
+	assert.equal(all.SPRITES_IMAGE, "default");
+	assert.equal(all.INSTABOX_IMAGE, "minimal");
 	assert.equal("MODAL_DEFAULT_IMAGE" in all, false, "no Modal default image: its prepareImage() answers the box image");
 	for (const name of ["E2B_BASE_TEMPLATE", "E2B_DESKTOP_TEMPLATE"]) assert.equal(name in all, false, `no ${name}: E2B's prepareImage() answers the box template`);
 });
@@ -345,6 +351,8 @@ const BUILT = {
 	boxd: PROVIDERS.find((one) => one.id === "boxd").capabilities.map(({ options }) => () => new BoxdProvider({ ...options, apiKey: "fake-test-key", Boxd: BOXD_SDK })),
 	groundbox: PROVIDERS.find((one) => one.id === "groundbox").capabilities.map(({ options }) => () => new GroundboxProvider({ ...options, apiKey: "fake-test-key", fetch: async () => new Response(null, { status: 500 }), webSocket: () => assert.fail("a command stream was opened") })),
 	vercel: [() => new VercelProvider({ token: "fake-test-key", teamId: "team_test", projectId: "prj_test", fetch: async () => new Response(null, { status: 500 }) })],
+	sprites: [() => new SpritesProvider({ token: "fake-test-key", fetch: async () => new Response(null, { status: 500 }), webSocket: () => assert.fail("an exec socket was opened") })],
+	instabox: [() => new InstaboxProvider({ apiKey: "fake-test-key", ssh2: AGENT37_SSH2, fetch: async () => new Response(null, { status: 500 }) })],
 	orgo: PROVIDERS.find((one) => one.id === "orgo").capabilities.map(({ options }) => () => createOrgo({ ...options, apiKey: "fake-test-key", workspaceId: "ws-test", fetch: async () => new Response(null, { status: 500 }) })),
 };
 

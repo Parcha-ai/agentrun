@@ -308,6 +308,8 @@ export type RunTools = {
   readonly hands: Hands;
   /** Where the run's shell is (runHands' shell): its gate reads its defaults by it (tool-gate.ts defaultPermission). */
   readonly shell: ShellPlace;
+  /** The name the model knows the run's folder by (runHands' cwd): /workspace in a computer, the folder's own path otherwise. */
+  readonly cwd: string;
   /** Every absolute name of the run's folder its file tools take (runHands' names: cwd, its path here, each alias): its
    *  gate holds a filed folder by each (tool-gate.ts filedRefusal). */
   readonly names: readonly string[];
@@ -354,6 +356,7 @@ export async function runTools(workspace: Workspace, computer: RunComputer | und
     registry,
     hands: run.hands,
     shell: run.shell,
+    cwd: run.cwd,
     names: run.names,
     kindTools,
     ...(run.computer ? { computer: run.computer } : {}),
