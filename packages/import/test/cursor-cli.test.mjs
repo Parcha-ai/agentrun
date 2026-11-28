@@ -8,7 +8,7 @@ import { open, readdir, readFile, stat, unlink, utimes, writeFile } from "node:f
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { serialize } from "node:v8";
-import { cursorSessionId, HARNESS_OF, locatorSize, parseHome, READERS, readSession, SOURCE_NAMES } from "../dist/index.js";
+import { cursorSessionId, HARNESS_OF, locatorParent, locatorSize, parseHome, READERS, readSession, SOURCE_NAMES } from "../dist/index.js";
 import { AGENT, buildChat, MESSAGES, T0, WORKSPACE } from "./fixtures/cursor/fixture.mjs";
 import { tempHome } from "./fixtures.mjs";
 
@@ -281,6 +281,23 @@ test("a chat's size and last write take its write-ahead log and meta.json: an op
   await utimes(meta, later, later);
   assert.equal((await locatorSize({ file: chat }, "cursor")).mtimeMs, later.getTime());
   assert.equal(await locatorSize({ file: join(home, ".cursor", "chats", "gone", "gone", "store.db") }, "cursor"), null, "a store gone: no chat");
+});
+
+test("a subagent's chat names the agent it ran under from its store's metadata alone, never its messages: what ties one over a caller's cap to its run", async (t) => {
+  const home = await tempHome(t);
+  const parent = "00000000-0000-4000-8000-00000000c0aa";
+  const top = await buildChat(join(home, ".cursor"));
+  const sub = await buildChat(join(home, ".cursor"), { agent: "00000000-0000-4000-8000-00000000c0bb", subagentInfo: { parentAgentId: parent, rootParentAgentId: parent, toolCallId: "call_fixture_9", typeName: "fixture" } });
+  assert.equal(await locatorParent({ file: sub }, "cursor"), parent);
+  assert.equal(await locatorParent({ file: top }, "cursor"), undefined, "a top chat names none");
+  // A store whose messages are gone still names its parent: the lookup reads the metadata, not the blobs.
+  const db = new (await import("node:sqlite")).DatabaseSync(sub);
+  db.exec("DELETE FROM blobs");
+  db.close();
+  assert.equal(await locatorParent({ file: sub }, "cursor"), parent);
+  const junk = join(home, "junk.db");
+  await writeFile(junk, "not a store");
+  assert.equal(await locatorParent({ file: junk }, "cursor"), undefined, "no store: no parent, and no throw");
 });
 
 test("the session id is the chat's folder, as Cursor names its agent", () => {

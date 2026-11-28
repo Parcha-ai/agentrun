@@ -259,6 +259,22 @@ async function chatStat({ file }: Locator): Promise<LocatorSize | null> {
   return { bytes: db.size + (wal?.size ?? 0), mtimeMs: Math.max(db.mtimeMs, wal?.mtimeMs ?? 0, meta?.mtimeMs ?? 0) };
 }
 
+/** The agent a subagent's chat ran under (its metadata's subagentInfo.parentAgentId), from the store's meta row alone,
+ *  never its messages: what ties a chat over a caller's cap to its run. None for a top chat, or a store that cannot be
+ *  read. */
+async function parentOf({ file }: Locator): Promise<string | undefined> {
+  let db: Db | undefined;
+  try {
+    db = await openDb(file);
+    const info = agentOf(db).subagentInfo;
+    return isObject(info) ? str(info.parentAgentId) : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    db?.close();
+  }
+}
+
 export const cursor: Reader<"cursor", null> = {
   source: "cursor",
   name: "Cursor",
@@ -267,4 +283,5 @@ export const cursor: Reader<"cursor", null> = {
   read: (locator, _cursor, options = {}) => readChat(locator.file, options),
   idOf: ({ file }) => cursorSessionId(file),
   stat: chatStat,
+  parentOf,
 };

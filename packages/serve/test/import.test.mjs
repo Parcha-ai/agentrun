@@ -2778,6 +2778,27 @@ test("a Codex thread whose child thread is over the cap is left out as large, sa
   assert.deepEqual((await rowsOf(store)).map((r) => r.importedFrom.session), [sessionId(3)], "no run of it without its child's usage");
 });
 
+test("a Cursor chat whose subagent's chat is over the cap is left out as large, said, the subagent tied to it by its store's metadata alone", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  const run = cursorChat(h.at, project, 1);
+  // Its metadata names the agent it ran under; then a hole to past the cap, which no read of its messages may touch.
+  const sub = cursorChat(h.at, project, 2, { parent: sessionId(1) });
+  truncateSync(sub, MAX_SESSION_BYTES + 1);
+  const hourAgo = new Date(Date.now() - 60 * 60_000);
+  utimesSync(sub, hourAgo, hourAgo);
+  cursorChat(h.at, project, 3, { prompt: "Run the linter." });
+  const plan = await planImport(options(h));
+  assert.deepEqual(plan.skipped.map((s) => [s.kind, s.what, s.session ?? null]), [["large", sub, null], ["large", run, `cursor:${sessionId(1)}`]]);
+  assert.match(plan.skipped[1].why, /subagent/);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, plan, options(h));
+  assert.deepEqual((await rowsOf(store)).map((r) => r.importedFrom.session), [sessionId(3)], "no run of it without its subagent's work");
+});
+
 test("an OpenCode request run through Claude Code keeps its usage and cost when that Claude Code session, planned, is not saved: it could not be read", { skip: process.getuid?.() === 0 && "root reads any file" }, async (t) => {
   const root = await scratch(t);
   const h = { at: join(root, "home"), temp: join(root, "tmp") };

@@ -498,8 +498,8 @@ export function claudeSubagent(home, cwd, n, k, { model = "claude-haiku-5", slug
  *  1) and the chat's start (field 26)), its meta "0" (the agent's metadata, hex JSON), and a meta.json beside it. A
  *  prompt, an answer reading a file, the read's result (failed with `readFails`) and a last answer: two requests, of
  *  tokens and a model Cursor does not keep (its lastUsedModel is the chat's, not a request's). Dated an hour ago unless
- *  `fresh`. */
-export function cursorChat(home, cwd, n, { prompt = "Tidy the notes.", model = "fixture-model", readFails = false, fresh = false, wal = false } = {}) {
+ *  `fresh`. With `parent`, a subagent's chat: its metadata names the agent it ran under (subagentInfo). */
+export function cursorChat(home, cwd, n, { prompt = "Tidy the notes.", model = "fixture-model", readFails = false, fresh = false, wal = false, parent } = {}) {
   const id = sessionId(n);
   const dir = join(home, ".cursor", "chats", createHash("md5").update(cwd).digest("hex"), id);
   mkdirSync(dir, { recursive: true });
@@ -526,7 +526,7 @@ export function cursorChat(home, cwd, n, { prompt = "Tidy the notes.", model = "
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB); CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);");
   for (const bytes of [...messages, root]) db.prepare("INSERT OR IGNORE INTO blobs VALUES (?, ?)").run(idOf(bytes), bytes);
-  const agent = { agentId: id, latestRootBlobId: idOf(root), name: "New Agent", createdAt: T0, mode: "default", isRunEverything: false, ...(model ? { lastUsedModel: model } : {}) };
+  const agent = { agentId: id, latestRootBlobId: idOf(root), name: "New Agent", createdAt: T0, mode: "default", isRunEverything: false, ...(model ? { lastUsedModel: model } : {}), ...(parent ? { subagentInfo: { parentAgentId: parent, rootParentAgentId: parent, toolCallId: `call_sub_${n}`, typeName: "fixture" } } : {}) };
   db.prepare("INSERT INTO meta VALUES ('0', ?)").run(Buffer.from(JSON.stringify(agent)).toString("hex"));
   db.close();
   writeFileSync(join(dir, "meta.json"), JSON.stringify({ schemaVersion: 1, createdAtMs: T0, hasConversation: true, updatedAtMs: T0 + 3 * 60_000, cwd }));
