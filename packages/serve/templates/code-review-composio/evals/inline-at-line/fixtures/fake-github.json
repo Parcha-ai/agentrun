@@ -1,0 +1,416 @@
+{
+  "server": "github",
+  "description": "A fake GitHub toolkit (Composio's) for the inline-at-line case: pull request #12 on example/cart, one changed file with a read past the end on head line 4. It serves the six actions the package names, their arguments shaped as Composio's input_parameters (trimmed to what the package uses) and their answers in Composio's {data, successful, error} envelope, and records every call for the graders. It never reaches GitHub.",
+  "tools": {
+    "GITHUB_GET_A_PULL_REQUEST": {
+      "description": "Retrieves a specific pull request from a github repository using its owner, repository name, and pull request number.",
+      "input": {
+        "type": "object",
+        "required": [
+          "owner",
+          "repo",
+          "pull_number"
+        ],
+        "properties": {
+          "owner": {
+            "type": "string",
+            "description": "The username of the account that owns the repository. This value is not case sensitive."
+          },
+          "repo": {
+            "type": "string",
+            "description": "The name of the repository, without the .git extension. This value is not case sensitive."
+          },
+          "pull_number": {
+            "type": "integer",
+            "description": "The number that identifies the specific pull request."
+          }
+        }
+      },
+      "answers": [
+        {
+          "when": {
+            "owner": "example",
+            "repo": "cart",
+            "pull_number": 12
+          },
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "{\"data\":{\"number\":12,\"state\":\"open\",\"draft\":false,\"title\":\"Count the last item in the cart total\",\"body\":\"The total skipped the last item, so this makes the loop's bound inclusive.\",\"user\":{\"login\":\"dev-sam\",\"type\":\"User\"},\"author_association\":\"MEMBER\",\"labels\":[],\"base\":{\"ref\":\"main\",\"sha\":\"4f1c2a9e8b7d6c5f4e3d2c1b0a9f8e7d6c5b4a39\",\"repo\":{\"full_name\":\"example/cart\"}},\"head\":{\"ref\":\"fix/total\",\"sha\":\"e3b9f61c04a2d7586b1f9e2c3a4d5b6c7e8f9012\",\"repo\":{\"full_name\":\"example/cart\"}},\"changed_files\":1,\"additions\":1,\"deletions\":1,\"commits\":1},\"successful\":true,\"error\":null}"
+              }
+            ]
+          }
+        }
+      ],
+      "default": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"data\":{},\"successful\":false,\"error\":\"Not Found (404)\"}"
+          }
+        ]
+      }
+    },
+    "GITHUB_LIST_PULL_REQUESTS_FILES": {
+      "description": "Lists all files (including additions, modifications, and removals) associated with a specific pull request in a github repository.",
+      "input": {
+        "type": "object",
+        "required": [
+          "owner",
+          "repo",
+          "pull_number"
+        ],
+        "properties": {
+          "owner": {
+            "type": "string",
+            "description": "The account owner of the repository (e.g., a GitHub username or organization name). This field is not case sensitive."
+          },
+          "repo": {
+            "type": "string",
+            "description": "The name of the repository, without the `.git` extension. This field is not case sensitive."
+          },
+          "pull_number": {
+            "type": "integer",
+            "description": "The numeric identifier of the pull request whose files are to be listed."
+          },
+          "page": {
+            "type": "integer",
+            "description": "Page number of the results to retrieve for pagination."
+          },
+          "per_page": {
+            "type": "integer",
+            "description": "Number of file results to return per page (max 100)."
+          }
+        }
+      },
+      "answers": [
+        {
+          "when": {
+            "owner": "example",
+            "repo": "cart",
+            "pull_number": 12
+          },
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "{\"data\":{\"files\":[{\"sha\":\"9c2d1aa8f04b3e6d1a2b3c4d5e6f708192a3b4c5\",\"filename\":\"src/total.js\",\"status\":\"modified\",\"additions\":1,\"deletions\":1,\"changes\":2,\"patch\":\"@@ -1,8 +1,8 @@\\n // The cart's total in cents: each item's price times its quantity.\\n export function total(items) {\\n   let sum = 0;\\n-  for (let i = 0; i < items.length; i++) {\\n+  for (let i = 0; i <= items.length; i++) {\\n     sum += items[i].price * items[i].quantity;\\n   }\\n   return sum;\\n }\"}]},\"successful\":true,\"error\":null}"
+              }
+            ]
+          }
+        }
+      ],
+      "default": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"data\":{},\"successful\":false,\"error\":\"Not Found (404)\"}"
+          }
+        ]
+      }
+    },
+    "GITHUB_GET_REPOSITORY_CONTENT": {
+      "description": "Retrieves a file's base64 encoded content or a directory's metadata (but not a listing of its contents) from a github repository path.",
+      "input": {
+        "type": "object",
+        "required": [
+          "owner",
+          "repo",
+          "path"
+        ],
+        "properties": {
+          "owner": {
+            "type": "string",
+            "description": "The account owner of the repository. This name is not case sensitive."
+          },
+          "repo": {
+            "type": "string",
+            "description": "The name of the repository, without the `.git` extension. This name is not case sensitive."
+          },
+          "path": {
+            "type": "string",
+            "description": "The path to the content in the repository. This can be a file or a directory path."
+          },
+          "ref": {
+            "type": "string",
+            "description": "The name of the commit, branch, or tag. If not provided, the repository's default branch will be used."
+          }
+        }
+      },
+      "answers": [
+        {
+          "when": {
+            "owner": "example",
+            "repo": "cart",
+            "path": "src/total.js"
+          },
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "{\"data\":{\"type\":\"file\",\"name\":\"total.js\",\"path\":\"src/total.js\",\"sha\":\"9c2d1aa8f04b3e6d1a2b3c4d5e6f708192a3b4c5\",\"size\":225,\"encoding\":\"base64\",\"content\":\"Ly8gVGhlIGNhcnQncyB0b3RhbCBpbiBjZW50czogZWFjaCBpdGVtJ3MgcHJpY2UgdGltZXMgaXRzIHF1YW50aXR5LgpleHBvcnQgZnVuY3Rpb24gdG90YWwoaXRlbXMpIHsKICBsZXQgc3VtID0gMDsKICBmb3IgKGxldCBpID0gMDsgaSA8PSBpdGVtcy5sZW5ndGg7IGkrKykgewogICAgc3VtICs9IGl0ZW1zW2ldLnByaWNlICogaXRlbXNbaV0ucXVhbnRpdHk7CiAgfQogIHJldHVybiBzdW07Cn0K\"},\"successful\":true,\"error\":null}"
+              }
+            ]
+          }
+        }
+      ],
+      "default": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"data\":{},\"successful\":false,\"error\":\"Not Found (404)\"}"
+          }
+        ]
+      }
+    },
+    "GITHUB_LIST_REVIEW_COMMENTS_ON_A_PULL_REQUEST": {
+      "description": "Lists all review comments on a specific pull request within a github repository.",
+      "input": {
+        "type": "object",
+        "required": [
+          "owner",
+          "repo",
+          "pull_number"
+        ],
+        "properties": {
+          "owner": {
+            "type": "string",
+            "description": "Username of the account owning the repository. Not case sensitive."
+          },
+          "repo": {
+            "type": "string",
+            "description": "Name of the repository, without the `.git` extension. Not case sensitive."
+          },
+          "pull_number": {
+            "type": "integer",
+            "description": "Unique number identifying the pull request."
+          },
+          "page": {
+            "type": "integer",
+            "description": "Page number of results to retrieve."
+          },
+          "per_page": {
+            "type": "integer",
+            "description": "Number of comments per page (max 100)."
+          }
+        }
+      },
+      "answers": [
+        {
+          "when": {
+            "owner": "example",
+            "repo": "cart",
+            "pull_number": 12
+          },
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "{\"data\":[],\"successful\":true,\"error\":null}"
+              }
+            ]
+          }
+        }
+      ],
+      "default": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"data\":{},\"successful\":false,\"error\":\"Not Found (404)\"}"
+          }
+        ]
+      }
+    },
+    "GITHUB_LIST_REVIEWS_FOR_A_PULL_REQUEST": {
+      "description": "Lists submitted reviews chronologically for a specific pull request within a github repository.",
+      "input": {
+        "type": "object",
+        "required": [
+          "owner",
+          "repo",
+          "pull_number"
+        ],
+        "properties": {
+          "owner": {
+            "type": "string",
+            "description": "The account owner of the repository (e.g., a GitHub username or organization name). This name is not case sensitive."
+          },
+          "repo": {
+            "type": "string",
+            "description": "The name of the repository, without the `.git` extension. This name is not case sensitive."
+          },
+          "pull_number": {
+            "type": "integer",
+            "description": "The unique number identifying the pull request within the repository."
+          },
+          "page": {
+            "type": "integer",
+            "description": "The page number for the set of results to retrieve."
+          },
+          "per_page": {
+            "type": "integer",
+            "description": "The number of review results to display per page. Maximum 100."
+          }
+        }
+      },
+      "answers": [
+        {
+          "when": {
+            "owner": "example",
+            "repo": "cart",
+            "pull_number": 12
+          },
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "{\"data\":[],\"successful\":true,\"error\":null}"
+              }
+            ]
+          }
+        }
+      ],
+      "default": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"data\":{},\"successful\":false,\"error\":\"Not Found (404)\"}"
+          }
+        ]
+      }
+    },
+    "GITHUB_CREATE_A_REVIEW_FOR_A_PULL_REQUEST": {
+      "description": "Creates a pull request review, allowing approval, change requests, or comments; `body` is required if `event` is `request changes` or `comment`, and omitting `event` makes the review `pending`.",
+      "input": {
+        "type": "object",
+        "required": [
+          "owner",
+          "repo",
+          "pull_number"
+        ],
+        "properties": {
+          "owner": {
+            "type": "string",
+            "description": "Username of the account owning the repository (case-insensitive)."
+          },
+          "repo": {
+            "type": "string",
+            "description": "Repository name, without the `.git` extension (case-insensitive)."
+          },
+          "pull_number": {
+            "type": "integer",
+            "description": "Identifying number of the pull request."
+          },
+          "commit_id": {
+            "type": "string",
+            "nullable": true,
+            "description": "SHA of the commit to review; defaults to the latest pull request commit. Outdated SHAs may lead to stale comments."
+          },
+          "body": {
+            "type": "string",
+            "nullable": true,
+            "description": "Review's main body text; required if `event` is `REQUEST_CHANGES` or `COMMENT`."
+          },
+          "event": {
+            "enum": [
+              "APPROVE",
+              "REQUEST_CHANGES",
+              "COMMENT"
+            ],
+            "type": "string",
+            "nullable": true,
+            "description": "Review action type (`APPROVE`, `REQUEST_CHANGES`, `COMMENT`); if omitted, review is `PENDING` and requires later submission."
+          },
+          "comments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "ReviewComment",
+              "required": [
+                "path",
+                "body"
+              ],
+              "properties": {
+                "body": {
+                  "type": "string",
+                  "title": "Body",
+                  "description": "The text of the comment"
+                },
+                "line": {
+                  "type": "integer",
+                  "title": "Line",
+                  "default": null,
+                  "nullable": true,
+                  "description": "The line number in the diff to comment on (required for single-line comments)"
+                },
+                "path": {
+                  "type": "string",
+                  "title": "Path",
+                  "description": "The relative path to the file being commented on"
+                },
+                "side": {
+                  "enum": [
+                    "LEFT",
+                    "RIGHT"
+                  ],
+                  "type": "string",
+                  "title": "SideEnm",
+                  "default": null,
+                  "nullable": true,
+                  "description": "The side of the diff to place the comment on (LEFT or RIGHT)"
+                },
+                "start_line": {
+                  "type": "integer",
+                  "title": "Start Line",
+                  "default": null,
+                  "nullable": true,
+                  "description": "The start line number for multi-line comments"
+                },
+                "start_side": {
+                  "enum": [
+                    "LEFT",
+                    "RIGHT"
+                  ],
+                  "type": "string",
+                  "title": "SideEnm",
+                  "default": null,
+                  "nullable": true,
+                  "description": "The side of the diff to start a multi-line comment on"
+                }
+              },
+              "description": "Schema for individual review comments"
+            },
+            "nullable": true,
+            "description": "Inline draft review comments. Each object requires `path` (relative file path) and `body` (comment text). Optionally, specify `line` (or `start_line` for multi-line), and `side` (or `start_side`) for diff location. `position` is deprecated; use `line`. Example: `[{'path': 'file.py', 'line': 10, 'body': 'Refactor this.'}]`"
+          }
+        }
+      },
+      "answers": [
+        {
+          "when": {
+            "owner": "example",
+            "repo": "cart",
+            "pull_number": 12
+          },
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "{\"data\":{\"id\":80001,\"state\":\"COMMENTED\",\"commit_id\":\"e3b9f61c04a2d7586b1f9e2c3a4d5b6c7e8f9012\",\"html_url\":\"https://github.com/example/cart/pull/12#pullrequestreview-80001\"},\"successful\":true,\"error\":null}"
+              }
+            ]
+          }
+        }
+      ],
+      "default": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"data\":{},\"successful\":false,\"error\":\"Not Found (404)\"}"
+          }
+        ]
+      }
+    }
+  }
+}

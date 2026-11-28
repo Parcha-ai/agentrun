@@ -62,11 +62,13 @@ const needRun = (id: string, agent: string, over: Partial<Run>): Run => ({ sha: 
   ended_at: null, result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null, ...over,
 });
 const overloaded = { code: "run_failed" as const, message: "529 overloaded: the provider is over capacity, try again shortly", retryable: false };
-const names: Record<string, string> = { "invoice-checker": "Invoice checker", "support-triage": "Support triage", "lead-scorer": "Lead scorer", "meeting-notes": "Meeting notes" };
+const names: Record<string, string> = { "invoice-checker": "Invoice checker", "support-triage": "Support triage", "lead-scorer": "Lead scorer", "meeting-notes": "Meeting notes", "release-notes": "Release notes" };
 const strip = (
   <NeedsYouStrip agentName={(id) => names[id] ?? id} onAnswer={async () => null} onRunAgain={async (runs) => ({ started: runs.map((r) => r.run_id), problem: null })} onStop={async () => null}
     asking={[
       needRun("q1", "invoice-checker", { status: "input_required", state: "waiting", title: "Check invoice INV-2310 from Contoso Freight, a new vendor.", pending: { kind: "question", question: "Contoso Freight isn't on the vendor list yet. Which approval limit applies: the $5,000 standard or the $25,000 preferred tier?", asked_at: ago(9) } }),
+      // A tall card between two short ones: the second question packs in under the first, beside the approval.
+      needRun("a1", "release-notes", { status: "input_required", state: "waiting", title: "Publish the changelog for this week.", pending: { kind: "approval", id: "ap_1", tool: "write", call_id: "call_1", args_preview: JSON.stringify({ path: "CHANGELOG.md", content: "## Week 47\n\n- Refunds retry with backoff.\n- The run timeline takes keyboard shortcuts." }), requested_at: ago(6) } }),
       needRun("q2", "support-triage", { status: "input_required", state: "waiting", title: "Triage ticket #4427: refund request over the policy limit.", pending: { kind: "question", question: "Which product or plan was charged twice?", asked_at: ago(3) } }),
     ]}
     failed={[

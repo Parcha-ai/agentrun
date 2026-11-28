@@ -3989,16 +3989,22 @@ serves these routes alone:
   the API with the keys and budget it sends, a trigger the agent had before the profile included; the unarchive turns
   them on again. Without the hook it makes neither (`not_set_up_here`: set the hook, or start those runs through the
   API), and a trigger the agent already had stays as it was: an enabled one still fires here, on this server's keys,
-  until it is turned off (below) or the agent is archived, and the skip's warning says so. A webhook, GitHub, Composio or email trigger is never made here, hook
-  or not, since this profile refuses the hook or setting each needs (`not_an_option`). Each skipped trigger is a warning
-  under `warnings` (`triggers.<i>`), and the dry run (`dry_run: true`) plans it as `skip` in the same words;
+  until it is turned off (below) or the agent is archived, and the skip's warning says so. An apply makes no webhook
+  trigger, in a workspace or not (`not_an_option`), since its answer shows no signing secret: one is made with
+  `POST /triggers` in a workspace (`AgentRun-Workspace`) alone, whose first answer shows it once
+  ([Workspaces](#workspaces)). It fires on a signed request to its own hook (`POST /hooks/{trigger_id}`, no token),
+  which this profile serves only with the launch hook set and only for a webhook trigger whose firings start a run. A
+  GitHub, Composio or email trigger is never made here, hook or not, since this profile refuses the hook or setting each
+  needs (`not_an_option`).
+  Each skipped trigger is a warning under `warnings` (`triggers.<i>`), and the dry run (`dry_run: true`) plans it as
+  `skip` in the same words;
 - the triggers, for a backend to see one that is off and turn it on again: their list (`GET /triggers`), one
   (`GET /triggers/{id}`), its firings (`GET /triggers/{id}/firings`), and its turn on or off
   (`PATCH /triggers/{id}` with `{"enabled": true}` or `{"enabled": false}`; from the CLI,
   `agentrun triggers update <id> --enabled` or `--no-enabled`). A trigger whose firings failed 5 times in
   a row turns itself off (`disabled.reason` `auto_paused`), and there is no console here to turn it on in. The PATCH
-  takes `enabled` alone (any other field is `422 not_allowed`), and turns on only what the apply would make: a schedule
-  or a feed, with the launch hook set (`422` under `enabled` otherwise, since its firings would start runs on this
+  takes `enabled` alone (any other field is `422 not_allowed`), and turns on only a schedule, a feed or a webhook
+  (made in a workspace), with the launch hook set (`422` under `enabled` otherwise, since its firings would start runs on this
   server's keys or wait on a hook this profile refuses). Turning one off always works. Making, deleting or firing a
   trigger, and its secret, stay refused;
 - a Composio server's save (a new name, or a server the token saved) and the delete of a server the token saved, for a
@@ -4096,8 +4102,8 @@ Here a run's computer routes take the server's token. `POST /runs/{id}/computer/
 `AGENTRUN_PUBLIC_URL` that opens that run's live page and socket until the run ends (API doc).
 
 Every other address is `404 not_found`, answered before the request is read further: the console at `/` and its
-assets, sign-in and setup, every other `/settings` route, `POST /mcp`, every other trigger route and the triggers'
-`POST /hooks/{id}`, the agents list, an agent made or edited through `/agents`, the templates list and every other
+assets, sign-in and setup, every other `/settings` route, `POST /mcp`, every other trigger route, the triggers'
+`POST /hooks/{id}` without the launch hook and any path under a hook, the agents list, an agent made or edited through `/agents`, the templates list and every other
 template route, `/openapi.json`, `/llms.txt` and a browser's live view. It has no accounts: there is no page to sign in
 to, so no setup code is printed. The token works as it does on every route served. Unset, `0` or `false` serve the
 whole server, as before; any value other than these and `1` or `true` stops the start, in words.
@@ -4124,8 +4130,8 @@ read and removed); the computers this server offers (`GET /computers`, never a p
 runs of the workspace's own going on one (`GET /computers/running`); a workflow's check (`POST /workflows/validate`); the
 templates' list, read, import, apply and delete (a bundled package stays `403`); the marketplace's list
 (`/marketplace/templates`, each entry's `here` naming only a package the workspace sees); the uploaded files' create,
-upload, list, read and delete (`/files`); the triggers' list, read, firings, create, edit, delete and run now
-(`/triggers`); the MCP servers' list, names, read, preview, save, Composio save, refresh and delete
+upload, list, read and delete (`/files`); the triggers' list, read, firings, create, edit, delete, run now and a
+webhook's new secret (`/triggers`); the MCP servers' list, names, read, preview, save, Composio save, refresh and delete
 (`/settings/mcp-servers`); and `/capabilities`, `/health` and `/openapi.json`. Every other route is `403 forbidden` with
 `details.reason: "not_scoped"`, a sign-in's removal among them (removing a secret takes the owner's session). An agent's
 package in a workspace reads the workspace's own MCP servers alone: a shared one is not the workspace's to read, so a
@@ -4138,11 +4144,15 @@ whoever started it, so a run a request with no header starts on that agent is th
 take the workspace's files alone: one out of it reads as no file. An `Idempotency-Key` is the workspace's own: the same
 key in another workspace starts afresh. A trigger is its agent's workspace's: another's answers the same `404` as an id
 no trigger has, and a new one naming another workspace's agent or run is refused in the words an unknown one gets. A
-request in a workspace makes what an apply here makes, a schedule or a feed that starts runs, with the launch hook set;
-any other source or target, or no hook, is `422` and nothing is made. Its edit is `enabled` alone, as above, and its run
-now (`POST /triggers/{id}/fire`) is served only for a trigger that may be on here, so the firing goes to the backend
-through the launch hook. A request with no header reads, imports, applies and deletes the packages of no workspace
-alone: its import of a name a workspace holds is a package of its own, never replacing that workspace's.
+request in a workspace makes a schedule, a feed or a webhook that starts runs, with the launch hook set; any other
+source or target, or no hook, is `422` and nothing is made. A webhook's signing secret is in its make's `201` alone, as
+`signing_secret`: a replay under the same `Idempotency-Key`, a read and a list show none, and the key's record keeps
+none. `POST /triggers/{id}/secret` in the workspace makes a new one and shows it once, and the old one signs nothing
+from then on. The backend in front of the server decides who among its tenant's people is shown it, and keeps none. Its
+edit is `enabled` alone, as above, and its run now (`POST /triggers/{id}/fire`) is served only for a trigger that may be
+on here, so the firing goes to the backend through the launch hook. A request with no header reads, imports, applies
+and deletes the packages of no workspace alone: its import of a name a workspace holds is a package of its own, never
+replacing that workspace's.
 
 A workspace's MCP servers are its own, beside the install's shared ones (saved with no header). In it, the list and the
 reads, saves, refreshes and deletes reach the workspace's servers alone: another workspace's server of a name answers the

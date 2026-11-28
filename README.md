@@ -340,6 +340,7 @@ until you tick each MCP tool yourself.
 | --- | --- |
 | `agent-scout` | Reads a GitHub repository on a read-only checkout and suggests up to five agents its app could call, each with the lines of code that show why. The **Suggested agents** page shows them: Create opens a pull request that adds the agent and a client to your repository; Discard hides it for good |
 | `code-review` | Reviews a pull request with eight independent reviewers on a read-only checkout (or a pasted diff), merges and verifies their findings, quotes the line behind each, and returns them as JSON. It sets up its own GitHub trigger |
+| `code-review-composio` | code-review for a server that reaches GitHub through Composio: the same eight reviewers and findings, no checkout or shell. It posts one COMMENT review with a comment on each finding's line, and sets up its own Composio trigger on each new pull request |
 | `kyb` | Due diligence on one company: registries, owners, sanctions lists, dated adverse media, and a verdict with every claim cited |
 | `market-monitor` | Every Monday, a digest of what changed at the companies you watch, each item dated and linked |
 | `inbound-lead` | Researches each lead a webhook sends and scores it 0 to 100 against your ideal customer profile |

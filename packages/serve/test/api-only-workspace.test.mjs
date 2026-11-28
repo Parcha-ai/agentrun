@@ -185,6 +185,7 @@ const TABLE = {
   updateTrigger: { triggers: true },
   deleteTrigger: { triggers: true },
   fireTrigger: { triggers: true },
+  rotateTriggerSecret: { triggers: true },
   getCapabilities: { method: "GET", path: "/v2/capabilities", served: true },
   getHealth: { method: "GET", path: "/v2/health", served: true },
   getOpenapi: { method: "GET", path: "/v2/openapi.json", served: true },
@@ -638,7 +639,7 @@ test("a listed token without the header is 403; the header off an API-only serve
     assert.deepEqual([answer.status, answer.body.error?.code], [400, "bad_request"], `${JSON.stringify(workspace)}: ${answer.text}`);
   }
   assert.equal((await send(server, "GET", "/v2/runs", { workspace: "x".repeat(128) })).status, 200, "128 characters is a name");
-  for (const [method, path] of [["DELETE", "/v2/agents/a1/learning"], ["GET", "/v2/usage"], ["GET", "/v2/runs/r1/usage"], ["POST", "/v2/runs/r1/approvals/ap1"], ["PUT", `${homeFiles("a1")}/notes.md`], ["POST", "/v2/triggers/t1/secret"], ["POST", "/v2/runs"]]) {
+  for (const [method, path] of [["DELETE", "/v2/agents/a1/learning"], ["GET", "/v2/usage"], ["GET", "/v2/runs/r1/usage"], ["POST", "/v2/runs/r1/approvals/ap1"], ["PUT", `${homeFiles("a1")}/notes.md`], ["POST", "/v2/settings/webhook/secret"], ["POST", "/v2/runs"]]) {
     const answer = await inW1(server, method, path, method === "GET" || method === "DELETE" ? {} : { body: {} });
     assert.deepEqual([answer.status, answer.body.error?.code, answer.body.error?.details?.reason], [403, "forbidden", "not_scoped"], `${method} ${path}: ${answer.text}`);
   }

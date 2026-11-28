@@ -906,6 +906,17 @@ async function neverKind(locator: Locator, now: number, temps: readonly string[]
  *  (`mirrors`) counts in that run. */
 const NEVER_IN = new Set<LeftOut>(["large", "unread", "no-words", "temp", "gone", "no-project"]);
 const LIVE_CHILD: Pick<Skipped, "why" | "kind"> = { why: "a subagent of it was written in the last 10 minutes: it comes in with it", kind: "live" };
+/** A file written within LIVE_MS of the import, left out: its session may still be running (resumed after the plan judged
+ *  it), and an import after it ages takes it. */
+const stillLive = (what: string): Skipped => ({ what, why: "written in the last 10 minutes: it may still be running", kind: "live" });
+/** The records a run's read adds, over those the import holds (`base`), added to `base` by `commit` once the run is
+ *  written. A run left out after its read (live, over the cap) holds none of them: a later session that copies them
+ *  keeps them, as none of them was saved. */
+function staged(base: Set<string>): { seen: Set<string>; commit(): void } {
+  const added = new Set<string>();
+  const seen = { has: (record: string) => added.has(record) || base.has(record), add: (record: string) => added.add(record) } as Set<string>;
+  return { seen, commit: () => added.forEach((record) => base.add(record)) };
+}
 const LARGE_CHILD: Pick<Skipped, "why" | "kind"> = { why: `a subagent of it is over ${MAX_SESSION_BYTES} bytes`, kind: "large" };
 
 /** A run's subagents, theirs, and so on down, each once (the import's children relation, as readChildren walks it):
@@ -1390,6 +1401,7 @@ type Place = { project: ProjectPlan; line: ImportReport["agents"][number]; revis
 /** The plan, into `store`: the agents it does not hold, and the runs it does not. Each run is written whole in one atomic
  *  `importRun` (its row, its launch and its transcript's journal), so a stop between two runs leaves no partial run. */
 export async function runImport(store: ImportStore, plan: Plan, options: ImportOptions): Promise<ImportReport> {
+  const now = options.now ?? Date.now();
   const cut = secretCut([options.env, options.stored ?? {}], SECRET_NAMES);
   const { text, json } = cut;
   // Each key found is the import's to cut, and the CLI's to cut out of what it prints.
@@ -1435,8 +1447,13 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
       report.skipped.push(tooLarge(listed));
       return;
     }
+    // What its read adds to the records the import holds, kept only once the run is written.
+    const run = staged(seen(listed.source));
     const budget = budgetOf();
     let over = false;
+    // A file written since the plan judged it (its session resumed while others were read) leaves the session out as
+    // live, as the plan would now: never imported as done, which a later import would hold as unchanged.
+    let live = false;
     // Each of its files, in order. The first's size and time before its read: a file that changes during it is read
     // again next time.
     const parts: Session[] = [];
@@ -1451,11 +1468,16 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
       const { file } = entry;
       const key = locatorKey(locatorOf(entry));
       const stats = await sizeOf(entry);
+      if (stats && now - stats.mtimeMs < LIVE_MS) {
+        report.skipped.push(stillLive(key));
+        live = true;
+        break;
+      }
       if (stats && !fits(budget, stats.bytes)) {
         over = true;
         break;
       }
-      const part = stats ? await readSession(locatorOf(entry), listed.source, { seen: seen(listed.source), lookups: lookupsOf(plan), ...(cached(listed.source) ? { chain: true } : {}) }).catch((error: unknown) => void report.skipped.push(unread(file, error))) : void report.skipped.push({ what: file, why: "gone since it was listed", kind: "vanished" });
+      const part = stats ? await readSession(locatorOf(entry), listed.source, { seen: run.seen, lookups: lookupsOf(plan), ...(cached(listed.source) ? { chain: true } : {}) }).catch((error: unknown) => void report.skipped.push(unread(file, error))) : void report.skipped.push({ what: file, why: "gone since it was listed", kind: "vanished" });
       if (!part || !stats) continue;
       searched.push(part);
       if (part.sourceTitle !== undefined && (!titled || stats.mtimeMs >= titled.at)) titled = { at: stats.mtimeMs, title: part.sourceTitle };
@@ -1468,6 +1490,7 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
       parts.push(part);
       if (scannedAs.get(key) !== stampOf(stats)) changed = true;
     }
+    if (live) return;
     if (over) {
       report.skipped.push(tooLarge(listed));
       return;
@@ -1488,13 +1511,24 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
       // holding a key counts among the keys removed.
       const keptAs = text(session.id) === session.id ? session.id : redactedId(session.id);
       session.id = keptAs;
-      const subagents = await readChildren(plan, session, searched, seen(listed.source), budget, cached(listed.source)).catch((error: unknown) => {
+      const subagents = await readChildren(plan, session, searched, run.seen, budget, cached(listed.source)).catch((error: unknown) => {
         if (!(error instanceof RunTooLarge)) throw error;
         report.skipped.push(tooLarge(listed));
       });
       if (!subagents) return;
       for (const child of subagents) settled(child, mirrored);
-      const moved = await Promise.all(subagents.map(async (child) => scannedAs.get(locatorKey(locatorOf(child))) !== stampOf((await sizeOf(child)) ?? { bytes: -1, mtimeMs: -1 })));
+      // Every file of the run, its own and its subagents', once all of it is read: one written since the plan, or while
+      // it was read, leaves the run out as live, never saved as done.
+      const childSizes = await Promise.all(subagents.map((child) => sizeOf(child)));
+      const ownSizes = await Promise.all(files.map((entry) => sizeOf(entry)));
+      const all = [...files, ...subagents];
+      const sizes = [...ownSizes, ...childSizes];
+      const liveAt = all.findIndex((_, i) => sizes[i] && now - sizes[i]!.mtimeMs < LIVE_MS);
+      if (liveAt >= 0) {
+        report.skipped.push(stillLive(locatorKey(locatorOf(all[liveAt]!))));
+        return;
+      }
+      const moved = subagents.map((child, i) => scannedAs.get(locatorKey(locatorOf(child))) !== stampOf(childSizes[i] ?? { bytes: -1, mtimeMs: -1 }));
       if (moved.some(Boolean)) add(await keysInSessions(subagents));
       // The transcript as the store's own write batches, each string cut; its subagents' requests marked after its turns,
       // so its timeline's usage row counts what its metrics do, one number for the run.
@@ -1529,6 +1563,7 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
         endedAt: Date.parse(session.endedAt ?? session.startedAt ?? epoch0),
         transcript: batches,
       });
+      run.commit();
       line.runs += 1;
       // Saved: a request another run leaves to it (`mirrors`) is its from now on.
       saved.add(`${listed.source}:${listed.id}`);

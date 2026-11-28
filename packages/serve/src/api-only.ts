@@ -3,13 +3,15 @@
 // its assets, sign-in and setup, settings but the MCP servers' names, a Composio server's save and the delete of a server
 // (the secret-write gate lets the token save over or delete only a server it saved, mcp-secret-writes.ts), the MCP
 // endpoint, triggers but their reads, their turn on or off (apiOnlyTriggerEdit) and a firing's release (which the launch
-// hook's host sends), their webhook hooks, the rest of agents and templates. Off by default.
+// hook's host sends), the hooks but a webhook trigger's own with the launch hook set, the rest of agents and templates.
+// Off by default.
 import { API_ONLY_ENV } from "./env-switch.js";
 import { TOKEN_SAVED_MCP_AUTHS } from "./mcp-api-only-origins.js";
 import type { InputIssue } from "./errors.js";
 import { NOT_SET_UP } from "./runnable.js";
 import type { Route } from "./server.js";
 import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-hook.js";
+import { WORKSPACE_NAME } from "./workspace-scope.js";
 
 /** The routes (server.ts ROUTES, by name) an API-only server serves. Past a run's own, why each group is here:
  *  - a run's hosted machine fetches computerd with the token its create minted, not the server's;
@@ -32,17 +34,23 @@ import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-ho
  *  - a backend uploads an agent's package (importTemplate, as {files} alone: a GitHub source is refused in this profile's
  *    words, template-import.ts), which an apply then makes into its agent;
  *  - a backend that deploys agents here applies their template, reads the agent and its revisions, moves its current
- *    revision back, and archives it before its delete (or unarchives it, the schedule and feed triggers its archive
- *    turned off on again when the server has the launch hook). That is more than inline runs give its token: it makes
- *    agents and revisions that stay, archives and deletes any agent made here and purges any run of one, as the whole
- *    server's token does, and with the launch hook its apply makes schedule and feed triggers. A trigger the apply can't
- *    make here is skipped, and said (apiOnlyTriggerSkipped). One the agent had before the profile stays as it was:
+ *    revision back, and archives it before its delete (or unarchives it, the triggers its archive turned off on again
+ *    when the server has the launch hook, each one the apply would make). That is more than inline runs give its token:
+ *    it makes agents and revisions that stay, archives and deletes any agent made here and purges any run of one, as the
+ *    whole server's token does, and with the launch hook its apply makes schedule and feed triggers (never a webhook,
+ *    whose secret its answer would not show). A trigger the apply can't make here is skipped, and said (apiOnlyTriggerSkipped). One
+ *    the agent had before the profile stays as it was:
  *    without the hook, an enabled one still fires here on this server's keys until it is turned off (below) or the agent
  *    is archived;
  *  - a backend reads the triggers (their list, one, its firings) and turns one on or off (updateTrigger, `enabled` alone:
  *    apiOnlyTriggerEdit), since a trigger whose firings failed FAILURES_TO_PAUSE times in a row turns itself off and
- *    there is no console here to turn it on in. It turns one on under the apply's rule: a schedule or a feed, with the
- *    launch hook. Making, deleting, firing a trigger and its secret stay refused to an unscoped request (a scoped one: WORKSPACE_ROUTES);
+ *    there is no console here to turn it on in. It turns one on under one rule: a schedule, a feed or a webhook (made in
+ *    a workspace), with the launch hook. Making, deleting, firing a trigger and rotating its secret stay refused to an unscoped request
+ *    (a scoped one: WORKSPACE_ROUTES, where a webhook's make and its rotation show its signing secret once);
+ *  - with the launch hook, a webhook trigger's sender POSTs to its own hook (receiveHook on /v2/hooks/{trigger_id}, no
+ *    token: its signature is the check, push-handler.ts), so the firing goes to the backend. Only a trigger it would
+ *    turn on takes one (apiOnlyTurnsOn): any other id answers as one that names no trigger, and so does GitHub's hook,
+ *    which every agent here shares. A path under a hook (Composio's) is not served;
  *  - an API-only server has no owner, so the token is the backend's own, as with take-over: it saves the Composio servers
  *    its agents need through the preset (saveComposioServer), saves over or deletes only a server it saved
  *    (mcp-secret-writes.ts tokenWriteOverRefused), and never writes a secret (secret-writes.ts). A Composio server names
@@ -74,26 +82,31 @@ export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "getWrapped",
 ]);
 
-/** The trigger sources an apply on an API-only server makes once the server has the launch hook: the ones that fire on
- *  its own clock and need nothing a refused route sets up. Each firing goes to the backend in front of it
- *  (trigger-launch-hook.ts), which starts the run through the API on its own keys and budget, never on this server's
- *  model key. A webhook, GitHub or Composio trigger is delivered to a hook this profile refuses, and an email trigger
- *  reads the account Settings → Email saves: none of them is made here, hook or not. */
-export const API_ONLY_HOOKED_KINDS: ReadonlySet<string> = new Set(["schedule", "feed"]);
+/** The trigger sources an API-only server with the launch hook turns on and fires. A schedule and a feed fire on its own
+ *  clock, and its apply makes them; a webhook, made with POST /triggers in a workspace alone (apiOnlyTriggerSkipped),
+ *  fires on a signed request to its own hook (/v2/hooks/{trigger_id}, served with the launch hook: servedApiOnly). Each firing goes to the backend in front of it (trigger-launch-hook.ts), which starts the
+ *  run through the API on its own keys and budget, never on this server's model key. A GitHub or Composio trigger is
+ *  delivered to a hook every agent here shares, and an email trigger reads the account Settings → Email saves: none of
+ *  them is made here, hook or not. */
+export const API_ONLY_HOOKED_KINDS: ReadonlySet<string> = new Set(["schedule", "feed", "webhook"]);
 
 /** Why an apply on an API-only server (and its dry run's plan) does not make `trigger` of the `packageName` template, or
- *  undefined for one it makes: a schedule or a feed when the server has the launch hook (`hooked`). Without it, those two
- *  are not_set_up_here (set the hook and apply again); any other source is not_an_option, hook or not. */
+ *  undefined for one it makes: a schedule or a feed when the server has the launch hook (`hooked`). Without it, those are
+ *  not_set_up_here (set the hook and apply again); any other source is not_an_option, hook or not. A webhook is one of
+ *  them: an apply's answer shows no signing secret (its Idempotency-Key record would keep it), so it is made with POST
+ *  /triggers in a workspace alone, whose first answer shows it once. */
 export function apiOnlyTriggerSkipped(packageName: string, trigger: { name?: unknown; source?: unknown }, hooked: boolean): { reason: typeof NOT_SET_UP | "not_an_option"; message: string } | undefined {
   const kind = trigger.source !== null && typeof trigger.source === "object" ? String((trigger.source as { kind?: unknown }).kind) : "";
-  const named = `The ${packageName} template's trigger ${String(trigger.name).trim()} (${kind}) was not made: this server serves the run API only (${API_ONLY_ENV}=1)`;
+  const name = `The ${packageName} template's trigger ${String(trigger.name).trim()} (${kind}) was not made`;
+  if (kind === "webhook") return { reason: "not_an_option", message: `${name}: on this server (${API_ONLY_ENV}=1) a webhook trigger is made with POST /v2/triggers in a workspace (${WORKSPACE_NAME}) alone, whose first answer shows its signing secret once; an apply's answer shows none. Make it there, or start its runs through the API.` };
+  const named = `${name}: this server serves the run API only (${API_ONLY_ENV}=1)`;
   if (!API_ONLY_HOOKED_KINDS.has(kind)) return { reason: "not_an_option", message: `${named}, which serves no route or setting a ${kind} trigger needs. Start its runs through the API instead.` };
   if (hooked) return undefined;
   return { reason: NOT_SET_UP, message: `${named} and has no launch hook, so its firings have nowhere to go. Start its runs through the API, or set the launch hook (${LAUNCH_HOOK_URL_ENV} and ${LAUNCH_HOOK_SECRET_ENV}) and apply again: each firing then goes to your backend, which starts its run.` };
 }
 
 /** Whether an API-only server turns on a trigger whose source is `kind` and whose target is `target` (its PATCH, its
- *  agent's unarchive): only one the apply would make, a source of API_ONLY_HOOKED_KINDS aimed at an agent (start_run),
+ *  agent's unarchive): only a source of API_ONLY_HOOKED_KINDS aimed at an agent (start_run),
  *  with the launch hook `hooked`, so each firing goes to the backend. A message_run firing never goes to the hook
  *  (triggers.ts): on, it would open its run on this server's keys. */
 export function apiOnlyTurnsOn(kind: string, target: string, hooked: boolean): boolean {
@@ -122,10 +135,10 @@ export function apiOnlyTriggerEdit(body: unknown, kind: string, hooked: boolean,
 }
 
 /** Why an API-only server refuses `body`, a scoped request's new trigger, each an issue (none: it goes on to the trigger's
- *  own checks, a body with no source or target among them). It makes what its apply makes, on or off: a schedule or a
- *  feed that starts its own workspace's agent's runs (apiOnlyTurnsOn), each firing handed to the backend by the launch
- *  hook. Any other source needs a route or setting this profile refuses, and a message_run would open a run on this
- *  server's keys. */
+ *  own checks, a body with no source or target among them). It makes, on or off, a schedule, a feed or a webhook that
+ *  starts its own workspace's agent's runs (apiOnlyTurnsOn), each firing handed to the backend by the launch hook; a
+ *  webhook's first answer shows its signing secret once. Any other source needs a route or setting this profile
+ *  refuses, and a message_run would open a run on this server's keys. */
 export function apiOnlyTriggerMade(body: unknown, hooked: boolean): InputIssue[] {
   if (body === null || typeof body !== "object" || Array.isArray(body)) return [];
   const kindOf = (value: unknown) => (value !== null && typeof value === "object" ? (value as { kind?: unknown }).kind : undefined);
@@ -134,7 +147,7 @@ export function apiOnlyTriggerMade(body: unknown, hooked: boolean): InputIssue[]
   const named = `This server serves the run API only (${API_ONLY_ENV}=1)`;
   const issues: InputIssue[] = [];
   if (typeof source === "string" && !API_ONLY_HOOKED_KINDS.has(source)) {
-    issues.push({ field: "source.kind", reason: "not_an_option", message: `${named}, which serves no route or setting a ${source} trigger needs, so it is not made here. Make a schedule or a feed, or start its runs through the API.` });
+    issues.push({ field: "source.kind", reason: "not_an_option", message: `${named}, which serves no route or setting a ${source} trigger needs, so it is not made here. Make a schedule, a feed or a webhook, or start its runs through the API.` });
   } else if (typeof source === "string" && !hooked) {
     issues.push({ field: "source.kind", reason: NOT_SET_UP, message: `${named} and has no launch hook, so this ${source} trigger's firings would start runs on this server's keys: set the launch hook (${LAUNCH_HOOK_URL_ENV} and ${LAUNCH_HOOK_SECRET_ENV}), then make it.` });
   }
@@ -184,18 +197,23 @@ export function apiOnlyMcpPreview(body: unknown, origins: readonly string[]): bo
 /** A run's computer live view: its page, files and socket, which take the viewer credential alone here (server.ts). */
 const COMPUTER_LIVE = /^\/v2\/runs\/[^/]+\/computer\/live\//;
 
+/** A trigger's own hook: one segment under /v2/hooks/, never a path under a hook (Composio's). */
+const TRIGGER_HOOK = /^\/v2\/hooks\/[^/]+$/;
+
 /** The MCP settings routes an API-only server serves when the operator names MCP origins, each body checked at its route
  *  by apiOnlyMcpSave: the generic save, and the preview that lists such a server's tools before it is saved. */
 const API_ONLY_MCP_ORIGIN_ROUTES: ReadonlySet<string> = new Set(["saveMcpServer", "previewMcpServer"]);
 
 /** Whether an API-only server serves `method` on `raw` (the path as sent, its query cut): a /v2 path one of
  *  API_ONLY_ROUTES matches for that method (HEAD as GET), the generic MCP save and the preview when the operator names
- *  MCP origins (`mcpSave`, their bodies checked at the route: apiOnlyMcpSave), or a GET of a run's computer live view. */
-export function servedApiOnly(routes: readonly Route[], method: string | undefined, raw: string, mcpSave = false): boolean {
+ *  MCP origins (`mcpSave`, their bodies checked at the route: apiOnlyMcpSave), a POST to a trigger's own hook when the
+ *  server has the launch hook (`hooks`: each firing goes to the backend), or a GET of a run's computer live view. */
+export function servedApiOnly(routes: readonly Route[], method: string | undefined, raw: string, mcpSave = false, hooks = false): boolean {
   if (!raw.startsWith("/v2/")) return false;
   const path = raw.slice(3);
   const asked = method === "HEAD" ? "GET" : method;
   if (asked === "GET" && COMPUTER_LIVE.test(raw)) return true;
+  if (hooks && asked === "POST" && TRIGGER_HOOK.test(raw)) return true;
   const served = (name: string) => API_ONLY_ROUTES.has(name) || (mcpSave && API_ONLY_MCP_ORIGIN_ROUTES.has(name));
   return routes.some((route) => served(route.name) && route.method === asked && route.pattern.test(path));
 }
@@ -211,14 +229,15 @@ export const apiOnlyRefusal = (raw: string): string => `this server serves the r
  *  refused with 403 not_scoped, whatever API_ONLY_ROUTES serves an unscoped request. listAgents, createAgent,
  *  updateDefinition, getTemplate, listTemplates, deleteTemplate, listMarketplaceTemplates, getOpenapi, getRunGraph,
  *  getRunTrace, pauseRun, resumeRun, archiveRun, unarchiveRun, startRun, createTrigger, deleteTrigger, fireTrigger,
- *  listMcpServers, getMcpServer, previewMcpServer, refreshMcpServer and the suggestion and GitHub reads are not in
- *  API_ONLY_ROUTES: an API-only server serves them to a scoped request alone (a new trigger under apiOnlyTriggerMade, a
- *  firing under apiOnlyTurnsOn). Every run route here names its run first in its path, which the route's scope check
- *  reads as missing when it is another workspace's. answerApproval is not here: it takes the owner's session alone,
- *  never a token. Nor are the agent extras in API_ONLY_ROUTES; each names its agent first in its path, as the run routes
- *  name their run, and validateWorkflow names none. writeHomeFile is not here: nothing bounds a home's size on a disk the
- *  workspaces share. Nor is forgetSignIn: removing a secret takes the owner's console session, never a token
- *  (secret-writes.ts).
+ *  rotateTriggerSecret, listMcpServers, getMcpServer, previewMcpServer, refreshMcpServer and the suggestion and GitHub
+ *  reads are not in API_ONLY_ROUTES: an API-only server serves them to a scoped request alone (a new trigger under
+ *  apiOnlyTriggerMade, a firing under apiOnlyTurnsOn, a webhook's new secret shown once to the backend, which decides who
+ *  in the workspace sees it: trigger-secrets-shown.ts). Every run route here names its run first in its path, which the
+ *  route's scope check reads as missing when it is another workspace's. answerApproval is not here: it takes the owner's
+ *  session alone, never a token. Nor are the agent extras in API_ONLY_ROUTES; each names its agent first in its path, as
+ *  the run routes name their run, and validateWorkflow names none. writeHomeFile is not here: nothing bounds a home's
+ *  size on a disk the workspaces share. Nor is forgetSignIn: removing a secret takes the owner's console session, never a
+ *  token (secret-writes.ts).
  *
  *  A workspace's MCP servers are its own rows (mcp-workspace.ts): it lists, reads, saves, refreshes and deletes those
  *  alone, another workspace's name reading as an unknown one, and its agents grant its own server of a name before the
@@ -238,6 +257,7 @@ export const WORKSPACE_ROUTES: ReadonlySet<string> = new Set([
   "createFile", "listFiles", "getFile", "uploadFile", "deleteFile",
   "listMcpServerNames", "listMcpServers", "getMcpServer", "previewMcpServer", "saveMcpServer", "saveComposioServer", "refreshMcpServer", "deleteMcpServer",
   "listTriggers", "getTrigger", "listTriggerFirings", "createTrigger", "updateTrigger", "deleteTrigger", "fireTrigger",
+  "rotateTriggerSecret",
   "listSuggestions", "scanForSuggestions", "getSuggestion", "discardSuggestion", "restoreSuggestion", "createSuggestedAgent",
   "getGitHubConnection", "listGitHubRepositories",
   "getCapabilities", "getHealth", "getOpenapi",
