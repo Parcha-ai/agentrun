@@ -313,6 +313,33 @@ test("the page is final when the run is terminal and settled", async () => {
   assert.equal(page.status, "completed");
 });
 
+test("a queued page changes when a runner takes the run or its claim lapses, though it still reads queued: a long poll on it wakes; a page that shows doesn't change at its claim's release", async () => {
+  const queued = { status: "queued", state: "working", cost: null, poll_after_ms: 1000, claim: null };
+  const claim = { runner: "r1", epoch: 1, until: "2026-11-28T00:00:30.000Z" };
+  const state = { rows: [], view: queued };
+  const tl = timeline(state);
+  const first = await tl.page({}, "run-1", 0, 0, 100);
+  // A long poll on the queued page wakes when a runner claims the run, before any row shows.
+  const waiting = tl.page({}, "run-1", first.next_after, 2_000, 100);
+  state.view = { ...queued, claim };
+  const claimed = await waiting;
+  assert.equal(claimed.unchanged, false, "a claim taken is a change");
+  assert.deepEqual([claimed.status, claimed.rows], ["queued", []], "still queued, and no row");
+  // A renewal (a later until) is no change; the claim's lapse is one.
+  state.view = { ...queued, claim: { ...claim, until: "2026-11-28T00:01:00.000Z" } };
+  const renewed = await tl.page({}, "run-1", claimed.next_after, 0, 100);
+  assert.equal(renewed.unchanged, true, "a renewal is no change");
+  const lapsing = tl.page({}, "run-1", renewed.next_after, 2_000, 100);
+  state.view = queued;
+  assert.equal((await lapsing).unchanged, false, "a lapse is a change");
+  // A run that shows (working) adds no change when its claim goes: its status already says what a page reader needs.
+  state.rows = [row("e1", "a")];
+  state.view = { ...working, claim };
+  const shown = await tl.page({}, "run-1", 0, 0, 100);
+  state.view = { ...working, claim: null };
+  assert.equal((await tl.page({}, "run-1", shown.next_after, 0, 100)).unchanged, true);
+});
+
 // ---- what a live run waits on (GRE-4835) ----------------------------------------------------------------------------
 
 test("a live run's page names what it waits on, from when it was sent; a request sent or answered is a change that wakes it", async () => {

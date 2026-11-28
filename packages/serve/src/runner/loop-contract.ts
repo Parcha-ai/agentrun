@@ -148,20 +148,22 @@ export interface Loop {
   closing?(): void;
 }
 
-/** What a claim's tool hosts get beyond a provider's own cleanup bound to let the run go (RELEASE_MARGIN_MS). */
+/** What a claim's tool hosts get beyond a provider's own cleanup bound to let the run go, and what a cut's booking gets,
+ *  unless the runner is told otherwise (RunnerOptions.releaseMarginMs, LoopDeps.releaseMarginMs). */
 export const RELEASE_MARGIN_MS = 5_000;
 /** How long a loop waits for its claim's tool hosts to let the run go (their beforeRelease), at its end, park or shutdown:
  *  a computer provider's cleanup bound (`cleanupMs`, the providers' default RECOVER_MS: a lost create's recovery may take
- *  all of it) and RELEASE_MARGIN_MS. Past it the loop goes on without them and says so on the run (KINDS.releaseCut). */
-export const releaseBoundMs = (cleanupMs: number = RECOVER_MS): number => cleanupMs + RELEASE_MARGIN_MS;
+ *  all of it) and the release's margin (`marginMs`, default RELEASE_MARGIN_MS). Past it the loop goes on without them and
+ *  says so on the run (KINDS.releaseCut). */
+export const releaseBoundMs = (cleanupMs: number = RECOVER_MS, marginMs: number = RELEASE_MARGIN_MS): number => cleanupMs + marginMs;
 
 /** Waits for each lost create's recovery under way in this process (recoveriesInFlight) to end: until its own bound, or
- *  the close's drain from `closedAt` when that is later, and RELEASE_MARGIN_MS for the release it books, never past
- *  `stopBy`. One that has not ended by then is left to its own bound and the lease. */
-export async function recoveriesDone(closedAt: number, drainMs: number, stopBy: number): Promise<void> {
+ *  the close's drain from `closedAt` when that is later, and the release's margin (`marginMs`, default RELEASE_MARGIN_MS)
+ *  for the release it books, never past `stopBy`. One that has not ended by then is left to its own bound and the lease. */
+export async function recoveriesDone(closedAt: number, drainMs: number, stopBy: number, marginMs: number = RELEASE_MARGIN_MS): Promise<void> {
   await Promise.all(
     recoveriesInFlight().map(async (recovery) => {
-      const until = Math.min(Math.max(closedAt + drainMs, recovery.by) + RELEASE_MARGIN_MS, stopBy);
+      const until = Math.min(Math.max(closedAt + drainMs, recovery.by) + marginMs, stopBy);
       let timer: NodeJS.Timeout | undefined;
       await Promise.race([recovery.done, new Promise<void>((resolve) => (timer = setTimeout(resolve, Math.max(0, until - Date.now()))))]);
       clearTimeout(timer);
@@ -214,6 +216,9 @@ export interface LoopDeps {
   incarnation?: string;
   /** How long the loop waits for its claim's tool hosts to let the run go (releaseBoundMs). Absent: releaseBoundMs(). */
   releaseBoundMs?: number;
+  /** How long a cut's booking (each host's releaseCut) may take before the cut is written, the margin releaseBoundMs
+   *  adds to the cleanup bound. Absent: RELEASE_MARGIN_MS. */
+  releaseMarginMs?: number;
   /** While its runner closes: when the loop's release must have ended (ms since the epoch), so the cut and its record land
    *  inside the close's window (Runner.close). Undefined: not closing, and the release has its own bound alone. */
   releaseBy?: () => number | undefined;
