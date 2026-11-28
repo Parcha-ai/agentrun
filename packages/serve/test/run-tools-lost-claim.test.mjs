@@ -5,7 +5,8 @@
 // disk) and writes its scratch at the same paths (.agentrun/tmp, .agentrun/output), so a lost claim's sweep would delete
 // the later claim's TMPDIR and bash outputs while it runs; that claim's own end sweeps what both left. The fence decides,
 // never the claim signal's reason: a shutdown aborts it first, and a claim lost after that keeps the shutdown's reason.
-// A fence not given or one that throws sweeps nothing. Background processes are ended either way.
+// A fence not given or one that throws sweeps nothing. Background processes are ended either way, and the fence is asked
+// only after they are (their TERM, KILL 3 s later), so a claim lost during that wait is seen.
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -93,6 +94,24 @@ test("Mode 1, a sandbox the later claim's start released: the lost claim's end d
   assert.deepEqual(kept(), []);
 });
 
+test("Mode 1, a claim lost while its background processes are ending (the TERM's wait): the fence is asked after it, so nothing is swept", async () => {
+  const root = scratch();
+  // The lost claim's sandbox still answers, so a sweep through it would remove the later claim's scratch. Its renew is
+  // answered Fenced while its background process is being ended: the fence turns lost inside the end.
+  const live = fakeComputer(root);
+  let running = true, held = true;
+  live.overrides["process.list"] = () => ({ processes: [{ id: "p9", pid: 9, argv: ["bash", "-c", "sleep 99", "agentrun-background", "1", "sleep 99"], argvClipped: false, pty: false, running, exitCode: running ? null : 143, signal: running ? null : "TERM", startedAt: 1, endedAt: running ? null : 2 }], truncated: false, next: 1 });
+  live.overrides["process.signal"] = () => ((held = false), (running = false), {});
+  const sandbox = (computer) => ({ mode: 1, computer: { kind: "sandbox", computer, check: { readBackOf } } });
+  const { lost, later, kept } = await twoClaims(root, sandbox(live), sandbox(fakeComputer(root)));
+  await released(lost, () => held);
+  assert.ok(live.calls.some(([method, params]) => method === "process.signal" && params.signal === "TERM"), "its background process was ended");
+  assert.equal(held, false);
+  assert.deepEqual(kept(), SCRATCH, "the end read the fence before its background processes ended, and swept the later claim's scratch");
+  await released(later, () => true);
+  assert.deepEqual(kept(), []);
+});
+
 test("a claim lost after a shutdown's abort: the signal still says the shutdown, the fence says lost, and nothing is swept", async () => {
   const root = scratch();
   const { signal, lost, kept } = await twoClaims(root, { mode: 2 });
@@ -131,5 +150,23 @@ test("a fence that throws, or none given: unknown is never held, so nothing is s
     const said = await released(run, fence);
     assert.deepEqual(kept(), SCRATCH, `swept with ${fence ? "a throwing fence" : "no fence"}`);
     if (fence) assert.ok(said.some((line) => /fence could not be read/.test(line)), `said: ${JSON.stringify(said)}`);
+  }
+});
+
+test("RunTools.end's own `sweep`: only an answer of true sweeps; absent, false, not true, a throw or a rejection sweeps nothing", async () => {
+  const left = [undefined, () => false, async () => false, () => "yes", () => 1, () => { throw new Error("the channel closed"); }, async () => { throw new Error("the channel closed"); }];
+  for (const sweep of left) {
+    const root = scratch();
+    const run = await runTools(localWorkspace(root), undefined, { mode: 2, context: ctx, signal: new AbortController().signal });
+    const kept = await scratchIn(run, root);
+    await run.end(sweep === undefined ? undefined : { sweep });
+    assert.deepEqual(kept(), SCRATCH, `swept with ${sweep ?? "no sweep"}`);
+  }
+  for (const sweep of [() => true, async () => true]) {
+    const root = scratch();
+    const run = await runTools(localWorkspace(root), undefined, { mode: 2, context: ctx, signal: new AbortController().signal });
+    const kept = await scratchIn(run, root);
+    await run.end({ sweep });
+    assert.deepEqual(kept(), [], `kept with ${sweep}`);
   }
 });
