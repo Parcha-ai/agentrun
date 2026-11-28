@@ -228,6 +228,30 @@ test("output nobody reads ends the exec once 64 MiB of it waits: the socket clos
 	assert.match(failed.message, /output not read passed 64 MiB/);
 });
 
+test("a start's abort listener goes once the start settles: one long-lived signal over many execs keeps none", async () => {
+	const { vendor, host } = spritesOf();
+	await host.create(request(), CTX);
+	const signal = new AbortController().signal;
+	let listeners = 0;
+	const add = signal.addEventListener.bind(signal);
+	const remove = signal.removeEventListener.bind(signal);
+	signal.addEventListener = (type, listener, options) => {
+		if (type === "abort") listeners += 1;
+		add(type, listener, options);
+	};
+	signal.removeEventListener = (type, listener, options) => {
+		if (type === "abort") listeners -= 1;
+		remove(type, listener, options);
+	};
+	for (let at = 0; at < 20; at++) {
+		const proc = await host.exec(NAME, ["true"], { ...CTX, signal });
+		const session = [...vendor.sessions.values()].at(-1);
+		session.exit(0);
+		assert.equal(await proc.wait(), 0);
+	}
+	assert.equal(listeners, 0, "every start removed the abort listener it added");
+});
+
 test("an exec on a name Fly lacks is not_found: the socket never opens, and get says why", async () => {
 	const { host } = spritesOf();
 	await assert.rejects(host.exec("computer-ffffffffffff", ["true"], CTX), (error) => error.code === "not_found" && /no sprite computer-ffffffffffff/.test(error.message));
