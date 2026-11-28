@@ -257,6 +257,12 @@ export interface AdapterRunSpec {
    *  server's row (COMPUTER_NOTE, marked `files`) once a request carrying it is answered; read at each claim, so a resume
    *  never tells it again. Absent: the run's folder is mounted in its computer, or it has no desktop or phone. */
   readonly computerFilesNote?: string;
+  /** What the model is told once in its run when its computer reaches less than the internet (computer-deps.ts
+   *  computerReachNote: nowhere, or the hosts of its list): placed as the replaced computer's note is, after it and before
+   *  the files note, so the first request carries it, and written as the server's row (COMPUTER_NOTE, marked `reach`) once
+   *  a request carrying it is answered; read at each claim, so a resume never tells it again. Absent: the computer's
+   *  network is open, or there is no computer. */
+  readonly computerReachNote?: string;
   /** The run's computer held for its owner (a run started with `hold: true`, computer-held.ts): the agent's first input
    *  waits for the owner's start, and the run's end waits for the owner's release (runner/held-run.ts). */
   readonly held?: HeldSpec;
@@ -549,9 +555,9 @@ const DELIVER_NOW_MS = 5_000;
  *  (ModelPort.noteReturned): this is only the backstop for a path that never does. A proxy's token count and admission
  *  take well under it. Once admitted, the request holds the note until it ends, however long it streams. */
 const WRAP_UP_OFFER_MS = 30_000;
-/** A server note a request may carry: the replaced computer's (no field), where the run's files are (`files`), the cap's
- *  wrap-up (`cap`) or the free limit's (`freeLimit`). */
-type ServerNote = { words: string; files?: true; cap?: { leftUsd: number; capUsd: number }; freeLimit?: number };
+/** A server note a request may carry: the replaced computer's (no field), where the computer reaches (`reach`), where
+ *  the run's files are (`files`), the cap's wrap-up (`cap`) or the free limit's (`freeLimit`). */
+type ServerNote = { words: string; reach?: true; files?: true; cap?: { leftUsd: number; capUsd: number }; freeLimit?: number };
 
 /** A note the model was told (it begins with SERVER_NOTE_LABEL) as the server's row for it says it: the words after the
  *  label, their first letter a capital, since the row is the server's already ("AgentRun: …", timeline.ts CAP_WRAPUP). */
@@ -2373,13 +2379,18 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         };
         let bookingNow: ModelBooking | undefined;
         // The computer's notes, in order, each until a request carrying it is answered: the replaced computer's
-        // (spec.computerNote), then where the run's files are (spec.computerFilesNote), unless a COMPUTER_NOTE row marked
-        // `files` says an earlier claim told it. One note per request: the replaced computer's goes before the wrap-up, so
-        // the wrap-up waits a request; the files note goes after a wrap-up that is due, so it never holds one back.
-        const filesTold = spec.computerFilesNote !== undefined && (await entriesOf(gate.journal, wrapUpRoot.id, context))
-          .some((entry) => entry.kind === COMPUTER_NOTE && (entry.data as { files?: unknown } | undefined)?.files === true);
+        // (spec.computerNote), then where it reaches (spec.computerReachNote), then where the run's files are
+        // (spec.computerFilesNote); the last two unless a COMPUTER_NOTE row marked `reach` or `files` says an earlier claim
+        // told it. One note per request: the replaced computer's and the reach note go before the wrap-up, so the wrap-up
+        // waits a request; the files note goes after a wrap-up that is due, so it never holds one back.
+        const toldRows = spec.computerReachNote !== undefined || spec.computerFilesNote !== undefined
+          ? (await entriesOf(gate.journal, wrapUpRoot.id, context)).filter((entry) => entry.kind === COMPUTER_NOTE).map((entry) => entry.data as { files?: unknown; reach?: unknown } | undefined)
+          : [];
+        const filesTold = toldRows.some((data) => data?.files === true);
+        const reachTold = toldRows.some((data) => data?.reach === true);
         const computerNotes: ServerNote[] = [
           ...(spec.computerNote !== undefined ? [{ words: spec.computerNote }] : []),
+          ...(spec.computerReachNote !== undefined && !reachTold ? [{ words: spec.computerReachNote, reach: true as const }] : []),
           ...(spec.computerFilesNote !== undefined && !filesTold ? [{ words: spec.computerFilesNote, files: true as const }] : []),
         ];
         // The server's note a request carries (the replaced computer's, else the cap's wrap-up; `cap` says the wrap-up's
@@ -2412,8 +2423,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           } else if (told.cap === undefined) {
             if (computerNotes[0]?.words === told.words) computerNotes.shift();
             kind = COMPUTER_NOTE;
-            data = { words: rowWords(told.words), ...(told.files ? { files: true } : {}) };
-            what = told.files ? "the computer files note's row" : "the replaced computer's note row";
+            data = { words: rowWords(told.words), ...(told.files ? { files: true } : {}), ...(told.reach ? { reach: true } : {}) };
+            what = told.files ? "the computer files note's row" : told.reach ? "the computer reach note's row" : "the replaced computer's note row";
           } else {
             const { leftUsd, capUsd } = told.cap;
             if (toldAt(capUsd)) return undefined;
