@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { serve, withEnv } from "./support.mjs";
 
-const NAMES = ["AGENTRUN_MCP_ALLOW_LOOPBACK", "AGENTRUN_WEBHOOK_PRIVATE_TARGETS", "AGENTRUN_PRIVATE_HOSTS", "AGENTRUN_BOX_ALLOW", "AGENTRUN_BOX_CPUS", "AGENTRUN_BOX_MEMORY", "AGENTRUN_BOX_PIDS", "AGENTRUN_BOX_MAX_TUNNELS", "AGENTRUN_API_ONLY_MCP_ORIGINS"];
+const NAMES = ["AGENTRUN_MCP_ALLOW_LOOPBACK", "AGENTRUN_WEBHOOK_PRIVATE_TARGETS", "AGENTRUN_PRIVATE_HOSTS", "AGENTRUN_BOX_ALLOW", "AGENTRUN_BOX_CPUS", "AGENTRUN_BOX_MEMORY", "AGENTRUN_BOX_PIDS", "AGENTRUN_BOX_MAX_TUNNELS", "AGENTRUN_API_ONLY_MCP_ORIGINS", "AGENTRUN_API_ONLY_WORKSPACE_MCP_PUBLIC_HTTPS"];
 
 /** Each switch's on and value, by name, in the order capabilities list them. */
 const read = (switches) => Object.entries(switches).map(([name, { on, value }]) => [name, on, value]);
@@ -43,6 +43,7 @@ test("capabilities list the start-time switches as the server was started: on, w
     ["AGENTRUN_BOX_MAX_TUNNELS", true, "128"],
     // A full server holds no API-only list: off.
     ["AGENTRUN_API_ONLY_MCP_ORIGINS", false, null],
+    ["AGENTRUN_API_ONLY_WORKSPACE_MCP_PUBLIC_HTTPS", false, null],
   ]);
   assert.match(caps.body.switches.AGENTRUN_API_ONLY_MCP_ORIGINS.allows, /per_run/);
   // The webhook does what the listing says: a receiver on this machine is taken.
@@ -60,6 +61,17 @@ test("AGENTRUN_API_ONLY_MCP_ORIGINS on an API-only server: the token's capabilit
   assert.ok(listed, `capabilities list AGENTRUN_API_ONLY_MCP_ORIGINS: ${Object.keys(caps.body.switches).join(", ")}`);
   assert.deepEqual([listed.on, listed.value], [true, null]);
   for (const origin of ["tools.example", "edge.example"]) assert.ok(!JSON.stringify(caps.body).includes(origin), `the answer names ${origin}`);
+});
+
+test("AGENTRUN_API_ONLY_WORKSPACE_MCP_PUBLIC_HTTPS on an API-only server is listed as on; on a full server the option is held off", async (t) => {
+  withEnv(t, {}, NAMES);
+  // The CLI reads the variable on an API-only start alone (ServeOptions.workspaceMcpPublicHttps).
+  const apiOnly = await serve(t, { runner: false, apiOnly: true, workspaceMcpPublicHttps: true });
+  const on = (await apiOnly.api("GET", "/capabilities")).body.switches.AGENTRUN_API_ONLY_WORKSPACE_MCP_PUBLIC_HTTPS;
+  assert.deepEqual([on.on, on.value], [true, "1"]);
+  assert.match(on.allows, /per_run/);
+  const full = await serve(t, { runner: false, workspaceMcpPublicHttps: true });
+  assert.equal((await full.api("GET", "/capabilities")).body.switches.AGENTRUN_API_ONLY_WORKSPACE_MCP_PUBLIC_HTTPS.on, false);
 });
 
 test("AGENTRUN_BOX_ALLOW=none is listed as on, its value none", async (t) => {

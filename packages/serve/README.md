@@ -4195,6 +4195,23 @@ serves these routes alone:
   session with API-only off; the start names the servers off the list in one log line (`api_only_mcp_off_list`), never
   their addresses. A server the owner's session saved is not governed by the list, and its runs' `mcp_auth` still
   goes there;
+- a workspace's `per_run` MCP server at any public https origin: `AGENTRUN_API_ONLY_WORKSPACE_MCP_PUBLIC_HTTPS=1`
+  (off by default; `1` or `true` on, `0`, `false` or unset off, any other value stops the start). With it, a
+  workspace's token (the `AgentRun-Workspace` header) saves and previews `"auth": {"type": "per_run"}` at an https
+  origin `AGENTRUN_API_ONLY_MCP_ORIGINS` does not list, and its runs use it. Plain http, or any other scheme, is the
+  refused route's `404`, and so are headers, a bearer token and a Composio server there: those stay at the listed
+  origins, and the token with no header still saves at the listed origins alone. Every request to such a server, at its
+  save, preview and refresh and at each request of a run's calls, resolves its name then and is sent only to a public
+  address it resolves to, the connection pinned to the address checked: never loopback, a private network (10/8,
+  172.16/12, 192.168/16, fc00::/7, CGNAT 100.64/10), link-local (169.254/16, fe80::/10, cloud metadata
+  169.254.169.254 and `fd00:ec2::254` among it), `0.0.0.0/8` or `::`, an IPv4-mapped IPv6 address of any of them, or a
+  literal address in the URL in any of them, whatever `AGENTRUN_MCP_ALLOW_LOOPBACK` or the owner's private hosts allow.
+  The metadata names (`metadata.google.internal`, `metadata.goog`, `metadata`, `instance-data`,
+  `instance-data.ec2.internal`) are refused by name. A name that resolves public at the save and inward later is
+  refused at that request, nothing sent. No redirect is followed: at a save or preview a `3xx` is `422` (reason
+  `redirect`), and in a run the call fails with nothing sent past it. A refused save is `422 not_allowed` at `url`; a
+  refused call says so to the model. The setting is held in the store with the list: a server saved under it whose
+  server later starts without it is refused at its runs, as one off the list is;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
 
 Here a run's computer routes take the server's token. `POST /runs/{id}/computer/viewer` mints a 5-minute link on
@@ -4260,7 +4277,8 @@ shared server is not the workspace's to read, change or delete. `GET /settings/m
 names and the shared ones', what its agents may grant; with no header, the shared ones alone. An agent of the workspace
 reaches its own server of a name before the shared one, at its save and at each run's claim; one that reaches neither is
 refused as a server never saved. A save in a workspace is of an address at the operator's MCP origins
-(`AGENTRUN_API_ONLY_MCP_ORIGINS`): `per_run` (each run hands its own in `mcp_auth`), or `headers` or `bearer`, whose
+(`AGENTRUN_API_ONLY_MCP_ORIGINS`), or, with `AGENTRUN_API_ONLY_WORKSPACE_MCP_PUBLIC_HTTPS=1`, a `per_run` one at any
+public https origin (above): `per_run` (each run hands its own in `mcp_auth`), or `headers` or `bearer`, whose
 credential is sealed in the workspace's own row and sent by its own agents' runs alone (a re-save that sends none keeps
 it); or a per-run Composio save (`user_id: "per_run"`, no `auth_config_id`, else `422 not_allowed`) whose key the install
 names (`api_key_env`). Anything else is the refused route's `404`, before anything is sent. A save or delete over a row
