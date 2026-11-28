@@ -50,8 +50,10 @@ export function keyedClient({ who, base, headers, feeOf, timeoutMs, refuseOn, ch
         if (refuseOn.includes(response.status)) refused = true;
         if (!chargeOf || !billedStatus(response.status)) return response;
         // The answer read once, to KEYED_MAX_BYTES at most (bytesOf), and handed on as read: keyedCall takes its parse
-        // (readAhead), and one past the bound goes on with no body, unreadable as before; its charge is the hold.
-        const bytes = await bytesOf(response);
+        // (readAhead), and one past the bound goes on with no body, unreadable as before; its charge is the hold. A 2xx
+        // whose body breaks throws, charged its hold; a 408 or a 5xx whose body breaks goes on with none, its charge
+        // read as for one that reported no count.
+        const bytes = response.ok ? await bytesOf(response) : await bytesOf(response).catch(() => undefined);
         const json = bytes === undefined ? undefined : parsed(bytes);
         charge = chargeOf(fee, path, json, response.status);
         const read = new Response(bytes === undefined ? null : new Uint8Array(bytes), { status: response.status, statusText: response.statusText, headers: response.headers });
