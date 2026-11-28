@@ -21,7 +21,7 @@ import { fakeClock, until } from "./trigger-support.mjs";
 
 const { WORKSPACE_ROUTES, servedScoped } = await import("../dist/api-only.js");
 const { ROUTES } = await import("../dist/server.js");
-const { migrate, openPostgresStore, openSqliteStore, migrationsIn, runnerOn } = await import("../dist/store/index.js");
+const { migrate, openPostgresStore, openSqliteStore, migrationsIn, runnerOn, StoreAwaitsServer } = await import("../dist/store/index.js");
 const { SCHEMA_VERSION } = await import("../dist/store/schema.js");
 const { workspaceTokensFrom } = await import("../dist/workspace-scope.js");
 const { backfillMapOf, backfillWorkspaces, workspaceBackfillMain } = await import("../dist/workspace-backfill.js");
@@ -431,7 +431,7 @@ test("the workspace migration (0033) is additive: a runner of the build before i
   assert.equal(runnerOn({ version: 33, runnerFloor: floor }, 32), "opens");
 });
 
-test("on SQLite the server adds the workspace columns to a store an earlier build of its version made, every row unscoped, with no wait for its runner", async (t) => {
+test("on SQLite the server adds the workspace columns to a store an earlier build of its version made, every row unscoped; its runner waits for it", async (t) => {
   const dir = await scratch(t);
   const file = join(dir, "store.sqlite");
   const first = await openSqliteStore({ file });
@@ -442,11 +442,12 @@ test("on SQLite the server adds the workspace columns to a store an earlier buil
   const raw = new DatabaseSync(file);
   raw.exec("DROP INDEX agents_by_workspace; DROP INDEX runs_by_workspace; ALTER TABLE agents DROP COLUMN workspace; ALTER TABLE runs DROP COLUMN workspace; ALTER TABLE imported_templates DROP COLUMN workspace");
   raw.close();
-  const runner = await openSqliteStore({ file, role: "runner" });
-  await runner.close();
+  // A claim reads its run's workspace (runner/github-app.ts): a runner waits for the server that adds the columns.
+  await assert.rejects(openSqliteStore({ file, role: "runner" }), (error) => error instanceof StoreAwaitsServer && /agents\.workspace, runs\.workspace/.test(error.message));
   const server = await openSqliteStore({ file });
   t.after(() => server.close());
   assert.equal((await server.schemaState()).version, SCHEMA_VERSION, "no version step");
+  await (await openSqliteStore({ file, role: "runner" })).close();
   await workspaceRows(server);
 });
 
