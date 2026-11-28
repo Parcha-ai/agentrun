@@ -175,9 +175,19 @@ test('the GitHub release is published once every publish job passed, from the fo
   assert.doesNotMatch(raw, /gh release create|git tag|git push/, 'nothing creates or moves a tag');
 });
 
-test('the release posts nowhere on its own: no job reads a Slack secret or variable', () => {
+test('the release reads no Slack secrets or variables', () => {
   assert.equal(jobs.slack, undefined);
   assert.doesNotMatch(raw, /SLACK_|slack\.com|release-slack/, 'the person who cut the release posts its summary (docs/releasing.md)');
+});
+
+test('Discord reads the published URL and can fail without failing the release', () => {
+  const { steps } = jobs['github-release'];
+  const published = stepAt('github-release', /^node scripts\/release-github\.mjs /);
+  const announced = stepAt('github-release', /^node scripts\/discord-community\.mjs release /);
+  assert.ok(announced > published);
+  assert.equal(steps[announced].env.RELEASE_URL, `\${{ steps.${steps[published].id}.outputs.url }}`);
+  assert.equal(steps[announced].env.DISCORD_WEBHOOK_URL, '${{ secrets.DISCORD_RELEASES_WEBHOOK_URL }}');
+  assert.equal(steps[announced]['continue-on-error'], true);
 });
 
 test('the website import pull request is opened after the GitHub release with the website App\'s token, and never fails or blocks the release', async () => {

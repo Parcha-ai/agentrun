@@ -618,9 +618,16 @@ jobs:
       - name: Write the notes
         run: node scripts/release-notes.mjs --tag "$RELEASE_TAG" --changelog "${{ runner.temp }}/changelog/CHANGELOG.md" --image "$IMAGE:$RELEASE_TAG" --platforms "$PLATFORMS" --chart oci://ghcr.io/parcha-ai/charts/agentrun --out "${{ runner.temp }}/notes.md"
       - name: Publish the release on its tag
+        id: publish-release
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/release-github.mjs --tag "$RELEASE_TAG" --notes "${{ runner.temp }}/notes.md"
+      - name: Announce the release in Discord
+        continue-on-error: true
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_RELEASES_WEBHOOK_URL }}
+          RELEASE_URL: ${{ steps.publish-release.outputs.url }}
+        run: node scripts/discord-community.mjs release "$RELEASE_TAG" "$RUNNER_TEMP/notes.md" "$RELEASE_URL"
 
   # The website's import pull request, once the packages are published and the GitHub prerelease is out: the website's own
   # scripts/import-content.py, run in its checkout of main against this tag, then scripts/release-website.mjs commits the

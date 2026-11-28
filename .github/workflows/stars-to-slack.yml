@@ -3,14 +3,21 @@ name: Star notifications
 on:
   watch:
     types: [started]
+  schedule:
+    - cron: '17 * * * *'
   workflow_dispatch:
+    inputs:
+      verify_discord:
+        description: Verify both Discord channels without posting (otherwise test Slack)
+        type: boolean
+        default: false
 
 # The event payload supplies all repository details; no checkout or GitHub token is needed.
 permissions: {}
 
 jobs:
   notify:
-    if: github.repository == 'Parcha-ai/agentrun'
+    if: github.repository == 'Parcha-ai/agentrun' && (github.event_name == 'watch' || (github.event_name == 'workflow_dispatch' && !inputs.verify_discord))
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -77,3 +84,48 @@ jobs:
               raise SystemExit("Slack rejected the notification: " + result.get("error", "unknown_error"))
           print("Slack notification sent.")
           PY
+
+  discord-stars:
+    if: github.repository == 'Parcha-ai/agentrun' && github.event.repository.private == false && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      deployments: write
+    concurrency:
+      group: discord-star-milestones
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24.22.3'
+      - name: Announce a new milestone in Discord
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_MILESTONES_WEBHOOK_URL }}
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/discord-community.mjs stars
+
+  verify-discord:
+    if: github.repository == 'Parcha-ai/agentrun' && github.event_name == 'workflow_dispatch' && inputs.verify_discord
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24.22.3'
+      - name: Verify release notes webhook
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_RELEASES_WEBHOOK_URL }}
+        run: node scripts/discord-community.mjs verify 1571650135124086984 1574867068237381722
+      - name: Verify announcements webhook
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_MILESTONES_WEBHOOK_URL }}
+        run: node scripts/discord-community.mjs verify 1571650135124086984 1571660164313129071

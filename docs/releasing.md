@@ -123,13 +123,17 @@ The release is complete only when every published archive matches the release pl
 
 After publication, test the README from an empty clone and exact-version npm installation outside the workspace. Remove private or unpublished notices only when those public paths work. Website deployment belongs to the separate website repository.
 
-The release posts nowhere on its own. Once the release page is out, whoever cut the release posts its summary to the team's Slack, as the team's bot, through the team's Slack tool. Write it for someone who uses AgentRun, not for someone who built it:
+After GitHub publishes the release, the release job sends a short embed to the AgentRun Discord release notes channel when `DISCORD_RELEASES_WEBHOOK_URL` is configured. The embed links to the full notes and install commands. The release remains published if Discord delivery fails. Check the channel before reposting a missing announcement.
+
+Whoever cut the release posts its summary to the team's Slack, as the team's bot, through the team's Slack tool. Write it for someone who uses AgentRun, not for someone who built it:
 
 1. **What you can do now**: the release's new abilities in product words, a line each, from its section's intro and changes.
 2. **Before you upgrade**: three lines, from its **Upgrading and going back:** and **Breaking:** blocks: what to do before the upgrade, whether the store moves and how to go back, and what breaks.
 3. The install lines from the release page, then the link to the release notes.
 
 See npm's [trusted publishing](https://docs.npmjs.com/trusted-publishers/), [provenance](https://docs.npmjs.com/generating-provenance-statements/) and [scoped package](https://docs.npmjs.com/creating-and-publishing-scoped-public-packages/) documentation for account setup.
+
+The **Star notifications** workflow checks the public GitHub star count hourly. It posts the highest new 100-star milestone, starting at 1,300, to the AgentRun Discord announcements channel using `DISCORD_MILESTONES_WEBHOOK_URL`. Its GitHub deployment records reserve milestones before delivery so a retry or a drop in star count cannot repeat an announcement. If a reserved milestone fails delivery, check Discord before posting manually. To verify both webhook secrets without posting, manually run **Star notifications** with `verify_discord` selected.
 
 ## Check a published server
 
