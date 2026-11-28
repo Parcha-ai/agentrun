@@ -15,7 +15,10 @@ export const SEALED_STAGEHAND = {
 
 type StagehandModule = Pick<typeof import("@browserbasehq/stagehand"), "localBrowser" | "Stagehand">;
 
-/** The batch deadline comes from `DriverOptions`; a caller that passes none gets the facade's 60 s. Stagehand allows one
+/** The batch deadline a caller that passes none in `DriverOptions` gets: 60 s, the facade's. */
+export const DEFAULT_BATCH_TIMEOUT_MS = 60_000;
+
+/** The batch deadline comes from `DriverOptions`; a caller that passes none gets `DEFAULT_BATCH_TIMEOUT_MS`. Stagehand allows one
  *  client per browser: an attach that fails or is cancelled after it connected disconnects again, and only then fails, so
  *  the next attach never meets its slot still taken (Stagehand bounds the disconnect: 10 s for the detach). `internals` is
  *  for tests: the Stagehand module the driver uses. */
@@ -28,7 +31,7 @@ export function stagehandDriver(internals: { stagehand?: () => Promise<Stagehand
     const browser = await untilCancelled(attachStep(host)(connecting), signal, (late) => late.disconnect());
     try {
       const stagehand = await untilCancelled(Stagehand.create({ browser, ...SEALED_STAGEHAND }), signal, () => undefined);
-      return pageDriver(stagehand, { batchMs: options?.batchTimeoutMs ?? 60_000 });
+      return pageDriver(stagehand, { batchMs: options?.batchTimeoutMs ?? DEFAULT_BATCH_TIMEOUT_MS });
     } catch (error) {
       await browser.disconnect().catch(() => undefined);
       throw error;
