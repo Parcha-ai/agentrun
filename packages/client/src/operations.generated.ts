@@ -517,6 +517,7 @@ export type RunSummary = {
     kind: "question";
     question: string;
     asked_at: string;
+    expires_at?: string;
   } | {
     kind: "approval";
     id: string;
@@ -859,6 +860,7 @@ export type Run = {
     kind: "question";
     question: string;
     asked_at: string;
+    expires_at?: string;
   } | {
     kind: "approval";
     id: string;

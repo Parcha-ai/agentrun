@@ -1060,6 +1060,7 @@ export interface components {
       kind: "question";
       question: string;
       asked_at: string;
+      expires_at?: string;
     } | {
       kind: "approval";
       id: string;
@@ -1371,6 +1372,7 @@ export interface components {
       kind: "question";
       question: string;
       asked_at: string;
+      expires_at?: string;
     } | {
       kind: "approval";
       id: string;

@@ -4088,7 +4088,12 @@ const PENDING: Json = {
   oneOf: [
     {
       type: "object", additionalProperties: false, required: ["kind", "question", "asked_at"],
-      properties: { kind: { const: "question" }, question: { type: "string", description: "What it asked, at most 2000 characters." }, asked_at: { type: "string", format: "date-time" } },
+      properties: {
+        kind: { const: "question" },
+        question: { type: "string", description: "What it asked, at most 2000 characters." },
+        asked_at: { type: "string", format: "date-time" },
+        expires_at: { type: "string", format: "date-time", description: "When the question expires unanswered, where the backend sets it a deadline (the hosted API does). Absent where none is set, as on this server.", "x-agentrun-serve": "questionexpires/1" },
+      },
       description: "A question the run asked a person (status input_required, state waiting): a message answers it.",
     },
     {
