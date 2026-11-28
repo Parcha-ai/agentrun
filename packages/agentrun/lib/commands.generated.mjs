@@ -2639,7 +2639,7 @@ export const COMMANDS = [
         "name": "scan",
         "type": "string",
         "required": false,
-        "description": "The reservation a host-started run is bound to (the reserve's `scan`)."
+        "description": "The reservation a host-started run is bound to (the reserve's `scan`); sent alone, the reservation released."
       }
     ],
     "hasBody": true,

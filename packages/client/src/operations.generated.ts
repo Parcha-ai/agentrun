@@ -4429,6 +4429,9 @@ export type ScanForSuggestionsResponse = {
   status: "starting";
 } | {
   repo: string;
+  status: "released";
+} | {
+  repo: string;
   run_id: string;
   agent_id: string;
   status: "running";

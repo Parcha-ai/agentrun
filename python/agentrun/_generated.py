@@ -1192,6 +1192,7 @@ __all__ = [
     "ScanForSuggestionsResponseObject11",
     "ScanForSuggestionsResponseObject12",
     "ScanForSuggestionsResponseObject12Input",
+    "ScanForSuggestionsResponseObject13",
     "ScanForSuggestionsResponseObject2",
     "SdkRunEventsBody",
     "SdkRunEventsBodyEventsItem1",
@@ -6939,7 +6940,7 @@ class ScanForSuggestionsBody(_ScanForSuggestionsBodyRequired, total=False):
     scan: str
 
 
-ScanForSuggestionsResponse: TypeAlias = "ScanForSuggestionsResponseObject11 | ScanForSuggestionsResponseObject12 | ScanForSuggestionsResponseObject2"
+ScanForSuggestionsResponse: TypeAlias = "ScanForSuggestionsResponseObject11 | ScanForSuggestionsResponseObject12 | ScanForSuggestionsResponseObject13 | ScanForSuggestionsResponseObject2"
 
 
 class ScanForSuggestionsResponseObject11(TypedDict):
@@ -6960,6 +6961,11 @@ class ScanForSuggestionsResponseObject12(TypedDict):
 
 class ScanForSuggestionsResponseObject12Input(TypedDict):
     content: str
+
+
+class ScanForSuggestionsResponseObject13(TypedDict):
+    repo: str
+    status: Literal["released"]
 
 
 class ScanForSuggestionsResponseObject2(TypedDict):

@@ -30,6 +30,7 @@ function settings() {
 /** The service with a clock the test moves; `scout` runs are the ones the server takes as its scout's here. */
 function service({ hostStarts = false } = {}) {
   let now = 1_000_000;
+  const runs = { read: async () => ({ status: "running" }) };
   const started = [];
   const scoutRuns = new Set(["run_scout_1", "run_scout_2"]);
   const s = new Suggestions({
@@ -37,7 +38,7 @@ function service({ hostStarts = false } = {}) {
     github: { view: () => undefined, settingsUrl: () => undefined, api: "http://127.0.0.1:9", repoInstallation: async () => ({ unusable: "none", reason: "not_connected" }), tokenWith: async () => ({ unusable: "none" }), revokeToken: async () => {} },
     scoutAgent: async () => "scout",
     startScan: async (agentId, content) => (started.push({ agentId, content }), "run_started_here"),
-    readRun: async () => ({ status: "running" }),
+    readRun: (...args) => runs.read(...args),
     makeAgent: async () => { throw new Error("no create here"); },
     agentFrom: async () => undefined,
     cancelScan: async () => {},
@@ -45,7 +46,7 @@ function service({ hostStarts = false } = {}) {
     scoutRun: async (runId, agentId) => agentId === "scout" && scoutRuns.has(runId),
     now: () => now,
   });
-  return { s, started, tick: (ms) => (now += ms) };
+  return { s, started, runs, tick: (ms) => (now += ms) };
 }
 
 const refusal = async (promise) => {
@@ -149,6 +150,20 @@ test("a release with another token, of a bound scan, or after the claim lapsed i
   const { body: old } = await later.scan({ repo: REPO, start: "host" });
   tick(SCAN_CLAIM_MS);
   assert.deepEqual(await refusal(later.scan({ repo: REPO, scan: old.scan })), other);
+});
+
+test("a release puts back the repository's last scan, which the reservation stood over", async () => {
+  const { s, runs } = service({ hostStarts: true });
+  const { body: first } = await s.scan({ repo: REPO, start: "host" });
+  await s.scan({ repo: REPO, run_id: "run_scout_1", scan: first.scan });
+  // The first scan's run is gone, so it is read (failed) and a new scan may be reserved over it.
+  runs.read = async () => undefined;
+  const before = (await s.list({})).repositories.find((r) => r.repo === REPO)?.scan;
+  assert.equal(before?.run_id, "run_scout_1");
+  const { body: claim } = await s.scan({ repo: REPO, start: "host" });
+  assert.equal(claim.status, "starting");
+  await s.scan({ repo: REPO, scan: claim.scan });
+  assert.deepEqual((await s.list({})).repositories.find((r) => r.repo === REPO)?.scan, before);
 });
 
 test("a scan body takes start: host, run_id with scan, or scan alone, never start with either", async () => {

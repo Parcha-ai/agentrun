@@ -765,7 +765,7 @@ export class Suggestions {
 
   /** POST /v2/suggestions/scans: a scan of `repo` started (or the one still running answered). With `start: "host"` the
    *  row is reserved and the scout and its run's input answered, with nothing started: the host starts that run and
-   *  binds it, sending `run_id` with the reservation's `scan`. */
+   *  binds it, sending `run_id` with the reservation's `scan`, or releases it, sending the `scan` alone. */
   async scan(body: Json): Promise<{ status: 200 | 202; body: Json }> {
     const issues = unknownFields(body, ["repo", "start", "run_id", "scan"]);
     if (issues.length) throw invalid(issues);
@@ -775,10 +775,10 @@ export class Suggestions {
     if (host || body.run_id !== undefined || body.scan !== undefined) {
       const runId = text(body.run_id, 1, 200);
       const token = text(body.scan, 1, 200);
-      if (host ? body.run_id !== undefined || body.scan !== undefined : !runId || !token) {
-        throw invalid([{ field: host ? "start" : runId ? "scan" : "run_id", reason: "invalid", message: 'a scan is reserved (start: "host") or bound (run_id with the reservation\'s scan), not both' }]);
+      if (host ? body.run_id !== undefined || body.scan !== undefined : !token || (body.run_id !== undefined && !runId)) {
+        throw invalid([{ field: host ? "start" : token ? "run_id" : "scan", reason: "invalid", message: 'a scan is reserved (start: "host"), then bound (run_id with the reservation\'s scan) or released (its scan alone)' }]);
       }
-      if (!host) return this.bind(repo, runId!, token!);
+      if (!host) return runId ? this.bind(repo, runId, token!) : this.releaseScan(repo, token!);
     } else if (this.deps.hostStarts?.()) {
       throw new ApiError("agent_not_runnable", `This server's host starts a workspace's runs: reserve the scan of ${repo} with start: "host", start its run, then bind it.`);
     }
@@ -859,6 +859,21 @@ export class Suggestions {
     }
     this.used("suggestions_scanned");
     return answer(scan);
+  }
+
+  /** The reservation held under `token` given up before its run was bound, so the next scan of `repo` reserves at once
+   *  instead of waiting out the claim: the row goes back as it was before the reservation. Another token, a lapsed claim
+   *  or a bound one is the one 404, which names only the repository. */
+  private async releaseScan(repo: string, token: string): Promise<{ status: 200; body: Json }> {
+    const key = scanKey(repo);
+    const missing = () => new ApiError("not_found", `No reserved scan of ${repo} is held under that scan.`);
+    const was = (await this.deps.settings.get(key)) as (Partial<Scan> & { repo?: string }) | undefined;
+    const claim = isObject(was) ? was.starting : undefined;
+    if (!isObject(was) || !isObject(claim) || claim.by !== token || !this.held(claim, SCAN_CLAIM_MS)) throw missing();
+    const { starting: _claim, ...before } = was;
+    const released = typeof before.run_id === "string" ? await this.deps.settings.replaceIf(key, was, before) : await this.deps.settings.removeIf(key, was);
+    if (!released) throw missing();
+    return { status: 200, body: { repo: was.repo ?? repo, status: "released" } };
   }
 
   /** GET /v2/suggestions/{id}:the suggestion whole, the files a create would add (rendered now), and whether this
