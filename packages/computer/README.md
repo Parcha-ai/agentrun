@@ -16,7 +16,7 @@ import { checkMount, readBackOf, WORKSPACE, type MountSpec } from "@parcha/agent
 
 The package root holds the protocol, the registry and the descriptors, and loads no provider: a provider loads by its
 id (`providerFor(id, options)`, which imports that one provider's file), or from its subpath (`/docker`, `/daytona`,
-`/modal`, `/e2b`, `/orgo`, `/orgo-desktop`, `/phone-harness`, `/browserbase`, `/kernel`, `/local-chrome`, `/boxd`, `/smolcloud`, `/groundbox`, `/vercel`, `/sprites`, `/instabox`). A provider's
+`/modal`, `/e2b`, `/orgo`, `/orgo-desktop`, `/phone-harness`, `/browserbase`, `/kernel`, `/local-chrome`, `/boxd`, `/smolcloud`, `/groundbox`, `/vercel`, `/sprites`, `/instabox`, `/tensorlake`). A provider's
 option types (`DockerProviderOptions`, `ModalProviderOptions` and the like) come from its subpath too, not the root.
 
 The package carries the daemon for Linux amd64 and arm64 in `dist/`, so a provider runs it with no Go on the host. A
@@ -691,6 +691,7 @@ live under:
   | `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` | Vercel Sandbox's `token`, `teamId` and `projectId`, all required |
   | `SPRITES_TOKEN` | Fly Sprites' `token`: the name Fly's own CLI reads |
   | `INSTABOX_API_KEY` | InstaBox's `apiKey`: the name InstaBox's own CLI and SDK read |
+  | `TENSORLAKE_API_KEY` | Tensorlake's `apiKey`: the name Tensorlake's own CLI and SDK read |
 
 - **the conformance CLI and the live harness** (`src/conformance/`: the CLI, each provider's conformance module and the
   sweeps) read their own `COMPUTER_<ID>_*` names, the ones the live scripts set, through each module's
@@ -3459,6 +3460,53 @@ Unverified until the live run: the gateway taking the token as the username with
 ssh2 verifies, whose sha256 is `hostKeyFingerprint`; a taken name answering 409; a deleted machine reading 404 or a
 `deleted` record; sshd's port 22 being the one vendor listener; `minimal` being on every paid plan; the 8 KiB metadata
 bound counting compact JSON; a silent SSH channel holding 75 s; and root making a network namespace.
+
+## Tensorlake
+
+```ts
+import { providerFor } from "@parcha/agentrun-computer";
+
+// The key is the caller's to pass (serve's TENSORLAKE_API_KEY).
+const tensorlake = await providerFor("tensorlake", { apiKey });
+const made = await tensorlake.create({ image: "tensorlake/ubuntu-minimal", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
+```
+
+A Tensorlake computer is a [Tensorlake](https://docs.tensorlake.ai/llms.txt) sandbox: a microVM from one of Tensorlake's
+images (`"tensorlake/ubuntu-minimal"` by default) or a sandbox image registered in the key's project, by name. It is a
+sandbox alone: Tensorlake boots only images registered in the project, never the box image by its OCI name, so there is
+no desktop and no Archil mount, and a sandbox can't dial the server. Tensorlake runs on the shared machine-host adapter
+([PROVIDERS.md](PROVIDERS.md)): `src/tensorlake.ts` is its `MachineHost`, over the Tensorlake API
+(`https://api.tensorlake.ai`, `Authorization: Bearer <key>`, [OpenAPI](https://docs.tensorlake.ai/api-reference/openapi.yaml))
+with `fetch` and the shared REST client, and over SSH with the host's `ssh2` package, as Agent37 (no SDK).
+
+| MachineHost | Tensorlake |
+| --- | --- |
+| `create` | `POST /sandboxes` with the name, the image, the size, `timeout_secs` (an idle threshold) at the backstop's span within 60 s and a day, `network.allow_internet_access` as the request reaches out, `auto_resume: false`, `wait: false` and `max_pending_secs` at create's own bound; a 409 is a sandbox of that name, `exists`. Then the sandbox is read until it runs (`terminated` first is the reason in Tensorlake's words, `no_capacity` a `limit`), and the labels are written to a file only root reads, through the sandbox proxy's `POST /api/v1/processes/run` under `sudo` |
+| `get` | `GET /sandboxes/{id}`: pending is starting, running and snapshotting are running, suspending, suspended and resume_failed are stopped (resume_failed in its `error_details` words); a 404 or `terminated` is none |
+| `list` | `GET /sandboxes`, every page by `next_cursor` within the call's one bound (each page asked for what is left of it, none after it); only sandboxes named as computers whose name may carry the labels asked, a label beyond the name's read from the labels file, which fails the listing closed, naming the sandbox, where it can't be read within the call's bound, or at all as the sandbox stands (not running, or no file yet) |
+| `delete` | `DELETE /sandboxes/{id}`, a 404 done; then the sandbox's SSH connections end |
+| `exec` | SSH with `SshExec` to the sandbox's own sshd, turned on for this process's ed25519 key by the proxy's `POST /api/v1/ssh/enable` (as `tl-user`, passwordless sudo) and reached through the proxy's TCP tunnel, `wss://<sandbox>/api/v1/tunnels/tcp?port=22` with the key and `X-Tensorlake-Sandbox-Id`; the host key pinned to the enable's `host_key_fingerprint`, which is required: an enable that names none (null, or the field left out), or one not `SHA256:` and 43 characters of unpadded base64, is refused (vendor) before any tunnel opens, so no command runs through an sshd it can't verify; a login the sshd refuses enables again, once, and execs refused at once share that enable; the enable is shared by the execs that ask at once and stopped by none of them, each waiting on it within its own time and signal |
+
+A sandbox has no labels, only a name unique in the project, so the name carries the adapter's name, the run's hash, the
+epoch and the deadline (`computer-<12 hex>-r<run hash>-e<epoch>-d<deadline>`, base 36, a DNS label): the janitor reads
+the deadline from the name, so a sandbox still pending, or one Tensorlake suspended, is never ended for a label it
+can't read. Every other label is in `/var/lib/agentrun-computer/labels.json`, read once and kept for the process. The
+name holds only the run's hash, so the run itself is read from that file. A sandbox whose labels file can't be read
+(suspended, or the read fails) carries the hash as `agentrun.run.hash`, and serve's janitor sweeps it by that: at once
+when its run is over, at the deadline in its name when no claim holds the run, never while one does, and never a
+sandbox whose name has no run hash. A run's end (`releaseOlder`) matches `agentrun.run` alone, so it doesn't delete
+such a sandbox, nor is it fenced by one of a later epoch. The processes API answers output as lines with their line ends dropped, so it can't carry the exec contract's bytes: it
+reads and writes the labels file alone. No `upload` (the daemon goes through exec's stdin) and no `extend` (the janitor
+moves the deadline label). `check()` takes a Tensorlake or project image by name, at most 16 vCPUs, and 1024 to 8192 MB
+a vCPU. The daemon user can't be uid 1000, `tl-user`'s.
+
+No live run has been made. Unverified until one: `ssh/enable` letting this process's key in as `tl-user`, and an enable
+with another key replacing it; sshd listening on 127.0.0.1:22 for the tunnel; `host_key_fingerprint` being OpenSSH's
+`SHA256:` form and never null (a null refuses every exec, and so every create); tunnel traffic counting against the idle threshold; the processes API running `sudo` with no
+password; a 63-character name of `[a-z0-9-]` being taken; a taken name answering 409; a deleted sandbox reading 404 or
+`terminated`; `sandbox_url` being in every read; the sandbox being amd64; root making a network namespace; a suspended
+sandbox with `auto_resume: false` staying suspended; the plan's longest `timeout_secs`; vendor listeners on 22 and 9501
+alone; and a silent SSH channel holding 75 s.
 
 ## Conformance
 

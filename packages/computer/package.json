@@ -13,7 +13,8 @@
     "groundbox",
     "vercel",
     "sprites",
-    "instabox"
+    "instabox",
+    "tensorlake"
   ],
   "type": "module",
   "license": "Apache-2.0",
@@ -95,6 +96,10 @@
     "./instabox": {
       "types": "./dist/instabox.d.ts",
       "default": "./dist/instabox.js"
+    },
+    "./tensorlake": {
+      "types": "./dist/tensorlake.d.ts",
+      "default": "./dist/tensorlake.js"
     },
     "./orgo": {
       "types": "./dist/orgo.d.ts",

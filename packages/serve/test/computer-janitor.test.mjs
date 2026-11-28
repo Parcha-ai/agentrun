@@ -505,3 +505,46 @@ test("the provider sweep marks a kept machine's row ending before it deletes the
     }
   }
 });
+
+test("Tensorlake: a sandbox another process made whose labels can't be read (suspended, or its file unreadable) is this server's by the run hash in its name, and swept: its run over, or its deadline past; never one a claim holds, another server's, one whose name has no run hash, or one whose hash doesn't parse (review)", async () => {
+  const { TensorlakeProvider } = await import("@parcha/agentrun-computer/tensorlake");
+  const { API_URL, KEY, fakeRest } = await import("../../computer/test/fake-tensorlake.mjs");
+  const rest = fakeRest();
+  const tensorlake = new TensorlakeProvider({ apiKey: KEY, ssh2: { Client: class {} }, fetch: rest.fetch, WebSocket: class {}, apiUrl: API_URL, timeouts: { pollMs: 1 } });
+  const past = Date.now() - 60_000;
+  const later = Date.now() + 3_600_000;
+  /** A sandbox made on the fake straight, as another server process made it, named as src/tensorlake.ts names one. */
+  const made = async (computer, { run, epoch = 1, deadline = later, status = "suspended", rawRun } = {}) => {
+    const runPart = rawRun ?? (run === undefined ? undefined : runHash(run));
+    const name = `${computer}${runPart === undefined ? "" : `-r${runPart}`}-e${epoch.toString(36)}-d${deadline.toString(36)}`;
+    const answer = await rest.fetch(`${API_URL}/sandboxes`, { method: "POST", headers: { Authorization: `Bearer ${KEY}` }, body: JSON.stringify({ name, image: "tensorlake/ubuntu-minimal", wait: false }) });
+    const { sandbox_id: id } = await answer.json();
+    const one = rest.sandboxes.get(id);
+    one.sandbox.status = status;
+    one.file = JSON.stringify({ "agentrun.computer": "1", "agentrun.computer.name": computer, "agentrun.computer.deadline": new Date(deadline).toISOString(), "agentrun.epoch": String(epoch), ...(run === undefined ? {} : { "agentrun.run": run }) });
+    return { computer, id };
+  };
+  const sweptAway = [
+    await made("computer-0000000000a1", { run: "run-mine" }),
+    await made("computer-0000000000a2", { run: "run-mine", status: "running" }),
+    await made("computer-0000000000a3", { run: "run-parked", epoch: 2, deadline: past }),
+  ];
+  const left = [
+    await made("computer-0000000000b1", { run: "run-parked", epoch: 2 }),
+    await made("computer-0000000000b2", { run: "run-live", epoch: 3, deadline: past }),
+    await made("computer-0000000000b3", { run: "run-of-another-server", deadline: past }),
+    await made("computer-0000000000b4", { deadline: past }),
+    await made("computer-0000000000b5", { rawRun: "abcdefghijklmn0p", deadline: past }),
+    await made("computer-0000000000b6", { rawRun: `${runHash("run-mine")}a`, deadline: past }),
+  ];
+  const unreadable = sweptAway[1].id;
+  rest.proxy.script = (_body, one) => (one.sandbox.id === unreadable ? new Response("boom", { status: 500 }) : undefined);
+  const providers = { made: tensorlake };
+  const swept = await sweepServerComputers({ store: store(), computers: computers([providers], { TENSORLAKE_KEY: "k" }), now: () => Date.now() });
+  assert.equal(swept.length, 1);
+  assert.equal(swept[0].swept.ok, true, JSON.stringify(swept[0].swept.error));
+  assert.deepEqual([...swept[0].swept.value.deleted].sort(), sweptAway.map(({ computer }) => computer), "its run over (suspended, or its file unreadable), or its deadline past");
+  const status = ({ id }) => rest.sandboxes.get(id).sandbox.status;
+  assert.deepEqual(sweptAway.map(status), ["terminated", "terminated", "terminated"]);
+  assert.deepEqual(left.map(status), ["suspended", "suspended", "suspended", "suspended", "suspended", "suspended"], "before its deadline, held, another server's, no run hash, or a hash that doesn't parse: left");
+});

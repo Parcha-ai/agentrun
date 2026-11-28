@@ -180,7 +180,7 @@ test("capabilities lists the place modes, this host's default, and each box: non
   assert.deepEqual(Object.keys(places), ["modes", "default_place", "default_reason", "boxes", "allow"]);
   assert.deepEqual(places.modes, ["runner", "sandbox"], "one boxed mode: no tool-box");
   assert.equal(places.default_place, null, "no docker here, and the runner has no shell: no default place, so a new agent names its own");
-  assert.deepEqual(places.boxes.map((b) => [b.id, b.available]), [["docker", false], ["daytona", false], ["modal", false], ["e2b", false], ["agent37", false], ["morph", false], ["cloudflare", false], ["fly", false], ["render", false], ["boxd", false], ["groundbox", false], ["vercel", false], ["sprites", false], ["instabox", false]]);
+  assert.deepEqual(places.boxes.map((b) => [b.id, b.available]), [["docker", false], ["daytona", false], ["modal", false], ["e2b", false], ["agent37", false], ["morph", false], ["cloudflare", false], ["fly", false], ["render", false], ["boxd", false], ["groundbox", false], ["vercel", false], ["sprites", false], ["instabox", false], ["tensorlake", false]]);
   for (const box of places.boxes) assert.equal(box.reason, `not enabled on this server: start AgentRun with AGENTRUN_BOXES=${box.id}`);
 });
 

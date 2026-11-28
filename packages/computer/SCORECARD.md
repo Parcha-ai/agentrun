@@ -1,7 +1,7 @@
 # Provider scorecard
 
 AgentRun is an open-source platform for running AI agents, and it gives each agent a computer on a vendor's machines.
-This page reads 26 sandbox and machine vendors against the provider contract in [PROVIDERS.md](PROVIDERS.md) and
+This page reads 28 sandbox and machine vendors against the provider contract in [PROVIDERS.md](PROVIDERS.md) and
 [spec/computer/provider.md](../../spec/computer/provider.md). For each it says whether a provider fits on the shared
 machine-host adapter, what the provider would take, and what is still open. It is for a vendor's engineer, or a
 contributor, deciding whether to write one.
@@ -23,10 +23,10 @@ documented calls, not from written code. The size column is an estimate, and siz
 
 ## The table
 
-Of 31 rows (27 vendors; Google, Fly.io, Beam and boxes.dev have two rows each): 0 clean, 5 fit if unverified facts hold,
-16 need a workaround, 10 are blocked. Render's row is built since (`src/render.ts`, a dial sandbox), and so are
-Vercel's (`src/vercel.ts`), Fly.io Sprites' (`src/sprites.ts`) and InstaBox's (`src/instabox.ts`), hosted sandboxes
-whose unverified facts wait on their live runs.
+Of 32 rows (28 vendors; Google, Fly.io, Beam and boxes.dev have two rows each): 0 clean, 5 fit if unverified facts hold,
+17 need a workaround, 10 are blocked. Render's row is built since (`src/render.ts`, a dial sandbox), and so are
+Vercel's (`src/vercel.ts`), Fly.io Sprites' (`src/sprites.ts`), InstaBox's (`src/instabox.ts`) and Tensorlake's
+(`src/tensorlake.ts`), hosted sandboxes whose unverified facts wait on their live runs.
 
 | Vendor | Rents | Fit | Size (estimate) | Shared pieces it would use |
 | --- | --- | --- | --- | --- |
@@ -59,6 +59,7 @@ whose unverified facts wait on their live runs.
 | [Railway Sandboxes](https://docs.railway.com/sandboxes) | VMs in a project environment | needs a workaround (no name or labels: labels kept in create's variables and read by exec; errors mapped by message text) | 420-470 | [prepareImage][pi] |
 | [Render Sandboxes](https://render.com/docs/sandboxes) | Firecracker microVMs | needs a workaround (built as a dial sandbox, `src/render.ts`: no stdin, so the sandbox dials the server, `agentrun-dial` started by one `runs/sync` call; no label, so the labels live in a file in the sandbox; Core passed live over dial) | 505, built | [dial][dl], [prepareImage][pi] |
 | [Runloop Devboxes](https://docs.runloop.ai/docs/devboxes/overview.md) | VMs | needs a workaround (two SSE feeds merged by hand) | 270-290 | [framedExec][fe] with [sse][ss], [backstopAt][bs], [prepareImage][pi] |
+| [Tensorlake Sandboxes](https://docs.tensorlake.ai/llms.txt) | microVMs from Tensorlake's images or a project's registered ones | needs a workaround (built, `src/tensorlake.ts`, a sandbox alone: no labels, so the run, epoch and deadline go in the name and the rest in a root-only file read through the processes API; exec over the sandbox's own sshd, enabled per process key and reached through the proxy's TCP tunnel; no desktop or Archil, since only registered images boot; no live run yet, so unverified: the SSH enable and its host key, sshd on loopback 22, tunnel traffic as activity, `sudo` in the processes API, a 63-character name and a taken one's 409, a deleted sandbox's read, amd64, root's network namespace, 75 s of SSH silence) | 828, built | [ssh-exec][se], [backstopAt][bs], [sse][ss] |
 | [Together Code Sandbox](https://docs.together.ai/docs/together-code-sandbox.md) | Firecracker microVMs booted from snapshots | fits if (unverified: root makes a network namespace; the SSE feed holds 75 s of silence; the `ttl` cap; the tag value limit; amd64) | 240-270 | [framedExec][fe] with [sse][ss], [packed labels][pl], [prepareImage][pi] |
 | [Vercel Sandbox](https://vercel.com/docs/sandbox) | Firecracker microVMs | built (`src/vercel.ts`; unverified until the live run: the log stream keeps a character split across two chunks whole and holds 75 s of silence; a taken name's status reads as `exists`; root makes a network namespace) | 283, built | [framedExec][fe], [packed labels][pl], [prepareImage][pi] |
 
@@ -496,6 +497,42 @@ provider spec.
 - **Image:** a blueprint built in [prepareImage](PROVIDERS.md#wire-it-up).
 - **Open:** ours, a shared merge of separate stdout and stderr feeds. Unverified: listeners, SSE silence, metadata
   limits, root's network namespace.
+
+### Tensorlake Sandboxes
+
+- **Rents:** a microVM per sandbox from one of Tensorlake's images (`tensorlake/ubuntu-minimal` by default) or a sandbox
+  image registered in the project, at most 16 vCPUs on Pro with 1 to 8 GB a vCPU, billed per second of active use
+  ([docs](https://docs.tensorlake.ai/llms.txt), [OpenAPI](https://docs.tensorlake.ai/api-reference/openapi.yaml),
+  [billing](https://docs.tensorlake.ai/platform/billing.md)).
+- **Exec:** SSH with [`SshExec`](PROVIDERS.md#exec-shapes-that-work) to the sandbox's own sshd, as `tl-user` with its
+  passwordless sudo ([images](https://docs.tensorlake.ai/sandboxes/tensorlake-images.md)): the proxy's
+  `POST /api/v1/ssh/enable` takes this process's public key, and its TCP tunnel (`/api/v1/tunnels/tcp?port=22`, a
+  WebSocket, [tunnels](https://docs.tensorlake.ai/sandboxes/tunnels.md)) carries the stream. The sshd's host key is
+  pinned to the enable's `host_key_fingerprint`, which is required: an enable that names none (null, or the field
+  left out) is refused before any tunnel opens, so no command runs through an sshd it can't verify. The processes API answers
+  output as lines with their line ends dropped, so it is used for the labels file alone. Dial is out: a sandbox boots
+  only a registered image, never the box image by its OCI name.
+- **Labels and lifetime:** no labels, a name unique in the project, so the name carries the run's hash, the epoch and
+  the deadline (the janitor reads the deadline there), and the rest go in a root-only file read through the processes
+  API with [`sse`](PROVIDERS.md#output-as-server-sent-events). `timeout_secs` is an idle threshold
+  ([lifecycle](https://docs.tensorlake.ai/sandboxes/lifecycle.md)), set at create to the backstop's span, with
+  `auto_resume` off so a suspended sandbox stays so; the janitor ends a computer at its deadline, within a day (the
+  usage-credits plan's longest session). The name holds the run's hash alone, so the run is read from the file. A
+  sandbox whose file can't be read (suspended, or the read fails) carries the hash as `agentrun.run.hash`, and serve's
+  janitor sweeps it by that: at once when its run is over, at the deadline in its name when no claim holds the run,
+  never while one does. A run's end (`releaseOlder`) matches `agentrun.run` alone, so it doesn't delete such a sandbox,
+  nor is it fenced by one of a later epoch. A listing by a label beyond the name's fails closed on a sandbox not
+  running or with no file yet.
+- **Image:** Tensorlake's images or a project's, by name. A create names no image of ours, so no desktop and no Archil
+  mount.
+- **Built:** `src/tensorlake.ts`, key `TENSORLAKE_API_KEY`; its tests run on a fake of the API, the proxy, the tunnel
+  and the sshd, the exec pre-check and the provider's Core cases included. No `upload` and no `extend`.
+- **Open:** no live run has been made. Unverified until one: the SSH enable letting this process's key in as `tl-user`
+  and another key's enable replacing it; sshd on 127.0.0.1:22 for the tunnel; `host_key_fingerprint`'s form, and its
+  never being null (a null refuses every exec, and so every create); tunnel
+  traffic keeping the sandbox awake; `sudo` with no password in the processes API; a 63-character name and a taken
+  name's 409; a deleted sandbox reading 404 or `terminated`; `sandbox_url` in every read; amd64; root's `unshare -n`;
+  the plan's longest `timeout_secs`; vendor listeners on 22 and 9501 alone; a silent SSH channel holding 75 s.
 
 ### Together Code Sandbox
 

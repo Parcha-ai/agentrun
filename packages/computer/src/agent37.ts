@@ -11,7 +11,6 @@
 // output only at its end), so it is not used. The rest of the computer is the shared machine-host adapter's
 // (./hosted/provider.ts). Every vendor fact here is cited in the README's Agent37 section.
 import { createHash } from "node:crypto";
-import { Duplex } from "node:stream";
 import { boxImageRef, boxRecipeHash } from "./box-image.js";
 import type { ProviderSecrets } from "./descriptor.js";
 import { AGENT37, AGENT37_BASE_TEMPLATE } from "./descriptors/agent37.js";
@@ -20,7 +19,8 @@ import { type HostCall, HostError, type HostFacts, type Machine, type MachineHos
 import { boundOf, codeOfError, orThrow } from "./hosted/process.js";
 import { httpsBase, jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts } from "./hosted/provider.js";
-import { pemOf, type Ssh2Module, SshExec, SshTunnelError, type SshTunnel } from "./hosted/ssh-exec.js";
+import { pemOf, type Ssh2Module, SshExec, type SshTunnel } from "./hosted/ssh-exec.js";
+import { tunnelOf, type WebSocketClass } from "./hosted/ws-tunnel.js";
 import { ed25519PublicOf, newEd25519, type SshPublicKey } from "./hosted/ssh-key.js";
 import type { ProviderNote } from "./mount-archil.js";
 import { dateOf, DOMAIN, isWhole } from "./hosted/values.js";
@@ -28,18 +28,7 @@ import type { CallContext, ComputerResources, ComputerSpec, Refusal } from "./pr
 import { type ComputerErrorCode, failFor, ok, type Result } from "./result.js";
 import { vendorSdk } from "./vendor-sdk.js";
 
-/** A WebSocket as this provider uses one: Node's global WebSocket (undici), which takes headers, or the same slice. */
-export interface WebSocketLike {
-	binaryType: string;
-	readonly readyState: number;
-	readonly bufferedAmount: number;
-	send(data: Uint8Array): void;
-	close(code?: number, reason?: string): void;
-	addEventListener(type: "open" | "close" | "error", listener: (event: { code?: number; reason?: string; message?: string }) => void): void;
-	addEventListener(type: "message", listener: (event: { data: unknown }) => void): void;
-}
-
-export type WebSocketClass = new (url: string, init: { headers: Record<string, string> }) => WebSocketLike;
+export type { WebSocketClass, WebSocketLike } from "./hosted/ws-tunnel.js";
 
 /** One Agent37 instance as the REST API answers it (docs: agents-api/instances/object), as far as this provider reads it. */
 export interface Agent37Instance {
@@ -134,9 +123,6 @@ const MAX_CPUS = 4;
 const METADATA_MAX_BYTES = 4096;
 /** A VM boots inside the create's POST, which answers once it runs (docs: instances/create, Defaults). */
 const DEFAULT_CREATE_MS = 300_000;
-/** How much a tunnel may hold unsent before a write waits for it (the WebSocket's bufferedAmount). */
-const TUNNEL_HIGH_WATER = 1024 * 1024;
-const TUNNEL_POLL_MS = 10;
 /**
  * A registration copies the image into the workspace's storage before it answers, "up to a few minutes for a large
  * image" (docs: templates, Register a workspace template): the POST's bound, and the wait on another's registration.
@@ -311,69 +297,6 @@ function shapeOf(cpus: number | undefined, memoryMb: number | undefined): { cpu:
 
 const SHAPE_WORDS = SHAPES.map(({ cpu, memory }) => `${cpu} CPUs with ${memory * 1024} MiB`).join(", ");
 
-/**
- * A WebSocket's binary stream as a Duplex for ssh2: what the socket gives is read, a write is one binary frame, and a
- * write waits while the socket holds more than TUNNEL_HIGH_WATER unsent. Its end closes the socket.
- */
-function tunnelOf(ws: WebSocketLike, host: string): { duplex: Duplex; opened: Promise<void> } {
-	let open = false;
-	const duplex = new Duplex({
-		read() {},
-		write(chunk: Buffer, _encoding, done) {
-			if (ws.readyState !== 1) return done(new SshTunnelError(`the SSH tunnel to ${host} is closed`));
-			try {
-				ws.send(chunk);
-			} catch (error) {
-				return done(error as Error);
-			}
-			const wait = () => {
-				if (ws.readyState !== 1) done(new SshTunnelError(`the SSH tunnel to ${host} closed while it sent`));
-				else if (ws.bufferedAmount <= TUNNEL_HIGH_WATER) done();
-				else setTimeout(wait, TUNNEL_POLL_MS);
-			};
-			wait();
-		},
-		final(done) {
-			try {
-				ws.close(1000);
-			} catch {
-				// Closed already.
-			}
-			done();
-		},
-		destroy(error, done) {
-			try {
-				ws.close(1000);
-			} catch {
-				// Closed already.
-			}
-			done(error);
-		},
-	});
-	ws.addEventListener("message", ({ data }) => {
-		if (data instanceof ArrayBuffer) duplex.push(Buffer.from(data));
-		else if (ArrayBuffer.isView(data)) duplex.push(Buffer.from(data.buffer, data.byteOffset, data.byteLength));
-		else if (typeof data === "string") duplex.push(Buffer.from(data, "utf8"));
-	});
-	const opened = new Promise<void>((resolve, reject) => {
-		ws.addEventListener("open", () => {
-			open = true;
-			resolve();
-		});
-		ws.addEventListener("error", (event) => {
-			const error = new SshTunnelError(`the SSH tunnel to ${host} failed${open ? "" : " to open"}${event.message ? `: ${event.message}` : ""}`);
-			if (!open) reject(error);
-			else duplex.destroy(error);
-		});
-		ws.addEventListener("close", ({ code, reason }) => {
-			if (!open) reject(new SshTunnelError(`the SSH tunnel to ${host} was refused (closed with ${code ?? "no code"}${reason ? `: ${reason}` : ""}); the edge opens it for the workspace's API key alone`));
-			else duplex.push(null);
-		});
-	});
-	opened.catch(() => {});
-	return { duplex, opened };
-}
-
 /** Agent37's instances as a MachineHost (../host.ts). */
 class Agent37Host implements MachineHost {
 	readonly descriptor = AGENT37;
@@ -444,7 +367,7 @@ class Agent37Host implements MachineHost {
 		const host = `${id}-${AGENT37_SSH_PORT}.${this.#proxyDomain}`;
 		const ws = new this.#WebSocket(`wss://${host}/`, { headers: { "X-Agent37-Key": this.#apiKey } });
 		ws.binaryType = "arraybuffer";
-		return { ...tunnelOf(ws, host), host };
+		return { ...tunnelOf(ws, host, "the edge opens it for the workspace's API key alone"), host };
 	}
 
 	/**
