@@ -18,7 +18,7 @@ import * as registry from "../dist/providers.js";
 import { bootDial, dialServer, socketPair } from "./fake-dial-host.mjs";
 import { fakeFreestyle, json, KEY, vmIdOf } from "./fake-freestyle.mjs";
 
-const { FreestyleProvider, accountOf, create } = await import("../dist/freestyle.js");
+const { FreestyleProvider, accountOf, boxFreestyleSnapshot, create } = await import("../dist/freestyle.js");
 const freestyleModule = await import("../dist/conformance/freestyle.js");
 
 const VM = vmIdOf(0);
@@ -299,6 +299,7 @@ test("check takes a snapshot of the account by id or slug, or a public {owner}/{
 		assert.deepEqual(host.check({ image }).map(({ field }) => field), ["image"], image);
 	}
 	assert.match(host.check({ image: "freestyle/ubuntu" })[0].message, /base snapshots \(freestyle\/\.\.\.\) have none/);
+	assert.deepEqual(host.check({ image: boxFreestyleSnapshot() }), [], "the box snapshot's slug");
 	assert.deepEqual(host.check({ image: SNAPSHOT, cpus: 2 }).map(({ field }) => field), ["cpus"]);
 	assert.deepEqual(host.check({ image: SNAPSHOT, memoryMb: 4096 }).map(({ field }) => field), ["memoryMb"]);
 	assert.match(host.check({ cpus: 2 })[0].message, /a Freestyle VM has the size of its snapshot/);
@@ -312,6 +313,9 @@ test("the constructor refuses a missing key, a fetch that is no function, an API
 	assert.throws(() => new FreestyleProvider({ apiKey: KEY, daemonUser: "1000:1000" }), /the uid of the VM's own user/);
 	assert.throws(() => new FreestyleProvider({ apiKey: KEY, maxLifetimeMs: 25 * 3_600_000 }), /maxLifetimeMs/);
 	assert.ok((await create({ apiKey: KEY })) instanceof FreestyleProvider);
+	const prepared = await new FreestyleProvider({ apiKey: KEY, fetch: () => assert.fail("prepareImage calls nothing") }).prepareImage();
+	assert.deepEqual(prepared, { ok: true, value: boxFreestyleSnapshot() });
+	assert.match(boxFreestyleSnapshot(), /^agentrun-box-[0-9a-f]{12}$/, "the box snapshot is named by the box recipe's hash");
 	const fake = fakeFreestyle();
 	const elsewhere = new FreestyleProvider({ apiKey: KEY, fetch: fake.fetch, apiUrl: "https://freestyle.example.com/" });
 	await elsewhere.host.list({}, CTX);
@@ -390,7 +394,7 @@ test("Core's provider cases pass through the Freestyle REST calls and the dial, 
 	const options = { dial, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS };
 	// Not provider.deadline or drift.arch: they run programs, which the fake machine's daemon only echoes (as hosted-dial's run).
 	const cases = conformanceCases.filter((one) => ["provider", "health", "drift"].includes(one.group) && one.level === "core" && !["provider.deadline", "drift.arch"].includes(one.id));
-	const report = await runConformance(provider(fake, options), { image: SNAPSHOT, cases, dial: kitOf(fake, dial, options)(), caseTimeoutMs: 30_000, cleanupTimeoutMs: 10_000 });
+	const report = await runConformance(provider(fake, options), { image: SNAPSHOT, cases, dial: kitOf(fake, dial, options), caseTimeoutMs: 30_000, cleanupTimeoutMs: 10_000 });
 	assert.ok(report.results.length >= 3, report.results.map(({ id }) => id).join(" "));
 	assert.equal(report.results.find(({ id }) => id === "provider.dial-token")?.status, "pass", JSON.stringify(report.results.find(({ id }) => id === "provider.dial-token")));
 	assert.deepEqual(
@@ -475,7 +479,7 @@ test("the conformance module reads COMPUTER_FREESTYLE_* alone, needs its live sw
 	assert.equal(host.descriptor.id, "freestyle");
 	assert.equal(freestyleModule.sweepScope({ env }), accountOf(KEY));
 	assert.doesNotMatch(freestyleModule.sweepScope({ env }), new RegExp(KEY));
-	await assert.rejects(freestyleModule.conformanceImage({ env }), /set COMPUTER_FREESTYLE_IMAGE to the snapshot of the box image/);
+	assert.equal(await freestyleModule.conformanceImage({ env }), boxFreestyleSnapshot(), "the box snapshot prepareImage() names");
 	assert.equal(await freestyleModule.conformanceImage({ env: { ...env, COMPUTER_FREESTYLE_IMAGE: SNAPSHOT } }), SNAPSHOT);
 	assert.throws(() => freestyleModule.dialKit({ env }), /^Error: Freestyle's machines dial the server that minted their tokens, and this run has no public server: run its Core with packages\/serve\/scripts\/dial-conformance\.mjs --provider freestyle/);
 });

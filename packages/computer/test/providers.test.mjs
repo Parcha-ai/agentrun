@@ -213,9 +213,9 @@ test("at most one provider's descriptor sets defaultBox, the box a new agent tha
 
 test("whether a provider's machines dial the server is its descriptor's connect, read by connectOf without building one, and is what its built host's facts.connect says", async () => {
 	const { connectOf, descriptorOf } = index;
-	// Read from the descriptors alone: Fly, Cloudflare and Render always dial; E2B, Daytona and Modal dial where their
-	// connect option (a server setting) says dial, and reach their machines through the vendor's exec otherwise.
-	assert.deepEqual(providerIds.filter((id) => connectOf(descriptorOf(id)) === "dial"), ["cloudflare", "fly", "render"]);
+	// Read from the descriptors alone: Fly, Cloudflare, Render and Freestyle always dial; E2B, Daytona and Modal dial where
+	// their connect option (a server setting) says dial, and reach their machines through the vendor's exec otherwise.
+	assert.deepEqual(providerIds.filter((id) => connectOf(descriptorOf(id)) === "dial"), ["cloudflare", "fly", "render", "freestyle"]);
 	assert.deepEqual(providerIds.filter((id) => connectOf(descriptorOf(id), { connect: "dial" }) === "dial" && connectOf(descriptorOf(id)) === "exec"), ["daytona", "modal", "e2b"]);
 	for (const id of providerIds) {
 		const either = descriptorOf(id).connect === "either";
@@ -228,6 +228,7 @@ test("whether a provider's machines dial the server is its descriptor's connect,
 		["fly", { apiToken: "fake-test-key", app: "fake-app" }],
 		["cloudflare", { relayUrl: "https://relay.example.com", relayToken: "fake-test-key" }],
 		["render", { apiKey: "fake-test-key", ownerId: "tea-abcdefghij0123456789" }],
+		["freestyle", { apiKey: "fake-test-key" }],
 		["daytona", { apiKey: "fake-test-key" }],
 		["daytona", { apiKey: "fake-test-key", connect: "dial" }],
 	];

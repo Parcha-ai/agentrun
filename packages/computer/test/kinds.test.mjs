@@ -145,7 +145,7 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	assert.deepEqual(declaring("settings"), ["daytona", "modal", "e2b"]);
 	// The image made ready before the first create: Docker's built on this host; the box image registered, pulled or
 	// built as a snapshot in the key's account by the hosted ones (Cloudflare's is the one its relay was deployed FROM).
-	assert.deepEqual(declaring("prepareImage"), ["docker", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "smolcloud", "groundbox", "vercel"]);
+	assert.deepEqual(declaring("prepareImage"), ["docker", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "smolcloud", "groundbox", "vercel", "freestyle"]);
 	assert.ok(declaring("prepareImage").every((id) => extra[id].prepareImage === true));
 	// Docker's computers run on this machine's engine; every other provider's are remote.
 	assert.deepEqual(declaring("local"), ["docker"]);
