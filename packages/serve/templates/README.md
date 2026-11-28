@@ -267,7 +267,8 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   - `llm`: the body is the rubric a blind grader applies to the answer (or to `target`, one field of the answer's JSON), with the run's tool calls (each with its arguments and the head of its result) and the fake MCP servers' calls beside it, so a rubric can check what the run did, not only what it said.
   - `regex`: `pattern` over the answer (or `target`), with `flags` and `expect: match` (the default) or `no_match`.
   - `tool_used`: `tool` (or `tools`, a list), `expect: called` (the default) or `not_called`, and optionally `args` (the
-    arguments a call must carry) and either `count` (exactly that many matching calls) or bounds: `at_least` (that many
+    arguments a call must carry; a value written `{"$pattern": <regex>}` matches a string the regex matches whole, as
+    in a fixture's `when`) and either `count` (exactly that many matching calls) or bounds: `at_least` (that many
     or more, so a run that searches once more than the case needs still passes), `at_most` (that many or fewer, and at
     least one), or both (`at_least: 3` with `at_most: 4` passes on 3 or 4 calls). `at_least` and `at_most` are 1 or more and mean
     `expect: called`; a grader that gives either beside `count` or `expect: not_called`, or an `at_least` above its
@@ -362,7 +363,9 @@ answer when it is one JSON object and nothing else. The report lists it as the g
   (`monid:<provider>/*`) is filled from monid's listing when the agent is saved, so the eval cannot check a name under
   it before the run. A faked MCP tool's calls are its fake's log, the calls that reached it; any other tool's are the
   timeline's. With `count`, exactly that many calls; else `expect: called`, one or more, or `not_called`, none. `args` keeps the calls
-  that carry each of its arguments (an object's own fields compared the same way, any other value equal), on any
+  that carry each of its arguments (an object's own fields compared the same way, a `{"$pattern": <regex>}` value
+  matched against a string whole, any other value equal: `expect: not_called` with `args: { path: { $pattern:
+  '(?!skills/).*' } }` fails a run that read anything outside `skills/`), on any
   tool's calls: the eval reads the timeline with `calls=whole`, which carries each call's arguments through the run's
   redaction (a held value or a key-shaped string reads `[redacted]`, and so never matches), each string cut at 2,000
   characters. With `args_file`, the eval reads that file from the run's work folder after the run (under the run's

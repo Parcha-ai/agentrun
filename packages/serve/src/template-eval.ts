@@ -129,6 +129,26 @@ type Answer = { when: Json | Json[]; result: Json };
 /** The regex a `when` value matches by, when it is `{"$pattern": <regex>}` and nothing else: anchored here, so a key
  *  made of a run's random stem (ns-k7m2p9qa-voice-cold-open) matches whole, never by a prefix the author left open. */
 const patternOf = (value: unknown): RegExp | undefined => (isObject(value) && Object.keys(value).length === 1 && typeof value.$pattern === "string" ? new RegExp(`^(?:${value.$pattern})$`) : undefined);
+/** Why a value that names $pattern is no pattern: one that is no string, does not compile, or sits beside another key
+ *  would be compared by equality and match nothing, so it is refused when the case is read, not missed silently. */
+const patternProblem = (value: unknown): string | undefined => {
+  if (!isObject(value) || !Object.hasOwn(value, "$pattern")) return undefined;
+  const others = Object.keys(value).filter((name) => name !== "$pattern");
+  if (others.length) return `a {"$pattern": ...} value holds no other key, and this one holds ${others.join(", ")}`;
+  if (typeof value.$pattern !== "string") return `$pattern is a regular expression's source, a string`;
+  try {
+    new RegExp(value.$pattern);
+  } catch (error) {
+    return `its $pattern does not compile: ${(error as Error).message}`;
+  }
+  return undefined;
+};
+/** patternProblem for each value of a tool_used grader's args, an object's fields in turn, each by its path (args.a.b). */
+const argsPatternProblems = (value: unknown, at: string): string[] => {
+  const problem = patternProblem(value);
+  if (problem) return [`${at}: ${problem}`];
+  return isObject(value) && !Object.hasOwn(value, "$pattern") ? Object.entries(value).flatMap(([key, field]) => argsPatternProblems(field, `${at}.${key}`)) : [];
+};
 /** A fake code search: the call's `query` argument searched over `files` (GitHub's code search syntax, read loosely: bare
  *  and quoted terms every one of which a file holds, /.../ terms read as literal text (a backslash before punctuation
  *  dropped), never as a regular expression, so no query can stall the eval, NOT before a term or a qualifier, and the
@@ -245,18 +265,8 @@ function fixtureOf(text: string, name: string, at: string, bad: (message: string
       const whens = Array.isArray(answer.when) ? answer.when.map((when, j) => [`[${j}]`, when] as const) : [["", answer.when] as const];
       for (const [j, when] of whens) {
         for (const [key, value] of Object.entries(when as Json)) {
-          if (!isObject(value) || !Object.hasOwn(value, "$pattern")) continue;
-          const where = `${at}: tools.${tool}.answers[${i}].when${j}.${key}`;
-          const others = Object.keys(value).filter((name) => name !== "$pattern");
-          if (others.length) bad(`${where}: a {"$pattern": ...} value holds no other key, and this one holds ${others.join(", ")}`);
-          else if (typeof value.$pattern !== "string") bad(`${where}: $pattern is a regular expression's source, a string`);
-          else {
-            try {
-              new RegExp(value.$pattern);
-            } catch (error) {
-              bad(`${where}: its $pattern does not compile: ${(error as Error).message}`);
-            }
-          }
+          const problem = patternProblem(value);
+          if (problem) bad(`${at}: tools.${tool}.answers[${i}].when${j}.${key}: ${problem}`);
         }
       }
     }
@@ -344,6 +354,9 @@ function graderOfType(p: Package, file: string, text: string, bad: (message: str
       // Any call's arguments are known: a faked MCP tool's from its fake's log, any other's from the run's timeline read
       // with calls=whole (each string through the run's redaction and cut at CALL_RESULT_CHARS).
       if (data.args !== undefined && !isObject(data.args)) bad(`${file}: args is a mapping of the arguments a call must carry`);
+      // A value written {"$pattern": <regex>} matches a call's string the regex matches whole (carries), as a fixture's
+      // when does, and is refused here on the same terms.
+      if (isObject(data.args)) for (const problem of argsPatternProblems(data.args, "args")) bad(`${file}: ${problem}`);
       // args_file: a file the run writes, a JSON list of argument objects, each carried by its own call (the values a run
       // computes, which a grader can't hold as literals). Its number of calls is the list's length, or count.
       const argsFile = data.args_file;
@@ -663,8 +676,13 @@ function targetOf(answer: string, target: string): { text: string } | { why: str
 
 const same = (a: unknown, b: unknown): boolean => JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
 const canonical = (value: unknown): unknown => (Array.isArray(value) ? value.map(canonical) : isObject(value) ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value);
-/** Whether `call` carries `args`: each key's value equal, an object's compared as a subset in turn. */
-const carries = (call: unknown, args: unknown): boolean => (isObject(args) ? isObject(call) && Object.entries(args).every(([key, value]) => Object.hasOwn(call, key) && carries(call[key], value)) : same(call, args));
+/** Whether `call` carries `args`: each key's value equal, an object's compared as a subset in turn, and a value written
+ *  `{"$pattern": <regex>}` a string the regex matches whole (patternOf, as a fixture's `when` reads it). */
+const carries = (call: unknown, args: unknown): boolean => {
+  const pattern = patternOf(args);
+  if (pattern) return typeof call === "string" && pattern.test(call);
+  return isObject(args) ? isObject(call) && Object.entries(args).every(([key, value]) => Object.hasOwn(call, key) && carries(call[key], value)) : same(call, args);
+};
 
 /** What the run's cut writes in place of a secret's span in a file it serves (handed-values.ts). */
 const CUT_MARK = "[redacted]";

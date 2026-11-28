@@ -279,6 +279,45 @@ test("tool_used's at_most passes on at least one and at most that many matching 
   });
 });
 
+test("tool_used's args take {\"$pattern\": <regex>} as a fixture's when does: a call's string matched whole; a pattern that is no string, does not compile or sits beside another key is refused", async (t) => {
+  const read = (path) => ({ tool: "read", arguments: { path }, status: "success", result: "" });
+  const runOf = (...paths) => ({ answer: "", calls: paths.map(read), mcpCalls: [], files: [] });
+  const grade = (args, expect, run) => gradeDeterministic({ file: "r.md", type: "tool_used", tools: ["read"], expect, args }, run, []);
+  // A read outside the skill's own folder and the run's message: a grader that expects none of them.
+  const outside = { path: { $pattern: String.raw`(?!\.agents/skills/review/[^/]+$|inputs/message\.md$).*` } };
+  const kept = [".agents/skills/review/SKILL.md", "inputs/message.md"];
+  assert.deepEqual(grade(outside, "not_called", runOf(...kept)), { pass: true, reason: `0 calls of read with ${JSON.stringify(outside)}; the grader expects none` }, "reads of the skill and the message pass");
+  for (const path of ["src/totals.ts", "CODEREVIEW.md", ".agents/skills/code-review-knowledge/rules.md", "inputs/message.md.bak", "x/inputs/message.md"]) {
+    assert.deepEqual(grade(outside, "not_called", runOf(...kept, path)), { pass: false, reason: `1 call of read with ${JSON.stringify(outside)}; the grader expects none` }, `a read of ${path} fails`);
+  }
+  // Whole, never a prefix or a part: "src" matches no call of src/totals.ts, "src/.*" does.
+  const src = runOf("src/totals.ts");
+  assert.equal(grade({ path: { $pattern: "src" } }, "called", src).pass, false, "a pattern matches the whole string");
+  assert.equal(grade({ path: { $pattern: "totals" } }, "called", src).pass, false, "a pattern matches the whole string, not a part");
+  assert.equal(grade({ path: { $pattern: "src/.*" } }, "called", src).pass, true);
+  assert.equal(grade({ path: { $pattern: ".*" } }, "called", runOf(7)).pass, false, "a value that is no string matches no pattern");
+  // Inside an object argument, as carries compares an object's fields, and beside a value compared equal.
+  const nested = { answer: "", calls: [{ tool: "read", arguments: { path: "a.md", opts: { range: "1-20", mode: "text" } }, status: "success", result: "" }], mcpCalls: [], files: [] };
+  assert.equal(grade({ path: "a.md", opts: { range: { $pattern: String.raw`\d+-\d+` } } }, "called", nested).pass, true);
+  assert.equal(grade({ path: "b.md", opts: { range: { $pattern: ".*" } } }, "called", nested).pass, false, "every other key still compares equal");
+  // Read from a grader's front matter: kept as written, or refused as a fixture's when is.
+  const dir = await webPackage(t, "graded", "unavailable", [["web_search", { query: "x" }]]);
+  const grader = (name, front) => writeFileSync(join(dir, "evals", "graded", "graders", name), `---\ntype: tool_used\ntool: web_search\n${front}\n---\n`);
+  grader("pattern.md", "expect: not_called\nargs: { query: { $pattern: 'rob.*' }, page: { n: { $pattern: '\\d+' } } }");
+  assert.deepEqual(readCases(dir, ["graded"]).cases[0].graders.find((g) => g.file === "pattern.md"), { file: "pattern.md", type: "tool_used", tools: ["web_search"], expect: "not_called", args: { query: { $pattern: "rob.*" }, page: { n: { $pattern: "\\d+" } } } });
+  grader("broken.md", "args: { query: { $pattern: '(' } }");
+  grader("flagged.md", "args: { query: { $pattern: 'x', flags: i } }");
+  grader("number.md", "args: { page: { n: { $pattern: 3 } } }");
+  assert.throws(() => readCases(dir, ["graded"]), (e) => {
+    for (const said of [
+      /graders\/broken\.md: args\.query: its \$pattern does not compile: /,
+      /graders\/flagged\.md: args\.query: a \{"\$pattern": \.\.\.\} value holds no other key, and this one holds flags/,
+      /graders\/number\.md: args\.page\.n: \$pattern is a regular expression's source, a string/,
+    ]) assert.match(e.message, said);
+    return true;
+  });
+});
+
 test("tool_used's args_file is read from a grader's front matter: a path in the run's work folder, never beside expect: not_called, at_least or at_most", async (t) => {
   const dir = await webPackage(t, "graded", "unavailable", [["web_search", { query: "x" }]]);
   const grader = (name, front) => writeFileSync(join(dir, "evals", "graded", "graders", name), `---\ntype: tool_used\ntool: web_search\n${front}\n---\n`);
