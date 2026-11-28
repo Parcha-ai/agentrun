@@ -1,0 +1,16 @@
+# Applied with these parameters (POST /v2/templates/code-review-composio/apply). Pass: 3 of 3 runs.
+parameters:
+  owner: example
+  repo: cart
+# A fake GitHub toolkit (Composio's), saved as the `github` server before the apply, from fixtures/fake-github.json (the
+# shared fake-MCP fixture format); it records every call. The grants are the owner's answer at apply, listed one by one,
+# so the run asks nobody.
+mcp:
+  github: fixtures/fake-github.json
+grants:
+  - mcp:github/GITHUB_GET_A_PULL_REQUEST
+  - mcp:github/GITHUB_LIST_PULL_REQUESTS_FILES
+  - mcp:github/GITHUB_GET_REPOSITORY_CONTENT
+  - mcp:github/GITHUB_LIST_REVIEW_COMMENTS_ON_A_PULL_REQUEST
+  - mcp:github/GITHUB_LIST_REVIEWS_FOR_A_PULL_REQUEST
+  - mcp:github/GITHUB_CREATE_A_REVIEW_FOR_A_PULL_REQUEST
