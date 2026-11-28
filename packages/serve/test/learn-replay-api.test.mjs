@@ -5,8 +5,9 @@
 // a revision and workflow the agent has (404), a whole number of inputs within the grades kept (400), and only by the
 // owner's password session (a token is 403), as making a learned workflow an agent is.
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { test } from "node:test";
+import { agentRunLearningKey } from "../dist/agent-run-learning.js";
 import { GRADES_KEPT, promotionsOf, recordPromotion } from "../dist/learn/promote.js";
 import { putLearning } from "./learn-support.mjs";
 import { putPromotions } from "./learned-workflow-seed-support.mjs";
@@ -209,4 +210,33 @@ test("an archived agent's replay is refused as its run's start is (409 agent_not
   assert.deepEqual((await api("GET", "/agents/source/learning/promotions")).body.promotions, [], "no replay reserved");
   const runs = (await api("GET", "/agents/source/runs?archived=true")).body.runs;
   assert.equal(runs.length, 1, `only the graded run: ${JSON.stringify(runs)}`);
+});
+
+// A run that asks to learn (POST /agents/{id}/runs `learning: {settings}`) after its agent's revision was saved gives the
+// agent's numbers (agent-run-learning.ts): an owner's replay of an agent whose definition has no learning picks the
+// asking run's compile_after newest inputs, and its replay runs launch with that run's settings, so they learn as the
+// agent does now (with none, a run of that revision learns nothing, and the replay is refused).
+test("an owner's replay of an agent whose definition has no learning, after a run of it asked with compile_after 2: 202 on its 2 newest inputs, each replay run launched with that run's settings", { timeout: 240_000 }, async (t) => {
+  const { api, store, replay, runs } = await world(t, { graded: 4, learning: false });
+  const settings = { compile_after: 2 };
+  // The asking run as its start makes it (runs-over-store.ts startRun, which needs a model gateway for its key, which
+  // this server has none of): its launch with the settings, and its agent's row naming it after the revision's save.
+  const launch = (await store.runs.launch(runs[0])).body;
+  const asking = randomUUID();
+  await store.runs.create({ id: asking, agentId: "source", revisionId: (await store.agents.get("source")).currentRevision }, { body: { ...launch, input: { content: "What is 9 plus 42?" }, learning: { ...launch.learning, settings } } });
+  await store.settings.put(agentRunLearningKey("source"), { run: asking, at: Date.now() });
+  await follow(api, asking, ["completed"], { deadlineMs: 60_000 });
+
+  const started = await replay();
+  assert.equal(started.status, 202, started.text);
+  assert.equal(started.json.inputs, 2, "the asking run's compile_after newest inputs, never the default's 20 (all 5 completed runs)");
+  const records = (await api("GET", "/agents/source/learning/promotions")).body.promotions;
+  const reserved = records.find((one) => one.replay_id === started.json.replay);
+  assert.equal(reserved?.runs?.length, 2, JSON.stringify(records));
+  for (const id of reserved.runs) assert.deepEqual((await store.runs.launch(id)).body.learning?.settings, settings, `replay run ${id} launched with the asking run's settings`);
+  // Its runs end before the server closes.
+  const path = `/agents/source/learning/workflows/answer/revisions/${DIGEST}/replays/${started.json.replay}`;
+  for (const end = Date.now() + 180_000; (await api("GET", path)).body.status === "running"; await new Promise((resolve) => setTimeout(resolve, 200))) {
+    assert.ok(Date.now() < end, "the replay never ended");
+  }
 });

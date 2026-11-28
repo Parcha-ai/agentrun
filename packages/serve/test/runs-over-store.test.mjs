@@ -746,6 +746,28 @@ test("startRun of a run that asks to learn names it before it is made; a start t
   assert.equal(await askedLearningOf(store, "a1"), undefined, "no settings from a run that is not there");
 });
 
+test("of two asking starts, the one that took the later time stays named though the earlier one writes last: its agent reads the later one's settings", async (t) => {
+  // One clock for the starts and the store: the later start takes its time and writes first, then the earlier one
+  // (its time taken before, on a slower server or a clock behind) writes its name after it.
+  t.mock.timers.enable({ apis: ["Date"], now: 2_000_000 });
+  const store = await freshStore();
+  const later = await startRun(store, learningDeps(), entryOf(), { ...ASKS, learning: { settings: { compile_after: 2 } } });
+  t.mock.timers.setTime(1_000_000);
+  const earlier = await startRun(store, learningDeps(), entryOf(), { ...ASKS, learning: { settings: { compile_after: 9 } } });
+  assert.notEqual(earlier.id, later.id, "both runs were made");
+  assert.deepEqual(await store.settings.get(agentRunLearningKey("a1")), { run: later.id, at: 2_000_000 }, "the later start stays named");
+  assert.deepEqual(await askedLearningOf(store, "a1"), { compile_after: 2 }, "the agent reads the later start's settings");
+});
+
+test("an asking retry under an origin key that already started a run gets that run, and the row names that run still: its agent reads its settings", async () => {
+  const store = await freshStore();
+  const first = await startRun(store, learningDeps(), entryOf(), ASKS, { origin: { key: "firing-asks" } });
+  const again = await startRun(store, learningDeps(), entryOf(), { ...ASKS, learning: { settings: { compile_after: 7 } } }, { origin: { key: "firing-asks" } });
+  assert.equal(again.id, first.id, "the retry gets the run the key started");
+  assert.equal((await store.settings.get(agentRunLearningKey("a1")))?.run, first.id, "the row names that run, never the retry's id no run has");
+  assert.deepEqual(await askedLearningOf(store, "a1"), { compile_after: 1 });
+});
+
 test("startRun records the server's learning off as no learning", async () => {
   const store = await freshStore();
   const run = await startRun(store, learningDeps({ learning: "off" }), entryOf(), { input: { content: "hi" } });

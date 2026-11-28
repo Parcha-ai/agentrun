@@ -301,11 +301,12 @@ test("a failed read of the run's own row while it waits is tried at the next rea
   assert.deepEqual(written.map((one) => one.learning), [{ seed: "save-1", section: "" }], "the round ended: it read again and wrote");
 });
 
-/** A store with one run (`run-2`) at `epoch`, whose launch names `after`, its journal `journal`; its seed read throws.
- *  `reread`: what a read of its launch after the write answers (the store read back). */
-function claimStore({ epoch, journal, after = ["run-1"], reread }) {
+/** A store with one run (`run-2`) at `epoch`, whose launch names `after` (and `own`: the rest of its learning start), its
+ *  journal `journal`; its seed read throws, unless `seed` reads it. `reread`: what a read of its launch after the write
+ *  answers (the store read back). */
+function claimStore({ epoch, journal, after = ["run-1"], reread, own = {}, seed = SEED_UNREAD }) {
   const written = [];
-  const launch = { runId: "run-2", body: launchBody({ input: {}, title: "t", place: { mode: "runner" }, learning: { seed: "save-1", section: "", after } }), sealed: null, census: null, createdAt: 0 };
+  const launch = { runId: "run-2", body: launchBody({ input: {}, title: "t", place: { mode: "runner" }, learning: { seed: "save-1", section: "", after, ...own } }), sealed: null, census: null, createdAt: 0 };
   const store = {
     runs: {
       // As the store writes it (sqlite/run-launch.ts writeLaunchLearning): the body's learning member replaced.
@@ -315,10 +316,25 @@ function claimStore({ epoch, journal, after = ["run-1"], reread }) {
     },
     readJournal: () => journal,
     commands: async () => [],
-    learning: { seed: SEED_UNREAD, proposal: async () => undefined },
+    learning: { seed, proposal: async () => undefined },
   };
   return { store, written };
 }
+
+test("a run that asked to learn, its seed read again at its first claim, keeps its start's own: the loop numbers it asked with, its compile model, use", async (t) => {
+  const data = await tmpData(t);
+  const own = { settings: { compile_after: 1, audit_every: 2 }, model: "m-1", use: true };
+  // Its agent has nothing learned yet: the seed read again is the empty one (no save), read without a failure.
+  const { store, written } = claimStore({ epoch: 1, journal: EMPTY_JOURNAL, own, seed: async () => undefined });
+  const lines = [];
+  const row = await reseededLaunchOf({ store, data, shown: SHOWN, log: (line) => lines.push(line), waitMs: 60_000 })("run-2", 1);
+  assert.equal(lines.some((line) => line.includes("could not be read again")), false, `the seed was read again: ${lines.join("\n")}`);
+  assert.equal(written.length, 1);
+  assert.equal(written[0].seed, null, "the seed as read again: no save yet");
+  assert.equal("after" in written[0], false);
+  assert.deepEqual([written[0].settings, written[0].model, written[0].use], [own.settings, own.model, own.use], "its start's own kept in what it wrote");
+  assert.deepEqual(readLaunchBody(row.body).learning.settings, own.settings, "the launch the run runs keeps the settings it asked to learn with");
+});
 
 test("a re-claimed run that already took a turn keeps the seed it started from: no wait, no read, no write", async (t) => {
   const data = await tmpData(t);

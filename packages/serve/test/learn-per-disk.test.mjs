@@ -164,7 +164,7 @@ test("learning reads only runs on no named disk since the reset: compile_after's
 test("a runner runs a named-disk launch with no seed, no # Learned section and no learned workflow, whatever its body holds; the body read back keeps what it ran; the agent's own disk or none runs as written", async () => {
   // A start made before its run's disk was read (a run queued before this build, or reopened): the default disk's
   // corrections and workflows in a named-disk run's body.
-  const learning = { seed: "a".repeat(40), section: `# Learned\n- ${MARK.default}`, workflows: ["answer"], model: "m-1", use: true };
+  const learning = { seed: "a".repeat(40), section: `# Learned\n- ${MARK.default}`, workflows: ["answer"], model: "m-1", use: true, settings: { compile_after: 1, audit_every: 2 } };
   const base = { input: { content: "Q" }, title: "t", place: { mode: "runner" }, learning };
   const stored = launchBody({ ...base, ...launchDisk("disk-b") });
   // What the runner's dispatch hands the harness it picks: the launch as the run runs it.
@@ -175,7 +175,7 @@ test("a runner runs a named-disk launch with no seed, no # Learned section and n
     return seen[0];
   };
   const named = await ran(stored);
-  assert.deepEqual(named.learning, { seed: null, section: "", seedFailed: "other_disk", model: "m-1", use: true }, "the run starts with nothing learned, its flags kept");
+  assert.deepEqual(named.learning, { seed: null, section: "", seedFailed: "other_disk", model: "m-1", use: true, settings: { compile_after: 1, audit_every: 2 } }, "the run starts with nothing learned, its flags and the loop numbers it asked to learn with kept");
   assert.equal(JSON.stringify(named).includes(MARK.default), false, "nothing of the default disk's learning reaches the run");
   assert.deepEqual(launchOnItsDisk(readLaunchBody(stored)).learning, named.learning, "the child process's read is the same");
   assert.deepEqual(readLaunchBody(stored).learning, learning, "a finished run's views read what its body says");
