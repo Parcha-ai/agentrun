@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { AsyncResource } from "node:async_hooks";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -129,6 +130,8 @@ const TABLE = {
   createRun: { method: "POST", path: "/v2/agents/{agent}/runs", row: "agent", body: { input: { content: "Hello." } } },
   updateDefinition: { method: "PUT", path: "/v2/agents/{agent}/definition", row: "agent", body: { definition: { version: 1, name: "W2 edit", instructions: "Answer.", skills: [], tools: [] } } },
   setCurrent: { method: "POST", path: "/v2/agents/{agent}/current", row: "agent", body: { revision_id: "rev_none" } },
+  getAgentArchil: { method: "GET", path: "/v2/agents/{agent}/archil", row: "agent" },
+  deleteAgentArchil: { method: "DELETE", path: "/v2/agents/{agent}/archil", row: "agent" },
   archiveAgent: { method: "POST", path: "/v2/agents/{agent}/archive", row: "agent" },
   unarchiveAgent: { method: "POST", path: "/v2/agents/{agent}/unarchive", row: "agent" },
   deleteAgent: { method: "DELETE", path: "/v2/agents/{agent}", row: "agent" },
@@ -156,6 +159,11 @@ const TABLE = {
   getCapabilities: { method: "GET", path: "/v2/capabilities", served: true },
   getHealth: { method: "GET", path: "/v2/health", served: true },
   getOpenapi: { method: "GET", path: "/v2/openapi.json", served: true },
+  listMarketplaceTemplates: { method: "GET", path: "/v2/marketplace/templates", served: true },
+  // The computers this server offers, never the operator's paired ones (computers.test.mjs); the runs a workspace's
+  // computers are up for, its own alone (computers-running.test.mjs).
+  listComputers: { method: "GET", path: "/v2/computers", served: true },
+  listRunningComputers: { method: "GET", path: "/v2/computers/running", served: true },
   // Composio's catalog, no workspace's row: api-only-composio-listing.test.mjs.
   listComposioToolkits: { catalog: true },
   listComposioTools: { catalog: true },
@@ -219,6 +227,58 @@ test("a scoped request reads another workspace's row as a missing one, the same 
   // The operator's unscoped token reads every row, as before.
   assert.equal((await unscoped(server, "GET", `/v2/runs/${w1.run}`)).status, 200);
   assert.equal((await unscoped(server, "GET", `/v2/runs/${run.body.run_id}`)).status, 200);
+});
+
+test("a scoped request reads the marketplace's list with the package here only where its workspace sees one: a bundled package for every workspace, an import for its own alone", { timeout: 120_000 }, async (t) => {
+  const site = createServer((_req, res) => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify([{ name: "deployed" }, { name: "notes" }, { name: "elsewhere" }])));
+  await new Promise((done) => site.listen(0, "127.0.0.1", done));
+  t.after(() => new Promise((done) => site.close(done)));
+  const server = await scopedServer(t, { marketplace: `http://127.0.0.1:${site.address().port}` });
+  const { template } = await seedW1(server);
+  const hereIn = async (request) => {
+    const answer = await request(server, "GET", "/v2/marketplace/templates");
+    assert.equal(answer.status, 200, answer.text);
+    assert.equal(answer.body.state, "read", answer.text);
+    return answer.body.templates.map((entry) => [entry.name, entry.here ?? null]);
+  };
+  assert.deepEqual(await hereIn(inW1), [["deployed", "deployed"], ["notes", template], ["elsewhere", null]]);
+  assert.deepEqual(await hereIn(inW2), [["deployed", "deployed"], ["notes", null], ["elsewhere", null]], "W1's import is not here for W2");
+  assert.equal((await unscoped(server, "GET", "/v2/marketplace/templates")).status, 404, "unscoped, an API-only server serves it no more than before");
+});
+
+test("a workspace reads and removes its own agent's Archil disk: on a server keeping run folders on its own disk, none", { timeout: 120_000 }, async (t) => {
+  const server = await scopedServer(t);
+  const { agent } = await seedW1(server);
+  const read = await inW1(server, "GET", `/v2/agents/${agent}/archil`);
+  assert.deepEqual([read.status, read.body], [200, { on: false, archil_disk: null }], read.text);
+  const removed = await inW1(server, "DELETE", `/v2/agents/${agent}/archil`);
+  assert.deepEqual([removed.status, removed.body], [200, { on: false, archil_disk: null, removed: null }], removed.text);
+});
+
+test("a workspace removes its own agent's existing Archil disk: refused until it archives the agent, then deleted at Archil; another workspace's remove is the unknown-path 404", { timeout: 120_000 }, async (t) => {
+  const REGION = "aws-us-east-1";
+  const DISK = "dsk-0000000000000a11";
+  withEnv(t, { ARCHIL_API_KEY: "fake-test-key" });
+  const control = archilControlFetch({ region: REGION, strict: true, disks: [{ id: DISK, name: "w1-agent" }] });
+  const server = await scopedServer(t, { archilControl: { baseUrl: control.baseUrl, fetch: control.fetch } });
+  await saveArchilSettings(server.store, { region: REGION, s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" });
+  const made = await inW1(server, "POST", "/v2/agents", { body: { definition: { version: 1, name: "W1 agent", instructions: "Answer.", skills: [], tools: [] } } });
+  assert.equal(made.status, 201, made.text);
+  const agent = made.body.agent_id;
+  await storeAgentDisk(server.store, agent, { diskId: DISK });
+  const path = `/v2/agents/${agent}/archil`;
+  assert.deepEqual((await inW1(server, "GET", path)).body, { on: true, archil_disk: { disk_id: DISK } });
+  const early = await inW1(server, "DELETE", path);
+  assert.deepEqual([early.status, early.body.error?.code], [412, "precondition_failed"], early.text);
+  assert.match(early.body.error.message, /archive it first/);
+  assert.equal((await inW2(server, "POST", `/v2/agents/${agent}/archive`)).status, 404, "W2 can't archive W1's agent");
+  assert.equal((await inW2(server, "DELETE", path)).status, 404, "W2 can't remove W1's agent's disk");
+  assert.equal(control.disks.has(DISK), true, "nothing removed yet");
+  const archived = await inW1(server, "POST", `/v2/agents/${agent}/archive`);
+  assert.equal(archived.status, 200, archived.text);
+  const removed = await inW1(server, "DELETE", path);
+  assert.deepEqual([removed.status, removed.body], [200, { on: true, archil_disk: null, removed: { disk_id: DISK } }], removed.text);
+  assert.equal(control.disks.has(DISK), false, "its disk deleted at Archil");
 });
 
 test("a workspace archives, unarchives and deletes its own agent and deletes its own imported package; another workspace's calls change none of them", { timeout: 120_000 }, async (t) => {

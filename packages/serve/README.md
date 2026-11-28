@@ -4117,8 +4117,11 @@ as before.
 
 A request in a workspace is served only: the runs' reads and lists (`GET /runs`, `/runs/{id}`, its timeline, files and
 export), a run's message, stop and cancel; the agents' list, read, create, revisions, definition and current revision,
-archive, unarchive and delete, and a run started on one; the templates' list, read, import, apply and delete (a bundled
-package stays `403`); the uploaded files' create, upload, list, read and delete (`/files`); the triggers' list, read,
+archive, unarchive and delete, a run started on one, and its Archil disk (`/agents/{id}/archil`, read and removed); the
+computers this server offers (`GET /computers`, never a paired computer of the operator's) and the runs of the
+workspace's own going on one (`GET /computers/running`); the templates' list, read, import, apply and delete (a bundled
+package stays `403`); the marketplace's list (`/marketplace/templates`, each entry's `here` naming only a package the
+workspace sees); the uploaded files' create, upload, list, read and delete (`/files`); the triggers' list, read,
 firings, create, edit, delete and run now (`/triggers`); and `/capabilities`, `/health` and `/openapi.json`. Every
 other route is `403 forbidden` with
 `details.reason: "not_scoped"`. In it, an agent, run, imported template package or file of another workspace (or of none)

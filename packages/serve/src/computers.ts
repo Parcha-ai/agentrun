@@ -410,9 +410,9 @@ const noProvider = (id: string | undefined): ApiError => new ApiError("not_found
 
 /** One of Settings → Computers' routes at its handler, as serve's dispatch calls it: its answer (sent 200), or its refusal
  *  as an ApiError (sent with its status): an unknown provider is not_found; a key save's body that is not an object of
- *  names, or a name the provider does not take, is input_invalid with its fields. */
-export async function settingsComputerRoute(routes: ComputerRoutes, name: string, request: { readonly provider?: string; readonly body?: unknown; readonly signal?: AbortSignal }): Promise<unknown> {
-  if (name === "listComputers") return routes.view();
+ *  names, or a name the provider does not take, is input_invalid with its fields. `scoped`: a request in a workspace. */
+export async function settingsComputerRoute(routes: ComputerRoutes, name: string, request: { readonly provider?: string; readonly body?: unknown; readonly signal?: AbortSignal; readonly scoped?: boolean }): Promise<unknown> {
+  if (name === "listComputers") return routes.view({ scoped: request.scoped === true });
   if (name === "saveComputerKeys") {
     const { body } = request;
     if (typeof body !== "object" || body === null || Array.isArray(body)) throw new ApiError("input_invalid", "the body is a JSON object of the provider's key names, each a string, or null to remove it");
