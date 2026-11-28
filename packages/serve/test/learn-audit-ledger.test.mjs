@@ -331,6 +331,26 @@ test("(g) the definition's numbers stand in: audit_every 5 draws at 1/5, and hol
   assert.deepEqual([held.decided, held.audit.window, held.audit.disagree, held.audit.rows], ["hold", 5, 2, 2], JSON.stringify(held));
 });
 
+test("(run learning) the hold takes the numbers of the agent's newest run that asked to learn: its revision at every default, its runs at hold_window 5 with hold_disagree 2, held on 2 disagreements", { timeout: 240_000 }, async (t) => {
+  const settings = { audit_every: 5, hold_window: 5, hold_disagree: 2 };
+  const picked = Array.from({ length: 200 }, (_, i) => `rl-${i}`).filter((id) => drawn(id, 5) && !drawn(id, 10)).slice(0, 2);
+  const skipped = Array.from({ length: 200 }, (_, i) => `rl-${i}`).find((id) => !drawn(id, 5));
+  assert.equal(picked.length, 2);
+  const w = await world(t, { learning: true, submit: answers({ wrong: picked.map((id) => `Question for ${id}`) }) });
+  // Each run asked to learn with `settings` (its launch's learning.settings, as POST /agents/{id}/runs keeps them).
+  const asked = async () => ({ learning: { ...startAt((await w.server.learning.seed("agent-1")).save.id), settings } });
+  const first = await w.start(skipped, `Question for ${skipped}`, await asked());
+  assert.equal(first.metrics?.path, "workflow");
+  // Named the agent's newest run that asked, in the row its start writes (agent-run-learning.ts noteRunLearning).
+  await w.server.settings.put("agent.run_learning.agent-1", { run: first.id, at: first.startedAt });
+  for (const id of picked) assert.equal((await w.start(id, `Question for ${id}`, await asked())).metrics?.path, "workflow");
+  assert.deepEqual((await w.shadows()).map(({ launch }) => launch.audit.of).sort(), [...picked].sort(), "drawn at the runs' audit_every 5");
+  const next = await w.start("rl-next", "Question next", await asked());
+  assert.equal(next.metrics?.path, "agent", "held on 2 of the last 5 rows: the asking run's numbers, not the revision's defaults (3 of 10)");
+  const held = (await promotionsOf(w.server.learning, "agent-1")).at(-1);
+  assert.deepEqual([held.decided, held.audit.window, held.audit.disagree, held.audit.rows], ["hold", 5, 2, 2], JSON.stringify(held));
+});
+
 test("(r2) three shadows that end between two claims are written oldest first: hold_window 2 holds on the 2 newest", { timeout: 240_000 }, async (t) => {
   const w = await world(t, { learning: { audit_every: 1, hold_window: 2, hold_disagree: 2 }, paused: true, submit: answers({ wrong: ["Batch 2", "Batch 3"] }) });
   // Made before the runner starts: a claim takes the oldest run first, so the three served runs are claimed before any of
