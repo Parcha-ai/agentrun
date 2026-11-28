@@ -22,9 +22,10 @@ export function messageText(input: unknown): string {
  *  tool_gate; none, a native harness's `every_call`), can open the files given to it. A harness that runs only the host's
  *  tools (`every_call` or `config`: pi, codex, claude-agent, whose own built-ins are off; goose) reads them with a tool it
  *  is granted that reads the run's work/ (skills.ts READING_TOOLS: read, bash), and with none has no way to open them. An
- *  ACP agent's own tools (`permission`) read files of their own; a workflow's nodes name their own tools. */
-export const opensFiles = (kind: string, tools: readonly unknown[] | undefined, toolGate?: string): boolean =>
-  kind !== "agentic" || toolGate === "permission" || readsFiles((tools ?? []).filter((tool): tool is string => typeof tool === "string"));
+ *  ACP agent's own tools (`permission`) read files of their own; a workflow's nodes name their own tools. A tool `denied`
+ *  (its permission in force is deny, the agent's setting or this server's) reads nothing: every call of it is refused. */
+export const opensFiles = (kind: string, tools: readonly unknown[] | undefined, toolGate?: string, denied: (tool: string) => boolean = () => false): boolean =>
+  kind !== "agentic" || toolGate === "permission" || readsFiles((tools ?? []).filter((tool): tool is string => typeof tool === "string" && !denied(tool)));
 
 /** The line's label for a run whose agent has no tool that reads files (opensFiles false): the files are named, as they
  *  are its inputs, and the model is told it cannot open them, so it never says it will read one and then asks for it. */

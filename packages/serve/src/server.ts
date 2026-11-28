@@ -4806,8 +4806,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (!view || !Array.isArray(fileIds) || fileIds.length === 0) return view;
     const row = await store.runs.get(runId);
     const revision = row ? await store.agents.revision(row.revisionId) : undefined;
-    const body = revision?.body as { tools?: readonly unknown[]; harness?: string } | undefined;
-    if (!revision || opensFiles(revision.kind, body?.tools, harnessOf(env, harnessOfBody(body ?? {}))?.promises?.tool_gate)) return view;
+    const body = revision?.body as { tools?: readonly unknown[]; harness?: string; toolSettings?: Parameters<typeof permissionFrom>[2] } | undefined;
+    // A reader whose permission in force is deny (the agent's setting or this server's) reads nothing, as the run's gate refuses it.
+    const server = settings.get() as Parameters<typeof permissionFrom>[1];
+    const denied = (tool: string) => permissionFrom(tool, server, body?.toolSettings ?? {}).permission === "deny";
+    if (!revision || opensFiles(revision.kind, body?.tools, harnessOf(env, harnessOfBody(body ?? {}))?.promises?.tool_gate, denied)) return view;
     return { ...view, warnings: [unreadFilesWarning()] };
   }
 

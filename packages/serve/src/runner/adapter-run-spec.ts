@@ -1049,7 +1049,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // through the run's Workspace (Mode 2: its inputs/ on the disk, never a folder of this machine).
   // A typed input's other fields follow its content as one json block (inputMessage).
   // An agent with no tool that reads files is told its files are out of its reach (opensFiles).
-  const input = await firstMessage(inputMessage(launch.input), ws.workspace, undefined, opensFiles(revision.kind, granted));
+  const input = await firstMessage(inputMessage(launch.input), ws.workspace, undefined, opensFiles(revision.kind, granted, undefined, (tool) => gate.permissions.policy(tool) === "deny"));
 
   // The run's end-of-run step, when it learns (learningEndOfRun from the launch's learning start; none otherwise): the
   // compile turn and the owner's correction over the run's store, asked in the end turn while the claim is held

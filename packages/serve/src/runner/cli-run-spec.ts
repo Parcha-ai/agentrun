@@ -832,7 +832,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
 
   // A typed input's other fields follow its content as one json block (inputMessage).
   // An agent with no tool that reads files is told its files are out of its reach (opensFiles).
-  const input = await firstMessage(inputMessage(launch.input), ws.workspace, undefined, opensFiles(revision.kind, granted, entry.promises?.tool_gate));
+  const input = await firstMessage(inputMessage(launch.input), ws.workspace, undefined, opensFiles(revision.kind, granted, entry.promises?.tool_gate, (tool) => gate.permissions.policy(tool) === "deny"));
 
   // The run's end-of-run step, when it learns, the same as the pi spec's: the compile turn and the owner's correction over
   // the run's store, its draft checked against the seed in the agent's learning rows.

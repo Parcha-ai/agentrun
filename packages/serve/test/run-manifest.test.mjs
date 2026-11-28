@@ -105,9 +105,13 @@ for (const harness of ["claude-agent", "codex"]) {
     assert.equal((await api("POST", "/agents", agent(`reader-${harness}`, { harness, tools: ["read"] }))).status, 201);
     const reads = await api("POST", `/agents/reader-${harness}/runs`, { input: { content: "Look at this." }, file_ids: ids });
     assert.equal(reads.body.warnings, undefined, "a reader: no warning");
+    // read granted but denied by the agent's own setting: every read refused, so the same warning.
+    assert.equal((await api("POST", "/agents", agent(`denied-${harness}`, { harness, tools: ["read"], tool_settings: { read: { permission: "deny" } } }))).status, 201);
+    const denied = await api("POST", `/agents/denied-${harness}/runs`, { input: { content: "Look at this." }, file_ids: ids });
+    assert.deepEqual(denied.body.warnings?.map((w) => w.reason), ["no_file_tool"], "a denied reader: the warning");
     const none = await api("POST", `/agents/blind-${harness}/runs`, { input: { content: "Hi." } });
     assert.equal(none.body.warnings, undefined, "no files: no warning");
-    for (const id of [inline.body.run_id, reads.body.run_id, none.body.run_id]) await follow(api, id, ["completed"], { deadlineMs: 55_000 });
+    for (const id of [inline.body.run_id, reads.body.run_id, denied.body.run_id, none.body.run_id]) await follow(api, id, ["completed"], { deadlineMs: 55_000 });
   });
 }
 
@@ -118,6 +122,9 @@ test("which runs can open their files: an agent granted read or bash; an ACP age
   assert.equal(opensFiles("agentic", [], "config"), false, "goose: its own tools off");
   assert.equal(opensFiles("agentic", [], "permission"), true, "an ACP agent reads with its own tools");
   assert.equal(opensFiles("workflow", []), true);
+  const denied = (tool) => tool === "read";
+  assert.equal(opensFiles("agentic", ["read"], undefined, denied), false, "a reader denied reads nothing");
+  assert.equal(opensFiles("agentic", ["read", "bash"], undefined, denied), true, "bash still reads");
 });
 
 test("the line names at most MANIFEST_ENTRIES files, then counts the rest; sizes read as a person reads them; each name quoted, so no name breaks the line", () => {
