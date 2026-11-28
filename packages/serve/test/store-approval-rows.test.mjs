@@ -173,6 +173,14 @@ test("an ACP agent's call that names no command and no title reads as the agent'
   assert.doesNotMatch(`${waiting?.summary}\n${waiting?.text}\n${waiting?.tool_input_preview}`, /toolCallId|toolu_|"kind"|"input"/);
 });
 
+test("an ACP agent's call to another MCP server reads with that server's name first on its approval row", async (t) => {
+  const other = { id: "c1", tool: "acp_other", args: { title: "agentrun-look_up: look_up", kind: "other", input: {}, toolCallId: "toolu_04abcdef", server: "other-mcp" } };
+  const store = await runWith(t, [other], { ended: false });
+  const rows = await timelineOverStore(store, "run-1", deps);
+  const waiting = readFor(rows, "c1").after[0];
+  assert.equal(waiting?.summary, 'Waiting for your approval: acp_other Calls MCP server "other-mcp": agentrun-look_up: look_up');
+});
+
 test("two approvals in one run each read in order, and reading the rows twice gives the same rows", async (t) => {
   const store = await runWith(t, [fetchCall("c1", { approved: true }, { text: "one", isError: false }), fetchCall("c2", { approved: false, note: "not that page twice" }, { text: "refused", isError: true })]);
   const rows = await timelineOverStore(store, "run-1", deps);

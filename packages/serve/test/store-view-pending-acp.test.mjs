@@ -71,6 +71,21 @@ test("an ACP agent's call whose input names no command and no title serves that 
   assert.equal(view.summary, undefined);
 });
 
+test("an ACP agent's call to another MCP server names that server first in its summary, the one the adapter recorded, though its input is empty", async (t) => {
+  // Cursor asks with input {} and a title of its own making; the adapter records the server the call belongs to beside it
+  // (permissionGateCall's `server`). Dropping the wrapper must not drop that server: a person approves knowing whose call it is.
+  const store = await waitingOn(t, "acp_other", { title: "agentrun-look_up: look_up", kind: "other", input: {}, toolCallId: "toolu_04abcdef", server: "other-mcp" });
+  const { view, summary } = await pendings(store);
+  for (const [where, pending] of Object.entries({ view, summary })) {
+    assert.equal(pending?.args_preview, "{}", `${where}: ${JSON.stringify(pending)}`);
+    assert.equal(pending.summary, 'Calls MCP server "other-mcp": agentrun-look_up: look_up', where);
+  }
+  const named = await waitingOn(t, "acp_other", { kind: "other", input: { q: 1 }, toolCallId: "toolu_05abcdef", server: "other-mcp" });
+  const { view: alone } = await pendings(named);
+  assert.equal(alone.summary, 'Calls MCP server "other-mcp"', "a call naming neither command nor title still names its server");
+  assert.deepEqual(JSON.parse(alone.args_preview), { q: 1 });
+});
+
 test("any other tool's call keeps its whole arguments, even ones shaped like the gate's", async (t) => {
   const args = { title: "t", kind: "k", input: { q: 1 }, toolCallId: "x" };
   const store = await waitingOn(t, "web_fetch", args);
