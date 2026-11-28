@@ -80,6 +80,8 @@ jobs:
   launcher:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     uses: ./.github/workflows/install-walk.yml
+    with:
+      ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
   docker:
     name: Docker Compose, main's image

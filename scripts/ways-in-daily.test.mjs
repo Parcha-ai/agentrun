@@ -129,29 +129,35 @@ test('after each publish the daily walk runs at the published tag too, and only 
   assert.match(workflow.concurrency.group, /github\.event\.workflow_run\.head_sha/);
 });
 
-test("after a publish each row walks the tag's commit, not main's tip: its own checkouts and the walks it calls", () => {
+// Every walk the daily walk calls (each uses: ./.github/workflows/...), read from the workflow itself, so a row added or
+// missed is in this list either way.
+const calledWalks = () => Object.entries(workflow.jobs).filter(([, job]) => /^\.\/\.github\/workflows\//.test(job.uses ?? '')).map(([id, job]) => [id, job, job.uses.replace('./.github/workflows/', '')]);
+
+test("after a publish each row walks the tag's commit, not main's tip: its own checkouts, each walk it calls, and every checkout in those", () => {
   const own = checkouts(workflow.jobs);
   assert.ok(own.length >= 6, 'the daily walk checks out in its own jobs');
   for (const [id, step] of own) assert.equal(step.with?.ref, AT, `${id}'s checkout`);
-  for (const id of ['helm', 'coolify', 'dokploy']) assert.equal(workflow.jobs[id].with?.ref, AT, `${id} hands the walk the tag's commit`);
-  for (const name of ['helm-walk.yml', 'selfhost-walk.yml']) {
-    const called = workflowAt(name);
-    assert.deepEqual(called.on.workflow_call.inputs.ref, { type: 'string', default: '' }, `${name} takes a ref`);
-    const steps = checkouts(called.jobs);
+  const called = calledWalks();
+  assert.deepEqual(called.map(([id]) => id).sort(), ['coolify', 'dokploy', 'helm', 'launcher'], 'the rows that call a walk');
+  for (const [id, job, name] of called) {
+    assert.equal(job.with?.ref, AT, `${id} hands ${name} the tag's commit`);
+    const walk = workflowAt(name);
+    assert.deepEqual(walk.on.workflow_call.inputs?.ref, { type: 'string', default: '' }, `${name} takes a ref`);
+    const steps = checkouts(walk.jobs);
     assert.ok(steps.length > 0, `${name} checks out`);
-    // Empty on its own push or pull request, so the checkout keeps its own default there.
-    for (const [id, step] of steps) assert.equal(step.with?.ref, '${{ inputs.ref }}', `${name} ${id}'s checkout`);
+    // Empty on its own push, pull request or publish, so the checkout keeps its own default there.
+    for (const [jobId, step] of steps) assert.equal(step.with?.ref, '${{ inputs.ref }}', `${name} ${jobId}'s checkout`);
   }
-  // The launcher row calls install-walk, which on a publish installs what npm and the registry serve: the release itself.
+  // On a publish install-walk installs what npm and the registry serve (the release itself), now from the tag's scripts.
   assert.match(readFileSync(new URL('../.github/workflows/install-walk.yml', import.meta.url), 'utf8'), /github\.event_name \}\}" = workflow_run/);
 });
 
-test("a called walk's concurrency group names the commit it was handed, so a daily run never cancels a release's walk", () => {
-  // A called workflow's github.workflow is the caller's and its github.ref is main on the schedule and after a publish
-  // alike, and helm-walk and selfhost-walk cancel in progress: without the commit both runs share one group.
-  for (const name of ['helm-walk.yml', 'selfhost-walk.yml']) {
+test("a called walk's concurrency group names the commit it was handed, so a daily run never cancels or replaces a release's walk", () => {
+  // A called workflow's github.workflow is the caller's, and its github.ref (and github.sha) are main's on the schedule and
+  // after a publish alike: without the commit both runs share one group, and helm-walk and selfhost-walk cancel in progress.
+  for (const name of new Set(calledWalks().map(([, , n]) => n))) {
     const { concurrency } = workflowAt(name);
-    assert.equal(concurrency['cancel-in-progress'], true, `${name} still cancels a superseded run of the same commit`);
     assert.ok(concurrency.group.endsWith("${{ inputs.ref && format('-{0}', inputs.ref) || '' }}"), `${name}'s group names the handed commit, and is as before with none`);
   }
+  for (const name of ['helm-walk.yml', 'selfhost-walk.yml']) assert.equal(workflowAt(name).concurrency['cancel-in-progress'], true, `${name} still cancels a superseded run of the same commit`);
 });
