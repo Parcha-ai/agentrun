@@ -68,8 +68,34 @@ test("install.sh is POSIX shell that stops at the first failure, runs its steps 
   assert.match(step("packages"), /id -u agentrun-tool >\/dev\/null 2>&1 \|\| useradd /);
   assert.match(step("packages"), /if \[ "\$\(dpkg-query -W -f '\$\{Version\}' archil 2>\/dev\/null\)" != "\$ARCHIL_VERSION" \]; then/, "the archil client is fetched only when another version, or none, is installed");
   assert.match(step("checked"), /if dpkg -s sudo >\/dev\/null 2>&1; then /, "sudo is purged only where it is installed");
-  // It reads no network beyond what the Dockerfile read: Debian's mirrors through apt, and Archil's package.
-  assert.deepEqual([...INSTALL.matchAll(/https?:\/\/[^\s"']+/g)].map((match) => match[0]), ["https://s3.amazonaws.com/archil-client/pkg/archil_${ARCHIL_VERSION}_${arch}.deb"]);
+  assert.match(step("packages"), /if \[ "\$\(\/usr\/local\/bin\/node --version 2>\/dev\/null\)" != "v\$NODE_VERSION" \]; then/, "Node is fetched only when another version, or none, is installed");
+  // It reads no network beyond Debian's mirrors through apt, Archil's package and Node's release.
+  assert.deepEqual([...INSTALL.matchAll(/https?:\/\/[^\s"']+/g)].map((match) => match[0]), [
+    "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz",
+    "https://s3.amazonaws.com/archil-client/pkg/archil_${ARCHIL_VERSION}_${arch}.deb",
+  ]);
+});
+
+test("the image's Node is the server image's release from nodejs.org, pinned by sha256 for each architecture, not Debian's nodejs and npm", () => {
+  const serve = readFileSync(new URL("../../serve/docker/Dockerfile", import.meta.url), "utf8");
+  const version = serve.match(/^ARG NODE_VERSION=(\S+)$/m)?.[1];
+  assert.ok(version, "the server image pins a Node version");
+  assert.match(INSTALL, new RegExp(`^NODE_VERSION=${version.replace(/\./g, "\\.")}$`, "m"), "the same Node as the server's image");
+  for (const arch of ["AMD64", "ARM64"]) assert.match(INSTALL, new RegExp(`^NODE_SHA256_${arch}=[0-9a-f]{64}$`, "m"), arch);
+  const packages = step("packages");
+  assert.ok(packages.includes('amd64) sum="$ARCHIL_SHA256_AMD64"; node_arch=x64; node_sum="$NODE_SHA256_AMD64" ;;'), "x64's tarball on amd64");
+  assert.ok(packages.includes('arm64) sum="$ARCHIL_SHA256_ARM64"; node_arch=arm64; node_sum="$NODE_SHA256_ARM64" ;;'), "arm64's on arm64");
+  const fetched = packages.indexOf('curl -fsSL -o /tmp/node.tar.xz');
+  const summed = packages.indexOf('echo "$node_sum  /tmp/node.tar.xz" | sha256sum -c -');
+  const unpacked = packages.indexOf("tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 --no-same-owner");
+  assert.ok(fetched > 0 && fetched < summed && summed < unpacked, "the tarball is checked before it is unpacked");
+  const installed = packages.match(/apt-get install -y -qq --no-install-recommends (.*?) >\/dev\/null/)?.[1].split(/\s+/) ?? [];
+  assert.ok(installed.includes("xz-utils"), "tar reads the .tar.xz with xz");
+  assert.ok(!installed.includes("nodejs") && !installed.includes("npm"), "no Debian nodejs or npm beside it");
+  assert.ok(packages.includes("rm -rf /var/lib/apt/lists/* /tmp/archil.deb /tmp/node.tar.xz"), "the tarball is not left in the image");
+  const checked = step("checked");
+  assert.ok(checked.includes('[ "$(/usr/local/bin/node --version)" = "v$NODE_VERSION" ] || { echo "the image\'s node is not $NODE_VERSION" >&2; exit 1; }'), "the build reads the version back");
+  assert.ok(checked.includes('for x in npm npx; do [ -x "/usr/local/bin/$x" ]'), "and finds npm and npx beside node");
 });
 
 test("the image pins the archil client the live checks ran, by version and sha256, and refuses to build, in words, while a sum is unpinned", () => {
@@ -427,10 +453,10 @@ test("the desktop step installs and checks every app the linux-desktop suite ope
   }
 });
 
-test("the default box recipe's hash is 244e45e13f7f: a recipe change is a box bump, a new image and snapshot of that name", async () => {
+test("the default box recipe's hash is 243c3c1a9d57: a recipe change is a box bump, a new image and snapshot of that name", async () => {
   // Another image (media/, documents/) is a recipe of its own; nothing it adds moves this one. A change here names a new
   // ghcr.io/parcha-ai/agentrun-box:<hash> (the release's box job publishes it), a new Daytona snapshot
   // agentrun-box-<hash> (box/build-daytona.py) for AGENTRUN_DAYTONA_SNAPSHOT, and relays/cloudflare/wrangler.json's image.
   const { recipeHash } = await import("../box/recipe.mjs");
-  assert.equal(recipeHash(), "244e45e13f7f");
+  assert.equal(recipeHash(), "243c3c1a9d57");
 });

@@ -227,11 +227,17 @@ export const apiOnlyRefusal = (raw: string): string => `this server serves the r
  *  ones), the marketplace's list (its `here` naming only a package the workspace sees), its own suggested agents (with
  *  GitHub read as not connected: the server's App is the operator's), and the server's description. Every other is
  *  refused with 403 not_scoped, whatever API_ONLY_ROUTES serves an unscoped request. listAgents, createAgent,
- *  updateDefinition, getTemplate, listTemplates, deleteTemplate, listMarketplaceTemplates, getOpenapi, createTrigger,
- *  deleteTrigger, fireTrigger, rotateTriggerSecret, listMcpServers, getMcpServer, previewMcpServer, refreshMcpServer and
- *  the suggestion and GitHub reads are not in API_ONLY_ROUTES: an API-only server serves them to a scoped request alone
- *  (a new trigger under apiOnlyTriggerMade, a firing under apiOnlyTurnsOn, a webhook's new secret shown once to the
- *  backend, which decides who in the workspace sees it: trigger-secrets-shown.ts).
+ *  updateDefinition, getTemplate, listTemplates, deleteTemplate, listMarketplaceTemplates, getOpenapi, getRunGraph,
+ *  getRunTrace, pauseRun, resumeRun, archiveRun, unarchiveRun, startRun, createTrigger, deleteTrigger, fireTrigger,
+ *  rotateTriggerSecret, listMcpServers, getMcpServer, previewMcpServer, refreshMcpServer and the suggestion and GitHub
+ *  reads are not in API_ONLY_ROUTES: an API-only server serves them to a scoped request alone (a new trigger under
+ *  apiOnlyTriggerMade, a firing under apiOnlyTurnsOn, a webhook's new secret shown once to the backend, which decides who
+ *  in the workspace sees it: trigger-secrets-shown.ts). Every run route here names its run first in its path, which the
+ *  route's scope check reads as missing when it is another workspace's. answerApproval is not here: it takes the owner's
+ *  session alone, never a token. Nor are the agent extras in API_ONLY_ROUTES; each names its agent first in its path, as
+ *  the run routes name their run, and validateWorkflow names none. writeHomeFile is not here: nothing bounds a home's
+ *  size on a disk the workspaces share. Nor is forgetSignIn: removing a secret takes the owner's console session, never a
+ *  token (secret-writes.ts).
  *
  *  A workspace's MCP servers are its own rows (mcp-workspace.ts): it lists, reads, saves, refreshes and deletes those
  *  alone, another workspace's name reading as an unknown one, and its agents grant its own server of a name before the
@@ -244,8 +250,10 @@ export const WORKSPACE_ROUTES: ReadonlySet<string> = new Set([
   "listAgents", "getAgent", "listRevisions", "createAgent", "updateDefinition", "setCurrent",
   "archiveAgent", "unarchiveAgent", "deleteAgent",
   "getAgentArchil", "deleteAgentArchil", "listComputers", "listRunningComputers",
+  "getAgentPackage", "getRevisionSkills", "validateWorkflow", "listHomeFiles", "readHomeFile", "deleteHomeFile",
   "importTemplate", "applyTemplate", "getTemplate", "listTemplates", "deleteTemplate", "listMarketplaceTemplates",
   "createRun", "sendMessage", "stopRun", "cancelRun",
+  "deleteRun", "raiseRunCap", "getRunGraph", "getRunTrace", "pauseRun", "resumeRun", "archiveRun", "unarchiveRun", "gradeRun", "startRun",
   "createFile", "listFiles", "getFile", "uploadFile", "deleteFile",
   "listMcpServerNames", "listMcpServers", "getMcpServer", "previewMcpServer", "saveMcpServer", "saveComposioServer", "refreshMcpServer", "deleteMcpServer",
   "listTriggers", "getTrigger", "listTriggerFirings", "createTrigger", "updateTrigger", "deleteTrigger", "fireTrigger",

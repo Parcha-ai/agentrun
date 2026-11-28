@@ -11,7 +11,8 @@
 //    bound read-only from dist/docker with the package's package.json), in a pinned Node image, on the provider's own
 //    bridge alone (EGRESS_NETWORK), publishing no port, as the computer's uid:gid, with a read-only root, no capability,
 //    no privilege to gain, and bounded memory, pids and log. Its argv holds the list (or `--open public`), the computer's deadline (it ends itself then), the
-//    Docker host's own public addresses (refused as this host's) and the hint. It holds no key.
+//    Docker host's own public addresses (refused as this host's), the hint, and the operator's cap on its connections open
+//    at once when one is set. It holds no key.
 //  - The network EGRESS_NETWORK: one user-defined bridge every proxy of every provider on this Docker host shares, made
 //    by the first create that needs it and never removed. Inter-container traffic on it is off (enable_icc=false), and
 //    no other workload's container is on it: on Docker's default bridge, one with NET_RAW could ARP-spoof the gateway
@@ -25,7 +26,7 @@ import { fileURLToPath } from "node:url";
 import { DEADLINE_LABEL } from "../drift.js";
 import type { DockerInspect } from "./inspect.js";
 import type { NetworkPolicy } from "../provider.js";
-import { LISTED_PORTS, parseAllow } from "./egress-proxy.js";
+import { LISTED_PORTS, maxTunnelsOf, parseAllow } from "./egress-proxy.js";
 import { checkAddress } from "./egress-table.js";
 
 /** The proxy container's image: node:22.23.5-trixie-slim (Node 22's November 2026 security release), pinned to its
@@ -223,6 +224,8 @@ export interface EgressRun {
 	deadline: string;
 	code: EgressCode;
 	hint?: string;
+	/** The operator's cap on the proxy's connections open at once (`--max-tunnels`); the proxy's default without one. */
+	maxTunnels?: number;
 	/** The spec's labels, which the proxy container carries too. */
 	labels?: Record<string, string>;
 }
@@ -238,7 +241,7 @@ const PROXY_NOFILE = 1024;
 const PROXY_LOG = { driver: "json-file", options: { "max-size": "1m", "max-file": "2" } } as const;
 
 /** `docker run` of a computer's proxy container (see the head of this file). Pinned by a golden test. */
-export function egressRunArgs({ name, user, image, allow, local, deadline, code, hint, labels = {} }: EgressRun): string[] {
+export function egressRunArgs({ name, user, image, allow, local, deadline, code, hint, maxTunnels, labels = {} }: EgressRun): string[] {
 	const proxy = egressNameOf(name);
 	const args = ["run", "--detach", "--name", proxy, "--label", `${EGRESS_LABEL}=${name}`, "--label", `${DEADLINE_LABEL}=${deadline}`];
 	for (const [key, value] of Object.entries(labels)) args.push("--label", `${key}=${value}`);
@@ -263,6 +266,7 @@ export function egressRunArgs({ name, user, image, allow, local, deadline, code,
 	args.push("--entrypoint", "node", image, PROXY_MAIN, "--socket", PROXY_SOCKET, "--deadline", deadline, ...(allow === "open" ? ["--open", "public"] : ["--allow", allow.join(",")]));
 	if (local.length > 0) args.push("--local", local.join(","));
 	if (hint !== undefined) args.push("--hint", hint);
+	if (maxTunnels !== undefined) args.push("--max-tunnels", String(maxTunnels));
 	return args;
 }
 
@@ -372,8 +376,11 @@ export function egressOf(proxy: DockerInspect | null | undefined, owner: EgressO
 	if (form === "allow" && !flags.has("--allow")) return other("has no host list in its command");
 	if (flags.get("--socket") !== PROXY_SOCKET) return other(`listens on ${show(flags.get("--socket"))}, not ${PROXY_SOCKET}`);
 	if (flags.get("--deadline") !== owner.deadline) return other(`ends at ${show(flags.get("--deadline"))}, not the computer's deadline ${show(owner.deadline)}`);
-	const unknown = [...flags.keys()].filter((flag) => !["--socket", "--deadline", "--allow", "--open", "--local", "--hint"].includes(flag));
+	const unknown = [...flags.keys()].filter((flag) => !["--socket", "--deadline", "--allow", "--open", "--local", "--hint", "--max-tunnels"].includes(flag));
 	if (unknown.length > 0) return other(`runs with flags ${unknown.join(", ")}, which create never gives`);
+	// A cap the operator set when the proxy was made holds for its life: any the proxy would start with is the
+	// provider's, whatever the setting reads now.
+	if (flags.has("--max-tunnels") && maxTunnelsOf(flags.get("--max-tunnels")!) === undefined) return other(`runs with --max-tunnels ${show(flags.get("--max-tunnels"))}, a cap create never gives`);
 	const read = form === "open" ? undefined : allowOf((flags.get("--allow") ?? "").split(","));
 	if (read !== undefined && "problem" in read) return other(`holds a list this provider never makes: ${read.problem}`);
 	// The host block: a --local removed or shortened lets the computer reach the Docker host's own addresses.

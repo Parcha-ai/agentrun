@@ -1,5 +1,0 @@
----
-packages: @parcha/agentrun-serve
-kind: feature
----
-Agent Factory opens a session beside the board. A card's name opens its run in a panel over the board's right side, or over all of it on a narrow page: what the run did last, what it asks, and the run page's own controls. A question is answered, a tool call allowed or denied, a working run steered, a follow-up asked and a run stopped or cancelled without leaving the board, which keeps its place, its filters and its scroll under the panel. A session an SDK or a connected CLI runs has no message box and no stop there, as on its run's page. A session that waits on a person names the step on its card (Answer, Review), and the board reads again as soon as something done in the panel is read back. The board's address keeps the open session and the filters (`#/factory?session=…&repo=…&control=…`), so a reload, a link and the way back from a run's page open the same board. A card's run label, and Open run in the panel, lead to the run's own page.

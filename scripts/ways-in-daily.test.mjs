@@ -145,10 +145,11 @@ test("after a publish each row walks the tag's commit, not main's tip: its own c
     assert.deepEqual(walk.on.workflow_call.inputs?.ref, { type: 'string', default: '' }, `${name} takes a ref`);
     const steps = checkouts(walk.jobs);
     assert.ok(steps.length > 0, `${name} checks out`);
-    // Empty on its own push, pull request or publish, so the checkout keeps its own default there.
-    for (const [jobId, step] of steps) assert.equal(step.with?.ref, '${{ inputs.ref }}', `${name} ${jobId}'s checkout`);
+    // Empty on its own push or pull request, so the checkout keeps its own default there; a walk the publish also starts
+    // on its own falls back to the publish's commit (the tag), never to main's tip.
+    for (const [jobId, step] of steps) assert.match(step.with?.ref, /^\$\{\{ inputs\.ref( \|\| github\.event\.workflow_run\.head_sha)? \}\}$/, `${name} ${jobId}'s checkout`);
   }
-  // On a publish install-walk installs what npm and the registry serve (the release itself), now from the tag's scripts.
+  // On a publish install-walk installs what npm and the registry serve (the release itself), from the tag's scripts.
   assert.match(readFileSync(new URL('../.github/workflows/install-walk.yml', import.meta.url), 'utf8'), /github\.event_name \}\}" = workflow_run/);
 });
 

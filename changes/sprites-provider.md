@@ -1,5 +1,0 @@
----
-packages: @parcha/agentrun-computer, @parcha/agentrun-serve
-kind: feature
----
-A new computer provider, `sprites`: a Linux sandbox on a Fly sprite (a Firecracker microVM Fly keeps by name), over the Sprites API with no SDK. It takes `SPRITES_TOKEN`, the name Fly's own CLI reads, and loads from `@parcha/agentrun-computer/sprites` or `providerFor("sprites", { token })`. A computer starts from Fly's own Ubuntu image, `"default"`, the only one a sprite has, so it is a sandbox alone: no desktop and no Archil mount. The exec is the exec WebSocket's binary frames, its kill the session's kill call. Serve offers it as a box once `AGENTRUN_BOXES` lists `sprites` and the token is set, and the launcher holds `SPRITES_TOKEN` with the other secrets. `fly` (Fly Machines) is unchanged. No live run has been made yet: the arch, a label string's room, the status of a create whose name is taken, root in the sprite, the exec socket through 75 s of silence and whether an exec keeps a sprite awake are unverified until then.

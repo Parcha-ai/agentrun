@@ -57,8 +57,8 @@ const page = await web.fetch("https://example.org/", { offset: 0, maxChars: 20_0
   empty objective is `{ error: "web_search needs an objective" }`, and no provider is asked. Each provider is sent what
   it takes: Parallel the objective and the queries (`objective`, `search_queries`, mode `fast`, plus `client_model` and
   `session_id` when `client` names them); Exa, keyed and keyless, the objective as its query; Firecrawl, keyed and
-  keyless, up to 3 of the queries at once, each asked for `ceil(n / k)` results scraped as markdown (main content only),
-  the results merged by URL in first-seen order and cut at `n`, each snippet its page's markdown; keyless Firecrawl
+  keyless, up to 3 of the queries at once, each asked for `ceil(n / k)` results (keyless: each result scraped as markdown, main content only;
+  keyed: no scrape, each snippet Firecrawl's description of the result), the results merged by URL in first-seen order and cut at `n`, each snippet its page's markdown where it has one, else its description; keyless Firecrawl
   sends the objective too, which its tool requires; `native` the first query. The answer is `{ provider, objective,
   queries, results }`.
 - `client` (WebConfig) is `{ model?, session? }`: the model the run calls, as a bare id (`claude-opus-4-7`), and an id of
@@ -145,6 +145,8 @@ const { answer, receipt } = await web.search({ objective: "Where Widgets, Inc. i
   settle, and every cut result shows its snippet's first 300 characters instead. Its url,
   title and relevance stay, and the `sift` adds `"; past the first 2, a result shows only its passage most relevant to
   the search: web_fetch its url to read it"`. A fetch's objective then holds 5 found chunks in place of 8.
+  `"top3-best300-found8"` keeps the 3 most relevant results whole and picks the same passage for each later one (the
+  `sift` says `"past the first 3"`), and a fetch's objective holds 8 found chunks, as under `"shipped"`.
 - A fetched part is judged in passages (`passagesOf`: whole paragraphs packed to about 1,000 characters, at most 50).
   The kept ones stay in order, `LEFT_OUT` stands for each run left out, and the part's `chars`, `offset` and
   `next_offset` are unchanged. A fetch with no `task` is not judged.

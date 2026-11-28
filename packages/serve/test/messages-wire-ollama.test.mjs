@@ -190,6 +190,30 @@ test("on the route, a streamed answer that stalls and the whole one asked again:
   assert.deepEqual(entries.filter((entry) => entry.type === "message").map((entry) => entry.text), ["The answer is done."]);
 });
 
+// Two answers the route starts in the same millisecond (a stalled stream and the whole one asked again at once, or two
+// requests of one run side by side) are two messages: each its own id. An id the clock alone made would be the same for
+// both, and the transcript would read the whole answer as the stalled stream's and never say its rest.
+test("on the route, answers started in the same millisecond have their own ids, and the whole one asked again after a stall is said live once", async (t) => {
+  const { TranscriptBuilder } = await import("../../run-adapters-claude-agent/dist/transcript.js");
+  const { env } = await onOllama(t, { reply: () => ({ text: "The answer is done." }) });
+  const { fetch: send } = await moduleLaunch(env, TOOLS);
+  const at = Date.now();
+  t.mock.method(Date, "now", () => at);
+  const events = await eventsOf(await post(send, request()));
+  const whole = await (await post(send, request({ stream: false }))).json();
+  const again = await eventsOf(await post(send, request()));
+  t.mock.restoreAll();
+  const ids = [events, again].map((said) => said.find((event) => event.type === "message_start")?.message?.id);
+  assert.equal(new Set([...ids, whole.id]).size, 3, `three answers, three ids: ${JSON.stringify([...ids, whole.id])}`);
+  const upTo = events.findIndex((event) => event.type === "content_block_delta" && event.delta?.type === "text_delta");
+  assert.equal(events[upTo].delta.text, "The answer", "the stall comes after the first half");
+  const live = [];
+  const b = new TranscriptBuilder({ message: () => {}, live: (event) => live.push(event) });
+  for (const event of events.slice(0, upTo + 1)) b.observe({ type: "stream_event", parent_tool_use_id: null, event });
+  for (const block of whole.content) b.observe({ type: "assistant", parent_tool_use_id: null, message: { id: whole.id, role: "assistant", content: [block] } });
+  assert.equal(live.filter((event) => event.type === "text").map((event) => event.delta).join(""), "The answer is done.", JSON.stringify(live));
+});
+
 // The whole answer is read from the route's own stream; a part of it that does not read (a data line that is not JSON, a
 // tool call's input cut short) is a Messages error with words, as an error event is, never a throw out of the fetch.
 test("an answer asked whole whose stream does not read (a data line not JSON, a tool input cut short) is a Messages error, 500 with words", async () => {

@@ -726,8 +726,11 @@ export class HostedProvider implements ComputerProvider {
 		if (!launched.ok) return launched.error.code === "exists" ? this.#createOnce(spec, name, signal, launched) : launched;
 		const { ref, made } = launched.value;
 		// From here the machine exists: every step takes the caller's signal, and a failure or an abort deletes it.
-		// Another provider instance's create of this request may have made one too (#converge): the oldest is kept.
-		const first = await this.#converge(name, ref.id, signal);
+		// Another provider instance's create of this request may have made one too (#converge): the oldest is kept. This
+		// first look may narrow by this spec's run and epoch (nameAsk: Render's one page by the whole name, not every page of
+		// the workspace). It only stops a create early: a machine of the request under another run or epoch is settled by
+		// the reads below, which never narrow, as each racing create makes them.
+		const first = await this.#converge(name, ref.id, signal, nameAsk(this.host, spec));
 		if (first.ok && first.value !== undefined && first.value.id !== ref.id) return this.#again(spec, name, first.value, signal);
 		const prepared = await this.#prepare(spec, ref, made, signal);
 		const given = this.#given.get(ref.id);
@@ -772,11 +775,12 @@ export class HostedProvider implements ComputerProvider {
 	 * more than one machine holds the name, the oldest (createdAt, or the lowest id where any has none) is kept, and every
 	 * other is deleted and read back gone, its Archil folder let go first. Every instance picks the same one from the
 	 * same listing. Its value is the machine kept, or undefined when mine holds the name alone (or nothing is listed yet).
-	 * The listing is by the name alone, never narrowed (nameAsk): two creates of one request that ask another run or epoch
-	 * must still see each other's machine, so one is kept and the other answered exists.
+	 * The listing that settles a create (after a failed prepare, and the last) is by the name alone, never narrowed
+	 * (nameAsk): two creates of one request that ask another run or epoch must still see each other's machine, so one is
+	 * kept and the other answered exists. `also` narrows the first look after the vendor's answer alone (#createOnce).
 	 */
-	async #converge(name: string, mine: string, signal?: AbortSignal): Promise<Result<Machine | undefined>> {
-		const listed = await foundBy(this.host, "the listing by the request's name", byName(name), this.#timeouts, signal);
+	async #converge(name: string, mine: string, signal?: AbortSignal, also?: Record<string, string>): Promise<Result<Machine | undefined>> {
+		const listed = await foundBy(this.host, "the listing by the request's name", byName(name), this.#timeouts, signal, also);
 		if (!listed.ok) return listed;
 		const holders = listed.value.filter((machine) => ours(machine.labels, name) && alive(machine.state));
 		if (!holders.some((machine) => machine.id !== mine)) return ok(undefined);
@@ -1816,8 +1820,10 @@ const byName = (name: string): Record<string, string> => ({ [COMPUTER_LABEL]: "1
  * What a listing by a create's name asks beside byName on a host whose names carry the run and epoch (facts.labels.named):
  * the spec's run and epoch, where it has both, so the host can look up the whole name. Only asked, never required: a
  * machine of the name is kept whatever its get says of them (a sandbox before its labels file, read by its name alone).
- * Only the sweeps for a machine this create made ask it (#waitListed, #deleteNamed): that machine's name is the whole
- * name. The first check and #converge look for any machine of the request, whatever run or epoch it was made with.
+ * Only the sweeps for a machine this create made ask it (#waitListed, #deleteNamed), and the first look for a racing
+ * create's machine right after the vendor's answer, which only stops a create early: that machine's name is the whole
+ * name. The first check and the convergence that settles a create look for any machine of the request, whatever run or
+ * epoch it was made with.
  */
 function nameAsk(host: MachineHost, spec: ComputerSpec): Record<string, string> | undefined {
 	const run = spec.labels?.[RUN_LABEL];
