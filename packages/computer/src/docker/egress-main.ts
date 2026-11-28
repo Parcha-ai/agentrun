@@ -61,14 +61,14 @@ const proxy = await startEgressProxy({
 	alsoLocal: () => local,
 	...(given.has("--hint") ? { allowHint: given.get("--hint")! } : {}),
 });
-say(`egress cap tunnels=${maxTunnels}`);
-say(allow === undefined ? `${EGRESS_READY} open` : `${EGRESS_READY} allow=${allow.join(",")}`);
-
 const end = (why: string) => {
 	say(`egress: ${why}, the proxy ends`);
 	void proxy.close().finally(() => process.exit(0));
 };
+// The stop handlers come before the ready line: a caller that stops the proxy as soon as it reads ready gets exit 0.
 for (const signal of ["SIGTERM", "SIGINT"] as const) process.once(signal, () => end(`${signal} came`));
+say(`egress cap tunnels=${maxTunnels}`);
+say(allow === undefined ? `${EGRESS_READY} open` : `${EGRESS_READY} allow=${allow.join(",")}`);
 const wait = () => {
 	const left = deadline - Date.now();
 	if (left <= 0) return end(`the deadline ${new Date(deadline).toISOString()} has come`);

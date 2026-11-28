@@ -837,9 +837,9 @@ test("an address inside a listed CIDR still meets the address rule: the host's o
 	}
 });
 
-/** Runs the proxy container's entry on this machine: its exit, what it printed, and the child, once `until` says so. */
-function entry(args, until = () => false) {
-	const child = spawn(process.execPath, [MAIN, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+/** Runs the proxy container's entry on this machine (after `node` flags such as an --import): its exit, what it printed, and the child, once `until` says so. */
+function entry(args, until = () => false, node = []) {
+	const child = spawn(process.execPath, [...node, MAIN, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
 	let out = '';
 	const exited = new Promise((ok) => child.once('exit', (code, signal) => ok({ code, signal })));
 	const seen = new Promise((ok) => {
@@ -932,6 +932,34 @@ test("the proxy container's entry holds connections open at once to the operator
 			run.child.kill('SIGTERM');
 			assert.deepEqual(await run.exited, { code: 0, signal: null });
 		} finally {
+			if (run.child.exitCode === null && run.child.signalCode === null) run.child.kill('SIGKILL');
+		}
+	}
+});
+
+test("the proxy container's entry refuses a tunnel past the operator's --max-tunnels while the ones under it stay open", async () => {
+	// The fake network: origin.example is a public address, and every dial reaches a local origin that holds the tunnel.
+	const node = ['--import', fileURLToPath(new URL('./fixtures/egress/preload.mjs', import.meta.url))];
+	for (const cap of [1, 2]) {
+		const path = socketPath();
+		mkdirSync(join(path, '..'), { recursive: true });
+		const deadline = new Date(Date.now() + 60_000).toISOString();
+		const run = entry(['--socket', path, '--deadline', deadline, '--allow', 'origin.example', '--max-tunnels', String(cap)], (out) => out.includes('egress ready'), node);
+		const held = [];
+		try {
+			await run.seen;
+			for (let n = 0; n < cap; n++) {
+				const tunnel = await talk(path, CONNECT('origin.example:443'), ended);
+				held.push(tunnel.socket);
+				assert.equal(head(tunnel.got).status, 200, `cap ${cap}: tunnel ${n + 1} opens`);
+			}
+			const over = head((await talk(path, CONNECT('origin.example:443'), ended)).got);
+			assert.equal(over.status, 429, `cap ${cap}: one more is refused while ${cap} stay open`);
+			assert.match(over.line, /tunnel cap/);
+			run.child.kill('SIGTERM');
+			assert.deepEqual(await run.exited, { code: 0, signal: null });
+		} finally {
+			for (const socket of held) socket.destroy();
 			if (run.child.exitCode === null && run.child.signalCode === null) run.child.kill('SIGKILL');
 		}
 	}
