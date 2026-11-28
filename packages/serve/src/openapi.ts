@@ -264,7 +264,7 @@ const ANALYTICS = closed({
   time: closed({ ended_runs: COUNT, wall_ms: { ...COUNT, description: "Ended minus started, summed over `ended_runs`." }, active_runs: COUNT, active_ms: { ...COUNT, description: "How long the runs were at work, summed over the `active_runs` whose metrics say." } }),
   by_harness_effort: { type: "array", description: "By the revision's harness (`pi` when it names none, `workflow` for a workflow revision), then the effort the run's metrics name (null: unset, or no metrics).", items: closed({ harness: { type: "string" }, effort: { type: ["string", "null"] }, ...GROUP }) },
   by_day: { type: "array", description: "By the UTC date the run started, oldest first.", items: closed({ day: { type: "string", format: "date" }, ...GROUP }) },
-  by_source: { type: "array", description: "`live`, run here, first, then each source runs were imported from.", items: closed({ source: { enum: ["live", "claude-code", "codex", "pi", "opencode", "copilot"] }, ...GROUP }) },
+  by_source: { type: "array", description: "`live`, run here, first, then each source runs were imported from.", items: closed({ source: { enum: ["live", "claude-code", "codex", "pi", "opencode", "copilot", "cursor"] }, ...GROUP }) },
   tools: { type: "array", maxItems: 20, description: "The 20 tools with the most calls, by name on a tie; `errors` counts the calls that failed (an error, a result the tool reads as failed such as a refused fetch, or no result at all).", items: closed({ tool: { type: "string", description: "The name the tool was called by." }, label: { type: "string", description: "What a person calls the tool, from the timeline's label registry; the name it was called by when it has none.", "x-agentrun-serve": "stats/3" }, calls: COUNT, errors: COUNT }) },
 }, "The runs' tokens, requests, time and tool calls from their metrics, over the runs not archived that the query picks; a run with no metrics counts in `runs` alone.");
 /** GET /stats's answer (stats.ts). */
@@ -4404,7 +4404,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       type: ["object", "null"],
       additionalProperties: false,
       required: ["source", "session"],
-      properties: { source: { enum: ["claude-code", "codex", "pi", "opencode", "copilot"] }, session: { type: "string", description: "The session's id in its source." } },
+      properties: { source: { enum: ["claude-code", "codex", "pi", "opencode", "copilot", "cursor"] }, session: { type: "string", description: "The session's id in its source." } },
       description: "Imported history (`agentrun-serve import`): where the run was run, and its session there; else null. An imported run takes no message (`409 not_continuable`, `details.reason` `imported`); a stop or a cancel answers as for an ended run.",
       "x-agentrun-serve": "imported/1",
     },
@@ -4440,7 +4440,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       type: ["object", "null"],
       additionalProperties: false,
       required: ["source", "session"],
-      properties: { source: { enum: ["claude-code", "codex", "pi", "opencode", "copilot"] }, session: { type: "string", description: "The session's id in its source." } },
+      properties: { source: { enum: ["claude-code", "codex", "pi", "opencode", "copilot", "cursor"] }, session: { type: "string", description: "The session's id in its source." } },
       description: "Imported history (`agentrun-serve import`): where the run was run, and its session there; else null. An imported run takes no message (`409 not_continuable`, `details.reason` `imported`); a stop or a cancel answers as for an ended run.",
       "x-agentrun-serve": "imported/1",
     },
