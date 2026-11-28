@@ -134,6 +134,22 @@ test("delete ends the VM by its id and is safe to repeat; get then reads it none
 	assert.equal(await host.dialExit(id, CTX), undefined, "what this process kept of its command went with it");
 });
 
+test("a get that reads a VM none (Maritime ended it at its time limit, or no longer has it) drops what this process kept of its agentrun-dial: no data plane call after, and its redial is not_found; a get of a live VM keeps it", async () => {
+	for (const [why, gone] of [["ended", (vendor, id) => vendor.end(id)], ["no record", (vendor, id) => vendor.sandboxes.delete(id)]]) {
+		const { vendor, host } = maritimeOf();
+		const { id } = await host.create(request(), CTX);
+		assert.ok(await host.get(id, CTX), why);
+		assert.equal(await host.dialLog(id, CTX), "", `${why}: a get of a live VM keeps its command`);
+		gone(vendor, id);
+		assert.equal(await host.get(id, CTX), undefined, why);
+		const before = planeCalls(vendor).length;
+		assert.equal(await host.dialLog(id, CTX), undefined, why);
+		assert.equal(await host.dialExit(id, CTX), undefined, why);
+		await assert.rejects(host.redial(id, CTX), (error) => error.code === "not_found", why);
+		assert.equal(planeCalls(vendor).length, before, `${why}: nothing reads the data plane of a VM get read none`);
+	}
+});
+
 test("list asks for the computers' name prefix, reads every page by cursor, and keeps only VMs that carry every label asked: others' VMs, ended ones and those of other names are left out", async () => {
 	const { vendor, host } = maritimeOf({ pageSize: 2 });
 	const ours = vendor.add({ name: NAME, metadata: LABELS });

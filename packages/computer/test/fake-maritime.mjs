@@ -148,6 +148,8 @@ export function fakeMaritime({ pageSize = 2, startReads = 1, start = () => undef
 		sandboxes,
 		commands,
 		add,
+		/** A VM Maritime ends itself (its time limit, say), as a DELETE ends one: its running commands killed. */
+		end: (id, reason = "time_limit") => end(sandboxes.get(id), reason),
 		/** The VMs not ended. */
 		live: () => [...sandboxes.values()].filter(({ sandbox }) => sandbox.state !== "ended").map(({ sandbox }) => sandbox.id),
 		/** A command's end, as its process ended it. */
