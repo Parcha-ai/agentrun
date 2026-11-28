@@ -127,10 +127,10 @@ registerSecretWrite("listComposioToolkits", composioSendsKey, composioListingOwn
 registerSecretWrite("saveComposioServer", composioSendsKey, composioSaveDropsSecret);
 // A listing keeps nothing, so its refusal says what the token may list with, not the secret write's words.
 registerSecretRefusal(["listComposioTools", "listComposioToolkits"], (request) => (request.apiOnly ? COMPOSIO_LISTING_REFUSAL.apiOnly : COMPOSIO_LISTING_REFUSAL.elsewhere));
-/** A token's refused Composio listing: on an API-only server it lists with the key api_key_env names; anywhere else the
- *  listings are the owner's session alone. */
+/** A token's refused Composio listing: on an API-only server, which has no owner's session, it lists with the key
+ *  api_key_env names; anywhere else the listings are the owner's session alone. */
 export const COMPOSIO_LISTING_REFUSAL = {
-  apiOnly: "A listing that sends a key's value takes the owner's signed-in session; on this server name the key by api_key_env instead.",
+  apiOnly: "On an API-only server a Composio listing sends no key's value. Name the key by api_key_env instead.",
   elsewhere: "Listing Composio's toolkits or tools takes the owner's signed-in session in the console; the API token lists them only on an API-only server, with the key named by api_key_env.",
 };
 // A body that sends a key's value, or anything but api_key_env alone in its place: a secret written.

@@ -11,7 +11,7 @@ import { test } from "node:test";
 import * as harness from "../dist/harness.js";
 import * as table from "../dist/harness-table.js";
 import * as host from "../dist/host.js";
-import { agent, follow, scratch, serve } from "./support.mjs";
+import { agent, FAST_BEATS, follow, scratch, serve } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 import { installGoose, needsGoose } from "./fixtures/goose-installed.mjs";
 
@@ -102,7 +102,7 @@ test("a 384 MB server: claude-agent is unavailable with why in capabilities, its
 
 test("--max-runs bounds the count beside the memory: on 1 GB with a cap of 1, a second pi run that fits by memory is queued, not refused, and runs once the first ends", { timeout: 120_000 }, async (t) => {
   withMemory(t, 1024);
-  const { api, data, runnerBeats } = await serve(t, { maxRuns: 1 });
+  const { api, data, runnerBeats } = await serve(t, { maxRuns: 1, runnerTiming: FAST_BEATS });
   assert.equal((await api("GET", "/capabilities")).body.limits.max_concurrent_runs, 1);
   assert.equal((await api("POST", "/agents", agent("busy"))).status, 201);
   const first = await api("POST", "/agents/busy/runs", { input: { content: `Answer once ${join(data, "go")} exists.` } });
@@ -124,7 +124,7 @@ test("--max-runs bounds the count beside the memory: on 1 GB with a cap of 1, a 
 
 test("the runner claims by memory too: on 512 MB, whose 384 MB for runs holds one claude-agent run (288 MB), a second waits queued under a run cap of three, and runs once the first ends", { timeout: 120_000 }, async (t) => {
   withMemory(t, 512);
-  const { api, data, runnerBeats } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
+  const { api, data, runnerBeats } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), runnerTiming: FAST_BEATS });
   const caps = (await api("GET", "/capabilities")).body;
   assert.equal(caps.limits.max_concurrent_runs, 3, "the count alone (pi's, the smallest run) would take three");
   assert.equal(Object.fromEntries(caps.harnesses.map((h) => [h.id, h.max_concurrent_runs]))["claude-agent"], 1);

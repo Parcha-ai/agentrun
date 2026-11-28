@@ -125,6 +125,7 @@ test("Orgo Windows create: os windows with Orgo's end as the backstop, waits whi
 	keyless(created, "create");
 	const record = newest(fake);
 	assert.deepEqual(record.asked, { workspace_id: WORKSPACE, name: created.value.name, os: "windows", ram: 4, cpu: 1, ends_in_hours: 1 });
+	assert.deepEqual(created.value.resources, { cpus: 1, memoryMb: 4096 }, "the size Orgo's answer says it ran");
 	assert.match(created.value.name, /^computer-[0-9a-f]{12}-r[a-z2-7]{16}-e3-d[0-9a-z]+$/);
 	const box = fake.boxOf(record.id);
 	assert.equal(box.commands.length, 3, "two refused while it booted, then the labels file");
@@ -143,6 +144,7 @@ test("Orgo macOS create: os macos, ram 10, no cpu and no end (Orgo has none for 
 	const created = await provider.create(specOf("macos"));
 	assert.equal(created.ok, true, JSON.stringify(created));
 	assert.deepEqual(newest(fake).asked, { workspace_id: WORKSPACE, name: created.value.name, os: "macos", ram: 10 });
+	assert.equal(created.value.resources?.memoryMb, 10_240, "a Mac's 10 GB, as Orgo's answer says it");
 	assert.deepEqual(JSON.parse(fake.boxOf(newest(fake).id).files.get(MACOS_LABELS).toString("utf8")).labels, LABELS);
 });
 

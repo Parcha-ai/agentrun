@@ -237,6 +237,61 @@ test("a step after the machine exists that throws deletes that machine by its id
 	});
 });
 
+// boxd can read a machine its create just answered with as not found. Two live creates (sandbox bench probes, region
+// fra) failed 0.7 and 1.1 s in, the wait's first read answering "NotFoundError: VM not found (region fra)", and in one
+// the delete by id right after read not found too: the machine said to be deleted was still there for the bench's
+// sweep minutes later.
+const NOT_YET = () => named("NotFoundError", { message: "VM not found (region fra)" });
+
+test("a machine boxd reads not found just after its create is waited for again, and the create goes on once boxd reads it", async () => {
+	let reads = 0;
+	const { rec, host } = setup({}, { create: machine(), waitUntilReady: () => (++reads <= 2 ? Promise.reject(NOT_YET()) : machine()) });
+	assert.deepEqual(await host.create(request(), { timeoutMs: 5_000 }), { id: "m-1" });
+	assert.deepEqual(
+		rec.calls.map(([name]) => name),
+		["create", "waitUntilReady", "waitUntilReady", "waitUntilReady", "setEgressAllow", "setAutoHibernateTimeout"],
+		"no delete: the machine is the create's",
+	);
+	for (const [, id, { timeout }] of rec.calls.filter(([name]) => name === "waitUntilReady")) {
+		assert.equal(id, "m-1");
+		assert.ok(timeout > 0 && timeout <= 5_000, `each wait is bounded by what is left of the create's: ${timeout}`);
+	}
+});
+
+test("a machine boxd reads not found for the whole of its create's bound is a timeout, left to the adapter's sweep by name: a delete by its id would read not found too", async () => {
+	const { rec, host } = setup({}, { create: machine(), waitUntilReady: () => Promise.reject(NOT_YET()) });
+	await assert.rejects(host.create(request(), { timeoutMs: 1_200 }), (error) => {
+		assert.equal(error.code, "timeout", `${error.name}: ${error.message}`);
+		assert.match(error.message, /m-1/);
+		assert.match(error.message, /VM not found \(region fra\)/);
+		return true;
+	});
+	assert.equal(rec.calls.filter(([name]) => name === "waitUntilReady").length > 1, true, "waited for again");
+	assert.deepEqual(rec.calls.filter(([name]) => name === "delete"), [], "no delete by its id");
+});
+
+// The first wait reads not found; any after it stays in flight, as boxd's own wait does, so a wait started after a
+// cancel shows in the count and is never answered.
+const notYetThenWaiting = () => {
+	let reads = 0;
+	return () => (++reads === 1 ? Promise.reject(NOT_YET()) : new Promise(() => {}));
+};
+const after = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test("a cancel during the pause after a not found ends the create's wait as aborted, and no wait starts after it", async () => {
+	const { rec, host } = setup({}, { create: machine(), waitUntilReady: notYetThenWaiting() });
+	const cancel = new AbortController();
+	const waits = () => rec.calls.filter(([name]) => name === "waitUntilReady").length;
+	const answer = host.create(request(), { timeoutMs: 5_000, signal: cancel.signal });
+	await after(100);
+	assert.equal(waits(), 1, "the first wait read not found, and the pause before the next began");
+	cancel.abort();
+	const settled = await Promise.race([answer.then(() => "made", (error) => error), after(1_000).then(() => "no answer 1 s after the cancel")]);
+	assert.equal(settled?.code, "aborted", settled instanceof Error ? `${settled.name}: ${settled.message}` : String(settled));
+	await after(700);
+	assert.equal(waits(), 1, "no wait after the cancel, now or once the pause would have ended");
+});
+
 test("the provider's create whose wait for the machine throws RateLimitError fails as limit, and the one machine it made is deleted by its id", async () => {
 	const { rec, provider } = setup({}, { list: [], create: (params) => machine({ name: params.name, labels: params.labels }), waitUntilReady: () => Promise.reject(named("RateLimitError")) });
 	const made = await provider.create(SPEC, { requestId: "r-limit" });
@@ -461,6 +516,14 @@ test("prepareImage: a desktop's snapshot is built once from boxd's own image: th
 	);
 });
 
+test("prepareImage: a build machine boxd reads not found just after its create is waited for again, and the build goes on", async () => {
+	let reads = 0;
+	const { rec, provider } = setup({ kind: "desktop" }, building({ waitUntilReady: () => (++reads <= 2 ? Promise.reject(NOT_YET()) : machine({ id: "b-1" })) }));
+	assert.deepEqual(await provider.prepareImage(), { ok: true, value: boxdDesktopSnapshot() });
+	assert.equal(rec.calls.filter(([call]) => call === "waitUntilReady").length, 3);
+	assert.ok(rec.calls.some(([call]) => call === "snapshots.create"), "the recipe ran and the capture was taken");
+});
+
 test("prepareImage: a cancelled request makes no build machine, and a cancel while one starts deletes it at once", async () => {
 	const cancelled = setup({ kind: "desktop" }, building());
 	const already = new AbortController();
@@ -481,6 +544,23 @@ test("prepareImage: a cancelled request makes no build machine, and a cancel whi
 	assert.equal(failed.error.code, "aborted", "boxd's own wait for a ready machine is not the caller's to sit through");
 	assert.deepEqual(starting.rec.calls.filter(([call]) => call === "delete"), [["delete", "b-1"]]);
 	assert.equal(starting.rec.calls.some(([call]) => call === "streamExec" || call === "snapshots.create"), false);
+});
+
+test("prepareImage: a cancel during the pause after a build machine read not found starts no wait after it, while or after the machine is deleted", async () => {
+	const { rec, provider } = setup({ kind: "desktop" }, building({ waitUntilReady: notYetThenWaiting() }));
+	const cancel = new AbortController();
+	const waits = () => rec.calls.filter(([call]) => call === "waitUntilReady").length;
+	const answer = provider.prepareImage({ signal: cancel.signal });
+	await after(100);
+	assert.equal(waits(), 1, "the first wait read not found, and the pause before the next began");
+	cancel.abort();
+	const failed = await answer;
+	assert.equal(failed.ok, false);
+	assert.equal(failed.error.code, "aborted");
+	assert.deepEqual(rec.calls.filter(([call]) => call === "delete"), [["delete", "b-1"]]);
+	await after(700);
+	assert.equal(waits(), 1, "no wait after the cancel, now or once the pause would have ended");
+	assert.equal(rec.calls.some(([call]) => call === "streamExec" || call === "snapshots.create"), false);
 });
 
 test("prepareImage: a build machine whose create reply was lost is found by its name and deleted; the create's error is the answer", async () => {

@@ -82,6 +82,12 @@ export interface ProviderDescriptor<Module extends ProviderModule = ProviderModu
 	/** The vendor bills by time; prices are the vendor's page, not ours. */
 	readonly metered: boolean;
 	/**
+	 * Its create answers the size the vendor runs each computer at (CreatedComputer.resources: its CPUs and memory), on
+	 * every create, the vendor's figure over the spec's. A metered provider's time is priced by that size, so one
+	 * without it has its computer time unpriced, whatever its price setting says: time no one can measure is never $0.
+	 */
+	readonly sized?: boolean;
+	/**
 	 * The mount kinds its computers take beside the synced folder, bind or archil; [] for none. sync is never listed: it
 	 * is derived (syncs, derivedMounts), and capabilities().mount declares both.
 	 */
@@ -212,6 +218,7 @@ export function descriptorProblems(value: unknown): string[] {
 	if (typeof d.id !== "string" || !ID.test(d.id)) problems.push(`id ${JSON.stringify(d.id)} is not lowercase letters, digits and hyphens`);
 	if (typeof d.label !== "string" || d.label.trim() === "") problems.push("label is not a name in words");
 	if (typeof d.metered !== "boolean") problems.push("metered is not true or false");
+	if (d.sized !== undefined && typeof d.sized !== "boolean") problems.push("sized is not true or false");
 	if (typeof d.load !== "function") problems.push("load is not a function that imports the provider module");
 	if (!Array.isArray(d.mounts) || d.mounts.some((kind) => kind !== "bind" && kind !== "archil")) problems.push("mounts is not a list of mount kinds (bind, archil): sync is derived, never listed");
 	if (d.unmounted !== undefined) {

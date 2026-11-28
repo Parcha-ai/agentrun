@@ -239,6 +239,8 @@ interface Target {
 	image?: string;
 	/** The module's notes for the report. */
 	notes?: string[];
+	/** The module's clock: conformanceClock. */
+	clock?: Clock;
 }
 
 /** A bare name, which is an id; a module path has a slash or an extension. */
@@ -320,7 +322,8 @@ export function plantSecrets(names: readonly string[]): { values: string[]; secr
 /**
  * The provider a conformance module makes, its drifted twin and its run folders (mountFor) when it offers them, and what
  * it says of its run: conformanceImage(), the image when --image names none (asked only then: a module's may make or
- * register its image, so it is given the run's signal), and conformanceNotes, strings for the report.
+ * register its image, so it is given the run's signal), conformanceNotes, strings for the report, and
+ * conformanceClock, the clock its provider's timers run on.
  */
 async function load(label: string, module: Partial<ConformanceModule>, options: object, { imageNamed, signal }: { imageNamed: boolean; signal?: AbortSignal }, declared?: readonly KindCapabilities[]): Promise<Target> {
 	const { createProvider, createDriftedProvider, conformanceImage, mountFor, dialKit } = module;
@@ -355,6 +358,12 @@ async function load(label: string, module: Partial<ConformanceModule>, options: 
 	if (notes !== undefined) {
 		if (!Array.isArray(notes) || !notes.every((note) => typeof note === "string")) throw new Usage(`${label}: conformanceNotes is not an array of strings`);
 		target.notes = notes;
+	}
+	const clock: unknown = module.conformanceClock;
+	if (clock !== undefined) {
+		const { now, sleep } = (clock ?? {}) as Partial<Clock>;
+		if (typeof now !== "function" || typeof sleep !== "function") throw new Usage(`${label}: conformanceClock is not a clock: it has no now() and sleep(ms)`);
+		target.clock = clock as Clock;
 	}
 	return target;
 }
@@ -423,6 +432,8 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 		}
 		return 1;
 	}
+	// The test's clock, else the module's, else the runner's wall clock.
+	const clock = io.clock ?? target.clock;
 	const onResult = progress ? (r: CaseResult) => stderr.write(`${r.status === "pass" ? "✓" : r.status === "fail" ? "✗" : "-"} ${r.id}\n`) : undefined;
 	if (args.tti !== undefined || args.burst !== undefined) {
 		const report = await measureTti(target.provider, {
@@ -432,7 +443,7 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 			...(args.run ? { run: args.run } : {}),
 			...(target.notes && target.notes.length > 0 ? { notes: target.notes } : {}),
 			...(signal ? { signal } : {}),
-			...(io.clock ? { clock: io.clock } : {}),
+			...(clock ? { clock } : {}),
 			...(onResult ? { onResult } : {}),
 		});
 		if (providerNotes.length > 0) report.providerNotes = providerNotes;
@@ -459,7 +470,7 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 		...(target.dial ? { dial: target.dial } : {}),
 		...(onResult ? { onResult } : {}),
 		...(io.cdp ? { cdp: io.cdp } : {}),
-		...(io.clock ? { clock: io.clock } : {}),
+		...(clock ? { clock } : {}),
 	});
 	if (providerNotes.length > 0) report.providerNotes = providerNotes;
 	await write(stdout, args.json ? `${JSON.stringify(report, null, 2)}\n` : formatReport(report));
