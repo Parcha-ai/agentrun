@@ -52,9 +52,11 @@ class FakeSocket {
 
 /**
  * The fake. pageSize is the listing's; teamId, when given, is the team every path must name (an organisation token's);
- * rateLimited makes every create a 429. add() makes a service of the project this provider did not make.
+ * rateLimited makes every create a 429; fault(call), given each call ({method, path, query, body}), answers the status
+ * to refuse it with (429 a rate cap, any other a vendor failure), or nothing to answer it as Northflank would. add()
+ * makes a service of the project this provider did not make.
  */
-export function fakeNorthflank({ backend, pageSize = 2, teamId, rateLimited = false } = {}) {
+export function fakeNorthflank({ backend, pageSize = 2, teamId, rateLimited = false, fault } = {}) {
 	const services = new Map();
 	const sessions = new Map();
 	const sockets = [];
@@ -211,6 +213,8 @@ export function fakeNorthflank({ backend, pageSize = 2, teamId, rateLimited = fa
 		const query = Object.fromEntries(searchParams);
 		calls.push({ method, path: pathname, query, body });
 		if (init.headers?.Authorization !== `Bearer ${TOKEN}`) return refuse(401, "Unauthenticated");
+		const faulted = fault?.({ method, path: pathname, query, body });
+		if (faulted !== undefined) return refuse(faulted, faulted === 429 ? "Rate limit exceeded" : "Internal server error");
 		const one = new RegExp(`^/v1${base}/services/([^/]+)$`).exec(pathname);
 		const scale = new RegExp(`^/v1${base}/services/([^/]+)/scale$`).exec(pathname);
 		if (method === "POST" && pathname === `/v1${base}/services/deployment`) {

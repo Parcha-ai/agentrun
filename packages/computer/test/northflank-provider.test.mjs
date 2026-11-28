@@ -18,6 +18,7 @@ const { NORTHFLANK } = await import("../dist/descriptors/index.js");
 const { boxImageRef } = await import("../dist/box-image.js");
 const { PID_KILL } = await import("../dist/hosted/scripts.js");
 const { packLabels } = await import("../dist/hosted/values.js");
+const { mayHaveMade } = await import("../dist/hosted/provider.js");
 const { checkExecStream, formatExecStream } = await import("../dist/conformance/exec-stream.js");
 const { NORTHFLANK_ENV: ENV, settingsFromEnv, createProvider, createHost, conformanceImage, sweepScope } = await import("../dist/conformance/northflank.js");
 
@@ -150,6 +151,28 @@ test("a create of a name the project holds is exists (unverified until the live 
 	await assert.rejects(denied.list({}, CTX), (error) => error.code === "denied" && !error.message.includes("fake-test-key-other"));
 });
 
+test("a create whose service was made and whose scale then fails deletes the service before it answers; one whose delete fails too answers a code the adapter sweeps the name on, never a refusal, and the sweep leaves nothing", { timeout: 60_000 }, async () => {
+	const scale = ({ method, path }) => method === "POST" && path.endsWith("/scale");
+	// The scale rate-limited past its retries: the service is deleted, and the cap is the answer.
+	const limited = northflankOf({ fault: (call) => (scale(call) ? 429 : undefined) });
+	await assert.rejects(limited.host.create(request(), CTX), (error) => error.code === "limit" && /Rate limit exceeded/.test(error.message));
+	assert.deepEqual(limited.vendor.calls.filter((call) => call.method === "DELETE").map((call) => call.path), [`/v1/projects/${PROJECT}/services/${NAME}`]);
+	assert.deepEqual([...limited.vendor.services.keys()], [], "the service made is deleted");
+	// Its delete failing too: the service may be there, so the code is one the adapter sweeps the name on.
+	const stuck = northflankOf({ fault: (call) => (scale(call) ? 429 : call.method === "DELETE" ? 500 : undefined) });
+	await assert.rejects(stuck.host.create(request(), { timeoutMs: 20_000 }), (error) => mayHaveMade(error.code) && new RegExp(`${NAME} may be left`).test(error.message) && /Rate limit exceeded/.test(error.message));
+	assert.deepEqual([...stuck.vendor.services.keys()], [NAME]);
+	// Through the provider: the host's own delete fails its three tries, and the adapter's sweep by name deletes it.
+	let deletes = 0;
+	const swept = northflankOf({ fault: (call) => (scale(call) ? 429 : call.method === "DELETE" && ++deletes <= 3 ? 500 : undefined) }, { daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, createMs: 30_000 } });
+	const created = await swept.provider.create({ image: IMAGE, lifetimeMs: 600_000, network: "none" }, { requestId: "req-scale" });
+	assert.equal(created.ok, false);
+	assert.ok(mayHaveMade(created.error.code), created.error.code);
+	assert.match(created.error.message, /was deleted and read back gone/);
+	assert.equal(deletes, 4, "three tries by create, one by the sweep");
+	assert.equal(swept.vendor.services.size, 0, "nothing is left on Northflank");
+});
+
 test("get reads a service: PENDING and IN_PROGRESS are starting, COMPLETED running, FAILED gone, one past its expiry stopped, a status unknown stopped in words; its plan's size; one Northflank lacks is none", async () => {
 	const { vendor, host } = northflankOf();
 	await host.create(request(), CTX);
@@ -194,6 +217,30 @@ test("list reads every page and keeps the project's computers alone: a listing t
 		return fetch(url, init);
 	} }).host;
 	assert.equal((await gone.list({}, CTX)).some((machine) => machine.id === "computer-000000000001"), false);
+});
+
+test("the provider's list reads each computer once: the adapter's read of each one listed answers from the listing's own get, used once, so a sweep of N costs N detail reads, not 2N; a delete or a later get reads Northflank again", async () => {
+	const { vendor, provider, host } = northflankOf({ pageSize: 100 });
+	const names = ["computer-000000000000", "computer-000000000001", "computer-000000000002"];
+	const deadline = new Date(Date.now() + 600_000).toISOString();
+	for (const name of names) {
+		const labels = { ...LABELS, "agentrun.computer.name": name, "agentrun.run": "run-1", "agentrun.computer.deadline": deadline, "agentrun.computer.network": "none" };
+		await host.create(request({ name, labels: packLabels(labels, name, host.facts.labels).labels }), CTX);
+	}
+	const reads = (from) => vendor.calls.slice(from).filter((call) => call.method === "GET" && /\/services\/computer-[0-9a-z]+$/.test(call.path)).map((call) => call.path.split("/").at(-1));
+	let before = vendor.calls.length;
+	const listed = await provider.list({ "agentrun.run": "run-1" });
+	assert.equal(listed.ok, true, JSON.stringify(listed.error));
+	assert.deepEqual(listed.value.map((info) => info.ref.id).sort(), names);
+	assert.deepEqual(reads(before).sort(), names, "one detail read of each, not two");
+	before = vendor.calls.length;
+	assert.equal((await host.get(names[0], CTX)).id, names[0]);
+	assert.deepEqual(reads(before), [names[0]], "a get after the adapter's read reads Northflank");
+	await host.list({}, CTX);
+	await host.delete(names[1], CTX);
+	before = vendor.calls.length;
+	assert.equal(await host.get(names[1], CTX), undefined, "a get after a delete reads Northflank, never the listing's read");
+	assert.deepEqual(reads(before), [names[1]]);
 });
 
 test("delete deletes by id and reads back as none; one Northflank no longer has is done; release deletes and waits for the readback", async () => {
