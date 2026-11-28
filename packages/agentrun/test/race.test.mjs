@@ -218,7 +218,7 @@ function waited(runs) {
     const timeline = /^\/runs\/([^/?]+)\/timeline\?/.exec(path);
     if (timeline) {
       const run = runs[decodeURIComponent(timeline[1])];
-      const ended = ENDED.has(run.status);
+      const ended = ENDED.has(run.status) && run.final !== false;
       return { status: 200, body: { run_id: run.run_id, status: run.status, rows: [], next_after: 1, unchanged: !ended, has_more: false, final: ended, poll_after_ms: 100 } };
     }
     const one = /^\/runs\/([^/?]+)$/.exec(path);
@@ -308,4 +308,24 @@ test("race show LABEL --wait reads the race's runs once, follows each to its end
   assert.match(out.out, /^1 +pi\/a +completed .* one$/m);
   assert.match(out.out, /^2 +codex\/b +completed .* two$/m);
   assert.equal(seen.filter((r) => r.path.startsWith("/runs?")).length, 1);
+});
+
+test("race start --wait: a lane completed whose timeline is not final yet (end-of-run work going on) at --timeout is not done: exit 1, named on stderr", { timeout: 60_000 }, async (t) => {
+  const runs = { "run-1": runOf("run-1", 1, "pi", "a", "completed", { final: false, result: { final_answer: "done" } }), "run-2": runOf("run-2", 2, "pi", "b", "completed", { result: { final_answer: "done" } }) };
+  const { agentrun } = await fake(t, starting(runs));
+  const out = await agentrun(["race", "start", "--lane", "pi/a", "--lane", "pi/b", "--task", "x", "--label", "w", "--wait", "--timeout", "1"]);
+  assert.equal(out.code, 1, out.err);
+  assert.match(out.err, /^Lane 1 \(pi\/a\) is still finishing after 1 s; it goes on: see agentrun race show w --wait\.$/m);
+  assert.doesNotMatch(out.err, /Lane 2/);
+});
+
+test("race show LABEL --wait with more runs than one page under the label never reports the race done: exit 1, said on stderr", { timeout: 60_000 }, async (t) => {
+  const runs = { "run-1": runOf("run-1", 1, "pi", "a", "completed", { result: { final_answer: "one" } }), "run-2": runOf("run-2", 2, "pi", "b", "completed", { result: { final_answer: "two" } }) };
+  const wait = waited(runs);
+  const { agentrun } = await fake(t, async (method, path) => (path.startsWith("/runs?") ? { status: 200, body: { runs: [runs["run-1"], runs["run-2"]], next_cursor: "c2" } } : (wait(method, path) ?? { status: 404, body: {} })));
+  const out = await agentrun(["race", "show", "w", "--wait"]);
+  assert.equal(out.code, 1, out.err);
+  assert.match(out.err, /^More than 50 runs carry the label race:w: only the first 50 were followed, so the race is not reported done\.$/m);
+  const json = await agentrun(["race", "show", "w", "--wait", "--json"]);
+  assert.equal(JSON.parse(json.out).more, true);
 });
