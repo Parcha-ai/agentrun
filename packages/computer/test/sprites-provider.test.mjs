@@ -214,6 +214,20 @@ test("a kill between the socket's open and session_info waits for Fly to name th
 	assert.deepEqual([vendor.sockets[0].readyState, vendor.sockets[0].closedWith], [3, 1000]);
 });
 
+test("output nobody reads ends the exec once 64 MiB of it waits: the socket closes, and the exec fails in words that say why", async () => {
+	const { vendor, host } = spritesOf();
+	await host.create(request(), CTX);
+	const proc = await host.exec(NAME, ["yes"], CTX);
+	const session = await sessionOf(vendor);
+	const mib = Buffer.alloc(1024 * 1024, 0x79);
+	for (let at = 0; at < 65; at++) session.out("stdout", mib);
+	for (let at = 0; at < 500 && vendor.sockets[0].readyState !== 3; at++) await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(vendor.sockets[0].readyState, 3, "the socket closes at the bound, with the output still unread");
+	const [out, failed] = await Promise.all([textOf(proc.stdout), proc.wait().then((code) => new Error(`exited ${code}`), (error) => error)]);
+	assert.ok(out.length < 64 * 1024 * 1024, "the output past the bound was dropped, not kept");
+	assert.match(failed.message, /output not read passed 64 MiB/);
+});
+
 test("an exec on a name Fly lacks is not_found: the socket never opens, and get says why", async () => {
 	const { host } = spritesOf();
 	await assert.rejects(host.exec("computer-ffffffffffff", ["true"], CTX), (error) => error.code === "not_found" && /no sprite computer-ffffffffffff/.test(error.message));
