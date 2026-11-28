@@ -12,7 +12,8 @@
     "smolcloud",
     "groundbox",
     "vercel",
-    "sprites"
+    "sprites",
+    "instabox"
   ],
   "type": "module",
   "license": "Apache-2.0",
@@ -90,6 +91,10 @@
     "./sprites": {
       "types": "./dist/sprites.d.ts",
       "default": "./dist/sprites.js"
+    },
+    "./instabox": {
+      "types": "./dist/instabox.d.ts",
+      "default": "./dist/instabox.js"
     },
     "./orgo": {
       "types": "./dist/orgo.d.ts",

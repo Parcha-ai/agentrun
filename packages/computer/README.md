@@ -16,7 +16,7 @@ import { checkMount, readBackOf, WORKSPACE, type MountSpec } from "@parcha/agent
 
 The package root holds the protocol, the registry and the descriptors, and loads no provider: a provider loads by its
 id (`providerFor(id, options)`, which imports that one provider's file), or from its subpath (`/docker`, `/daytona`,
-`/modal`, `/e2b`, `/orgo`, `/orgo-desktop`, `/phone-harness`, `/browserbase`, `/kernel`, `/local-chrome`, `/boxd`, `/smolcloud`, `/groundbox`, `/vercel`, `/sprites`). A provider's
+`/modal`, `/e2b`, `/orgo`, `/orgo-desktop`, `/phone-harness`, `/browserbase`, `/kernel`, `/local-chrome`, `/boxd`, `/smolcloud`, `/groundbox`, `/vercel`, `/sprites`, `/instabox`). A provider's
 option types (`DockerProviderOptions`, `ModalProviderOptions` and the like) come from its subpath too, not the root.
 
 The package carries the daemon for Linux amd64 and arm64 in `dist/`, so a provider runs it with no Go on the host. A
@@ -688,6 +688,7 @@ live under:
   | `GROUNDBOX_API_KEY` | Groundbox's `apiKey` |
   | `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` | Vercel Sandbox's `token`, `teamId` and `projectId`, all required |
   | `SPRITES_TOKEN` | Fly Sprites' `token`: the name Fly's own CLI reads |
+  | `INSTABOX_API_KEY` | InstaBox's `apiKey`: the name InstaBox's own CLI and SDK read |
 
 - **the conformance CLI and the live harness** (`src/conformance/`: the CLI, each provider's conformance module and the
   sweeps) read their own `COMPUTER_<ID>_*` names, the ones the live scripts set, through each module's
@@ -3383,6 +3384,45 @@ a concurrency cap (`concurrent_sprite_limit_exceeded`) is a `limit`.
 Unverified until the live run: the arch (amd64); a label string's room (64 bytes); a taken name answering 409; the exec
 user being root or having passwordless sudo, and root making a network namespace; no vendor agent on TCP; the exec
 socket holding 75 s of silence with no ping; and a sprite with an exec running never going to sleep.
+
+## InstaBox
+
+```ts
+import { providerFor } from "@parcha/agentrun-computer";
+
+// The key is the caller's to pass (serve's INSTABOX_API_KEY).
+const instabox = await providerFor("instabox", { apiKey });
+const made = await instabox.create({ image: "minimal", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
+```
+
+An InstaBox computer is an [InstaBox](https://instabox.sh/llms-full.txt) machine: a Firecracker microVM from one of
+InstaBox's templates (`"minimal"` by default, or `agent-browser`, `universal`) or a snapshot of the key's workspace, by
+name or `sn_` id. It is a sandbox alone: a create names no image of ours, so there is no desktop and no Archil mount.
+InstaBox runs on the shared machine-host adapter ([PROVIDERS.md](PROVIDERS.md)): `src/instabox.ts` is its
+`MachineHost`, over the InstaBox API (`https://api.instabox.sh`, `X-API-Key: <key>`) with `fetch` and the shared REST
+client, and over SSH with the host's `ssh2` package, as Agent37 and Morph (no SDK). A computer needs a paid plan: it
+switches off InstaBox's idle pause and maximum run, which the free plan refuses (a 403 `spec_not_allowed`, a `refused`
+in those words).
+
+| MachineHost | InstaBox |
+| --- | --- |
+| `create` | `POST /v1/machines` under an `Idempotency-Key` of the request, with its name, the template (`templateId`) or snapshot (`snapshotId`), the size, the packed labels as `metadata`, `deleteAfterSeconds` at the backstop, `autoSuspendAfterSeconds: 0`, `maxRunMinutes: -1`, no vault and no secrets; the answer's `machineId` is the id |
+| `get` | `GET /v1/machines/{id}`: creating, starting and resuming are starting, running is running once `runtime.ready`, stopping, stopped, suspending and suspended are stopped, deleting and error gone (error in its `lastError` words); a 404 or a `deleted` record is none |
+| `list` | `GET /v1/machines?metadata=<name>:<value>`, every page, then the asked labels kept here and a `deleted` record left out |
+| `delete` | `DELETE /v1/machines/{id}` with `X-Confirm-Delete: <id>` and a fresh `Idempotency-Key`, a 404 done, a `409 operation_conflict` sent again within the call's bound; then the machine's SSH connections end |
+| `exec` | SSH through InstaBox's gateway with `SshExec`, logged in as a token from `POST /v1/machines/{id}/ssh-tokens` (the username, SSH's none auth), the gateway's host key pinned to the token's `hostKeyFingerprint`; the machine's user, `user`, with passwordless sudo; a held token the gateway refuses is let go and another minted, once |
+
+No `upload` (InstaBox's file API writes as the machine's user, not root, so the adapter sends the daemon through exec's
+stdin) and no `extend` (the janitor moves the deadline label). `check()` takes a template id or a snapshot's name or
+id, and the sizes InstaBox offers: 2, 4, 8, 16 or 32 vCPUs with 2048 MB each, one alone taking the other's match. A
+rate, quota, concurrency or capacity cap (`rate_limited`, `quota_exceeded`, `concurrency_limit`, `no_capacity`,
+`machine_cooldown`) is a `limit`; `missing_scope` and `permission_denied` are `denied`. The daemon user can't be uid
+1000, the machine user's.
+
+Unverified until the live run: the gateway taking the token as the username with SSH's none auth; its host key being one
+ssh2 verifies, whose sha256 is `hostKeyFingerprint`; a taken name answering 409; a deleted machine reading 404 or a
+`deleted` record; sshd's port 22 being the one vendor listener; `minimal` being on every paid plan; the 8 KiB metadata
+bound counting compact JSON; a silent SSH channel holding 75 s; and root making a network namespace.
 
 ## Conformance
 

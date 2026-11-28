@@ -179,6 +179,8 @@ test("labels: the adapter's and the caller's go packed into metadata InstaBox ta
 	assert.ok(Object.values(stored).every((value) => Buffer.byteLength(value) <= 512));
 	assert.ok(JSON.stringify(stored).length <= 8_192);
 	assert.deepEqual(unpackLabels(stored), labels);
+	// Read once, so it runs: a computer still starting is not listed.
+	await host.get(id, CTX);
 	const listed = await provider.list({ "agentrun.run": "run-1" });
 	assert.equal(listed.ok, true, JSON.stringify(listed.error));
 	assert.deepEqual(listed.value.map((info) => [info.ref.id, info.labels]), [[id, labels]]);
@@ -396,7 +398,7 @@ test("kill ends the process and every process under it, and wait answers -1; a k
 	await done.kill();
 });
 
-test("delete ends the machine's SSH connections and lets its token go: a later exec mints anew, and the gateway refuses it", async (t) => {
+test("delete ends the machine's SSH connections and lets its token go: a later exec mints anew, and InstaBox has no machine to mint for (not_found)", async (t) => {
 	const { fake, rest, host } = await setup(t);
 	const id = await running(host);
 	assert.equal((await run(host, id, ["true"])).code, 0);
