@@ -360,6 +360,46 @@ for (const [kind, script] of Object.entries(SCRIPTS)) {
     assert.deepEqual(await readdir(folder), [], "the end removed it");
   });
 
+  for (const [how, stop] of [["a disk error", `printf 'mv: write error: No space left on device\\n' >&2; exit 1`], ["a stop (the script killed)", "kill -KILL $PPID; exit 1"]]) {
+    test(`checkout ${kind}, run: a move into ${CHECKOUT_DIR}/ that copies across filesystems and is cut short by ${how} after the objects are copied leaves no repository data, and the run is told there is no ${CHECKOUT_DIR}/ folder only when none is left`, { timeout: 120_000 }, async (t) => {
+      const dir = await scratch(t);
+      const server = await privateServer(t, dir);
+      const { folder, workspace } = await runFolder(dir);
+      // An mv in front of the run's PATH that moves as mv does between two filesystems (/tmp and the run's mount): each
+      // source copied, then removed. Once it has copied the repository's objects it ends, by ${how}.
+      const spy = join(dir, "spy");
+      const copied = join(dir, "copied");
+      await mkdir(spy);
+      writeFileSync(
+        join(spy, "mv"),
+        [
+          `#!${system("sh")}`,
+          'eval "dest=\\${$#}"',
+          "n=$# i=0",
+          `stop() { : > '${copied}'; ${stop}; }`,
+          'for src in "$@"; do',
+          '  i=$((i + 1)); [ "$i" -lt "$n" ] || break',
+          '  if [ -d "$dest" ]; then to="$dest/$(basename "$src")"; else to=$dest; fi',
+          '  if [ -d "$src/objects" ]; then mkdir -p "$to" && cp -R "$src/objects" "$to/objects"; stop',
+          '  elif [ "$(basename "$src")" = objects ]; then cp -R "$src" "$to"; stop',
+          '  else cp -R "$src" "$to" && rm -rf "$src" || exit 1; fi',
+          "done",
+          "",
+        ].join("\n"),
+        { mode: 0o755 },
+      );
+      const argvs = [];
+      const spied = Object.create(workspace);
+      spied.exec = (argv, options) => (argvs.push(argv), workspace.exec(argv, { ...options, env: { ...options.env, PATH: `${spy}:${options.env.PATH}` } }));
+      const made = await script.run({ workspace: spied, mint: server.mint }, server);
+      assert.ok(existsSync(copied), `the move was cut short after copying the objects: ${made.note}`);
+      assert.match(made.note, new RegExp(`there is no ${CHECKOUT_DIR}/ folder`), made.note);
+      assert.deepEqual(await readdir(folder), [], `the interrupted copy is gone, as the note says: ${made.note}`);
+      assert.equal(existsSync(join("/tmp", `agentrun-checkout-${argvs[0].at(-1)}`)), false, "the private repository is gone");
+      await made.end();
+    });
+  }
+
   test(`checkout ${kind}, run: sh, git and every program the script runs are the system's (/usr/bin, /bin), never one a folder ahead of them on the run's PATH holds (/usr/local/bin, which an image or a root agent may fill)`, { timeout: 120_000 }, async (t) => {
     const dir = await scratch(t);
     const server = await privateServer(t, dir);
