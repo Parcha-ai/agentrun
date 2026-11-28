@@ -792,26 +792,34 @@ test("a scoped request's capabilities count no paired computer's kind; the opera
   assert.deepEqual(await kinds(inW1), before, "a workspace's");
 });
 
-test("a workspace is served none of Settings → Computers' routes: with a phone paired, listing, testing, choices and keys are 403 not_scoped in it, and the operator's list names the phone", { timeout: 120_000 }, async (t) => {
+test("a workspace never sees a paired computer in Settings → Computers: its list holds no paired one (refused, or served without them), its tests, choices and keys are 403 not_scoped, and the operator's list names it", { timeout: 120_000 }, async (t) => {
   const server = await scopedServer(t);
   await pairPhone(server, "cmp-pixel");
-  for (const [method, path, options] of [["GET", "/v2/computers"], ["POST", "/v2/computers/cmp-pixel/test"], ["GET", "/v2/computers/cmp-pixel/choices"], ["PUT", "/v2/computers/cmp-pixel/keys", { body: {} }]]) {
+  const list = await inW1(server, "GET", "/v2/computers");
+  if (list.status === 403) assert.equal(list.body.error.details.reason, "not_scoped", list.text);
+  else {
+    assert.equal(list.status, 200, list.text);
+    const ids = [...list.body.kinds.flatMap((kind) => (kind.providers ?? []).map((provider) => provider.id)), ...list.body.paired.map((one) => one.id)];
+    assert.deepEqual(ids.filter((id) => id.startsWith("cmp-")), [], "a workspace's list");
+  }
+  assert.ok(!list.text.includes("cmp-pixel") && !list.text.includes("Pixel"), `a workspace's answer names no paired computer: ${list.text}`);
+  for (const [method, path, options] of [["POST", "/v2/computers/cmp-pixel/test"], ["GET", "/v2/computers/cmp-pixel/choices"], ["PUT", "/v2/computers/cmp-pixel/keys", { body: {} }]]) {
     const refused = await inW1(server, method, path, options);
     assert.deepEqual([refused.status, refused.body.error.details.reason], [403, "not_scoped"], `${method} ${path}: ${refused.text}`);
-    assert.ok(!refused.text.includes("Pixel"), `${method} ${path} names no paired computer: ${refused.text}`);
   }
   const listed = await unscoped(server, "GET", "/v2/computers");
   assert.equal(listed.status, 200, listed.text);
   assert.deepEqual(listed.body.paired.map((one) => one.id), ["cmp-pixel"], "the operator's view");
 });
 
-test("a workspace's refusal of a paired computer says where its backend finds a provider it may name: GET /v2/computers read without the workspace header, any provider but a paired one", { timeout: 120_000 }, async (t) => {
+test("a workspace's refusal of a paired computer points at what the workspace is served: the kinds its capabilities offer, and any provider of the kind but a paired one", { timeout: 120_000 }, async (t) => {
   const server = await scopedServer(t);
   await pairPhone(server, "cmp-pixel");
   const refused = await inW1(server, "POST", "/v2/agents", { body: { definition: { version: 1, name: "W1 phone", instructions: "Answer.", skills: [], tools: [], computer: { kind: "phone", provider: "cmp-pixel" } } } });
   assert.equal(refused.status, 422, refused.text);
   const { message } = refused.body.error.fields[0];
   assert.ok(message.startsWith(scopedPairedWords("cmp-pixel")), message);
-  assert.match(message, /without the workspace header/, "the list a workspace is refused is read by its backend unscoped");
-  assert.match(message, /does not begin with cmp-/, "and a paired computer, listed there too, is not one to pick");
+  assert.doesNotMatch(message, /pick one GET \/v2\/computers lists/, "never a list that holds the paired computer itself");
+  assert.match(message, /GET \/v2\/capabilities offers it \(features\.computers\.kinds\)/, "the kinds a workspace's capabilities count, which leave the paired computer out");
+  assert.match(message, /never one whose id begins with cmp-/, "and a paired computer is not a provider to name");
 });
