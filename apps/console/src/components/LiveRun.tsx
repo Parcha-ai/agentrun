@@ -34,7 +34,7 @@ const RECORDING_REREAD_MS = 3_000;
  *  messages. A write's acceptance is not its effect: the page shows what the run and its timeline say afterwards.
  *  `embedded`: the run beside another page (Agent Factory's panel), which has its own way back, so the header has none
  *  and its title is a section's heading. `onChanged`: something a person did here has been read back (a message, an
- *  answer, a stop), so a list beside it reads again at once. */
+ *  answer, a stop), or the run itself moved (it started, waits or ended), so a list beside it reads again at once. */
 export function LiveRun({ v2, runId, caps, agentName, embedded, onChanged }: { v2: Client; runId: string; caps: MessageCaps | null; agentName: (id: string) => string; embedded?: boolean; onChanged?: () => void }) {
   const [run, setRun] = useState<Run | null>(null);
   // The newest timeline page's cost: each page carries the run's cost as it stands, so while the run works the header
@@ -49,6 +49,9 @@ export function LiveRun({ v2, runId, caps, agentName, embedded, onChanged }: { v
   const [follows, setFollows] = useState(0);
 
   const status = useRef<string>("");
+  // The holder's `onChanged` as this render has it, for the timeline's follow, which outlives the render that started it.
+  const changed = useRef(onChanged);
+  changed.current = onChanged;
   // Only the newest read of the run and of its files lands: an older one finishing last never puts back an old state.
   const runReads = useRef(latest()).current;
   const messageKeys = useRef(keeper()).current;
@@ -98,7 +101,13 @@ export function LiveRun({ v2, runId, caps, agentName, embedded, onChanged }: { v
       // answers the agent's browser ask and it asks its question at once, between two timeline reads, which sample the run
       // about once a second): while it waits, a page that brings anything new reads the run again, so its `pending` (the
       // card the person answers) is never an earlier wait's.
-      onPage: (p) => { if (p.cost) setPageCost(p.cost); setInFlight(p.final ? [] : [...(p.in_flight ?? [])]); const s = `${p.status}/${p.state}`; if (s !== status.current || (p.status === "input_required" && !p.unchanged)) { status.current = s; void refresh(); } },
+      // A move of the run's own (it started, waits, or ended; not the first look at it) is told to whoever holds this view
+      // too, once the run is read back, as a person's act here is: the board beside it shows the move, not 10 s later.
+      onPage: (p) => {
+        if (p.cost) setPageCost(p.cost); setInFlight(p.final ? [] : [...(p.in_flight ?? [])]);
+        const s = `${p.status}/${p.state}`, moved = status.current !== "" && s !== status.current;
+        if (s !== status.current || (p.status === "input_required" && !p.unchanged)) { status.current = s; void refresh().then(() => { if (moved) changed.current?.(); }); }
+      },
     }).catch((e) => { if (!ctl.signal.aborted) setError(failure(e)); });
     return () => ctl.abort();
   }, [runId, follows]); // eslint-disable-line react-hooks/exhaustive-deps
