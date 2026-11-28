@@ -22,7 +22,8 @@ once: your previous findings are your own comments ending in `<!-- fp: <fingerpr
 `<!-- code-review ... head:<sha> -->`.
 
 A diff pasted in the message with no PR number is the whole change (AgentRun saved the run's first message as
-`inputs/message.md`): skip to step 3, run no command.
+`inputs/message.md`): skip to step 3, run no command. Its `head_sha` is the head commit the message names, in full; when
+it names none, `head_sha` is null. Never make one up: a diff's `index` line holds blob hashes, not a commit.
 
 ## 2. Checkout
 
@@ -55,7 +56,7 @@ owner: <the repository's owner, as your instructions name it>
 repo: <the repository's name alone, as your instructions name it>
 pr: <number>
 base_sha: <sha>
-head_sha: <sha>
+head_sha: <sha, or none>
 merge_base: <sha>
 checkout: repo/   (or: none)
 last_reviewed_sha: <sha, or none>
@@ -114,4 +115,4 @@ A pending review in the way: `delete_pending`, then `create` once more. Never `A
 ## 6. Return
 
 Exactly one fenced `json` block that meets `findings.schema.json` (beside this file): the merged review, `head_sha`
-the full 40-character sha reviewed. Nothing after it.
+the full 40-character sha reviewed (null for a pasted diff that names no head commit). Nothing after it.

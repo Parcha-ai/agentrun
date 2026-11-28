@@ -288,11 +288,11 @@ test("a suggested agent's package is kept before its apply, registered after it,
   const origin = (sha) => ({ source: `${id}@agentrun/ticket-triage`, sha, publisher: "faux-org" });
   const rows = new Map();
   const order = [];
-  // The store stamps each put (importedAt) and answers that it wrote the row, as it does.
+  // The store stamps each put (importedAt) and keeps its workspace (none here), as it does.
   let stamp = 0;
   const importedTemplates = {
     list: async () => [...rows.values()],
-    put: async (row) => { order.push(`put ${row.sha}`); rows.set(row.id, { ...row, importedAt: ++stamp }); return true; },
+    put: async (row, workspace) => { order.push(`put ${row.sha}`); rows.set(row.id, { ...row, workspace: workspace ?? null, importedAt: ++stamp }); },
     remove: async (gone) => { order.push("remove"); return rows.delete(gone); },
   };
   const registered = [];

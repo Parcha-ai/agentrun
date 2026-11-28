@@ -79,6 +79,25 @@ test("a retry keeps attempts, the next try and the last error on the firing, and
   assert.equal(await store.triggers.settle("trg-1", "fir-none", { status: "skipped" }), undefined, "a firing that is gone");
 });
 
+test("what the launch hook told a firing's host is the lowest cap any hand told: a higher cap never raises it, a lower one lowers it, a number after a told null is kept under the agent's default, it outlives a failed try and the move to sent, and a firing that is gone has none", async (t) => {
+  const { store } = await withTrigger(t);
+  await store.triggers.record("trg-1", [due("fir-1"), due("fir-2")]);
+  assert.equal((await store.triggers.firing("trg-1", "fir-1")).hooked, null, "a firing never handed was told nothing");
+  assert.deepEqual(await store.triggers.hooked("trg-1", "fir-1", { max_cost_usd: 0.5 }), { max_cost_usd: 0.5 });
+  assert.deepEqual(await store.triggers.hooked("trg-1", "fir-1", { max_cost_usd: 5 }), { max_cost_usd: 0.5 }, "a higher cap never raises it");
+  assert.deepEqual(await store.triggers.hooked("trg-1", "fir-1", { max_cost_usd: 0.2 }), { max_cost_usd: 0.2 }, "a lower one lowers it");
+  assert.deepEqual(await store.triggers.hooked("trg-1", "fir-1", { max_cost_usd: 0.5 }), { max_cost_usd: 0.2 }, "and a cap raised back never raises it again");
+  assert.deepEqual(await store.triggers.hooked("trg-1", "fir-1", { max_cost_usd: null }), { max_cost_usd: 0.2 }, "nor does a target that has since dropped its cap");
+  assert.deepEqual(await store.triggers.hooked("trg-1", "fir-2", { max_cost_usd: null }), { max_cost_usd: null }, "a told null is kept as told");
+  assert.deepEqual(await store.triggers.hooked("trg-1", "fir-2", { max_cost_usd: 50 }), { max_cost_usd: 50, under_default: true }, "a cap told after a null is kept, still under the agent's default the null stood for");
+  assert.deepEqual(await store.triggers.hooked("trg-1", "fir-2", { max_cost_usd: 2 }), { max_cost_usd: 2, under_default: true });
+  assert.deepEqual(await store.triggers.hooked("trg-1", "fir-2", { max_cost_usd: null }), { max_cost_usd: 2, under_default: true });
+  await store.triggers.settle("trg-1", "fir-1", { attempts: 1, retryAt: T0 + 5_000, error: { code: "hook_failed", message: "500" } });
+  const sent = await store.triggers.settle("trg-1", "fir-1", { status: "sent", reason: "handed", keepAttrs: true, startBy: T0 + 600_000, from: "due" });
+  assert.deepEqual([sent.firing.status, sent.firing.hooked], ["sent", { max_cost_usd: 0.2 }]);
+  assert.equal(await store.triggers.hooked("trg-1", "fir-none", { max_cost_usd: 0.5 }), undefined, "no such firing");
+});
+
 test("a due firing waits on its run's turn end with no try counted; pending lists the due and the failures not yet told", async (t) => {
   const { store } = await withTrigger(t);
   await store.triggers.record("trg-1", [due("fir-1"), due("fir-2")]);

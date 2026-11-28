@@ -433,12 +433,12 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // as the pi spec makes it: a refusal lets the Workspace and the Archil claim go (holds above).
   let filedIn: Workspace | undefined;
   const hold = (values: string[]) => { for (const redact of [run.redact, cut]) redact.hold(values); };
-  const mcp = heldRefusal !== undefined ? undefined : await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, toolSettings: body.toolSettings, work: () => (mode === 2 ? filedIn ?? ws.workspace : ws.workspace), launchInput: launch.input, hold, redact: run.redact, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, say: (words) => run.phase?.(words), ...(facts.toolsFixedAtStart ? { toolsFixedAtStart: true } : {}), ...claimMetering(deps, web, launch) });
+  const mcp = heldRefusal !== undefined ? undefined : await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, toolSettings: body.toolSettings, work: () => (mode === 2 ? filedIn ?? ws.workspace : ws.workspace), launchInput: launch.input, hold, redact: run.redact, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { run: claim.runId, ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, say: (words) => run.phase?.(words), ...(facts.toolsFixedAtStart ? { toolsFixedAtStart: true } : {}), ...claimMetering(deps, web, launch) });
   // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
   holds.hold({ passed: mcp });
   // The pull request's checkout, when the revision asks for one, as the pi spec makes it (pr-checkout.ts): on an Archil
   // region with no serverless exec, in the run's computer once it mounts the folder (below, checkoutWhereNoExec).
-  let checkout = body.checkout && noExec === undefined ? await prCheckoutForClaim(deps, ws.workspace, launch, cut, run.stopped ?? run.signal, (part) => holds.hold({ checkout: part }), body.checkout) : undefined;
+  let checkout = body.checkout && noExec === undefined ? await prCheckoutForClaim(deps, claim.runId, ws.workspace, launch, cut, run.stopped ?? run.signal, (part) => holds.hold({ checkout: part }), body.checkout) : undefined;
   holds.hold({ checkout });
   // A run's own process copies nothing: its runner placed them before the process started (run-child-host.ts).
   if (!(deps.sealKey === undefined && runnerSeam())) await placeRunInputs(deps.data, claim.runId, ws.workspace, filesToCopy(launch), messageText(launch.input));
@@ -504,11 +504,13 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // A computer that replaced an earlier claim's holds its acts to what it showed, as the pi spec's does.
   const tools = await runTools(ws.workspace, computer.computer, { mode, noExec, context, aliases: [scratch], ...(computer.hold ? { hold: computer.hold } : {}), ...(bashPolicy === undefined ? {} : { bashPolicy }), ...(computer.replaced ? { replaced: true } : {}) });
   filedIn = tools.workspace;
+  // The ToolHost's tools (web_save, uploads) and monid write in the run's files where the MCP files, for the same reason.
+  const written = mode === 2 ? tools.workspace : ws.workspace;
   let remoteProjectCapture = false;
   holds.hold({ tools: { end: () => remoteProjectCapture ? Promise.resolve() : tools.end() } });
   // On an Archil region with no serverless exec, the checkout now, as the pi spec makes it (pr-checkout.ts).
   if (body.checkout && noExec !== undefined) {
-    checkout = await checkoutWhereNoExec(deps, tools.shell === "computer" ? { workspace: tools.workspace, fresh: computer.fresh === true } : undefined, noExec, launch, cut, claimSignal, (part) => holds.hold({ checkout: part }), body.checkout, (words) => run.phase?.(words));
+    checkout = await checkoutWhereNoExec(deps, claim.runId, tools.shell === "computer" ? { workspace: tools.workspace, fresh: computer.fresh === true } : undefined, noExec, launch, cut, claimSignal, (part) => holds.hold({ checkout: part }), body.checkout, (words) => run.phase?.(words));
     holds.hold({ checkout });
   }
   const root = runFolder(deps.data, runRow.agentId, claim.runId);
@@ -711,7 +713,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   const held = run.redact;
   // The run's monid endpoints (monid-run.ts), one host tool each from its revision's pin, on the claim's keys and beside
   // its MCP tools in the loop's one catalog seam; their answers pass the redactors as the web tools' do.
-  const monid = monidForClaim(revisionRow.monidPin ?? undefined, { ...claimed }, () => ws.workspace, claim.runId, () => launch.maxCostUsd !== undefined, fakes?.monid);
+  const monid = monidForClaim(revisionRow.monidPin ?? undefined, { ...claimed }, () => written, claim.runId, () => launch.maxCostUsd !== undefined, fakes?.monid);
   const catalog = withMonid(mcp, monid && { ...monid, tools: monid.tools.map((tool) => answersCut(tool, held)) });
   // A run whose web_search is the harness's own search (ownSearchRuns: native on its plane, Claude's WebSearch, Codex's
   // live search) is not handed the host's web_search beside it.
@@ -782,7 +784,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     if (webNames.length || browsing) {
       life ??= hostLifecycle();
       const liveAt = await claimLiveAt(deps, claim.runId);
-      const host: ToolHost = { ...buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: held, launch, toolSettings: body.toolSettings, ...(fakes ? { fakes } : {}), ...reach, ...(liveAt ? { liveAt } : {}), ...(deps.saveSlots ? { saveSlots: deps.saveSlots } : {}) }), ...(claimBrowser ? { browserComputer: claimBrowser } : {}) };
+      const host: ToolHost = { ...buildToolHost({ root, workspace: written, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: held, launch, toolSettings: body.toolSettings, ...(fakes ? { fakes } : {}), ...reach, ...(liveAt ? { liveAt } : {}), ...(deps.saveSlots ? { saveSlots: deps.saveSlots } : {}) }), ...(claimBrowser ? { browserComputer: claimBrowser } : {}) };
       gate.askedOn(host);
       webTools = await webHostTools(host, webGranted, ctx);
       browserTools = await browserHostTools(host, granted, launch.plane, ctx);

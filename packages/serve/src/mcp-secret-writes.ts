@@ -16,7 +16,7 @@ import type { InputIssue } from "./errors.js";
 import { secretShapes } from "./learn/secrets.js";
 import { urlOf } from "./mcp-probe.js";
 import { mcpSourceKey, savedByToken } from "./mcp-sources.js";
-import { registerNotSecretWrite, registerSecretPage, registerSecretWrite, type SecretRequest } from "./secret-writes.js";
+import { registerNotSecretWrite, registerSecretPage, registerSecretRefusal, registerSecretWrite, type SecretRequest } from "./secret-writes.js";
 import type { McpCredentialMark } from "./store/index.js";
 import { MCP_SERVER_NAME } from "./tool-names.js";
 import { isObject } from "./validate.js";
@@ -80,8 +80,16 @@ export async function tokenWriteOverRefused(_body: unknown, request: SecretReque
   const was = await store.mcp.server(name);
   request.seen = credentialMark(was);
   if (!was) return false;
-  return (was.sealed !== null && was.sealed !== undefined) || !savedByToken(await store.settings.get(mcpSourceKey(name)), was.createdAt);
+  const sealed = was.sealed !== null && was.sealed !== undefined;
+  if (!sealed && savedByToken(await store.settings.get(mcpSourceKey(name)), was.createdAt)) return false;
+  request.words = tokenWriteOverWords(name, sealed);
+  return true;
 }
+
+/** The words tokenWriteOverRefused's refusal gets: it names the saved server the write would land on and why the token
+ *  may not write it (it keeps a credential, or the token did not save it), since the body may hold no secret at all. */
+export const tokenWriteOverWords = (name: string, sealed: boolean): string =>
+  `The MCP server ${name} ${sealed ? "keeps a credential" : "was not saved by the API token"}, so the token can't save over it or remove it. Use another name, or change it from the owner's signed-in session.`;
 
 /** MCP's operations the one gate reads: the predicates above decide each request. */
 export const MCP_SECRET_OPERATIONS = ["saveMcpServer", "startMcpOAuth", "putMcpPrivateHosts", "deleteMcpServer"] as const;
@@ -93,6 +101,14 @@ for (const operation of MCP_SECRET_OPERATIONS) registerSecretWrite(operation, (b
 registerSecretWrite("listComposioTools", composioSendsKey, composioListingOwners);
 registerSecretWrite("listComposioToolkits", composioSendsKey, composioListingOwners);
 registerSecretWrite("saveComposioServer", composioSendsKey, composioSaveDropsSecret);
+// A listing keeps nothing, so its refusal says what the token may list with, not the secret write's words.
+registerSecretRefusal(["listComposioTools", "listComposioToolkits"], (request) => (request.apiOnly ? COMPOSIO_LISTING_REFUSAL.apiOnly : COMPOSIO_LISTING_REFUSAL.elsewhere));
+/** A token's refused Composio listing: on an API-only server it lists with the key api_key_env names; anywhere else the
+ *  listings are the owner's session alone. */
+export const COMPOSIO_LISTING_REFUSAL = {
+  apiOnly: "A listing that sends a key's value takes the owner's signed-in session; on this server name the key by api_key_env instead.",
+  elsewhere: "Listing Composio's toolkits or tools takes the owner's signed-in session in the console; the API token lists them only on an API-only server, with the key named by api_key_env.",
+};
 // A body that sends a key's value, or anything but api_key_env alone in its place: a secret written.
 function composioSendsKey(body: unknown): boolean {
   return !(isObject(body) && body.api_key === undefined && body.api_key_env !== undefined);

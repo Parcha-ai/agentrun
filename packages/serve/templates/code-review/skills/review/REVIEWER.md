@@ -81,7 +81,7 @@ Exactly one fenced `json` block that meets `findings.schema.json` (beside this f
 
 ```json
 {
-  "head_sha": "<full 40-character sha reviewed>",
+  "head_sha": "<full 40-char sha, or null if none>",
   "summary": "<2-4 sentences: what the change does and the verdict>",
   "risk_score": 3,
   "risk_reasons": ["parseHeader throws on a missing header, which any request can send"],

@@ -456,6 +456,24 @@ export const actingOn = (run: Pick<RunView, "approvals" | "meta">) => [...(run.a
 /** What is shown of a call's arguments: the whole of them redacted with the run's redactor, then cut (previewOf), so
  *  no cut leaves the head of a held key. */
 export const shownArgs = (approval: Pick<Approval, "args_json">, redact: (text: string) => string): string => previewOf(redact(approval.args_json));
+/** What an ACP agent's own call does, in its words: the call the ACP adapter's gate asks about is `acp_<kind>` with
+ *  `{ title, kind, input, toolCallId? }`, where `input` is the agent's own. Its command where the input names one
+ *  (Antigravity's CommandLine, a `command` or `cmd`), its newlines kept; else its title (Cursor's names what it runs).
+ *  Undefined for any other call, or one whose arguments say neither: its row shows its arguments. */
+export const acpCallWords = (tool: string, argsJson: string): string | undefined => {
+  if (!tool.startsWith("acp_")) return undefined;
+  let args: unknown;
+  try {
+    args = JSON.parse(argsJson);
+  } catch {
+    return undefined;
+  }
+  if (!args || typeof args !== "object") return undefined;
+  const { title, input } = args as { title?: unknown; input?: unknown };
+  const given = (value: unknown) => (typeof value === "string" && value.trim() ? value : undefined);
+  const own = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+  return given(own.CommandLine) ?? given(own.command) ?? given(own.cmd) ?? given(title);
+};
 
 /** A dollar figure to a millionth, as the timeline's cost.usd is. */
 export { micro } from "./micro.js";
@@ -891,6 +909,9 @@ export function withApprovalRows(rows: readonly TimelineEvent[], asks: ReadonlyM
     const last = lastOf.get(approval.call_id) === row.id;
     if (!askHere && !last) return [own];
     const args = shownArgs(approval, redact);
+    // An ACP agent's call reads as what it does (its command or title), not as the gate's JSON around the agent's input.
+    const acp = acpCallWords(approval.tool, approval.args_json);
+    const words = acp === undefined ? args : previewOf(redact(acp));
     // A served row keeps the place it was first served at (rows.ts). The approval row is served while the call waits, below
     // its call's row, where it stays once the result is in, so it keeps its id. The call's result comes in after the
     // answer (the park writes none), so the outcome rows take a new id once it is there: served anew below the result, as
@@ -899,7 +920,7 @@ export function withApprovalRows(rows: readonly TimelineEvent[], asks: ReadonlyM
     const head = !answer ? "Waiting for your approval" : answer.decision === "canceled" ? "Withdrawn when the run was cancelled" : answer.decision === "withdrawn" ? (answer.ended ? "Withdrawn when the run ended" : "Withdrawn when the run was stopped") : answer.by === "message" ? "Declined by your message" : answer.by === "setting" ? (answer.decision === "deny" ? "Denied by the tool's setting on this server" : "Allowed by the tool's setting") : "Asked your approval";
     // Its time is the ask's (the gate's requestedAt), never the row it was made from.
     const when = approval.requested_at ? { timestamp: approval.requested_at, created_at: approval.requested_at } : {};
-    const asked: TimelineEvent = { ...madeFrom(row), ...when, id: approvalRowId(approval.call_id), kind: APPROVAL_ROW as TimelineEvent["kind"], summary: `${head}: ${approval.tool} ${clip(args, 400)}`, text: args, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null };
+    const asked: TimelineEvent = { ...madeFrom(row), ...when, id: approvalRowId(approval.call_id), kind: APPROVAL_ROW as TimelineEvent["kind"], summary: `${head}: ${approval.tool} ${clip(words, 400)}`, text: words, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null };
     const placed = !askHere ? [own] : row.id === call ? [own, asked] : [asked, own];
     if (!last || !outcome) return placed;
     const failed = answer!.decision === "allow" && result?.tool_status === "failed";

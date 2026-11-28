@@ -2,6 +2,7 @@
 // write there goes through raw() (store-target.mjs) off the thread the server commits from.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -13,6 +14,12 @@ const refused = (error) => error.message.startsWith(GUARD_MESSAGE) && /raw\(\) \
 
 test("the guard is installed in this process: node:sqlite in a test is the guarded one (run the suite with npm test, or node --import=./test/fixtures/sqlite-guard-register.mjs --test)", () => {
   assert.equal(DatabaseSync.guarded, true);
+});
+
+test("a test's require of node:sqlite is the guarded one too, the same class its import is", () => {
+  const required = createRequire(import.meta.url)("node:sqlite");
+  assert.equal(required.DatabaseSync.guarded, true);
+  assert.equal(required.DatabaseSync, DatabaseSync);
 });
 
 test("the package's test script and the Postgres runner load the guard in every test process", () => {
