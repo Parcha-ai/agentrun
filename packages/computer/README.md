@@ -3483,7 +3483,7 @@ with `fetch` and the shared REST client, and over SSH with the host's `ssh2` pac
 | --- | --- |
 | `create` | `POST /sandboxes` with the name, the image, the size, `timeout_secs` (an idle threshold) at the backstop's span within 60 s and a day, `network.allow_internet_access` as the request reaches out, `auto_resume: false`, `wait: false` and `max_pending_secs` at create's own bound; a 409 is a sandbox of that name, `exists`. Then the sandbox is read until it runs (`terminated` first is the reason in Tensorlake's words, `no_capacity` a `limit`), and the labels are written to a file only root reads, through the sandbox proxy's `POST /api/v1/processes/run` under `sudo` |
 | `get` | `GET /sandboxes/{id}`: pending is starting, running and snapshotting are running, suspending, suspended and resume_failed are stopped (resume_failed in its `error_details` words); a 404 or `terminated` is none |
-| `list` | `GET /sandboxes`, every page by `next_cursor`; only sandboxes named as computers whose name may carry the labels asked, a label beyond the name's read from the labels file, which fails the listing closed, naming the sandbox, where it can't be read within the call's bound |
+| `list` | `GET /sandboxes`, every page by `next_cursor` within the call's one bound (each page asked for what is left of it, none after it); only sandboxes named as computers whose name may carry the labels asked, a label beyond the name's read from the labels file, which fails the listing closed, naming the sandbox, where it can't be read within the call's bound, or at all as the sandbox stands (not running, or no file yet) |
 | `delete` | `DELETE /sandboxes/{id}`, a 404 done; then the sandbox's SSH connections end |
 | `exec` | SSH with `SshExec` to the sandbox's own sshd, turned on for this process's ed25519 key by the proxy's `POST /api/v1/ssh/enable` (as `tl-user`, passwordless sudo) and reached through the proxy's TCP tunnel, `wss://<sandbox>/api/v1/tunnels/tcp?port=22` with the key and `X-Tensorlake-Sandbox-Id`; the host key pinned to the enable's `host_key_fingerprint`, which is required: an enable that names none (null, or the field left out), or one not `SHA256:` and 43 characters of unpadded base64, is refused (vendor) before any tunnel opens, so no command runs through an sshd it can't verify; a login the sshd refuses enables again, once, and execs refused at once share that enable; the enable is shared by the execs that ask at once and stopped by none of them, each waiting on it within its own time and signal |
 
@@ -3491,9 +3491,11 @@ A sandbox has no labels, only a name unique in the project, so the name carries 
 epoch and the deadline (`computer-<12 hex>-r<run hash>-e<epoch>-d<deadline>`, base 36, a DNS label): the janitor reads
 the deadline from the name, so a sandbox still pending, or one Tensorlake suspended, is never ended for a label it
 can't read. Every other label is in `/var/lib/agentrun-computer/labels.json`, read once and kept for the process. The
-name holds only the run's hash, so the run itself is read from that file: a running sandbox whose labels file can't be
-read is not matched at its run's end (`releaseOlder` lists by the run), and the janitor ends it at the deadline in its
-name, within a day. The processes API answers output as lines with their line ends dropped, so it can't carry the exec contract's bytes: it
+name holds only the run's hash, so the run itself is read from that file. A sandbox whose labels file can't be read
+(suspended, or the read fails) carries the hash as `agentrun.run.hash`, and serve's janitor sweeps it by that: at once
+when its run is over, at the deadline in its name when no claim holds the run, never while one does, and never a
+sandbox whose name has no run hash. A run's end (`releaseOlder`) matches `agentrun.run` alone, so it doesn't delete
+such a sandbox, nor is it fenced by one of a later epoch. The processes API answers output as lines with their line ends dropped, so it can't carry the exec contract's bytes: it
 reads and writes the labels file alone. No `upload` (the daemon goes through exec's stdin) and no `extend` (the janitor
 moves the deadline label). `check()` takes a Tensorlake or project image by name, at most 16 vCPUs, and 1024 to 8192 MB
 a vCPU. The daemon user can't be uid 1000, `tl-user`'s.

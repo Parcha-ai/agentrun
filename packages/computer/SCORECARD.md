@@ -517,9 +517,12 @@ provider spec.
   API with [`sse`](PROVIDERS.md#output-as-server-sent-events). `timeout_secs` is an idle threshold
   ([lifecycle](https://docs.tensorlake.ai/sandboxes/lifecycle.md)), set at create to the backstop's span, with
   `auto_resume` off so a suspended sandbox stays so; the janitor ends a computer at its deadline, within a day (the
-  usage-credits plan's longest session). The name holds the run's hash alone, so the run is read from the file: a
-  running sandbox whose file can't be read is not matched at its run's end, and the janitor ends it at the deadline in
-  its name, within a day.
+  usage-credits plan's longest session). The name holds the run's hash alone, so the run is read from the file. A
+  sandbox whose file can't be read (suspended, or the read fails) carries the hash as `agentrun.run.hash`, and serve's
+  janitor sweeps it by that: at once when its run is over, at the deadline in its name when no claim holds the run,
+  never while one does. A run's end (`releaseOlder`) matches `agentrun.run` alone, so it doesn't delete such a sandbox,
+  nor is it fenced by one of a later epoch. A listing by a label beyond the name's fails closed on a sandbox not
+  running or with no file yet.
 - **Image:** Tensorlake's images or a project's, by name. A create names no image of ours, so no desktop and no Archil
   mount.
 - **Built:** `src/tensorlake.ts`, key `TENSORLAKE_API_KEY`; its tests run on a fake of the API, the proxy, the tunnel
