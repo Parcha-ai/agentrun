@@ -4422,8 +4422,28 @@ export type SaveModelGatewayResponse = {
 /** Scan a repository for places its app needs an agent (POST /suggestions/scans). */
 export type ScanForSuggestionsBody = {
   repo: string;
+  start?: "host";
+  run_id?: string;
+  scan?: string;
 };
 export type ScanForSuggestionsResponse = {
+  repo: string;
+  run_id: string;
+  agent_id: string;
+  status: "running";
+  already_running: boolean;
+} | {
+  repo: string;
+  agent_id: string;
+  input: {
+    content: string;
+  };
+  scan: string;
+  status: "starting";
+} | {
+  repo: string;
+  status: "released";
+} | {
   repo: string;
   run_id: string;
   agent_id: string;

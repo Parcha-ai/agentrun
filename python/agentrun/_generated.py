@@ -1189,6 +1189,11 @@ __all__ = [
     "SaveWebhookResponseObject22Disabled",
     "ScanForSuggestionsBody",
     "ScanForSuggestionsResponse",
+    "ScanForSuggestionsResponseObject11",
+    "ScanForSuggestionsResponseObject12",
+    "ScanForSuggestionsResponseObject12Input",
+    "ScanForSuggestionsResponseObject13",
+    "ScanForSuggestionsResponseObject2",
     "SdkRunEventsBody",
     "SdkRunEventsBodyEventsItem1",
     "SdkRunEventsBodyEventsItem2",
@@ -6941,11 +6946,45 @@ class SaveModelGatewayResponseSecret(TypedDict):
     changed_at: str | None
 
 
-class ScanForSuggestionsBody(TypedDict):
+class _ScanForSuggestionsBodyRequired(TypedDict):
     repo: str
 
 
-class ScanForSuggestionsResponse(TypedDict):
+class ScanForSuggestionsBody(_ScanForSuggestionsBodyRequired, total=False):
+    start: Literal["host"]
+    run_id: str
+    scan: str
+
+
+ScanForSuggestionsResponse: TypeAlias = "ScanForSuggestionsResponseObject11 | ScanForSuggestionsResponseObject12 | ScanForSuggestionsResponseObject13 | ScanForSuggestionsResponseObject2"
+
+
+class ScanForSuggestionsResponseObject11(TypedDict):
+    repo: str
+    run_id: str
+    agent_id: str
+    status: Literal["running"]
+    already_running: bool
+
+
+class ScanForSuggestionsResponseObject12(TypedDict):
+    repo: str
+    agent_id: str
+    input: ScanForSuggestionsResponseObject12Input
+    scan: str
+    status: Literal["starting"]
+
+
+class ScanForSuggestionsResponseObject12Input(TypedDict):
+    content: str
+
+
+class ScanForSuggestionsResponseObject13(TypedDict):
+    repo: str
+    status: Literal["released"]
+
+
+class ScanForSuggestionsResponseObject2(TypedDict):
     repo: str
     run_id: str
     agent_id: str
