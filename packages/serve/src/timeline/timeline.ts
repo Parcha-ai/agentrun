@@ -206,6 +206,8 @@ export const chargedTool = (row: TimelineEvent): string | undefined =>
  *  told after the note's "AgentRun server note:" label). A row of its own, the server's ("AgentRun: …", labelled once);
  *  no request, no cost. */
 export const CAP_WRAPUP = "agentrun.cap_wrapup";
+/** A dollar cap's wrap-up row with no cost words (TimelineOptions.costWords): what it says in place of the told amount. */
+export const CAP_WRAPUP_UNPRICED = "Near this run's spend cap; the model was told to wrap up.";
 /** A tool call the spend cap's wrap-up refused (serve's wrap-up.ts, the runner's gate): `callId` and the cap it was
  *  refused under (`capUsd`), on the run's root. The call's own refused row is its result's; this one is data only, for the
  *  run's view (`stopped_for`, `budget_refused_calls`): no row, no request, no cost. A call refused twice (a replay) is
@@ -1033,8 +1035,11 @@ function createProjector(options: TimelineOptions) {
     if (entry.kind === CAP_WRAPUP || entry.kind === COMPUTER_NOTE || entry.kind === BROWSERS_UNHELD) {
       // What the run's model was told near its cap, or after its computer was replaced: the server's row (`origin:
       // "server"`, in the words of its other rows), no request, no cost, and no message any turn took (its id ends in
-      // NOTE_SUFFIX, which isMessageRow passes over).
-      const words = str(obj(entry.data)?.words);
+      // NOTE_SUFFIX, which isMessageRow passes over). A dollar cap's note (it names `capUsd`) with no cost words says
+      // the run neared its cap, no amount; the model was told the note as written.
+      const data = obj(entry.data);
+      const told = str(data?.words);
+      const words = told && entry.kind === CAP_WRAPUP && data?.capUsd !== undefined && options.costWords === false ? CAP_WRAPUP_UNPRICED : told;
       if (words) add(make("phase", conv, `${base}${NOTE_SUFFIX}`, { summary: `AgentRun: ${words}`, text: words, origin: "server" }));
       return out;
     }

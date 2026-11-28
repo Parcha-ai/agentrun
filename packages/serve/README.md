@@ -1723,7 +1723,8 @@ run's Timeline says its cost in words, as before: "Cost: $0.0624 over 2 model re
 cost: fal charged $0.0600 for mcp:fal/run_model", "Spent $0.06, $0.02 over the run's cap of $0.04". With `1`, the
 served Timeline (`GET /v2/runs/{id}/timeline`, its stream, and the run's export) says the same rows with no figure:
 "2 model requests and 1 paid tool call", "mcp:fal/run_model via fal", "Over the run's cap", and a reply the cap cut
-short "…: all that was left of the run's cap could buy.". Each row's `usage` is
+short "…: all that was left of the run's cap could buy.". A dollar cap's wrap-up note reads "Near this run's spend cap;
+the model was told to wrap up." (the model is told the note with its amount, as before). Each row's `usage` is
 unchanged either way, so a reader that shows a cost reads it there.
 
 ### Direct Particle-1
