@@ -206,7 +206,7 @@ test("checkoutWhereNoExec, a computer the claim did not start: whatever its moun
       ["none there", () => undefined],
       ["a look that would never answer", () => new Promise(() => {})],
     ]) {
-      const made = await checkoutWhereNoExec(deps, { workspace: computer(stat), fresh: false }, GCP, launch, { hold: () => {} }, undefined, () => {}, kind, () => {});
+      const made = await checkoutWhereNoExec(deps, "run-1", { workspace: computer(stat), fresh: false }, GCP, launch, { hold: () => {} }, undefined, () => {}, kind, () => {});
       assert.match(made.note, /^No checkout was made: /, `${kind}, ${what}: ${made.note}`);
       assert.match(made.note, NOT_ITS_REPO, `${kind}, ${what}: ${made.note}`);
       assert.doesNotMatch(made.note, /there is no repo\/ folder/, `${kind}, ${what}`);
