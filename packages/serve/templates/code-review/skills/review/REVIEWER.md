@@ -48,8 +48,9 @@ Every defect you can show is a finding, P2 and edge cases included. Priority, li
   name the harm and it is a finding.
 - A break the change causes in code it didn't write (a caller, a consumer, a test asserting the old shape) is this
   change's finding, anchored at the changed line, not pre-existing.
-- Unsure an input reaches it, or a fact you didn't read stops it? Keep it with `Not shown: <fact>` and `confidence`
-  0.6.
+- Unsure an input reaches it, or a fact you didn't read stops it? Keep it, hedged: P2 at most, `confidence` 0.6, and
+  its `failure` carries the literal `Not shown: <fact>`. A change that gives the usual inputs a different result than
+  the old code did, not only an odd one (a null, an empty list), shows its own failure in the diff: never hedge that.
 
 **Re-review** (`last_reviewed_sha` set, `previous_findings` given): review only hunks that changed since it. Never
 raise a `dismissed` finding again. List in `resolve` the `active` fingerprints this change fixes. An `active` finding
