@@ -774,6 +774,15 @@ test("its owner deletes a share: 204, its bytes gone, its page and bundle 410; a
     assert.equal(res.status, 410, path);
     assert.ok(!res.text.includes("Six times seven"), "nothing of the share");
   }
+  // A person who opens a deleted share's link gets the share page, not a JSON error: the page reads its bundle, gets the
+  // 410, and says the share was deleted (SharePage.tsx). Its status stays 410, under the hosted page's CSP.
+  const page = await send(s.port, { path: `/r/${id}` });
+  assert.match(page.headers["content-type"], /^text\/html/);
+  assert.equal(page.headers["content-security-policy"], SHARE_HOST_CSP);
+  assert.equal(page.headers["x-robots-tag"], "noindex");
+  assert.match(page.text, /\/r\/_assets\/share-/);
+  assert.equal((await send(s.port, { method: "HEAD", path: `/r/${id}/` })).status, 410);
+  assert.match((await send(s.port, { path: `/r/${id}/bundle.json` })).headers["content-type"], /^application\/json/);
   assert.equal((await send(s.port, { method: "DELETE", path: `/r/v2/shares/${id}`, token: s.alice.token })).status, 204, "a second delete is 204 too");
   assert.deepEqual((await send(s.port, { path: "/r/v2/shares", token: s.alice.token })).json.shares, []);
 });
@@ -823,6 +832,11 @@ test("the page and its assets load under /r/: share.html at /r/<id> with every a
   // The hosted page's CSP is the local preview's, never a looser copy of it.
   assert.equal(SHARE_HOST_CSP, (await import("../dist/page.js")).SHARE_PAGE_CSP);
   assert.equal((await send(s.port, { method: "HEAD", path: `/r/${id}` })).status, 200);
+  // A link to no share on this host gets the page too, which says so; its status is 404.
+  const unknown = await send(s.port, { path: `/r/${"b".repeat(26)}` });
+  assert.equal(unknown.status, 404);
+  assert.match(unknown.headers["content-type"], /^text\/html/);
+  assert.equal(unknown.headers["content-security-policy"], SHARE_HOST_CSP);
   for (const path of [`/r/${"b".repeat(26)}`, "/r/not-an-id", "/r/_assets/missing.js", "/r/_assets/../share.html", "/r/_assets/%2e%2e/share.html", "/r/_assets/.hidden.js", "/r/_assets/x.html", `/r/${id}/other.json`, `/r/${id}/bundle.json/x`]) {
     assert.equal((await send(s.port, { path })).status, 404, path);
   }
