@@ -32,6 +32,7 @@ const { inWorkspace, outsideWorkspace, workspaceNow } = await import("../dist/wo
 const { Triggers } = await import("../dist/triggers.js");
 const { saveArchilSettings, storeAgentDisk } = await import("../dist/archil-settings.js");
 const { scopedPairedWords } = await import("../dist/workspace/attached-computers.js");
+const { makeRevision } = await import("../dist/agents-store.js");
 const { PROTOCOL_VERSION } = await import("@parcha/agentrun-computer");
 
 const SCOPED = randomBytes(24).toString("hex");
@@ -1042,6 +1043,22 @@ test("an agent in a workspace never names a paired computer: a scoped create or 
   await pairPhone(whole, "cmp-pixel");
   const owner = await whole.api("POST", "/agents", definition("Owner phone", phone));
   assert.equal(owner.status, 201, JSON.stringify(owner.body));
+});
+
+test("the save check of a revision is its agent's workspace's, whoever asks: called with no request scope, W1's agent's revision naming a paired computer is refused at definition.computer; an agent in no workspace's takes it", { timeout: 120_000 }, async (t) => {
+  const server = await scopedServer(t);
+  await pairPhone(server, "cmp-pixel");
+  const revision = makeRevision({ version: 1, name: "W1 phone", instructions: "Answer.", skills: [], tools: [], computer: { kind: "phone", provider: "cmp-pixel" } }, {}, undefined);
+  assert.equal(workspaceNow(), undefined, "no request scope");
+  await assert.rejects(server.saveable(revision, null, { workspace: W1 }), (error) => {
+    assert.equal(error.code, "input_invalid");
+    assert.deepEqual(error.extra.fields.map(({ field, reason }) => ({ field, reason })), [{ field: "definition.computer", reason: "not_an_option" }]);
+    assert.ok(error.extra.fields[0].message.startsWith(scopedPairedWords("cmp-pixel")), error.message);
+    return true;
+  }, "W1's agent never names the operator's phone");
+  await server.saveable(revision, null, { workspace: null });
+  await assert.rejects(inWorkspace(W2, () => server.saveable(revision, null, { workspace: W1 })), /paired with this server/, "a W2 scope does not stand in for W1's either");
+  await inWorkspace(W1, () => server.saveable(revision, null, { workspace: null }));
 });
 
 test("a scoped request's capabilities count no paired computer's kind; the operator's count it", { timeout: 120_000 }, async (t) => {
