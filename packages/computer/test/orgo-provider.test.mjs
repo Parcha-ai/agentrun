@@ -3,14 +3,14 @@
 // Orgo VM, on Orgo's own X display, so the desktop is the same wire as every computer. No key is read from the
 // environment, none leaves the Authorization header, and nothing reaches the network.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { kindOf, serves, sweep } from "../dist/index.js";
-import { API, fakeOrgoApi, fakeOrgoChannel, KEY, LABELS_PATH, VNC, WORKSPACE } from "./fake-orgo.mjs";
+import { API, fakeOrgoApi, fakeOrgoChannel, KEY, LABELS_PATH, ORGO_AUTOCUTSELS, selectionsOf, VNC, WORKSPACE } from "./fake-orgo.mjs";
 import { refusesHttp } from "./https-refusal.mjs";
 
 /** A create's context with a request id of its own: each create here is a new request. */
@@ -165,7 +165,7 @@ test("Orgo create: the computer in the workspace, computerd uploaded and install
 	assert.match(record.name, /^computer-[0-9a-f]{12}-r[a-z2-7]{16}-e3-d[0-9a-z]+$/);
 	assert.deepEqual(record.asked, { workspace_id: WORKSPACE, name: record.name, os: "linux", ram: 4, cpu: 1, ends_in_hours: 1 });
 	const ops = channel.calls.map(({ op, kind }) => (kind ? `${op} ${kind}` : op));
-	assert.deepEqual(ops.slice(0, 8), ["upload", "run install", "run orgo-x11", "run orgo-labels", "run orgo-ports", "run orgo-lockdown", "start init", "stdio stdio"]);
+	assert.deepEqual(ops.slice(0, 9), ["upload", "run install", "run orgo-x11", "run orgo-labels", "run orgo-ports", "run orgo-lockdown", "run orgo-primary-sync", "start init", "stdio stdio"]);
 	// Every path socket of Orgo's desktop is made root's alone before any tool runs, but the display's own: the tools reach
 	// the X server through it, and nothing else (live run 4 found root's D-Bus buses connectable by the tool user).
 	assert.deepEqual(channel.calls.find((call) => call.kind === "orgo-lockdown").argv.slice(4), ["/tmp/.X11-unix/X99"]);
@@ -512,4 +512,69 @@ test("Orgo create: a lockdown that leaves a socket open refuses the create in wo
 	assert.match(made.error.message, /was deleted/);
 	assert.equal(only(fakes.api).deleted, true, "the computer is deleted");
 	assert.equal(fakes.channel.calls.some((call) => call.kind === "init"), false, "init never started");
+});
+
+// linux.files.move's oracle (Ctrl+A, Ctrl+X, Ctrl+L, the path, Enter, Ctrl+V in Thunar) moved nothing on Orgo in sandbox
+// bench rounds 2 and 4, every seed, and moved both files on E2B, Agent37 and boxd. The live diagnostic
+// (orgo-move-diag-1, 2026-11-28) read why, a capture after each step: after Ctrl+X Thunar owned CLIPBOARD with the cut
+// (diag/captures/s02-after-ctrl+x.tool.txt); after Ctrl+L Thunar owned PRIMARY and autocutsel CLIPBOARD, as plain text
+// (s03-after-ctrl+l.tool.txt); after Ctrl+V an "Error" window had focus and both files were where they were
+// (s06-after-ctrl+v.tool.txt). Root's ps (facts.root.txt) holds both autocutsels, one per selection (ORGO_AUTOCUTSELS).
+test("Orgo create: a cut survives a selection in a text field: Orgo's PRIMARY autocutsel is ended before any tool runs, its CLIPBOARD one kept", async () => {
+	const { provider, api, channel } = setup();
+	const created = await provider.create(SPEC, newRequest());
+	assert.equal(created.ok, true, JSON.stringify(created));
+	const box = channel.boxOf(only(api).id);
+	const files = ["file:///tmp/computer-bench-4e788a/downloads-4e788a/beach-4e788a.txt", "file:///tmp/computer-bench-4e788a/downloads-4e788a/sunset-4e788a.txt"];
+	const selections = selectionsOf(box);
+	selections.cut(files);
+	selections.select("/tmp/computer-bench-4e788a/downloads-4e788a");
+	selections.select("/tmp/computer-bench-4e788a/photos-4e788a/");
+	assert.deepEqual(box.clipboard, { owner: "thunar", targets: ["text/uri-list", "x-special/gnome-copied-files", "UTF8_STRING"], uris: files }, "Ctrl+V pastes the cut");
+	const ops = channel.calls.map(({ op, kind }) => (kind ? `${op} ${kind}` : op));
+	assert.ok(ops.indexOf("run orgo-primary-sync") >= 0 && ops.indexOf("run orgo-primary-sync") < ops.indexOf("start init"), `ended before init starts: ${ops.join(", ")}`);
+	assert.deepEqual(box.processes, [ORGO_AUTOCUTSELS[0]], "the CLIPBOARD autocutsel runs on, so the clipboard still reaches Orgo's VNC viewer");
+	assert.ok(created.value.notes.some((note) => /PRIMARY autocutsel ended \(pid 514\)/.test(note)), JSON.stringify(created.value.notes));
+	// A desktop with no PRIMARY autocutsel (another Orgo image) ends nothing and says so.
+	const plain = setup({}, { channel: { processes: [ORGO_AUTOCUTSELS[0]] } });
+	const made = await plain.provider.create(SPEC, newRequest());
+	assert.equal(made.ok, true, JSON.stringify(made));
+	assert.deepEqual(plain.channel.boxOf(only(plain.api).id).processes, [ORGO_AUTOCUTSELS[0]]);
+	assert.ok(made.value.notes.some((note) => /no PRIMARY autocutsel ran/.test(note)), JSON.stringify(made.value.notes));
+});
+
+test("Orgo create: a PRIMARY autocutsel that outlives its signal refuses the create in words, and the computer is deleted", async () => {
+	const fakes = setup({}, { channel: { primarySync: { exitCode: 1, output: "autocutsel 514 outlived SIGTERM\n" } } });
+	const made = await fakes.provider.create(SPEC, newRequest());
+	assert.equal(made.ok, false, JSON.stringify(made));
+	assert.equal(made.error.code, "refused");
+	assert.match(made.error.message, /ending Orgo's PRIMARY autocutsel .* failed \(exit 1\): autocutsel 514 outlived SIGTERM/);
+	assert.match(made.error.message, /was deleted/);
+	assert.equal(only(fakes.api).deleted, true, "the computer is deleted");
+	assert.equal(fakes.channel.calls.some((call) => call.kind === "init"), false, "init never started");
+});
+
+test("Orgo primary sync: the script ends a process whose whole command line is Orgo's PRIMARY autocutsel and no other", async () => {
+	// Real processes with the command lines Orgo's ps showed (perl sets its own), and a lookalike of each kind.
+	const named = (line) => spawn("perl", ["-e", `$0 = ${JSON.stringify(line)}; sleep 600`], { stdio: "ignore" });
+	const alive = (pid) => {
+		const stat = spawnSync("sh", ["-c", `awk '{ print $3 }' /proc/${pid}/stat 2>/dev/null`], { encoding: "utf8" }).stdout.trim();
+		return stat !== "" && stat !== "Z";
+	};
+	const primary = named("autocutsel -fork -selection PRIMARY");
+	const others = [named("autocutsel -fork -selection CLIPBOARD"), named("autocutsel -fork -selection PRIMARY -debug"), named("xautocutsel -fork -selection PRIMARY")];
+	const all = [primary, ...others];
+	try {
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		for (const child of all) assert.ok(alive(child.pid), `${child.pid} started`);
+		const ran = spawnSync("sh", ["-c", orgo.PRIMARY_SYNC_SCRIPT, "sh"], { encoding: "utf8" });
+		assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+		assert.equal(ran.stdout.trim(), `ended ${primary.pid}`);
+		assert.equal(alive(primary.pid), false, "Orgo's PRIMARY autocutsel is gone");
+		for (const child of others) assert.ok(alive(child.pid), `${child.pid} is not Orgo's PRIMARY autocutsel and runs on`);
+		const again = spawnSync("sh", ["-c", orgo.PRIMARY_SYNC_SCRIPT, "sh"], { encoding: "utf8" });
+		assert.deepEqual([again.status, again.stdout.trim()], [0, "none"]);
+	} finally {
+		for (const child of all) child.kill("SIGKILL");
+	}
 });

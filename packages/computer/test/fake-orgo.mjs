@@ -182,6 +182,38 @@ export function markOf(argv) {
 }
 
 /**
+ * The clipboard helpers Orgo's Linux desktop runs as root beside Xtigervnc :99, as root's `ps` read them in the files.move
+ * diagnostic (orgo-move-diag-1, live, 2026-11-28: diag/captures/facts.root.txt): one autocutsel per selection, each
+ * syncing its selection with CUT_BUFFER0.
+ */
+export const ORGO_AUTOCUTSELS = [
+	{ pid: 512, args: "autocutsel -fork -selection CLIPBOARD" },
+	{ pid: 514, args: "autocutsel -fork -selection PRIMARY" },
+];
+
+/**
+ * A desktop's selections as Orgo's two autocutsels move them, which the same diagnostic read step by step (its
+ * captures s02 to s06): a file manager's cut owns CLIPBOARD with text/uri-list and x-special/gnome-copied-files;
+ * Ctrl+L then selects the location's text, which sets PRIMARY; the PRIMARY autocutsel copies that text into the cut
+ * buffer, and the CLIPBOARD one, seeing the cut buffer change, takes CLIPBOARD with it as plain text. The cut is lost,
+ * and the paste that follows is the location's text, which Thunar answers with an "Error" window.
+ */
+export function selectionsOf(box) {
+	const running = (selection) => box.processes.some((process) => process.args === `autocutsel -fork -selection ${selection}`);
+	return {
+		cut(uris) {
+			box.clipboard = { owner: "thunar", targets: ["text/uri-list", "x-special/gnome-copied-files", "UTF8_STRING"], uris: [...uris] };
+		},
+		select(text) {
+			box.primary = text;
+			if (!running("PRIMARY") || box.cutBuffer === text) return;
+			box.cutBuffer = text;
+			if (running("CLIPBOARD")) box.clipboard = { owner: "autocutsel", targets: ["UTF8_STRING", "STRING", "TEXT"], text };
+		},
+	};
+}
+
+/**
  * A fake OrgoChannel. Each computer (by id) holds its files, its labels file, whether its X socket is there, init (when
  * started) and what its daemon reports. Options:
  *  - install: the install script's exit code (default 0); sha: "ok" or "lie";
@@ -197,19 +229,23 @@ export function markOf(argv) {
  *    them (default 8231 and 5900);
  *  - sockets: the path sockets of Orgo's desktop the lockdown script makes root's alone, as it prints them (default
  *    root's D-Bus buses, as live run 4 found them);
- *  - lockdown: { exitCode, output } the lockdown script answers instead (a socket it could not lock).
+ *  - lockdown: { exitCode, output } the lockdown script answers instead (a socket it could not lock);
+ *  - processes: root's processes in each computer, { pid, args } (default Orgo's two autocutsels); the primary-sync
+ *    script ends each whose whole command line is `autocutsel -fork -selection PRIMARY`, as pgrep -x -f matches it;
+ *  - primarySync: { exitCode, output } that script answers instead, ending nothing (one that outlived its signal).
+ * box.processes is a computer's process list, and selectionsOf(box) its selections.
  * The status script answers what the computer holds: init running or not, its socket, its log's tail. The stop-init
  * script ends init (box.stopped counts them). A test sets box.init.version for a daemon of another version. The daemon holds
  * its programs to their own loopback when init was started with --own-network, and else shares Orgo's network.
  * channel.calls holds every call, { op, computer, argv | path, how }; channel.boxes each computer's state, its
  * probes' targets in box.probes.
  */
-export function fakeOrgoChannel({ install = 0, sha = "ok", x11 = true, box: boxPatch = {}, notListening = 0, startFails, bridge = "ok", initDies = false, rootPorts = [8231, 5900], sockets = ["/run/dbus/system_bus_socket", "/tmp/dbus-3fd5ustF2v"], lockdown } = {}) {
+export function fakeOrgoChannel({ install = 0, sha = "ok", x11 = true, box: boxPatch = {}, notListening = 0, startFails, bridge = "ok", initDies = false, rootPorts = [8231, 5900], sockets = ["/run/dbus/system_bus_socket", "/tmp/dbus-3fd5ustF2v"], lockdown, processes = ORGO_AUTOCUTSELS, primarySync } = {}) {
 	const boxes = new Map();
 	const calls = [];
 	let waiting = notListening;
 	const boxOf = (id) => {
-		if (!boxes.has(id)) boxes.set(id, { files: new Map(), labels: undefined, x11, init: undefined, daemon: undefined, streams: [], extended: [], probes: [] });
+		if (!boxes.has(id)) boxes.set(id, { files: new Map(), labels: undefined, x11, init: undefined, daemon: undefined, streams: [], extended: [], probes: [], processes: processes.map((process) => ({ ...process })) });
 		return boxes.get(id);
 	};
 	const channel = {
@@ -243,6 +279,12 @@ export function fakeOrgoChannel({ install = 0, sha = "ok", x11 = true, box: boxP
 			if (mark?.kind === "orgo-labels-read") return box.labels === undefined ? done(1, `cat: ${mark.args[0]}: No such file or directory`) : done(0, box.labels);
 			if (mark?.kind === "orgo-ports") return done(0, rootPorts.map((port) => `${port}\n`).join(""));
 			if (mark?.kind === "orgo-lockdown") return lockdown ? done(lockdown.exitCode, lockdown.output) : done(0, sockets.map((path) => `locked ${path}\n`).join(""));
+			if (mark?.kind === "orgo-primary-sync") {
+				if (primarySync) return done(primarySync.exitCode, primarySync.output);
+				const ended = box.processes.filter((process) => process.args === "autocutsel -fork -selection PRIMARY").map((process) => process.pid);
+				box.processes = box.processes.filter((process) => !ended.includes(process.pid));
+				return done(0, ended.length > 0 ? `ended ${ended.join(" ")}\n` : "none\n");
+			}
 			if (mark?.kind === "orgo-stop-init") {
 				// Init stopped by its process, its programs with it; the daemon's binary stays installed.
 				const up = box.init !== undefined;
