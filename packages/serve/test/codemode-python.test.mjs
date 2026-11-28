@@ -116,6 +116,7 @@ test("a Python script reaches the host's files, network, processes and environme
   try {
     const codemode = codemodeOf();
     const attempts = [
+      'return open("/etc/passwd").read()',
       `return open(${JSON.stringify(secret)}).read()`,
       `open(${JSON.stringify(join(dir, "written.txt"))}, "w").write("x")`,
       `from pathlib import Path\nreturn Path(${JSON.stringify(secret)}).read_text()`,
@@ -126,6 +127,7 @@ test("a Python script reaches the host's files, network, processes and environme
       `import os\nreturn os.getenv(${JSON.stringify(canary)})`,
       `import os\nos.system("touch ${join(dir, "system-ran")}")`,
       `__import__("os")`,
+      "import sys\nreturn sys.modules",
       "import socket",
       "import subprocess",
       "import urllib.request",
@@ -139,13 +141,47 @@ test("a Python script reaches the host's files, network, processes and environme
       const answer = await python(codemode, script, nested);
       assert.equal(answer.isError, true, `${script}: ${answer.text}`);
       assert.match(answer.text, /^The script failed: [\s\S]*(PermissionError|RuntimeError|ModuleNotFoundError|NameError|AttributeError)/, `${script}: ${answer.text}`);
-      assert.doesNotMatch(answer.text, /host-file-contents|canary-not-a-secret/, `${script}: ${answer.text}`);
+      assert.doesNotMatch(answer.text, /host-file-contents|canary-not-a-secret|root:/, `${script}: ${answer.text}`);
       assert.deepEqual(calls, [], `${script}: no tool call`);
     }
     assert.deepEqual(readdirSync(dir), ["secret.txt"], "nothing was written on the host");
   } finally {
     delete process.env[canary];
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a Python script finds no way to the host through what the host hands it: a tool's value, the tools module, its functions or the builtins", async () => {
+  const canary = "CODEMODE_PY_CANARY";
+  process.env[canary] = "canary-not-a-secret";
+  try {
+    const codemode = codemodeOf();
+    const attempts = [
+      'a = await tools.read_file({})\nreturn getattr(a, "open")',
+      "a = await tools.read_file({})\nreturn a.__class__",
+      "a = await tools.read_file({})\nreturn type(a).__subclasses__()",
+      'a = await tools.read_file({})\nreturn getattr(a["items"], "__class__")',
+      'return getattr(tools, "open")("/etc/passwd")',
+      'return tools.open("/etc/passwd")',
+      "return tools.__dict__",
+      "return tools.read_file.__globals__",
+      'return getattr(print, "__self__")',
+      'return getattr(__builtins__, "open")("/etc/passwd")',
+      "return globals()",
+      "return ().__class__.__base__.__subclasses__()",
+      `return eval("open('/etc/passwd').read()")`,
+      'exec("import os\\nx = os.environ")',
+    ];
+    for (const script of attempts) {
+      const { calls, nested } = nestedCalls(() => ({ text: JSON.stringify({ body: "hello", items: [1, 2] }) }));
+      const answer = await python(codemode, script, nested);
+      assert.equal(answer.isError, true, `${script}: ${answer.text}`);
+      assert.match(answer.text, /^The script failed: [\s\S]*(PermissionError|RuntimeError|NameError|AttributeError)/, `${script}: ${answer.text}`);
+      assert.doesNotMatch(answer.text, /root:|canary-not-a-secret/, `${script}: ${answer.text}`);
+      assert.deepEqual(calls.map(([name]) => name), script.includes("tools.read_file({})") ? ["read_file"] : [], `${script}: no call beyond the script's own`);
+    }
+  } finally {
+    delete process.env[canary];
   }
 });
 
