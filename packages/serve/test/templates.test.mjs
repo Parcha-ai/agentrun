@@ -877,7 +877,12 @@ test("an mcp entry's pin is checked: each tool one of the entry's, 1 to 8 argume
     const empty = compiled(p, given,{ mcp: served(p), defaultTools: [], grants: [SEND] });
     assert.deepEqual(empty.agent.definition.tool_settings, { [SEND]: { permission: "deny" } }, JSON.stringify(given));
     assert.deepEqual(empty.unpinned, [{ tool: SEND, parameters: ["channel"] }]);
+    // Where no one can approve, the tick's allow never lifts an empty fill's deny.
+    assert.deepEqual(compiled(p, given, { mcp: served(p), defaultTools: [], grants: [SEND], allowTicks: [SEND] }).agent.definition.tool_settings, { [SEND]: { permission: "deny" } }, JSON.stringify(given));
   }
+  // Where no one can approve, a ticked tool's filled pin gets the tick's allow beside it; an unticked one, none.
+  assert.deepEqual(compiled(p, { channel: "C0123", count: 3 }, { mcp: served(p), defaultTools: [], grants: [SEND], allowTicks: [SEND] }).agent.definition.tool_settings, { [SEND]: { pin: { channel_id: "C0123", limit: 3, unfurl_links: false, thread_ts: null }, permission: "allow" } });
+  assert.deepEqual(compiled(p, { channel: "C0123", count: 3 }, { mcp: served(p), defaultTools: [], grants: [], allowTicks: [SEND] }).agent.definition.tool_settings, { [SEND]: { pin: { channel_id: "C0123", limit: 3, unfurl_links: false, thread_ts: null } } });
   // A one-of list is filled item by item, in its order; an item whose parameter is missing denies as a scalar's does.
   const { p: listed } = await pinProblems(t, '    pin: { slack_send_message: { channel_id: [C0GENERAL1, "${parameters.channel}"], limit: [null, "${parameters.count}"] } }');
   assert.deepEqual(compiled(listed, { channel: "C0123", count: 3 }, { mcp: served(listed), defaultTools: [], grants: [] }).agent.definition.tool_settings, { [SEND]: { pin: { channel_id: ["C0123", "C0GENERAL1"], limit: [null, 3] } } }, "in its one form");

@@ -1343,12 +1343,14 @@ export async function packageTiers(env: NodeJS.ProcessEnv, model: Package["model
  *  tools (or, when it names none, `defaultTools`, those this server gives a new agent). A grant writes no permission: each
  *  call follows this server's tool settings, so under approvals ask a write asks the owner unless the owner allowed it
  *  there, a read runs where the owner turned on Allow reads for its server and asks otherwise, and a deny the owner set on this server still holds; approvals
- *  never lifts those asks. A tool left unticked is not the agent's at all, so no harness offers it and approvals never,
+ *  never lifts those asks. Where no one can answer an ask (the server's accounts off, readApprovers), an ask is refused at
+ *  once, so a ticked tool left to ask could never run: there the apply names the ticks in `allowTicks` (under approvals ask,
+ *  less any this server denies), and each is allowed in the agent's own settings; a pin's empty fill keeps its deny. A tool left unticked is not the agent's at all, so no harness offers it and approvals never,
  *  which lifts an ask of a tool the agent has, has nothing to lift: the owner grants it later in the agent's tools. A
  *  tool the package pins gets its pin, filled, in the agent's tool settings, ticked or not (it holds once the tool is
  *  granted later); one whose pin fills empty (its parameter not given) is set to deny instead, and named in `unpinned`
  *  (by gate name, with the parameters not given): a send with no destination set never runs. */
-export function compiled(p: Package, parameters: Json, chosen: { harness?: string; model?: string; modelTiers?: Record<string, string>; mcp: McpServed[]; defaultTools: readonly string[]; grants: readonly string[]; approvals?: Approvals; computer?: ComputerPick }, _deps?: TemplatesDeps): { agent: Json; triggers: Json[]; unpinned: { tool: string; parameters: string[] }[] } {
+export function compiled(p: Package, parameters: Json, chosen: { harness?: string; model?: string; modelTiers?: Record<string, string>; mcp: McpServed[]; defaultTools: readonly string[]; grants: readonly string[]; approvals?: Approvals; computer?: ComputerPick; allowTicks?: readonly string[] }, _deps?: TemplatesDeps): { agent: Json; triggers: Json[]; unpinned: { tool: string; parameters: string[] }[] } {
   const skills = Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length));
   // The ticks, in the package's order: never a tool of a server not saved here, nor one the owner did not tick.
   const granted = chosen.mcp.flatMap(({ server, tools }) => tools.map((tool) => mcpToolName(server, tool))).filter((tool) => chosen.grants.includes(tool));
@@ -1358,8 +1360,9 @@ export function compiled(p: Package, parameters: Json, chosen: { harness?: strin
   const own = pick ? (p.tools ?? pick.defaults).filter((tool) => !pick.dropped.includes(tool)) : p.tools;
   const named = own && (p.tools || own.length) ? own : undefined;
   const tools = granted.length ? [...(named ?? (pick ? [] : chosen.defaultTools)), ...granted] : named;
-  // No permission for a tick: a grant is no allow (this server's tool settings decide). Only a pin, or a pin's empty fill's deny.
-  const settings: Record<string, { permission?: "deny"; pin?: Record<string, PinValue>; policy?: BashPolicy; file?: FileSetting }> = {};
+  // No permission for a tick: a grant is no allow (this server's tool settings decide). Only a pin, or a pin's empty fill's
+  // deny; and, where no one can approve, the tick's allow (below).
+  const settings: Record<string, { permission?: "allow" | "deny"; pin?: Record<string, PinValue>; policy?: BashPolicy; file?: FileSetting }> = {};
   // A tool's policy (bash's read-only), written as its setting, whatever its permission: never one an apply grants. With
   // a picked computer, only where the agent's tools hold bash: none for a bash the computer dropped, or never gave.
   if (p.toolPolicy && (!pick || tools?.includes("bash"))) settings.bash = { ...settings.bash, policy: p.toolPolicy.bash };
@@ -1370,6 +1373,9 @@ export function compiled(p: Package, parameters: Json, chosen: { harness?: strin
       unpinned.push({ tool: name, parameters: empty });
     } else settings[name] = { ...settings[name], pin: sortedPin(pin) as Record<string, PinValue> };
   }
+  // Where no one can answer an ask, the ticks the apply allows (allowTicks): an ask there is only ever refused, so the tick
+  // is the owner's one answer. Never over a pin's empty-fill deny.
+  for (const name of granted) if (chosen.allowTicks?.includes(name) && settings[name]?.permission !== "deny") settings[name] = { ...settings[name], permission: "allow" };
   // A tool's file setting, written as the package states it, ticked or not (it holds once the tool is granted later), as
   // a pin is: the tool's result is a summary of each answer, never the answer.
   for (const { server, file } of chosen.mcp) for (const [tool, setting] of Object.entries(file ?? {})) settings[mcpToolName(server, tool)] = { ...settings[mcpToolName(server, tool)], file: { folder: setting.folder, show: [...setting.show] } };
