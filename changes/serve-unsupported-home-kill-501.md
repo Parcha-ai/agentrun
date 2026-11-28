@@ -1,5 +1,0 @@
----
-packages: @parcha/agentrun-serve
-kind: fix
----
-Public contract change: `GET` and `PUT /agents/{id}/home` (the contract's packed home export and import) and `POST /runs/{id}/kill` now answer `501 unsupported_here`, naming `home.export`, `home.import` or `runs.kill` in `error.capability`, where they answered `404`. This is the contract's documented answer for a feature a backend doesn't offer, and quotes already answered it that way. The token is checked first (`401` without it), and the `501` comes before any lookup: an agent or run that exists, one that doesn't and a purged one all get the same answer. A client that read the `404` as "this server has no such route" should now read the `501` and its capability. Capabilities still declare all three false, and the served document still leaves them out. An API-only server refuses them as before: `404` unscoped. A request with the `AgentRun-Workspace` header now gets `403 not_scoped`, as quotes do, because they are now routes of the server.
