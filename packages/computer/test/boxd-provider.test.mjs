@@ -270,6 +270,22 @@ test("a machine boxd reads not found for the whole of its create's bound is a ti
 	assert.deepEqual(rec.calls.filter(([name]) => name === "delete"), [], "no delete by its id");
 });
 
+test("a cancel during the pause after a not found ends the create's wait as aborted, and no wait starts after it", async () => {
+	const { rec, host } = setup({}, { create: machine(), waitUntilReady: () => Promise.reject(NOT_YET()) });
+	const cancel = new AbortController();
+	const waits = () => rec.calls.filter(([name]) => name === "waitUntilReady").length;
+	const answer = host.create(request(), { timeoutMs: 5_000, signal: cancel.signal });
+	await new Promise((resolve) => setTimeout(resolve, 100));
+	assert.equal(waits(), 1, "the first wait read not found, and the pause before the next began");
+	cancel.abort();
+	await assert.rejects(answer, (error) => {
+		assert.equal(error.code, "aborted", `${error.name}: ${error.message}`);
+		return true;
+	});
+	await new Promise((resolve) => setTimeout(resolve, 700));
+	assert.equal(waits(), 1, "no wait after the cancel, now or once the pause would have ended");
+});
+
 test("the provider's create whose wait for the machine throws RateLimitError fails as limit, and the one machine it made is deleted by its id", async () => {
 	const { rec, provider } = setup({}, { list: [], create: (params) => machine({ name: params.name, labels: params.labels }), waitUntilReady: () => Promise.reject(named("RateLimitError")) });
 	const made = await provider.create(SPEC, { requestId: "r-limit" });
@@ -522,6 +538,23 @@ test("prepareImage: a cancelled request makes no build machine, and a cancel whi
 	assert.equal(failed.error.code, "aborted", "boxd's own wait for a ready machine is not the caller's to sit through");
 	assert.deepEqual(starting.rec.calls.filter(([call]) => call === "delete"), [["delete", "b-1"]]);
 	assert.equal(starting.rec.calls.some(([call]) => call === "streamExec" || call === "snapshots.create"), false);
+});
+
+test("prepareImage: a cancel during the pause after a build machine read not found starts no wait after it, while or after the machine is deleted", async () => {
+	const { rec, provider } = setup({ kind: "desktop" }, building({ waitUntilReady: () => Promise.reject(NOT_YET()) }));
+	const cancel = new AbortController();
+	const waits = () => rec.calls.filter(([call]) => call === "waitUntilReady").length;
+	const answer = provider.prepareImage({ signal: cancel.signal });
+	await new Promise((resolve) => setTimeout(resolve, 100));
+	assert.equal(waits(), 1, "the first wait read not found, and the pause before the next began");
+	cancel.abort();
+	const failed = await answer;
+	assert.equal(failed.ok, false);
+	assert.equal(failed.error.code, "aborted");
+	assert.deepEqual(rec.calls.filter(([call]) => call === "delete"), [["delete", "b-1"]]);
+	await new Promise((resolve) => setTimeout(resolve, 700));
+	assert.equal(waits(), 1, "no wait after the cancel, now or once the pause would have ended");
+	assert.equal(rec.calls.some(([call]) => call === "streamExec" || call === "snapshots.create"), false);
 });
 
 test("prepareImage: a build machine whose create reply was lost is found by its name and deleted; the create's error is the answer", async () => {
