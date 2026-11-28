@@ -1,15 +1,18 @@
 // The serve backend against a fake serve that keeps serve's held-computer contract (README.md, "What serve needs"): a run
 // created with hold: true, its computer reached through /computer/call, its agent started by /start, its steps and
 // answer read from its Timeline, the computer kept after the agent's end for the checks, and let go by /computer/release.
-// The fake serve's computers are fake worlds and its agents the fake agents. Last, the preflight against this
-// repository's own serve, which has every route the bench needs.
+// The fake serve's computers are fake worlds and its agents the fake agents. Last, this repository's own serve: the
+// preflight, which finds every route the bench needs, and a code-mode run on its CLI start, whose steps the bench counts.
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { createServer } from "node:http";
+import { createInterface } from "node:readline";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { FAKE_AGENTS, FakeWorld, helper, SETTINGS_APP } from "../dist/fake-world.js";
-import { buildReport, ENTRY, MissingRoute, reportMarkdown, resolveTask, runBench, serveBackend, Store, verifySuite } from "../dist/index.js";
+import { buildReport, ENTRY, loadSuite, MissingRoute, reportMarkdown, resolveTask, runBench, serveBackend, Store, verifySuite } from "../dist/index.js";
 import { arm, fakeTasks, recordOf, store, tmp, withSpec } from "./support.mjs";
 
 const TOKEN = "t0ken";
@@ -676,4 +679,41 @@ test("this repository's serve saves an arm's agent: its effort is the definition
 	assert.equal((agent.definition ?? agent).computer.surface, "tools", "serve keeps the arm's surface");
 	// A computer's file ops need read and write among the agent's tools: without them serve offers none of the files group.
 	assert.deepEqual([...(agent.definition ?? agent).tools].sort(), ["read", "write"], "the agent is given the computer's file ops");
+});
+
+test("this repository's serve, started as its CLI starts it (each run a process of its own): a code-mode script's computer calls are its steps, its input an act by the input route", { timeout: 180_000 }, async (t) => {
+	// serve's CLI with --faux: the faux model (fixtures/serve-faux-codemode-model.mjs) and --faux's faux-desktop.
+	const cli = join(dirname(fileURLToPath(import.meta.resolve("@parcha/agentrun-serve/package.json"))), "dist", "cli.js");
+	const data = join(tmp("cb-serve-cli-"), "agents");
+	const model = join(import.meta.dirname, "fixtures", "serve-faux-codemode-model.mjs");
+	const child = spawn(process.execPath, [cli, "--data", data, "--listen", "127.0.0.1", "--port", "0", "--faux", model, "--drain-timeout", "5s"], { env: { ...process.env, AGENTRUN_TELEMETRY: "0" }, stdio: ["ignore", "pipe", "inherit"] });
+	const exited = new Promise((resolve) => child.once("exit", resolve));
+	t.after(async () => {
+		child.kill("SIGTERM");
+		await exited;
+	});
+	let baseUrl;
+	for await (const line of createInterface({ input: child.stdout })) {
+		baseUrl = /^AGENTRUN_BASE_URL=(\S+)$/.exec(line)?.[1];
+		if (baseUrl) break;
+	}
+	assert.ok(baseUrl, "serve said where it listens");
+	child.stdout.resume();
+	const suite = tmp("cb-suite-");
+	mkdirSync(join(suite, "look-and-act"));
+	writeFileSync(join(suite, "look-and-act", "task.json"), JSON.stringify({
+		id: "serve.look-and-act", version: 1, title: "Look, act, say done", split: "dev", tags: [],
+		needs: { os: "linux", kind: "desktop" }, instruction: "Look at the screen, click once, then say Done.",
+		budget: { steps: 6, usd: 0.1, wall_s: 120 },
+		checks: [{ id: "said-done", kind: "answer", why: "The faux model's answer is Done.", text: { equals: "Done." } }],
+	}));
+	const backend = serveBackend({ baseUrl, token: readFileSync(join(data, ".token"), "utf8").trim(), pollMs: 200 });
+	// Any pi model: --faux answers every model request.
+	const faux = { id: "faux", harness: "pi", surface: "code", model: "anthropic/claude-sonnet-5-5", options: { provider: "faux-desktop" } };
+	const s = store();
+	const [result] = await runBench({ tasks: loadSuite(suite), arms: [faux], seeds: [1], backend, store: s, grade: "never" });
+	assert.equal(result.outcome, "pass", JSON.stringify(result));
+	assert.deepEqual([result.steps, result.acts, result.routes, result.tool_calls], [2, 1, { input: 1 }, 1], JSON.stringify(result));
+	const steps = recordOf(s, result.run).filter((entry) => entry.kind === ENTRY.step && entry.data.phase === "agent").map((entry) => entry.data);
+	assert.deepEqual(steps.map((step) => [step.method, step.tool, step.turn, step.ok]), [["screen.shot", "codemode", 1, true], ["input.actions", "codemode", 1, true]]);
 });
