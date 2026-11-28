@@ -66,8 +66,8 @@ this change does not fix stays out of `findings` and `resolve` and counts toward
 
 **Evidence.** A finding's `failure` gives the input or state, what goes wrong at which line, the fix in one sentence if
 clear, and ends with `Evidence: path:line "text"`: the changed line, and every other place the claim rests on (caller,
-callee, guard, test, earlier commit), each quoted as a call in this run returned it. `confidence` 0.8 (0.6 with
-`Not shown:`). Line numbers come only from
+callee, guard, test, earlier commit), each quoted as a call in this run returned it. `confidence` 0.8 (0.6 hedged).
+Line numbers come only from
 the patch's hunk headers (count from a hunk's `+<start>`); a whole file is context, never a line number.
 
 ## Calls
@@ -113,12 +113,10 @@ after it:
 }
 ```
 
-- `line` is the head line of the finding inside the PR's hunks (a defect caused elsewhere anchors at the changed line
-  that triggers it); `existing_code` is that line's text. `fingerprint`: path, enclosing symbol and a short kind,
-  lowercased, joined with `:`.
+- `line` is the head line of the finding inside the PR's hunks; `existing_code` is that line's text. `fingerprint`:
+  path, enclosing symbol and a short kind, lowercased, joined with `:`.
 - `coverage`: each changed file's hunks and a verdict of at most 15 words. `skipped`: generated, lockfile, vendored
   and budget-skipped files, with the reason.
-- Every `findings` item has `path`, `line` and `priority`, and every JSON value is a literal: no expression, no
-  concatenation.
+- Every JSON value is a literal: no expression, no concatenation.
 - `risk_score`: 1 no findings, 2 only P2, 3 one P1, 4 two or more P1, 5 any P0; an open `active` finding counts. No
   findings is a fine answer.
