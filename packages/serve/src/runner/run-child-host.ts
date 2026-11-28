@@ -787,7 +787,12 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
           if (!projectComputer || !projectWorkspace) throw new ClaimRefused("The project's held execution resources are unavailable.");
           checkpoint = runProjectCheckpoint({ store, agentId: run.agentId, claim, launch, computer: projectComputer, ioHeld: true,
             tools: { get workspace() { if (!tools) throw new ClaimRefused("Project settlement has not opened its workspace."); return tools.workspace; },
-              settleProject: async () => { tools = await runTools(projectWorkspace!, projectComputer!.computer, { mode: projectMode, noExec: projectNoExec, context: BACKGROUND_CONTEXT }); return tools.settleProject(); } },
+              settleProject: async (options) => {
+                tools = await runTools(projectWorkspace!, projectComputer!.computer, { mode: projectMode, noExec: projectNoExec, context: BACKGROUND_CONTEXT });
+                return tools.settleProject(options);
+              } },
+            // The settle's sweep asks projectOwns once the project's processes are ended, as the end's does (below).
+            stillHolds: () => projectOwns(true).then(() => true, () => false),
             workspace: { data: deps.data, sealKey, env: deps.env, control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } },
             secrets: async () => runnerSecrets(deps.env, [...runnerSecrets(claimed), ...await storeSecrets(store, sealKey, deps.data)]),
           });
@@ -798,7 +803,9 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
           projectFailed = true;
           result = checkpoint?.uncertain() ?? uncertain();
         } finally {
-          try { await tools?.end(); }
+          // Its scratch swept only while the claim is still this run's, by the run's row (projectOwns), read at the sweep:
+          // a read that fails or refuses leaves it (RunTools.end).
+          try { if (tools) await tools.end({ sweep: () => projectOwns(true).then(() => true, () => false) }); }
           catch { projectFailed = true; result = { ...uncertain(), reason: "project_capture_failed", stage: "cleanup" }; }
         }
         return result;
@@ -1483,6 +1490,8 @@ export function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, 
                 return loopDeps.deliverNow?.();
               case "refuse":
                 return loopDeps.refuse?.(Number(args[0]), String(args[1]));
+              case "stillHolds":
+                return (await loopDeps.stillHolds?.()) === true;
               case "live":
                 latest = (args[0] ?? undefined) as HeldState | undefined;
                 keeps = args[1] === true;

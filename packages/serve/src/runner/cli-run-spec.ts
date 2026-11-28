@@ -507,7 +507,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // The ToolHost's tools (web_save, uploads) and monid write in the run's files where the MCP files, for the same reason.
   const written = mode === 2 ? tools.workspace : ws.workspace;
   let remoteProjectCapture = false;
-  holds.hold({ tools: { end: () => remoteProjectCapture ? Promise.resolve() : tools.end() } });
+  // Its scratch swept at the end only while the runner's fence says the claim still holds (spec-holds.ts).
+  holds.hold({ tools: { end: (options) => remoteProjectCapture ? Promise.resolve() : tools.end(options) }, ...(run.stillHolds ? { stillHolds: run.stillHolds } : {}) });
   // On an Archil region with no serverless exec, the checkout now, as the pi spec makes it (pr-checkout.ts).
   if (body.checkout && noExec !== undefined) {
     checkout = await checkoutWhereNoExec(deps, claim.runId, tools.shell === "computer" ? { workspace: tools.workspace, fresh: computer.fresh === true } : undefined, noExec, launch, cut, claimSignal, (part) => holds.hold({ checkout: part }), body.checkout, (words) => run.phase?.(words));
@@ -944,6 +945,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     ...(movedProject ? { projectCheckpoint: projectCheckpointForRun({ store: deps.store, agentId: runRow.agentId, claim, launch, tools, computer,
       workspace: { data: deps.data, sealKey: deps.sealKey, env: deps.env, control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } },
       secrets: async () => runnerSecrets(deps.env, await storeSecrets(deps.store, deps.sealKey, deps.data)),
+      // Its settle sweeps the run's scratch only while the runner's fence (these holds') says the claim holds, asked at the sweep.
+      holds,
     }, () => { remoteProjectCapture = true; }) } : {}),
     endCheckout: () => holds.endCheckout(),
   };

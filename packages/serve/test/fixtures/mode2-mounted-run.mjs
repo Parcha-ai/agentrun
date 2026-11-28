@@ -83,7 +83,8 @@ function sandboxOverArchil(disk, scratch, mounts, computer, providerAttach) {
 
 /** A Mode 2 run of a revision with one skill, over the Archil fake `disk`, in a fresh store (`learns`: a learning run, its seed
  *  the agent's first save in the store). `claimNext(build)` claims it (a claim taken over a lapsed one when there was
- *  one) and builds its spec; `t.after` lets every spec go. `mcp`: the run's MCP, its revision granted `grants` and
+ *  one) and builds its spec, its runner's fence on the claim (`stillHolds`) saying held unless the call gives its own;
+ *  `t.after` lets every spec go. `mcp`: the run's MCP, its revision granted `grants` and
  *  pinned `pin`, its own tool settings `toolSettings`, `before(server)` registering the server, `deps` added to the claim's. `computer: false`: a revision with
  *  no computer, so nothing mounts the run's folder. `region`: the server's Archil region (aws-us-east-1 by default).
  *  `body`: more of the revision's body (its `checkout`); `launch`: more of the run's launch (its input, inputOrigin or
@@ -146,7 +147,7 @@ export async function mode2Run(t, { harness, disk, learns = false, mcp, computer
     /** The claim's deps, as either spec builder is given them (a run's own process's runner takes them too). */
     deps,
     /** Claim the run (`leaseMs`: the claim's lease) and build its spec with `build`. */
-    async claimNext(build, { leaseMs = 60_000 } = {}) {
+    async claimNext(build, { leaseMs = 60_000, stillHolds = () => true } = {}) {
       const [claim] = await store.runs.claimMany("runner-a", 1, { leaseMs });
       if (!claim) throw new Error("the run was not claimed");
       const registry = createRegistry();
@@ -154,7 +155,7 @@ export async function mode2Run(t, { harness, disk, learns = false, mcp, computer
       const harnessRun = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
       const entry = { harnessRun };
       opened.push(entry);
-      entry.spec = await build(launch, { redact: heldRedactor((text) => text), harness: harnessRun, registry, setModels: (given) => (models = given), phase: (words) => void said.push(words) }, deps, claim);
+      entry.spec = await build(launch, { redact: heldRedactor((text) => text), harness: harnessRun, registry, setModels: (given) => (models = given), phase: (words) => void said.push(words), stillHolds }, deps, claim);
       return { claim, spec: entry.spec };
     },
   };

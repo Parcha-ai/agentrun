@@ -40,7 +40,13 @@
 // through the computer when it mounts the folder: on Archil the run's own Workspace is the disk's file API, which Archil
 // refuses every delete under the folder (409 OperationAborted) while the computer's mount holds its write delegation, and
 // the computer's own calls sync to the disk before they answer. It runs before the run's end commit, never after: a
-// follow-up the commit reopens may be claimed at once, and its scratch is the same folder's.
+// follow-up the commit reopens may be claimed at once, and its scratch is the same folder's. For the same reason the end
+// sweeps only when its caller says the claim still holds (`sweep`, the runner's fence read through the spec's holds:
+// spec-holds.ts), asked at the sweep, after the background processes' end (up to its 3 s KILL wait, during which a claim
+// can be lost), and again before each delete and before Mode 1's fallback to the run's own folder (a remove on a
+// computer that stopped answering waits out the end's cut, during which the claim can be lost too): a later claim of a lost one may already hold the folder (Mode 1's, bound into its new sandbox; Mode 2's
+// key on the disk) and write its TMPDIR and bash's outputs at the same paths, and that claim's own end sweeps what both
+// left. Not said, said wrong or a throw is not swept.
 import type { Context } from "@earendil-works/chord/context";
 import type { HostTool } from "@parcha/agentrun-kernel";
 import { type CapabilityKind, COMPUTER_OP_TOOL, COMPUTER_TOOLS, createRegistry, endBackground, HANDOFF_TOOL, type Registry, unsavedScreenshot, withoutOps } from "@parcha/agentrun-kernel/kernel";
@@ -189,8 +195,10 @@ export type RunHands = {
   /** A desktop or a phone the run's folder is not mounted in: its own disk holds none of the run's files. */
   readonly apart?: "desktop" | "phone";
   /** The run's end, after its background processes are ended and before the computer is let go: bash's full outputs
-   *  and its TMPDIR swept, through the computer when it mounts the folder. */
-  sweep(): Promise<void>;
+   *  and its TMPDIR swept, through the computer when it mounts the folder. `holds` is asked before each remove and before
+   *  any fallback to the run's own folder; the sweep stops at the first answer that is not true (a claim lost while a
+   *  remove waited out the lease). */
+  sweep(holds: () => Promise<boolean>): Promise<void>;
   /** The run's end begins: from here no call of its computer is cut by the claim's signal (claimCut), one in flight
    *  included; each is cut by `cut` instead (the end's own, RunTools' endCut), so ending its background processes and
    *  the sweep on a daemon that never answers end then, and the claim's release after them lands in the close's window.
@@ -253,16 +261,20 @@ export async function runHands(workspace: Workspace, claimed: RunComputer | unde
     ...(script ? { computer: script } : {}),
     ...((computer?.kind === "desktop" || computer?.kind === "phone") && mounted === undefined ? { apart: computer.kind } : {}),
     ending: cut.release,
-    async sweep() {
+    async sweep(holds) {
       // Through the Workspace the run wrote them through: the computer's when it mounts the folder, since on Archil the
       // run's own Workspace is the disk's file API, which the mount's write delegation refuses until the computer's
       // release. A computer that no longer answers leaves a Mode 1 folder to the run's own Workspace (a folder of this
       // machine, which no delegation holds); a Mode 2 one keeps its scratch, said by the release's log.
+      // The claim is asked again before each delete: a remove on a computer that stopped answering waits out the end's
+      // cut, not the claim's signal, and the run's folder may be a later claim's by its end.
       for (const dir of [OUTPUT_DIR, TMP_DIR]) {
+        if (!(await holds())) return;
         try {
           await attached.remove(dir, { recursive: true, force: true });
         } catch (error) {
           if (mounted === undefined || options.mode === 2) throw error;
+          if (!(await holds())) return;
           await workspace.remove(dir, { recursive: true, force: true });
         }
       }
@@ -363,11 +375,22 @@ export type RunTools = {
    *  computer_screenshot offers save_as; `opsRefused`, the ops computer_op leaves out (bindTools). */
   hostTools(names: readonly string[], options?: { readonly results?: ToolResults; readonly writes?: boolean; readonly opsRefused?: readonly string[] }): HostTool[];
   /** The run's end, before the computer is let go: its background processes ended (TERM, then KILL 3 s later; none with
-   *  no computer), then bash's full outputs and TMPDIR swept, its computer calls cut by the end's cut (endCut). */
-  end(): Promise<void>;
-  /** Strict checkpoint stop: cleanup errors or any still-running tracked process refuse publication. */
-  settleProject(): Promise<readonly string[]>;
+   *  no computer), then bash's full outputs and TMPDIR swept, only where `sweep`, asked once they are ended and again
+   *  before each delete, answers true that the claim still holds the run's folder (a lost claim's may be a later claim's by now). Not given, an answer
+   *  other than true or a throw: nothing is swept. Its computer calls are cut by the end's cut (endCut). */
+  end(options?: { readonly sweep?: () => boolean | Promise<boolean> }): Promise<void>;
+  /** Strict checkpoint stop: cleanup errors or any still-running tracked process refuse publication. Its scratch is swept
+   *  as at the end: only where `sweep`, asked once the processes are ended, answers true (a claim lost during their end
+   *  may share the run's folder with a later claim). Not given, an answer other than true or a throw: nothing is swept. */
+  settleProject(options?: { readonly sweep?: () => boolean | Promise<boolean> }): Promise<readonly string[]>;
 };
+
+/** Whether a sweep's `sweep` (RunTools.end, settleProject) answers true, asked now, once the run's background processes
+ *  are ended: not given, an answer other than true or a throw is false, and nothing is swept. */
+async function stillSaid(sweep: (() => boolean | Promise<boolean>) | undefined): Promise<boolean> {
+  if (sweep === undefined) return false;
+  return (await Promise.resolve().then(sweep).catch(() => false)) === true;
+}
 
 /**
  * A run's tools on `workspace`, attached to `computer` when its kind has files and exec and its provider mounts the
@@ -394,17 +417,18 @@ export async function runTools(workspace: Workspace, computer: RunComputer | und
     ...(run.computer ? { computer: run.computer } : {}),
     ...(run.apart ? { apart: { kind: run.apart, screenshot: kindTools.includes("computer_screenshot") } } : {}),
     hostTools: (names, options) => bindTools(run, registry, names, options),
-    async settleProject() {
+    async settleProject(settleOptions) {
       const before = await run.hands.processes?.list() ?? [];
       await endBackground(run.hands);
       if ((await run.hands.processes?.list() ?? []).some(process => process.running)) throw new Error("Project processes have not settled.");
-      await run.sweep();
+      await run.sweep(() => stillSaid(settleOptions?.sweep));
       return before.filter(process => process.argv[3] === "agentrun-background" && /^[1-9][0-9]*$/.test(process.argv[4] ?? "")).map(process => `background/${process.argv[4]}/output.log`);
     },
-    async end() {
+    async end(endOptions) {
       run.ending(options.endCut?.());
       await endBackground(run.hands);
-      await run.sweep();
+      // Asked only now: a claim lost while its background processes were ending is seen.
+      await run.sweep(() => stillSaid(endOptions?.sweep));
     },
   };
 }
