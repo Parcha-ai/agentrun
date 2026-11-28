@@ -278,6 +278,45 @@ test("a person's stop of a run in a process of its own, its browser's release ne
   assert.equal(cut.length, 1, `the cut charged the session's time through the cut: ${JSON.stringify({ charges: await charges(runId), asked: new Date(asked).toISOString() })}`);
 });
 
+test("a run in a process of its own takes its runner's release margin: a cut whose booking hangs is written that margin after the booking began, not the default margin after", { timeout: 60_000 }, async (t) => {
+  const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
+  const { journalRecords } = await import("../dist/runner/journal-reader.js");
+  const { RELEASE_MARGIN_MS } = await import("../dist/runner/loop-contract.js");
+  const dir = scratchDir(t, "child-margin-");
+  // The vendor's release never answers, so the release is cut; the cut's booking then hangs on the vendor's list (its
+  // let-go of the run's unheld sessions), so the cut is written only once the release's margin is over (faux-browser.mjs).
+  const hold = join(dir, "let-go");
+  const listHold = join(dir, "list-go");
+  t.after(() => existsSync(dir) && (writeFileSync(hold, ""), writeFileSync(listHold, "")));
+  withEnv(t, { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project", FAUX_BROWSER_RELEASE_HOLD: hold, FAUX_BROWSER_LIST_HOLD: listHold }, ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAUX_BROWSER_RELEASE_HOLD", "FAUX_BROWSER_LIST_HOLD", "FAUX_BROWSER_PROVIDER"]);
+  // A margin well under the default: a process that never got it would wait RELEASE_MARGIN_MS for the booking.
+  const timing = { cleanupMs: 500, releaseMarginMs: 700, commandPollMs: 50 };
+  assert.ok(timing.releaseMarginMs + 2_000 < RELEASE_MARGIN_MS);
+  const gate = join(dir, "gate");
+  const lines = [];
+  const { api, store } = await serve(t, { faux: new URL("./fixtures/faux-browse-gated.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname, childRuns: { log: (line) => void lines.push(line) }, runnerTiming: timing });
+  const records = async (runId) => (await journalRecords(store.readJournal(runId), BACKGROUND_CONTEXT)).entries;
+  const cutsOf = async (runId) => (await records(runId)).filter((entry) => entry.kind === "agentrun.release.cut").map((entry) => entry.data);
+  // The run browses once and then waits, its session open, on a gate that never opens: only the person's stop ends it.
+  const runId = await started(api, "browse-margin", { tools: ["browser"] }, { input: { content: `Browse the example page 1 times, then answer once ${gate} exists.` } });
+  for (let waited = 0; !(await records(runId)).some((entry) => entry.kind === "agentrun.browser_charged"); waited += 50) {
+    assert.ok(waited < 30_000, `the snapshot's call was charged; ${lines.join("\n")}`);
+    await sleep(50);
+  }
+  assert.equal((await api("POST", `/runs/${runId}/stop`)).body.stopped, true);
+  let cuts = [];
+  for (let waited = 0; (cuts = await cutsOf(runId)).length === 0; waited += 25) {
+    assert.ok(waited < 20_000, `the run says its release was cut; ${lines.join("\n")}`);
+    await sleep(25);
+  }
+  const seen = Date.now();
+  assert.ok(existsSync(`${listHold}.asked`), "the cut's booking was under way, held on the vendor's list");
+  const booking = seen - statSync(`${listHold}.asked`).mtimeMs;
+  assert.equal(cuts.length, 1, JSON.stringify(cuts));
+  assert.equal(cuts[0].bound_ms, timing.cleanupMs + timing.releaseMarginMs, `the release was bound at the cleanup bound and the runner's margin: ${JSON.stringify(cuts[0])}`);
+  assert.ok(booking >= timing.releaseMarginMs - 100 && booking < timing.releaseMarginMs + 2_000, `the cut was written the runner's margin (${timing.releaseMarginMs} ms) after its booking began, not RELEASE_MARGIN_MS (${RELEASE_MARGIN_MS} ms): ${booking} ms`);
+});
+
 test("a run's process: a raise its loop refuses (not above the cap) on a run parked at its cap is written refused, and the run stays parked, claimed once for it and never again on each poll", { timeout: 180_000 }, async (t) => {
   const { sendCommand } = await import("../dist/runner/commands.js");
   const lines = [];
