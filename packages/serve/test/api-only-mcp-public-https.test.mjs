@@ -238,6 +238,7 @@ test("a redirect is never followed in a workspace's sign-in discovery under the 
   t.after(() => new Promise((resolve) => server.close(resolve)));
   const network = routed({ "disc.example.test": [PUBLIC] }, { "disc.example.test": `http://127.0.0.1:${server.address().port}` });
   const { registry } = await registryOn(t, network);
+  const seen = [];
   for (const [name, asked] of [["protected-resource metadata", /^\/\.well-known\/oauth-protected-resource/], ["authorization server metadata", /^\/(as\/)?\.well-known\/(oauth-authorization-server|openid-configuration)/], ["the listing's 401 probe", /^\/\.well-known\/oauth-protected-resource/]]) {
     variant = name;
     heard.length = 0;
@@ -245,9 +246,9 @@ test("a redirect is never followed in a workspace's sign-in discovery under the 
       assert.equal(error.code, "auth_required", `${name}: ${error.message}`);
       return true;
     });
-    assert.ok(heard.some((path) => asked.test(path)), `${name}: the redirecting endpoint was asked (${heard.join(", ")})`);
-    assert.deepEqual(heardByTarget, [], `${name}: no redirect followed`);
+    seen.push({ name, asked: heard.some((path) => asked.test(path)), followed: heardByTarget.splice(0).length });
   }
+  assert.deepEqual(seen, ["protected-resource metadata", "authorization server metadata", "the listing's 401 probe"].map((name) => ({ name, asked: true, followed: 0 })));
 });
 
 /** A W1 agent whose revision pins `name`'s add (as W1's row lists it), a run of it handed its own per_run header, claimed
