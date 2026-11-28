@@ -280,6 +280,34 @@ export const LOCKDOWN_SCRIPT = [
 	"exit $failed",
 ].join("\n");
 
+/**
+ * Ends Orgo's PRIMARY autocutsel, so a selection no longer takes the clipboard. Orgo's desktop runs two as root, one per
+ * selection (`autocutsel -fork -selection CLIPBOARD` and `... PRIMARY`), both through CUT_BUFFER0: selecting text (Ctrl+L
+ * in a file manager selects its location) sets PRIMARY, the PRIMARY one copies that text into the cut buffer, and the
+ * CLIPBOARD one then takes CLIPBOARD with it as plain text, so a cut or copy of files is gone before its paste. The
+ * CLIPBOARD one is kept: the clipboard still reaches Orgo's VNC viewer. Only a process whose whole command line is the
+ * PRIMARY one's is ended (pgrep -x -f, which never matches this script or itself): SIGTERM, then up to 5 s for it to be
+ * gone (a zombie counts as gone). Prints `ended <pids>`, or `none`; exits 1 when one outlives its SIGTERM or pgrep fails.
+ */
+export const PRIMARY_SYNC_SCRIPT = [
+	"# agentrun-computer: orgo-primary-sync",
+	'pids=$(pgrep -x -f "autocutsel -fork -selection PRIMARY")',
+	'case $? in 0) ;; 1) echo none; exit 0 ;; *) echo "pgrep failed"; exit 1 ;; esac',
+	// The state is the field after the last ")": the command's name before it, in parentheses, may hold spaces.
+	"alive() { [ -e \"/proc/$1\" ] && [ \"$(sed -n 's/.*) \\([A-Z]\\).*/\\1/p' \"/proc/$1/stat\" 2>/dev/null)\" != Z ]; }",
+	"kill -TERM $pids 2>/dev/null",
+	"i=0",
+	"while [ $i -lt 50 ]; do",
+	"\tleft=",
+	'\tfor p in $pids; do alive "$p" && left="$left $p"; done',
+	'\t[ -n "$left" ] || { echo "ended" $pids; exit 0; }',
+	"\tsleep 0.1",
+	"\ti=$((i + 1))",
+	"done",
+	'echo "autocutsel$left outlived SIGTERM"',
+	"exit 1",
+].join("\n");
+
 /** What a name of this provider's making says, as attach reads it. */
 type Parts = { owner?: string; run?: string; epoch?: string };
 
@@ -612,6 +640,9 @@ export class OrgoProvider implements ComputerProvider {
 		// Every path socket of Orgo's desktop root's alone but the display's own, before any tool runs.
 		const locked = await this.#lockDown(ref, socket, signal);
 		if (!locked.ok) return locked;
+		// Orgo's PRIMARY autocutsel ended, before any tool runs, so a text selection never replaces a cut.
+		const primary = await this.#endPrimarySync(ref, signal);
+		if (!primary.ok) return primary;
 		const started = await this.#channel.start(ref.id, ["sh", "-c", commands.init], { how: this.#start, timeoutMs: execMs, ...(signal ? { signal } : {}) });
 		if (!started.ok) return fail(started.error.code, `starting the daemon in ${ref.name} failed: ${started.error.message}`);
 		const opened = await this.#openWhenListening(ref, signal);
@@ -626,6 +657,9 @@ export class OrgoProvider implements ComputerProvider {
 				...inside.value,
 				`Orgo's own network listens on ${ports.value.join(", ") || "no TCP port"} (TCP, as root reads it); the tools' probe was refused at each and at ${ORGO_AGENT_PORTS.join(", ")}, on both loopbacks`,
 				`Orgo's desktop sockets made root's alone: ${locked.value.join(", ") || "none"} (the display's own, ${socket}, left to the tools)`,
+				primary.value.length > 0
+					? `Orgo's PRIMARY autocutsel ended (pid ${primary.value.join(", ")}), so a text selection no longer replaces the clipboard; its CLIPBOARD one runs on for the VNC viewer`
+					: "no PRIMARY autocutsel ran in Orgo's desktop",
 			]);
 		} finally {
 			await opened.value.close();
@@ -638,6 +672,14 @@ export class OrgoProvider implements ComputerProvider {
 		if (!ran.ok) return ran;
 		if (ran.value.exitCode !== 0) return fail("refused", `making Orgo's desktop sockets root's alone in ${ref.name} failed (exit ${ran.value.exitCode}): ${ran.value.output.trim().slice(0, 200)}`);
 		return ok(ran.value.output.split("\n").flatMap((line) => (line.startsWith("locked ") ? [line.slice("locked ".length).trim()] : [])));
+	}
+
+	/** Orgo's PRIMARY autocutsel ended (PRIMARY_SYNC_SCRIPT): the PIDs it ended, none when none ran. */
+	async #endPrimarySync(ref: ComputerRef, signal?: AbortSignal): Promise<Result<string[]>> {
+		const ran = await this.#channel.run(ref.id, ["sh", "-c", PRIMARY_SYNC_SCRIPT], { timeoutMs: this.#timeouts.execMs, ...(signal ? { signal } : {}) });
+		if (!ran.ok) return ran;
+		if (ran.value.exitCode !== 0) return fail("refused", `ending Orgo's PRIMARY autocutsel in ${ref.name}, which hands a text selection to the clipboard, failed (exit ${ran.value.exitCode}): ${ran.value.output.trim().slice(0, 200)}`);
+		return ok(/^ended (.+)$/m.exec(ran.value.output)?.[1].trim().split(/\s+/) ?? []);
 	}
 
 	/** The TCP ports root listens on in Orgo's own network, sorted, read through the channel. */

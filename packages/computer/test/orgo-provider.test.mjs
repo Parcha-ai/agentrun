@@ -558,7 +558,7 @@ test("Orgo primary sync: the script ends a process whose whole command line is O
 	// Real processes with the command lines Orgo's ps showed (perl sets its own), and a lookalike of each kind.
 	const named = (line) => spawn("perl", ["-e", `$0 = ${JSON.stringify(line)}; sleep 600`], { stdio: "ignore" });
 	const alive = (pid) => {
-		const stat = spawnSync("sh", ["-c", `awk '{ print $3 }' /proc/${pid}/stat 2>/dev/null`], { encoding: "utf8" }).stdout.trim();
+		const stat = spawnSync("sh", ["-c", `sed -n 's/.*) \\([A-Z]\\).*/\\1/p' /proc/${pid}/stat 2>/dev/null`], { encoding: "utf8" }).stdout.trim();
 		return stat !== "" && stat !== "Z";
 	};
 	const primary = named("autocutsel -fork -selection PRIMARY");
