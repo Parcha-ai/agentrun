@@ -791,3 +791,27 @@ test("a scoped request's capabilities count no paired computer's kind; the opera
   assert.deepEqual(await kinds(unscoped), [...before, "phone"], "the operator's paired phone");
   assert.deepEqual(await kinds(inW1), before, "a workspace's");
 });
+
+test("a workspace is served none of Settings → Computers' routes: with a phone paired, listing, testing, choices and keys are 403 not_scoped in it, and the operator's list names the phone", { timeout: 120_000 }, async (t) => {
+  const server = await scopedServer(t);
+  await pairPhone(server, "cmp-pixel");
+  for (const [method, path, options] of [["GET", "/v2/computers"], ["POST", "/v2/computers/cmp-pixel/test"], ["GET", "/v2/computers/cmp-pixel/choices"], ["PUT", "/v2/computers/cmp-pixel/keys", { body: {} }]]) {
+    const refused = await inW1(server, method, path, options);
+    assert.deepEqual([refused.status, refused.body.error.details.reason], [403, "not_scoped"], `${method} ${path}: ${refused.text}`);
+    assert.ok(!refused.text.includes("Pixel"), `${method} ${path} names no paired computer: ${refused.text}`);
+  }
+  const listed = await unscoped(server, "GET", "/v2/computers");
+  assert.equal(listed.status, 200, listed.text);
+  assert.deepEqual(listed.body.paired.map((one) => one.id), ["cmp-pixel"], "the operator's view");
+});
+
+test("a workspace's refusal of a paired computer says where its backend finds a provider it may name: GET /v2/computers read without the workspace header, any provider but a paired one", { timeout: 120_000 }, async (t) => {
+  const server = await scopedServer(t);
+  await pairPhone(server, "cmp-pixel");
+  const refused = await inW1(server, "POST", "/v2/agents", { body: { definition: { version: 1, name: "W1 phone", instructions: "Answer.", skills: [], tools: [], computer: { kind: "phone", provider: "cmp-pixel" } } } });
+  assert.equal(refused.status, 422, refused.text);
+  const { message } = refused.body.error.fields[0];
+  assert.ok(message.startsWith(scopedPairedWords("cmp-pixel")), message);
+  assert.match(message, /without the workspace header/, "the list a workspace is refused is read by its backend unscoped");
+  assert.match(message, /does not begin with cmp-/, "and a paired computer, listed there too, is not one to pick");
+});
