@@ -4561,6 +4561,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     }
     // The pull request's checkout goes before the end is committed: a run that reads final never still holds its code.
     await specNow?.endCheckout?.();
+    // A CLI's own session goes before the end is committed, as its checkout does: the end lets the claim go (an ending
+    // patch clears its runner), and a message sent the moment the run reads ended reopens it onto a new session on the
+    // same thread, never beside this one still closing. Closed before the end's patch and its late stop are read, so a
+    // stop that comes while it closes is this end's; what its close writes (a turn it halts) lands above the end.
+    if (cliRecord) await closeCliSession();
     const patch = await endPatchOf(base);
     // A person's stop that came while the end waited (its host's release, its bookings, its patch's reads, up to
     // END_PATCH_MS on a busy store) is this end's, as a stop during any earlier await of the end path is: the run ends
@@ -4600,10 +4605,6 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // end's commit: nothing of the stopped turn lands after the end. One that only nests calls (a harness's own: Codex's
     // `exec`) ends after the rows of its calls (their withdrawals above it in this commit); its own end on its way is
     // written first. Marked `withRun`: a park or a stop failed nothing, so its row reads interrupted, never failed.
-    // A CLI's own session goes before the end is committed, as its checkout does: the end lets the claim go (an ending
-    // patch clears its runner), and a message sent the moment the run reads ended reopens it onto a new session on the
-    // same thread, never beside this one still closing. What its close writes (a turn it halts) lands above the end.
-    if (cliRecord) await closeCliSession();
     while (ownWrites.size > 0) await Promise.allSettled([...ownWrites]);
     const cutOpen = ends.openCalls();
     const ended = theGate.expect(writesEntry(KINDS.end), { run, ...(also.length ? { also } : {}), ...(take.length ? { take } : {}) });
