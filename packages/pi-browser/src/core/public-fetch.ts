@@ -84,6 +84,52 @@ export type PublicAnswer = { url: string; status: number; contentType: string; b
  *  or application/<name>+json (atom, rss, xhtml, ld+json), so a site's feed reads like its pages. Anything else (a PDF,
  *  a zip, octet-stream, an image/svg+xml) is refused. */
 const TEXT_TYPE = /^(text\/|application\/(json|xml|[\w.!#$&^-]+\+(xml|json)\b))/i;
+/** The types whose own <meta> may name their charset: HTML and XHTML. */
+const HTML_TYPE = /^(text\/html|application\/xhtml\+xml)\s*(;|$)/i;
+/** How far into a page a <meta> charset counts: the first 1024 bytes, as a browser's prescan reads. */
+const PRESCAN_BYTES = 1024;
+
+/** The charset a `charset=` parameter in `words` names (a Content-Type, or a <meta http-equiv> tag's content), quotes
+ *  taken off; undefined when there is none. */
+const charsetParam = (words: string): string | undefined => /(?:^|[;\s])charset\s*=\s*["']?([^"';\s]+)/i.exec(words)?.[1];
+
+/** The charset an HTML page's own <meta> names in its first 1024 bytes: a `<meta charset>`, else a
+ *  `<meta http-equiv="Content-Type" content="...; charset=...">`. Undefined when neither does. */
+function metaCharset(bytes: Uint8Array): string | undefined {
+  // latin1 maps each byte to one char: an ASCII tag reads the same whatever the page's charset.
+  const head = Buffer.from(bytes.buffer, bytes.byteOffset, Math.min(bytes.byteLength, PRESCAN_BYTES)).toString("latin1");
+  for (const [tag] of head.matchAll(/<meta\b[^>]*>/gi)) {
+    const attributes = new Map<string, string>();
+    for (const [, name, double, single, bare] of tag.slice(5).matchAll(/([^\s"'>/=]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g)) {
+      const key = name!.toLowerCase();
+      if (!attributes.has(key)) attributes.set(key, (double ?? single ?? bare ?? "").trim());
+    }
+    const charset = attributes.get("charset");
+    if (charset) return charset;
+    if (attributes.get("http-equiv")?.toLowerCase() === "content-type") {
+      const said = charsetParam(attributes.get("content") ?? "");
+      if (said) return said;
+    }
+  }
+  return undefined;
+}
+
+/** A decoder for `label`, or undefined when no encoding goes by it. A page's <meta> naming UTF-16 is read as UTF-8, as a
+ *  browser does: a page whose bytes are UTF-16 could not have spelled the tag in ASCII. */
+function decoderFor(label: string | undefined, fromMeta: boolean): TextDecoder | undefined {
+  if (label === undefined) return undefined;
+  let decoder: TextDecoder;
+  try { decoder = new TextDecoder(label); } catch { return undefined; }
+  return fromMeta && decoder.encoding.startsWith("utf-16") ? new TextDecoder("utf-8") : decoder;
+}
+
+/** A text page's `bytes` as text, decoded by the charset it declares: its Content-Type's `charset`, else (an HTML page)
+ *  its <meta> charset in the first 1024 bytes, else UTF-8. A label no encoding goes by is passed over for the next.
+ *  Bytes the charset cannot read become U+FFFD. */
+function pageText(bytes: Uint8Array, contentType: string): string {
+  const decoder = decoderFor(charsetParam(contentType), false) ?? (HTML_TYPE.test(contentType) ? decoderFor(metaCharset(bytes), true) : undefined) ?? new TextDecoder("utf-8");
+  return decoder.decode(bytes);
+}
 
 /** The answer that ended the redirects, as `publicDownload` gives it: its URL, status and type, and its bytes when it is a
  *  2xx answer (an empty array for a 2xx with no body). */
@@ -211,7 +257,8 @@ function statedLength(headers: Headers): number | undefined {
 
 /**
  * Fetches `url` from a public host, following at most 5 redirects (or `maxRedirects`), each hop resolved, checked and dialled at the
- * address checked. A 2xx answer of a text type is read whole, up to `maxBytes`; another status comes back without its
+ * address checked. A 2xx answer of a text type is read whole, up to `maxBytes`, and
+ * decoded by the charset it declares (pageText); another status comes back without its
  * body. Refused (`BrowserFailureError` `refused`), on the first hop or a redirect: a scheme other than http(s) (other
  * than https, with `httpsOnly`); a host that is local by name or resolves to any private address; a port other than 80
  * or 443; too many redirects (any, with `maxRedirects` 0); a 2xx body that is not text or is over the cap. `signal` ends the fetch at any point, a
@@ -226,7 +273,7 @@ export async function publicFetch(url: string, options: PublicFetchOptions = {})
     if (!res.body) return { url: target.href, status: res.status, contentType, body: "" };
     if (!TEXT_TYPE.test(contentType)) throw refusedError(`refused: ${contentType || "an unknown content type"} is not text`);
     const body = await readCapped(res.body, maxBytes, `refused: the page is over ${maxBytes === PUBLIC_MAX_BYTES ? "5 MiB" : `${maxBytes} bytes`}`);
-    return { url: target.href, status: res.status, contentType, body: body.toString("utf8") };
+    return { url: target.href, status: res.status, contentType, body: pageText(body, contentType) };
   });
 }
 
