@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createWeb, searchBreaker, searchInTurn } from "../dist/index.js";
-import { SEARCH_UNAVAILABLE } from "../dist/search.js";
+import { SEARCH_UNAVAILABLE, withKeyBreaker } from "../dist/search.js";
 
 const NOW = Date.parse("2026-11-28T03:40:00Z");
 const MIDNIGHT = "2026-11-29T00:00:00Z";
@@ -81,6 +81,54 @@ test("one provider held while the one asked found nothing: the receipt names the
   assert.ok(alone.receipt.cost.usd > 0, "Parallel's search carries a fee");
   assert.deepEqual(held.receipt.cost, alone.receipt.cost, "the same fee line as the search with nothing held");
   assert.deepEqual(held.receipt.tries.map(({ provider, outcome }) => [provider, outcome]), [["parallel", "empty"], ["exa", "held"]]);
+});
+
+test("one provider waiting out a short rate limit while the next found nothing: an error naming the wait, never a bare empty list", async () => {
+  const breakerOf = breakersAt(NOW);
+  await searchInTurn([limited("firecrawl-keyless", { kind: "rate", retryAfter: 30 })], breakerOf);
+  const answer = await searchInTurn([limited("firecrawl-keyless", { kind: "rate" }), nothing("exa-keyless")], breakerOf);
+  assert.ok("error" in answer, `an error, not a result list: ${JSON.stringify(answer)}`);
+  assert.match(answer.error, /exa-keyless found no results, and firecrawl-keyless is rate-limited until 2026-11-28T03:40:30Z/);
+});
+
+test("a breaker held by two limits names the one that ends last", () => {
+  const short = { kind: "rate", until: NOW + 30_000 };
+  const midnight = { kind: "quota", until: Date.parse(MIDNIGHT) };
+  const holdingOf = (limits, now = NOW) => {
+    const breaker = searchBreaker(() => now);
+    for (const limit of limits) breaker.read({ answer: { error: "held" }, limit });
+    return breaker.holding();
+  };
+  // A key out of quota until midnight behind a 30-second search wait: the provider runs again at midnight, not in 30 s.
+  const keyed = (own, key) => withKeyBreaker(own, key).holding();
+  const own = searchBreaker(() => NOW);
+  own.read({ answer: { error: "held" }, limit: { kind: "rate", retryAfter: 30 } });
+  const key = searchBreaker(() => NOW);
+  key.read({ answer: { error: "held" }, limit: { kind: "quota", retryAfter: SECONDS_TO_MIDNIGHT } });
+  assert.deepEqual(keyed(own, key), midnight, "search wait 30 s, key off until midnight");
+  assert.deepEqual(keyed(key, own), midnight, "the same, either way round");
+  // One breaker off until a minute from now and waiting ten: it may be asked again in ten.
+  assert.deepEqual(holdingOf([{ kind: "quota", retryAfter: 60 }, { kind: "rate", retryAfter: 600 }]), { kind: "rate", until: NOW + 600_000 });
+  assert.deepEqual(holdingOf([{ kind: "rate", retryAfter: 30 }]), short, "a wait alone, as before");
+});
+
+test("a run's Web with a short search wait and its key out until midnight: web_search names the key's reset", async () => {
+  const until = Date.parse(MIDNIGHT);
+  const nothingFound = async () => new Response(JSON.stringify({ results: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  const unsent = async () => {
+    throw new Error("a held provider was asked");
+  };
+  const web = createWeb({
+    order: { search: ["parallel", "exa"], fetch: [] },
+    keys: { parallel: "not-a-secret", exa: "not-a-secret" },
+    holds: [{ provider: "exa", tool: "search", kind: "rate", until: NOW + 30_000 }, { provider: "exa", tool: "key", kind: "quota", until }],
+    send: { parallel: nothingFound, exa: unsent },
+    now: () => NOW,
+  });
+  const { answer } = await web.search({ objective: "Who founded Framework?", queries: ["framework founder"] });
+  assert.ok("error" in answer, JSON.stringify(answer));
+  assert.match(answer.error, /parallel found no results, and exa is out of quota until 2026-11-29T00:00:00Z/);
+  assert.doesNotMatch(answer.error, /03:40:30Z/, "not the 30-second wait");
 });
 
 test("a run's Web started with the server's keyless holds: web_search names each provider and its reset, unsent", async () => {
