@@ -3,7 +3,7 @@
 // it is judged by, its result and the jobs that failed. A run walked the tag when it ran at the tag's commit (main's push
 // of the release, or a dispatch at the tag), or ran after the tag's publish (workflow_run, whose own sha is main's tip),
 // which the daily walk and the install walk name in their run-name ("... at <tag>"). Red (exit 1) when a walk has no
-// such run or its run did not pass.
+// such run or its run did not pass, a known (parked) failure included; the table names that one as known.
 //   GH_TOKEN=... node scripts/walks-at-tag.mjs v0.1.0-beta.68     the table on stdout, and in the job's summary in CI
 import { execFileSync } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
@@ -15,6 +15,17 @@ export const WALKS = [
   { file: 'selfhost-walk.yml', name: 'Self-host walk' },
   { file: 'ways-in-daily.yml', name: 'Ways in' },
 ];
+
+// Failures already known and parked on someone who isn't a lane: the table names them as such, and they still count red.
+// Each is a job's name in its workflow (the test checks it), so a renamed job loses the label instead of hiding a failure.
+export const KNOWN = [
+  { file: 'ways-in-daily.yml', job: "Railway's published template, on Railway", why: 'the published template is being republished' },
+];
+
+const label = (file, job) => {
+  const known = KNOWN.find((k) => k.file === file && k.job === job);
+  return known ? `${job} (known, parked: ${known.why})` : job;
+};
 
 const names = (title, tag) => (title ?? '').split(/\s+/).includes(tag);
 
@@ -41,7 +52,7 @@ function result(r) {
 export function report(tag, sha, byFile) {
   const rows = WALKS.map(({ file, name }) => {
     const { run, failed = [] } = byFile[file] ?? {};
-    return { name, said: result(run), url: run?.html_url ?? '', failed };
+    return { name, said: result(run), url: run?.html_url ?? '', failed: failed.map((job) => label(file, job)) };
   });
   const table = [
     `## Walks at ${tag} (${sha.slice(0, 10)})`,

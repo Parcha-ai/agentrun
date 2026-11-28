@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { parse } from 'yaml';
-import { WALKS, best, report, runsAtTag } from './walks-at-tag.mjs';
+import { KNOWN, WALKS, best, report, runsAtTag } from './walks-at-tag.mjs';
 
 const workflowAt = (file) => parse(readFileSync(new URL(`../.github/workflows/${file}`, import.meta.url), 'utf8'));
 const TAG = 'v0.1.0-beta.68';
@@ -50,8 +50,21 @@ test('one table: each walk, its run and its result; a failed run names its faile
   });
   assert.equal(red.red, true);
   assert.match(red.table, /\| Helm walk \| not walked \| /);
-  assert.match(red.table, /\| Ways in \| FAIL \| [^|]+ \| Railway's published template, on Railway \|/);
+  assert.match(red.table, /\| Ways in \| FAIL \| [^|]+ \| Railway's published template, on Railway \(known, parked: [^)|]+\) \|/);
   assert.match(red.table, /\| Install walk \| running \| /);
+});
+
+test('a known failure is named as such in the table and still counts red; an unknown one carries no label', () => {
+  for (const { file, job } of KNOWN) {
+    const names = Object.values(workflowAt(file).jobs).map(({ name }) => name);
+    assert.ok(names.includes(job), `${file} has a job named ${job}`);
+  }
+  const green = Object.fromEntries(WALKS.map(({ file }) => [file, { run: run(), failed: [] }]));
+  const known = report(TAG, SHA, { ...green, 'ways-in-daily.yml': { run: run({ conclusion: 'failure' }), failed: ["Railway's published template, on Railway"] } });
+  assert.equal(known.red, true);
+  assert.match(known.table, /Railway's published template, on Railway \(known, parked: the published template is being republished\)/);
+  const other = report(TAG, SHA, { ...green, 'helm-walk.yml': { run: run({ conclusion: 'failure' }), failed: ["Railway's published template, on Railway", 'walk'] } });
+  assert.match(other.table, /\| Helm walk \| FAIL \| [^|]+ \| Railway's published template, on Railway, walk \|/);
 });
 
 test('after a publish, the runs this table finds name the tag: the daily walk and the install walk set a run-name on workflow_run, and keep their default name on every other event', () => {
