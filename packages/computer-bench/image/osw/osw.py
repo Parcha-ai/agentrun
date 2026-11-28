@@ -46,7 +46,7 @@ import urllib.request
 import uuid
 
 PASS, FAIL, BAD_TASK, INFRA = 0, 1, 2, 75
-HOST = "127.0.0.1"  # key-gate: loopback-rule OSWorld server binds loopback only
+HOST = "127.0.0.1"
 CHROMIUM_PORT, VLC_PORT = 9222, 8080
 START_S = 60
 SHA256 = re.compile(r"[0-9a-f]{64}")
