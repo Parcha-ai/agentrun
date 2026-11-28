@@ -44,7 +44,7 @@ interface CheckBase {
 	why: string;
 }
 export type Check =
-	| (CheckBase & { kind: "exec"; argv: string[]; timeoutMs?: number; exit?: number; stdout?: Match; stderr?: Match })
+	| (CheckBase & { kind: "exec"; argv: string[]; timeoutMs?: number; exit?: number; infra?: number[]; stdout?: Match; stderr?: Match })
 	| (CheckBase & { kind: "file"; path: string; exists?: boolean; text?: Match })
 	| (CheckBase & { kind: "ui"; app?: string; find: UiQuery; min?: number; max?: number })
 	| (CheckBase & { kind: "app"; front?: string; installed?: string })
@@ -240,6 +240,8 @@ function ruleProblems(spec: TaskSpec, files: Record<string, string>): string[] {
 		if (check.kind === "exec") {
 			matches(check.stdout, `${label} stdout`);
 			matches(check.stderr, `${label} stderr`);
+			const exit = check.exit ?? 0;
+			if (check.infra?.includes(exit)) problems.push(`${label}: infra names exit ${exit}, which the check passes on`);
 		} else if (check.kind === "file") {
 			matches(check.text, `${label} text`);
 			if (check.exists === false && check.text) problems.push(`${label}: a file that must not exist has no text to match`);

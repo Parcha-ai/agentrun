@@ -37,9 +37,8 @@ test("the loader writes each portable fixture's task.json as expected, and the s
 	// osworld.json reaches osw whole: the setup and the check inline it as one argv word, unchanged by the fill.
 	const calc = resolveTask(tasks.find((task) => task.spec.id.endsWith("1273e544")), 1);
 	const inlined = read(join(out, "libreoffice-calc-1273e544", "osworld.json"));
-	assert.equal(calc.setup[0].params.argv[3], inlined);
-	assert.equal(calc.checks[0].argv[3], inlined);
-	assert.equal(calc.checks[0].argv.length, 4);
+	assert.deepEqual(calc.setup[0].params.argv.slice(3), ["sh", inlined]);
+	assert.deepEqual(calc.checks[0].argv.slice(3), ["sh", inlined]);
 });
 
 test("each fixture the bench desktop can't run is refused with its reason, and PORT.md lists it", async () => {
