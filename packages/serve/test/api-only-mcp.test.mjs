@@ -17,7 +17,7 @@ import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { queued, registryPin, storeOn } from "./store-helpers.mjs";
 import { asOwner, follow, serve, serverLog, storeBytes, withEnv } from "./support.mjs";
 
-const { SECRET_WRITE_REFUSAL } = await import("../dist/secret-writes.js");
+const { SECRET_WRITE_REFUSAL, SECRET_WRITE_REFUSAL_API_ONLY } = await import("../dist/secret-writes.js");
 const { tokenWriteOverWords } = await import("../dist/mcp-secret-writes.js");
 const { composioMadeKey, storedMade } = await import("../dist/composio-made.js");
 const { mcpSourceKey, ownersRecord } = await import("../dist/mcp-sources.js");
@@ -164,13 +164,15 @@ test("API-only: api_key_env with COMPOSIO_API_KEY unset or blank is 422 missing 
   }
 });
 
-test("API-only: a key's value from the token is still the one secret-write refusal (403), alone or beside api_key_env; nothing sent", async (t) => {
+test("API-only: a key's value from the token is still the secret-write refusal (403), alone or beside api_key_env, in the API-only server's words (no owner's session, no console); nothing sent", async (t) => {
   withEnv(t, { [KEY_ENV]: KEY });
   const s = await setup(t);
   for (const body of [{ api_key: KEY, toolkit: "gmail", tools: ["add"] }, { ...SAVE, api_key: KEY }]) {
     const refused = await s.token("PUT", "/settings/mcp-servers/mail/composio", body);
     assert.equal(refused.status, 403, JSON.stringify(refused.body));
-    assert.ok(String(refused.body.error?.message).startsWith(SECRET_WRITE_REFUSAL), refused.body.error?.message);
+    assert.equal(refused.body.error?.message, SECRET_WRITE_REFUSAL_API_ONLY);
+    assert.doesNotMatch(String(refused.body.error?.message), /signed-in session|console/);
+    assert.equal(refused.body.error?.details?.console_url, undefined);
   }
   assert.deepEqual(s.composio.calls, [], "nothing sent to Composio");
 });
