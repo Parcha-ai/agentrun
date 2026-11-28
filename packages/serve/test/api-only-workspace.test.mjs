@@ -25,6 +25,8 @@ const { ROUTES } = await import("../dist/server.js");
 const { migrate, openPostgresStore, openSqliteStore, migrationsIn, runnerOn } = await import("../dist/store/index.js");
 const { SCHEMA_VERSION } = await import("../dist/store/schema.js");
 const { workspaceTokensFrom } = await import("../dist/workspace-scope.js");
+/** An agent's home files route (`/agents/{id}/home/files`); a file in it is this plus `/<name>`. */
+const homeFiles = (agent) => `/v2/agents/${agent}/home/files`;
 const { backfillMapOf, backfillWorkspaces, workspaceBackfillMain } = await import("../dist/workspace-backfill.js");
 const { deleteTemplate, importTemplate } = await import("../dist/template-import.js");
 const { TemplateRegistry } = await import("../dist/templates.js");
@@ -283,11 +285,11 @@ test("a scoped request reads its own agent's package, a revision's skills and it
   writeFileSync(join(home, "notes.md"), "kept");
   const listed = await inW1(server, "GET", `/v2/agents/${agent}/home/files`);
   assert.deepEqual([listed.status, listed.body.files.map((one) => one.path)], [200, ["notes.md"]], listed.text);
-  const read = await inW1(server, "GET", `/v2/agents/${agent}/home/files/notes.md`);
+  const read = await inW1(server, "GET", `${homeFiles(agent)}/notes.md`);
   assert.deepEqual([read.status, read.text], [200, "kept"]);
-  const owned = await inW1(server, "GET", `/v2/agents/${agent}/home/files/learning/notes.md`);
+  const owned = await inW1(server, "GET", `${homeFiles(agent)}/learning/notes.md`);
   assert.deepEqual([owned.status, owned.body.error?.code], [403, "system_file_forbidden"], "a host-owned path stays the server's");
-  const removed = await inW1(server, "DELETE", `/v2/agents/${agent}/home/files/notes.md`);
+  const removed = await inW1(server, "DELETE", `${homeFiles(agent)}/notes.md`);
   assert.equal(removed.status, 204, removed.text);
   assert.deepEqual((await inW1(server, "GET", `/v2/agents/${agent}/home/files`)).body.files, []);
   const forgot = await inW1(server, "DELETE", `/v2/agents/${agent}/sign-ins/google`);
@@ -461,7 +463,7 @@ test("a listed token without the header is 403; the header off an API-only serve
     assert.deepEqual([answer.status, answer.body.error?.code], [400, "bad_request"], `${JSON.stringify(workspace)}: ${answer.text}`);
   }
   assert.equal((await send(server, "GET", "/v2/runs", { workspace: "x".repeat(128) })).status, 200, "128 characters is a name");
-  for (const [method, path] of [["DELETE", "/v2/agents/a1/learning"], ["GET", "/v2/usage"], ["GET", "/v2/runs/r1/usage"], ["POST", "/v2/runs/r1/approvals/ap1"], ["PUT", "/v2/agents/a1/home/files/notes.md"], ["GET", "/v2/triggers"], ["POST", "/v2/runs"]]) {
+  for (const [method, path] of [["DELETE", "/v2/agents/a1/learning"], ["GET", "/v2/usage"], ["GET", "/v2/runs/r1/usage"], ["POST", "/v2/runs/r1/approvals/ap1"], ["PUT", `${homeFiles("a1")}/notes.md`], ["GET", "/v2/triggers"], ["POST", "/v2/runs"]]) {
     const answer = await inW1(server, method, path, method === "GET" || method === "DELETE" ? {} : { body: {} });
     assert.deepEqual([answer.status, answer.body.error?.code, answer.body.error?.details?.reason], [403, "forbidden", "not_scoped"], `${method} ${path}: ${answer.text}`);
   }
