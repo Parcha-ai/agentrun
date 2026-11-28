@@ -25,7 +25,7 @@ test('a gate job checks the tag and its CI run before anything else starts', () 
   assert.equal(gate.needs, undefined, 'the first job');
   assert.equal(gate.environment, undefined, 'no approval: it publishes nothing and holds no secret');
   assert.equal(gate.if, publish.if, 'where the release runs, and nowhere else');
-  assert.deepEqual(gate.permissions, { contents: 'read', actions: 'read' }, 'reads the CI run, writes nothing');
+  assert.deepEqual(gate.permissions, { contents: 'read', actions: 'read', 'pull-requests': 'read' }, 'reads the CI run and the release pull request, writes nothing');
   pinned(gate.steps);
   const at = pattern => gate.steps.findIndex(step => pattern.test(step.run ?? step.uses ?? ''));
   assert.equal(at(/\[\[ "\$RELEASE_TAG" =~ \^v\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+-beta\\\.\[0-9\]\+\$ \]\]/), 0, 'first, the tag is a beta tag');
@@ -40,6 +40,11 @@ test('a gate job checks the tag and its CI run before anything else starts', () 
   assert.ok(version, 'the tag is newer than what is out, and is the version its manifests say');
   assert.equal(version.env.GH_TOKEN, '${{ github.token }}', 'it reads the repository\'s releases');
   assert.ok(at(/^actions\/setup-node@/) < at(/^node scripts\/release-version\.mjs/), 'with the pinned Node');
+  const gated = gate.steps[at(/^node scripts\/release-gated-cut\.mjs --tag "\$RELEASE_TAG"$/)];
+  assert.ok(gated, 'the tag is the tree the release gate ran on');
+  assert.equal(gated.env.GH_TOKEN, '${{ github.token }}', 'it reads the release pull request\'s "Gated cut:" line');
+  assert.equal(checkout.with['fetch-depth'], 0, 'with the history under the tag, to name the commits the gate never saw');
+  assert.equal(checkout.with['persist-credentials'], false);
 });
 
 // Every job a job waits for, and every job those wait for.
