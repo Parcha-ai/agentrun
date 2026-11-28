@@ -717,6 +717,17 @@ test("the provider's Core conformance cases pass through the Tensorlake REST cal
 	assert.ok(machines.uploads.length > 0 && machines.uploads.every(({ through }) => through === "exec"), "the daemon went through the exec's stdin");
 });
 
+test("a create answers the size Tensorlake says the sandbox runs at (its read's resources, O SandboxInfo.resources, required), not a size the spec asked: the descriptor is sized", { timeout: 60_000 }, async (t) => {
+	const machines = fakeHost();
+	const { rest, provider } = await setup(t, { backend: machines.host }, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const made = await provider.create({ image: IMAGE, lifetimeMs: 600_000, network: "none" }, { requestId: "tensorlake-sized" });
+	assert.equal(made.ok, true, made.ok ? "" : made.error.message);
+	assert.deepEqual(made.value.resources, { cpus: 1, memoryMb: 1024, diskGb: 10 }, "the fake's allocation for a create that named no size");
+	assert.equal(TENSORLAKE.sized, true);
+	assert.equal((await provider.release(made.value)).ok, true);
+	assert.equal(rest.live().length, 0);
+});
+
 // --- the registry and the conformance module ---
 
 test("the registry builds Tensorlake from its options alone, and its source reads no environment and writes nowhere", async () => {
