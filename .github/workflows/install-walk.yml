@@ -59,6 +59,11 @@ on:
       ref:
         type: string
         default: ''
+    outputs:
+      # Set when npm lacked the launcher's server and the walk installed this checkout's packed packages: the words for
+      # the daily walk's row (scripts/ways-in-report.mjs).
+      serve:
+        value: ${{ jobs.pack.outputs.serve }}
 
 permissions:
   contents: read
@@ -72,9 +77,11 @@ jobs:
     name: lint and pack the launcher
     if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 10 minutes for the pack alone; the rest for the build when npm lacks the launcher's server (below).
+    timeout-minutes: 30
     outputs:
       package: ${{ steps.pack.outputs.package }}
+      serve: ${{ steps.pack.outputs.serve }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -84,7 +91,11 @@ jobs:
           node-version: '24.22.3'
       - name: shellcheck
         run: shellcheck --severity=warning -s sh packages/agentrun/install.sh packages/agentrun/test/fake-tailscale.sh packages/agentrun/test/first-run.sh && shellcheck -x --severity=warning packages/agentrun/test/install-walk.sh packages/agentrun/test/vps-walk.sh
-      # After a release the walk installs what npm serves; otherwise this checkout's launcher.
+      # After a release the walk installs what npm serves; otherwise this checkout's launcher. That launcher pins its server
+      # at the release version, which npm has only once the release is published: from the release pull request to its
+      # publish, the walk installs this checkout's own packed packages for the @parcha ones npm lacks
+      # (packages/agentrun/test/walk-unpublished.mjs), and the `serve` output says so, for the job summary and the daily
+      # walk's table: a PASS then is this checkout's packages, never npm's.
       - name: Pack
         id: pack
         run: |
@@ -92,8 +103,18 @@ jobs:
           if [ "${{ github.event_name }}" = workflow_run ]; then
             echo "package=" >> "$GITHUB_OUTPUT"
           else
-            npm pack ./packages/agentrun --pack-destination launcher
-            echo "package=$(ls launcher)" >> "$GITHUB_OUTPUT"
+            package=$(npm pack ./packages/agentrun --pack-destination launcher --silent | tail -n 1)
+            echo "package=$package" >> "$GITHUB_OUTPUT"
+            need=$(node packages/agentrun/test/walk-unpublished.mjs plan "launcher/$package")
+            if [ -n "$need" ]; then
+              echo "npm lacks: $need"
+              npm ci --no-audit --no-fund
+              # It builds them first (the console before the server), packs them, and refuses a server with no console.
+              note=$(node packages/agentrun/test/walk-unpublished.mjs pack "launcher/$package" launcher /tmp/launcher)
+              echo "serve=$note" >> "$GITHUB_OUTPUT"
+              echo "::notice title=Install walk::$note"
+              echo "**Install walk:** $note" >> "$GITHUB_STEP_SUMMARY"
+            fi
           fi
           ls -la launcher
       - uses: actions/upload-artifact@v4
