@@ -446,15 +446,12 @@ jobs:
         env:
           AGENTRUN_IMAGE: agentrun-walk:local
 
-  image-custody:
-    # A run of the image holds its own model's key and nothing else, runs as a uid of its own, and reaches neither the data
-    # directory nor the server's memory, nor anything of another live run (packages/serve/docker/image-custody.sh), after
-    # the run helper's own Go tests (packages/serve/runas): the image built once from this checkout,
-    # then read in both shapes, the server with its runner in one process, and the two processes on a Postgres store whose
-    # URL is a canary. It runs when a change reaches the server, its runner, its launcher, its image or this file. Outside
-    # the verify matrix: it needs a Docker daemon, not both Node versions.
+  runas:
+    # The run helper's own Go tests (packages/serve/runas), the unprivileged ones and, as root, the privileged ones, on
+    # real files. A job of its own beside image-custody, which they used to run before its image build: they need Go and
+    # sudo, not the image. It runs when image-custody does (.github/actions/serve-paths).
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -462,23 +459,7 @@ jobs:
           fetch-depth: 2
       - name: Does this change reach the server, its runner, its launcher or its image?
         id: paths
-        env:
-          EVENT: ${{ github.event_name }}
-          GROUP_BASE: ${{ github.event.merge_group.base_sha }}
-          PUSH_BASE: ${{ github.event.before }}
-        run: |
-          case "$EVENT" in
-            pull_request) base=HEAD^1 ;;
-            merge_group) base="$GROUP_BASE" ;;
-            *) base="$PUSH_BASE" ;;
-          esac
-          # A base this clone cannot reach (a new branch, a force push) checks the image.
-          if [ "$base" != HEAD^1 ] && ! git fetch --no-tags --depth=1 origin "$base" 2>/dev/null; then
-            echo "run=true" >> "$GITHUB_OUTPUT"; echo "base $base unreachable: checked"; exit 0
-          fi
-          changed=$(git diff --name-only --no-renames "$base" HEAD -- packages/serve/ .github/workflows/ci.yml)
-          echo "${changed:-no server, runner, launcher or image path changed}"
-          if [ -n "$changed" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; else echo "run=false" >> "$GITHUB_OUTPUT"; fi
+        uses: ./.github/actions/serve-paths
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         if: steps.paths.outputs.run == 'true'
         with:
@@ -497,6 +478,24 @@ jobs:
         if: steps.paths.outputs.run == 'true'
         working-directory: packages/serve/runas
         run: sudo env "PATH=$PATH" CGO_ENABLED=0 GOCACHE="$RUNNER_TEMP/go-root-cache" GOFLAGS=-buildvcs=false go test -count=1 -v -run Privileged ./...
+
+  image-custody:
+    # A run of the image holds its own model's key and nothing else, runs as a uid of its own, and reaches neither the data
+    # directory nor the server's memory, nor anything of another live run (packages/serve/docker/image-custody.sh): the
+    # image built once from this checkout (the run helper's own Go tests are the runas job's), then read in both shapes,
+    # the server with its runner in one process, and the two processes on a Postgres store whose URL is a canary. It runs
+    # when a change reaches the server, its runner, its launcher, its image or this file. Outside the verify matrix: it
+    # needs a Docker daemon, not both Node versions.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The merge commit and its first parent, the base branch's tip: their diff is what a pull request changes.
+          fetch-depth: 2
+      - name: Does this change reach the server, its runner, its launcher or its image?
+        id: paths
+        uses: ./.github/actions/serve-paths
       # Docker's classic image store, so the image built next is loaded as built, its layers not compressed and unpacked
       # again (about 54 s on the containerd store). The step prints the store and fails unless the switch took.
       - name: Docker on its classic image store
