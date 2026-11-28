@@ -184,7 +184,7 @@ import { HarnessKeysOverStore, harnessKeysSavedHere } from "./harness-keys.js";
 import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
 import { signInsOverStore } from "./sign-ins-store.js";
 import { boundTool, MCP_AUTH_TYPES, marked, mcpAuthOf, type McpTool, nameOf as mcpNameOf } from "./mcp-probe.js";
-import { type COMPOSIO_KEY_ENV, composioEnvKey, composioMadeKey, composioPerRun } from "./composio-made.js";
+import { COMPOSIO_KEY_ENVS, type ComposioKeyEnv, isComposioKeyEnv, composioEnvKey, composioMadeKey, composioPerRun } from "./composio-made.js";
 import { ownersComposioUsers, ownersUser } from "./composio-owners.js";
 import { COMPOSIO_PER_RUN, type ComposioControl, composioForget, composioNote, composioSave, composioTokenUser, composioToolkits, composioTools } from "./composio-preset.js";
 import { ComposioTriggers, composioNoPublicUrl } from "./composio-triggers.js";
@@ -1234,7 +1234,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
        *  grant (runnable.ts takes one on any), a module's among them. `composio_per_run`: a per-run Composio server takes
        *  each run's own Composio account (mcp_auth's ComposioRunBinding, composioperrun/1), said here so a backend in
        *  front learns it from this answer, which an API-only server serves, not from the API document, which it refuses. */
-      mcp_client: { transports: ["streamable-http"], auth: [...MCP_AUTH_TYPES], at_rest: "sealed", harnesses: [...harnessIds(env)], composio_per_run: true },
+      mcp_client: { transports: ["streamable-http"], auth: [...MCP_AUTH_TYPES], at_rest: "sealed", harnesses: [...harnessIds(env)], composio_per_run: true, composio_key_envs: [...COMPOSIO_KEY_ENVS] },
       /** This server's learning switch (`--learning`): on, a run learns when its agent says `learning: true`; off, none does. */
       learning,
       /** /settings/webhook: one URL POSTed, signed by the Standard Webhooks spec, when a run needs its person and when it
@@ -3682,7 +3682,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const unset = ((revision.body as { tools?: readonly string[] }).tools ?? []).flatMap((tool, index) => {
         const named = mcpToolOf(tool);
         const saved = named ? mcpMeta.get(named.server) : undefined;
-        const keyEnv = saved?.keyEnv as typeof COMPOSIO_KEY_ENV | undefined;
+        const keyEnv = saved?.keyEnv as ComposioKeyEnv | undefined;
         const got = named && saved && keyEnv ? composioEnvKey(named.server, saved.url, keyEnv, mcpServers.composioOrigin) : undefined;
         return got && "refused" in got ? [{ field: `definition.tools[${index}]`, reason: got.reason, message: got.refused, tool, keyEnv: keyEnv!, unset: got.reason === "missing" }] : [];
       });
@@ -6625,6 +6625,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // saved holds (tokenStandsOn, tokenAccountOn), as a Composio user in its own namespace (composioTokenUser). The body
         // names no address or headers (composioSave refuses them).
         const answer = await inComposioTurn(async () => {
+          const existing = await store.mcp.server(id);
+          const keyEnv = existing ? await mcpServers.keyEnvOf(existing) : undefined;
+          if (keyEnv && isObject(body) && isComposioKeyEnv(body.api_key_env) && body.api_key_env !== keyEnv) {
+            throw invalid([{ field: "api_key_env", reason: "not_allowed", message: `The saved server ${id} uses ${keyEnv}. Save another Composio project under a different server name.` }]);
+          }
           const over: { dropped?: ComposioDropped } = {};
           const guard: SaveGuard = { turn: (work) => composioTriggers.inTurnOf(id, work), inUse: () => composioTriggers.inUse(id, SAVE_AFTER_TRIGGERS) };
           const saved = await composioSave(body, options.composioControl ?? {}, (mcp, made, stands) => mcpServers.save(id, mcp, stopping.signal, secretSeen as McpCredentialMark | undefined, made, stands, (left) => (over.dropped = left), guard, byToken), id, stopping.signal, async () => (await mcpServers.get(id)).url, byToken ? (config) => mcpServers.tokenStandsOn(config) : undefined, byToken ? (user, account) => mcpServers.tokenAccountOn(user, account) : undefined, byToken ? composioTokenUser : undefined);

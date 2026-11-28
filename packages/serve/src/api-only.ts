@@ -45,7 +45,7 @@ import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-ho
  *  - an API-only server has no owner, so the token is the backend's own, as with take-over: it saves the Composio servers
  *    its agents need through the preset (saveComposioServer), saves over or deletes only a server it saved
  *    (mcp-secret-writes.ts tokenWriteOverRefused), and never writes a secret (secret-writes.ts). A Composio server names
- *    its key by api_key_env (COMPOSIO_API_KEY, on the launcher's list of secrets, read at each use through secrets.ts
+ *    its key by api_key_env (one of COMPOSIO_KEY_ENVS, on the launcher's list of secrets, read at each use through secrets.ts
  *    secret, sent to Composio's origin alone: composio-made.ts composioEnvKey), and its body names no address or headers.
  *    The Composio listings (the toolkits, a toolkit's actions) read the catalog with that key, named the same way, for the
  *    backend's own picker. There is no list or read of the servers here (listMcpServerNames above is the listing). The generic save
