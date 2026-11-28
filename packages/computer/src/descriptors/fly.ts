@@ -15,6 +15,8 @@ export const FLY = defineProvider({
 		{ name: "FLY_APP", option: "app", required: true },
 	],
 	metered: true,
+	// Its create answers the size the vendor runs the computer at (resources), which its time is priced by.
+	sized: true,
 	// Its machines dial the server: Fly's exec answers only once the command ends, so nothing reaches into one.
 	connect: "dial",
 	// None: a machine that dials takes no Archil mount (mountsOf).

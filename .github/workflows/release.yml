@@ -21,7 +21,8 @@ concurrency:
 jobs:
   # The release's preconditions, checked once before anything else starts: the tag is a reviewed beta tag, the run was
   # dispatched at it, it is newer than what is out and is the version the manifests at it say, and the tagged commit passed
-  # every check main requires. Every other job needs it, so the jobs the npm-release approval holds (publish, pypi, box)
+  # every check main requires, and its tree is the one the release gate ran on (the release pull request's "Gated cut:"
+  # line). Every other job needs it, so the jobs the npm-release approval holds (publish, pypi, box)
   # all ask for it at the same moment and one approval covers them. Anyone with write access may dispatch the workflow;
   # the npm-release environment's required reviewers are the approval, and nothing here names a person.
   gate:
@@ -31,6 +32,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      pull-requests: read
     env:
       RELEASE_TAG: ${{ inputs.tag }}
     steps:
@@ -43,6 +45,8 @@ jobs:
         with:
           ref: ${{ inputs.tag }}
           persist-credentials: false
+          # The history under the tag, to name the commits the gated cut lacks.
+          fetch-depth: 0
       - name: Match the checkout to the provenance commit
         run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -59,6 +63,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/release-ci-gate.mjs
+      # The tag's tree is the tree of the commit the release gate passed on, the last "Gated cut: <sha>" line of the pull
+      # request merged as the tag's commit, or differs from it only in the release's own files; no changes/ fragment is
+      # left at the tag. A refusal names the commits under the tag the gate never saw.
+      - name: The tag is the code the release gate ran on
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release-gated-cut.mjs --tag "$RELEASE_TAG"
 
   publish:
     needs: gate

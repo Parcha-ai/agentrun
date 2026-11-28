@@ -21,7 +21,7 @@ import { fauxEnvOf } from "../dist/server.js";
 import { FAUX_VENDOR_API_ENV } from "../dist/tools.js";
 import { resolve } from "node:path";
 import { openSqliteStore, openStore } from "../dist/store/index.js";
-import { startRunner } from "../dist/runner/runner.js";
+import { END_RETRY_BACKOFF_MS, END_RETRY_CAP_MS, startRunner } from "../dist/runner/runner.js";
 import { runCensus } from "../dist/run-census.js";
 import { maxRunsOf } from "../dist/host.js";
 import { claimInstallsStopped } from "../dist/harness-install.js";
@@ -886,10 +886,24 @@ export async function whenFree(send) {
  *  never its red. A test that means to read home_busy itself calls `api`, never this. */
 export const retried = (api) => (...args) => whenFree(() => api(...args));
 
+/** The runner's poll and the waits it puts between two claims of one run, as startRunner defaults them (runner.ts): a run
+ *  whose loop closed itself is claimed again after interruptBackoffMs, one whose parked resume threw after resumeBackoffMs,
+ *  one whose stopped end was refused after endRetryBackoffMs (each doubling, the last up to endRetryCapMs). */
+const RUNNER_BEAT_DEFAULTS = { pollMs: 1_000, interruptBackoffMs: 1_000, resumeBackoffMs: 5_000, endRetryBackoffMs: END_RETRY_BACKOFF_MS, endRetryCapMs: END_RETRY_CAP_MS };
+
+/** `runnerTiming` for a case that counts the runner's beats (runnerBeats, claimsAfterRow) to show a run is not claimed, or
+ *  claimed once and never again: those defaults, every one a tenth (a 100 ms poll). The rule is that they scale together.
+ *  A count of N beats spans N polls, so it spans a backoff at the faster poll only if that backoff is as much shorter: a
+ *  100 ms poll beside the default 5 s resumeBackoffMs would end ten beats inside one backoff, and a claim loop behind it
+ *  would pass the case unseen. Scaled together, N beats cover the same backoffs they cover at the defaults, in a tenth of
+ *  the time. A case that adds its own timing spreads this first and keeps any poll or backoff it sets to the same rule. */
+export const FAST_BEATS = Object.freeze(Object.fromEntries(Object.entries(RUNNER_BEAT_DEFAULTS).map(([key, ms]) => [key, ms / 10])));
+
 /** What run `runId`'s claims did with its command row `rowId`, written once the run had `before` claims: waits until the
  *  row is answered and the run let go, or the run was claimed 3 times since (a claim loop), then for `polls` more of the
  *  runner's polls (`beats`, its poll and renewal count) with the same stop. Counted in claims and polls, never by the
- *  clock: the claims since, the row, and the run as it then reads. */
+ *  clock: the claims since, the row, and the run as it then reads. Its runner's timing is FAST_BEATS (or the defaults), so
+ *  the polls span every backoff a second claim could wait out. */
 export async function claimsAfterRow(store, runId, rowId, before, beats, polls = 10) {
   const since = async () => (await store.runAttempts.forRun(runId)).length - before;
   const rowNow = async () => (await store.commands(runId, rowId - 1)).find((row) => row.id === rowId);

@@ -14,7 +14,7 @@ import { basename, dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { claudeAgentExecutable, CLAUDE_AGENT_SDK_VERSION } from "@parcha/agentrun-harness-claude";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
-import { agent, client, follow, retried, scratch, serve } from "./support.mjs";
+import { agent, client, FAST_BEATS, follow, retried, scratch, serve } from "./support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
 import { stranger } from "./fixtures/stranger.mjs";
@@ -555,7 +555,7 @@ test("runs that wait for the install keep their places: at max_concurrent_runs 1
   const registry = await fakeRegistry(t, { hold });
   const anthropic = await anthropicEndpoint(t);
   await firstUseEnv(t, registry, anthropic.fake);
-  const { api, runnerBeats } = await serve(t, { faux: undefined, harnesses: false, harnessLocks: { "claude-agent": registry.lock }, maxRuns: 1 });
+  const { api, runnerBeats } = await serve(t, { faux: undefined, harnesses: false, harnessLocks: { "claude-agent": registry.lock }, maxRuns: 1, runnerTiming: FAST_BEATS });
   assert.equal((await retried(api)("POST", "/agents", agent("claude", { harness: "claude-agent", model: `anthropic/${MODEL}` }))).status, 201);
   const first = await api("POST", "/agents/claude/runs", { input: { content: "Say hello." } });
   assert.equal(first.status, 202, JSON.stringify(first.body));
