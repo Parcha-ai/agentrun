@@ -233,34 +233,46 @@ export function recordedClient(client: ComputerClient): ComputerClient {
  *  `release()`: a call in flight when it aborts ends then, and one made after it is refused before it is sent. A run's
  *  tools and their setup take the claim's signal (LoopDeps.signal: a lost claim, or the runner's shutdown once its drain
  *  is over), so a call to a daemon that never answers ends with the loop that made it, and the runner's close goes on at
- *  once instead of sitting out its whole stop window. From `release()` on (the run's end: its background processes
- *  ended, its scratch swept through the computer), no call is cut by it, one in flight included: the close's own window
- *  bounds them, as it always did. `signal`: the cut itself, aborted with the claim's until `release()` and never after,
- *  for a call of the computer's that is not the client's (its mount's read-back, AttachableComputer.readBack). */
-export function claimCutClient(client: ComputerClient, signal: AbortSignal): { readonly client: ComputerClient; readonly signal: AbortSignal; release(): void } {
+ *  once instead of sitting out its whole stop window. From `release(then)` on (the run's end: its background processes
+ *  ended, its scratch swept through the computer), no call is cut by the claim's signal: each, one in flight included,
+ *  is cut by `then` instead (the end's own cut, at the close's releaseBy), so a daemon that never answers holds the end
+ *  only until then and the claim's release still lands in the close's window. With no `then`, no call is cut at all.
+ *  `signal`: the cut itself, aborted with the claim's until `release(then)` and with `then` after it, for a call of the
+ *  computer's that is not the client's (its mount's read-back, AttachableComputer.readBack). */
+export function claimCutClient(client: ComputerClient, signal: AbortSignal): { readonly client: ComputerClient; readonly signal: AbortSignal; release(then?: AbortSignal): void } {
   // Bound: a provider's DaemonClient reads its own fields through `this`.
   const send = client.call.bind(client) as (method: string, params: unknown, options?: { signal?: AbortSignal }) => Promise<unknown>;
   const cut = new AbortController();
   let released = false;
+  /** What cuts the calls from the release on: the end's own cut, or none. */
+  let after: AbortSignal | undefined;
   const onAbort = () => {
     if (!released) cut.abort(signal.reason);
   };
   if (signal.aborted) onAbort();
   else signal.addEventListener("abort", onAbort, { once: true });
+  // A signal of the call's own (AbortSignal.any holds its sources weakly): what listens for it, the run channel's
+  // stand-in across the process among them, never piles up on the one cut's signal call after call.
+  const cutBy = (by: AbortSignal, options: { signal?: AbortSignal } | undefined) => ({ ...options, signal: AbortSignal.any(options?.signal ? [options.signal, by] : [by]) });
   return {
     client: {
       call: ((method: string, params: unknown, options?: { signal?: AbortSignal }) => {
-        if (released) return send(method, params, options);
-        // A signal of the call's own (AbortSignal.any holds its sources weakly): what listens for it, the run channel's
-        // stand-in across the process among them, never piles up on the one claim's signal call after call.
-        return send(method, params, { ...options, signal: AbortSignal.any(options?.signal ? [options.signal, cut.signal] : [cut.signal]) });
+        if (!released) return send(method, params, cutBy(cut.signal, options));
+        return after ? send(method, params, cutBy(after, options)) : send(method, params, options);
       }) as ComputerClient["call"],
       close: () => client.close(),
     },
     signal: cut.signal,
-    release: () => {
+    release: (then?: AbortSignal) => {
+      if (released) return;
       released = true;
       signal.removeEventListener("abort", onAbort);
+      if (!then) return;
+      after = then;
+      // A call in flight from before (the claim's signal not aborted, so its cut is not either) ends at `then` too.
+      if (cut.signal.aborted) return;
+      if (then.aborted) cut.abort(then.reason);
+      else then.addEventListener("abort", () => cut.abort(then.reason), { once: true });
     },
   };
 }

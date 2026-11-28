@@ -463,6 +463,10 @@ export type AdapterRun = PiRun & {
   /** The runner's presence incarnation (LoopDeps.incarnation): with the claim's runner, who keeps a computer a park pins
    *  to its runner (computer-for-claim.ts ClaimLaunch.holder). Absent where no loop gave one. */
   readonly incarnation?: string;
+  /** A cut for the run's end's computer calls (RunTools.end, its endCut), made as the end begins: aborted when the
+   *  runner's close cuts the tool hosts' release (LoopDeps.releaseBy: its window less its reserve), or, with no close,
+   *  at the release's own bound from then (releaseBoundMs). Absent where no loop gave one. */
+  readonly endCut?: () => AbortSignal;
   /** LoopDeps.handBack: a request the run needs refused because the runner is closing hands the run back to resume
    *  (claim-secrets.ts: the plan's renewal). Absent where no loop gave one. */
   readonly handBack?: () => Promise<void>;
@@ -1110,6 +1114,32 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** While the tool hosts' release runs: sets its cut again by its bound and LoopDeps.releaseBy as they read now (a
    *  shutdown that comes while it runs, its close's window then known). */
   let releaseRearm: (() => void) | undefined;
+  /** Each end's cut not yet come (endCut), set again when the close's window becomes known. */
+  const endCuts = new Set<() => void>();
+  /** A cut for the run's end's computer calls (AdapterRun.endCut), from now: at the close's releaseBy (its window less
+   *  its reserve, the point the tool hosts' release is cut by), or with no close the release's bound from now
+   *  (releaseBoundMs). A shutdown or a close that comes while the end runs sets it again by the window (stop, closing), as it does
+   *  the release's (releaseRearm). So an end on a daemon that never answers (it died mid-run) stops there, and the
+   *  claim's release after it (its cut written, the run handed back, the computer let go) lands inside the window. */
+  const endCut = (): AbortSignal => {
+    const began = Date.now();
+    const cut = new AbortController();
+    const by = (): number => deps.releaseBy?.() ?? began + (deps.releaseBoundMs ?? releaseBoundMs());
+    let timer: NodeJS.Timeout | undefined;
+    const arm = (): void => {
+      clearTimeout(timer);
+      if (Date.now() < by()) {
+        timer = setTimeout(arm, by() - Date.now());
+        timer.unref();
+        return;
+      }
+      endCuts.delete(arm);
+      cut.abort(new Error(`the run's end did not finish within ${by() - began} ms`));
+    };
+    endCuts.add(arm);
+    arm();
+    return cut.signal;
+  };
   /** Ends the hold a shutdown's stop puts on the claim's journal (holdForRelease), while it stands. */
   let releaseHold: (() => void) | undefined;
   /** A tool host's beforeRelease, once per claim: before a park's seal and before the end's commit (the end is the
@@ -2064,7 +2094,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           if (passGate.sealed) return;
           passGate.expect(writesEntry(kind, test), { run: { summary } }).catch(() => undefined);
         };
-        const runOf: AdapterRun = { harness, registry, setModels: (given) => (models = given), ledger, redact: deps.redact, signal: deps.signal, stopped: AbortSignal.any([deps.signal, stopAbort.signal]), phase, rowSummaryOn, ...(deps.incarnation ? { incarnation: deps.incarnation } : {}), ...(deps.handBack ? { handBack: deps.handBack } : {}) };
+        const runOf: AdapterRun = { harness, registry, setModels: (given) => (models = given), ledger, redact: deps.redact, signal: deps.signal, stopped: AbortSignal.any([deps.signal, stopAbort.signal]), phase, rowSummaryOn, ...(deps.incarnation ? { incarnation: deps.incarnation } : {}), ...(deps.handBack ? { handBack: deps.handBack } : {}), endCut };
         // The spec, its MCP claim step among it (mcpForClaim, before the session opens). A refusal there ends the run in its
         // words with nothing sent; a claim lost during its refresh ends the loop with nothing more written. A claim the spec
         // refuses (ClaimRefused: a handed sign-in that won't read back) ends the run in its words too.
@@ -4709,16 +4739,22 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       stopReason ??= reason;
       if (reason.kind === "shutdown") holdForRelease();
       if (reason.kind !== "command") gate?.seal(new Interrupted(reason.kind));
-      // A release under way takes the close's window as its cut from now (releaseHost).
-      if (reason.kind === "shutdown") releaseRearm?.();
+      // A release under way takes the close's window as its cut from now (releaseHost), and so does an end under way
+      // (endCut).
+      if (reason.kind === "shutdown") {
+        releaseRearm?.();
+        for (const arm of endCuts) arm();
+      }
       stopped();
       stopAbort.abort(new Interrupted(reason.kind));
       wakeInbox();
       await finished?.catch(() => undefined);
     },
     closing() {
-      // A release under way takes the close's window as its cut from now, its stop left as it was (releaseHost).
+      // A release under way takes the close's window as its cut from now, its stop left as it was (releaseHost), and so
+      // does an end under way (endCut).
       releaseRearm?.();
+      for (const arm of endCuts) arm();
     },
   };
 }
