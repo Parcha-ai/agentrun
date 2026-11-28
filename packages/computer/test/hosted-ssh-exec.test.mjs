@@ -89,7 +89,9 @@ test("a pinned SshExec refuses a login with no hostKey, or one not SHA256: and 4
 		await assert.rejects(ssh.exec("m1", ["true"], { timeoutMs: 5_000 }), (error) => error.code === "vendor" && /no host key \(SHA256:\.\.\.\) to pin/.test(error.message) && !error.message.includes(SECRET), JSON.stringify(hostKey));
 	}
 	assert.equal(tunnels, 0, "no tunnel was opened");
-	assert.equal(sshd.state.connections, 0, "no connection reached the sshd");
+	assert.equal(sshd.state.connections, 0, "no connection reached the sshd, so no handshake");
+	assert.equal(sshd.state.logins, 0, "no login reached the sshd");
+	assert.deepEqual(sshd.commands, [], "no command reached the sshd");
 	const right = new SshExec({ ssh2, pinned: true, loginOf: () => ({ username: "u", hostKey: pin }), tunnelOf: loopback });
 	const proc = await right.exec("m1", ["echo", "pinned"], { timeoutMs: 5_000 });
 	assert.equal(Buffer.concat(await proc.stdout.toArray()).toString("utf8"), "pinned\n");

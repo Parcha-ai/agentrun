@@ -435,25 +435,31 @@ test("an sshd whose host key is not the one the enable named is refused in the h
 	assert.deepEqual(await run(off, id, ["echo", "ok"]), { code: 0, stdout: "ok\n", stderr: "" }, "a failed enable is let go: the next exec enables again");
 });
 
-test("an enable that names no host key is refused as the vendor's before any tunnel opens: no exec runs through an sshd it can't pin, and a create, whose daemon start is an exec, fails", async (t) => {
-	const { fake, rest, host } = await setup(t);
-	const { id } = await host.create(request(), CTX);
-	rest.ssh.fingerprint = null;
-	await assert.rejects(host.exec(id, ["true"], CTX), (error) => error.code === "vendor" && /no host key/.test(error.message));
-	assert.deepEqual(fake.ws.opened, [], "no tunnel opened");
-	assert.equal(fake.sshd.state.logins, 0, "no login reached the sshd");
-	assert.deepEqual(fake.sshd.commands, [], "no command reached the sshd");
+test("an enable that names no host key (null, or the field left out) is refused as the vendor's before any tunnel opens: no exec runs through an sshd it can't pin, and a create, whose daemon start is an exec, fails", async (t) => {
+	/** The enable's own refusal, which names what it answered. */
+	const NAMED = /POST \/api\/v1\/ssh\/enable on \S+ answered no host key fingerprint/;
+	for (const fingerprint of [null, undefined]) {
+		const what = fingerprint === null ? "null" : "left out";
+		const { fake, rest, host } = await setup(t);
+		const { id } = await host.create(request(), CTX);
+		rest.ssh.fingerprint = fingerprint;
+		await assert.rejects(host.exec(id, ["true"], CTX), (error) => error.code === "vendor" && NAMED.test(error.message), what);
+		assert.equal(enables(rest).length, 1, `${what}: one enable, answered`);
+		assert.deepEqual(fake.ws.opened, [], `${what}: no tunnel opened`);
+		assert.equal(fake.sshd.state.logins, 0, `${what}: no login reached the sshd`);
+		assert.deepEqual(fake.sshd.commands, [], `${what}: no command reached the sshd`);
 
-	const machines = fakeHost();
-	const daemon = await setup(t, { backend: machines.host }, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
-	daemon.rest.ssh.fingerprint = null;
-	const made = await daemon.provider.create({ image: IMAGE, lifetimeMs: 600_000, network: "none" }, { requestId: "tensorlake-no-pin" });
-	assert.equal(made.ok, false, "the create fails");
-	assert.match(made.error.message, /no host key/);
-	assert.deepEqual(daemon.fake.ws.opened, [], "no tunnel opened for the create");
-	assert.equal(daemon.fake.sshd.state.logins, 0, "no login reached the create's sshd");
-	assert.deepEqual(daemon.fake.sshd.commands, [], "no command reached the create's sshd");
-	assert.deepEqual(machines.uploads, [], "no daemon went up");
+		const machines = fakeHost();
+		const daemon = await setup(t, { backend: machines.host }, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+		daemon.rest.ssh.fingerprint = fingerprint;
+		const made = await daemon.provider.create({ image: IMAGE, lifetimeMs: 600_000, network: "none" }, { requestId: `tensorlake-no-pin-${what}` });
+		assert.equal(made.ok, false, `${what}: the create fails`);
+		assert.match(made.error.message, NAMED, what);
+		assert.deepEqual(daemon.fake.ws.opened, [], `${what}: no tunnel opened for the create`);
+		assert.equal(daemon.fake.sshd.state.logins, 0, `${what}: no login reached the create's sshd`);
+		assert.deepEqual(daemon.fake.sshd.commands, [], `${what}: no command reached the create's sshd`);
+		assert.deepEqual(machines.uploads, [], `${what}: no daemon went up`);
+	}
 });
 
 test("a login the sshd refuses (another key enabled since) lets the enable go and enables again, once, and the exec runs; two execs refused at once share the one enable in its place", async (t) => {
