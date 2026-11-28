@@ -421,7 +421,7 @@ export const FLOOR_HINT_GAP_MS = 1_000;
  *  settles, once, with the words of why, when it is above `known`, the version this runner's build knows, and the reads
  *  stop. A read that fails (a busy store, a connection down) is tried at the next one: a renew's own failure says so, and
  *  only a floor read says to stop. */
-function watchFloor(store: Store, known: number, everyMs: number): { readonly outdated: Promise<string>; stop(): void } {
+export function watchFloor(store: Store, known: number, everyMs: number): { readonly outdated: Promise<string>; stop(): void } {
   let settle!: (why: string) => void;
   const outdated = new Promise<string>((resolve) => (settle = resolve));
   if (!store.schemaState) return { outdated, stop: () => {} };

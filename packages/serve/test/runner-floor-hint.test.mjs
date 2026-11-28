@@ -8,11 +8,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { FLOOR_HINT_GAP_MS, startRunnerProcess } from "../dist/runner/main.js";
+import { FLOOR_HINT_GAP_MS, startRunnerProcess, watchFloor } from "../dist/runner/main.js";
 import { openSqliteStore } from "../dist/store/index.js";
 import { SCHEMA_VERSION } from "../dist/store/schema.js";
 import { STORE_FILE } from "../dist/store/sqlite/store.js";
-import { fauxLoops } from "./runner-support.mjs";
+import { fauxLoops, until } from "./runner-support.mjs";
 
 const SEAL = randomBytes(32).toString("base64");
 
@@ -53,6 +53,50 @@ test("a SQLite store hints at a write to its file by another connection, and its
   } finally {
     db.close();
   }
+});
+
+/** A store of the floor's shape alone: its schemaState counted, its floor set by the test; `watch` gives it a watchSchema. */
+function floorStore({ watch } = {}) {
+  const state = { floor: SCHEMA_VERSION, reads: [], hint: undefined, unwatched: 0 };
+  const store = {
+    schemaState: async () => (state.reads.push(Date.now()), { version: state.floor, runnerFloor: state.floor, known: SCHEMA_VERSION }),
+    ...(watch ? { watchSchema: (hint) => ((state.hint = hint), () => (state.unwatched += 1)) } : {}),
+  };
+  return { store, state };
+}
+
+test("a store with no watchSchema (Postgres's, an in-memory SQLite's): the floor is read at its interval alone, every everyMs, and a rise is seen at the next read", async (t) => {
+  const { store, state } = floorStore();
+  const startedAt = Date.now();
+  const floor = watchFloor(store, SCHEMA_VERSION, 200);
+  t.after(() => floor.stop());
+  // Three reads, none sooner than its interval from the one before: the poll is the one it always was. A loaded box only
+  // makes them later, so the wait for them is generous and the claim is the spacing.
+  await until(async () => state.reads.length >= 3, "three reads at the interval", 10_000);
+  const at = [startedAt, ...state.reads];
+  for (let i = 1; i < at.length; i++) assert.ok(at[i] - at[i - 1] >= 180, `read ${i} came ${at[i] - at[i - 1]} ms after the one before, under its 200 ms interval`);
+  state.floor = SCHEMA_VERSION + 1;
+  const before = state.reads.length;
+  const why = await within(floor.outdated, 10_000);
+  assert.match(String(why), /runner floor rose to/);
+  assert.equal(state.reads.length, before + 1, "seen at the next read of the interval");
+});
+
+test("a store with watchSchema: a hint reads the floor with its interval an hour away, two hints at least FLOOR_HINT_GAP_MS apart, and the stop unsubscribes", async (t) => {
+  const { store, state } = floorStore({ watch: true });
+  const floor = watchFloor(store, SCHEMA_VERSION, 3_600_000);
+  t.after(() => floor.stop());
+  assert.equal(typeof state.hint, "function", "subscribed");
+  state.hint();
+  // The interval is an hour away, so any read is the hint's.
+  await until(async () => state.reads.length === 1, "the hint's read", 10_000);
+  state.floor = SCHEMA_VERSION + 1;
+  state.hint();
+  const why = await within(floor.outdated, 10_000);
+  assert.match(String(why), /runner floor rose to/);
+  assert.equal(state.reads.length, 2, "one read per hint, none from the interval");
+  assert.ok(state.reads[1] - state.reads[0] >= FLOOR_HINT_GAP_MS - 20, `hinted reads ${state.reads[1] - state.reads[0]} ms apart, under FLOOR_HINT_GAP_MS`);
+  assert.equal(state.unwatched, 1, "the stop ended its subscription");
 });
 
 test("a runner whose floor timer is an hour away stops within seconds of the floor's rise on SQLite: the store's hint reads it", async (t) => {
