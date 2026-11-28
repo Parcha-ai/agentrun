@@ -35,7 +35,8 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
-import { API_ONLY_ROUTES, WORKSPACE_ROUTES, apiOnlyMcpSave, apiOnlyRefusal, apiOnlyTriggerEdit, apiOnlyTriggerSkipped, apiOnlyTurnsOn, servedApiOnly, servedScoped } from "./api-only.js";
+import { API_ONLY_ROUTES, WORKSPACE_ROUTES, apiOnlyMcpSave, apiOnlyRefusal, apiOnlyTriggerEdit, apiOnlyTriggerMade, apiOnlyTriggerSkipped, apiOnlyTurnsOn, servedApiOnly, servedScoped } from "./api-only.js";
+import { triggersInWorkspace } from "./trigger-scope.js";
 import { inWorkspace, outOfScope, scopedSlot, slotPath, WORKSPACE, WORKSPACE_HEADER, WORKSPACE_NAME, WORKSPACE_TOKENS_ENV, workspaceNow, workspaceTokensFrom } from "./workspace-scope.js";
 import { API_ONLY_ENV, API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV } from "./env-switch.js";
 import { pricesInForce } from "./prices.js";
@@ -159,7 +160,7 @@ import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { type Blocker, blockersOf, CODE_NODES_ENV, deniedComputer, issueOf, NOT_SET_UP, type RevisionShape } from "./runnable.js";
 import { computerDeniedWords } from "./refusal-words.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
-import { isSecretWriteOperation, type SecretRequest, secretPageFor, secretsWritableFields, secretWriteRefusal, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
+import { isSecretWriteOperation, type SecretRequest, secretPageFor, secretRefusalWords, secretsWritableFields, secretWriteRefusal, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
 import { ChatGPTPlan, planOf, PlanSignInRefused, RENEWAL_DRAIN_MS, SIGN_OUT_UNCONFIRMED, stopRenewals, withPlan } from "./chatgpt-plan.js";
 import { modelGatewayRoute, readSavedGateway, type SavedGateway, withSavedGateway } from "./model-gateway.js";
 import { CLAUDE_LOGIN_ROUTES, LOGIN_REFUSES_API_KEYS, oneOwnerDeps, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginServed, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, LOGIN_HARNESS, loginOf, loginOnRunnerOnly, loopback, signOutClaudeLogin, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, withClaudeLogin, signInHereOff, type PublicUrlFrom } from "./claude-login.js";
@@ -243,7 +244,7 @@ import { mintViewerCredential, VIEWER_PARAM, viewerCookie, viewerCredentialFor, 
 import { ATTACH_PATH, AttachHub, containerSigns, type HostedDial, PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
 import { dockerDaemonOf } from "@parcha/agentrun-computer/docker";
 import { type AttachTiming, createAttachRoutes, liveRelays, pairedView } from "./computer-attach.js";
-import { pairedRefusal, withPaired } from "./workspace/attached-computers.js";
+import { namesPaired, pairedRefusal, scopedPairedWords, withPaired } from "./workspace/attached-computers.js";
 import { PAIRED_ROUTE_MS, readRoute } from "./workspace/paired-route.js";
 import { COMPUTER_TOOLS, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { freeModelRequestsOf } from "@parcha/agentrun-kernel/kernel/cap";
@@ -2284,19 +2285,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const workspace = workspaceNow();
     return workspace === undefined ? {} : { workspace };
   };
-  /** The packages of `pkgs` a scoped request sees: the bundled ones and the ones its workspace imported. */
-  const templatesSeen = async <T extends { id: string; origin: unknown }>(pkgs: T[]): Promise<T[]> => {
-    if (workspaceNow() === undefined) return pkgs;
-    const held = await store.importedTemplates.workspaces();
-    return pkgs.filter((pkg) => pkg.origin === null || !outOfScope(held.get(pkg.id)));
-  };
-  const templateSeen = async (id: string) => {
-    const pkg = registry.get(id);
-    return pkg && (await templatesSeen([pkg]))[0];
-  };
   /** Whether the agent or run `id` is in another workspace than the scoped request's, or in none: read as missing. */
   const agentOutOfScope = async (id: string) => workspaceNow() !== undefined && outOfScope(await store.agents.workspace(id));
   const runOutOfScope = async (id: string) => workspaceNow() !== undefined && outOfScope(await store.runs.workspace(id));
+  // A trigger is its agent's: it is in a workspace when its agent is (an unknown one goes on to its own 404).
+  const triggerOutOfScope = async (id: string) => {
+    if (workspaceNow() === undefined) return false;
+    const row = await store.triggers.get(id);
+    return row !== undefined && row !== null && (await agentOutOfScope(row.agentId));
+  };
   const agents = {
     get: (id: string) => getAgent(store, id),
     // A scoped request (workspace-scope.ts) lists its workspace's agents alone, and stamps the ones it makes.
@@ -2709,9 +2706,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const triggerDeps: TriggerTargetDeps = {
     ...(options.beforeSubmit ? { beforeSubmit: options.beforeSubmit } : {}),
     start: startDeps,
-    getAgent: async (agentId: string) => (await getAgent(store, agentId)) ?? undefined,
+    // A scoped request's trigger names its own workspace's agent or run: another's reads as unknown (workspace-scope.ts).
+    getAgent: async (agentId: string) => ((await agentOutOfScope(agentId)) ? undefined : ((await getAgent(store, agentId)) ?? undefined)),
     needAgent,
-    momentOf: (runId: string) => momentOverStore(store, runId, viewDepsFor(ownOriginOf())),
+    momentOf: async (runId: string) => ((await runOutOfScope(runId)) ? undefined : momentOverStore(store, runId, viewDepsFor(ownOriginOf()))),
     // A trigger never messages a run on a plan-billed recipe whose keys are not all saved: its turn would run on its
     // owner's own sign-in. With them saved, the turn runs on them (harness-keys.ts), and a claim that opens not every one
     // is refused (cli-run-spec.ts).
@@ -3811,6 +3809,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // The store's NewRevision keeps the revision's fields under `body` (AgenticBody|WorkflowBody); build the flat shape the
     // host checks (runnable.ts RevisionShape) from it, as shapeOf does for a run's Revision.
     const body = revision.body as AgenticBody & Partial<WorkflowBody>;
+    // An agent in a workspace never names a paired computer; its run's claim refuses one too (computer-for-claim.ts).
+    const setting = workspaceNow() === undefined ? undefined : settingOfDefinition(body)?.computer;
+    if (setting && namesPaired(setting)) throw invalid([{ field: body.computer !== undefined ? "definition.computer" : "definition.place", reason: "not_an_option", message: scopedPairedWords(setting.provider) }]);
     if (nativeOf(body)) {
       const overrides = nativeModelOverrides(body);
       if (overrides.length) throw invalid(overrides.map(field => ({ field: `definition.${field}`, reason: "not_allowed", message: NATIVE_MODEL_SETTINGS_UNSUPPORTED })));
@@ -4618,7 +4619,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const seal = startSeal(secrets);
         // What the server writes of the start (its input, which the run's title is read from) is cut of what it hands.
         const cut = cutHanded(rest, handedSecretValues(secrets));
-        return targets.start(firing.target, cut.input, firing.trigger, firing.from, firing.title, firing.previous, { body: cut, ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets) });
+        return targets.start(firing.target, cut.input, firing.trigger, firing.from, firing.title, firing.previous, { body: cut, ...(firing.told !== undefined ? { told: firing.told } : {}), ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets) });
       });
       return { status: 202, body: await viewOverStore(store, run.run_id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${run.run_id}`, ...(run.replayed ? { "idempotent-replayed": "true" } : {}) } };
     }
@@ -5328,7 +5329,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if (req.headers.authorization !== undefined && !byOwnerSession(req) && !bearer(req.headers.authorization, req)) authFailed(`/v2${path}`, "wrong_token");
       // tools[].held: the server's keyless holds on each web tool now (web-run.ts withHeld), never cached.
       // features.api_keys.routes: false on an API-only server, which serves none of the keys' routes and reads no key.
-      return send(res, 200, { ...answer, tools: withHeld(answer.tools), ...storeSchema, runner_refused: runnerRefused, features: { ...answer.features, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) }, claude_login: loginServed, api_keys: { ...answer.features.api_keys, routes: !options.apiOnly }, workspaces: { ...answer.features.workspaces, enforced: options.apiOnly === true, required_for_tokens: (options.workspaceTokens ?? []).length > 0 } } });
+      // features.computers for a request in a workspace counts no paired computer's kind: none is its to use.
+      return send(res, 200, { ...answer, tools: withHeld(answer.tools), ...storeSchema, runner_refused: runnerRefused, features: { ...answer.features, computers: await computerCapabilities(computersOf(), { scoped: workspaceNow() !== undefined }), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) }, claude_login: loginServed, api_keys: { ...answer.features.api_keys, routes: !options.apiOnly }, workspaces: { ...answer.features.workspaces, enforced: options.apiOnly === true, required_for_tokens: (options.workspaceTokens ?? []).length > 0 } } });
     }
     if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, ownerCookieName(req)));
     // With accounts off there is no owner, and the console still asks whether it may save a secret: secret-writes.ts'
@@ -5469,7 +5471,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // secret (secretPageFor), at the address people open the console at.
         const page = await secretPageFor(found.name, body, { params, store });
         const link = page === undefined ? undefined : `${linkOrigin(req)}${page}`;
-        throw new ApiError("forbidden", secretWriteRefusal(link), link === undefined ? {} : { details: { console_url: link } });
+        throw new ApiError("forbidden", secretWriteRefusal(link, secretRefusalWords(found.name, checked)), link === undefined ? {} : { details: { console_url: link } });
       }
       secretSeen = checked.seen;
     }
@@ -5590,6 +5592,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (id && ID.test(id) && workspaceNow() !== undefined) {
       if (found.pattern.source.startsWith("^\\/runs\\/([^/]+)") && (await runOutOfScope(id))) throw new ApiError("not_found", `no run ${id}`);
       if (found.pattern.source.startsWith("^\\/agents\\/([^/]+)") && (await agentOutOfScope(id))) throw new ApiError("not_found", `no agent ${id}`);
+      if (found.pattern.source.startsWith("^\\/triggers\\/([^/]+)") && (await triggerOutOfScope(id))) throw new ApiError("not_found", `no trigger ${id}`);
     }
     // A purged run or agent (DELETE /runs/{id}, /agents/{id}): every route of it but its DELETE answers 410 purged, with
     // its tombstone in the details.
@@ -5823,7 +5826,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           definition: definitionOf(agent, revision, entry.version),
           skills: (isObject(revision.skills) ? revision.skills : {}) as Record<string, string>,
           template: entry.template ? { id: entry.template.id, version: entry.template.version, ...(entry.template.secrets ? { secrets: entry.template.secrets } : {}) } : null,
-          origin: entry.template ? registry.get(entry.template.id) : undefined,
+          // The package of its template id in the agent's own workspace, whoever exports it.
+          origin: entry.template ? registry.get(entry.template.id, (await store.agents.workspace(id)) ?? null) : undefined,
           servers: mcpMeta,
           triggers: views,
           signIns: await store.signIns.list(id),
@@ -6563,9 +6567,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, { names: (await listMcpServers(store)).map((row) => row.name).sort() });
       case "getMcpServer":
         return send(res, 200, await mcpServers.get(id));
-      case "previewMcpServer":
+      case "previewMcpServer": {
         // The API token's preview, as the gate reads a token's save: a server it saved is previewed at its shown address.
-        return send(res, 200, await mcpServers.preview(await bodyOf(req), stopping.signal, req.headers.authorization !== undefined && !mayHoldSecrets(req)));
+        // API-only, where this route is served only with the operator's MCP origins: the body the save there takes alone
+        // (apiOnlyMcpSave), else the refused route's own 404, before anything reaches the address.
+        const body = await bodyOf(req);
+        if (options.apiOnly && !apiOnlyMcpSave(body, false, apiOnlyMcpOrigins)) throw new ApiError("not_found", apiOnlyRefusal(`/v2${path}`));
+        return send(res, 200, await mcpServers.preview(body, stopping.signal, req.headers.authorization !== undefined && !mayHoldSecrets(req)));
+      }
       case "saveMcpServer": {
         const body = await bodyOf(req);
         const preset = await mcpServers.composioPreset(id);
@@ -6984,10 +6993,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, await slack.attemptsView());
       case "redeliverSlack":
         return send(res, 200, await slack.redeliver(id));
-      case "listTriggers":
-        return send(res, 200, { triggers: (await triggers.list()).triggers.map(withSecretOf) });
+      case "listTriggers": {
+        // A scoped request lists the triggers of its own workspace's agents alone (trigger-scope.ts).
+        const workspace = workspaceNow();
+        const listed = workspace === undefined ? (await triggers.list()).triggers : await triggersInWorkspace(workspace, store, async (keep) => (await triggers.list(keep)).triggers);
+        return send(res, 200, { triggers: listed.map(withSecretOf) });
+      }
       case "createTrigger": {
         const body = await bodyOf(req);
+        // On an API-only server, made only where its apply would make it (api-only.ts); routing serves this to a scoped request alone.
+        if (options.apiOnly) {
+          const refused = apiOnlyTriggerMade(body, options.launchHook !== undefined);
+          if (refused.length) throw invalid(refused);
+        }
         // A webhook trigger's secret is in its first answer alone: the Idempotency-Key's record keeps the trigger and a
         // note, so a retry under the key gets the same trigger, never a second one, and never the secret.
         let secret: string | undefined;
@@ -7004,8 +7022,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "listTemplates": {
         // Each package's computer list read against this server now: what an apply here would pick (pickComputer).
-        // Its subagents' tiers likewise: what an apply here would keep of the package's (packageTiers).
-        const listed = await templatesSeen(registry.list());
+        // Its subagents' tiers likewise: what an apply here would keep of the package's (packageTiers). The bundled ones
+        // and those imported in the request's workspace (none's, unscoped): TemplateRegistry.
+        const listed = registry.list();
         const [pickView, tiersView] = await Promise.all([computerHere(listed), tiersHere(listed)]);
         return send(res, 200, { templates: listed.map((pkg) => ({ ...packageView(pkg), computer_here: pickView(pkg), model_tiers_here: tiersView(pkg) })) });
       }
@@ -7030,17 +7049,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "getTemplate": {
         // One package whole, a bundled one's too: as the list shows it, with the files an import's answer shows, for a
         // person (or a coding agent) to read before they apply it.
-        const pkg = await templateSeen(id);
+        const pkg = registry.get(id);
         if (!pkg) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
         return send(res, 200, { ...packageDetail(pkg, await computerHere([pkg]), await tiersHere([pkg])), console_url: templateLink(linkOrigin(req), pkg.id) });
       }
       case "deleteTemplate":
-        // A scoped request deletes its own workspace's package alone: another's reads as a missing one.
-        if (!(await templateSeen(id))) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
+        // A request deletes its own workspace's package alone (deleteTemplate): another's reads as a missing one.
         await deleteTemplate(importDeps, id);
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "applyTemplate": {
-        const pkg = await templateSeen(id);
+        const pkg = registry.get(id);
         if (!pkg) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
         const body = await bodyOf(req);
         // A dry run writes nothing, so it keeps no Idempotency-Key record either: a retry reads the plan again.
@@ -7093,6 +7111,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "fireTrigger": {
         const key = req.headers["idempotency-key"];
         if (typeof key !== "string" || key.length < 1 || key.length > 255) throw new ApiError("bad_request", "Running a trigger now takes an Idempotency-Key of 1 to 255 characters: a retry with the same key fires it once.");
+        // On an API-only server, fired only where it may be on (api-only.ts apiOnlyTurnsOn), so the firing goes to the launch hook.
+        if (options.apiOnly) {
+          const trigger = await triggers.get(id);
+          if (!apiOnlyTurnsOn(trigger.source.kind, trigger.target.kind, options.launchHook !== undefined)) {
+            throw invalid([{ field: "id", reason: "not_an_option", message: `This server serves the run API only (${API_ONLY_ENV}=1), where a trigger is run now only if it may be on here: a schedule or a feed that starts runs, with the launch hook set, so its firing goes to your backend.` }]);
+          }
+        }
         const fired = await triggers.fire(id, key);
         return send(res, fired.created ? 202 : 200, fired.firing, fired.created ? {} : { "idempotent-replayed": "true" });
       }

@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
+import { ApprovalCard } from "@/components/ApprovalCard";
 import { ProblemCard } from "@/components/Problem";
 import { RunSkeleton } from "@/components/Skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
-import { Timeline } from "@/components/Timeline";
+import { Timeline, Working } from "@/components/Timeline";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { pageBodyClass, pageClass, pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
+import { APPROVAL_ROW, approvalOf, approvalRefusal } from "@/lib/approval";
 import { type Client, follow } from "@/lib/client";
 import { costOfCap, runEnded, runTitle } from "@/lib/format";
 import { problem } from "@/lib/problem";
@@ -94,7 +96,9 @@ export function Race({ v2, label, rereadMs = RACE_REREAD_MS }: { v2: Client; lab
 }
 
 /** One lane: its run's header (harness and model, status, cost, tokens, tool calls, clock) over its newest steps. The
- *  timeline is followed with a short wait (LANE_WAIT_MS), and the run is read again when a page says its state moved. */
+ *  timeline is followed with a short wait (LANE_WAIT_MS), and the run is read again when a page says its state moved. A
+ *  lane whose call waits on the owner's approval offers the run page's card, compact, answered in place, and says it
+ *  waits rather than showing the agent at work. */
 function RaceLane({ v2, first, now }: { v2: Client; first: Run; now: number }) {
   const [run, setRun] = useState(first);
   const [rows, setRows] = useState<TimelineRow[]>([]);
@@ -102,6 +106,10 @@ function RaceLane({ v2, first, now }: { v2: Client; first: Run; now: number }) {
   const [failed, setFailed] = useState<unknown>(null);
   const [readFailed, setReadFailed] = useState(false);
   const state = useRef("");
+  // The lane's approval rows as last read (each one's id and words): a change reads the run again, as the run page does
+  // (LiveRun). An answer is queued, so the read after it may still name the call answered, and the agent's next approval
+  // leaves the run input_required and waiting, which the state check alone never reads again.
+  const approvals = useRef("");
   // Only the newest read of the run lands: an older one answering last never puts a finished run back to Working.
   const runReads = useRef(latest()).current;
   const live = useRef<AbortSignal | null>(null);
@@ -126,7 +134,13 @@ function RaceLane({ v2, first, now }: { v2: Client; first: Run; now: number }) {
     follow(v2, first.run_id, {
       signal: ctl.signal,
       waitMs: LANE_WAIT_MS,
-      onRows: setRows,
+      onRows: (r) => {
+        setRows(r);
+        const seen = r.filter((x) => x.kind === APPROVAL_ROW).map((x) => `${x.id}\u0000${x.summary}`).join("\u0001");
+        if (seen === approvals.current) return;
+        approvals.current = seen;
+        void readRun();
+      },
       onPage: (p) => {
         if (p.cost) setPageCost(p.cost);
         const s = `${p.status}/${p.state}`;
@@ -141,6 +155,18 @@ function RaceLane({ v2, first, now }: { v2: Client; first: Run; now: number }) {
   const stats = laneStats(run, rows, pageCost, now);
   const harness = run.labels?.harness, model = run.labels?.model;
   const lane = run.labels?.[LANE_KEY];
+  const pending = approvalOf(run);
+  // The run is read again whatever came of the answer, as the run page does.
+  const answer = async (id: string, decision: "allow" | "deny", note?: string, confirmed?: true): Promise<string | null> => {
+    let refused: string | null = null;
+    try {
+      await v2.answerApproval(run.run_id, id, decision, note, confirmed);
+    } catch (e) {
+      refused = approvalRefusal(e);
+    }
+    void readRun();
+    return refused;
+  };
   return (
     <section data-race-lane={run.run_id} className="flex min-w-0 flex-col border bg-card">
       <header className="border-b px-4 py-3">
@@ -164,8 +190,14 @@ function RaceLane({ v2, first, now }: { v2: Client; first: Run; now: number }) {
           </p>
         )}
       </header>
+      {pending && (
+        <div className="border-b p-2">
+          <ApprovalCard key={pending.id} compact pending={pending} onAnswer={(decision, note, confirmed) => answer(pending.id, decision, note, confirmed)} />
+        </div>
+      )}
       <div className="min-w-0 px-2 py-2">
-        {failed ? <ProblemCard className="m-2" problem={problem(failed, "this lane's timeline")} /> : <Timeline rows={rows} live={!ended} fold={LANE_STEPS} ended={ended} />}
+        {failed ? <ProblemCard className="m-2" problem={problem(failed, "this lane's timeline")} /> : <Timeline rows={rows} live={!ended && !pending} fold={LANE_STEPS} ended={ended} />}
+        {pending && !failed && <Working title="Waiting for your approval" note="The run goes on once you answer the approval above." spin={false} />}
       </div>
     </section>
   );

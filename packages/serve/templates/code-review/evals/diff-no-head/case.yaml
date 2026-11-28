@@ -1,0 +1,5 @@
+# The parameters this case's agent is applied with. No MCP server: the diff is in the prompt, and it names no head
+# commit (only the index line's blob hashes), so the answer's head_sha is null.
+parameters:
+  owner: example
+  repo: cart

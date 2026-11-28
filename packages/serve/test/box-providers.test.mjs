@@ -8,7 +8,7 @@ import { PROVIDERS } from "@parcha/agentrun-computer";
 import { BOX_IDS, enabledBoxes, placeOffers, withNetworks } from "../dist/place-offers.js";
 import { placeIssues } from "../dist/place.js";
 
-const BOXES = ["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"];
+const BOXES = ["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox", "vercel"];
 
 test("every provider whose descriptor gives a box's needs is a box, in Settings' order; one that can't hold a run's shell and folder is not", () => {
   assert.deepEqual([...BOX_IDS], BOXES);
