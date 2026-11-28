@@ -1,8 +1,8 @@
 // Northflank for the conformance CLI: `npm run conformance -w @parcha/agentrun-computer -- --provider northflank`. It
 // makes real services, which bill while they run, so it runs only with AGENTRUN_COMPUTER_LIVE_NORTHFLANK=1 and your own
 // token, under COMPUTER_NORTHFLANK_TOKEN (never NORTHFLANK_API_TOKEN or NF_API_TOKEN, which may hold another team's),
-// with your project under COMPUTER_NORTHFLANK_PROJECT_ID (never NORTHFLANK_PROJECT_ID, which Northflank sets inside its
-// own services). Every computer of a run has a deadline of at most 30 minutes, which the janitor keeps.
+// with your project under COMPUTER_NORTHFLANK_PROJECT_ID (never NF_PROJECT_ID, which Northflank injects into its own
+// services, or NORTHFLANK_PROJECT_ID). Every computer of a run has a deadline of at most 30 minutes, which the janitor keeps.
 import { boxImageRef } from "../box-image.js";
 import { httpsBase } from "../hosted/rest.js";
 import { create, DEFAULT_API_URL, type NorthflankProvider, type NorthflankProviderOptions } from "../northflank.js";

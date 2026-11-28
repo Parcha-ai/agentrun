@@ -1,9 +1,9 @@
 // Northflank's descriptor: a Linux sandbox on a Northflank service (a Kata microVM on Northflank Cloud) in the customer's
 // own project, started from our box image, the public registry tag its prepareImage() answers (box-image.ts), which
 // Northflank pulls at each create. The token is under the name Northflank's own client reads (NORTHFLANK_API_TOKEN,
-// @northflank/js-client). The project has no default, so Settings asks for it; its key is not NORTHFLANK_PROJECT_ID, the
-// name Northflank sets inside its own services, so a server Northflank runs never takes its own project for the
-// computers'. The team is for an organisation token alone. No Archil mount and no desktop yet: both are unverified until
+// @northflank/js-client). The project has no default, so Settings asks for it; its key is neither NF_PROJECT_ID, which
+// Northflank injects into every service it runs, nor NORTHFLANK_PROJECT_ID, a name other tools use, so a server
+// Northflank runs never takes its own project for the computers'. The team is for an organisation token alone. No Archil mount and no desktop yet: both are unverified until
 // a live run.
 import { defineProvider } from "../descriptor.js";
 import { SANDBOX } from "./shared.js";

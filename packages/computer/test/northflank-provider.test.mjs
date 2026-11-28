@@ -58,7 +58,7 @@ test("the descriptor: a sandbox under NORTHFLANK_API_TOKEN and a project of the 
 		{ name: "NORTHFLANK_COMPUTER_PROJECT_ID", option: "projectId", required: true },
 		{ name: "NORTHFLANK_COMPUTER_TEAM_ID", option: "teamId", required: false },
 	]);
-	assert.ok(!NORTHFLANK.keys.some((key) => key.name === "NORTHFLANK_PROJECT_ID"), "never the name Northflank sets inside its own services");
+	assert.ok(!NORTHFLANK.keys.some((key) => /^NF_/.test(key.name) || key.name === "NORTHFLANK_PROJECT_ID"), "never a name Northflank injects into its own services (NF_PROJECT_ID, NF_*), nor NORTHFLANK_PROJECT_ID");
 	assert.deepEqual([NORTHFLANK.network, NORTHFLANK.mounts, NORTHFLANK.defaultImage, NORTHFLANK.prepareImage], [["none", "open", "allow"], [], undefined, true]);
 	const { host } = northflankOf();
 	assert.deepEqual(host.facts, { daemon: "child", isolation: "microvm", lifetime: "janitor", maxLifetimeMs: 604_800_000 - 300_000, arch: "amd64", vendorAgentPorts: [], labels: { bytes: 262_144, packed: {} } });

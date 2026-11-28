@@ -3497,8 +3497,9 @@ create is `exists`; a 429 a `limit`.
 The conformance module, `dist/conformance/northflank.js`, checks `AGENTRUN_COMPUTER_LIVE_NORTHFLANK=1` first, then reads
 `COMPUTER_NORTHFLANK_TOKEN` (`token`) and `COMPUTER_NORTHFLANK_PROJECT_ID` (`projectId`), both required, and
 `COMPUTER_NORTHFLANK_TEAM_ID`, `COMPUTER_NORTHFLANK_API_URL`, `COMPUTER_NORTHFLANK_DAEMON` and
-`COMPUTER_NORTHFLANK_IMAGE` (the run's image, default the box image), never `NORTHFLANK_API_TOKEN`, `NF_API_TOKEN` or
-`NORTHFLANK_PROJECT_ID`. Every computer of a run lives at most 30 minutes.
+`COMPUTER_NORTHFLANK_IMAGE` (the run's image, default the box image), never `NORTHFLANK_API_TOKEN`, `NF_API_TOKEN`,
+`NF_PROJECT_ID` (which Northflank injects into its own services) or `NORTHFLANK_PROJECT_ID`. Every computer of a run
+lives at most 30 minutes.
 
 Unverified until the live run: latin1 carrying every byte both ways; the exec socket holding 75 s of silence with no
 ping; output trailing the `completion` message, and the socket closing after it; the exec user root being root; a taken

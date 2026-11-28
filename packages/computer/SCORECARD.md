@@ -426,7 +426,7 @@ provider spec.
   ([network policies](https://northflank.com/docs/v1/application/network/configure-network-policies.md)), so `none`
   rests on init's fence.
 - **Built:** `src/northflank.ts`, key `NORTHFLANK_API_TOKEN`, with the project under `NORTHFLANK_COMPUTER_PROJECT_ID`
-  (required, no default; not `NORTHFLANK_PROJECT_ID`, which Northflank sets inside its own services) and an
+  (required, no default; not `NF_PROJECT_ID`, which Northflank injects into its own services, nor `NORTHFLANK_PROJECT_ID`) and an
   organisation token's team under `NORTHFLANK_COMPUTER_TEAM_ID`. Its tests run on a fake of the REST API and the
   command-exec socket, the exec pre-check and the provider's Core cases included. The adapter polls every 2 s, since a
   token has 1000 requests an hour. No `upload` and no `extend`.
