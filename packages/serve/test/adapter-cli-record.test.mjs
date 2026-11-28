@@ -371,7 +371,10 @@ function twoCallCli(tool, closes = { count: 0 }) {
         async settleOpenTurn() { state = "idle"; },
         turnEnd: () => turn,
         async interrupt() {},
-        async close() { closes.count += 1; },
+        async close() {
+          closes.count += 1;
+          await closes.atClose?.();
+        },
       };
     },
   };
@@ -385,7 +388,9 @@ test("a CLI run whose one answer asks for two calls at once: the run completes, 
   await queue(opened.server, "run-1");
   const ran = [];
   const lookup = { name: "lookup", description: "Look it up.", inputSchema: { type: "object" }, replay: "never", call: async (args) => { ran.push(args.q); return { text: `found ${args.q}` }; } };
-  const closes = { count: 0 };
+  // The run's row as the CLI session's close reads it: the claim still held then, never the run ended and let go first.
+  const atClose = [];
+  const closes = { count: 0, atClose: async () => void atClose.push(await opened.server.runs.get("run-1")) };
   const createLoop = createAdapterLoop(() => ({
     adapter: twoCallCli("lookup", closes),
     session: { key: "root", label: "root", system: [], tools: [lookup], context: "fresh" },
@@ -418,9 +423,12 @@ test("a CLI run whose one answer asks for two calls at once: the run completes, 
     assert.notEqual(result.tool_status, "interrupted", `call ${call.tool_use_id} not interrupted`);
   }
   assert.deepEqual(messagesOf(records).map((message) => [message.role, message.text]), [["person", "Find both."], ["model", "Looking twice."], ["model", "Both found."]]);
-  // Ported from harness-close.test.mjs: the harness's session is closed once its run is let go, so none of the CLI's own
-  // processes outlives the claim.
+  // Ported from harness-close.test.mjs: the harness's session is closed once, before its run is let go, so none of the
+  // CLI's own processes outlives the claim. The end lets the claim go in its own commit (an ending patch clears the
+  // runner), and a message sent the moment the run reads ended reopens it for a new session on the same thread: the old
+  // one is closed by then, never still closing beside it.
   assert.equal(closes.count, 1, "the CLI session closed once at the run's release");
+  assert.deepEqual(atClose.map((at) => [at.state, at.runner]), [["running", "runner-a"]], "the CLI session closed while its run still held the claim");
 });
 
 // The output contract's retry on a CLI harness: the loop writes it on the run's record, then sends it. A runner lost between
