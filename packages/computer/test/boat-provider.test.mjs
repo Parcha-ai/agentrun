@@ -177,6 +177,74 @@ test("extend patches ttlSeconds to the new end and the deadline label with the r
 	assert.equal(patches(), before, "no PATCH");
 });
 
+/** The wall clock, plus what the test has moved it on by: what the fake's auto-stop reads. */
+function movedClock() {
+	let moved = 0;
+	return { now: () => Date.now() + moved, sleep: async (ms) => void (moved += Math.max(0, ms)) };
+}
+
+test("boat's auto-stop on the fake's clock: a sandbox posted with no ttlSeconds stops at the docs' 3600 s, one with 900 s at 900 s, and one the provider makes for 2 h runs past both, then stops at its own end", async () => {
+	const clock = movedClock();
+	const { vendor, host } = boatOf(undefined, { readyAfter: 0, clock });
+	const post = async (body) => (await (await vendor.fetch(`${API_URL}/sandboxes`, { method: "POST", headers: { Authorization: `Bearer ${KEY}` }, body: JSON.stringify(body) })).json()).sandbox.id;
+	const unset = await post({ name: "my-app" });
+	const short = await post({ name: "my-app-2", ttlSeconds: 900 });
+	const { id } = await host.create(request({ lifetimeMs: 2 * 3_600_000 }), CTX);
+	assert.equal(vendor.calls.at(-1).body.ttlSeconds, 7_200, "create sends the whole lifetime: boat's default never applies");
+	const states = async () => [(await host.get(id, CTX))?.state, ...[unset, short].map((one) => vendor.sandboxes.get(one).sandbox.ttlSeconds)];
+	assert.deepEqual(await states(), ["running", 3_600, 900]);
+	const read = (one) => vendor.fetch(`${API_URL}/sandboxes/${one}`, { headers: { Authorization: `Bearer ${KEY}` } }).then((answer) => answer.json()).then(({ sandbox }) => sandbox.state);
+	await clock.sleep(901_000);
+	assert.deepEqual([await read(short), await read(unset), (await host.get(id, CTX))?.state], ["archived", "ready", "running"], "901 s on");
+	await clock.sleep(2_700_000);
+	assert.deepEqual([await read(unset), (await host.get(id, CTX))?.state], ["archived", "running"], "3601 s on");
+	await clock.sleep(3_600_000);
+	assert.equal((await host.get(id, CTX))?.state, "stopped", "past the 2 h it was made with, boat has stopped it");
+	const huge = await host.create(request({ name: "computer-0123456789ac", lifetimeMs: 60 * 24 * 3_600_000 }), CTX);
+	assert.ok(huge.id);
+	assert.equal(vendor.calls.at(-1).body.ttlSeconds, 2_592_000, "a lifetime past boat's 30 days asks for its most");
+});
+
+test("a held computer outlives boat's 900 s and its 3600 s default on the fake's clock: the provider makes it for 2 h, its daemon answers after 901 s and 3601 s quiet, an extend PATCHes ttlSeconds past the 2 h, and lifetime.idle passes on the same clock", async (t) => {
+	const { conformanceCases, runConformance } = await import("../dist/conformance/index.js");
+	const moved = movedClock();
+	const machines = fakeHost();
+	const { vendor, provider } = boatOf(t, { backend: machines.host, readyAfter: 0, clock: moved }, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const hold = {
+		id: "boat.hold",
+		level: "core",
+		group: "lifetime",
+		needs: [],
+		computer: "none",
+		timeoutMs: 30_000,
+		async run(c) {
+			const labels = { ...c.runLabels, "agentrun.conformance.case": "hold" };
+			const ref = await c.create({ lifetimeMs: 2 * 3_600_000, labels });
+			const listed = async () => c.ok(await c.provider.list(labels), "list").map((info) => info.state);
+			for (const quiet of [901_000, 2_700_000]) {
+				await c.clock.sleep(quiet);
+				c.deepEqual(await listed(), ["running"], `after ${quiet / 1000} s more with no call`);
+				const back = await c.connect(ref);
+				c.deepEqual(c.ok(await back.client.call("ping", {}), "ping"), {}, `its daemon answers ping, ${quiet / 1000} s more on`);
+				await back.close();
+			}
+			const extended = c.ok(await c.provider.extend(ref, 3 * 3_600_000, { signal: c.signal }), "extend to 3 h from now");
+			const patch = vendor.calls.findLast((call) => call.method === "PATCH");
+			c.assert(patch.body.ttlSeconds > 10_000, `extend PATCHes ttlSeconds to 3 h, not ${patch.body.ttlSeconds}`);
+			c.assert(extended.deadline instanceof Date, "extend answers a deadline");
+			await c.clock.sleep(3_600_000);
+			c.deepEqual(await listed(), ["running"], "past the 2 h it was made with, after the extend");
+		},
+	};
+	const cases = [hold, ...conformanceCases.filter((one) => one.id === "lifetime.idle")];
+	const report = await runConformance(provider, { image: BOAT_IMAGE, cases, clock: moved, long: true, caseTimeoutMs: 30_000, cleanupTimeoutMs: 5_000 });
+	assert.deepEqual(
+		report.results.map(({ id, status, reason }) => `${id} ${status}${reason ? `: ${reason}` : ""}`),
+		["boat.hold pass", "lifetime.idle pass"],
+	);
+	assert.equal(vendor.sandboxes.size, 0, "every sandbox made was deleted");
+});
+
 test("exec posts this provider's own SSH key once per sandbox, logs in as boat's user with it, and runs argv as root through sudo -n: stdin, stdout, stderr and the exit code", async (t) => {
 	const { vendor, host } = boatOf(t);
 	const id = await running(host);
@@ -235,6 +303,14 @@ test("the host key boat answers is pinned: an sshd with another is refused in wo
 	const bare = boatOf(t, { hostKey: "none" });
 	const other = await running(bare.host);
 	await assert.rejects(bare.host.exec(other, ["true"], CTX), (error) => error.code === "vendor" && /no host key/.test(error.message));
+});
+
+test("an sshkey answer with no sshUser, as boat's schema allows, logs in as the docs' user `user`", async (t) => {
+	const { vendor, host } = boatOf(t, { sshUser: false });
+	const id = await running(host);
+	const proc = await host.exec(id, ["true"], CTX);
+	assert.equal(await proc.wait(), 0);
+	assert.deepEqual([vendor.sshd(id).state.logins > 0, vendor.sshd(id).state.denied], [true, 0]);
 });
 
 test("an exec on an id boat lacks is not_found, and so is one of another form, before any call", async () => {

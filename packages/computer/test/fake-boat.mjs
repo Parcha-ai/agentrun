@@ -29,9 +29,11 @@ const refuse = (status, code, message, details) => json(status, { ok: false, typ
  * reads ready; ignoresLabels makes a listing answer every sandbox whatever labels it asks (a host must filter);
  * rateLimited makes every create a 429 rate_limited; hostKey "other" answers a host key that is not the sshd's.
  * snapshots names the account's saved snapshots, which `from` may name. calls lists each REST call, its method,
- * path, query (label as a list), headers and body.
+ * path, query (label as a list), headers and body. sshUser false leaves sshUser out of the sshkey answer, as the
+ * schema allows. clock is the time boat's auto-stop reads (default the wall clock): a sandbox past its archiveAfter
+ * reads archived, as boat stops it then whatever ran in it (docs: auto-stop); a create with no ttlSeconds gets 3600.
  */
-export function fakeBoat({ backend, pageSize = 2, readyAfter = 1, ignoresLabels = false, rateLimited = false, hostKey = "own", snapshots = [] } = {}) {
+export function fakeBoat({ backend, pageSize = 2, readyAfter = 1, ignoresLabels = false, rateLimited = false, hostKey = "own", snapshots = [], sshUser = true, clock = { now: () => Date.now() } } = {}) {
 	const sandboxes = new Map();
 	const idempotent = new Map();
 	const calls = [];
@@ -50,8 +52,15 @@ export function fakeBoat({ backend, pageSize = 2, readyAfter = 1, ignoresLabels 
 	/** A sandbox of the account made outside this provider, as boat lists it. */
 	const add = (name, labels = {}, state = "ready") => {
 		const id = idOf();
-		const sandbox = { id, name, state, labels, type: "small", vcpu: 2, memoryGB: 4, ip: "127.0.0.1", sshEndpoint: null, createdAt: new Date().toISOString(), archiveAfter: new Date(Date.now() + 3_600_000).toISOString(), ttlSeconds: 3600, desktopAvailable: false, snapshotAvailable: false };
+		const sandbox = { id, name, state, labels, type: "small", vcpu: 2, memoryGB: 4, ip: "127.0.0.1", sshEndpoint: null, createdAt: new Date(clock.now()).toISOString(), archiveAfter: new Date(clock.now() + 3_600_000).toISOString(), ttlSeconds: 3600, desktopAvailable: false, snapshotAvailable: false };
 		sandboxes.set(id, { sandbox, reads: readyAfter, keys: [] });
+		return sandbox;
+	};
+	/** archiveAfter for a ttlSeconds from now: null for none. */
+	const archiveAt = (ttl) => (ttl === null ? null : new Date(clock.now() + ttl * 1000).toISOString());
+	/** boat's auto-stop, read when a sandbox is: past its archiveAfter, a live sandbox is archived. */
+	const autoStop = (sandbox) => {
+		if (["ready", "idle", "running"].includes(sandbox.state) && sandbox.archiveAfter !== null && clock.now() >= Date.parse(sandbox.archiveAfter)) sandbox.state = "archived";
 		return sandbox;
 	};
 
@@ -123,7 +132,7 @@ export function fakeBoat({ backend, pageSize = 2, readyAfter = 1, ignoresLabels 
 			const sandbox = add(body?.name ?? `Sandbox ${new Date().toISOString()}`, labels, "provisioning");
 			const [vcpu, memoryGB] = SIZES[type];
 			const ttl = body?.ttlSeconds === undefined ? 3600 : body.ttlSeconds;
-			Object.assign(sandbox, { type, vcpu, memoryGB, ttlSeconds: ttl, archiveAfter: ttl === null ? null : new Date(Date.now() + ttl * 1000).toISOString() });
+			Object.assign(sandbox, { type, vcpu, memoryGB, ttlSeconds: ttl, archiveAfter: archiveAt(ttl) });
 			const held = sandboxes.get(sandbox.id);
 			held.body = body;
 			if (key !== undefined) idempotent.set(key, { text, id: sandbox.id });
@@ -136,7 +145,7 @@ export function fakeBoat({ backend, pageSize = 2, readyAfter = 1, ignoresLabels 
 			if (unknown) return refuse(400, "invalid_query", `Unknown query parameter ${unknown}`);
 			const asked = (query.label ?? []).map((pair) => [pair.slice(0, pair.indexOf("=")), pair.slice(pair.indexOf("=") + 1)]);
 			const all = [...sandboxes.values()]
-				.map(({ sandbox }) => sandbox)
+				.map(({ sandbox }) => autoStop(sandbox))
 				.filter((sandbox) => sandbox.name.startsWith(query.namePrefix ?? "") && (query.name === undefined || sandbox.name === query.name))
 				.filter((sandbox) => ignoresLabels || asked.every(([name, value]) => sandbox.labels[name] === value));
 			const limit = Math.min(Number(query.limit ?? 100), 200, pageSize);
@@ -148,13 +157,13 @@ export function fakeBoat({ backend, pageSize = 2, readyAfter = 1, ignoresLabels 
 		if (named && !named[2] && method === "GET") {
 			if (one === undefined) return refuse(404, "not_found", "Sandbox not found");
 			if (one.sandbox.state === "provisioning" && --one.reads < 0) one.sandbox.state = "ready";
-			return json(200, { ok: true, type: "sandbox.info", sandbox: one.sandbox });
+			return json(200, { ok: true, type: "sandbox.info", sandbox: autoStop(one.sandbox) });
 		}
 
 		if (named && !named[2] && method === "PATCH") {
 			if (one === undefined) return refuse(404, "not_found", "Sandbox not found");
 			if (body?.labels !== undefined) one.sandbox.labels = body.labels ?? {};
-			if (body?.ttlSeconds !== undefined) Object.assign(one.sandbox, { ttlSeconds: body.ttlSeconds, archiveAfter: body.ttlSeconds === null ? null : new Date(Date.now() + body.ttlSeconds * 1000).toISOString() });
+			if (body?.ttlSeconds !== undefined) Object.assign(one.sandbox, { ttlSeconds: body.ttlSeconds, archiveAfter: archiveAt(body.ttlSeconds) });
 			return json(200, { ok: true, type: "sandbox.info", sandbox: one.sandbox });
 		}
 
@@ -170,13 +179,13 @@ export function fakeBoat({ backend, pageSize = 2, readyAfter = 1, ignoresLabels 
 
 		if (named?.[2] && method === "POST") {
 			if (one === undefined) return refuse(404, "not_found", "Sandbox not found");
-			if (!["ready", "idle", "running"].includes(one.sandbox.state)) return refuse(409, "sandbox_not_ready", `The sandbox is ${one.sandbox.state}`);
+			if (!["ready", "idle", "running"].includes(autoStop(one.sandbox).state)) return refuse(409, "sandbox_not_ready", `The sandbox is ${one.sandbox.state}`);
 			const parsed = typeof body?.key === "string" ? ssh2.utils.parseKey(body.key) : undefined;
 			if (parsed === undefined || parsed instanceof Error || parsed.isPrivateKey()) return refuse(400, "invalid_request", "key: a public SSH key in OpenSSH format");
 			if (!one.keys.includes(body.key)) one.keys.push(body.key);
 			one.sshd ??= await fakeSshd({ authorized: () => one.keys, username: "user", sudo: true, ...(backend ? { run: runOn(one) } : {}) });
 			const shown = hostKey === "other" ? (await otherHostKey()) : one.sshd.hostKey;
-			return json(200, { ok: true, type: "ssh_key.configured", success: true, machineIp: "127.0.0.1", sshUser: "user", sshEndpoint: `127.0.0.1:${one.sshd.port}`, ...(hostKey === "none" ? {} : { hostKey: shown }) });
+			return json(200, { ok: true, type: "ssh_key.configured", success: true, machineIp: "127.0.0.1", ...(sshUser ? { sshUser: "user" } : {}), sshEndpoint: `127.0.0.1:${one.sshd.port}`, ...(hostKey === "none" ? {} : { hostKey: shown }) });
 		}
 
 		return refuse(404, "not_found", `no route ${method} ${path}`);
