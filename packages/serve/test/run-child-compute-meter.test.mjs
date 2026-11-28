@@ -45,7 +45,8 @@ async function pairOn(t) {
   return { handed, runProcess };
 }
 
-/** The run's ledger as the run's process holds it (RunLedger's paid, pause, judges and judged), each call kept. */
+/** The run's ledger as the run's process holds it (RunLedger's paid, pause, judges and judged), each call kept. Its admit
+ *  waits for the spec, as the run's paid calls do (adapter-loop.ts: they open on the spec's cap), and fails as it fails. */
 function ledgerOf() {
   const admitted = [];
   const settled = [];
@@ -56,7 +57,7 @@ function ledgerOf() {
   const built = new Promise((resolve, reject) => ((judged = resolve), (failed = reject)));
   built.catch(() => undefined);
   const ledger = {
-    paid: { admit: async (request) => void admitted.push(request), settle: async (id, usd, options) => void settled.push({ id, usd, ...(options ?? {}) }), spentUsd: () => 0, heldUsd: () => 0 },
+    paid: { admit: async (request) => void (await built, admitted.push(request)), settle: async (id, usd, options) => void settled.push({ id, usd, ...(options ?? {}) }), spentUsd: () => 0, heldUsd: () => 0 },
     pause: async (refusal) => void paused.push(refusal),
     judges: () => judges,
     judged: () => built,
@@ -113,6 +114,66 @@ test("a run's process whose spec failed: the runner's meter never reads its cap 
   meter.start("daytona", "sb-2", FIGURES);
   await meter.stop("daytona", "sb-2");
   assert.deepEqual(run.admitted.filter((one) => !one.hold), [], "nothing is booked while the cap can't judge");
+});
+
+/** Whether `made` settles within a bound: a stop the build would hold up never does until the build is done. */
+const within = (made, ms = 1_000) => Promise.race([made.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), ms))]);
+
+/** The runner's meter over the ledger a run's process handed it, on the test's clock, its stretches and log kept. */
+async function meteredBeforeBuild(t) {
+  const { handed, runProcess } = await pairOn(t);
+  const run = ledgerOf();
+  await runProcess.computerForClaim({}, {}, { hadComputer: async () => false, compute: { ledger: run.ledger, env: {} } });
+  const given = handed[0];
+  const clock = { at: 1_000_000 };
+  const ticks = [];
+  const lines = [];
+  const meter = computeMeter({ env: given.compute.env, ledger: given.compute.ledger, now: () => clock.at, every: (tick) => (ticks.push(tick), () => {}), log: (line) => void lines.push(line) });
+  const stretch = async (ms) => {
+    clock.at += ms;
+    for (const tick of ticks) tick();
+    await settle();
+  };
+  return { run, given, clock, meter, lines, stretch, booked: (id) => run.admitted.filter((one) => one.tool === "compute" && !one.hold && one.ref.startsWith(`compute:daytona:${id}:`)) };
+}
+
+test("computers metered while the run's spec is still built: a stretch waits for the cap, a computer let go then is never held up by the build, and both are booked once the cap judges", async (t) => {
+  const { run, given, clock, meter, lines, stretch, booked } = await meteredBeforeBuild(t);
+  meter.start("daytona", "sb-3", FIGURES);
+  meter.start("daytona", "sb-4", FIGURES);
+  const madeAt = clock.at;
+  await stretch(300_000);
+  assert.deepEqual(run.admitted, [], "while the spec is built, nothing reaches the run's ledger: each step waits for its cap");
+  clock.at += 60_000;
+  assert.equal(await within(meter.stop("daytona", "sb-4")), true, "a computer let go while the spec is built is let go at once, its booking never waited for there");
+  assert.equal(given.compute.ledger.judges(), false, "the runner reads the cap as not judging until the process says it can");
+
+  run.build();
+  await settle();
+  assert.equal(given.compute.ledger.judges(), true, "once the spec is built, the runner's meter reads its cap as judging");
+  assert.deepEqual(booked("sb-4").map((one) => [one.tag, one.basis.split(" ")[0]]).sort(), [["memory", "360"], ["vcpu", "360"]], "the computer let go before the build has its 360 s booked once the cap judges");
+
+  await stretch(300_000);
+  const running = booked("sb-3");
+  assert.deepEqual(running.map((one) => one.tag).sort(), ["memory", "vcpu"], "the running computer's next stretch is booked once the cap judges, each resource");
+  const vcpu = run.settled.find((one) => one.id === running.find((b) => b.tag === "vcpu").id);
+  assert.ok(Math.abs(vcpu.usd - 2 * ((clock.at - madeAt) / 1000) * 0.00001) < 1e-12, `two vCPUs for all it ran since it was made: ${vcpu?.usd}`);
+  assert.deepEqual(lines.filter((line) => line.includes("compute_spend_unbooked")), [], "nothing said unbooked");
+});
+
+test("a computer let go while the run's spec is built, the build then failing: nothing is booked, each priced resource's time is said unbooked, and its stop never waited on the build", async (t) => {
+  const { run, given, clock, meter, lines, booked } = await meteredBeforeBuild(t);
+  meter.start("daytona", "sb-5", FIGURES);
+  clock.at += 60_000;
+  assert.equal(await within(meter.stop("daytona", "sb-5")), true, "its stop never waits on the build");
+  run.fail(new Error("the image build failed"));
+  await settle();
+  assert.equal(given.compute.ledger.judges(), false, "a spec that failed never judges");
+  assert.deepEqual(booked("sb-5"), [], "nothing is booked");
+  assert.deepEqual(run.admitted, [], "nothing reached the run's ledger");
+  const unbooked = lines.filter((line) => line.includes("event=compute_spend_unbooked"));
+  assert.equal(unbooked.length, 2, `one line per priced resource: ${JSON.stringify(lines)}`);
+  for (const tag of ["vcpu", "memory"]) assert.ok(unbooked.some((line) => line.includes(`60 s of daytona sb-5's ${tag} time was not booked`) && line.includes("the image build failed")), `${tag}'s unbooked time said, with the spec's failure: ${JSON.stringify(unbooked)}`);
 });
 
 test("the runner's side of the ledger takes only what reads as one: a process that hands none, or a malformed one, gets no meter", () => {
