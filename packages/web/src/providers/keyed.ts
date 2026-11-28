@@ -3,7 +3,7 @@
 // spent (a quota) and a 429 a rate limit for its Retry-After, both for the run's breaker. A request on a stopped call is
 // never asked of the Pay, and one that failed before it left (paidSend) is settled at $0. Nothing is retried. A
 // provider's own words are never passed on: a failure is said in ours, with its status and, where it gives one, its code.
-import { type Fee, PaidRefused, type Pay, unmetered, unsentAnswer } from "../fees.js";
+import { chargedSaying, type Fee, PaidRefused, type Pay, unmetered, unsentAnswer } from "../fees.js";
 import { cutAt, withoutUserinfo } from "../page.js";
 import { type Failed, failed, keyWide, type Limit } from "../search.js";
 
@@ -16,10 +16,12 @@ export type KeyedFailed = Failed;
  *  request to `path` below its base. */
 export type Keyed = { who: string; live(): boolean; post(path: string, body: unknown, signal?: AbortSignal): Promise<Response> };
 /** A provider's API: its name in our words, its base URL, its auth headers, its prices, its bound, the statuses that
- *  refuse the key for the client's life. */
-export type KeyedSpec = { who: string; base: string; headers: Record<string, string>; feeOf: (path: string, body: unknown) => Fee | undefined; timeoutMs: number; refuseOn: readonly number[] };
+ *  refuse the key for the client's life. `chargeOf`, for a provider that reports what a request cost: what a 2xx
+ *  answer held at `fee` is charged and the receipt's words for it, from its body (`json`, undefined when not JSON);
+ *  without it, a 2xx is charged its fee. */
+export type KeyedSpec = { who: string; base: string; headers: Record<string, string>; feeOf: (path: string, body: unknown) => Fee | undefined; timeoutMs: number; refuseOn: readonly number[]; chargeOf?: (fee: Fee, path: string, json: unknown) => { usd: number; basis: string } };
 
-export function keyedClient({ who, base, headers, feeOf, timeoutMs, refuseOn }: KeyedSpec, send: typeof fetch = fetch, pay: Pay = unmetered): Keyed {
+export function keyedClient({ who, base, headers, feeOf, timeoutMs, refuseOn, chargeOf }: KeyedSpec, send: typeof fetch = fetch, pay: Pay = unmetered): Keyed {
   let refused = false;
   const root = base.replace(/\/+$/, "");
   return {
@@ -28,6 +30,9 @@ export function keyedClient({ who, base, headers, feeOf, timeoutMs, refuseOn }: 
     async post(path, body, signal) {
       const fee = feeOf(path, body);
       if (!fee) throw new PaidRefused(`${who}'s ${path} was not sent: it has no price here`);
+      // What a 2xx answer reports it cost, read from a copy of its body before the cap settles; never above the hold.
+      let charge: { usd: number; basis: string } | undefined;
+      const charged = chargeOf ? chargedSaying(() => Math.min(charge?.usd ?? fee.usd, fee.usd), () => charge?.basis) : undefined;
       return paidSend(pay, fee, signal, async () => {
         const response = await send(`${root}${path}`, {
           method: "POST",
@@ -38,8 +43,15 @@ export function keyedClient({ who, base, headers, feeOf, timeoutMs, refuseOn }: 
           signal: AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(signal ? [signal] : [])]),
         });
         if (refuseOn.includes(response.status)) refused = true;
+        if (chargeOf && response.ok) {
+          let json: unknown;
+          try {
+            json = await response.clone().json();
+          } catch {}
+          charge = chargeOf(fee, path, json);
+        }
         return response;
-      });
+      }, charged);
     },
   };
 }
@@ -70,7 +82,7 @@ export function unsentWhy(error: unknown, stoppedFirst: boolean): string | undef
  *  the stop's own reason thrown as fetch throws it; one whose send failed before it left (unsentWhy) answered to `pay`
  *  as unsentAnswer, a 4xx the cap settles at $0, and then thrown as it was, marked `unsent`. Every other failure is
  *  thrown inside `pay`, which books it at its fee. */
-export async function paidSend(pay: Pay, fee: Fee, signal: AbortSignal | undefined, send: () => Promise<Response>): Promise<Response> {
+export async function paidSend(pay: Pay, fee: Fee, signal: AbortSignal | undefined, send: () => Promise<Response>, charged?: () => number): Promise<Response> {
   if (signal?.aborted) throw signal.reason;
   let unsent: { error: unknown } | undefined;
   const answer = await pay(fee, async () => {
@@ -83,7 +95,7 @@ export async function paidSend(pay: Pay, fee: Fee, signal: AbortSignal | undefin
       unsent = { error };
       return unsentAnswer(why);
     }
-  });
+  }, charged);
   if (unsent) {
     const { error } = unsent;
     // Marked where it can be: a frozen or sealed error is thrown as it was, never replaced by the marking's own failure.

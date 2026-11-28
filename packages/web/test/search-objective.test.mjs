@@ -55,6 +55,8 @@ const row = (letter, more = {}) => ({ url: `https://${letter}.example/`, title: 
 /** Keyed Firecrawl's answer to a search: `rows` in data.web, as /v2/search answers them. */
 const firecrawlRows = (rows) => json({ success: true, data: { web: rows } });
 const SCRAPE = { formats: ["markdown"], onlyMainContent: true };
+/** A keyed search's scrapeOptions: SCRAPE on the basic proxy, a PDF result to 2 pages. */
+const KEYED_SCRAPE = { ...SCRAPE, proxy: "basic", parsers: [{ type: "pdf", maxPages: 2 }] };
 
 test("searchArgs: the objective cut at 1,000 characters, up to 5 queries each cut at 200 with blanks dropped, none giving the objective's first 200; a query alone is the objective and the one query", () => {
   assert.equal(web.OBJECTIVE_MAX, 1_000, "the objective's bound");
@@ -94,14 +96,14 @@ test("keyed Firecrawl's wire bodies: up to 3 of the queries at once, each limit 
   const fc = keyed((_path, body) => firecrawlRows(answers[body.query]));
   const w = web.createWeb({ order: { search: ["firecrawl"], fetch: [] }, keys: { firecrawl: KEY }, send: { firecrawl: fc.send } });
   const { answer, receipt } = await w.search({ objective: OBJECTIVE, queries: QUERIES }, { n: 4 });
-  assert.deepEqual(fc.sent.map(({ path, body }) => [path, body]), QUERIES.slice(0, 3).map((query) => ["/v2/search", { query, limit: 2, scrapeOptions: SCRAPE }]), "Firecrawl is sent the first 3 queries, each limit ceil(4/3) with scrapeOptions");
+  assert.deepEqual(fc.sent.map(({ path, body }) => [path, body]), QUERIES.slice(0, 3).map((query) => ["/v2/search", { query, limit: 2, scrapeOptions: KEYED_SCRAPE }]), "Firecrawl is sent the first 3 queries, each limit ceil(4/3) with scrapeOptions");
   assert.equal(fc.seen.most, 3, "the 3 requests are in flight at once");
   assert.deepEqual(answer.results.map((hit) => hit.url), ["a", "b", "c", "d"].map((letter) => `https://${letter}.example/`), "Firecrawl's results deduped by url, first seen first, cut at n");
   assert.deepEqual(answer.results.map((hit) => hit.snippet), ["# Page a The whole of page a.", "# Page b The whole of page b.", "About c.", "# Page d The whole of page d."], "each snippet the page's markdown, its description where it has none");
-  assert.deepEqual(receipt.cost.lines.map((fee) => fee.basis), Array(3).fill("Firecrawl's list price for a search of 2 results, each scraped: 4 credits at the key's plan price"), "each request priced as a scraping search");
+  assert.deepEqual(receipt.cost.lines.map((fee) => fee.basis), Array(3).fill("the hold, 6 credits; Firecrawl reported no credit count"), "each request held as a scraping search, charged its hold where Firecrawl reports no credits");
   const one = keyed(() => firecrawlRows([row("a"), row("b"), row("c")]));
   await web.createWeb({ order: { search: ["firecrawl"], fetch: [] }, keys: { firecrawl: KEY }, send: { firecrawl: one.send } }).search({ objective: OBJECTIVE, queries: ["widgets"] }, { n: 2 });
-  assert.deepEqual(one.sent.map(({ body }) => body), [{ query: "widgets", limit: 2, scrapeOptions: SCRAPE }], "one query: one request of limit n");
+  assert.deepEqual(one.sent.map(({ body }) => body), [{ query: "widgets", limit: 2, scrapeOptions: KEYED_SCRAPE }], "one query: one request of limit n");
 });
 
 test("keyed Firecrawl's failures: some requests failing answers the merged rest and hands the quota met to the breaker; every one failing, a limit among them, answers the breaker's words, the receipt the first, typed", async () => {
