@@ -197,6 +197,57 @@ describe("Agent Factory page", () => {
       // Both scopes, read once more, well inside the board's 10 seconds.
       expect(listFactoryRuns.mock.calls.length).toBe(before + 2);
     });
+
+    it("reads the board again when the open run starts and when it ends, not at the board's next 10 seconds", async () => {
+      // Only the timers the test moves run: the board's 10 s read never comes, so every board read below is the run's.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+      const runs: Run[] = [asking("asks"), makeRun("works")];
+      const ended = (run: Run) => ["completed", "failed", "cancelled"].includes(run.status);
+      const listFactoryRuns = vi.fn(async (scope: "active" | "review") => ({ scope, observed_at: at, runs: scope === "active" ? runs.filter((run) => !ended(run)) : [], next_cursor: null } as FactoryRunPage));
+      // The open run's timeline: its first page as recorded, then each later read waits until the test moves the run.
+      const waiting: ((page: unknown) => void)[] = [];
+      let first = true;
+      const page = (status: string, state: string, final = false) => ({ ...waitingTimeline.body, run_id: "asks", status, state, rows: [], reset: false, drop: [], unchanged: false, has_more: false, final });
+      const v2 = {
+        listFactoryRuns, sendMessage: vi.fn(async () => ({})),
+        getRun: async (id: string) => runs.find((run) => run.run_id === id)!, listFiles: async (id: string) => ({ run_id: id, files: [], complete: true, truncated: false }),
+        getTimeline: (id: string) => {
+          if (id !== "asks") return Promise.resolve({ ...page("working", "working", true), run_id: id });
+          if (first) { first = false; return Promise.resolve({ ...waitingTimeline.body, run_id: id, final: false, has_more: false }); }
+          return new Promise((resolve) => { waiting.push(resolve); });
+        },
+        listRevisions: async () => ({ revisions: [], next_cursor: null }), harnesses: async () => ({ harnesses: [{ id: "pi", available: true, steer: true }] }),
+      };
+      const tick = async (ms = 0) => { for (let i = 0; i < 8; i++) await act(async () => { await vi.advanceTimersByTimeAsync(i ? 0 : ms); }); };
+      const el = host();
+      await act(async () => root!.render(createElement(AgentFactoryPage, { v2: v2 as never, agentName, go: vi.fn(), place: { repository: "all", control: "all", session: "asks" }, caps: { features: { messages: messageFeatures }, harnesses: [{ id: "pi", available: true, steer: true }] } })));
+      await tick();
+      const totals = () => el.querySelector('[aria-label="Loaded active session totals"]')?.textContent ?? "";
+      expect(totals()).toContain("2 active sessions loaded");
+      // The panel's first look at the run is no move: the board is read once, for itself.
+      expect(listFactoryRuns.mock.calls.length).toBe(2);
+      // The answer is sent; the board is read at once for it (the case above), and the run has not moved yet.
+      const field = el.querySelector<HTMLTextAreaElement>('aside[aria-label="Session"] textarea')!;
+      await act(async () => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, "USD"); field.dispatchEvent(new Event("input", { bubbles: true })); });
+      await act(async () => { field.closest("form")!.requestSubmit(); });
+      await tick();
+      const sent = listFactoryRuns.mock.calls.length;
+      expect(waiting.length, "the panel follows the run's timeline").toBeGreaterThan(0);
+
+      // The run starts working on the answer: its timeline says so, and the board is read again for it.
+      runs[0] = { ...runs[0], status: "working", state: "working", pending: null } as unknown as Run;
+      await act(async () => { waiting.at(-1)!(page("working", "working")); });
+      await tick();
+      expect(listFactoryRuns.mock.calls.length, "the board is read when the run starts").toBe(sent + 2);
+
+      // The run ends: the board drops it from the active sessions without waiting for its 10 seconds.
+      runs[0] = { ...runs[0], status: "completed", state: "idle", ended_at: at } as unknown as Run;
+      await tick(waitingTimeline.body.poll_after_ms);
+      await act(async () => { waiting.at(-1)!(page("completed", "idle", true)); });
+      await tick();
+      expect(listFactoryRuns.mock.calls.length, "the board is read when the run ends").toBe(sent + 4);
+      expect(totals()).toContain("1 active sessions loaded");
+    });
   });
 });
 

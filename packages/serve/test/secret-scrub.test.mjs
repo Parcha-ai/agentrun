@@ -3374,11 +3374,13 @@ test("LXXII: a camelCase credential name's unquoted value (YAML, Helm, a config 
 
 /** One rule's find on `text` alone, in the context the engine builds for a view (secret-cut.ts contextOf): the raw view,
  *  its line bounds, nothing held, `extra` (a call's command or path). Its hits, and the CPU time it took in ms. */
-const ruleAlone = async (id, text, extra = {}) => {
-  const { lineBounds } = await import("../dist/secret-rules.js");
+const ruleAlone = async (id, text, { command, ...extra } = {}) => {
+  const { lineBounds, commandFacts } = await import("../dist/secret-rules.js");
   const rule = SCRUB_RULES.find((each) => each.id === id);
   const [view] = secretCut.viewsOf(text);
-  const ctx = { held: [], source: view.source, homes: [], lint: async () => [], lines: lineBounds(view.text, ...view.decodedStrings, view.strings), ...extra };
+  // A command reaches the rules as its facts, made once, as scrubWith makes them (secret-cut.ts).
+  const facts = command === undefined ? {} : { facts: commandFacts(command) };
+  const ctx = { held: [], source: view.source, homes: [], lint: async () => [], lines: lineBounds(view.text, ...view.decodedStrings, view.strings), ...facts, ...extra };
   const before = process.cpuUsage();
   const hits = await rule.find(view.text, ctx);
   const used = process.cpuUsage(before);
