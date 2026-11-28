@@ -206,14 +206,51 @@ test("a run of a workspace's agent with checkout: repository fetches anonymously
   assert.equal((await fauxState(server)).minted, before, "no checkout of a workspace's run used the operator's App");
 });
 
-test("on an API-only server with a launch hook, a workspace's scan starts no run of its own: the host starts a workspace's runs, under its metered key", { timeout: 120_000 }, async (t) => {
+/** An API-only server whose host starts a workspace's runs (a launch hook), and the hook's receiver. */
+async function hostedServer(t) {
   const { hookServer } = await import("./trigger-support.mjs");
   const { mintSecret } = await import("../dist/standard-webhooks.js");
   const hook = await hookServer(t);
   const server = await serve(t, { faux: SCOUT, fauxGitHub: true, publicUrl: "https://agents.example.test", apiOnly: true, launchHook: { url: hook.url, secret: mintSecret() }, tokens: [{ id: "v2", token: SCOPED }, { id: "ops", token: OPERATOR }], workspaceTokens: ["v2"] });
+  return { server, hook };
+}
+
+test("on an API-only server with a launch hook, a workspace's scan without start: host is 409 agent_not_runnable, with nothing started or applied", { timeout: 120_000 }, async (t) => {
+  const { server, hook } = await hostedServer(t);
   const refused = await inW1(server, "POST", "/suggestions/scans", { body: { repo: REPO } });
-  assert.ok(refused.status >= 400 && refused.status < 500, `refused before anything starts: ${refused.text}`);
+  assert.equal(refused.status, 409, refused.text);
+  assert.equal(refused.body.error.code, "agent_not_runnable");
   assert.deepEqual((await inW1(server, "GET", "/runs")).body.runs, [], "no run was started");
   assert.deepEqual((await inW1(server, "GET", "/agents")).body.agents, [], "no scout was applied");
   assert.equal(hook.got.length, 0, "nothing was handed to the hook");
+  // The operator's own scan, unscoped, starts its run here as before.
+  const operators = await send(server, "POST", "/suggestions/scans", { token: OPERATOR, body: { repo: REPO } });
+  assert.equal(operators.status, 202, operators.text);
+});
+
+test("there, a workspace's scan is reserved with start: host, the run its host starts is bound once, and another workspace's bind is the unknown run's 404", { timeout: 180_000 }, async (t) => {
+  const { server } = await hostedServer(t);
+  const reserved = await inW1(server, "POST", "/suggestions/scans", { body: { repo: REPO, start: "host" } });
+  assert.equal(reserved.status, 200, reserved.text);
+  assert.equal(reserved.body.status, "starting");
+  assert.deepEqual((await inW1(server, "GET", "/runs")).body.runs, [], "the reserve starts nothing");
+  // The host starts the scout's run with the input it was answered.
+  const run = await inW1(server, "POST", `/agents/${reserved.body.agent_id}/runs`, { body: { input: reserved.body.input } });
+  assert.equal(run.status, 202, run.text);
+  const runId = run.body.run_id;
+  // Another workspace binding it, with the reservation's own token, is the unknown run's 404 there.
+  const foreign = await inW2(server, "POST", "/suggestions/scans", { body: { repo: REPO, run_id: runId, scan: reserved.body.scan } });
+  const unknown = await inW2(server, "POST", "/suggestions/scans", { body: { repo: REPO, run_id: missingLike(runId), scan: reserved.body.scan } });
+  assert.equal(foreign.status, 404, foreign.text);
+  assert.equal(shape(foreign, runId), shape(unknown, missingLike(runId)));
+  const bound = await inW1(server, "POST", "/suggestions/scans", { body: { repo: REPO, run_id: runId, scan: reserved.body.scan } });
+  assert.equal(bound.status, 202, bound.text);
+  assert.deepEqual(bound.body, { repo: REPO, run_id: runId, agent_id: reserved.body.agent_id, status: "running", already_running: false });
+  const again = await inW1(server, "POST", "/suggestions/scans", { body: { repo: REPO, run_id: runId, scan: reserved.body.scan } });
+  assert.deepEqual([again.status, again.body], [202, bound.body], "the same bind answers the same");
+  // The bound scan is read as any other: its suggestions are W1's.
+  const listed = await scanned(server, W1);
+  assert.equal(listed.repositories.find((r) => r.repo === REPO).scan.run_id, runId);
+  assert.ok(listed.suggestions.length > 0, JSON.stringify(listed));
+  assert.deepEqual((await inW2(server, "GET", "/suggestions")).body.suggestions, []);
 });
