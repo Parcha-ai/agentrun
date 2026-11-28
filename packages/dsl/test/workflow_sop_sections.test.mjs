@@ -31,3 +31,18 @@ test("one missing section among several fails the node instead of narrowing its 
   await assert.rejects(runWorkflowSlice(wf(["ONE", "FOUR"]), { question: "q" }, { from: "judge" }, deps), /sopSection "FOUR" matches no/);
   assert.equal(calls, 0);
 });
+
+test("a sopSection gets the section whose heading is exactly that name, not an earlier heading containing it", async () => {
+  const seen = [];
+  const runNode = async ({ system }) => { seen.push(system.join("\n---\n")); return { total: 1 }; };
+  // An earlier heading that starts with the same words.
+  const prefixed = ["## Data sources", "sources rule", "## Data", "data rule", ""].join("\n");
+  await runWorkflowSlice(wf("Data"), { question: "q" }, { from: "judge" }, { sop: prefixed, runNode });
+  assert.match(seen[0], /data rule/);
+  assert.doesNotMatch(seen[0], /sources rule/);
+  // An earlier deeper heading inside another section.
+  const nested = ["## ONE", "### Data", "nested rule", "## Data", "data rule", ""].join("\n");
+  await runWorkflowSlice(wf("Data"), { question: "q" }, { from: "judge" }, { sop: nested, runNode });
+  assert.match(seen[1], /data rule/);
+  assert.doesNotMatch(seen[1], /nested rule/);
+});
