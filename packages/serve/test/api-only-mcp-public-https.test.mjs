@@ -217,38 +217,97 @@ test("a redirect is never followed under the mode: at the save it is 422 redirec
   assert.deepEqual(target.log, [], "the run's call followed no redirect");
 });
 
-test("a redirect is never followed in a workspace's sign-in discovery under the mode: the protected-resource metadata a 401 names, the authorization server's metadata, and the metadata the listing's own 401 probe reads each answer 307 to loopback, and loopback hears nothing", async (t) => {
-  // Where every redirect points: a server nothing else sends to, so any request it hears is a redirect followed.
-  const heardByTarget = [];
-  const target = createServer((req, res) => (heardByTarget.push(req.url), res.writeHead(404).end()));
-  await new Promise((resolve) => target.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => target.close(resolve)));
-  const away = `http://127.0.0.1:${target.address().port}/elsewhere`;
-  const ORIGIN = "https://disc.example.test";
-  let variant;
-  const heard = [];
-  const server = createServer((req, res) => {
-    heard.push(req.url);
-    const json = (body) => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(body));
-    if (req.url.startsWith("/.well-known/oauth-protected-resource")) return variant === "authorization server metadata" ? json({ resource: `${ORIGIN}/mcp`, authorization_servers: [`${ORIGIN}/as`] }) : res.writeHead(307, { location: away }).end();
-    if (req.url.startsWith("/.well-known/oauth-authorization-server") || req.url.startsWith("/.well-known/openid-configuration") || req.url.startsWith("/as/.well-known/")) return variant === "authorization server metadata" ? res.writeHead(307, { location: away }).end() : res.writeHead(404).end();
-    res.writeHead(401, { "www-authenticate": variant === "the listing's 401 probe" ? "Bearer" : `Bearer resource_metadata="${ORIGIN}/.well-known/oauth-protected-resource/mcp"` }).end();
+/** A network whose transport follows a redirect as a real one does unless told `redirect: "manual"`: it looks the
+ *  Location's name up and dials that address, recorded in `dialled` like any request. `answer(url, init)` is what each
+ *  host answers; a name in `names` with no answer there is never reached. */
+function following(names, answer) {
+  const dialled = [];
+  const looked = [];
+  const lookup = async (host) => {
+    looked.push(host);
+    const found = names[host];
+    if (!found) throw Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`), { code: "ENOTFOUND" });
+    return typeof found === "function" ? found() : found;
+  };
+  const reach = async (url, init = {}, address) => {
+    dialled.push([url, address]);
+    const res = await answer(new URL(url), init);
+    if (res.status >= 300 && res.status < 400 && (init.redirect ?? "follow") === "follow") {
+      const next = new URL(res.headers.get("location"), url);
+      return reach(next.href, init, (await lookup(next.hostname))[0]);
+    }
+    return res;
+  };
+  return { dialled, looked, lookup, fetch: reach, dial: reach, local: () => [] };
+}
+
+test("a redirect to a host the owner allows on a private network is never followed from a workspace's mode server: a run's later tools/call, the save, the preview by url and by name, the refresh, the protected-resource metadata a 401 names, the authorization server's metadata and the listing's own 401 probe each answer 302 there, and the private address is never dialled", async (t) => {
+  const fake = await startFakeMcp();
+  t.after(() => fake.close());
+  const base = fake.url.replace(/\/mcp$/, "");
+  const ORIGIN = "https://hop.example.test";
+  const INSIDE = "10.20.30.40";
+  const away = { status: 302, headers: { location: "https://inside.example.test/took" } };
+  let variant = "none";
+  let bounced = 0;
+  const reply = ({ status, headers = {}, body = null }) => new Response(body, { status, headers });
+  const proxied = (url, init) => fetch(`${base}${url.pathname}${url.search}`, { ...init, redirect: "manual" });
+  const bounce = () => (bounced += 1, reply(away));
+  const network = following({ "hop.example.test": [PUBLIC], "inside.example.test": [INSIDE] }, async (url, init) => {
+    if (url.hostname !== "hop.example.test") return reply({ status: 200, body: "inside" });
+    const metadata = url.pathname.startsWith("/.well-known/oauth-protected-resource");
+    const asMetadata = /^\/(as\/)?\.well-known\/(oauth-authorization-server|openid-configuration)/.test(url.pathname) || url.pathname.startsWith("/.well-known/oauth-authorization-server") || url.pathname.startsWith("/.well-known/openid-configuration");
+    switch (variant) {
+      case "a run's later tools/call":
+        return typeof init.body === "string" && init.body.includes('"tools/call"') ? bounce() : proxied(url, init);
+      case "the save": case "the preview by url": case "the preview by name": case "the refresh":
+        return bounce();
+      case "protected-resource metadata":
+        if (metadata) return bounce();
+        return asMetadata ? reply({ status: 404 }) : reply({ status: 401, headers: { "www-authenticate": `Bearer resource_metadata="${ORIGIN}/.well-known/oauth-protected-resource/mcp"` } });
+      case "authorization server metadata":
+        if (metadata) return reply({ status: 200, headers: { "content-type": "application/json" }, body: JSON.stringify({ resource: `${ORIGIN}/mcp`, authorization_servers: [`${ORIGIN}/as`] }) });
+        return asMetadata ? bounce() : reply({ status: 401, headers: { "www-authenticate": `Bearer resource_metadata="${ORIGIN}/.well-known/oauth-protected-resource/mcp"` } });
+      case "the listing's 401 probe":
+        return metadata ? bounce() : asMetadata ? reply({ status: 404 }) : reply({ status: 401, headers: { "www-authenticate": "Bearer" } });
+      default:
+        return proxied(url, init);
+    }
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-  const network = routed({ "disc.example.test": [PUBLIC] }, { "disc.example.test": `http://127.0.0.1:${server.address().port}` });
-  const { registry } = await registryOn(t, network);
+  const { store, dir, registry } = await registryOn(t, network);
+  await savePrivateOAuthHosts(store, ["hop.example.test", "inside.example.test"]);
+  await savedInW1(registry, "srv", `${ORIGIN}/mcp`);
+  const { call } = await w1Run(t, store, dir, network, "srv", `${ORIGIN}/mcp`);
+  const preview = (body) => inWorkspace(W1, () => registry.preview(body, undefined, true));
+  const refused = (code, reason) => async (request) => {
+    try {
+      await request();
+      return "answered";
+    } catch (error) {
+      return error.code === code && (reason === undefined || error.extra.fields?.[0]?.reason === reason) ? "refused" : `${error.code}: ${error.message}`;
+    }
+  };
+  const viaRedirect = refused("input_invalid", "redirect");
+  const signIn = refused("auth_required");
+  const cases = [
+    ["a run's later tools/call", async () => ((await call("call-hop")).isError === true ? "refused" : "answered")],
+    ["the save", () => viaRedirect(() => savedInW1(registry, "again", `${ORIGIN}/mcp`))],
+    ["the preview by url", () => viaRedirect(() => preview({ url: `${ORIGIN}/mcp`, auth: { type: "per_run" } }))],
+    ["the preview by name", () => viaRedirect(() => preview({ name: "srv" }))],
+    ["the refresh", () => viaRedirect(() => inWorkspace(W1, () => registry.refresh("srv")))],
+    ["protected-resource metadata", () => signIn(() => preview({ url: `${ORIGIN}/mcp`, auth: { type: "per_run" } }))],
+    ["authorization server metadata", () => signIn(() => preview({ url: `${ORIGIN}/mcp`, auth: { type: "per_run" } }))],
+    ["the listing's 401 probe", () => signIn(() => preview({ url: `${ORIGIN}/mcp`, auth: { type: "per_run" } }))],
+  ];
   const seen = [];
-  for (const [name, asked] of [["protected-resource metadata", /^\/\.well-known\/oauth-protected-resource/], ["authorization server metadata", /^\/(as\/)?\.well-known\/(oauth-authorization-server|openid-configuration)/], ["the listing's 401 probe", /^\/\.well-known\/oauth-protected-resource/]]) {
+  for (const [name, run] of cases) {
     variant = name;
-    heard.length = 0;
-    await assert.rejects(inWorkspace(W1, () => registry.preview({ url: `${ORIGIN}/mcp`, auth: { type: "per_run" } }, undefined, true)), (error) => {
-      assert.equal(error.code, "auth_required", `${name}: ${error.message}`);
-      return true;
-    });
-    seen.push({ name, asked: heard.some((path) => asked.test(path)), followed: heardByTarget.splice(0).length });
+    bounced = 0;
+    const from = network.dialled.length;
+    const outcome = await run();
+    seen.push({ name, redirected: bounced > 0, privateDials: network.dialled.slice(from).filter(([, address]) => address === INSIDE).length, outcome });
   }
-  assert.deepEqual(seen, ["protected-resource metadata", "authorization server metadata", "the listing's 401 probe"].map((name) => ({ name, asked: true, followed: 0 })));
+  assert.deepEqual(seen, cases.map(([name]) => ({ name, redirected: true, privateDials: 0, outcome: "refused" })));
 });
 
 /** A W1 agent whose revision pins `name`'s add (as W1's row lists it), a run of it handed its own per_run header, claimed
