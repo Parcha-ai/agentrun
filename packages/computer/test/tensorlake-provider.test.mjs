@@ -9,6 +9,7 @@
 // (hosted-provider.test.mjs); Tensorlake's own is proven live.
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -544,6 +545,131 @@ test("an enable that names no host key (null, or the field left out) is refused 
 		assert.equal(daemon.fake.sshd.state.logins, 0, `${what}: no login reached the create's sshd`);
 		assert.deepEqual(daemon.fake.sshd.commands, [], `${what}: no command reached the create's sshd`);
 		assert.deepEqual(machines.uploads, [], `${what}: no daemon went up`);
+	}
+});
+
+// Each pin layer on its own. A copy of this package's dist, imported under ?stub=<marker>, has one guard rewritten out
+// as it loads (STUBS); the tests' own imports are the dist as built. Each stub must match exactly once, so a rewrite
+// that no longer finds its guard fails rather than testing nothing.
+const DIST = new URL("../dist/", import.meta.url).href;
+const STUBS = new Map([
+	// #enable without its refusal: a missing fingerprint goes on to the login as its host key.
+	["no-enable-guard", { file: "tensorlake.js", from: /if \(fingerprint === undefined \|\| fingerprint === null\)\s*throw new HostError\("vendor", `\$\{where\} answered no host key fingerprint[^`]*`\);/g, to: "if (fingerprint === undefined || fingerprint === null) return { hostKey: fingerprint };", hits: 0 }],
+	// SshExec without its refusal: a pinned login with no host key goes on to its tunnel.
+	["no-ssh-guard", { file: "hosted/ssh-exec.js", from: /if \(this\.#pinned && !\(typeof hostKey === "string" && HOST_KEY_PIN\.test\(hostKey\)\)\) \{/g, to: "if (false) {", hits: 0 }],
+]);
+const markerOf = (url) => (url?.startsWith(DIST) ? new URL(url).searchParams.get("stub") : null);
+registerHooks({
+	resolve(specifier, context, next) {
+		const found = next(specifier, context);
+		const marker = markerOf(context.parentURL);
+		return marker && found.url.startsWith(DIST) && !found.url.includes("?") ? { ...found, url: `${found.url}?stub=${marker}` } : found;
+	},
+	load(url, context, next) {
+		const loaded = next(url, context);
+		const stub = STUBS.get(markerOf(url));
+		if (stub === undefined || new URL(url).pathname !== new URL(stub.file, DIST).pathname) return loaded;
+		return { ...loaded, source: String(loaded.source).replace(stub.from, () => (stub.hits++, stub.to)) };
+	},
+});
+/** The dist's tensorlake.js and hosted/ssh-exec.js with the marker's guard taken out, and that it was, once. */
+async function stubbed(marker) {
+	const [tensorlake, ssh] = await Promise.all([import(`${DIST}tensorlake.js?stub=${marker}`), import(`${DIST}hosted/ssh-exec.js?stub=${marker}`)]);
+	assert.equal(STUBS.get(marker).hits, 1, `the ${marker} stub found its guard once`);
+	return { ...tensorlake, ...ssh };
+}
+/** ssh2 that counts its clients: SshExec makes one only past its guard, to log in. */
+function countedSsh2(ssh2) {
+	const count = { clients: 0 };
+	return { count, ssh2: { ...ssh2, Client: class extends ssh2.Client { constructor(...args) { super(...args); count.clients++; } } } };
+}
+/** Every count of a byte reaching the sandbox: the proxy's tunnels, the sshd's connections, logins and commands. */
+const reached = (fake) => ({ tunnels: fake.ws.opened.length, connections: fake.sshd.state.connections, logins: fake.sshd.state.logins, commands: fake.sshd.commands.length });
+const NONE = { tunnels: 0, connections: 0, logins: 0, commands: 0 };
+
+test("the pin's SshExec layer alone: a pinned SshExec with no host key, called straight or behind an enable whose refusal is taken out, refuses before any byte reaches the sandbox (no tunnel, connection, ssh2 client, login, command or upload); so the flag reaches SshExec from Tensorlake", async (t) => {
+	const { SshExec } = await import("../dist/hosted/ssh-exec.js");
+	const { tunnelOf: wsTunnel } = await import("../dist/hosted/ws-tunnel.js");
+	const SSH_REASON = /names no host key \(SHA256:\.\.\.\) to pin/;
+	// Straight: SshExec over the proxy's tunnel to the fake sshd, the way Tensorlake's host builds it.
+	const { fake, host } = await setup(t);
+	const { id } = await host.create(request(), CTX);
+	const counted = countedSsh2(fake.options.ssh2);
+	let tunnels = 0;
+	const tunnelTo = (one) => {
+		tunnels++;
+		const proxy = `${one}.${PROXY_DOMAIN}`;
+		const ws = new fake.ws.WebSocket(`wss://${proxy}/api/v1/tunnels/tcp?port=22`, { headers: { Authorization: `Bearer ${KEY}`, "X-Tensorlake-Sandbox-Id": one } });
+		ws.binaryType = "arraybuffer";
+		return { ...wsTunnel(ws, proxy, "the fake proxy"), host: proxy };
+	};
+	for (const hostKey of [undefined, null]) {
+		const ssh = new SshExec({ ssh2: counted.ssh2, pinned: true, loginOf: () => ({ username: "tl-user", privateKey: keyPair().private, hostKey }), tunnelOf: tunnelTo });
+		const outcome = await ssh.exec(id, ["true"], CTX).then(() => "it ran", (error) => error);
+		assert.deepEqual({ ...reached(fake), tunnelOf: tunnels, clients: counted.count.clients }, { ...NONE, tunnelOf: 0, clients: 0 }, `straight, ${hostKey}: nothing reached the sandbox`);
+		assert.ok(outcome instanceof Error && outcome.code === "vendor" && SSH_REASON.test(outcome.message), `straight, ${hostKey}: ${outcome}`);
+	}
+
+	// Behind Tensorlake's host, with the enable's refusal taken out: the login carries no host key, and SshExec alone stops it.
+	const { TensorlakeProvider: Unguarded } = await stubbed("no-enable-guard");
+	for (const fingerprint of [null, undefined]) {
+		const what = fingerprint === null ? "null" : "left out";
+		const lone = await fakeTensorlake();
+		t.after(() => lone.sshd.close());
+		const ssh2 = countedSsh2(lone.options.ssh2);
+		const bare = new Unguarded({ ...lone.options, ssh2: ssh2.ssh2, timeouts: { pollMs: 1 } }).host;
+		const made = await bare.create(request(), CTX);
+		lone.rest.ssh.fingerprint = fingerprint;
+		const outcome = await bare.exec(made.id, ["true"], CTX).then(() => "it ran", (error) => error);
+		assert.equal(enables(lone.rest).length, 1, `${what}: the enable answered, and its missing key went on to the login`);
+		assert.deepEqual({ ...reached(lone), clients: ssh2.count.clients }, { ...NONE, clients: 0 }, `${what}: nothing reached the sandbox`);
+		assert.ok(outcome instanceof Error && outcome.code === "vendor" && SSH_REASON.test(outcome.message), `${what}: SshExec's refusal, ${outcome}`);
+
+		const machines = fakeHost();
+		const daemon = await fakeTensorlake({ backend: machines.host });
+		t.after(() => daemon.sshd.close());
+		const counted2 = countedSsh2(daemon.options.ssh2);
+		const provider = new Unguarded({ ...daemon.options, ssh2: counted2.ssh2, timeouts: TIMEOUTS, daemonPath: DAEMON_PATH });
+		daemon.rest.ssh.fingerprint = fingerprint;
+		const create = await provider.create({ image: IMAGE, lifetimeMs: 600_000, network: "none" }, { requestId: `tensorlake-ssh-layer-${what}` });
+		assert.deepEqual({ ...reached(daemon), clients: counted2.count.clients, uploads: machines.uploads.length }, { ...NONE, clients: 0, uploads: 0 }, `${what}: the create reached nothing`);
+		assert.equal(create.ok, false, `${what}: the create fails`);
+		assert.match(create.error.message, SSH_REASON, what);
+	}
+});
+
+test("the pin's enable layer alone: with SshExec's refusal taken out (shown live: a pinned login with no host key then opens its tunnel), an enable that names no host key still refuses before any byte reaches the sandbox (no tunnel, connection, ssh2 client, login, command or upload)", async (t) => {
+	const NAMED = /POST \/api\/v1\/ssh\/enable on \S+ answered no host key fingerprint/;
+	const { TensorlakeProvider: Unguarded, SshExec: Unpinned } = await stubbed("no-ssh-guard");
+	// The stub is live: this SshExec, pinned with no host key, goes on to its tunnel.
+	let tunnels = 0;
+	const control = new Unpinned({ ssh2: { Client: class {} }, pinned: true, loginOf: () => ({ username: "u" }), tunnelOf: () => (tunnels++, assert.fail("counted")) });
+	await control.exec("m1", ["true"], { timeoutMs: 1_000 }).catch(() => {});
+	assert.ok(tunnels >= 1, "with SshExec's refusal taken out, a pinned login with no host key reaches its tunnel");
+
+	for (const fingerprint of [null, undefined]) {
+		const what = fingerprint === null ? "null" : "left out";
+		const lone = await fakeTensorlake();
+		t.after(() => lone.sshd.close());
+		const ssh2 = countedSsh2(lone.options.ssh2);
+		const host = new Unguarded({ ...lone.options, ssh2: ssh2.ssh2, timeouts: { pollMs: 1 } }).host;
+		const made = await host.create(request(), CTX);
+		lone.rest.ssh.fingerprint = fingerprint;
+		const outcome = await host.exec(made.id, ["true"], CTX).then(() => "it ran", (error) => error);
+		assert.equal(enables(lone.rest).length, 1, `${what}: one enable, answered`);
+		assert.deepEqual({ ...reached(lone), clients: ssh2.count.clients }, { ...NONE, clients: 0 }, `${what}: nothing reached the sandbox, and SshExec made no login`);
+		assert.ok(outcome instanceof Error && outcome.code === "vendor" && NAMED.test(outcome.message), `${what}: the enable's refusal, ${outcome}`);
+
+		const machines = fakeHost();
+		const daemon = await fakeTensorlake({ backend: machines.host });
+		t.after(() => daemon.sshd.close());
+		const counted = countedSsh2(daemon.options.ssh2);
+		const provider = new Unguarded({ ...daemon.options, ssh2: counted.ssh2, timeouts: TIMEOUTS, daemonPath: DAEMON_PATH });
+		daemon.rest.ssh.fingerprint = fingerprint;
+		const create = await provider.create({ image: IMAGE, lifetimeMs: 600_000, network: "none" }, { requestId: `tensorlake-enable-layer-${what}` });
+		assert.deepEqual({ ...reached(daemon), clients: counted.count.clients, uploads: machines.uploads.length }, { ...NONE, clients: 0, uploads: 0 }, `${what}: the create reached nothing`);
+		assert.equal(create.ok, false, `${what}: the create fails`);
+		assert.match(create.error.message, NAMED, what);
 	}
 });
 
