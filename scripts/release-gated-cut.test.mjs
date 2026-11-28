@@ -84,7 +84,9 @@ test('the verdict: the same tree passes, the release\'s own files pass, anything
 function repository(t) {
   const dir = mkdtempSync(join(tmpdir(), 'gated-cut-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_AUTHOR_NAME: 'r', GIT_AUTHOR_EMAIL: 'r@example.invalid', GIT_COMMITTER_NAME: 'r', GIT_COMMITTER_EMAIL: 'r@example.invalid' };
+  // CI's own GitHub settings stay out: the child would ask GitHub about this repository's commits, or write CI's summary.
+  const { GITHUB_REPOSITORY, GH_TOKEN, GITHUB_TOKEN, GITHUB_STEP_SUMMARY, ...outside } = process.env;
+  const env = { ...outside, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_AUTHOR_NAME: 'r', GIT_AUTHOR_EMAIL: 'r@example.invalid', GIT_COMMITTER_NAME: 'r', GIT_COMMITTER_EMAIL: 'r@example.invalid' };
   const git = (...args) => execFileSync('git', args, { cwd: dir, env, encoding: 'utf8' }).trim();
   const write = (path, text) => { mkdirSync(dirname(join(dir, path)), { recursive: true }); writeFileSync(join(dir, path), text); };
   const commit = (message, files, removed = []) => {
