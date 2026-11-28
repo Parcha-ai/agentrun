@@ -29,9 +29,20 @@ const label = (file, job) => {
 
 const names = (title, tag) => (title ?? '').split(/\s+/).includes(tag);
 
-/** The runs that walked the tag: at its commit, or after its publish with the tag in the run's name. */
+/** The runs that walked the tag: at its commit, or after its publish with the tag in the run's name. A post-publish run
+ *  counts only by its name: its own sha is main's tip when it started, which a later tag may name. */
 export function runsAtTag(runs, { tag, sha }) {
-  return runs.filter((r) => r.head_sha === sha || (r.event === 'workflow_run' && names(r.display_title, tag)));
+  return runs.filter((r) => (r.event === 'workflow_run' ? names(r.display_title, tag) : r.head_sha === sha));
+}
+
+/** Every page of a GitHub list (`key` in each page's answer), 100 at a time, until a short page. */
+export function allPages(get, path, key) {
+  const all = [];
+  for (let page = 1; ; page += 1) {
+    const items = get(`${path}${path.includes('?') ? '&' : '?'}per_page=100&page=${page}`)[key];
+    all.push(...items);
+    if (items.length < 100) return all;
+  }
 }
 
 /** The run a walk is judged by: the latest that finished green, else the latest. */
@@ -79,11 +90,11 @@ if (isMain(import.meta)) {
   const sha = object.sha;
   const byFile = {};
   for (const { file } of WALKS) {
-    const at = gh(`${repo}/actions/workflows/${file}/runs?head_sha=${sha}&per_page=100`).workflow_runs;
-    const after = gh(`${repo}/actions/workflows/${file}/runs?event=workflow_run&per_page=100`).workflow_runs;
+    const at = allPages(gh, `${repo}/actions/workflows/${file}/runs?head_sha=${sha}`, 'workflow_runs');
+    const after = allPages(gh, `${repo}/actions/workflows/${file}/runs?event=workflow_run`, 'workflow_runs');
     const run = best(runsAtTag([...at, ...after.filter((r) => !at.some((a) => a.id === r.id))], { tag, sha }));
     const failed = run && run.status === 'completed' && run.conclusion !== 'success'
-      ? gh(`${repo}/actions/runs/${run.id}/jobs?per_page=100`).jobs.filter((j) => j.conclusion === 'failure').map((j) => j.name)
+      ? allPages(gh, `${repo}/actions/runs/${run.id}/jobs`, 'jobs').filter((j) => j.conclusion === 'failure').map((j) => j.name)
       : [];
     byFile[file] = { run, failed };
   }

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { parse } from 'yaml';
-import { KNOWN, WALKS, best, report, runsAtTag } from './walks-at-tag.mjs';
+import { KNOWN, WALKS, allPages, best, report, runsAtTag } from './walks-at-tag.mjs';
 
 const workflowAt = (file) => parse(readFileSync(new URL(`../.github/workflows/${file}`, import.meta.url), 'utf8'));
 const TAG = 'v0.1.0-beta.68';
@@ -15,7 +15,7 @@ test('the walks are the workflows that walk a way in, each a file in .github/wor
   for (const { file } of WALKS) assert.ok(workflowAt(file).jobs, file);
 });
 
-test("a run walked the tag when it ran at the tag's commit, or after the tag's publish with the tag in its name; never a run of main's tip that names another tag", () => {
+test("a run walked the tag when it ran at the tag's commit, or after the tag's publish with the tag in its name; a post-publish run only by its name, never by its own sha", () => {
   const runs = [
     run({ id: 1 }),
     run({ id: 2, head_sha: MAIN, event: 'workflow_run', display_title: `Ways in at ${TAG}` }),
@@ -23,8 +23,25 @@ test("a run walked the tag when it ran at the tag's commit, or after the tag's p
     run({ id: 4, head_sha: MAIN, event: 'schedule', display_title: 'Ways in daily' }),
     run({ id: 5, head_sha: MAIN, event: 'workflow_run', display_title: `Ways in at ${TAG}0` }),
     run({ id: 6, head_sha: MAIN, event: 'push', display_title: `Ways in at ${TAG}` }),
+    // Another release's post-publish walk, run while main's tip was the commit this tag later named: its own sha is
+    // that commit, but it walked (and names) the other release.
+    run({ id: 7, head_sha: SHA, event: 'workflow_run', display_title: 'Ways in at v0.1.0-beta.67' }),
   ];
   assert.deepEqual(runsAtTag(runs, { tag: TAG, sha: SHA }).map(({ id }) => id), [1, 2]);
+});
+
+test('every page of runs is read, not only the newest 100: an older tag finds its walks on a later page', () => {
+  const asked = [];
+  const pages = [Array.from({ length: 100 }, (_, i) => ({ id: i + 10 })), [{ id: 3 }]];
+  const get = (path) => {
+    asked.push(path);
+    return { workflow_runs: pages[Number(/[?&]page=(\d+)/.exec(path)[1]) - 1] ?? [] };
+  };
+  const runs = allPages(get, 'repos/o/r/actions/workflows/ways-in-daily.yml/runs?event=workflow_run', 'workflow_runs');
+  assert.equal(runs.length, 101);
+  assert.ok(runs.some(({ id }) => id === 3));
+  assert.deepEqual(asked.map((p) => /[?&]page=(\d+)/.exec(p)[1]), ['1', '2']);
+  assert.ok(asked.every((p) => p.includes('per_page=100')));
 });
 
 test('the run a walk is judged by: the latest that finished green, else the latest', () => {
