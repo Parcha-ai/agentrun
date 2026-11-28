@@ -37,8 +37,10 @@ const redact = (line) => line.replace(/(AGENTRUN_API_KEY=)\S+/g, "$1<redacted>")
  *  has to be gone. */
 export const STOP_MS = 10_000;
 const KILLED_MS = 5_000;
-/** What a stopped server takes after its drain: its runs still in their turn stopped where they resume, and the server
- *  closed. The image leaves the same inside Docker's 10 s grace (its CMD's --drain-timeout 6s). */
+/** What a stopped server is given after its drain: its runs still in their turn stopped where they resume, and the server
+ *  closed. 4 s because it is the image's own margin: its CMD's --drain-timeout 6s inside Docker's 10 s grace, the same
+ *  10 s as STOP_MS (packages/serve/docker/Dockerfile). The stop after the drain takes about 0.2 s here
+ *  (harness-stop.test.mjs). */
 const AFTER_DRAIN_MS = 4_000;
 /** How long a stopped server lets a run still in its turn finish it (--drain-timeout) before it stops it to resume: inside
  *  STOP_MS with what the stop takes after it, so a stop with a run in its turn is a drain, never the SIGKILL at STOP_MS.

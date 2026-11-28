@@ -18,7 +18,7 @@ import { spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { promiseHooks } from "node:v8";
-import { apiOf, attachServer, flowScope, launchBrowser, newContext, newPage, owner, ROOT, signIn, startServer, STOP_MS, strayed } from "./harness.mjs";
+import { apiOf, attachServer, DRAIN_MS, flowScope, launchBrowser, newContext, newPage, owner, ROOT, signIn, startServer, STOP_MS, strayed } from "./harness.mjs";
 import { flows } from "./flows/index.mjs";
 
 const FLOW_MS = 60_000;
@@ -112,20 +112,24 @@ async function runFlow(flow) {
       await context?.close().catch(() => {});
       // The server stops while the next flow starts: one with a run still in its turn waits out its drain (DRAIN_MS,
       // inside the harness's SIGKILL at STOP_MS), and nothing of the next flow is its. Results print once every one has stopped, and
-      // a stop that failed (the server would not die, left a process running, or its directory stayed) fails its flow.
-      // One that had to be killed (SIGKILL) passes, and is reported with its flow and counted.
+      // a stop that failed (the server would not die, left a process running, or its directory stayed) fails its flow,
+      // as does one that had to be killed (SIGKILL): a run left in its turn outlasted the server's drain (DRAIN_MS).
       if (server) stopping.push(server.stop().then((how) => { if (how?.killed) killed = how.pid; }, (error) => { unstopped = error; }));
       running.delete(self);
     }
   });
   // One that comes after it passed (while it was closed, or later in the run), fails it too, as does a server that did
-  // not stop: read once all have ended and stopped.
+  // not stop or had to be killed: read once all have ended and stopped.
   return () => {
     const r = result.state === "PASS" && strays.length ? { ...failed(strays[0]), ms: result.ms } : result;
     const k = killed ? { killed } : {};
-    if (!unstopped) return { ...r, ...k };
-    const note = `its server did not stop: ${unstopped.message}`;
-    return r.state === "PASS" ? { ...failed(unstopped), note, ms: r.ms } : { ...r, note: `${r.note}\n${note}` };
+    const why = [
+      ...(unstopped ? [`its server did not stop: ${unstopped.message}`] : []),
+      ...(killed ? [`its server (pid ${killed}) was still running ${STOP_MS / 1000} s after SIGTERM and was killed (SIGKILL): a run left in its turn kept it draining (the harness passes --drain-timeout ${DRAIN_MS / 1000}s, which a flow's own server args may override)`] : []),
+    ];
+    if (!why.length) return r;
+    const note = why.join("\n");
+    return r.state === "PASS" ? { ...failed(new Error(note)), note, ms: r.ms, ...k } : { ...r, note: `${r.note}\n${note}`, ...k };
   };
 }
 
@@ -157,8 +161,8 @@ for (const r of results) {
   if (r.state === "FAIL") console.log(`  ${r.note.replaceAll("\n", "\n  ")}\n  -- the server's output --\n  ${(r.log ?? "").replaceAll("\n", "\n  ")}`);
 }
 const count = (s) => results.filter((r) => r.state === s).length;
-// A server still running STOP_MS after SIGTERM (a run left in its turn, draining) was killed: the flow passes, but no
-// kill goes unsaid.
+// A server still running STOP_MS after SIGTERM (a run left in its turn, draining past DRAIN_MS) was killed: its flow
+// failed above, and each kill is said here too, with its flow and its server.
 const STOP_S = STOP_MS / 1000;
 const kills = results.filter((r) => r.killed);
 for (const r of kills) console.log(`KILLED  ${r.name}: its server (pid ${r.killed}) was still running ${STOP_S} s after SIGTERM and was killed (SIGKILL)`);
