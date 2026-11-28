@@ -61,7 +61,7 @@ test("a lost child (named, never made, or its row gone) counts as ended at the t
   assert.deepEqual(await learningWorkOf(storeOf(settings), "run-1", NOT_YET), { state: "ended", runs: [], ended_at: iso(T + 5), deadline_at: null }, "never made: ended, never running forever");
   const dropped = settingsStore();
   await noteLearningChild(dropped, "run-2", { run: null, kind: "replay", at: T + 9, keyed: true, dropped: "no_budget" });
-  assert.deepEqual(await learningWorkOf(storeOf(dropped), "run-2", { learns: true, compiling: false, compiled: true, endedAt: T + 3, compileBy: null }), { state: "ended", runs: [], ended_at: iso(T + 9), deadline_at: null }, "dropped: ended at the drop");
+  assert.deepEqual(await learningWorkOf(storeOf(dropped), "run-2", { learns: true, compiling: false, compiled: true, endedAt: T + 3, compileBy: null }), { state: "ended", runs: [], ended_at: iso(T + 9), deadline_at: null, dropped: [{ kind: "replay", reason: "no_budget", at: iso(T + 9), detail: "Skipped a check replay of its learned workflow: this run's cap left too little for it. Nothing was spent on it." }] }, "dropped: ended at the drop, and said in words");
   assert.deepEqual(await learningChildrenOf(dropped, "run-2"), [{ run: null, kind: "replay", at: T + 9, keyed: true, dropped: "no_budget" }]);
 });
 
@@ -124,7 +124,7 @@ test("deadline_at: null for none and ended, set while running (the compile turn'
   assert.equal(await read(after), iso(Math.max(T + 40 + LEARNING_CHILD_MS, COMPILE_BY + 5_000)));
   // Ended: null.
   for (const id of ["replay-a", "replay-b", "shadow-c"]) runs[id] = row(id, "stopped", { endedAt: T + 50 });
-  assert.deepEqual(await learningWorkOf(storeOf(settings, runs), "run-1", after), { state: "ended", runs: [], ended_at: iso(T + 50), deadline_at: null });
+  assert.deepEqual(await learningWorkOf(storeOf(settings, runs), "run-1", after), { state: "ended", runs: [], ended_at: iso(T + 50), deadline_at: null, dropped: [{ kind: "shadow", reason: "no_budget", at: iso(T + 25), detail: "Skipped the audit's shadow run: this run's cap left too little for it. Nothing was spent on it." }] });
 });
 
 test("keyedBesideOf: what keyed replays took beside their run, at cost once ended, at their cap while not; the shadow counted apart", async () => {

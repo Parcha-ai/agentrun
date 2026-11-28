@@ -4853,6 +4853,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     thinking: { type: "array", items: { type: "string" }, description: "The thinking levels an agentic revision may name.", "x-agentrun-serve": "serve/1" },
     learning: { enum: [...LEARNING_MODES], description: "This server's learning switch (`--learning`): `on`, a run of an agent whose definition says `learning: true` starts from what its agent learned and adds to it; `off`, no run this server starts does, whatever its agent says, and its `learning` is null.", "x-agentrun-serve": "learning/1" },
+    run_learning: { type: "boolean", description: "Whether POST /agents/{agent_id}/runs takes `learning: {settings?}`: the run learns for its agent with those loop numbers whatever its revision says, all its learning work on its own `model_key` inside its own `max_cost_usd` (else `400 learning_needs_cap`). True only while this server's learning is on; off, the object is `400 learning_off`.", "x-agentrun-serve": "runlearning/1" },
     browser_live: {
       type: "object", additionalProperties: false, required: ["read_only", "take_over", "ask"],
       properties: {
@@ -5143,6 +5144,32 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   // learning_work, which a caller's revoke reads on every run (learning-work.ts): never missing, `none` at the least.
   const runSchema = schemas.Run as Json & { required: string[] };
   runSchema.required = [...runSchema.required, "place", "learning_work"];
+  // runlearning/1: a run that asks to learn (POST /agents/{agent_id}/runs `learning: {settings?}`) with the loop numbers a
+  // definition's `learning` object takes, on its own key inside its own cap. Set after POST /runs' body copied the run
+  // fields, so an inline run keeps "use" alone. Its learning work says what dropped, in words (learning_work.dropped).
+  const definitionLearning = (schemas.DefinitionInput as Json & { properties: Record<string, Json & { oneOf: Json[] }> }).properties.learning!;
+  const useOnly = runCreate.properties.learning as Json & { description: string };
+  runCreate.properties.learning = {
+    oneOf: [
+      { enum: [RUN_LEARNING_USE] },
+      { type: "object", additionalProperties: false, properties: { settings: { ...structuredClone(definitionLearning.oneOf[1]!), description: "The loop numbers the run learns with, as an agent definition's `learning` object takes them (each optional: one left out is its default; `{}` or none, every default). They stand for this run in place of its revision's: when its job compiles (`compile_after`), the bar its draft's check must pass (`agree_min`, `alone_min`, `agree_on`), how often its served answer is audited (`audit_every`, ...), and the re-pick (`repick`). A follow-up keeps them." } } },
+    ],
+    description: `${useOnly.description.replace(/ 422 not_an_option for anything else\.$/, "")} An object \`{settings?}\` (\`capabilities.features.run_learning\`): the run learns for its agent with those loop numbers, whatever its revision's \`learning\` says (one that says none included), its corrections and learned workflows its agent's as for any run that learns. All of its learning work spends the run's own \`model_key\` inside its own \`max_cost_usd\`: its compile turn inside its claim, a check's replay runs each on its share of what the cap leaves (one that does not fit is dropped, nothing spent, \`learning_work.dropped\` says so), an audit's shadow on what is left after. Without both \`model_key\` and \`max_cost_usd\` it is \`400 learning_needs_cap\` and nothing starts or is stored; settings a definition's \`learning\` would refuse are 422 at \`learning.settings.<field>\`. On a server whose learning is off it is \`400 learning_off\` ("Learning is off on this server.") and nothing starts or is stored. The agent's own learning reads (its view's \`learning.pending\`, its learning loop and promotions, an owner's replay, an audit's hold) take the newer of its newest run that asked (from its start) and its current revision (from its save): a revision saved after that run wins, one that says no learning reading as not learning, until another run asks. A start whose ask can't be recorded for its agent is refused (5xx) and nothing is made. A run a trigger starts keeps its revision's. 422 not_an_option for anything else.`,
+    "x-agentrun-serve": "runlearning/1",
+  };
+  const learningWork = (schemas.Run as Json & { properties: Record<string, Json & { properties: Record<string, Json> }> }).properties.learning_work!;
+  learningWork.properties.dropped = {
+    type: "array",
+    items: closed({
+      kind: { enum: ["replay", "shadow"], description: "A learned workflow's check replay run, or an audit's shadow run." },
+      reason: { enum: ["no_budget"], description: "`no_budget`: what the run's cap left at its end was too little for it." },
+      at: { ...DATE_TIME, description: "When it dropped." },
+      detail: { type: "string", description: "Why, in a person's words; the run's timeline says the same in a `learning` row." },
+    }),
+    description: "Each piece of learning work this run dropped before it started, oldest first, nothing spent on it; absent when none did. Its timeline has a `learning` row for each (state `dropped`, its reason and words).",
+    "x-agentrun-serve": "runlearning/1",
+  };
+  fields.push("Run.learning_work.dropped");
   // An agent's own fields this server always sends (agents-store.ts agentView), on a read, a list and a write's answer.
   const agentSchema = schemas.Agent as Json & { required: string[] };
   agentSchema.required = [...agentSchema.required, ...AGENT_FIELDS_SENT];

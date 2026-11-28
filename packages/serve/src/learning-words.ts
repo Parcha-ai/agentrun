@@ -119,6 +119,11 @@ export const said = {
   /** The owner's correction would take corrections.md past its cap (learn/corrections.ts): `why`, the cap's words. */
   correctionsFull: (why: string) => `Not kept: ${why.replace(/\.$/, "")}.`,
   noBudget: "Skipped: no budget left in this run to write what it learned.",
+  /** A piece of learning work the run's cap left too little for (learning-work.ts, `no_budget`): dropped before it
+   *  started, nothing spent. */
+  childDropped: (kind: "replay" | "shadow") => kind === "replay"
+    ? "Skipped a check replay of its learned workflow: this run's cap left too little for it. Nothing was spent on it."
+    : "Skipped the audit's shadow run: this run's cap left too little for it. Nothing was spent on it.",
   unknownCost: "Skipped: this run's spend is unknown, so its budget can't cover writing what it learned.",
   stopped: (cause: string) => `Not kept: learning stopped (${cause}).`,
   /** A run whose learning seed predates a reset of its agent's learning (runner/learning-end.ts, reason `reset`). */

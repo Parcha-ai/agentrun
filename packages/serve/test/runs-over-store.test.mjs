@@ -14,6 +14,7 @@ const { sendCommand } = await import("../dist/runner/commands.js");
 const { momentOverStore } = await import("../dist/store-view.js");
 const { readLaunchBody, learningStartOf } = await import("../dist/run-launch.js");
 const { learnedSection } = await import("../dist/learning.js");
+const { agentRunLearningKey, askedLearningOf } = await import("../dist/agent-run-learning.js");
 
 const dirs = [];
 after(() => {
@@ -715,6 +716,56 @@ test("startRun records no learning for a non-learning run", async () => {
   // The same deps, but the revision does not learn.
   const run = await startRun(store, learningDeps({ pinnedOf: async () => ({ revision: revisionOf({ learning: false, tools: ["read"] }), version: 1 }) }), entryOf(), { input: { content: "hi" } });
   assert.equal(readLaunchBody((await store.runs.launch(run.id)).body).learning, undefined);
+});
+
+/** `store` with its settings writes (putIfAbsent, replaceIf) failing as a full disk would; its reads as they are. */
+const settingsWritesFail = (store) => {
+  const settings = new Proxy(store.settings, { get: (target, key) => (key === "putIfAbsent" || key === "replaceIf" ? async () => { throw new Error("disk full"); } : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
+  return new Proxy(store, { get: (target, key) => (key === "settings" ? settings : Reflect.get(target, key)) });
+};
+const ASKS = { input: { content: "hi" }, max_cost_usd: 1, learning: { settings: { compile_after: 1 } } };
+
+test("startRun of a run that asks to learn whose agent row can't be written refuses the start and makes no run", async () => {
+  const store = await freshStore();
+  await assert.rejects(startRun(settingsWritesFail(store), learningDeps(), entryOf(), ASKS), /disk full/, "the start is refused");
+  assert.deepEqual((await store.runs.list({ agentId: "a1" })).map((run) => run.id), [], "no run made");
+  assert.equal(await store.settings.get(agentRunLearningKey("a1")), undefined, "no row");
+});
+
+test("startRun of a run that asks to learn names it before it is made; a start that then makes no run puts the row it replaced back, and a row naming a run that does not exist reads as its revision's", async () => {
+  const store = await freshStore();
+  const first = await startRun(store, learningDeps(), entryOf(), ASKS);
+  const row = await store.settings.get(agentRunLearningKey("a1"));
+  assert.equal(row?.run, first.id, "the asking run is named");
+  // A start whose run is never made (its create refused): the row names the first run again.
+  const refusing = new Proxy(store, { get: (target, key) => (key === "runs" ? new Proxy(target.runs, { get: (runs, k) => (k === "create" ? async () => { throw new Error("create refused"); } : typeof runs[k] === "function" ? runs[k].bind(runs) : runs[k]) }) : Reflect.get(target, key)) });
+  await assert.rejects(startRun(refusing, learningDeps(), entryOf(), { ...ASKS, learning: { settings: { compile_after: 7 } } }), /create refused/);
+  assert.deepEqual(await store.settings.get(agentRunLearningKey("a1")), row, "the row it replaced is back");
+  // A row naming a run that does not exist: the agent reads as its revision says.
+  await store.settings.put(agentRunLearningKey("a1"), { run: "no-such-run", at: Date.now() });
+  assert.equal(await askedLearningOf(store, "a1"), undefined, "no settings from a run that is not there");
+});
+
+test("of two asking starts, the one that took the later time stays named though the earlier one writes last: its agent reads the later one's settings", async (t) => {
+  // One clock for the starts and the store: the later start takes its time and writes first, then the earlier one
+  // (its time taken before, on a slower server or a clock behind) writes its name after it.
+  t.mock.timers.enable({ apis: ["Date"], now: 2_000_000 });
+  const store = await freshStore();
+  const later = await startRun(store, learningDeps(), entryOf(), { ...ASKS, learning: { settings: { compile_after: 2 } } });
+  t.mock.timers.setTime(1_000_000);
+  const earlier = await startRun(store, learningDeps(), entryOf(), { ...ASKS, learning: { settings: { compile_after: 9 } } });
+  assert.notEqual(earlier.id, later.id, "both runs were made");
+  assert.deepEqual(await store.settings.get(agentRunLearningKey("a1")), { run: later.id, at: 2_000_000 }, "the later start stays named");
+  assert.deepEqual(await askedLearningOf(store, "a1"), { compile_after: 2 }, "the agent reads the later start's settings");
+});
+
+test("an asking retry under an origin key that already started a run gets that run, and the row names that run still: its agent reads its settings", async () => {
+  const store = await freshStore();
+  const first = await startRun(store, learningDeps(), entryOf(), ASKS, { origin: { key: "firing-asks" } });
+  const again = await startRun(store, learningDeps(), entryOf(), { ...ASKS, learning: { settings: { compile_after: 7 } } }, { origin: { key: "firing-asks" } });
+  assert.equal(again.id, first.id, "the retry gets the run the key started");
+  assert.equal((await store.settings.get(agentRunLearningKey("a1")))?.run, first.id, "the row names that run, never the retry's id no run has");
+  assert.deepEqual(await askedLearningOf(store, "a1"), { compile_after: 1 });
 });
 
 test("startRun records the server's learning off as no learning", async () => {

@@ -33,6 +33,8 @@ import { githubTargetOf } from "./github.js";
 import { type RepoBinding, repoOf } from "./run-repo.js";
 import { type HeldRefusal, type LaunchDisk, launchBody, readLaunchBody, sourceProjectOf, type RunLaunch } from "./run-launch.js";
 import { learningDiskOf } from "./learn/learning-of.js";
+import { type LearningLoop, runLearningSettingsOf } from "./learning-setting.js";
+import { noteRunLearning } from "./agent-run-learning.js";
 import { keyTargetOf, type ModelKeyTarget, modelKeyRequired, serverKeyMissing } from "./run-model-key.js";
 import { type ApprovalDecision, raiseFollowUpId, type RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
@@ -542,13 +544,14 @@ const noShown: Shown = { text: (text) => text, name: (name) => name, holds: () =
  *  learningDiskOf), null for the default disk: a run on a named disk learns nothing, so it is never started from the
  *  folder seedFor reads (seedFailed `other_disk`: it starts with nothing learned). `rounds`: a run's start reads its agent's
  *  open rounds (StartDeps.openRounds) first and names them (`after`). */
-export async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, { use = false, noWorkflows = false, model, disk, rounds = false }: { use?: boolean; noWorkflows?: boolean; model?: string; disk: string | null; rounds?: boolean }): Promise<NonNullable<RunLaunch["learning"]> | undefined> {
+export async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, { use = false, settings, noWorkflows = false, model, disk, rounds = false }: { use?: boolean; settings?: LearningLoop; noWorkflows?: boolean; model?: string; disk: string | null; rounds?: boolean }): Promise<NonNullable<RunLaunch["learning"]> | undefined> {
   // A run started with `learning: "use"` starts from what its agent learned whatever its revision says, and keeps
-  // nothing; the server's learning off still gives it nothing.
-  const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && (learnsOf(rbody.learning) || use);
+  // nothing; one started with `learning: {settings}` learns for its agent with those loop numbers whatever its revision
+  // says. The server's learning off still gives either nothing.
+  const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && (learnsOf(rbody.learning) || use || settings !== undefined);
   if (!learns || !deps.seedFor) return undefined;
   const flows = noWorkflows || nativeOf(revision.body) ? { noWorkflows: true as const } : {};
-  const own = { ...flows, ...(use ? { use: true as const } : {}), ...(model ? { model } : {}) };
+  const own = { ...flows, ...(use ? { use: true as const } : {}), ...(settings ? { settings } : {}), ...(model ? { model } : {}) };
   // Another disk's learning is never read for it: not its corrections, not its workflows.
   if (disk !== null) return { seed: null, section: "", seedFailed: "other_disk", ...own };
   // `rounds` (a run's start, prepareLaunch): its agent's open rounds (`after`), read BEFORE the seed. A round open at this
@@ -570,10 +573,10 @@ export async function learningStartFor(deps: StartDeps, entry: AgentEntry, revis
 
 /** A run's learning start from seed `seed`, as read: its sha, its # Learned text (learnedSection, cut of `shown`), the
  *  learned workflows it may be answered by (none for `noWorkflows`) and when it was read, with `own` (what the run's start
- *  said of its learning: use, noWorkflows, its compile model) kept. The one build of it, at a run's start
+ *  said of its learning: use, its loop numbers, noWorkflows, its compile model) kept. The one build of it, at a run's start
  *  (learningStartFor) and at a claim that reads its seed again (runner/learning-reseed.ts). Throws when the seed cannot be
  *  made into a start (main's copy that threw). */
-export function startOfSeed(seed: Seed, shown: Shown, own: Pick<NonNullable<RunLaunch["learning"]>, "use" | "noWorkflows" | "model">): NonNullable<RunLaunch["learning"]> {
+export function startOfSeed(seed: Seed, shown: Shown, own: Pick<NonNullable<RunLaunch["learning"]>, "use" | "settings" | "noWorkflows" | "model">): NonNullable<RunLaunch["learning"]> {
   const workflows = own.noWorkflows ? [] : chooseWorkflows(seed, shown).flows.map(({ name }) => name);
   return { seed: seed.sha, section: learnedSection(seed, shown), ...(workflows.length ? { workflows } : {}), ...(seed.at !== undefined ? { seededAt: seed.at } : {}), ...own };
 }
@@ -604,10 +607,19 @@ export async function startRun(store: Store, deps: StartDeps, entry: AgentEntry,
   const target = keyTargetOf(launch, revision);
   keyedOrRefused(deps, target, sealed);
   const runId = (deps.newRunId ?? uuidv7)();
+  // A run that asks to learn is named its agent's newest that did, which its agent-level reads take the settings of
+  // (agent-run-learning.ts), BEFORE it is made: the store writes no settings row in the run's own transaction, so a name
+  // that fails to write refuses the start (the error answers, nothing made), never a run its agent reads nothing of. A
+  // start that then makes no run of this id puts the row it replaced back; a reader ignores a row whose run is not there.
+  const named = launch.learning?.settings ? await noteRunLearning(store.settings, entry.agent.id, runId, Date.now()) : undefined;
   try {
     const labels = labelsOf(body.labels);
     return await withHeldFiles(store, deps, runId, entry.agent.id, revision, launch, (launch) => store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, expectedCurrent: entry.agent.currentRevision, ...(origin ? { origin } : {}), ...(labels ? { labels } : {}), ...(firing ? { firing } : {}) }, { body: launchBody(launch), ...(sealed ? { sealed: sealed(runId, launch, target) } : {}) }));
   } catch (error) {
+    // A used origin key never makes a second run: the store refuses it (StoreConstraint) and writes nothing, so an
+    // origin retry lands here too. Put back only when no run of this id was made (an answer lost after its commit keeps
+    // its name).
+    if (named && (await store.runs.get(runId).then((row) => row === undefined, () => false))) await named.undo().catch(() => undefined);
     if (error instanceof RevisionMoved) throw new ApiError("precondition_failed", "The agent changed while this run was prepared. Start again using its current setup.");
     // Only another writer of the store got here first under the same origin key: its run is the one asked for.
     if (origin && error instanceof StoreConstraint) {
@@ -880,7 +892,7 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // a disk its launch names is never started from the default disk's.
   // A round of its agent's still open (a follow-up being answered or kept): the run names it (`rounds`), and its claim
   // reads the seed again once it ends, so a correction that merges a moment after this start is the run's too.
-  const learning = await learningStartFor(deps, entry, revision, rbody, { use: body.learning === RUN_LEARNING_USE, disk: archilDisk ? learningDiskOf({ archilDisk }) : null, rounds: true });
+  const learning = await learningStartFor(deps, entry, revision, rbody, { use: body.learning === RUN_LEARNING_USE, ...(isObject(body.learning) ? { settings: runLearningSettingsOf(body.learning) } : {}), disk: archilDisk ? learningDiskOf({ archilDisk }) : null, rounds: true });
   // The run's effort: its own, else its revision's saved thinking, else the host's AGENT_THINKING (each a thinking level,
   // else none). Nothing set: none, so the run gets no effort note and its harness's own default. Kept in its launch, so
   // its harness's thinking, its guidance and its metrics all read the one value.

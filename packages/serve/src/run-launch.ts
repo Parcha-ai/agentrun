@@ -2,6 +2,7 @@ import { sdkBindingOf, type SdkBinding } from "./sdk/runtimes.js";
 import type { SdkWorkflowTool, SdkWorkflowAdapter } from "./sdk/workflows.js";
 import type { NativeBinding } from "./native/types.js";
 import { nativeOf } from "./native/binding.js";
+import { learningSettingIssue, learningSettingOf, type LearningLoop } from "./learning-setting.js";
 // A run's launch record: the one JSON body the server writes when it starts a run (start = INSERT run, design 2.1), and
 // the runner reads at its claim to build the run's spec. It replaces the per-run `serve.json` the old per-run process read
 // (app.ts meta.input, place, effort, cap): no process, no door, no marker file, one body written once. What a person sees
@@ -75,8 +76,10 @@ export interface RunLaunch {
    *  when the seed was read (runs-over-store.ts openRoundsOf): its claim waits for them, bounded, then reads the seed again
    *  (runner/learning-reseed.ts), which writes the start it read without `after` and with `waited`: `ended`, every one of them
    *  ended (or left its round: queued, parked) before it read; `timed_out`, its bound ran out first and it read main as it
-   *  was then. Absent when the run does not learn. */
-  readonly learning?: { readonly seed: string | null; readonly section: string; readonly workflows?: readonly string[]; readonly noWorkflows?: true; readonly model?: string; readonly seedFailed?: SeedFailed; readonly use?: true; readonly seededAt?: number; readonly after?: readonly string[]; readonly waited?: SeedWaited };
+   *  was then. `settings`, a run started with `learning: {settings?}` (RunCreate): it learns for its agent with these loop
+   *  numbers (`{}`, every default), whatever its revision says; its compile, check and audit read them in place of its
+   *  revision's (learning-setting.ts runLearningOf). Absent when the run does not learn. */
+  readonly learning?: { readonly seed: string | null; readonly section: string; readonly workflows?: readonly string[]; readonly noWorkflows?: true; readonly model?: string; readonly seedFailed?: SeedFailed; readonly use?: true; readonly settings?: LearningLoop; readonly seededAt?: number; readonly after?: readonly string[]; readonly waited?: SeedWaited };
   /** `false`: the run never starts on a learned workflow, even one that fits its input (RunCreate `workflow_first`,
    *  runner/workflow-first.ts); its agent takes it from its first turn. Absent: a fitting one serves first. */
   readonly workflowFirst?: false;
@@ -225,7 +228,7 @@ export function launchBody(launch: RunLaunch): Json {
     ...(launch.files?.length ? { files: launch.files } : {}),
     ...(launch.filesPlaced ? { files_placed: true } : {}),
     ...(launch.sourceProject ? { source_project: launch.sourceProject } : {}),
-    ...(launch.learning ? { learning: { seed: launch.learning.seed, section: launch.learning.section, ...(launch.learning.workflows?.length ? { workflows: [...launch.learning.workflows] } : {}), ...(launch.learning.noWorkflows ? { noWorkflows: true } : {}), ...(launch.learning.model ? { model: launch.learning.model } : {}), ...(launch.learning.seedFailed ? { seedFailed: launch.learning.seedFailed } : {}), ...(launch.learning.use ? { use: true } : {}), ...(launch.learning.seededAt !== undefined ? { seededAt: launch.learning.seededAt } : {}), ...(launch.learning.after?.length ? { after: [...launch.learning.after] } : {}), ...(launch.learning.waited ? { waited: launch.learning.waited } : {}) } } : {}),
+    ...(launch.learning ? { learning: { seed: launch.learning.seed, section: launch.learning.section, ...(launch.learning.workflows?.length ? { workflows: [...launch.learning.workflows] } : {}), ...(launch.learning.noWorkflows ? { noWorkflows: true } : {}), ...(launch.learning.model ? { model: launch.learning.model } : {}), ...(launch.learning.seedFailed ? { seedFailed: launch.learning.seedFailed } : {}), ...(launch.learning.use ? { use: true } : {}), ...(launch.learning.settings ? { settings: { ...launch.learning.settings } as unknown as Json } : {}), ...(launch.learning.seededAt !== undefined ? { seededAt: launch.learning.seededAt } : {}), ...(launch.learning.after?.length ? { after: [...launch.learning.after] } : {}), ...(launch.learning.waited ? { waited: launch.learning.waited } : {}) } } : {}),
     ...(launch.workflowFirst === false ? { workflow_first: false } : {}),
     ...(launch.replay ? { replay: replayBody(launch.replay) } : {}),
     ...(launch.audit ? { audit: replayBody({ of: launch.audit.of, workflow: launch.audit.workflow, digest: launch.audit.digest, ...(launch.audit.deadlineAt !== undefined ? { deadlineAt: launch.audit.deadlineAt } : {}) }) } : {}),
@@ -238,15 +241,17 @@ export function launchBody(launch: RunLaunch): Json {
 }
 
 /** The learning start a launch body names, as read back: its seed sha, its # Learned section text, the learned workflows
- *  it was offered, its compile model, why its seed failed and whether it only uses them (`use`), or undefined when the
+ *  it was offered, its compile model, why its seed failed, whether it only uses them (`use`) and the loop numbers its
+ *  start asked to learn with (`settings`, kept only as a definition's `learning` object would be), or undefined when the
  *  body names none (a run that does not learn). */
 function readLearning(value: unknown): NonNullable<RunLaunch["learning"]> | undefined {
   if (!isObject(value)) return undefined;
+  const settings = isObject(value.settings) && learningSettingIssue(value.settings) === undefined ? { settings: learningSettingOf(value.settings as LearningLoop) as LearningLoop } : {};
   const seed = typeof value.seed === "string" ? value.seed : null;
   const section = typeof value.section === "string" ? value.section : "";
   const workflows = Array.isArray(value.workflows) ? value.workflows.filter((name): name is string => typeof name === "string") : [];
   const after = Array.isArray(value.after) ? value.after.filter((id): id is string => typeof id === "string" && id !== "") : [];
-  return { seed, section, ...(workflows.length ? { workflows } : {}), ...(value.noWorkflows === true ? { noWorkflows: true as const } : {}), ...(typeof value.model === "string" && value.model !== "" ? { model: value.model } : {}), ...(typeof value.seedFailed === "string" && SEED_FAILURES.includes(value.seedFailed) ? { seedFailed: value.seedFailed as SeedFailed } : {}), ...(value.use === true ? { use: true as const } : {}), ...(typeof value.seededAt === "number" && Number.isFinite(value.seededAt) ? { seededAt: value.seededAt } : {}), ...(after.length ? { after } : {}), ...(value.waited === "ended" || value.waited === "timed_out" ? { waited: value.waited } : {}) };
+  return { seed, section, ...(workflows.length ? { workflows } : {}), ...(value.noWorkflows === true ? { noWorkflows: true as const } : {}), ...(typeof value.model === "string" && value.model !== "" ? { model: value.model } : {}), ...(typeof value.seedFailed === "string" && SEED_FAILURES.includes(value.seedFailed) ? { seedFailed: value.seedFailed as SeedFailed } : {}), ...(value.use === true ? { use: true as const } : {}), ...settings, ...(typeof value.seededAt === "number" && Number.isFinite(value.seededAt) ? { seededAt: value.seededAt } : {}), ...(after.length ? { after } : {}), ...(value.waited === "ended" || value.waited === "timed_out" ? { waited: value.waited } : {}) };
 }
 
 /** The launch a runner runs (runner/dispatch.ts, run-child-host.ts): on a disk the launch names as its own (kind
@@ -256,8 +261,8 @@ function readLearning(value: unknown): NonNullable<RunLaunch["learning"]> | unde
  *  read. readLaunchBody keeps the body as written: a finished run's views show what it ran. */
 export function launchOnItsDisk(launch: RunLaunch): RunLaunch {
   if (!launch.learning || launch.archilDisk?.kind !== "launch") return launch;
-  const { noWorkflows, model, use } = launch.learning;
-  return { ...launch, learning: { seed: null, section: "", seedFailed: "other_disk", ...(noWorkflows ? { noWorkflows } : {}), ...(model ? { model } : {}), ...(use ? { use } : {}) } };
+  const { noWorkflows, model, use, settings } = launch.learning;
+  return { ...launch, learning: { seed: null, section: "", seedFailed: "other_disk", ...(noWorkflows ? { noWorkflows } : {}), ...(model ? { model } : {}), ...(use ? { use } : {}), ...(settings ? { settings } : {}) } };
 }
 
 /** Whether a person started the run: no trigger fired it (a schedule's, a webhook's, a trigger's turn into a run), and it

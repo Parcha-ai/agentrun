@@ -1062,6 +1062,8 @@ __all__ = [
     "RunCreateInline",
     "RunCreateInlineArchilDisk",
     "RunCreateInlineMcpAuthValue",
+    "RunCreateLearning",
+    "RunCreateLearningSettings",
     "RunCreateMcpAuthValue",
     "RunCreateTriggerFiring",
     "RunError",
@@ -1077,6 +1079,7 @@ __all__ = [
     "RunImportedFrom",
     "RunLearning",
     "RunLearningWork",
+    "RunLearningWorkDroppedItem",
     "RunLearningWorkflowsItem",
     "RunList",
     "RunNative",
@@ -6286,11 +6289,22 @@ class RunTrigger(TypedDict):
     firing_key: str
 
 
-class RunLearningWork(TypedDict):
+class _RunLearningWorkRequired(TypedDict):
     state: Literal["none", "running", "ended"]
     runs: list[str]
     ended_at: str | None
     deadline_at: str | None
+
+
+class RunLearningWork(_RunLearningWorkRequired, total=False):
+    dropped: list[RunLearningWorkDroppedItem]
+
+
+class RunLearningWorkDroppedItem(TypedDict):
+    kind: Literal["replay", "shadow"]
+    reason: Literal["no_budget"]
+    at: str
+    detail: str
 
 
 class RunWorkflow(TypedDict):
@@ -8385,7 +8399,7 @@ class RunCreate(_RunCreateRequired, total=False):
     mcp_auth: dict[str, RunCreateMcpAuthValue | ComposioRunBinding]
     labels: dict[str, str]
     workflow_first: bool
-    learning: Literal["use"]
+    learning: Literal["use"] | RunCreateLearning
     repo: str
     archil_disk: RunCreateArchilDisk
     hold: bool
@@ -8395,6 +8409,25 @@ class RunCreate(_RunCreateRequired, total=False):
 
 class RunCreateMcpAuthValue(TypedDict):
     headers: dict[str, str]
+
+
+class RunCreateLearning(TypedDict, total=False):
+    settings: RunCreateLearningSettings
+
+
+class RunCreateLearningSettings(TypedDict, total=False):
+    compile_after: int
+    agree_min: float
+    alone_min: float
+    agree_on: list[str]
+    audit_every: int
+    audit_every_later: int
+    audit_later_after: int
+    hold_window: int
+    hold_disagree: int
+    stop_window: int
+    repick: bool
+    repick_max_chars: int
 
 
 class RunCreateArchilDisk(TypedDict):
@@ -8972,6 +9005,7 @@ class Features(_FeaturesRequired, total=False):
     archive: FeaturesArchive
     thinking: list[str]
     learning: Literal["on", "off"]
+    run_learning: bool
     browser_live: FeaturesBrowserLive
     computers: FeaturesComputers
     claude_login: bool

@@ -48,6 +48,7 @@ import { sealHandedLaunch } from "../store/seal.js";
 import { runZone } from "../environment.js";
 import { shadowRunId } from "../learn/audit.js";
 import { agreeOnOf } from "../learning-setting.js";
+import { childLearningOf } from "./child-learning.js";
 import { openedAtUse, openRunWorkspace } from "../workspace/run-workspace.js";
 import { archilClaim, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { agentDirName, recordingsFolder, runFolder, scratchFolder } from "../workspace/paths.js";
@@ -913,7 +914,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       // keys are not its to spend, whatever its process asks; nor for a run that sends no model key (keyless: a held run,
       // which routes no model and grades nothing, or a faux one, whose model sends none).
       const subagent = !keyless && revision.kind === "agentic" && granted.includes(SUBAGENT_TOOL);
-      const grades = !keyless && (launch.replay !== undefined || launch.audit !== undefined) && !agreeOnOf((revision.body as { readonly learning?: unknown }).learning)?.length;
+      const grades = !keyless && (launch.replay !== undefined || launch.audit !== undefined) && !agreeOnOf(await childLearningOf(store, launch, revision.body))?.length;
       if (!subagent && !grades) return {};
       const { tiers, refs } = routedSubagentTiers(revision.body, keys.env ?? {});
       const keyed = await runKeyed();

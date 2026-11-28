@@ -331,6 +331,26 @@ test("(g) the definition's numbers stand in: audit_every 5 draws at 1/5, and hol
   assert.deepEqual([held.decided, held.audit.window, held.audit.disagree, held.audit.rows], ["hold", 5, 2, 2], JSON.stringify(held));
 });
 
+test("(run learning) the hold takes the numbers of the agent's newest run that asked to learn: its revision at every default, its runs at hold_window 5 with hold_disagree 2, held on 2 disagreements", { timeout: 240_000 }, async (t) => {
+  const settings = { audit_every: 5, hold_window: 5, hold_disagree: 2 };
+  const picked = Array.from({ length: 200 }, (_, i) => `rl-${i}`).filter((id) => drawn(id, 5) && !drawn(id, 10)).slice(0, 2);
+  const skipped = Array.from({ length: 200 }, (_, i) => `rl-${i}`).find((id) => !drawn(id, 5));
+  assert.equal(picked.length, 2);
+  const w = await world(t, { learning: true, submit: answers({ wrong: picked.map((id) => `Question for ${id}`) }) });
+  // Each run asked to learn with `settings` (its launch's learning.settings, as POST /agents/{id}/runs keeps them).
+  const asked = async () => ({ learning: { ...startAt((await w.server.learning.seed("agent-1")).save.id), settings } });
+  const first = await w.start(skipped, `Question for ${skipped}`, await asked());
+  assert.equal(first.metrics?.path, "workflow");
+  // Named the agent's newest run that asked, in the row its start writes (agent-run-learning.ts noteRunLearning).
+  await w.server.settings.put("agent.run_learning.agent-1", { run: first.id, at: first.startedAt });
+  for (const id of picked) assert.equal((await w.start(id, `Question for ${id}`, await asked())).metrics?.path, "workflow");
+  assert.deepEqual((await w.shadows()).map(({ launch }) => launch.audit.of).sort(), [...picked].sort(), "drawn at the runs' audit_every 5");
+  const next = await w.start("rl-next", "Question next", await asked());
+  assert.equal(next.metrics?.path, "agent", "held on 2 of the last 5 rows: the asking run's numbers, not the revision's defaults (3 of 10)");
+  const held = (await promotionsOf(w.server.learning, "agent-1")).at(-1);
+  assert.deepEqual([held.decided, held.audit.window, held.audit.disagree, held.audit.rows], ["hold", 5, 2, 2], JSON.stringify(held));
+});
+
 test("(r2) three shadows that end between two claims are written oldest first: hold_window 2 holds on the 2 newest", { timeout: 240_000 }, async (t) => {
   const w = await world(t, { learning: { audit_every: 1, hold_window: 2, hold_disagree: 2 }, paused: true, submit: answers({ wrong: ["Batch 2", "Batch 3"] }) });
   // Made before the runner starts: a claim takes the oldest run first, so the three served runs are claimed before any of
@@ -627,7 +647,7 @@ test("(agree_on) a revision read that fails while the audit is settled leaves it
   const w = await world(t, { learning: { audit_every: 1, hold_window: 1, hold_disagree: 1, agree_on: ["answer", "sure"] }, says: () => SHADOW_SAYS, submit: () => ({ answer: 42, sure: true }) });
   const revision = w.store.agents.revision.bind(w.store.agents);
   let failing = false;
-  w.store.agents.revision = (id) => (failing && /agreeOnOfRevision/.test(new Error().stack ?? "") ? Promise.reject(new Error("the store is busy")) : revision(id));
+  w.store.agents.revision = (id) => (failing && /agreeOnOfRun/.test(new Error().stack ?? "") ? Promise.reject(new Error("the store is busy")) : revision(id));
   const served = await w.start("same-1", "What is six times seven");
   assert.equal(served.metrics?.path, "workflow", JSON.stringify(served.metrics));
   failing = true;
@@ -639,6 +659,46 @@ test("(agree_on) a revision read that fails while the audit is settled leaves it
   const later = await w.start("same-later", "What is seven times six again");
   assert.equal(later.metrics?.path, "workflow", `not held: ${JSON.stringify(later.metrics)}`);
   assert.equal((await w.audits()).find((one) => one.run === "same-1")?.agreed, true, "settled at the later claim on agree_on");
+});
+
+// A run that asked to learn with agree_on (its launch's learning.settings), of an agent whose definition names none: its
+// audit compares on the run's agree_on, at both ends. Its shadow (learning off, so its served run's launch is read:
+// runner/child-learning.ts) asks no grader, and the audit's verdict (runner/audit.ts agreeOnOfRun) reads the served run's
+// launch, never the revision's whole answer.
+test("(run learning) a run that asked with agree_on is audited on it: a served answer that differs from its shadow's only in its rationale is no disagreement, and the shadow asks no grader, though the revision names no agree_on", { timeout: 300_000 }, async (t) => {
+  const settings = { audit_every: 1, hold_window: 1, hold_disagree: 1, agree_on: ["answer", "sure"] };
+  const graded = [];
+  // A grader asked (the whole answers compared) would call the rationale another decision.
+  const w = await world(t, { learning: true, says: () => SHADOW_SAYS, grader: ({ body }) => (graded.push(JSON.stringify(body)), JSON.stringify({ same: false, differs_on: "the rationale" })), submit: () => ({ answer: 42, sure: true }) });
+  const asked = async () => ({ learning: { ...startAt((await w.server.learning.seed("agent-1")).save.id), settings } });
+  const served = await w.start("asked-1", "What is six times seven", await asked());
+  assert.equal(served.metrics?.path, "workflow", JSON.stringify(served.metrics));
+  await w.server.settings.put("agent.run_learning.agent-1", { run: served.id, at: served.startedAt });
+  assert.ok(await w.shadowOf("asked-1"), "drawn at the run's audit_every 1");
+  assert.equal(graded.length, 0, `its shadow compared on the served run's agree_on, asking no grader: ${graded.join("\n")}`);
+  const next = await w.start("asked-next", "What is seven times six", await asked());
+  assert.equal(next.metrics?.path, "workflow", `not held: ${JSON.stringify(next.metrics)}`);
+  assert.equal((await w.audits()).find((one) => one.run === "asked-1")?.agreed, true, "agreed on the run's agree_on");
+});
+
+// The hold of a run served on a revision the agent has moved past compares the asking run's start with the agent's
+// current revision's save (runner/audit.ts auditLoopOfAgent), not with its served revision's: a revision saved after the
+// asking run wins, and its hold is at the served revision's own numbers.
+test("(run learning) a revision saved after the asking run wins for a run served on the revision before it: one disagreement holds nothing at that revision's numbers (3 of 10), never the asking run's (1 of 1)", { timeout: 300_000 }, async (t) => {
+  const settings = { audit_every: 1, hold_window: 1, hold_disagree: 1 };
+  const w = await world(t, { learning: true, submit: answers({ wrong: ["Question for moved-1"] }) });
+  const asked = async () => ({ learning: { ...startAt((await w.server.learning.seed("agent-1")).save.id), settings } });
+  const served = await w.start("moved-1", "Question for moved-1", await asked());
+  assert.equal(served.metrics?.path, "workflow", JSON.stringify(served.metrics));
+  assert.ok(await w.shadowOf("moved-1"), "drawn at the run's audit_every 1");
+  await w.server.settings.put("agent.run_learning.agent-1", { run: served.id, at: served.startedAt });
+  // Saved after the asking run, current from here, at every default; the runs here stay on the revision before it.
+  await w.server.agents.addRevision({ id: "rev-2", agentId: "agent-1", kind: "agentic", body: { instructions: "Answer.", tools: [], learning: true } });
+  assert.ok((await w.server.agents.revision("rev-2")).createdAt > served.startedAt, "the revision was saved after the asking run");
+  const next = await w.start("moved-next", "Question next", await asked());
+  assert.equal((await w.audits()).find((one) => one.run === "moved-1")?.agreed, false, "the disagreement is in the ledger");
+  assert.equal(next.metrics?.path, "workflow", `not held on 1 of the revision's 10: ${JSON.stringify(next.metrics)}`);
+  assert.equal((await promotionsOf(w.server.learning, "agent-1")).at(-1).decided, "promote");
 });
 
 // Review on #3182 (PRRT_kwDOUmdVMs65A5Eo): the check's side of the same rule. A revision read that fails when a new

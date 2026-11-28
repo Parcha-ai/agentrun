@@ -62,6 +62,7 @@ import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSp
 import { atRunEnd } from "../learning-work.js";
 import { compareEndOfRun, GRADER, withGrader } from "./compare-end.js";
 import { agreeOnOf } from "../learning-setting.js";
+import { childLearningOf } from "./child-learning.js";
 import { catalogSessionNames, claimMetering, type ClaimMcp, mcpWhereHeld } from "./mcp-run.js";
 import { held as runnerSeam, heldOrThrow, heldSignInReads } from "./held.js";
 import { type AdapterLoopOptions, type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
@@ -950,7 +951,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // A replay run's or a shadow's grader (runner/compare-end.ts), on a route of its own beside the session's, on the
   // session's booking under the run's one cap. None: the pair is compared whole, in words saying so. None for a held run
   // its model kept from running, whose model runs nowhere.
-  const graderRoute = (launch.replay || launch.audit) && heldRefusal === undefined ? await graderRouteOf(body as RevisionBody & { learning?: unknown }, keyed, runKey, toolEnv, cut, log, { ...deps, handBack: run.handBack, signal: run.signal }, [cut], claim, modelAskOf(launch.model, body.model)) : undefined;
+  const graderRoute = (launch.replay || launch.audit) && heldRefusal === undefined ? await graderRouteOf({ ...(body as RevisionBody), learning: await childLearningOf(deps.store, launch, body) }, keyed, runKey, toolEnv, cut, log, { ...deps, handBack: run.handBack, signal: run.signal }, [cut], claim, modelAskOf(launch.model, body.model)) : undefined;
   if (graderRoute) tierRoutes.set(GRADER, graderRoute.route);
 
   // The tool host's install lifecycle: what a binding registers to run in each conversation's creating commit, once the

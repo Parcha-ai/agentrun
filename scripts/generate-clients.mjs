@@ -68,9 +68,13 @@ function deref(doc, node) {
   return node;
 }
 
-/** A schema as a flag reads it: its type and its enum, nothing else. */
+/** A schema as a flag reads it: its type and its enum, nothing else. A choice of one string enum and objects (a run's
+ *  `learning`: "use" or `{settings}`) reads as that enum: the flag takes the word, and an object goes in --body. */
 function shapeOf(doc, schema) {
   const s = deref(doc, schema) ?? {};
+  const choices = (s.oneOf ?? []).map((choice) => deref(doc, choice) ?? {});
+  const words = choices.filter((choice) => Array.isArray(choice.enum) && choice.enum.every((v) => typeof v === 'string'));
+  if (s.type === undefined && s.enum === undefined && words.length === 1 && choices.every((choice) => choice === words[0] || choice.type === 'object')) return { type: null, enum: words[0].enum };
   return { type: s.type ?? null, enum: Array.isArray(s.enum) ? s.enum : null };
 }
 
