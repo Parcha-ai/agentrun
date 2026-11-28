@@ -7,7 +7,8 @@
 // SshExec (./hosted/ssh-exec.ts). This provider makes its own ed25519 key, once per host, and hands boat its public half
 // (POST /sandboxes/{id}/sshkey); boat answers the login (sshUser; the docs' user `user` when the answer leaves it out,
 // as its schema allows; passwordless sudo), where to reach the sshd, and
-// the sshd's host key, which the handshake pins ("Pin it in known_hosts"). Each command runs under `sudo -n --`, so it
+// the sshd's host key, which the handshake pins by its sha256 ("Pin it in known_hosts"). The pin is required twice, by
+// the sshkey answer's check and by the SshExec (pinned), so a login with no pin opens no connection. Each command runs under `sudo -n --`, so it
 // is root's. boat's REST commands (POST /sandboxes/{id}/commands) take no stdin and end within 600 s, so they cannot
 // carry the bridge and are not used. The rest of the computer is the shared machine-host adapter's (./hosted/provider.ts).
 //
@@ -35,7 +36,7 @@ import { orThrow } from "./hosted/process.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts, isoOf, MAX_LABEL } from "./hosted/provider.js";
 import { allPages, httpsBase, jsonOf, type Rest, type RestInit, rest } from "./hosted/rest.js";
 import { ed25519PublicOf, newEd25519 } from "./hosted/ssh-key.js";
-import { fingerprintOf, pemOf, type Ssh2Module, SshExec, tcpTunnel } from "./hosted/ssh-exec.js";
+import { fingerprintOf, HOST_KEY_PIN, pemOf, type Ssh2Module, SshExec, tcpTunnel } from "./hosted/ssh-exec.js";
 import { DOMAIN, dateOf } from "./hosted/values.js";
 import type { ComputerSpec, Refusal } from "./provider.js";
 import type { ComputerErrorCode } from "./result.js";
@@ -238,6 +239,7 @@ class BoatHost implements MachineHost {
 		this.#ssh = new SshExec({
 			ssh2: options.ssh2,
 			sudo: true,
+			pinned: true,
 			loginOf: (id) => {
 				const login = this.#logins.get(id);
 				return { username: login?.username ?? "user", privateKey: this.#privateKey, ...login?.pin, secrets: [apiKey] };
@@ -301,7 +303,7 @@ class BoatHost implements MachineHost {
 		const endpoint = endpointOf(answer);
 		if (endpoint === undefined) throw new HostError("vendor", `POST ${path} answered no sshd to reach: machineIp ${show(answer.machineIp)}, sshEndpoint ${show(answer.sshEndpoint)}`);
 		const pin = hostKeyOf(answer.hostKey);
-		if (pin === undefined) throw new HostError("vendor", `POST ${path} answered no host key this provider reads (an OpenSSH line, such as ssh-ed25519 AAAA...): ${show(answer.hostKey)}`);
+		if (pin === undefined || !HOST_KEY_PIN.test(pin.hostKey)) throw new HostError("vendor", `POST ${path} answered no host key this provider reads (an OpenSSH line, such as ssh-ed25519 AAAA...): ${show(answer.hostKey)}`);
 		return { username, ...endpoint, pin };
 	}
 
