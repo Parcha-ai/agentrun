@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { sealKeyOf } from "../dist/tool-keys.js";
-import { agent, FAUX, follow, runDir, scratch, serve, startServe, storeRun } from "./support.mjs";
+import { agent, FAST_BEATS, FAUX, follow, runDir, scratch, serve, startServe, storeRun } from "./support.mjs";
 
 const MiB = 2 ** 20;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -27,7 +27,7 @@ test("the default cap on how many runs at once is pi's: the host's memory less t
 
 test("a run that fails gives its one place back: a start made while it holds the place stays queued, then runs once the failed run is over", { timeout: 90_000 }, async (t) => {
   const dir = await scratch(t);
-  const { api, data, runnerBeats } = await serve(t, { maxRuns: 1 });
+  const { api, data, runnerBeats } = await serve(t, { maxRuns: 1, runnerTiming: FAST_BEATS });
   assert.equal((await api("POST", "/agents", agent("calc"))).status, 201);
   // A run that works until the test lets it go, and then fails: it holds the one place.
   const { body: holder } = await api("POST", "/agents/calc/runs", { input: { content: `Fail once ${join(dir, "go")} exists.` } });
@@ -52,7 +52,7 @@ test("a run that fails gives its one place back: a start made while it holds the
 
 test("two follow-ups to a completed run while its one place is held: both are taken at once and wait for the place to run, one reopens the run, the other waits for that; the reopen gives its place back when it ends again", { timeout: 90_000 }, async (t) => {
   const dir = await scratch(t);
-  const { api, data, runnerBeats } = await serve(t, { maxRuns: 1 });
+  const { api, data, runnerBeats } = await serve(t, { maxRuns: 1, runnerTiming: FAST_BEATS });
   assert.equal((await api("POST", "/agents", agent("calc"))).status, 201);
   const { body: first } = await api("POST", "/agents/calc/runs", { input: { content: "First." } });
   await follow(api, first.run_id, ["completed"]);
@@ -224,7 +224,7 @@ test("a run cancelled as the server stops has its end in the store once the stop
   await one.stop();
   assert.equal(storeRun(one.data, run.run_id).state, "stopped");
   // The next start's runner never takes it up: past three of its polls, it still reads cancelled.
-  const two = await serve(t, { data: one.data });
+  const two = await serve(t, { data: one.data, runnerTiming: FAST_BEATS });
   const seen = two.runnerBeats();
   for (let i = 0; two.runnerBeats() < seen + 3; i++) {
     assert.ok(i < 300, "three runner beats");

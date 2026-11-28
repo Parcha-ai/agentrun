@@ -13,6 +13,8 @@ export const INSTABOX = defineProvider({
 	label: "InstaBox",
 	keys: [{ name: "INSTABOX_API_KEY", option: "apiKey", required: true }],
 	metered: true,
+	// Its create answers the size the vendor runs the computer at (resources), which its time is priced by.
+	sized: true,
 	mounts: [],
 	// All three are init's, through root in the microVM (the machine user's passwordless sudo).
 	network: ["none", "open", "allow"],

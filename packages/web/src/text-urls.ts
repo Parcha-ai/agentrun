@@ -14,6 +14,10 @@ export const SCRUBBED_URL = new RegExp(`https?://[^${URL_ENDS}]+`, "gi");
 export const TRAILING = ".,;:!?*)]}'";
 const OPENER: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
 
+/** @internal The characters this module's readings have visited, each pass's span added once when it ends: the count a
+ *  test bounds as linear in a text's length. Not in the package's types (stripInternal). */
+export const scanned = { steps: 0 };
+
 /** A URL found in text less its tail (TRAILING): a closing bracket stays where the URL opened as many as it closes (a wiki
  *  title's `Foo_(bar)`). One count of the brackets, then one walk back, so a long run of them is linear. */
 export function trimmed(raw: string): string {
@@ -26,6 +30,7 @@ export function trimmed(raw: string): string {
     if (opener && count[opener]! >= count[char]!) break;
     if (opener) count[char]! -= 1;
   }
+  scanned.steps += raw.length + (raw.length - end);
   return raw.slice(0, end);
 }
 
@@ -37,14 +42,17 @@ export function targetEnd(text: string, from = 0, to = text.length): number {
     if (text[end] === "(") depth++;
     else if (text[end] === ")" && depth-- === 0) break;
   }
+  scanned.steps += end - from;
   return end;
 }
 
 /** Where a markdown target in angle brackets (`text` from `from`, the character after its "<") ends: the index of its ">",
  *  or -1 where whitespace, another "<" or `to` comes first (no such target: read it as targetEnd does). */
 function angledEnd(text: string, from: number, to: number): number {
-  for (let end = from; end < to && !/[\s<]/.test(text[end]!); end++) if (text[end] === ">") return end;
-  return -1;
+  let end = from;
+  for (; end < to && !/[\s<]/.test(text[end]!); end++) if (text[end] === ">") break;
+  scanned.steps += end - from;
+  return end < to && text[end] === ">" ? end : -1;
 }
 
 /** A string that is one URL whole (a JSON field holding a link means all of it, its last character too), trimmed of the
@@ -69,7 +77,14 @@ export type WrittenLink = { raw: string; exact: boolean };
  *  hostile page holds. A page's links (hrefsIn) and an answer's cited links (link-check.ts) both read it. */
 export function* linksWritten(text: string): Generator<WrittenLink> {
   const at = new RegExp(LINK_AT.source, "gi");
-  for (let found = at.exec(text); found; found = at.exec(text)) {
+  // Each search runs from where the last left off (lastIndex) to its match's end, or the text's.
+  const next = () => {
+    const from = at.lastIndex;
+    const found = at.exec(text);
+    scanned.steps += (found ? at.lastIndex : text.length) - from;
+    return found;
+  };
+  for (let found = next(); found; found = next()) {
     // A "](" alone is ["", ""]: one target, after it.
     const pieces = found[0].split("](");
     if (pieces[0]) yield { raw: pieces[0], exact: false };
@@ -99,6 +114,10 @@ const NAMED: Record<string, string> = { quot: '"', amp: "&", lt: "<", gt: ">", a
  *  an attribute) or in single quotes (the fourth group). */
 const ATTRIBUTE = /(\s)([^\s=<>"'/]+)(\s*=\s*)(?:"[^"]*"|'([^'<]*)')/g;
 
+/** @internal Every pattern this module scans a whole text with, for the test that compiles each on V8's linear engine (a
+ *  pattern that backtracks is refused there). Not in the package's types (stripInternal). */
+export const scanPatterns: readonly RegExp[] = [TEXT_URL, SCRUBBED_URL, LINK_AT, ENTITY, ATTRIBUTE];
+
 /** `text` read for its links, where it is not JSON: its entities undone once, so an escaped `&lt;a href=&quot;…&quot;&gt;`
  *  (an Atom feed's content) ends its URL at the quote, never running on to the next space, and an attribute's
  *  `href="https://a/?x=1&amp;y=2"` is the URL `https://a/?x=1&y=2`. One pass, so `&amp;lt;` is `&lt;`. Where it is XML,
@@ -106,12 +125,14 @@ const ATTRIBUTE = /(\s)([^\s=<>"'/]+)(\s*=\s*)(?:"[^"]*"|'([^'<]*)')/g;
  *  value holds no "'" or "<" of its own), and a namespace's name (`xmlns="http://www.w3.org/2005/Atom"`), an identifier,
  *  never a link, is dropped. Attributes are read in order, each whole. */
 function readable(text: string): string {
+  scanned.steps += text.length;
   const xml = /^\s*<[?!A-Za-z]/.test(text)
     ? text.replace(ATTRIBUTE, (attribute, space: string, name: string, equals: string, single: string | undefined) => {
         if (/^xmlns(:|$)/i.test(name)) return space;
         return single === undefined ? attribute : `${space}${name}${equals}"${single}"`;
       })
     : text;
+  scanned.steps += xml.length;
   return xml.replace(ENTITY, (entity, name: string | undefined, decimal: string | undefined, hex: string | undefined) => {
     if (name) return NAMED[name.toLowerCase()]!;
     const code = Number.parseInt(decimal ?? hex!, decimal ? 10 : 16);
@@ -126,6 +147,7 @@ function jsonHrefs(text: string): Iterable<string> | undefined {
   // An object, an array or one string: the bodies that can hold a URL (a string body is one, or holds some).
   if (!/^\s*[[{"]/.test(text)) return undefined;
   let body: unknown;
+  scanned.steps += text.length;
   try {
     body = JSON.parse(text);
   } catch {
@@ -154,6 +176,7 @@ function jsonHrefs(text: string): Iterable<string> | undefined {
 export function* linksOf(text: string): Generator<string> {
   const seen = new Set<string>();
   for (const href of jsonHrefs(text) ?? hrefsIn(readable(text))) {
+    scanned.steps += href.length;
     const link = /^https?:\/\//i.test(href) ? URL.parse(href) : null;
     if (!link) continue;
     link.hash = "";

@@ -52,8 +52,8 @@ export type Blocker = InputIssue & { host: boolean; tool?: string; notGrantable?
 /**
  * The model `harness` runs an agentic revision on here: `ref`, its own `provider/model-id`, or with none this host's
  * default for that harness. `why`: the model itself is the problem (`host`, a setting of this host could fix it);
- * `refused`: the harness runs here but refuses that model. Undefined when claude-agent does not run here: its model is
- * its own, and the harness says why. A save, a run and capabilities' `harnesses[].default_model` all ask this, so they
+ * `refused`: the harness runs here but refuses that model. Undefined when the harness does not run here and its model is
+ * its own (claude-agent's) or the revision names none: the harness says why, in its own words. A save, a run and capabilities' `harnesses[].default_model` all ask this, so they
  * cannot drift.
  */
 export async function harnessModel(env: NodeJS.ProcessEnv, harness: string, ref: string | undefined, available: boolean): Promise<{ model: ModelRef } | { why: string; host: boolean; needs?: ModelNeeds } | { refused: string } | undefined> {
@@ -63,14 +63,29 @@ export async function harnessModel(env: NodeJS.ProcessEnv, harness: string, ref:
   // its own. A test's stand-in chooses as its table entry says.
   const entry = harnessOf(env, harness);
   const chosen = entry ? await entry.model(env, ref, available) : await chooseModel(env, ref, "default", harness);
-  if (chosen === undefined || "why" in chosen) return chosen;
+  if (chosen === undefined) return chosen;
+  if ("why" in chosen) {
+    // A key is all it lacks, for a model this harness never runs (a codex agent on anthropic/<model>): that key would not
+    // run it here, so the harness refuses it in the words it gives once the key is set.
+    const slash = ref?.indexOf("/") ?? -1;
+    if (chosen.needs === "key" && ref !== undefined && slash > 0 && entry?.facts && available && !entry.runs(env, ref)) {
+      const refused = await refusedBy(env, harness, { provider: ref.slice(0, slash), modelId: ref.slice(slash + 1) });
+      if (refused !== undefined) return { refused };
+    }
+    return chosen;
+  }
   // The harness runs here; whether it runs this model (the revision's, or the default) is checked on it.
   if (entry?.facts && available) {
-    const { harnessReason } = await import("./adapters.js");
-    const refused = await harnessReason(harness, env, { model: chosen.model, models: { getModel: () => undefined } });
+    const refused = await refusedBy(env, harness, chosen.model);
     if (refused !== undefined) return { refused };
   }
   return { model: chosen.model };
+}
+
+/** Why `harness`, which runs here, refuses `model` (adapters.ts harnessReason); undefined when it runs it. */
+async function refusedBy(env: NodeJS.ProcessEnv, harness: string, model: ModelRef): Promise<string | undefined> {
+  const { harnessReason } = await import("./adapters.js");
+  return harnessReason(harness, env, { model, models: { getModel: () => undefined } });
 }
 
 /** The reason a warning gives: the revision runs once this host has what it names. */

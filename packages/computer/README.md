@@ -3564,6 +3564,10 @@ provider, or a conformance module's:
   folder on the host for a bind, the disk's file API for Archil. `undefined` for a kind it cannot make. The runner
   closes each folder when its case ends. `--provider docker` gives a bind of a new folder under the temp directory,
   owned by the provider's user. Without this export the mount cases skip in words.
+- `export const conformanceClock`, for a host whose timers run on a clock of its own (a fake host's): `{ now(), sleep(ms) }`,
+  the run's clock, which the deadline case reads and waits on, so a 45 s lifetime is waited out on it rather than in
+  real time. It reads no earlier than the clock the provider stamps a deadline with. A vendor's module exports none:
+  its run waits on the wall clock. `packages/serve/scripts/dial-conformance.mjs` takes it the same way.
 
 Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2):
 

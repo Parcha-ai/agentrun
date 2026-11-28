@@ -279,6 +279,7 @@ export const cursor: Reader<"cursor", null> = {
   source: "cursor",
   name: "Cursor",
   harness: "cursor",
+  untimed: true,
   discover: async (home, env = {}) => (await storesIn(configDir(home, env))).map((file) => ({ file })),
   read: (locator, _cursor, options = {}) => readChat(locator.file, options),
   idOf: ({ file }) => cursorSessionId(file),

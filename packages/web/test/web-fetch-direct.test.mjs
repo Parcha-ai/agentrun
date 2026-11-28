@@ -101,28 +101,41 @@ test("a page that is not HTML lists the absolute URLs its text holds: a JSON bod
   assert.deepEqual(text.links, ["https://status.example/a", "https://en.wikipedia.org/wiki/Foo_(bar)", "https://b.example/O'Reilly"], "a sentence's punctuation, an unopened bracket and a closing quote stay outside a URL");
 });
 
-test("the URLs a hostile text writes out are read in one pass: runs of schemes, closing brackets and nesting take no longer than their length", async () => {
+test("the URLs a hostile text writes out are read in one pass: runs of schemes, closing brackets and nesting take work linear in their length", async () => {
   const { linksOf } = await import("../dist/index.js");
+  const { scanned } = await import("../dist/text-urls.js");
   const hostile = (n) => ["https://".repeat(n / 8), `https://a.example/${")".repeat(n)}`, `https://a.example/${"(".repeat(n)}${".".repeat(n)}`, `${"[".repeat(n / 80)}"https://deep.example/"${"]".repeat(n / 80)}`, `${"](".repeat(n / 2)} https://after.example/`, `<f${" a='".repeat(n / 4)}`, `<f${" a=".repeat(n / 3)}`, `<f a="${"&amp;".repeat(n / 5)}`];
-  const n = 400_000;
+  const n = 40_000;
   const large = hostile(n);
   assert.deepEqual(large.slice(1, 5).map((text) => [...linksOf(text)]), [["https://a.example/"], [`https://a.example/${"(".repeat(n)}`], ["https://deep.example/"], ["https://after.example/"]]);
-  // The time is checked as a ratio, never against a clock: a loaded runner slows both sizes alike, while a pass that
-  // rereads the text takes a hundred times as long for ten times the length. Each size keeps its fastest of three reads,
-  // taken in turn so a burst of load lands on both.
-  const small = hostile(n / 10);
-  const read = (texts) => {
-    const started = performance.now();
-    for (const text of texts) [...linksOf(text)];
-    return performance.now() - started;
+  // The work is counted, never timed: text-urls counts the characters each of its passes visits (scanned.steps). A
+  // reading that rereads the text visits each character once for every link or bracket before it, so ten times the
+  // text costs a hundred times the steps and passes STEPS_PER_CHAR many times over.
+  const STEPS_PER_CHAR = 10;
+  const steps = (text) => {
+    scanned.steps = 0;
+    [...linksOf(text)];
+    return scanned.steps;
   };
-  let fast = Infinity;
-  let slow = Infinity;
-  for (let i = 0; i < 3; i++) {
-    fast = Math.min(fast, read(small));
-    slow = Math.min(slow, read(large));
+  for (const [i, text] of [...hostile(n / 10), ...large].entries()) {
+    const counted = steps(text);
+    assert.ok(counted > 0, `text ${i % 8} at ${text.length} characters: its reading counted no steps`);
+    assert.ok(counted <= STEPS_PER_CHAR * text.length, `text ${i % 8} at ${text.length} characters took ${counted} steps, ${(counted / text.length).toFixed(1)} a character, not at most ${STEPS_PER_CHAR}`);
   }
-  assert.ok(slow < 30 * fast, `ten times the text took ${(slow / fast).toFixed(1)} times as long (${Math.round(fast)} ms, then ${Math.round(slow)} ms), not under 30`);
+});
+
+test("every pattern the URL reading scans a text with runs on V8's linear engine: none backtracks", async () => {
+  // V8's linear engine refuses a pattern that needs backtracking (a lookaround, a backreference) as "Cannot be executed in
+  // linear time"; the engine is behind a flag, so a child node reads the patterns. It takes no "i" flag, which adds no
+  // backtracking, so each source is compiled with "l" alone. A nested quantifier the engine runs in linear time is not
+  // refused; the step count above bounds the module's own passes.
+  const { execFileSync } = await import("node:child_process");
+  const module = new URL("../dist/text-urls.js", import.meta.url).href;
+  const script = `const { scanPatterns } = await import(${JSON.stringify(module)});
+console.log(JSON.stringify(scanPatterns.map((pattern) => { try { new RegExp(pattern.source, "l"); return null; } catch (error) { return pattern.source + ": " + error.message; } })));`;
+  const refused = JSON.parse(execFileSync(process.execPath, ["--enable-experimental-regexp-engine", "--input-type=module", "-e", script], { encoding: "utf8" }));
+  assert.ok(refused.length >= 5, `${refused.length} patterns`);
+  assert.deepEqual(refused.filter(Boolean), [], "a pattern that backtracks");
 });
 
 /** A GitHub releases.atom, as github.com serves it: each entry's link in an attribute, its content escaped HTML. */

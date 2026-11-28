@@ -117,8 +117,9 @@ export const RUN_SLOTS = 256;
 const STOP_GRACE_MS = 30_000;
 /** How long a person's stop gives the run's process before the runner ends it: the turn's stop and end (STOP_GRACE_MS),
  *  and after it the tool hosts' release to its bound (`releaseBound`, LoopDeps.releaseBoundMs) and the cut's booking
- *  (RELEASE_MARGIN_MS), so a release that never answers is cut, charged and written before the process is ended. */
-const commandGraceMs = (releaseBound: number): number => STOP_GRACE_MS + releaseBound + RELEASE_MARGIN_MS;
+ *  (`releaseMargin`, LoopDeps.releaseMarginMs), so a release that never answers is cut, charged and written before the
+ *  process is ended. */
+const commandGraceMs = (releaseBound: number, releaseMargin: number): number => STOP_GRACE_MS + releaseBound + releaseMargin;
 /** How long a run's process has to exit once its loop ended, at the least: a lost create's recovery under way in it ends
  *  first (run-child.ts), so its exit is given the release's bound when that is longer (LoopDeps.releaseBoundMs). */
 const EXIT_GRACE_MS = 5_000;
@@ -1509,6 +1510,7 @@ export function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, 
             ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}),
             ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}),
             ...(loopDeps.releaseBoundMs === undefined ? {} : { releaseBoundMs: loopDeps.releaseBoundMs }),
+            ...(loopDeps.releaseMarginMs === undefined ? {} : { releaseMarginMs: loopDeps.releaseMarginMs }),
           };
           const ended = channel.call("loop", "start", [init]) as Promise<LoopEnd>;
           // From here a command or a stop goes to the run's process, after its start on the channel.
@@ -1561,7 +1563,8 @@ export function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, 
       // runs to that cut and the margin its booking takes, when that is later than its own.
       const releaseBy = loopDeps.releaseBy?.();
       const told = channel.call("loop", "stop", releaseBy === undefined ? [reason] : [reason, releaseBy]).catch(() => undefined);
-      const grace = reason.kind === "command" ? commandGraceMs(loopDeps.releaseBoundMs ?? releaseBoundMs()) : Math.max(STOP_GRACE_MS / 3, releaseBy === undefined ? 0 : releaseBy - Date.now() + RELEASE_MARGIN_MS);
+      const margin = loopDeps.releaseMarginMs ?? RELEASE_MARGIN_MS;
+      const grace = reason.kind === "command" ? commandGraceMs(loopDeps.releaseBoundMs ?? releaseBoundMs(), margin) : Math.max(STOP_GRACE_MS / 3, releaseBy === undefined ? 0 : releaseBy - Date.now() + margin);
       let timer: NodeJS.Timeout | undefined;
       const late = await Promise.race([told.then(() => false), new Promise<boolean>((resolve) => (timer = setTimeout(() => resolve(true), grace)))]);
       clearTimeout(timer);
