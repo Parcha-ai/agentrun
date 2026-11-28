@@ -182,6 +182,9 @@ export function runLearningIssues(value: Record<string, unknown>): { field: stri
 /** learning_needs_cap's words: a run start's `learning` object with no model_key or no max_cost_usd of its own. */
 export const RUN_LEARNING_NEEDS_CAP = "A run that asks to learn (learning: {settings}) spends its own model_key inside its own max_cost_usd, its learning work with it: send both, or send learning \"use\" or none.";
 
+/** learning_off's words: a run start's `learning` object on a server whose learning is off. */
+export const RUN_LEARNING_OFF = "Learning is off on this server.";
+
 /** The loop numbers a run start's valid `learning` object asks for, as a revision keeps them (learningSettingOf): `{}`,
  *  every default, when it names none. */
 export const runLearningSettingsOf = (value: { readonly settings?: unknown }): LearningLoop => learningSettingOf((value.settings ?? {}) as LearningLoop) as LearningLoop;

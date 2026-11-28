@@ -5104,7 +5104,12 @@ A run can also ask for it at its start (`POST /v2/agents/{id}/runs`, the field `
   stored, since all of its learning work spends that key inside that cap: the compile turn inside its claim, a check's
   replay runs on their share of what the cap leaves, and an audit's shadow on what is left after that. A replay or a
   shadow that does not fit is dropped before it starts, nothing spent, and says so in words in the run's
-  `learning_work.dropped` and in a `learning` row of its timeline. An inline run (`POST /v2/runs`) takes `"use"` alone.
+  `learning_work.dropped` and in a `learning` row of its timeline. On a server whose learning is off the object is
+  `400 learning_off` ("Learning is off on this server."), nothing stored, and `features.run_learning` is `false`. Once
+  a run asked, its agent's own learning reads take the settings of its newest run that asked, else its revision's: the
+  agent's `learning.pending`, its learning loop and promotions reads, an owner's replay and an audit's hold. So an agent
+  whose definition has no learning reads as learning while its runs learn. An inline run (`POST /v2/runs`) takes
+  `"use"` alone, and a run a trigger starts keeps its revision's learning.
 
 An agent learns two things. Its owner's corrections: the words they give after a run (a grade's, or a message after
 the job's first) become one line of the agent's `corrections.md`, and every later run reads the file whole. And its

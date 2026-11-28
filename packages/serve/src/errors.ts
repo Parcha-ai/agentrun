@@ -108,6 +108,9 @@ export const ERROR_STATUS = {
   // POST /agents/{agent_id}/runs with `learning: { settings? }` but no model_key or no max_cost_usd of its own: all of a
   // run's learning work spends its own key inside its own cap, so nothing starts and nothing is stored.
   learning_needs_cap: 400,
+  // POST /agents/{agent_id}/runs with `learning: { settings? }` on a server whose learning is off (`--learning off`): the
+  // run could learn nothing here, so it is refused in words, never started given nothing; nothing is stored.
+  learning_off: 400,
   // A run start while every runner here refused to claim any run (runner/presence.ts): its run isolation refused
   // (run-child-host.ts runIsolationOf), in the runner's words and their fix. Not retryable: it stays so until the runner
   // is started again as the words say.

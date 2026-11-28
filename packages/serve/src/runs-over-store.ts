@@ -34,6 +34,7 @@ import { type RepoBinding, repoOf } from "./run-repo.js";
 import { type HeldRefusal, type LaunchDisk, launchBody, readLaunchBody, sourceProjectOf, type RunLaunch } from "./run-launch.js";
 import { learningDiskOf } from "./learn/learning-of.js";
 import { type LearningLoop, runLearningSettingsOf } from "./learning-setting.js";
+import { noteRunLearning } from "./agent-run-learning.js";
 import { keyTargetOf, type ModelKeyTarget, modelKeyRequired, serverKeyMissing } from "./run-model-key.js";
 import { type ApprovalDecision, raiseFollowUpId, type RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
@@ -608,7 +609,11 @@ export async function startRun(store: Store, deps: StartDeps, entry: AgentEntry,
   const runId = (deps.newRunId ?? uuidv7)();
   try {
     const labels = labelsOf(body.labels);
-    return await withHeldFiles(store, deps, runId, entry.agent.id, revision, launch, (launch) => store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, expectedCurrent: entry.agent.currentRevision, ...(origin ? { origin } : {}), ...(labels ? { labels } : {}), ...(firing ? { firing } : {}) }, { body: launchBody(launch), ...(sealed ? { sealed: sealed(runId, launch, target) } : {}) }));
+    const row = await withHeldFiles(store, deps, runId, entry.agent.id, revision, launch, (launch) => store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, expectedCurrent: entry.agent.currentRevision, ...(origin ? { origin } : {}), ...(labels ? { labels } : {}), ...(firing ? { firing } : {}) }, { body: launchBody(launch), ...(sealed ? { sealed: sealed(runId, launch, target) } : {}) }));
+    // A run that asked to learn is named its agent's newest that did, which its agent-level reads take the settings of
+    // (agent-run-learning.ts). The run is made either way: a name that fails to write leaves them on the one before.
+    if (launch.learning?.settings && row.id === runId) await noteRunLearning(store.settings, entry.agent.id, row.id, row.startedAt).catch(() => undefined);
+    return row;
   } catch (error) {
     if (error instanceof RevisionMoved) throw new ApiError("precondition_failed", "The agent changed while this run was prepared. Start again using its current setup.");
     // Only another writer of the store got here first under the same origin key: its run is the one asked for.

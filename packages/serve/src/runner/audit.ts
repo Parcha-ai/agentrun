@@ -26,12 +26,15 @@
 //     verdict on the served answer, except a wrong one under agree_on with an expected answer, judged on those fields
 //     against it (answerJudged). A graded run is counted by its grade row alone (learn/audit.ts
 //     windowOf): the check and the audit read one ground truth, a grade's answer where a person gave one, else the agent's.
-// Every number is the agent definition's (learning-setting.ts auditLoopOf). Nothing here fails a claim: a failure is logged.
+// Every number is the agent definition's (learning-setting.ts auditLoopOf), or a run's that asked to learn with its own:
+// a draw reads its run's (runLearningOf), the hold its agent's newest asking run's (agent-run-learning.ts). Nothing here
+// fails a claim: a failure is logged.
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import { overCapMessage } from "@parcha/agentrun-kernel/kernel/cap";
 import { sourceSyncOf } from "../source-sync/types.js";
 import type { AuxiliaryAdmitter } from "../source-sync/auxiliary.js";
 import { agreeOnOf, auditLoopOf, type AuditLoop, runLearningOf } from "../learning-setting.js";
+import { learningOfAgentNow } from "../agent-run-learning.js";
 import { launchBody, readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { runEntries } from "../store-reads/journal.js";
 import { runPathOverStore } from "../store-reads/learning.js";
@@ -89,10 +92,12 @@ const turnOf = (id: string | undefined): { turn?: string } => (id === undefined 
 /** The answer an audit row is of: its `turn`'s, read from the run by that row's id; none when it names none. */
 const auditedAnswer = (deps: Pick<AuditDeps, "store" | "context">, row: Pick<AuditRow, "run" | "turn">) => (row.turn === undefined ? Promise.resolve(null) : answerOf(deps.store, row.run, deps.context, row.turn));
 
-/** The audit numbers of revision `revisionId`'s definition (each one it leaves out at its default). */
-export async function auditLoopOfRevision(store: Pick<Store, "agents">, revisionId: string): Promise<AuditLoop> {
+/** The audit numbers agent `agentId`'s hold reads, as every agent-level reader takes them (agent-run-learning.ts): its
+ *  newest run that asked to learn's settings, else revision `revisionId`'s definition's (each one left out at its
+ *  default). */
+export async function auditLoopOfAgent(store: Pick<Store, "agents" | "runs" | "settings">, agentId: string, revisionId: string): Promise<AuditLoop> {
   try {
-    return auditLoopOf(((await store.agents.revision(revisionId))?.body as { learning?: unknown } | undefined)?.learning);
+    return auditLoopOf(await learningOfAgentNow(store, agentId, (await store.agents.revision(revisionId))?.body));
   } catch {
     return auditLoopOf(undefined);
   }
@@ -384,7 +389,7 @@ async function addLines(deps: AuditDeps, lines: readonly LedgerLine[], agreed?: 
  *  idempotent (applyHold holds only a digest whose newest record still promotes it). */
 async function holdByLedger(deps: AuditDeps, all: readonly AuditRow[]): Promise<void> {
   if (!all.length) return;
-  const loop = await auditLoopOfRevision(deps.store, deps.revisionId);
+  const loop = await auditLoopOfAgent(deps.store, deps.agentId, deps.revisionId);
   const records = await promotionsOf(deps.store.learning, deps.agentId);
   for (const { workflow, digest } of servingOf(records)) {
     if (digest !== null) await applyHold(deps, all, loop, workflow, digest);

@@ -49,6 +49,7 @@ import type { Context } from "@earendil-works/chord/context";
 import type { LearnedWorkflow } from "../learning.js";
 import { LEARNING_LABEL } from "../learning.js";
 import { loopOf, runLearningOf } from "../learning-setting.js";
+import { learningOfAgentNow } from "../agent-run-learning.js";
 import { LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
 import { launchBody, readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { uuidv7 } from "../ids.js";
@@ -1274,10 +1275,11 @@ export async function askReplay(ask: ReplayAsk, name: string, digest: string, in
   const rival = replayingOf(records, name, digest)[0];
   if (rival) throw new ReplayRefused("conflict", `${name} at ${rival.digest} is replaying: one revision of a workflow is checked at a time, and a running check finishes. Ask again once it ends.`);
   const last = inputs === "held" ? heldInputsOf(records, name, digest) : undefined;
-  // The agent's own numbers (its current revision's definition, the one its replay runs launch on): with no earlier
+  // The agent's own numbers as its agent-level readers take them (agent-run-learning.ts: its newest run that asked to
+  // learn's settings, the ones its replay runs launch with, else its current revision's definition's): with no earlier
   // check, its last compile_after completed runs, as the claim's check picks them (startCheck), never the default's.
   const current = (await ask.store.agents.get(ask.agentId).catch(() => undefined))?.currentRevision;
-  const loop = current ? await loopOfRevision({ store: ask.store, revisionId: current }) : loopOf(undefined);
+  const loop = loopOf(await learningOfAgentNow(ask.store, ask.agentId, current ? (await ask.store.agents.revision(current))?.body : undefined));
   const { inputs: picked } = await checkInputs({ store: ask.store, agentId: ask.agentId }, found.workflow, { of: last ?? [], n: typeof inputs === "number" ? inputs : last ? 0 : loop.compile_after });
   if (!picked.length) throw new ReplayRefused("conflict", `${name} at ${digest} has no input to replay on: none of ${typeof inputs === "number" ? `the agent's newest ${plural(inputs, "completed run")}` : last ? "the runs it was last checked on" : "the agent's last completed runs"} has an input it fits. Nothing was started.`);
   const { launch, revisionId } = await ask.launchOf(picked[0]!.launch.input as Json);
