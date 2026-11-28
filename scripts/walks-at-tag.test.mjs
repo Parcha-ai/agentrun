@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { parse } from 'yaml';
-import { KNOWN, WALKS, allPages, best, findTag, issuePlan, report, runsAtTag } from './walks-at-tag.mjs';
+import { KNOWN, WALKS, allPages, best, findTag, issuePlan, latestTag, report, runsAtTag } from './walks-at-tag.mjs';
 
 const workflowAt = (file) => parse(readFileSync(new URL(`../.github/workflows/${file}`, import.meta.url), 'utf8'));
 const TAG = 'v0.1.0-beta.68';
@@ -123,17 +123,30 @@ test('the issue: nothing while a walk still runs; a red tag opens the one issue,
   assert.deepEqual([green.pending, red.pending, running.pending], [false, false, true]);
   assert.deepEqual(red.broken, ['Helm walk']);
   const RUN = 'https://x/run';
-  assert.deepEqual(issuePlan({ ...running, tag: TAG, open: [], run: RUN }), []);
-  assert.deepEqual(issuePlan({ ...green, tag: TAG, open: [], run: RUN }), []);
-  assert.deepEqual(issuePlan({ ...red, tag: TAG, open: [{ number: 7, title: 'ways in: Railway (hosted) broke' }], run: RUN }), [
+  assert.deepEqual(issuePlan({ ...running, tag: TAG, latest: TAG, open: [], run: RUN }), []);
+  assert.deepEqual(issuePlan({ ...green, tag: TAG, latest: TAG, open: [], run: RUN }), []);
+  assert.deepEqual(issuePlan({ ...red, tag: TAG, latest: TAG, open: [{ number: 7, title: 'ways in: Railway (hosted) broke' }], run: RUN }), [
     ['issue', 'create', '--title', `walks at ${TAG}: Helm walk not green`, '--body', red.table],
   ]);
   const ours = { number: 9, title: 'walks at v0.1.0-beta.67: Ways in not green' };
-  assert.deepEqual(issuePlan({ ...red, tag: TAG, open: [ours], run: RUN }), [
+  assert.deepEqual(issuePlan({ ...red, tag: TAG, latest: TAG, open: [ours], run: RUN }), [
     ['issue', 'edit', '9', '--title', `walks at ${TAG}: Helm walk not green`, '--body', red.table],
     ['issue', 'comment', '9', '--body', `${TAG}: Helm walk not green. ${RUN}`],
   ]);
-  assert.deepEqual(issuePlan({ ...green, tag: TAG, open: [ours], run: RUN }), [['issue', 'close', '9', '--comment', `Every walk green at ${TAG}: ${RUN}`]]);
+  assert.deepEqual(issuePlan({ ...green, tag: TAG, latest: TAG, open: [ours], run: RUN }), [['issue', 'close', '9', '--comment', `Every walk green at ${TAG}: ${RUN}`]]);
+});
+
+test('only the newest release drives the issue: an older tag finishing late or rerun, red or green, never closes or rewrites it', () => {
+  assert.equal(latestTag([{ name: 'v0.1.0-beta.68' }, { name: 'v0.1.0-beta.100' }, { name: 'v0.1.0-beta.9' }, { name: 'nightly' }]), 'v0.1.0-beta.100');
+  assert.equal(latestTag([{ name: 'v0.1.0-beta.99' }, { name: 'v0.1.0' }]), 'v0.1.0', 'a release outranks its betas');
+  assert.equal(latestTag([{ name: 'v0.1.0' }, { name: 'v0.2.0-beta.1' }, { name: 'v0.1.10' }]), 'v0.2.0-beta.1');
+  const at = (failed) => ({ ...Object.fromEntries(WALKS.map(({ file }) => [file, { run: run(), failed: [] }])), ...failed });
+  const older = 'v0.1.0-beta.67';
+  const issue = { number: 9, title: `walks at ${TAG}: Helm walk not green` };
+  for (const said of [report(older, SHA, at({})), report(older, SHA, at({ 'helm-walk.yml': {} }))]) {
+    assert.deepEqual(issuePlan({ ...said, tag: older, latest: TAG, open: [issue], run: 'https://x/run' }), [], `${said.red ? 'red' : 'green'} at an older tag`);
+    assert.deepEqual(issuePlan({ ...said, tag: older, latest: TAG, open: [], run: 'https://x/run' }), []);
+  }
 });
 
 test('the table runs itself when a walk finishes: one workflow on the four walks (never a pull request run), reading the tag through env, writing an issue only on that event', () => {

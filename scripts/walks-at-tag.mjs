@@ -49,6 +49,30 @@ export function findTag({ input, event, title, sha, tags }) {
   return found && RELEASE_TAG.test(found.name) ? found.name : '';
 }
 
+/** Release tags in version order (semver: numbers by value, a release after its prereleases), for sort. */
+export function compareTags(a, b) {
+  const parts = (tag) => {
+    const [, core, pre] = /^v([^-]+)(?:-(.+))?$/.exec(tag);
+    return { core: core.split('.').map(Number), pre: pre?.split('.') };
+  };
+  const [x, y] = [parts(a), parts(b)];
+  for (let i = 0; i < 3; i += 1) if (x.core[i] !== y.core[i]) return x.core[i] - y.core[i];
+  if (!x.pre || !y.pre) return (x.pre ? -1 : 0) + (y.pre ? 1 : 0);
+  for (let i = 0; i < Math.max(x.pre.length, y.pre.length); i += 1) {
+    const [p, q] = [x.pre[i], y.pre[i]];
+    if (p === undefined || q === undefined) return p === undefined ? -1 : 1;
+    if (p === q) continue;
+    const numeric = /^\d+$/.test(p) && /^\d+$/.test(q);
+    return numeric ? Number(p) - Number(q) : p < q ? -1 : 1;
+  }
+  return 0;
+}
+
+/** The newest release tag among `tags` (the repository's), by version. */
+export function latestTag(tags) {
+  return tags.map(({ name }) => name).filter((name) => RELEASE_TAG.test(name)).sort(compareTags).at(-1);
+}
+
 /** The runs that walked the tag: at its commit, or after its publish with the tag in the run's name. A post-publish run
  *  counts only by its name: its own sha is main's tip when it started, which a later tag may name. */
 export function runsAtTag(runs, { tag, sha }) {
@@ -103,9 +127,10 @@ const PREFIX = 'walks at ';
 const SUFFIX = ' not green';
 
 /** The gh commands for the one issue that tracks a release's walks, "walks at <tag>: <walks> not green", among `open`:
- *  none while a walk still runs; a red tag opens it, or moves the open one to this tag; a green tag closes it. */
-export function issuePlan({ tag, red, broken, pending, table, open, run }) {
-  if (pending) return [];
+ *  none while a walk still runs; a red tag opens it, or moves the open one to this tag; a green tag closes it. Only the
+ *  newest release (`latest`) drives it: an older tag's walk finishing late or rerun says nothing about the release out now. */
+export function issuePlan({ tag, latest, red, broken, pending, table, open, run }) {
+  if (pending || tag !== latest) return [];
   const ours = open.find((issue) => issue.title.startsWith(PREFIX) && issue.title.endsWith(SUFFIX));
   if (!red) return ours ? [['issue', 'close', String(ours.number), '--comment', `Every walk green at ${tag}: ${run}`]] : [];
   const title = `${PREFIX}${tag}: ${broken.join(', ')}${SUFFIX}`;
@@ -149,7 +174,9 @@ if (isMain(import.meta)) {
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, said.table);
   if (flag === '--issue') {
     const open = JSON.parse(cli(['issue', 'list', '--state', 'open', '--author', 'app/github-actions', '--limit', '100', '--json', 'number,title']));
-    const plan = issuePlan({ ...said, tag, open, run: process.env.RUN_URL ?? '' });
+    const latest = latestTag(allPages(gh, `${repo}/tags`));
+    const plan = issuePlan({ ...said, tag, latest, open, run: process.env.RUN_URL ?? '' });
+    if (tag !== latest) console.log(`${tag} is not the newest release (${latest}): the issue follows that one.`);
     if (said.pending) console.log('A walk is still running: the issue waits for the last one to finish.');
     for (const args of plan) console.log(cli(args).trim() || `gh ${args.slice(0, 3).join(' ')}`);
   }
