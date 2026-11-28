@@ -46,7 +46,7 @@ export interface RunnerHarness {
 
 type ClaudePackage = { LOCAL_STREAM_IDLE_MS: number; claudeAgentAdapter(options: Record<string, unknown>): AgentAdapter; verifyClaudeAgentCliAsync(path: string | undefined): Promise<unknown>; claudeAgentExecutable(): string | undefined };
 const CLAUDE_PACKAGE = "@parcha/agentrun-harness-claude";
-type CodexPackage = { codexAdapter(options: Record<string, unknown>): AgentAdapter; verifyCodexAsync(found?: { path: string; packageVersion?: string }): Promise<unknown> };
+type CodexPackage = { LOCAL_STREAM_IDLE_MS: number; codexAdapter(options: Record<string, unknown>): AgentAdapter; verifyCodexAsync(found?: { path: string; packageVersion?: string }): Promise<unknown> };
 const CODEX_PACKAGE = "@parcha/agentrun-harness-codex";
 
 /** Every harness the runner runs, by name. */
@@ -97,6 +97,8 @@ export const RUNNER_HARNESSES: Readonly<Record<string, RunnerHarness>> = {
         provider: { origin: launch.provider.origin, credential: launch.provider.credential },
         ...(launch.price ? { price: launch.price } : {}),
         ...(launch.fetch ? { fetch: launch.fetch } : {}),
+        // A local model says nothing while it loads or reads a long prompt: Codex waits it out, as claude-agent's CLI does.
+        ...(launch.local ? { streamIdleMs: codex.LOCAL_STREAM_IDLE_MS } : {}),
         sessionsDir: launch.sessionsDir,
         ...extra,
       });
