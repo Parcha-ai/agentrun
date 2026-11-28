@@ -6,7 +6,7 @@
 //   node npx-tree.mjs <npm cache>   the evidence on stdout; exit 0 PASS, 1 FAIL, 3 not checked
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { isMain } from "../../../scripts/is-main.mjs";
 
 const LAUNCHER = "@parcha/agentrun";
 const SCOPE = "@earendil-works/";
@@ -52,7 +52,7 @@ export function onePi(launcher, lock) {
   return { result: "PASS", evidence: `${good.join(", ")}, as launcher ${launcher.version} pins it; ${others}` };
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta)) {
   try {
     const tree = findTree(process.argv[2]);
     const json = (path) => JSON.parse(readFileSync(path, "utf8"));
