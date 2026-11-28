@@ -226,6 +226,7 @@ test("a 2xx whose body breaks while it is read stays charged at the hold: Firecr
   const { w, booked } = firecrawlWeb(() => breaking(200), { pdfMaxPages: 100 });
   const { answer } = await w.fetch(PUBLIC);
   assert.equal(answer.ok, false);
+  assert.doesNotMatch(JSON.stringify(answer), /answered nothing this server reads/, "a broken 2xx is a failed read, not an answer with no body");
   assert.deepEqual(booked[0], { name: "Firecrawl's scrape", hold: credits(100), usd: credits(100) });
 });
 
