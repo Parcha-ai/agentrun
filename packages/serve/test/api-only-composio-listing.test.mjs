@@ -11,6 +11,7 @@ import { secretWritePath, serve, serverLog, withEnv } from "./support.mjs";
 secretWritePath(["POST"], /^\/settings\/mcp-servers\/composio\/(toolkits|tools)$/);
 
 const { API_ONLY_ROUTES, WORKSPACE_ROUTES } = await import("../dist/api-only.js");
+const { SECRET_WRITE_REFUSAL, SECRET_WRITE_REFUSAL_API_ONLY, secretRefusalWords } = await import("../dist/secret-writes.js");
 
 const KEY_ENV = "COMPOSIO_API_KEY";
 const KEY = `not-a-secret-${"composio-env-key-0202"}`;
@@ -22,7 +23,9 @@ const SCOPED = randomBytes(24).toString("hex");
 const OPERATOR = randomBytes(24).toString("hex");
 /** The refusal a real secret write gets (secret-writes.ts SECRET_WRITE_REFUSAL), and the listings' own, which save nothing. */
 const SECRET_REFUSAL = "Saving, replacing or removing a secret takes the owner's signed-in session in the console; the API token can't write secrets.";
-const LISTING_API_ONLY = "A listing that sends a key's value takes the owner's signed-in session; on this server name the key by api_key_env instead.";
+/** An API-only server has no owner's session and serves no console: its refusals say what the token can send instead. */
+const SECRET_REFUSAL_API_ONLY = "On an API-only server the API token can't send a secret's value here. Save an MCP server as per_run, each run handing its credential in mcp_auth, or name a Composio key by api_key_env.";
+const LISTING_API_ONLY = "On an API-only server a Composio listing sends no key's value. Name the key by api_key_env instead.";
 const LISTING_ELSEWHERE = "Listing Composio's toolkits or tools takes the owner's signed-in session in the console; the API token lists them only on an API-only server, with the key named by api_key_env.";
 /** A 403's words before the console link the refusal may add (secret-writes.ts secretWriteRefusal). */
 const words = (refused) => String(refused.body.error.message).split(" Finish it in the console: ")[0];
@@ -49,6 +52,14 @@ async function post(server, path, body, { token = OPERATOR, workspace } = {}) {
   });
   return { status: res.status, body: await res.json() };
 }
+
+test("a refused secret write's words: the owner's session and console on a server that has them; on an API-only one, what the token can send instead", () => {
+  assert.equal(SECRET_WRITE_REFUSAL, SECRET_REFUSAL);
+  assert.equal(SECRET_WRITE_REFUSAL_API_ONLY, SECRET_REFUSAL_API_ONLY);
+  const request = { params: [], store: undefined };
+  assert.equal(secretRefusalWords("saveMcpServer", request), SECRET_REFUSAL);
+  assert.equal(secretRefusalWords("saveMcpServer", { ...request, apiOnly: true }), SECRET_REFUSAL_API_ONLY);
+});
 
 test("both listings are API-only routes a scoped request is served", () => {
   for (const name of ["listComposioToolkits", "listComposioTools"]) {
@@ -78,7 +89,8 @@ test("on an API-only server a key the caller sends is still 403 to the token, sc
       const refused = await post(s.server, path, body, options);
       assert.equal(refused.status, 403, `${path} ${JSON.stringify(body)}: ${JSON.stringify(refused.body)}`);
       assert.equal(refused.body.error.code, "forbidden");
-      assert.equal(words(refused), LISTING_API_ONLY, "a listing saves nothing: its own words, never the secret write's");
+      assert.equal(refused.body.error.message, LISTING_API_ONLY, "a listing saves nothing: its own words, never the secret write's, and no console link");
+      assert.equal(refused.body.error.details?.console_url, undefined);
       assert.ok(!JSON.stringify(refused.body).includes(KEY), "the refusal never echoes the key");
     }
   }

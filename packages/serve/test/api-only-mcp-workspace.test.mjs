@@ -19,7 +19,7 @@ import { storeOn } from "./store-helpers.mjs";
 import { raw } from "./store-target.mjs";
 
 const { WORKSPACE_ROUTES } = await import("../dist/api-only.js");
-const { SECRET_WRITE_REFUSAL } = await import("../dist/secret-writes.js");
+const { SECRET_WRITE_REFUSAL, SECRET_WRITE_REFUSAL_API_ONLY } = await import("../dist/secret-writes.js");
 const { mcpRowKey, mcpView, requestNames, runMcp } = await import("../dist/mcp-workspace.js");
 const { openMcpRow, saveMcpServer } = await import("../dist/mcp-store.js");
 const { inWorkspace, WORKSPACE } = await import("../dist/workspace-scope.js");
@@ -208,11 +208,14 @@ test("a workspace saves its own server's credential (headers or a bearer token) 
   assert.equal(await s.server.store.mcp.server("contextforge"), undefined, "no shared row was made");
   assert.equal((await s.w2("GET", PATH)).status, 404, "W2 reads W1's server as never saved");
 
-  // The unscoped token keeps none, as before: the one secret-write refusal.
+  // The unscoped token keeps none, as before: the API-only server's secret-write refusal, which names what the token can
+  // send instead and no owner's session or console, since the server has neither.
   for (const auth of [{ type: "headers", headers: { authorization: `Bearer ${SECRET}` } }, { type: "bearer", token: SECRET }]) {
     const refused = await s.ops("PUT", "/settings/mcp-servers/shared", { url: s.two.fake.url, auth });
     assert.equal(refused.status, 403, `${auth.type}: ${JSON.stringify(refused.body)}`);
-    assert.ok(String(refused.body.error?.message).startsWith(SECRET_WRITE_REFUSAL), refused.body.error?.message);
+    assert.equal(refused.body.error?.message, SECRET_WRITE_REFUSAL_API_ONLY, auth.type);
+    assert.doesNotMatch(String(refused.body.error?.message), /signed-in session|console/, auth.type);
+    assert.equal(refused.body.error?.details?.console_url, undefined, auth.type);
   }
   assert.ok(!s.two.sent.includes(`Bearer ${SECRET}`), "the shared address got nothing");
 
