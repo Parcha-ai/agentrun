@@ -157,7 +157,7 @@ test("harnesses are the ones of the readers it is given, not only the built-in o
     }),
   };
   const wrapped = await wrappedHome(home, 2026, { sources: ["own"], readers: { own }, catalog: false });
-  assert.deepEqual(wrapped.harnesses, [{ harness: "own-harness", sessions: 1, requests: 1, tokens: 10 }]);
+  assert.deepEqual(wrapped.harnesses, [{ harness: "own-harness", sessions: 1, requests: 1, tokens: 10, tokensUnknownRequests: 0 }]);
 });
 
 test("the report holds no prompt, path or project, only numbers and names", async (t) => {

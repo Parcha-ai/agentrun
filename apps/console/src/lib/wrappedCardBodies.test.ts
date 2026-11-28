@@ -160,8 +160,8 @@ describe("split", () => {
   it("folds the harnesses and models past what fits into one exact other bar", () => {
     const year: Wrapped = {
       ...YEAR,
-      harnesses: many(8).map(({ name, tokens }) => ({ harness: name, sessions: 1, requests: 1, tokens, sources: [] })),
-      models: many(7).map(({ name, tokens }) => ({ model: `p/${name}`, requests: 1, tokens, cost_usd: 0, unpriced_requests: 0 })),
+      harnesses: many(8).map(({ name, tokens }) => ({ harness: name, sessions: 1, requests: 1, tokens, tokens_unknown_requests: 0, sources: [] })),
+      models: many(7).map(({ name, tokens }) => ({ model: `p/${name}`, requests: 1, tokens, cost_usd: 0, unpriced_requests: 0, tokens_unknown_requests: 0 })),
     };
     const b = body("split", year)!;
     expect(chartCapacity(b)).toEqual([6, 6]);

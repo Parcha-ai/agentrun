@@ -68,7 +68,7 @@ describe("WrappedPage", () => {
   });
 
   it("says a model's cost counts priced requests only on the model with unpriced requests, and no price at all on one with none priced", async () => {
-    const models = { ...YEAR, models: [...YEAR.models, { model: "fx/unlisted", requests: 4, tokens: 1_000, cost_usd: 0, unpriced_requests: 4 }] };
+    const models = { ...YEAR, models: [...YEAR.models, { model: "fx/unlisted", requests: 4, tokens: 1_000, cost_usd: 0, unpriced_requests: 4, tokens_unknown_requests: 0 }] };
     await mount(async () => models, vi.fn(), 2025);
     const row = (model: string) => [...document.querySelectorAll('[aria-label="Models"] > li')].find((li) => li.textContent?.includes(model))!.textContent;
     expect(row("anthropic/claude-sonnet")).toContain("$40.00 priced only");
