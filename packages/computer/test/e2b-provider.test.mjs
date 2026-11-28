@@ -781,6 +781,14 @@ test("AGENTRUN_E2B_TEMPLATE: prepareImage answers it in place of the box templat
 	}
 });
 
+test("AGENTRUN_E2B_TEMPLATE saved with blanks around it starts that template, as serve's registryHere and computerSpecOf read it trimmed", async () => {
+	const { calls, provider } = await fromKeys({ E2B_API_KEY: KEY, AGENTRUN_E2B_TEMPLATE: " agentrun-oss/osworld-ubuntu \n" });
+	const ready = await provider.prepareImage();
+	assert.deepEqual(ready, { ok: true, value: "agentrun-oss/osworld-ubuntu" });
+	assert.equal((await provider.create({ ...SPEC, image: ready.value }, { requestId: "r-settings-template-blanks" })).ok, false);
+	assert.deepEqual(calls.filter(([call]) => call !== "Sandbox.list").map(([template]) => template), ["agentrun-oss/osworld-ubuntu"]);
+});
+
 test("E2B's metadata on an Archil computer of the longest agent id, on the box template: what create gives E2B, counted", async () => {
 	const RUN = "01a1d0b9-3e8b-7352-9497-a407e2909f53";
 	const { calls, Sandbox } = createRecorder();

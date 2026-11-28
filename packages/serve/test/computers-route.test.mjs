@@ -43,6 +43,18 @@ test("refusals: an unknown provider is not_found; a body that is not an object, 
   await refused(settingsComputerRoute(computers, "nope", {}), "not_found");
 });
 
+test("listComputers lists the image the operator names (a saved AGENTRUN_E2B_TEMPLATE, the environment's AGENTRUN_DAYTONA_SNAPSHOT) among a provider's images, trimmed, as computer.image may name it", async (t) => {
+  const { store } = await storeOn(t);
+  const computers = createComputerRoutes({ store, sealKey: randomBytes(32), kinds: KINDS, factories: fakeFactories().factories, tools, mode: "local", env: { AGENTRUN_DAYTONA_SNAPSHOT: " agentrun-osworld " } });
+  const imagesOf = (view, kind, id) => view.kinds.find((one) => one.kind === kind).providers.find((one) => one.id === id).images;
+  const before = await settingsComputerRoute(computers, "listComputers", {});
+  assert.deepEqual(["desktop", "sandbox"].map((kind) => imagesOf(before, kind, "e2b")), [undefined, undefined], "no template named: E2B offers no image to choose");
+  await settingsComputerRoute(computers, "saveComputerKeys", { provider: "e2b", body: { E2B_API_KEY: "good-e2b", AGENTRUN_E2B_TEMPLATE: " agentrun-oss/osworld-ubuntu " } });
+  const after = await settingsComputerRoute(computers, "listComputers", {});
+  assert.deepEqual(["desktop", "sandbox"].map((kind) => imagesOf(after, kind, "e2b")), [["agentrun-oss/osworld-ubuntu"], ["agentrun-oss/osworld-ubuntu"]]);
+  assert.equal(imagesOf(after, "sandbox", "daytona")[0], "agentrun-osworld");
+});
+
 test("capabilities.computers: the kinds this server offers, in the registry's order", async (t) => {
   assert.deepEqual(await computerCapabilities(await routes(t)), { kinds: ["none", "sandbox", "desktop", "phone", "browser"] });
   assert.deepEqual(await computerCapabilities(await routes(t, "disk")), { kinds: ["none", "sandbox", "desktop", "phone", "browser"] }, "Mode 2: Agent37's sandbox can start here (it registers the box image in the owner's workspace); Docker and Daytona mount no Archil disk, and Modal's and E2B's need Archil's image in the owner's account");
