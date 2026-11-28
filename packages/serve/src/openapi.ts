@@ -2022,7 +2022,7 @@ const CHECK_DISAGREEMENT = closedWith({ run: { type: "string" }, input: { type: 
   draft: { type: "string", description: "What it answered instead." },
   escalated: { type: "string", description: "Why it handed the input back." },
   failed: { const: true, description: "A step failed on it, or its run was still at work past the check's deadline, or never created by then." },
-  differs_on: { type: "string", description: "When `grader` compared it: the decision the two answers differ on, in the grader's words, or why its verdict could not be had (\"the comparison could not be read\", \"the cap held the comparison\", or \"the comparison read an earlier answer\" when the agent's run answered again after it was compared). Cut at 1200 characters." },
+  differs_on: { type: "string", description: "When `grader` compared it: the decision the two answers differ on, in the grader's words, or why its verdict could not be had (\"the cap held the comparison\", or \"the comparison read an earlier answer\" when the agent's run answered again after it was compared). Cut at 1200 characters." },
   fields: { type: "array", items: { type: "string" }, description: "The fields it answered wrong, against each one's known answer (`check.fields`): `agree_on`'s paths, else `answer`, the whole answer." },
   expected: { type: "array", items: closedWith({ field: { type: "string", description: "One of `fields`." }, known: { enum: ["grade", "correction", "unknown", "contradicts"], description: "Where its known answer came from; `correction` where the run's owner corrected the agent's answer by message, with no grade's expected answer (the known answer is the agent's as the correction changes it, and the agent's own is wrong); `unknown` where a grade marked the agent's answer wrong without giving the right one; `contradicts` where a grade marked it wrong yet the right answer it gave is the agent's, so there is none." } }, { value: { type: "string", description: "The known answer, as text or JSON: the expected answer a grade gave (with no `agree_on`, the check judges against it written over the agent's answer when both are JSON objects), or for `correction` the owner's correction in their words, cut at 1200 characters; empty once the run it is of was deleted. Left out for `unknown` and `contradicts`." } }), description: "Of `fields`, each one known from a grade or its owner's correction (never the agent's own answer, `agent`), or marked wrong with no right answer: what the recompile is asked to say there." },
 });
@@ -2033,11 +2033,12 @@ const FIELD_COUNT = {
   agent_right: { ...COUNT, description: "How many of them the agent's own answer had right." },
 };
 const UNJUDGED = { type: "integer", minimum: 1, description: "The inputs that carried it with no known answer (the agent's answer graded wrong with none given, and the workflow said another): never right, and the field must be judged on at least `alone_min` of the inputs that carried it. Left out when none." };
+const UNREAD = { type: "integer", minimum: 1, description: "The inputs whose grader's verdict could not be read (a reply that was not the verdict, or a request that failed, each asked twice; or one the run's stop or its deadline cut): counted neither way, never a disagreement. Left out when none." };
 const KNOWN_SOURCES = ["grade", "agent"] as const;
 /** A field's counts by where its known answer came from: its inputs known from a grade, and from the agent's own answer. */
 const FIELD_BY = { grade: closed(FIELD_COUNT, "Its inputs known from a grade."), agent: closed(FIELD_COUNT, "Its inputs known from the agent's own answer.") };
 /** A field's counts by source, as a connected agent's check keeps them between turns. */
-const FIELD_TALLY = { type: "object", additionalProperties: false, properties: { ...FIELD_BY, unjudged: UNJUDGED } };
+const FIELD_TALLY = { type: "object", additionalProperties: false, properties: { ...FIELD_BY, unjudged: UNJUDGED, unread: UNREAD } };
 /** One field's verdict (learn/field-check.ts FieldVerdict). */
 const FIELD_VERDICT = closedWith({
   ...FIELD_COUNT,
@@ -2046,7 +2047,7 @@ const FIELD_VERDICT = closedWith({
   pass: { type: "boolean", description: "Whether it passed: over all its known inputs pooled, at least `agree_min` right; on those known from a grade, at least `agree_min` right and at most 2 points under the agent, one miss always allowed in each; and judged on enough of its inputs (`unjudged`)." },
   reason: { type: "string", description: "Why, in words, with the numbers." },
   by: { type: "object", additionalProperties: false, properties: FIELD_BY, description: "Its counts per source." },
-}, { unjudged: UNJUDGED });
+}, { unjudged: UNJUDGED, unread: UNREAD });
 /** A compiled draft's one check (learn/promote.ts CheckRecord): its bar while it replays, its numbers once decided. */
 const PROMOTION_CHECK = closedWith({
   compile_after: { type: "integer", minimum: 1, description: "The agent definition's `learning.compile_after` when the check began: how many of the agent's newest completed runs it read inputs from." },
@@ -2055,7 +2056,7 @@ const PROMOTION_CHECK = closedWith({
   attempt: { enum: [1, 2], description: "1: the compile's first check. 2: the check of its one recompile, after the first held it; held again, it stops (`stopped`)." },
 }, {
   agree_on: { type: "array", items: { type: "string" }, minItems: 1, description: "The definition's `learning.agree_on` it compared the draft's answer and the agent's on: dotted paths into the answer's JSON object, each resolving in both answers to equal values. Left out when it compared the whole answer." },
-  grader: { type: "string", description: "With no `agree_on`: the model that compared the two answers where they were not equal, asked whether they reach the same decision (one request per input, booked as the check's spend; a reply it could not read, a failed request or one the cap refused counts as differing): the agent's fast model, else, with none set, the agent's own model, as the check's reason says. Left out when no model compared them: with `agree_on`, or when no grader could be routed (the whole answer)." },
+  grader: { type: "string", description: "With no `agree_on`: the model that compared the two answers where they were not equal, asked whether they reach the same decision (one request per input, asked once more on a reply that is not the verdict or a failed request, booked as the check's spend; one the cap refused counts as differing, and a verdict still not read is `unread`, counted neither way): the agent's fast model, else, with none set, the agent's own model, as the check's reason says. Left out when no model compared them: with `agree_on`, or when no grader could be routed (the whole answer)." },
   n: { ...COUNT, description: "The inputs it ran on (a replay stopped at a write is none; one never created, or not ended, by the check's deadline counts, as failed). 0 with nothing to run on: never promoted, it stops (`stopped`) and `reason` says why." },
   agreed: { ...COUNT, description: "How many of them it answered alone right on every field at once, each against its known answer: a grade's expected answer, else the agent's recorded answer (compared on `agree_on` when set; else equal answers, or the same decision by `grader`'s verdict). An input a field has no known answer on is not right." },
   alone: { ...COUNT, description: "How many of them it answered alone. Promoted when `alone`/`n` >= `alone_min`, `agreed`/`alone` >= `agree_min`, and every field of `fields` passes." },
@@ -2068,6 +2069,8 @@ const PROMOTION_CHECK = closedWith({
   unstarted: { ...COUNT, minimum: 1, description: "How many of its replay runs were never created by the check's deadline (the server stopped after reserving them, say), each a `failed` input. Left out when none. Every one: its replay's read is `failed`." },
   skipped_tools: SKIPPED_TOOLS,
   disagreements: { type: "array", items: CHECK_DISAGREEMENT, description: "On a hold: each input it did not agree on, which the agent's next run reads as data in its one recompile." },
+  unread: { ...UNREAD, description: "Of `alone`, the inputs whose grader's verdict could not be read (a reply that was not the verdict, or a request that failed, each asked twice; or one the run's stop or its deadline cut): counted neither right nor wrong, never in `disagreements`, and left out of the joint floor (`agreed` of `alone` - `unread`). Left out when none." },
+  undecided: { const: true, description: "With `unread`, fewer than 2 of the inputs it answered alone could be compared, so it decided nothing of the draft: a hold, `reason` saying \"not decided\" with the counts. A first check's asks the recompile; a recompile's stops (`stopped`), as any hold of it does. Left out when it decided." },
   stopped: { const: true, description: "The recompile's check held it too, or there was nothing to check it on (no input of the agent's it takes, or every input skipped at a write: `n` 0, `reason` starting \"nothing to check it on\", which asks no recompile): nothing compiles again until new evidence after the stop restarts it (a correction merged, or `compile_after` more of the agent's own runs started), as a first compile again: a revise, then one recompile. The agent keeps the runs." },
   released: { type: "integer", minimum: 1, description: "A connected agent's check (`via` sdk): how many of its reserved native turns in a row since the last one checked could not be its baseline and were given back to wait for the next turn the draft takes (see runner/promotion.ts SDK_CHECK_RELEASES for the causes and the hold the fifth writes). Left out when none." },
   fresh_reads: { type: "integer", minimum: 1, description: "A connected agent's check (`via` sdk): how many fresh read-only calls its shadow made where the native turn's recording had no result (the host's opt-in `shadowReadFallback`). Left out when every call was answered from the recording." },
@@ -2082,6 +2085,7 @@ const PROMOTION_CHECK = closedWith({
   }, {
     disagreements: { type: "array", items: CHECK_DISAGREEMENT, description: "Each turn it did not agree on." },
     fresh_reads: { type: "integer", minimum: 1, description: "The fresh read-only calls its shadows made, as `fresh_reads` counts them." },
+    unread: { ...UNREAD, description: "The turns whose grader's verdict could not be read, as `unread` counts them." },
   }), description: "A connected agent's check (`via` sdk) still collecting native turns. A check decides once, on `compile_after` inputs, so this one waits for that many turns, the agent answering each, then decides on all of them. Left out once decided, and on a server replay; a check stopped or set aside before it held them keeps the turns it had." },
 });
 const PROMOTION = closedWith({
@@ -2148,7 +2152,7 @@ const AUDIT_ROW = closedWith({
   digest: { type: "string", description: "The revision that served it." },
   promoted_at: { type: ["string", "null"], format: "date-time", description: "The promotion of that revision the row counts for: its promote record's `at` (GET .../learning/promotions), the one serving when the shadow started or the grade was given. The hold rule counts only the rows of the revision's promotion now, so a revision its owner's replay promotes again after a hold starts on none. Null: none." },
   source: { enum: ["shadow", "grade"], description: "`shadow`: the shadow run's answer compared with the served one. `grade`: an owner's grade of a run the workflow answered alone (PUT /runs/{id}/grade)." },
-  agreed: { type: ["boolean", "null"], description: "Whether the two answers say the same (a grade's: whether it was graded right); null when either answer is missing (a shadow that failed or `parked`, or none was started): no evidence, not counted." },
+  agreed: { type: ["boolean", "null"], description: "Whether the two answers say the same (a grade's: whether it was graded right); null when either answer is missing (a shadow that failed or `parked`, or none was started), or the grader's verdict on them could not be read (asked twice): no evidence, not counted." },
   served_cost: { type: ["number", "null"], minimum: 0, description: "What the served run cost; null when unknown." },
   shadow_cost: { type: ["number", "null"], minimum: 0, description: "What the shadow run cost (the agent's learning cost); null for a grade's row, or when unknown." },
   at: DATE_TIME,

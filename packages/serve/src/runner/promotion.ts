@@ -64,7 +64,7 @@ import { isObject, type Json } from "../validate.js";
 import { agentRun, lastOwnRuns, newCompileAttempt, sinceReset, STOP_RESTARTS, stoppedRecord, stopsOf } from "../learn/compile.js";
 import { answerAt, answerValue, type CheckBar, type CheckDisagreement, type CheckKnown, type CheckRecord, type CheckTurns, checkShares, CHECK_TEXT_MAX, championOf, compareAnswers, type Compared, comparedGrade, comparedOf, correctionCounts, gradesOf, knownAnswerText, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, type ReplayLaunch, type ReplayOutcomes, type ReplayScore, replayingOf, sameAnswer, type SkippedTool, skippedToolsOf, valueAtPath } from "../learn/promote.js";
 import { CORRECTIONS_CAP, correctionWords } from "../learn/corrections.js";
-import { check as checkFields, type CheckInput, type CheckTally, type FieldAnswers, jointSaid, KNOWN, tallyOf } from "../learn/field-check.js";
+import { check as checkFields, type CheckInput, type CheckTally, type FieldAnswers, jointSaid, KNOWN, READABLE_MIN, tallyOf, unreadWords } from "../learn/field-check.js";
 import { sendCommand } from "./commands.js";
 import { ClaimRefused } from "./loop-contract.js";
 import { readView, learningOf } from "../learn/rows.js";
@@ -486,6 +486,11 @@ export const NOTHING_TO_CHECK = "nothing to check it on";
  *  check no grader compared (no agree_on, and no model's verdict was kept: its route could not be made, or its run kept
  *  none). */
 export const NEVER_WORD_FOR_WORD = "its answers never matched the agent's word for word, and no model compared their decisions (the replays kept no grader's verdict); name the fields that carry the decision (learning.agree_on)";
+export { unreadWords };
+/** Why a check with an unread comparison decided nothing: `readable` of the `alone` inputs it answered alone could be
+ *  compared, under READABLE_MIN, `unread` of them unread (learn/field-check.ts CheckVerdict.undecided). */
+export const notDecidedWords = (readable: number, alone: number, unread: number): string =>
+  `not decided: ${readable} of ${alone} answered alone could be compared, and a check decides on ${READABLE_MIN} at least (${unreadWords(unread)})`;
 /** What a held check the grader compared says of the inputs it disagreed on: k of n, with one of the decisions. */
 export const differentDecisionWords = (k: number, n: number, example: string | undefined): string => `its answers reached a different decision from the agent's on ${k} of ${n}${example ? ` (for example: ${example})` : ""}`;
 
@@ -551,8 +556,9 @@ function checkInputOf(row: CheckRow, on: readonly string[] | undefined): { reado
   const corrected = row.expected === undefined ? row.corrected : undefined;
   const graded = contradicts ? { no_known: true as const } : row.expected ? { grade: row.expected, ...(row.correct !== undefined ? { agent_correct: row.correct } : {}) } : corrected !== undefined ? (row.compared?.corrected !== undefined ? { correction: corrected, agent_correct: false } : { correction: corrected, agent_correct: false, unasked: true as const }) : row.correct === false ? { agent_correct: false } : {};
   const compared = compareAnswers(row.answer, row.expected ? knownAnswerText(row.agent, row.expected) : row.agent, row.compared, corrected !== undefined);
-  // The answers as sameAnswer reads them, so a draft that says the agent's answer in another dress repeats it.
-  return { input: { input_id: row.of, outcome, fields: { [WHOLE_ANSWER]: { workflow: answerValue(row.answer), agent: answerValue(row.agent), agrees: compared.same, ...graded } } }, compared };
+  // The answers as sameAnswer reads them, so a draft that says the agent's answer in another dress repeats it. A verdict
+  // that could not be read counts neither way (FieldAnswers.unread).
+  return { input: { input_id: row.of, outcome, fields: { [WHOLE_ANSWER]: { workflow: answerValue(row.answer), agent: answerValue(row.agent), agrees: compared.same, ...graded, ...(compared.unread ? { unread: true as const } : {}) } } }, compared };
 }
 
 /** One answer judged as the check judges an input it answered alone (checkInputOf, learn/field-check.ts): `answer`
@@ -719,7 +725,8 @@ export async function decideCheck(deps: DecideDeps, name: string, digest: string
   const now = deps.now ?? Date.now;
   const { before } = read;
   const { verdict, disagreements, grader, own } = await judgeRows(deps, bar, read.rows, before);
-  const { tally, fields, failing, joint } = verdict;
+  const { tally, fields, failing, joint, undecided } = verdict;
+  const unread = tally.unread ?? 0;
   const score = { n: tally.n, agreed: tally.agreed, alone: tally.alone };
   const fieldCount = Object.keys(fields).length;
   const saysJoint = jointSaid(Object.values(fields).map((one) => one.pass), joint.pass);
@@ -748,17 +755,18 @@ export async function decideCheck(deps: DecideDeps, name: string, digest: string
   // and the words say none ran.
   const said = read.unstarted === score.n
     ? `none of its ${plural(score.n, "check run")} started by the check's deadline (its launch was interrupted: the server stopped after reserving it, say): nothing was checked`
-    : `checked on ${score.n} of the agent's inputs: answered ${score.alone} alone (${pct(shares.alone)}, the bar ${pct(bar.alone_min)})${Object.keys(fields).length ? `; ${Object.values(fields).map((one) => one.reason).join("; ")}` : ""}${saysJoint ? `; right on every field at once: ${joint.agreed} of ${joint.alone} (${pct(shares.agreement)}, the bar ${pct(bar.agree_min)})` : ""}${grader ? (own ? `; compared by the agent's own model (${grader}; no fast model is set)` : `; compared by the fast model (${grader})`) : ""}${aside ? ` (${aside})` : ""}`;
+    : `checked on ${score.n} of the agent's inputs: answered ${score.alone} alone (${pct(shares.alone)}, the bar ${pct(bar.alone_min)})${Object.keys(fields).length ? `; ${Object.values(fields).map((one) => one.reason).join("; ")}` : ""}${saysJoint ? `; right on every field at once: ${joint.agreed} of ${joint.alone} (${pct(joint.alone ? joint.agreed / joint.alone : 0)}, the bar ${pct(bar.agree_min)})` : ""}${grader ? (own ? `; compared by the agent's own model (${grader}; no fast model is set)` : `; compared by the fast model (${grader})`) : ""}${aside ? ` (${aside})` : ""}`;
   // The whole answer compared with the agent's: with the grader, how many answered alone reached another decision, with
   // one it named; never once the same and no grader: free text two runs never repeat, most likely, so the owner is told
   // what to set.
   const whole = bar.agree_on?.length ? undefined : fields[WHOLE_ANSWER]?.by.agent;
   const differed = whole ? whole.n - whole.workflow_right : 0;
   const example = disagreements.find((one) => one.differs_on !== undefined)?.differs_on;
-  const verbatim = ok || !whole ? "" : grader ? (differed > 0 ? `; ${differentDecisionWords(differed, whole.n, example)}` : "") : whole.workflow_right === 0 ? `; ${read.exactMismatchReason ?? NEVER_WORD_FOR_WORD}` : "";
+  // Too few comparisons read to decide: the hold says that, never that the workflow decided otherwise.
+  const verbatim = ok ? "" : undecided ? `; ${notDecidedWords(joint.alone, tally.alone, unread)}` : !whole ? "" : grader ? (differed > 0 ? `; ${differentDecisionWords(differed, whole.n, example)}` : "") : whole.workflow_right === 0 ? `; ${read.exactMismatchReason ?? NEVER_WORD_FOR_WORD}` : "";
   const heldOn = `held${failing.length ? ` on ${listed(failing)}` : !joint.pass && fieldCount ? " on its fields together" : ""}${verbatim}`;
   const reason = ok ? `${said}: promoted` : stopped ? `${said}: ${heldOn}, and this was the recompile's check, so it stops: ${STOP_RESTARTS}` : `${said}: ${heldOn}; the agent's next run recompiles it once with the inputs it did not agree on`;
-  const check: CheckRecord = { ...bar, ...score, agent_agreed: tally.agent_agreed, joint: joint.pass, ...(fieldCount ? { fields } : {}), ...numbers, ...(disagreements.length ? { disagreements } : {}), ...(stopped ? { stopped: true as const } : {}), ...(grader ? { grader } : {}) };
+  const check: CheckRecord = { ...bar, ...score, agent_agreed: tally.agent_agreed, joint: joint.pass, ...(fieldCount ? { fields } : {}), ...numbers, ...(disagreements.length ? { disagreements } : {}), ...(unread ? { unread } : {}), ...(undecided ? { undecided: true as const } : {}), ...(stopped ? { stopped: true as const } : {}), ...(grader ? { grader } : {}) };
   const record: PromotionRecord = { workflow: name, digest, at: iso(now()), decided: ok ? "promote" : "hold", reason, check, ...seedOf(deps), ...extra };
   // A check that outlives its revision's run: the run's purge never stops it (it replays other runs' inputs), and the
   // purge deletes the revision's rows and records. No version of the workflow holds the digest then: nothing is written
@@ -911,7 +919,7 @@ export async function sdkCheckTurn(deps: DecideDeps, record: PromotionRecord & {
   }
   const { verdict: { tally }, disagreements } = await judgeRows(deps, bar, [row], before);
   const fresh = (before?.fresh_reads ?? 0) + (read.fresh_reads ?? 0);
-  const turns: CheckTurns = { n: tally.n, agreed: tally.agreed, alone: tally.alone, agent_agreed: tally.agent_agreed, fields: tally.fields, of: [row.of, ...(before?.of ?? [])], outcomes: outcomesAdded(outcomes, before?.outcomes), ...(disagreements.length ? { disagreements } : {}), ...(fresh ? { fresh_reads: fresh } : {}) };
+  const turns: CheckTurns = { n: tally.n, agreed: tally.agreed, alone: tally.alone, agent_agreed: tally.agent_agreed, fields: tally.fields, of: [row.of, ...(before?.of ?? [])], outcomes: outcomesAdded(outcomes, before?.outcomes), ...(disagreements.length ? { disagreements } : {}), ...(fresh ? { fresh_reads: fresh } : {}), ...(tally.unread ? { unread: tally.unread } : {}) };
   const check = { ...bar, turns };
   const kept = await waitAgain(deps, record, check, `Waiting for the next native turn of the connected agent that it takes: ${sdkTurnsWords(check)}. Nothing was promoted.`, still);
   if (kept.won) deps.log(`workflow-first: ${record.workflow} at ${record.digest}: ${sdkTurnsWords(check)}`);

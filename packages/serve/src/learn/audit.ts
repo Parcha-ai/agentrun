@@ -28,8 +28,8 @@ export const AUDITS_KEPT = 2_000;
  *  `workflow` at `digest` served it, under the promotion begun at `promoted_at` (learn/promote.ts promotionStartOf: the
  *  one serving when its shadow started, or at the grade; null: none); `agreed`: whether the served answer is right
  *  against the known one (the shadow's, or a grade's: its `correct`, else its expected answer's verdict), null when
- *  either answer is missing (a shadow that failed, parked or never ran) or a grade contradicts itself: no evidence either
- *  way, never counted by the hold rule; the two runs' costs (null unknown). `turn`: the served run's answer the audit is
+ *  either answer is missing (a shadow that failed, parked or never ran), the grader's verdict on them could not be read
+ *  (learn/promote.ts Compared.unread), or a grade contradicts itself: no evidence either way, never counted by the hold rule; the two runs' costs (null unknown). `turn`: the served run's answer the audit is
  *  of, the id of its answer row (its newest final answer when the audit began, or at the grade): a follow-up's later
  *  answer is never the one compared; absent when it had none. `skipped`: a drawn run whose cap left its shadow no
  *  allowance (less than a run's smallest cap): no shadow was started. `parked`: its shadow came to wait on a person (an

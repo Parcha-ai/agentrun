@@ -2843,6 +2843,8 @@ class ListLearningPromotionsResponsePromotionsItemCheck(_ListLearningPromotionsR
     unstarted: int
     skipped_tools: list[ListLearningPromotionsResponsePromotionsItemCheckSkippedToolsItem]
     disagreements: list[ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem]
+    unread: int
+    undecided: Literal[True]
     stopped: Literal[True]
     released: int
     fresh_reads: int
@@ -2850,7 +2852,7 @@ class ListLearningPromotionsResponsePromotionsItemCheck(_ListLearningPromotionsR
 
 
 _ListLearningPromotionsResponsePromotionsItemCheckFieldsValueRequired = TypedDict("_ListLearningPromotionsResponsePromotionsItemCheckFieldsValueRequired", {"n": "int", "workflow_right": "int", "agent_right": "int", "known": "Literal[\"grade\", \"agent\"]", "pass": "bool", "reason": "str", "by": "ListLearningPromotionsResponsePromotionsItemCheckFieldsValueBy"})
-_ListLearningPromotionsResponsePromotionsItemCheckFieldsValueOptional = TypedDict("_ListLearningPromotionsResponsePromotionsItemCheckFieldsValueOptional", {"unjudged": "int"}, total=False)
+_ListLearningPromotionsResponsePromotionsItemCheckFieldsValueOptional = TypedDict("_ListLearningPromotionsResponsePromotionsItemCheckFieldsValueOptional", {"unjudged": "int", "unread": "int"}, total=False)
 
 
 class ListLearningPromotionsResponsePromotionsItemCheckFieldsValue(_ListLearningPromotionsResponsePromotionsItemCheckFieldsValueRequired, _ListLearningPromotionsResponsePromotionsItemCheckFieldsValueOptional):
@@ -2924,12 +2926,14 @@ class _ListLearningPromotionsResponsePromotionsItemCheckTurnsRequired(TypedDict)
 class ListLearningPromotionsResponsePromotionsItemCheckTurns(_ListLearningPromotionsResponsePromotionsItemCheckTurnsRequired, total=False):
     disagreements: list[ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItem]
     fresh_reads: int
+    unread: int
 
 
 class ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValue(TypedDict, total=False):
     grade: ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueGrade
     agent: ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueAgent
     unjudged: int
+    unread: int
 
 
 class ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueGrade(TypedDict):
@@ -3067,6 +3071,8 @@ class ListLearningPromotionsResponseServingItemChampionCheck(_ListLearningPromot
     unstarted: int
     skipped_tools: list[ListLearningPromotionsResponseServingItemChampionCheckSkippedToolsItem]
     disagreements: list[ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItem]
+    unread: int
+    undecided: Literal[True]
     stopped: Literal[True]
     released: int
     fresh_reads: int
@@ -3074,7 +3080,7 @@ class ListLearningPromotionsResponseServingItemChampionCheck(_ListLearningPromot
 
 
 _ListLearningPromotionsResponseServingItemChampionCheckFieldsValueRequired = TypedDict("_ListLearningPromotionsResponseServingItemChampionCheckFieldsValueRequired", {"n": "int", "workflow_right": "int", "agent_right": "int", "known": "Literal[\"grade\", \"agent\"]", "pass": "bool", "reason": "str", "by": "ListLearningPromotionsResponseServingItemChampionCheckFieldsValueBy"})
-_ListLearningPromotionsResponseServingItemChampionCheckFieldsValueOptional = TypedDict("_ListLearningPromotionsResponseServingItemChampionCheckFieldsValueOptional", {"unjudged": "int"}, total=False)
+_ListLearningPromotionsResponseServingItemChampionCheckFieldsValueOptional = TypedDict("_ListLearningPromotionsResponseServingItemChampionCheckFieldsValueOptional", {"unjudged": "int", "unread": "int"}, total=False)
 
 
 class ListLearningPromotionsResponseServingItemChampionCheckFieldsValue(_ListLearningPromotionsResponseServingItemChampionCheckFieldsValueRequired, _ListLearningPromotionsResponseServingItemChampionCheckFieldsValueOptional):
@@ -3148,12 +3154,14 @@ class _ListLearningPromotionsResponseServingItemChampionCheckTurnsRequired(Typed
 class ListLearningPromotionsResponseServingItemChampionCheckTurns(_ListLearningPromotionsResponseServingItemChampionCheckTurnsRequired, total=False):
     disagreements: list[ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItem]
     fresh_reads: int
+    unread: int
 
 
 class ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValue(TypedDict, total=False):
     grade: ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueGrade
     agent: ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueAgent
     unjudged: int
+    unread: int
 
 
 class ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueGrade(TypedDict):
