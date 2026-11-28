@@ -22,6 +22,7 @@ import { DockerProvider } from "../../dist/docker.js";
 import { newRequest } from "./request.mjs";
 import { EGRESS_IMAGE, sweep } from "../../dist/index.js";
 import { createForDeadline } from "./deadline.mjs";
+import { logsWith } from "./logs.mjs";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const RUN_LABEL = "agentrun.test.run";
@@ -147,7 +148,8 @@ describe("a Docker computer whose network is an allowlist", { skip: LIVE ? false
 		assert.match(outside, /^HTTP\/1\.1 403 8\.8\.8\.8 is not on this box's network list/, outside);
 		const port = await through("connect", "origin.example:22");
 		assert.match(port, /^HTTP\/1\.1 403 origin\.example:22 is not open on this box's network list/, port);
-		const logs = execFileSync("docker", ["logs", `${ref.name}-egress`], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+		// The last request's line: Docker keeps a container's lines in order, so every request's line is in the log by then.
+		const logs = await logsWith(`${ref.name}-egress`, /^egress connect host="origin\.example" port=22 ip=- class=/m);
 		assert.match(logs, /^fake lookup origin\.example$/m, "a listed name was looked up");
 		assert.doesNotMatch(logs, /fake lookup other\.example/, "the unlisted name was never looked up");
 		assert.match(logs, /^egress connect host="other\.example" port=443 ip=- class=not-listed$/m);

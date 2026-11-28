@@ -35,7 +35,7 @@ import { orThrow } from "./hosted/process.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts, isoOf, MAX_LABEL } from "./hosted/provider.js";
 import { allPages, httpsBase, jsonOf, type Rest, type RestInit, rest } from "./hosted/rest.js";
 import { ed25519PublicOf, newEd25519 } from "./hosted/ssh-key.js";
-import { pemOf, type Ssh2Module, SshExec, type SshLogin, tcpTunnel } from "./hosted/ssh-exec.js";
+import { fingerprintOf, pemOf, type Ssh2Module, SshExec, tcpTunnel } from "./hosted/ssh-exec.js";
 import { DOMAIN, dateOf } from "./hosted/values.js";
 import type { ComputerSpec, Refusal } from "./provider.js";
 import type { ComputerErrorCode } from "./result.js";
@@ -185,21 +185,24 @@ function endpointOf(answer: { machineIp?: unknown; sshEndpoint?: unknown }): { h
 	return { host, port };
 }
 
-/** The host key of an OpenSSH line: its type and blob, the blob's own type name agreeing; undefined else. */
-function hostKeyOf(line: unknown): SshLogin["hostKey"] {
+/**
+ * The pin of an OpenSSH line's host key: its sha256 (the shared fingerprintOf) and its type, the blob's own type name
+ * agreeing; undefined else.
+ */
+function hostKeyOf(line: unknown): { hostKey: string; hostKeyType: string } | undefined {
 	const found = typeof line === "string" ? HOST_KEY.exec(line) : null;
 	if (!found) return undefined;
 	const blob = Buffer.from(found[2] as string, "base64");
 	const named = blob.length > 4 ? blob.subarray(4, 4 + blob.readUInt32BE(0)).toString("latin1") : "";
-	return named === found[1] ? { type: found[1], blob } : undefined;
+	return named === found[1] ? { hostKey: fingerprintOf(blob), hostKeyType: found[1] } : undefined;
 }
 
-/** A login this host was given for one sandbox: the user, the sshd and its host key. */
+/** A login this host was given for one sandbox: the user, the sshd and its host key's pin. */
 interface BoatLogin {
 	username: string;
 	host: string;
 	port: number;
-	hostKey: NonNullable<SshLogin["hostKey"]>;
+	pin: { hostKey: string; hostKeyType: string };
 }
 
 /** boat's sandboxes as a MachineHost (../host.ts). */
@@ -237,7 +240,7 @@ class BoatHost implements MachineHost {
 			sudo: true,
 			loginOf: (id) => {
 				const login = this.#logins.get(id);
-				return { username: login?.username ?? "user", privateKey: this.#privateKey, ...(login ? { hostKey: login.hostKey } : {}), secrets: [apiKey] };
+				return { username: login?.username ?? "user", privateKey: this.#privateKey, ...login?.pin, secrets: [apiKey] };
 			},
 			tunnelOf: (id) => {
 				const login = this.#logins.get(id);
@@ -297,9 +300,9 @@ class BoatHost implements MachineHost {
 		if (typeof username !== "string" || !SSH_USER.test(username)) throw new HostError("vendor", `POST ${path} answered an SSH user that is not a Unix user name: ${show(username)}`);
 		const endpoint = endpointOf(answer);
 		if (endpoint === undefined) throw new HostError("vendor", `POST ${path} answered no sshd to reach: machineIp ${show(answer.machineIp)}, sshEndpoint ${show(answer.sshEndpoint)}`);
-		const hostKey = hostKeyOf(answer.hostKey);
-		if (hostKey === undefined) throw new HostError("vendor", `POST ${path} answered no host key this provider reads (an OpenSSH line, such as ssh-ed25519 AAAA...): ${show(answer.hostKey)}`);
-		return { username, ...endpoint, hostKey };
+		const pin = hostKeyOf(answer.hostKey);
+		if (pin === undefined) throw new HostError("vendor", `POST ${path} answered no host key this provider reads (an OpenSSH line, such as ssh-ed25519 AAAA...): ${show(answer.hostKey)}`);
+		return { username, ...endpoint, pin };
 	}
 
 	/**

@@ -152,18 +152,19 @@ export function fakeRest({ key = KEY, settleMs = 0 } = {}) {
 /**
  * An instance's sshd: ssh2's Server on 127.0.0.1, taking the one public key given, as root. Each exec runs under
  * `bash -c` (root's login shell on Agent37's base template), detached so it leads its own session as sshd's does, and
- * its exit-status, or exit-signal, is sent as OpenSSH sends them. commands lists each command line; state.logins counts
- * the handshakes that ended in a login, state.live the connections open now, state.sessions the sessions open now. A
+ * its exit-status, or exit-signal, is sent as OpenSSH sends them. commands lists each command line; state.connections
+ * counts the TCP connections it took, state.logins the handshakes that ended in a login, state.live the connections open now, state.sessions the sessions open now. A
  * connection takes MAX_SESSIONS sessions at once and refuses the next, as OpenSSH's sshd does by default (MaxSessions).
  * refuseSessions(n) refuses the next n session channels besides, dropAll() cuts every connection from the server's
  * side, and close() ends them all, then the server. accept(ctx), when given, decides each login in place of the one
- * key as root (Morph's gateway: its own username, any key); run(command, stream), when given, may answer a command
- * itself (true), in place of bash. authorized(id), when given, is the public lines instance id's sshd takes as root now
- * (fakeRest's authorizedFor: the workspace's registered keys), the instance named by the client's port in routes, which
- * fakeWebSocket fills; state.denied counts the logins refused. username is the one user a key logs in as (root by
- * default; boat's is user). sudo: the user has passwordless sudo and is not root, so a command must start `sudo -n -- `,
- * which this sshd takes off and runs the rest as above (run is given the rest), since the test machine's sudo is not
- * called; a command without it fails 126. hostKey is the server's public host key, an OpenSSH line, for a client that pins it.
+ * key as root (Morph's gateway: its own username, any key); run(command, stream, { username }), when given, may answer
+ * a command itself (true), in place of bash, told the user the connection logged in as. authorized(id), when given, is
+ * the public lines instance id's sshd takes as root now (fakeRest's authorizedFor: the workspace's registered keys), the
+ * instance named by the client's port in routes, which fakeWebSocket fills; state.denied counts the logins refused.
+ * username is the one user a key logs in as (root by default; boat's is user). sudo: the user has passwordless sudo and
+ * is not root, so a command must start `sudo -n -- `, which this sshd takes off and runs the rest as above (run is given
+ * the rest), since the test machine's sudo is not called; a command without it fails 126. hostKey is the server's host
+ * key, its OpenSSH public line, which a client pins by its sha256 (fingerprintOf).
  */
 export async function fakeSshd({ publicKey, accept, run, authorized, routes, username = "root", sudo = false }) {
 	const host = keyPair();
@@ -171,16 +172,19 @@ export async function fakeSshd({ publicKey, accept, run, authorized, routes, use
 	const commands = [];
 	const children = new Set();
 	const clients = new Set();
-	const state = { logins: 0, live: 0, sessions: 0, refusing: 0, denied: 0 };
+	const state = { connections: 0, logins: 0, live: 0, sessions: 0, refusing: 0, denied: 0 };
 	const server = new Server({ hostKeys: [host.private] }, (client, info) => {
+		state.connections++;
 		clients.add(client);
 		state.live++;
+		let loggedIn;
 		client.on("close", () => {
 			clients.delete(client);
 			state.live--;
 		});
 		client.on("error", () => {});
 		client.on("authentication", (ctx) => {
+			loggedIn = ctx.username;
 			if (accept !== undefined) return accept(ctx) ? ctx.accept() : ctx.reject(["publickey"]);
 			const key = ctx.method === "publickey" ? ctx.key : undefined;
 			const takes = authorized === undefined ? [allowed] : authorized(routes?.get(info.port)).map((line) => utils.parseKey(line));
@@ -218,7 +222,7 @@ export async function fakeSshd({ publicKey, accept, run, authorized, routes, use
 						}
 						line = line.slice(SUDO.length);
 					}
-					if (run?.(line, stream)) return;
+					if (run?.(line, stream, { username: loggedIn })) return;
 					const child = spawn("bash", ["-c", line], { detached: true, stdio: ["pipe", "pipe", "pipe"] });
 					children.add(child);
 					child.stdout.pipe(stream, { end: false });

@@ -1,7 +1,7 @@
 ---
 description: The repo's REVIEW.md says every handler checks the caller; a new handler doesn't, and the finding cites the rule's path:line.
 runs: 3
-max_cost_usd: 0.10
+max_cost_usd: 0.30
 ---
 Review this diff. Its head is 5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081; there is no checkout. The repo's `REVIEW.md` at the base, with its line numbers:
 

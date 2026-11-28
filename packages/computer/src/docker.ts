@@ -62,7 +62,7 @@ import {
 	RELAY_FLAG,
 } from "./docker/egress.js";
 import { daemonStage, daemonVerified, egressStage, egressStaged } from "./docker/stage.js";
-import { EGRESS_READY } from "./docker/egress-proxy.js";
+import { EGRESS_READY, MAX_TUNNELS_CEILING } from "./docker/egress-proxy.js";
 import { type DockerVolume, OLD_ENGINE, outsideWords, subpathOf, VOLUME_SUBPATH_ENGINE, volumeMount, volumeOf } from "./docker/volume.js";
 import { addressBytes } from "./docker/egress-table.js";
 import { checkMount, type MountReadBack, WORKSPACE } from "./mount.js";
@@ -120,6 +120,12 @@ export interface DockerEgressOptions {
 	 * better; it never makes the refusal weaker than what that root shows.
 	 */
 	hostRoot?: string;
+	/**
+	 * The most connections one computer's proxy holds open at once (its tunnels and forwarded requests), past which a new
+	 * one is refused with 429: a whole number from 1 to MAX_TUNNELS_CEILING (256). Default the proxy's, 64. A proxy keeps
+	 * the cap it was made with.
+	 */
+	maxTunnels?: number;
 }
 
 export interface DockerProviderOptions {
@@ -336,7 +342,7 @@ export class DockerProvider implements ComputerProvider {
 	readonly #user: string;
 	readonly #desktop: Required<DockerDesktopOptions> | undefined;
 	readonly #image: ImageSource;
-	readonly #egress: { image: string; hint?: string; readyMs: number; hostAddresses?: string[]; hostRoot: string };
+	readonly #egress: { image: string; hint?: string; readyMs: number; hostAddresses?: string[]; hostRoot: string; maxTunnels?: number };
 	/** The settleMs and settleQuietMs options: #settle's bounds; settleMs also bounds each removal #gone waits for. */
 	readonly #settleBounds: SettleBounds;
 	/** Each create in flight, and the names of the computers this provider deleted (create-requests.ts). */
@@ -845,8 +851,8 @@ export class DockerProvider implements ComputerProvider {
 		const volume = await this.#run(egressVolumeArgs(name, user, deadline, labels), signal);
 		if (!volume.ok) return volume;
 		if (volume.value.exitCode !== 0) return vendorFail("docker",`docker volume create ${proxy} failed: ${volume.value.stderr.trim()}`);
-		const { image, hint, readyMs } = this.#egress;
-		const args = egressRunArgs({ name, user, image, allow, local: this.#hostLocal(), deadline, code: this.#code, labels, ...(hint === undefined ? {} : { hint }) });
+		const { image, hint, readyMs, maxTunnels } = this.#egress;
+		const args = egressRunArgs({ name, user, image, allow, local: this.#hostLocal(), deadline, code: this.#code, labels, ...(hint === undefined ? {} : { hint }), ...(maxTunnels === undefined ? {} : { maxTunnels }) });
 		const ran = await this.#run(args, signal);
 		if (!ran.ok) {
 			// Cut off before its own exit: the daemon may still make the proxy after the caller's cleanup looked (#settle).
@@ -1596,12 +1602,13 @@ export function settleBoundsOf({ settleMs = SETTLE_MS, settleQuietMs = SETTLE_QU
 }
 
 /** The egress options with their defaults, or a throw in words. */
-function egressOptionsOf({ image = EGRESS_IMAGE, hint, readyMs = EGRESS_READY_MS, hostAddresses: given, hostRoot = "/" }: DockerEgressOptions): {
+function egressOptionsOf({ image = EGRESS_IMAGE, hint, readyMs = EGRESS_READY_MS, hostAddresses: given, hostRoot = "/", maxTunnels }: DockerEgressOptions): {
 	image: string;
 	hint?: string;
 	readyMs: number;
 	hostAddresses?: string[];
 	hostRoot: string;
+	maxTunnels?: number;
 } {
 	if (typeof hostRoot !== "string" || !hostRoot.startsWith("/")) throw new Error(`the egress proxy's hostRoot must be an absolute path, not ${JSON.stringify(hostRoot)}`);
 	if (typeof image !== "string" || image.trim() === "" || image.startsWith("-") || image.includes("\0")) {
@@ -1615,7 +1622,17 @@ function egressOptionsOf({ image = EGRESS_IMAGE, hint, readyMs = EGRESS_READY_MS
 	if (given !== undefined && !(Array.isArray(given) && given.every((address) => typeof address === "string" && addressBytes(address) !== undefined && !address.includes(",")))) {
 		throw new Error(`the egress proxy's hostAddresses must be a list of IP addresses, such as ["93.184.215.20"], not ${JSON.stringify(given)}`);
 	}
-	return { image, readyMs, hostRoot, ...(hint === undefined ? {} : { hint }), ...(given === undefined ? {} : { hostAddresses: [...given] }) };
+	if (maxTunnels !== undefined && (!Number.isSafeInteger(maxTunnels) || maxTunnels < 1 || maxTunnels > MAX_TUNNELS_CEILING)) {
+		throw new Error(`the egress proxy's maxTunnels must be a whole number from 1 to ${MAX_TUNNELS_CEILING}, not ${JSON.stringify(maxTunnels)}`);
+	}
+	return {
+		image,
+		readyMs,
+		hostRoot,
+		...(hint === undefined ? {} : { hint }),
+		...(given === undefined ? {} : { hostAddresses: [...given] }),
+		...(maxTunnels === undefined ? {} : { maxTunnels }),
+	};
 }
 
 /**

@@ -52,12 +52,17 @@ on:
   workflow_dispatch:
   # The daily walk (ways-in-daily.yml): the whole walk, on main's launcher.
   workflow_call:
+    inputs:
+      # The commit to walk: the daily walk hands it the release tag's after a publish. Empty: the event's own.
+      ref:
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-install-walk-${{ github.event.pull_request.number || github.sha }}
+  group: ${{ github.workflow }}-install-walk-${{ github.event.pull_request.number || github.sha }}${{ inputs.ref && format('-{0}', inputs.ref) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -70,6 +75,8 @@ jobs:
       package: ${{ steps.pack.outputs.package }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
       - uses: actions/setup-node@v4
         with:
           node-version: '24.22.3'
@@ -110,6 +117,8 @@ jobs:
     container: buildpack-deps:noble-curl
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
       - uses: actions/download-artifact@v4
         if: ${{ needs.pack.outputs.package != '' }}
         with:
@@ -135,6 +144,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
       - name: Walk
         env:
           BUILD: ${{ github.event_name != 'workflow_run' && '--build' || '' }}
@@ -161,6 +172,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
       - uses: actions/download-artifact@v4
         if: ${{ needs.pack.outputs.package != '' }}
         with:

@@ -31,6 +31,10 @@ on:
   # of the release's (main's, built once for every row).
   workflow_call:
     inputs:
+      # The commit to walk: the daily walk hands it the release tag's after a publish. Empty: the event's own.
+      ref:
+        type: string
+        default: ''
       image:
         type: string
         default: ''
@@ -43,7 +47,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-selfhost-walk-${{ github.ref }}-${{ inputs.platforms }}
+  group: ${{ github.workflow }}-selfhost-walk-${{ github.ref }}-${{ inputs.platforms }}${{ inputs.ref && format('-{0}', inputs.ref) || '' }}
   cancel-in-progress: true
 
 jobs:
@@ -59,6 +63,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          ref: ${{ inputs.ref }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
