@@ -55,6 +55,14 @@ async function openList(page) {
   return open;
 }
 
+/** Waits until the field is the one that stays. Each change of operation has the page read the agents again; with Start
+ *  a run picked, it draws the field in its own row while that read is out, then a new field beside the agents once it is
+ *  back, and a list opened on the first closes with it. A fresh server has no agent: Start a run's Request section is
+ *  then drawn with the field that stays. */
+async function steady(page) {
+  if (await page.locator("#api-operation").getAttribute("data-value") === "run") await page.locator('section[aria-label="Request"]').waitFor();
+}
+
 export default {
   name: "playground-operation-width",
   signedIn: true,
@@ -68,6 +76,7 @@ export default {
       await page.evaluate(() => document.fonts.ready);
       const widths = [];
       for (const operation of OPERATIONS) {
+        await steady(page);
         await button.click();
         const open = await openList(page);
         const shown = await page.evaluate(list);
