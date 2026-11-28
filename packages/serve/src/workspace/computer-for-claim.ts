@@ -316,8 +316,13 @@ const unavailable = (words: string): Error => Object.assign(new Error(words), { 
 const claimLost = (words: string): Error => Object.assign(new Error(words), { code: "claim_lost" });
 const noop = async (): Promise<void> => {};
 
-/** A claim's create request: the run and its claim epoch, so a retry of the claim's create finds the computer it made. */
-const claimRequestId = (claim: { readonly runId: string; readonly epoch: number }) => `${claim.runId}#${claim.epoch}`;
+/** A claim's create request: the run and its claim epoch, so a retry of the claim's create finds the computer it made.
+ *  Each claim takes the run's next epoch, so two claims of one run never share a request, and so never a computer's
+ *  name: a dial machine's token and hub socket go by that name (the computer package's hosted/provider.ts). */
+export const claimRequestId = (claim: { readonly runId: string; readonly epoch: number }) => `${claim.runId}#${claim.epoch}`;
+
+/** The create request of the claim's `times`th sandbox made after a loss: the claim's own, then the count. */
+export const lostRequestId = (claim: { readonly runId: string; readonly epoch: number }, times: number) => `${claimRequestId(claim)}#lost-${times}`;
 
 /** A kept machine (its provider's `id`) a claim gave back, and what marks its row ended once it is gone. */
 type KeptGone = { readonly id: string; readonly gone: () => Promise<void> };
@@ -1121,7 +1126,7 @@ export async function computerForClaim(
       }
       const call = deps.signal ? { signal: deps.signal } : {};
       const ahead = await meter?.before(entry.id, figuresOf(spec));
-      const created = await provider.create({ ...spec, ...(mount ? { mount } : {}) }, { requestId: `${claimRequestId(launch)}#lost-${times}`, ...call });
+      const created = await provider.create({ ...spec, ...(mount ? { mount } : {}) }, { requestId: lostRequestId(launch, times), ...call });
       if (!created.ok) {
         void ahead?.drop();
         throw new Error(created.error.message);
