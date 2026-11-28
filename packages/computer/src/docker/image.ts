@@ -38,13 +38,34 @@ export const DOCKER_RECIPE_HAS = "python, git, curl, node, npm, rg";
  *  registry-1.docker.io/v2/library/python/manifests/3.12-slim accepting an OCI index or a manifest list: its
  *  `docker-content-digest`), and put it here. The recipe's hash changes with it, and so does DEFAULT_DOCKER_IMAGE. */
 export const DOCKER_BASE = "python:3.12-slim@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30";
-/** The default image's recipe: python with git, curl, node, npm and rg for a model's tools, and socat, the relay to a
- *  computer's egress proxy when it has one. */
+/** The Node release the default image runs, the server image's (packages/serve/docker/Dockerfile): Debian's nodejs
+ *  comes with npm 9, older than the npm current packages are published for. */
+export const DOCKER_NODE_VERSION = "24.22.3";
+/** The sha256 of that release's Linux tarball for each Debian architecture, from its signed SHASUMS256.txt. */
+export const DOCKER_NODE_SHA256: Readonly<Record<"amd64" | "arm64", string>> = {
+	amd64: "4f2b175a6d53a5c617a80dba2676238a0688cef28c6da4eba35c7d844e66fcfb",
+	arm64: "6e51a2ada00f0011cc266f65d98922b403d7ad88f809ca2aa615a5fe1ce6e86c",
+};
+/** The default image's recipe: python with git, curl and rg for a model's tools, Node (node, npm and npx) from
+ *  nodejs.org checked against its sha256 before it is unpacked, and socat, the relay to a computer's egress proxy when it
+ *  has one. */
 export const DOCKER_RECIPE = [
 	`FROM ${DOCKER_BASE}`,
 	"RUN apt-get update \\",
-	" && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git curl ca-certificates nodejs npm ripgrep socat \\",
+	" && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git curl ca-certificates xz-utils ripgrep socat \\",
 	" && rm -rf /var/lib/apt/lists/*",
+	"RUN set -eu; \\",
+	'    case "$(dpkg --print-architecture)" in \\',
+	`      amd64) arch=x64; sum=${DOCKER_NODE_SHA256.amd64} ;; \\`,
+	`      arm64) arch=arm64; sum=${DOCKER_NODE_SHA256.arm64} ;; \\`,
+	'      *) echo "no Node build for $(dpkg --print-architecture)" >&2; exit 1 ;; \\',
+	"    esac; \\",
+	`    file="node-v${DOCKER_NODE_VERSION}-linux-$arch.tar.xz"; \\`,
+	`    curl -fsSLo "/tmp/$file" "https://nodejs.org/dist/v${DOCKER_NODE_VERSION}/$file"; \\`,
+	'    echo "$sum  /tmp/$file" | sha256sum -c -; \\',
+	'    tar -xJf "/tmp/$file" -C /usr/local --strip-components=1 --no-same-owner; \\',
+	'    rm -f "/tmp/$file" /usr/local/CHANGELOG.md /usr/local/README.md /usr/local/LICENSE; \\',
+	"    node --version; npm --version",
 	"",
 ].join("\n");
 

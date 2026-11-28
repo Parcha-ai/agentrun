@@ -266,7 +266,7 @@ import { agentComputerHoldKey } from "./workspace/agent-computer.js";
 import { sdkRunKey } from "./sdk/runs.js";
 import { waitEndedKey } from "./browser-wait-ended.js";
 import { browserHoldKey } from "./browser-hold.js";
-import { agentComputerOf, agentComputerView, agentDirName, agentFolder, agentHomeFolder, claimKinds, runFolder, scratchFolder, computerProviderFactories, computerProviderMakers, computerReadiness, dockerHostAddressesOf, isWorkspaceError, localWorkspace, reconcileAgentComputer, registryHere, runShellOf, serverRunWorkspace, type ShellPlace, storeLedger, type Workspace } from "./workspace/index.js";
+import { agentComputerOf, agentComputerView, agentDirName, agentFolder, agentHomeFolder, claimKinds, runFolder, scratchFolder, computerProviderFactories, computerProviderMakers, boxMaxTunnelsOf, computerReadiness, dockerHostAddressesOf, isWorkspaceError, localWorkspace, reconcileAgentComputer, registryHere, runShellOf, serverRunWorkspace, type ShellPlace, storeLedger, type Workspace } from "./workspace/index.js";
 import { keyReader } from "./key-meta.js";
 import { redacted } from "./key-refusal.js";
 
@@ -1394,6 +1394,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   dockerLimitsOf(process.env);
   // The Docker host's addresses an operator names (workspace/computer-deps.ts): a bad entry stops the start, in words.
   dockerHostAddressesOf(process.env);
+  // The cap on a Docker computer's egress proxy connections (workspace/computer-deps.ts): a bad value stops the start.
+  boxMaxTunnelsOf(process.env);
   // The Archil settings an operator sets (archil-settings.ts ARCHIL_SETTINGS_ENV): one set without the region, or a value
   // the PUT would refuse (no S3 URL for a region serve doesn't know), stops the start, in words naming each variable.
   archilSettingsFromEnv(process.env);

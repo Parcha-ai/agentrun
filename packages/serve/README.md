@@ -614,6 +614,7 @@ AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1 to allow it, only on a machine you alone use`
 | `AGENTRUN_PRIVATE_HOSTS` | Bounds the private-network hosts an owner may allow an MCP server or a calendar on (Settings → MCP servers): `none` allows none (and only an empty list can be saved), or a comma list of address ranges (`10.20.0.0/16,fd12:3456::/32`) every listed host's address must also fall in. Loopback, link-local (cloud metadata) and this machine's addresses stay refused whatever it says. A value that is neither reads as `none` | unset: the owner's list holds | On a server or runner many customers share, an owner's list would reach the operator's own private network: set `none` there, on the server and on each runner (each process holds to its own) |
 | `AGENTRUN_BOX_ALLOW` | The hosts a run's computer may reach: a comma list, or `none` ([A run in a Docker box](#a-run-in-a-docker-box)) | the package registries and GitHub | A run's network is the operator's policy, not a caller's |
 | `AGENTRUN_BOX_CPUS`, `AGENTRUN_BOX_MEMORY`, `AGENTRUN_BOX_PIDS` | A Docker computer's size ([Computers](#computers)) | 2 CPUs, 4 GiB, 1,024 processes | The machine's capacity is the operator's |
+| `AGENTRUN_BOX_MAX_TUNNELS` | How many connections a Docker computer's egress proxy holds open at once, from 1 to 256; past that a new one is answered 429 ([Computers](#computers)) | 64 | The machine's capacity is the operator's |
 
 On a server the installer runs as a service, `agentrun service install --env AGENTRUN_MCP_ALLOW_LOOPBACK=1 --env
 AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` saves the two yes-or-no switches in the service and restarts it; `--env KEY=` takes
@@ -1132,6 +1133,12 @@ and the Docker provider runs the container with them (`--cpu-quota`, `--memory` 
 They apply to Docker computers only: a vendor's computer (Daytona, Modal, E2B, Orgo, a phone, a hosted browser) is the
 size its provider makes it, and is never given them. A value the Docker provider refuses stops the server's start, in
 the provider's words.
+
+**A Docker computer's egress connections.** A Docker computer whose network is open or a list reaches it through its
+own egress proxy, which holds 64 connections open at once and answers a new one past that with 429.
+`AGENTRUN_BOX_MAX_TUNNELS` sets the cap, a whole number from 1 to 256 (the proxy's 1024 open files hold two per
+connection); the claim gives it to the Docker provider as `egress.maxTunnels`, which a running proxy keeps. Any other
+value stops the server's start, in words naming the setting.
 
 **What a sandbox needs.** A sandbox may list the programs its agent's work needs on the box's PATH:
 `"computer": {"kind": "sandbox", "provider": "docker", "needs": ["chrome", "ffmpeg", "ffprobe", "hyperframes"]}`, 1 to

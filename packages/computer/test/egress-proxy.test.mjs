@@ -868,6 +868,7 @@ test("the proxy container's entry refuses to start with no list, an empty one, a
 		[['--socket', path, '--deadline', deadline, '--allow', 'pypi.org', '--colour', 'red'], /--colour/],
 		[['--socket', path, '--deadline', deadline, '--open', 'all'], /--open takes "public"/],
 		[['--socket', path, '--deadline', deadline, '--open', 'public', '--allow', 'pypi.org'], /both --open and --allow/],
+		...['0', '257', '064', '12a', '1e2', '-1', ''].map((cap) => [['--socket', path, '--deadline', deadline, '--allow', 'pypi.org', '--max-tunnels', cap], /--max-tunnels takes a whole number from 1 to 256/]),
 	]) {
 		const run = entry(args);
 		const { code } = await run.exited;
@@ -916,6 +917,23 @@ test("the proxy container's entry with --open public says it is ready open, take
 		assert.deepEqual(await run.exited, { code: 0, signal: null });
 	} finally {
 		if (run.child.exitCode === null && run.child.signalCode === null) run.child.kill('SIGKILL');
+	}
+});
+
+test("the proxy container's entry holds connections open at once to the operator's --max-tunnels, 64 without one, and says the cap it holds", async () => {
+	for (const [cap, held] of [[[], 64], [['--max-tunnels', '1'], 1], [['--max-tunnels', '256'], 256]]) {
+		const path = socketPath();
+		mkdirSync(join(path, '..'), { recursive: true });
+		const deadline = new Date(Date.now() + 60_000).toISOString();
+		const run = entry(['--socket', path, '--deadline', deadline, '--allow', 'pypi.org', ...cap], (out) => out.includes('egress ready'));
+		try {
+			await run.seen;
+			assert.match(run.out(), new RegExp(`^egress cap tunnels=${held}\negress ready allow=pypi\\.org$`, 'm'), run.out());
+			run.child.kill('SIGTERM');
+			assert.deepEqual(await run.exited, { code: 0, signal: null });
+		} finally {
+			if (run.child.exitCode === null && run.child.signalCode === null) run.child.kill('SIGKILL');
+		}
 	}
 });
 

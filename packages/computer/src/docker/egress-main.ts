@@ -1,21 +1,22 @@
 // The entry a Docker computer's egress proxy container runs (egress.ts makes the container):
 //
-//	node egress-main.js --socket <path> --deadline <ISO time> (--allow <entries,...> | --open public) [--local <addresses,...>] [--hint <words>]
+//	node egress-main.js --socket <path> --deadline <ISO time> (--allow <entries,...> | --open public) [--local <addresses,...>] [--hint <words>] [--max-tunnels <n>]
 //
 // `--open public` is every public host (a computer whose network is open); `--allow` a list. It refuses to start, exit 2
 // and why on stdout, with neither or both, an empty list or a bad entry (no list never means open: only `--open public`
-// does), with no socket, or with no deadline it can read. Started, it logs "egress ready allow=<list>" (or "egress ready
-// open") once its socket listens, then one line per decision. It ends, exit 0 and its socket removed, on SIGTERM or SIGINT and at
+// does), with no socket, or with no deadline it can read. Started, it logs "egress cap tunnels=<n>", the cap in force, and
+// "egress ready allow=<list>" (or "egress ready open") once its socket listens, then one line per decision. It ends, exit 0 and its socket removed, on SIGTERM or SIGINT and at
 // the deadline, the computer's own: an orphaned proxy forwards nothing past its computer's end. `--local` is the Docker
-// host's own addresses, refused as this host's. It imports only node: modules and the proxy: it runs in a bare Node image.
-import { EGRESS_READY, parseAllow, startEgressProxy } from "./egress-proxy.js";
+// host's own addresses, refused as this host's. `--max-tunnels` is the operator's cap on connections open at once, 1 to
+// MAX_TUNNELS_CEILING, default DEFAULT_MAX_TUNNELS; any other value refuses the start. It imports only node: modules and
+// the proxy: it runs in a bare Node image.
+import { DEFAULT_MAX_TUNNELS, EGRESS_READY, MAX_TUNNELS_CEILING, maxTunnelsOf, parseAllow, startEgressProxy } from "./egress-proxy.js";
 
-/** Connections open at once through one computer's proxy, and in all for its life: serve's, for one run's box. */
-const MAX_TUNNELS = 64;
+/** Connections in all through one computer's proxy, for its life: serve's, for one run's box. */
 const MAX_CONNECTIONS = 20_000;
 /** The longest a Node timer holds; a later deadline is waited for in steps of it. */
 const MAX_TIMER_MS = 2_147_483_647;
-const FLAGS = new Set(["--socket", "--deadline", "--allow", "--open", "--local", "--hint"]);
+const FLAGS = new Set(["--socket", "--deadline", "--allow", "--open", "--local", "--hint", "--max-tunnels"]);
 
 const say = (line: string) => process.stdout.write(`${line}\n`);
 const refuse = (why: string): never => {
@@ -47,16 +48,20 @@ if (!socketPath.startsWith("/")) refuse("no socket path was given");
 const deadline = Date.parse(given.get("--deadline") ?? "");
 if (Number.isNaN(deadline)) refuse("no deadline was given as an ISO time");
 const local = (given.get("--local") ?? "").split(",").filter(Boolean);
+const capped = given.get("--max-tunnels");
+const maxTunnels = capped === undefined ? DEFAULT_MAX_TUNNELS : maxTunnelsOf(capped);
+if (maxTunnels === undefined) refuse(`--max-tunnels takes a whole number from 1 to ${MAX_TUNNELS_CEILING}, not ${JSON.stringify(capped)}`);
 
 const proxy = await startEgressProxy({
 	socketPath,
-	maxTunnels: MAX_TUNNELS,
+	maxTunnels: maxTunnels!,
 	maxConnections: MAX_CONNECTIONS,
 	log: say,
 	...(allow === undefined ? {} : { allow }),
 	alsoLocal: () => local,
 	...(given.has("--hint") ? { allowHint: given.get("--hint")! } : {}),
 });
+say(`egress cap tunnels=${maxTunnels}`);
 say(allow === undefined ? `${EGRESS_READY} open` : `${EGRESS_READY} allow=${allow.join(",")}`);
 
 const end = (why: string) => {
