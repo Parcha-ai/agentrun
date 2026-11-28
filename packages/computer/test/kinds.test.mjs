@@ -34,6 +34,7 @@ import { BoxdProvider } from "../dist/boxd.js";
 import { GroundboxProvider } from "../dist/groundbox.js";
 import { VercelProvider } from "../dist/vercel.js";
 import { SpritesProvider } from "../dist/sprites.js";
+import { MaritimeProvider } from "../dist/maritime.js";
 import { keyPair } from "./fake-agent37.mjs";
 import { BrowserbaseProvider } from "../dist/browserbase.js";
 import { E2BProvider } from "../dist/e2b.js";
@@ -143,7 +144,7 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	assert.deepEqual(declaring("settings"), ["daytona", "modal", "e2b"]);
 	// The image made ready before the first create: Docker's built on this host; the box image registered, pulled or
 	// built as a snapshot in the key's account by the hosted ones (Cloudflare's is the one its relay was deployed FROM).
-	assert.deepEqual(declaring("prepareImage"), ["docker", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "smolcloud", "groundbox", "vercel"]);
+	assert.deepEqual(declaring("prepareImage"), ["docker", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "smolcloud", "groundbox", "vercel", "maritime"]);
 	assert.ok(declaring("prepareImage").every((id) => extra[id].prepareImage === true));
 	// Docker's computers run on this machine's engine; every other provider's are remote.
 	assert.deepEqual(declaring("local"), ["docker"]);
@@ -349,6 +350,7 @@ const BUILT = {
 	groundbox: PROVIDERS.find((one) => one.id === "groundbox").capabilities.map(({ options }) => () => new GroundboxProvider({ ...options, apiKey: "fake-test-key", fetch: async () => new Response(null, { status: 500 }), webSocket: () => assert.fail("a command stream was opened") })),
 	vercel: [() => new VercelProvider({ token: "fake-test-key", teamId: "team_test", projectId: "prj_test", fetch: async () => new Response(null, { status: 500 }) })],
 	sprites: [() => new SpritesProvider({ token: "fake-test-key", fetch: async () => new Response(null, { status: 500 }), webSocket: () => assert.fail("an exec socket was opened") })],
+	maritime: [() => new MaritimeProvider({ apiKey: "fake-test-key", fetch: async () => new Response(null, { status: 500 }) })],
 	orgo: PROVIDERS.find((one) => one.id === "orgo").capabilities.map(({ options }) => () => createOrgo({ ...options, apiKey: "fake-test-key", workspaceId: "ws-test", fetch: async () => new Response(null, { status: 500 }) })),
 };
 
