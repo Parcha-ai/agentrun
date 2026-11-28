@@ -157,12 +157,13 @@ async function cutRunFile(store: RunReadsStore, runId: string, workspace: Worksp
   // underCut asks for, and every read of the run's cut and census around them. Past it, or when the worker fails, the read
   // is refused 503, never answered uncut, and never answered late.
   const timeMs = deps.cutMs ?? CUT_MS;
-  const until = Date.now() + timeMs;
+  // Counted on the monotonic clock: a wall clock set on or back mid-read moves neither the deadline nor the time left.
+  const until = performance.now() + timeMs;
   const unmade = (why: string) => new ApiError("unavailable", `this file's cut was not made (${why}), and it is never served uncut: read it again`);
   const lateRead = `the read did not finish within ${timeMs} ms`;
   const cutText = (values: readonly string[], held: readonly (readonly [number, number])[] = []): Promise<string> => {
     // Asked for past the deadline (the read has already been refused): no worker is started for it.
-    const left = until - Date.now();
+    const left = until - performance.now();
     if (left <= 0) return Promise.reject(unmade(lateRead));
     return (deps.cut ?? cutInWorker)(text, values, Buffer.byteLength(text), held, left).catch((error: unknown) => {
       if (error instanceof CutUnserved) throw unmade(error.message);

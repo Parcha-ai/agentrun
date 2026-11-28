@@ -2812,7 +2812,7 @@ ordinary MCP server with the key sealed as an `x-api-key` header. `POST /v2/sett
 toolkits Composio offers (`{toolkits: [{slug, name}]}`, by name) for the console's toolkit picker;
 `PUT /v2/settings/mcp-servers/{name}/composio` `{api_key, toolkit, tools, user_id?, auth_config_id?, price_usd?}` makes
 and saves the server. In place of `api_key`, `"api_key_env":
-"COMPOSIO_API_KEY"` (in the save and both listings) reads the key from that variable, as the server and each runner were started with it, at each use and keeps no copy: the
+"COMPOSIO_API_KEY"` or `"AGENTRUN_COMPOSIO_API_KEY"` (in the save and both listings) reads the key from that variable, as the server and each runner were started with it, at each use and keeps no copy: the
 way an [API-only](#api-only) server's token saves one and lists the toolkits and their actions, scoped to a workspace or not. That key is only ever sent to Composio's own origin, fixed in
 code, so a server saved so whose address is anywhere else is refused by name and sent nothing. The body names no
 address or headers (`422 not_allowed`): Composio answers the address. When the toolkit needs your account and `user_id`
@@ -4003,16 +4003,21 @@ serves these routes alone:
 - a Composio server's save (a new name, or a server the token saved) and the delete of a server the token saved, for a
   backend that grants its runs Composio tools. The token here never writes a secret, so the save keeps none:
   - a Composio server (`PUT /settings/mcp-servers/{name}/composio`) names its key with
-    `"api_key_env": "COMPOSIO_API_KEY"`, never `api_key` (still `403`). The server keeps the variable's name, never its
+    `"api_key_env": "COMPOSIO_API_KEY"` or `"AGENTRUN_COMPOSIO_API_KEY"`, never `api_key` (still `403`). The server keeps the variable's name, never its
     value, and reads the value it and each runner were started with at each use: the save's calls to Composio, each
-    run's connection and the delete's. A new value takes effect once they start again with it. `COMPOSIO_API_KEY` is
-    the one name taken (`422 invalid` for any other), and it must be set when the server is saved (`422 missing`). A
+    run's connection and the delete's. A new value takes effect once they start again with it. These are the only
+    names taken (`422 invalid` for any other), and the selected variable must be set when the server is saved (`422 missing`). A
     run of a server whose variable is unset is refused before it starts (`409 agent_not_runnable`), naming it; it never
     runs without the server's tools. `toolkit`, `tools`, `auth_config_id`, `price_usd` and `user_id: "per_run"` work as
     they do on the full server;
-  - `COMPOSIO_API_KEY` is a secret, so give it to the server and to each runner. The launcher hands it to each over a
+  - Both project keys are secrets: give each configured key to the server and to each runner. The launcher hands it to each over a
     pipe, so neither process's environment holds it, and no run is handed it: the runner sends it only as the MCP
     header of a Composio server the run is granted a tool of, and a run granted none gets nothing of it;
+  - `GET /capabilities` advertises the supported names in `features.mcp_client.composio_key_envs`. Read it before
+    saving a server for a second project; an older server that omits it does not support the second key. Each saved
+    server records its selected name; re-saving that name with a different project key is `422 not_allowed` before
+    Composio is called. Use separate server names for separate projects; a missing project key never
+    falls back to the other key. Upgrade both the server and every runner before saving servers with the new name.
   - the body names no address and no headers (`url` or `headers` is `422 not_allowed`): Composio answers the server's
     address, and the key read from the variable is only ever sent to Composio's own origin, fixed in code. A server
     whose saved address is anywhere else is refused by name wherever that key would be read (a refresh, a run's start),
@@ -5964,7 +5969,7 @@ carries no cost at all, as from a provider that does not price the model. The te
   run needs are read from the store at its claim, opened with the seal key, and are put on that run's environment alone.
   It gets none of the computer providers' account keys ([Sandbox](#sandbox)), not the Archil account key
   (`ARCHIL_API_KEY`), from which the claim mints the run's own mount credential, and not the Composio account key
-  (`COMPOSIO_API_KEY`), which the runner sends only as a granted Composio server's MCP header. A tool key reaches it only when its
+  (`COMPOSIO_API_KEY` and `AGENTRUN_COMPOSIO_API_KEY`), which the runner sends only as a granted Composio server's MCP header. A tool key reaches it only when its
   revision names a tool the key unlocks (`MONID_API_KEY` a monid tool, `BROWSERBASE_API_KEY` and `KERNEL_API_KEY` `browser`; a workflow's
   tools are those its model and call nodes name), and a model key only when its model needs it ([Models](#models)), read
   from the revision at each claim, a resume after a restart included.
