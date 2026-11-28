@@ -86,10 +86,12 @@ test("a key the server makes is cut by the same shape, in a learned note and in 
   const store = await openSqliteStore({ dataDir: dir });
   t.after(() => store.close());
   const keys = new ApiKeys(store, randomBytes(32));
-  // Several, so the test does not pass by one key's luck: each is random, and "-" and "_" are among its characters.
-  for (let i = 0; i < 25; i++) {
-    const made = await keys.create({ name: `key ${i}` });
-    const text = `curl -H "Authorization: ${SCHEME} ${made.api_key}" then AGENTRUN_API_KEY=${made.api_key} done`;
+  // Several, so the test does not pass by one key's luck: each is random, and "-" and "_" are among its characters. The
+  // first is fixed: a key whose 43 random characters start with "sk-", as about one in 160,000 the server makes do.
+  const made = [`${PREFIX}sk-${BODY}`];
+  for (let i = 0; i < 25; i++) made.push((await keys.create({ name: `key ${i}` })).api_key);
+  for (const api_key of made) {
+    const text = `curl -H "Authorization: ${SCHEME} ${api_key}" then AGENTRUN_API_KEY=${api_key} done`;
     const want = `curl -H "Authorization: ${SCHEME} [redacted]" then AGENTRUN_API_KEY=[redacted] done`;
     assert.equal(redactSecrets(text, []), want);
     assert.equal(redactLearned(text, []), want, "a learned note");
@@ -97,6 +99,6 @@ test("a key the server makes is cut by the same shape, in a learned note and in 
     assert.equal(redacted(text, ["a-value-the-server-holds"]), want, "a run's view");
     assert.equal(redactedAnswer(text, ["a-value-the-server-holds"]), want, "a run's answer");
     // With no scheme or parameter name beside it, the key's own shape alone finds it.
-    assert.deepEqual(secretShapes(`the app sends ${made.api_key} on each call`), [KIND]);
+    assert.deepEqual(secretShapes(`the app sends ${api_key} on each call`), [KIND]);
   }
 });
