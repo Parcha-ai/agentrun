@@ -14,8 +14,8 @@
 # Exit codes, as the bench reads an exec check:
 #   0   setup done; or a score of 1
 #   1   a score below 1
-#   2   a task osw can't check: an infeasible or malformed evaluator, a getter or metric OSWorld lacks, a download or
-#       cloud file with no pinned sha256
+#   2   a task osw can't check: an infeasible task, a malformed task or evaluator (found before the server starts, by
+#       setup and eval alike), a getter or metric OSWorld lacks, a download or cloud file with no pinned sha256
 #   75  the check could not run (EX_TEMPFAIL): the server didn't start, a setup step, getter or metric raised, a download
 #       failed or its sha256 differs from the pinned one, or a signal stopped osw. The box's fault, not the agent's: run
 #       it again, never score it.
@@ -221,33 +221,70 @@ class Env:
         return self.controller.get_vm_screen_size()
 
 
+def steps_of(value, what):
+    """A config or postconfig: absent, or a list of step objects."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(step, dict) for step in value):
+        raise BadTask(f"the task's {what} is not a list of step objects")
+    return value
+
+
+def shape(evaluator):
+    """The evaluator as DesktopEnv._set_evaluator_info reads it: (single, names, results, expected, options), each a list
+    with one entry per metric (an empty getter as None, empty options as {}). A shape OSWorld can't read is a bad task."""
+    if not isinstance(evaluator, dict):
+        raise BadTask("the task's evaluator is not an object")
+    func = evaluator.get("func")
+    single = isinstance(func, str)
+    names = [func] if single else func
+    if not isinstance(names, list) or not names or not all(isinstance(name, str) and name for name in names):
+        raise BadTask("the evaluator's func is not a name or a non-empty list of names")
+
+    def per_metric(field, valid, kind):
+        value = evaluator.get(field)
+        if single:
+            value = [value]
+        elif not value:
+            value = [None] * len(names)
+        elif not isinstance(value, list) or len(value) != len(names):
+            raise BadTask(f"the evaluator's {field} is not a list with one entry per func")
+        if not all(not one or valid(one) for one in value):
+            raise BadTask(f"the evaluator's {field} holds something that is not {kind}")
+        return [one or None for one in value]
+
+    def is_getter(config):
+        return isinstance(config, dict) and isinstance(config.get("type"), str) and config["type"] != ""
+
+    results = per_metric("result", is_getter, "a getter object with a type")
+    expected = per_metric("expected", is_getter, "a getter object with a type")
+    options = [one or {} for one in per_metric("options", lambda one: isinstance(one, dict), "an options object")]
+    return single, names, results, expected, options
+
+
+def check_task(task):
+    """The task as osw reads it, checked before anything runs: an object with a plain id, a config of steps, and an
+    evaluator of a shape OSWorld reads with a postconfig of steps."""
+    if not isinstance(task, dict):
+        raise BadTask("the task is not a JSON object")
+    if not isinstance(task.get("id"), str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", task["id"]):
+        raise BadTask("the task's id is missing or not a plain name")
+    steps_of(task.get("config"), "config")
+    shape(task.get("evaluator"))
+    steps_of(task["evaluator"].get("postconfig"), "postconfig")
+
+
 def plan(evaluator):
     """The evaluator as DesktopEnv._set_evaluator_info reads it: (single, conj, [(metric, result, expected, options)]),
     each getter as (function, config). A name OSWorld lacks is a bad task, found before anything runs."""
     from desktop_env.evaluators import getters, metrics
 
-    func = evaluator.get("func")
-    if func == "infeasible":
+    single, names, results, expected, options = shape(evaluator)
+    if evaluator["func"] == "infeasible":
         raise BadTask("an infeasible task is checked by the agent's answer, not by osw")
-    single = not isinstance(func, list)
-    names = [func] if single else func
-    count = len(names)
-    results = [evaluator.get("result")] if single else evaluator.get("result") or [None] * count
-    expected = [evaluator.get("expected")] if single else evaluator.get("expected") or [None] * count
-    options = evaluator.get("options")
-    if single:
-        options = [options or {}]
-    elif options is None:
-        options = [{}] * count
-    elif isinstance(options, list):
-        options = [one or {} for one in options]
-    else:
-        raise BadTask("many metrics take a list of options")
-    if not (count == len(results) == len(expected) == len(options)):
-        raise BadTask("func, result, expected and options differ in shape")
 
     def find(module, name):
-        found = getattr(module, name, None) if isinstance(name, str) else None
+        found = getattr(module, name, None)
         if not callable(found):
             raise BadTask(f"OSWorld has no {module.__name__.rsplit('.', 1)[-1]} {name!r}")
         return found
@@ -287,7 +324,7 @@ def evaluate(env, single, conj, steps):
 
 
 def run_setup(args, task, cache):
-    config = task.get("config", [])
+    config = steps_of(task.get("config"), "config")
     fetch_downloads(config, cache)
     with server(args, cache):
         if setup_controller(args.port, cache).setup(config) is False:
@@ -297,9 +334,9 @@ def run_setup(args, task, cache):
 
 
 def run_eval(args, task, cache):
-    evaluator = task.get("evaluator") or {}
+    evaluator = task["evaluator"]
     single, conj, steps = plan(evaluator)
-    postconfig = evaluator.get("postconfig", [])
+    postconfig = steps_of(evaluator.get("postconfig"), "postconfig")
     fetch_downloads(postconfig, cache)
     fetch_cloud_files(as_list(evaluator.get("result")) + as_list(evaluator.get("expected")), cache)
     with server(args, cache):
@@ -323,6 +360,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if not args.osworld:
         parser.error("--osworld or OSW_OSWORLD names OSWorld's checkout")
+    # From osw's working directory: the server runs in --home.
+    args.osworld, args.home = os.path.abspath(args.osworld), os.path.abspath(args.home)
     for one in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(one, stopped)
     logging.basicConfig(level=logging.WARNING, stream=sys.stderr, format="%(name)s: %(message)s")
@@ -333,8 +372,7 @@ def main(argv=None):
                 task = json.load(read)
         except (OSError, ValueError) as error:
             raise BadTask(f"{args.task}: {error}") from error
-        if not isinstance(task.get("id"), str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", task["id"]):
-            raise BadTask("the task's id is missing or not a plain name")
+        check_task(task)
         cache = cache_dir(args.cache, task["id"])
         return (run_setup if args.command == "setup" else run_eval)(args, task, cache)
     except BadTask as error:
