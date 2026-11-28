@@ -3,12 +3,16 @@
 // each task the bench desktop can't run refused with its reason. And the exec check's `infra` exit codes, which the
 // generated checks use for osw's 75: a check that could not run is infra, run again, never a fail.
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { loadSuite, loadTask, resolveTask, runChecks, stage1Of, TaskError } from "../dist/index.js";
-import { ROOT, tmp } from "./support.mjs";
+import { FakeWorld, fakeBackend } from "../dist/fake-world.js";
+import { loadSuite, loadTask, resolveTask, runBench, runChecks, stage1Of, TaskError } from "../dist/index.js";
+import { arm, ROOT, store, tmp } from "./support.mjs";
 
+const OSW = join(ROOT, "image", "osw", "osw.py");
 const FIXTURE = join(ROOT, "test", "fixtures", "osworld-port");
 const OSWORLD = join(FIXTURE, "osworld");
 const DATASET = "e28460ae734cb1b33901d232cef8747c20ccd677";
@@ -176,4 +180,89 @@ test("infra is an exec check's list of exit codes, never the code it passes on",
 	assert.match(problems({ ...OSW_CHECK, exit: 3, infra: [3, 75] }), /infra.*3.*passes/);
 	assert.notEqual(problems({ ...OSW_CHECK, infra: [] }), "", "an empty list names nothing");
 	assert.notEqual(problems({ id: "f", kind: "file", why: "w", path: "/a", infra: [75] }), "", "a file check has no exit code");
+});
+
+/**
+ * A folder for the front of PATH: `osw` as given, and a `sudo` that refuses as it does under computerd's no_new_privs
+ * (writing that it ran to sudo.log), so no test here ever reaches the host's own sudo.
+ */
+function binWith(osw) {
+	const bin = tmp("osw-bin-");
+	writeFileSync(join(bin, "osw"), osw, { mode: 0o755 });
+	writeFileSync(join(bin, "sudo"), `#!/bin/sh\necho ran >> ${bin}/sudo.log\necho 'sudo: The "no new privileges" flag is set, which prevents sudo from running as root.' >&2\nexit 1\n`, { mode: 0o755 });
+	return { bin, env: { PATH: `${bin}:${process.env.PATH}` } };
+}
+
+/** The fixture suite's calc task, as the loader writes it. */
+async function portedCalc() {
+	const { writeSuite } = await loader();
+	const out = tmp("osw-port-");
+	writeSuite(await portFixture(), out);
+	return { out, task: loadSuite(out).find((task) => task.spec.id.endsWith("1273e544")) };
+}
+
+test("the check runs osw only when it is the bench's osw.py: a changed one refuses the eval in words, infra, never a score", async () => {
+	const { OSW_SHA256 } = await loader();
+	const bench = read(OSW);
+	assert.equal(OSW_SHA256, createHash("sha256").update(bench).digest("hex"), "the tasks pin the bench's own osw.py");
+	const { task } = await portedCalc();
+	const [check] = resolveTask(task, 1).checks;
+	assert.deepEqual(check.infra, [75]);
+	const run = (osw) => {
+		const { bin, env } = binWith(osw);
+		return { ...spawnSync(check.argv[0], check.argv.slice(1), { env, encoding: "utf8", timeout: 60_000 }), bin };
+	};
+
+	// Changed in the agent's turn (the computer's own user can write it): refused before it runs.
+	const changed = run(`${bench}\nraise SystemExit(0)\n`);
+	assert.equal(changed.status, 75, changed.stderr);
+	assert.match(changed.stderr, new RegExp(`osw \\(${changed.bin}/osw\\) is not the bench's osw\\.py: its sha256 is [0-9a-f]{64}, the bench's is ${OSW_SHA256}; the check refuses to run it, and the task is not scored`));
+	// The bench's own runs: here, with no OSWorld checkout named, it stops on that in its own words.
+	const same = run(bench);
+	assert.equal(same.status, 2, same.stderr);
+	assert.match(same.stderr, /--osworld or OSW_OSWORLD names OSWorld's checkout/);
+	assert.equal(existsSync(join(same.bin, "sudo.log")), false, "no sudo");
+});
+
+test("a ported osw task passes its preconditions on a desktop with osw and no sudo, and its setup runs osw setup on the task's OSWorld JSON as the desktop's own user", async () => {
+	const { out, task } = await portedCalc();
+	const nonce = resolveTask(task, 1).nonce;
+	const ran = join(tmp("osw-ran-"), "osw.log");
+	// A stand-in osw: what it was asked, its cache, and its stdin.
+	const { bin, env } = binWith(`#!/bin/sh\necho "$* OSW_CACHE=$OSW_CACHE" >> ${ran}\ncat > ${ran}.$1.stdin\n`);
+	const setupFiles = ["log", "exit"].map((end) => `/tmp/computer-bench-${nonce}-osw-setup.${end}`);
+	const clear = () => setupFiles.forEach((path) => rmSync(path, { force: true }));
+	clear();
+	try {
+		// The fake desktop, with exec.run and process.start run for real with that PATH, and the task's apps installed.
+		const world = new FakeWorld({ os: "linux", groups: ["exec", "processes", "apps", "files"] });
+		const output = (child) =>
+			new Promise((resolve) => {
+				const stdout = [];
+				const stderr = [];
+				child.stdout.on("data", (chunk) => stdout.push(chunk));
+				child.stderr.on("data", (chunk) => stderr.push(chunk));
+				child.on("close", (code) => resolve({ ok: true, value: { exitCode: code, stdout: Buffer.concat(stdout).toString("base64"), stderr: Buffer.concat(stderr).toString("base64"), timedOut: false } }));
+			});
+		const wire = {
+			call(method, params, options) {
+				if (method === "apps.list") return Promise.resolve({ ok: true, value: { apps: task.spec.needs.apps.map((id) => ({ id })) } });
+				if (method === "exec.run") return output(spawn(params.argv[0], params.argv.slice(1), { env, timeout: params.timeoutMs }));
+				if (method === "process.start") {
+					const child = spawn(params.argv[0], params.argv.slice(1), { env, stdio: "ignore" });
+					return new Promise((resolve) => child.on("spawn", () => resolve({ ok: true, value: { id: String(child.pid) } })));
+				}
+				return world.call(method, params, options);
+			},
+		};
+		const backend = fakeBackend({ agents: {}, connect: async () => ({ wire, close: async () => {} }) });
+		const [result] = await runBench({ tasks: [task], arms: [arm("none")], seeds: [1], backend, store: store(), mode: "null", frames: false, retries: 0, grade: "never" });
+		assert.notEqual(result.phase, "preconditions", result.why);
+		assert.notEqual(result.phase, "setup", result.why);
+		assert.equal(read(ran).split("\n")[0], `setup /dev/stdin OSW_CACHE=/tmp/computer-bench-${nonce}-osw-cache`);
+		assert.equal(read(`${ran}.setup.stdin`), read(join(out, "libreoffice-calc-1273e544", "osworld.json")), "the task's OSWorld JSON reaches osw whole");
+		assert.equal(existsSync(join(bin, "sudo.log")), false, "no sudo");
+	} finally {
+		clear();
+	}
 });
