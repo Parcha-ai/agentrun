@@ -13,10 +13,11 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { ATTACH_CLOSE, AttachHub, MemoryMachineTokens, mintedComputer, releaseOlder, sweep } from "../dist/index.js";
 import { codeOfError } from "../dist/hosted/process.js";
+import { mayHaveMade } from "../dist/hosted/provider.js";
 import { packLabels, unpackLabels } from "../dist/hosted/values.js";
 import * as registry from "../dist/providers.js";
 import { bootDial, dialServer, socketPair } from "./fake-dial-host.mjs";
-import { fakeFreestyle, json, KEY, vmIdOf } from "./fake-freestyle.mjs";
+import { fakeFreestyle, json, KEY, snapshotIdOf, vmIdOf } from "./fake-freestyle.mjs";
 
 const { FreestyleProvider, accountOf, boxFreestyleSnapshot, create } = await import("../dist/freestyle.js");
 const freestyleModule = await import("../dist/conformance/freestyle.js");
@@ -87,13 +88,14 @@ test("create waits for the VM to run, then starts agentrun-dial in one exec-awai
 	assert.equal(reads.length, 2, "read until it ran");
 });
 
-test("a VM that stops, pauses or goes before it runs fails create in Freestyle's words, agentrun-dial never started; one still starting at the bound is a timeout", async () => {
+test("a VM that stops, pauses or goes before it runs fails create in Freestyle's words, agentrun-dial never started, and the VM is deleted; one still starting at the bound is a timeout, deleted too", async () => {
 	for (const state of ["stopped", "paused"]) {
 		const fake = fakeFreestyle({ states: ["starting", state] });
 		const error = await provider(fake).host.create(REQUEST, CTX).catch((caught) => caught);
 		assert.equal(error.code, "vendor", state);
-		assert.match(error.message, new RegExp(`Freestyle reads the VM ${VM} "${state}" before it ran, so agentrun-dial was not started`));
+		assert.match(error.message, new RegExp(`Freestyle reads the VM ${VM} "${state}" before it ran, so agentrun-dial was not started; the VM ${VM} it made was deleted`));
 		assert.deepEqual(fake.execs(), []);
+		assert.deepEqual(fake.deleted, [VM], state);
 	}
 	const gone = fakeFreestyle({ states: ["starting"], answer: (method, path) => (method === "GET" && path === `/vms/${VM}` ? json(404, { code: "NOT_FOUND", message: "vm not found" }) : undefined) });
 	const went = await provider(gone).host.create(REQUEST, CTX).catch((caught) => caught);
@@ -103,19 +105,21 @@ test("a VM that stops, pauses or goes before it runs fails create in Freestyle's
 	const late = await provider(slow, { timeouts: { pollMs: 20 } }).host.create(REQUEST, { timeoutMs: 100 }).catch((caught) => caught);
 	assert.equal(late.code, "timeout");
 	assert.match(late.message, /did not read running within 0\.1 s \(it reads starting\)/);
-	assert.equal(slow.calls.filter(({ method }) => method === "DELETE").length, 0, "a timeout may have made it: the adapter sweeps by name");
+	assert.deepEqual(slow.deleted, [VM], "the VM create made is known by its id: deleted, never left to a sweep");
 });
 
-test("a launch that exits other than 0 fails create in its words; one that got no answer, or a VM_NON_RESPONSIVE, is never sent again", async () => {
+test("a launch that exits other than 0 fails create in its words and deletes the VM; one that got no answer, or a VM_NON_RESPONSIVE, is never sent again", async () => {
 	const failing = fakeFreestyle({ answer: (method, path) => (path.endsWith("/exec-await") ? json(200, { stdout: "", stderr: "mkdir: cannot create directory", statusCode: 1 }) : undefined) });
 	const error = await provider(failing).host.create(REQUEST, CTX).catch((caught) => caught);
 	assert.equal(error.code, "vendor");
-	assert.equal(error.message, `starting agentrun-dial in ${VM} exited 1: mkdir: cannot create directory`);
+	assert.equal(error.message, `starting agentrun-dial in ${VM} exited 1: mkdir: cannot create directory; the VM ${VM} it made was deleted`);
+	assert.deepEqual(failing.deleted, [VM]);
 	for (const said of [() => Promise.reject(new TypeError("fetch failed")), () => json(409, { code: "VM_NON_RESPONSIVE", message: "the VM stopped responding; the command may already have run" })]) {
 		let tries = 0;
 		const silent = fakeFreestyle({ answer: (method, path) => (path.endsWith("/exec-await") ? (tries++, said()) : undefined) });
 		await assert.rejects(provider(silent).host.create(REQUEST, CTX));
 		assert.equal(tries, 1, "a launch that may have run is never sent again");
+		assert.deepEqual(silent.deleted, [VM]);
 	}
 });
 
@@ -123,14 +127,25 @@ test("a 409 is a slug taken where the slug reads a VM (exists, which the adapter
 	const fake = fakeFreestyle();
 	const { host } = provider(fake);
 	await host.create(REQUEST, CTX);
+	const before = fake.calls.length;
 	const taken = await host.create(REQUEST, CTX).catch((caught) => caught);
 	assert.equal(taken.code, "exists");
 	assert.match(taken.message, new RegExp(`409 CONFLICT: slug ${NAME} is already used by another VM: the account has a VM of the slug ${NAME} \\(${VM}\\)`));
+	assert.deepEqual(
+		fake.calls.slice(before).map(({ method, url }) => `${method} ${url.pathname}`),
+		["POST /v5/vms", `GET /v5/vms/${NAME}`],
+		"the 409's slug read first, then the answer; nothing deleted",
+	);
 	assert.equal(fake.vms.size, 1, "no second VM");
 	const full = fakeFreestyle({ capacity: false });
 	const none = await provider(full).host.create(REQUEST, CTX).catch((caught) => caught);
 	assert.equal(none.code, "limit");
 	assert.match(none.message, /answered 409 CONFLICT: no capacity is available, and no VM has the slug computer-0123456789ab: Freestyle has no capacity for it/);
+	assert.deepEqual(
+		full.calls.map(({ method, url }) => `${method} ${url.pathname}`),
+		["POST /v5/vms", `GET /v5/vms/${NAME}`],
+	);
+	assert.deepEqual(full.deleted, []);
 	let posts = 0;
 	const busy = fakeFreestyle({ answer: (method, path) => (path === "/vms" && method === "POST" && ++posts === 1 ? json(429, { code: "LIMIT_EXCEEDED", message: "rate limited" }) : undefined) });
 	assert.deepEqual(await provider(busy).host.create(REQUEST, CTX), { id: VM });
@@ -141,18 +156,49 @@ test("a 409 is a slug taken where the slug reads a VM (exists, which the adapter
 	assert.equal(tries, 1, "a create that got no answer may have made a VM: never sent again");
 });
 
-test("a create that fails after Freestyle made the VM deletes it, in the create's own code: an exec refused by 429s past every retry (limit) or by a 401 (denied)", async () => {
-	for (const [status, code] of [
-		[429, "limit"],
-		[401, "denied"],
+test("once the POST made the VM, a later step's failure deletes it by its id and is never a refusal (which says nothing was made): an exec refused by 429s past every retry, a 401 or 403 on the exec or on the wait's read", async () => {
+	const refusing = (status, at) => (method, path) => {
+		const said = json(status, { code: { 401: "UNAUTHORIZED", 403: "FORBIDDEN", 429: "LIMIT_EXCEEDED" }[status], message: "the account said no" });
+		if (at === "exec" && path.endsWith("/exec-await")) return said;
+		if (at === "read" && method === "GET" && path === `/vms/${VM}`) return said;
+		return undefined;
+	};
+	for (const [status, at] of [
+		[429, "exec"],
+		[401, "exec"],
+		[403, "exec"],
+		[401, "read"],
 	]) {
-		const fake = fakeFreestyle({ answer: (method, path) => (path.endsWith("/exec-await") ? json(status, { code: status === 429 ? "LIMIT_EXCEEDED" : "UNAUTHORIZED", message: "the account said no" }) : undefined) });
-		const made = provider(fake, { dial: dialServer(), daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, requestMs: 30_000 } });
-		const created = await made.create({ image: SNAPSHOT, lifetimeMs: 600_000, network: "none" }, { requestId: `freestyle-unmade-${status}` });
-		assert.equal(created.error?.code, code, String(status));
-		assert.match(created.error.message, new RegExp(`the VM ${VM} it made was deleted`), String(status));
-		assert.deepEqual(fake.deleted, [VM], `${status}: a VM create made is never left running`);
+		const what = `${status} on the ${at}`;
+		const fake = fakeFreestyle({ states: at === "read" ? ["starting"] : ["running"], answer: refusing(status, at) });
+		const error = await provider(fake).host.create(REQUEST, CTX).catch((caught) => caught);
+		assert.ok(mayHaveMade(error.code), `${what}: ${error.code} is no refusal`);
+		assert.equal(error.code, "vendor", what);
+		assert.match(error.message, new RegExp(`answered ${status} .*the account said no; the VM ${VM} it made was deleted`), what);
+		assert.equal(fake.calls.filter(({ method, url }) => method === "POST" && url.pathname === "/v5/vms").length, 1, `${what}: only the later step failed`);
+		assert.deepEqual(fake.deleted, [VM], `${what}: the VM create made is never left running`);
 	}
+	// Through the adapter, as serve makes one: the create fails in that code, and nothing is left.
+	const fake = fakeFreestyle({ answer: refusing(429, "exec") });
+	const made = provider(fake, { dial: dialServer(), daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, requestMs: 30_000 } });
+	const created = await made.create({ image: SNAPSHOT, lifetimeMs: 600_000, network: "none" }, { requestId: "freestyle-unmade" });
+	assert.equal(created.ok, false);
+	assert.ok(mayHaveMade(created.error.code), created.error.code);
+	assert.equal(fake.vms.size, 0, "a VM create made is never left");
+});
+
+test("a failed create whose delete of the VM fails too says so, naming Freestyle's ttlSeconds backstop, in a code the adapter sweeps by name", async () => {
+	const fake = fakeFreestyle({
+		answer: (method, path) => {
+			if (path.endsWith("/exec-await")) return json(200, { stdout: "", stderr: "no space left", statusCode: 1 });
+			if (method === "DELETE") return json(400, { code: "BAD_REQUEST", message: "try later" });
+			return undefined;
+		},
+	});
+	const error = await provider(fake).host.create(REQUEST, CTX).catch((caught) => caught);
+	assert.equal(error.code, "vendor");
+	assert.ok(mayHaveMade(error.code));
+	assert.match(error.message, new RegExp(`exited 1: no space left; the VM ${VM} it made could not be deleted \\(.*400 BAD_REQUEST: try later\\); Freestyle deletes it at its ttlSeconds`));
 });
 
 test("a request with no boot env makes nothing", async () => {
@@ -267,6 +313,80 @@ test("exec-await's answer: its text as Freestyle decoded it, no exit status a ti
 	assert.match((await host.dialExit(id, CTX).catch((caught) => caught)).message, /an exit status that is no number: "0"/);
 });
 
+test("the dial token travels in exec-await's env alone: never in a URL, a header, a command or a request's other fields, the VM's metadata or files, or an error's words, even where the VM's output echoes it", async () => {
+	const answers = [];
+	const fake = fakeFreestyle({ answer: (method, path) => (path.endsWith("/exec-await") && answers.length > 0 ? answers.shift() : undefined) });
+	const { host } = provider(fake);
+	const { id } = await host.create(REQUEST, CTX);
+	await host.dialLog(id, CTX);
+	await host.dialExit(id, CTX);
+	await host.redial(id, CTX);
+	await host.get(id, CTX);
+	await host.list({ "agentrun.computer.name": NAME }, CTX);
+	answers.push(json(200, { stdout: "", stderr: `agentrun-dial: refused ${TOKEN}`, statusCode: 2 }));
+	const again = await host.redial(id, CTX).catch((caught) => caught);
+	assert.equal(again.code, "vendor");
+	assert.equal(again.message.includes(TOKEN), false, again.message);
+	assert.match(again.message, /exited 2: agentrun-dial: refused <AGENTRUN_ATTACH_TOKEN>/);
+	const vm = fake.vms.get(id);
+	assert.equal(JSON.stringify(vm.record).includes(TOKEN), false, "the VM's record and metadata");
+	for (const [path, text] of vm.files) assert.equal(String(text).includes(TOKEN), false, `${path} holds no token`);
+	await host.delete(id, CTX);
+	// A launch whose output echoes the token: the create's error names the env, never the token.
+	const echoing = fakeFreestyle({ answer: (method, path) => (path.endsWith("/exec-await") ? json(200, { stdout: `token=${TOKEN}`, stderr: `dial failed with ${TOKEN}`, statusCode: 1 }) : undefined) });
+	const failed = await provider(echoing).host.create(REQUEST, CTX).catch((caught) => caught);
+	assert.equal(failed.message.includes(TOKEN), false, failed.message);
+	assert.match(failed.message, /exited 1: dial failed with <AGENTRUN_ATTACH_TOKEN>/);
+	for (const [one, launches] of [
+		[fake, 3],
+		[echoing, 1],
+	]) {
+		const carried = [];
+		for (const { method, url, headers, body } of one.calls) {
+			const { env, ...rest } = body ?? {};
+			assert.equal(`${method} ${url} ${JSON.stringify(headers)} ${JSON.stringify(rest)}`.includes(TOKEN), false, `${method} ${url.pathname}: the token outside env`);
+			if (env === undefined) continue;
+			assert.match(url.pathname, /\/exec-await$/, "env is exec-await's alone");
+			if (env.AGENTRUN_ATTACH_TOKEN === TOKEN) carried.push(url.pathname);
+		}
+		assert.equal(carried.length, launches, "the token went in each start's env (create's launch and each redial), and in no read's");
+	}
+});
+
+/** A fetch answer that never comes: it rejects once the request's signal aborts, as fetch does. */
+const hanging = (signal) =>
+	new Promise((_resolve, reject) => {
+		const stop = () => reject(signal.reason ?? Object.assign(new Error("This operation was aborted"), { name: "AbortError" }));
+		if (signal?.aborted) stop();
+		else signal?.addEventListener("abort", stop, { once: true });
+	});
+
+test("exec-await is bounded by its caller: an abort in the middle of the call ends it at once, as aborted; a call past its timeoutMs ends as a timeout; a launch cut short deletes the VM", { timeout: 20_000 }, async () => {
+	let hang = false;
+	const fake = fakeFreestyle({ answer: (method, path, body, { signal }) => (hang && path.endsWith("/exec-await") ? hanging(signal) : undefined) });
+	const { host } = provider(fake);
+	const { id } = await host.create(REQUEST, CTX);
+	hang = true;
+	const controller = new AbortController();
+	const started = Date.now();
+	setTimeout(() => controller.abort(), 50);
+	const aborted = await host.dialExit(id, { timeoutMs: 60_000, signal: controller.signal }).catch((caught) => caught);
+	assert.equal(codeOfError(host, aborted), "aborted", aborted.message);
+	assert.ok(Date.now() - started < 2_000, `the abort ended the call at once (${Date.now() - started} ms)`);
+	const sent = fake.execs().length;
+	const timed = Date.now();
+	const late = await host.dialLog(id, { timeoutMs: 200 }).catch((caught) => caught);
+	assert.equal(codeOfError(host, late), "timeout", late.message);
+	assert.ok(Date.now() - timed < 3_000, `held to its 200 ms (${Date.now() - timed} ms)`);
+	assert.ok(fake.execs().slice(sent).every(({ body }) => body.timeoutMs <= 200), "Freestyle is asked for no more time than the caller gave");
+	const launching = fakeFreestyle({ answer: (method, path, body, { signal }) => (path.endsWith("/exec-await") ? hanging(signal) : undefined) });
+	const cut = new AbortController();
+	setTimeout(() => cut.abort(), 50);
+	const stopped = await provider(launching).host.create(REQUEST, { timeoutMs: 60_000, signal: cut.signal }).catch((caught) => caught);
+	assert.equal(stopped.code, "aborted", stopped.message);
+	assert.deepEqual(launching.deleted, [VM], "the VM the POST made is deleted, on its own bound past the caller's abort");
+});
+
 // --- errors, check, the constructor ---
 
 test("Freestyle's errors are codes in Freestyle's words, never the key", async () => {
@@ -313,13 +433,124 @@ test("the constructor refuses a missing key, a fetch that is no function, an API
 	assert.throws(() => new FreestyleProvider({ apiKey: KEY, daemonUser: "1000:1000" }), /the uid of the VM's own user/);
 	assert.throws(() => new FreestyleProvider({ apiKey: KEY, maxLifetimeMs: 25 * 3_600_000 }), /maxLifetimeMs/);
 	assert.ok((await create({ apiKey: KEY })) instanceof FreestyleProvider);
-	const prepared = await new FreestyleProvider({ apiKey: KEY, fetch: () => assert.fail("prepareImage calls nothing") }).prepareImage();
-	assert.deepEqual(prepared, { ok: true, value: boxFreestyleSnapshot() });
 	assert.match(boxFreestyleSnapshot(), /^agentrun-box-[0-9a-f]{12}$/, "the box snapshot is named by the box recipe's hash");
 	const fake = fakeFreestyle();
 	const elsewhere = new FreestyleProvider({ apiKey: KEY, fetch: fake.fetch, apiUrl: "https://freestyle.example.com/" });
 	await elsewhere.host.list({}, CTX);
 	assert.equal(fake.calls[0].url.origin, "https://freestyle.example.com");
+});
+
+// --- the box snapshot ---
+
+const BOX = boxFreestyleSnapshot();
+const BUILD_DIR = "/tmp/agentrun-box";
+const RECIPE = ["install.sh", "agentrun-archil"].map((file) => [`${BUILD_DIR}/${file}`, readFileSync(new URL(`../box/${file}`, import.meta.url), "utf8")]);
+/** A fake whose build VM's install.sh answers `outcome`, the files the VM held when it started kept in `seen`. */
+function building(outcome = { exit: 0, log: "" }, options = {}) {
+	const seen = [];
+	const fake = fakeFreestyle({ states: ["starting", "running"], ...options, build: (vm) => (seen.push({ files: new Map(vm.files), execs: [...vm.execs] }), outcome) });
+	return { fake, seen };
+}
+const waits = () => {
+	const told = [];
+	return { told, onWait: (making, tag) => told.push([making, tag]) };
+};
+
+test("prepareImage answers the account's snapshot of the box recipe's digest when it has one, by its id, and makes nothing", async () => {
+	const fake = fakeFreestyle({ snapshots: [BOX] });
+	const { told, onWait } = waits();
+	assert.deepEqual(await provider(fake).prepareImage({ onWait }), { ok: true, value: snapshotIdOf(0) });
+	assert.deepEqual(fake.calls.map(({ method, url }) => `${method} ${url.pathname}`), [`GET /v5/snapshots/${BOX}`]);
+	assert.deepEqual(told, [], "onWait is told nothing when the account has it");
+});
+
+test("prepareImage builds the box snapshot once where the account has none: freestyle/ubuntu booted, the recipe uploaded, install.sh started detached and its exit file polled, the snapshot taken by the digest, and the build VM deleted", async () => {
+	const { fake, seen } = building({ exit: 0, log: "the box is ready" });
+	const { told, onWait } = waits();
+	const made = provider(fake);
+	const prepared = await made.prepareImage({ onWait });
+	assert.deepEqual(prepared, { ok: true, value: snapshotIdOf(0) });
+	assert.deepEqual(told, [["build", BOX]], "onWait is told once, before the build");
+	const posts = fake.calls.filter(({ method, url }) => method === "POST" && url.pathname === "/v5/vms");
+	assert.equal(posts.length, 1);
+	const { snapshotId, metadata, ttlSeconds, autoDeleteSeconds, automaticRestart, firewall, slug } = posts[0].body;
+	assert.deepEqual({ snapshotId, metadata, ttlSeconds, autoDeleteSeconds, automaticRestart, slug }, { snapshotId: "freestyle/ubuntu", metadata: { "agentrun-box-build": BOX }, ttlSeconds: 7200, autoDeleteSeconds: 0, automaticRestart: false, slug: undefined });
+	assert.ok(firewall, "the build VM has the public-egress firewall: install.sh fetches its packages");
+	assert.equal(seen.length, 1, "install.sh started once");
+	for (const [path, text] of RECIPE) assert.equal(seen[0].files.get(path), text, `${path} is the recipe's own`);
+	const start = seen[0].execs.at(-1);
+	assert.match(start.command, /setsid nohup sh -c 'sh \/tmp\/agentrun-box\/install\.sh; echo \$\? > \/tmp\/agentrun-box\/exit'/);
+	const execs = fake.execs();
+	for (const { body } of execs) {
+		assert.equal(body.linuxUser, "root");
+		assert.equal(body.env, undefined, "the build runs with no env");
+		assert.ok(body.timeoutMs <= 300_000, "every exec-await is answered inline");
+	}
+	assert.ok(execs.at(-1).body.command.includes(`rm -rf ${BUILD_DIR}`), "the build folder is removed before the snapshot");
+	const shots = fake.calls.filter(({ method, url }) => method === "POST" && url.pathname.endsWith("/snapshot"));
+	assert.deepEqual(shots.map(({ url, body }) => [url.pathname, body.slug]), [[`/v5/vms/${VM}/snapshot`, BOX]]);
+	const [snapshot] = fake.snapshots.values();
+	assert.equal(snapshot.record.slug, BOX);
+	assert.deepEqual([...snapshot.files.keys()].filter((path) => path.startsWith(BUILD_DIR)), [], "the snapshot holds no build folder");
+	assert.deepEqual(fake.deleted, [VM], "the build VM is deleted");
+	assert.equal(fake.vms.size, 0);
+
+	const before = fake.calls.length;
+	assert.deepEqual(await made.prepareImage({ onWait }), { ok: true, value: snapshotIdOf(0) });
+	assert.deepEqual(fake.calls.slice(before).map(({ method, url }) => `${method} ${url.pathname}`), [`GET /v5/snapshots/${BOX}`], "a second call finds it");
+	assert.equal(told.length, 1);
+});
+
+test("a build whose install.sh exits other than 0 fails in its log's words, takes no snapshot and deletes the build VM", async () => {
+	const { fake } = building({ exit: 100, log: "/tmp/node.tar.xz: OK\nE: Package 'firefox-esr' has no installation candidate\n" });
+	const prepared = await provider(fake).prepareImage();
+	assert.equal(prepared.ok, false);
+	assert.equal(prepared.error.code, "vendor");
+	assert.match(prepared.error.message, new RegExp(`^the box image ${BOX} as a Freestyle snapshot: box/install\\.sh exited 100 in the build VM ${VM}: .*firefox-esr' has no installation candidate`, "s"));
+	assert.equal(fake.snapshots.size, 0);
+	assert.deepEqual(fake.deleted, [VM]);
+});
+
+test("a build cut short deletes its VM: an abort while install.sh runs, a build VM that stops before it runs, an exec refused mid-build", { timeout: 20_000 }, async () => {
+	const { fake } = building({ exit: null });
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), 100);
+	const started = Date.now();
+	const aborted = await provider(fake).prepareImage({ signal: controller.signal });
+	clearTimeout(timer);
+	assert.equal(aborted.error?.code, "aborted", JSON.stringify(aborted));
+	assert.ok(Date.now() - started < 5_000);
+	assert.equal(fake.snapshots.size, 0);
+	assert.deepEqual(fake.deleted, [VM]);
+
+	const stopped = building({ exit: 0 }, { states: ["starting", "stopped"] });
+	const gone = await provider(stopped.fake).prepareImage();
+	assert.equal(gone.error?.code, "vendor");
+	assert.match(gone.error.message, new RegExp(`the build VM ${VM} .*"stopped"`));
+	assert.deepEqual(stopped.fake.deleted, [VM]);
+
+	let uploads = 0;
+	const refusing = building({ exit: 0 }, { answer: (method, path, body) => (path.endsWith("/exec-await") && body.command.includes("base64 -d") && ++uploads === 2 ? json(403, { code: "FORBIDDEN", message: "not yours" }) : undefined) });
+	const refused = await provider(refusing.fake).prepareImage();
+	assert.equal(refused.error?.code, "denied");
+	assert.deepEqual(refusing.fake.deleted, [VM]);
+	assert.equal(refusing.fake.snapshots.size, 0);
+});
+
+test("a build whose snapshot's slug another build took first answers that one, and still deletes its VM; a build VM's create refused makes nothing", async () => {
+	let fake;
+	({ fake } = building({ exit: 0 }, { answer: (method, path) => (method === "POST" && path.endsWith("/snapshot") ? void fake.addSnapshot(BOX) : undefined) }));
+	const raced = await provider(fake).prepareImage();
+	assert.deepEqual(raced, { ok: true, value: snapshotIdOf(0) });
+	assert.equal(fake.snapshots.size, 1, "no second snapshot");
+	assert.deepEqual(fake.deleted, [VM]);
+
+	const denied = fakeFreestyle({ answer: (method, path) => (method === "POST" && path === "/vms" ? json(403, { code: "FORBIDDEN", message: "no VMs on this plan" }) : undefined) });
+	const refused = await provider(denied).prepareImage();
+	assert.equal(refused.error?.code, "denied");
+	assert.match(refused.error.message, /no VMs on this plan/);
+	assert.deepEqual(denied.deleted, []);
+	assert.equal(denied.calls.some(({ method }) => method === "DELETE"), false);
 });
 
 test("the provider dials: kind linux, a VM, the janitor's lifetime, no exec, upload or extend, none, open and a list; a server with no public address calls Freestyle for nothing", async () => {
@@ -407,7 +638,7 @@ test("Core's provider cases pass through the Freestyle REST calls and the dial, 
 
 // --- the janitor ---
 
-test("the janitor's sweep and releaseOlder over packed metadata: past or unreadable deadlines are swept, older or unreadable epochs released, a newer epoch kept, and a VM with no packed map to read a run from never touched", async () => {
+test("the janitor's sweep and releaseOlder over packed metadata: a VM whose deadline can't be read, past its deadline, is swept, and one with no parseable run hash (no packed map to read) never touched; older or unreadable epochs released, a newer epoch kept", async () => {
 	const fake = fakeFreestyle();
 	const made = provider(fake, { timeouts: TIMEOUTS });
 	const labels = (n, extra) => ({ "agentrun.computer": "1", "agentrun.computer.name": `computer-${String(n).padStart(12, "0")}`, ...extra });
@@ -479,7 +710,9 @@ test("the conformance module reads COMPUTER_FREESTYLE_* alone, needs its live sw
 	assert.equal(host.descriptor.id, "freestyle");
 	assert.equal(freestyleModule.sweepScope({ env }), accountOf(KEY));
 	assert.doesNotMatch(freestyleModule.sweepScope({ env }), new RegExp(KEY));
-	assert.equal(await freestyleModule.conformanceImage({ env }), boxFreestyleSnapshot(), "the box snapshot prepareImage() names");
-	assert.equal(await freestyleModule.conformanceImage({ env: { ...env, COMPUTER_FREESTYLE_IMAGE: SNAPSHOT } }), SNAPSHOT);
+	const fake = fakeFreestyle({ snapshots: [BOX] });
+	assert.equal(await freestyleModule.conformanceImage({ env: { ...env, [live]: "1" }, fetch: fake.fetch }), snapshotIdOf(0), "the box snapshot prepareImage() finds or builds");
+	await assert.rejects(freestyleModule.conformanceImage({ env, fetch: fake.fetch }), /set AGENTRUN_COMPUTER_LIVE_FREESTYLE=1/, "finding or building it calls Freestyle, so it needs the live switch");
+	assert.equal(await freestyleModule.conformanceImage({ env: { ...env, COMPUTER_FREESTYLE_IMAGE: SNAPSHOT }, fetch: () => assert.fail("a named image calls nothing") }), SNAPSHOT);
 	assert.throws(() => freestyleModule.dialKit({ env }), /^Error: Freestyle's machines dial the server that minted their tokens, and this run has no public server: run its Core with packages\/serve\/scripts\/dial-conformance\.mjs --provider freestyle/);
 });
