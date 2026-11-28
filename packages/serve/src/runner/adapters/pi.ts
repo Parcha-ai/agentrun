@@ -16,7 +16,7 @@ import { clampThinkingLevel, createModels, getSupportedThinkingLevels } from "@e
 import { AgentDoc, AssistantEntry, type Conversation, type Cursor, defineExtension, type EntryRecord, defineTool, type Extension, GenerationTask, type Harness, hook, type JsonObject, ProviderDoc, type Registry, type Submission, type ToolExecutionApi, ToolResultEntry, ToolTask, type ToolRegistration } from "@earendil-works/pi-durable";
 import { anthropicPolicy, withWebSearches } from "@parcha/agentrun-harness-claude";
 import { type AdapterSession, type AgentAdapter, HOST_RESULT_MAX_CHARS, type HostTool, type NestedCalls, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus, type Wire } from "@parcha/agentrun-kernel";
-import { conversationLabel, type ModelProxy, NATIVE_SEARCH_USD, type ProviderPolicy, startModelProxy } from "@parcha/agentrun-kernel/host";
+import { conversationLabel, LOCAL_MODEL_STALL_MS, type ModelProxy, NATIVE_SEARCH_USD, type ProviderPolicy, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { INTERRUPTED_TEXT } from "@parcha/agentrun-kernel/kernel";
 import { boundTo, resultMaxChars, TurnBudget, type TurnRecord } from "@parcha/agentrun-kernel/process";
 import { randomBytes } from "node:crypto";
@@ -209,9 +209,15 @@ async function openPi(options: PiAdapterOptions, spec: SessionSpec, io: PiSessio
   }
 }
 
-/** A tier's model as its proxy takes it: its route's provider, model, catalog entry, price and fetch (model-route.ts), and
- *  its catalog's context window, which a conversation on the tier holds each tool result to (boundPiResult). */
-export type TierModel = Pick<PiAdapterOptions, "provider" | "model" | "like" | "price" | "fetch" | "stallMs"> & { readonly contextWindow?: number };
+/** A tier's model as its proxy takes it: its route's provider, model, catalog entry, price and fetch (model-route.ts), its
+ *  catalog's context window, which a conversation on the tier holds each tool result to (boundPiResult), and whether the
+ *  model is on the host's own machine (the route's `local`), which sets its stall bound (tierStallMs). */
+export type TierModel = Pick<PiAdapterOptions, "provider" | "model" | "like" | "price" | "fetch" | "stallMs"> & { readonly contextWindow?: number; readonly local?: boolean };
+
+/** How long a tier's provider may send nothing before its proxy stops the request: its own `stallMs`, else for a model on
+ *  the host's own machine (an Ollama tier, which says nothing while it loads) LOCAL_MODEL_STALL_MS, as the session's
+ *  (adapters/index.ts piOptionsOf); else the proxy's own bound. pi's client of the tier waits on its proxy as long. */
+export const tierStallMs = (route: TierModel): number | undefined => route.stallMs ?? (route.local ? LOCAL_MODEL_STALL_MS : undefined);
 
 /** The tier proxies a session holds (openTierProxies): each tier's port for a side request under `label`, and their close. */
 export interface TierProxies {
@@ -239,7 +245,7 @@ async function routeProxy(route: TierModel, hooks: SessionIO["models"], tools: r
     ...(price ? { price: price as never } : {}),
     ...(route.provider.headers ? { headers: route.provider.headers } : {}),
     ...(route.fetch ? { fetch: route.fetch } : {}),
-    ...(route.stallMs === undefined ? {} : { stallMs: route.stallMs }),
+    ...(tierStallMs(route) === undefined ? {} : { stallMs: tierStallMs(route) }),
     redact,
   }, randomBytes(32).toString("base64url"));
 }
@@ -386,7 +392,7 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   models.setProvider(sessionProvider(api, proxy, model, { provider: PROVIDER, keyName: "AGENTRUN_SESSION_KEY", ...(like ? { like } : {}), reasoning: false, ...(options.stallMs === undefined ? {} : { wait: options.stallMs }) }));
   // Each tier's model at its own proxy, under its own provider id (tierProvider): a conversation whose agent names it
   // (a subagent's) is sent there, and booked as the session's own requests are.
-  for (const [tier, route, at] of tiers.each) models.setProvider(sessionProvider(route.provider.api, at, route.model, { provider: tierProvider(tier), keyName: "AGENTRUN_SESSION_KEY", ...(route.like ? { like: route.like } : {}), reasoning: false, ...(route.stallMs === undefined ? {} : { wait: route.stallMs }) }));
+  for (const [tier, route, at] of tiers.each) models.setProvider(sessionProvider(route.provider.api, at, route.model, { provider: tierProvider(tier), keyName: "AGENTRUN_SESSION_KEY", ...(route.like ? { like: route.like } : {}), reasoning: false, ...(tierStallMs(route) === undefined ? {} : { wait: tierStallMs(route) }) }));
   // A child made on an earlier claim keeps the tier's model it was made on; when the tier's model has changed since (the
   // server's AGENT_MODEL_STRONG, say), that one is not here, and the child resumes on the tier's model now, as a new call
   // on the tier would run.

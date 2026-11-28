@@ -674,7 +674,8 @@ export interface ModelProxyOptions {
    *  proxy starts (`hostHeaderProblems`). */
   headers?: Readonly<Record<string, string>>;
   /** The fetch the proxy forwards with: the host's route for a model it translates onto the wire (a test's recorder,
-   *  too); absent, the network. */
+   *  too); absent, the network. Each request's init carries `heard` (ProviderHeard), for a route that holds back what its
+   *  provider sends. */
   fetch?: typeof fetch;
   /** Told, with CONTENT_FILTERED, once an answer the provider stopped on its content filter has been passed and booked
    *  (`ProviderPolicy.filtered`): the harness halts the turn with it, before its client asks for the answer again. */
@@ -712,6 +713,19 @@ export const stalledWords = (ms: number): string => `the model sent nothing for 
  *  reads its `error` object, Responses' `error` event its `code` and `message`. */
 const stalledEvent = (words: string): string =>
   `event: error\ndata: ${JSON.stringify({ type: "error", code: MODEL_STALLED, message: words, error: { type: "agentrun_proxy", code: MODEL_STALLED, message: words } })}\n\n`;
+
+/** What closes the event a client was left in, from the last characters it was written (`sentEnd`), so an event of the
+ *  proxy's own after it is read as one of its own: nothing between two events (or before any), the blank line after an
+ *  event's whole lines, and a line end and the blank line inside a line. The relay (errorCut) passes a healthy event's
+ *  lines as they come, so a stall can leave the client after a data line, or inside one. */
+const eventClose = (sentEnd: string): string =>
+  sentEnd === "" || sentEnd.endsWith("\n\n") || sentEnd.endsWith("\r\n\r\n") || sentEnd.endsWith("\r\r") ? "" : /\r?\n$|\r$/.test(sentEnd) ? "\n" : "\n\n";
+
+/** Called by a host's route (ModelProxyOptions.fetch), given it on the request's init as `heard`, each time its provider
+ *  sends something the route holds back from the stream it answers (a thinking block it sends whole at its end, a reply
+ *  it reads whole): the proxy's stall bound counts the provider's silence, not the route's. A network fetch never calls
+ *  it. */
+export type ProviderHeard = () => void;
 
 /** A header a host may not set on forwarded requests: the credential's, the transport's, and the provider's protocol. */
 const RESERVED_HEADER = /^(?:authorization|proxy-authorization|x-api-key|host|content-length|content-type|transfer-encoding|connection|cookie|anthropic-.*)$/i;
@@ -1564,15 +1578,31 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     let stallTimer: NodeJS.Timeout | undefined;
     /** Set once the client was sent the provider's event stream (a 200 one): a stall after is told as its last event. */
     let eventStream = false;
+    /** Whether the bound runs: from the request's leaving to its answer's end, but for each wait on its client. */
+    let stallRuns = false;
     /** Starts the stall bound again: as the request leaves, as its answer's headers come, and after each piece of the
      *  answer the client has taken. A wait on a client that reads slowly is the client's, never counted. */
     const waitProvider = (): void => {
       clearTimeout(stallTimer);
+      stallRuns = true;
       stallTimer = setTimeout(() => {
         stalled = true;
         controller.abort(new Error(stalledWords(stallMs)));
       }, stallMs);
     };
+    /** Stops the bound while the client is written a piece (its wait is its own), or at the answer's end. */
+    const holdStall = (): void => {
+      clearTimeout(stallTimer);
+      stallRuns = false;
+    };
+    /** A host route's word that its provider sent something the route holds back (a translation that sends a thinking
+     *  block whole at its end, or a reply it reads whole): the provider is not silent, so the bound starts again, unless
+     *  it is held for the client. ProviderHeard. */
+    const heard: ProviderHeard = () => {
+      if (stallRuns && !stalled) waitProvider();
+    };
+    /** The last characters the client was written: whether it stands between two events, for the stall's own event. */
+    let sentEnd = "";
     /** Set once the provider's content-filter stop was told: the answer is read on to its end for its usage, though the
      *  client (whose turn the harness ends) goes away. */
     let keepReading = false;
@@ -1706,7 +1736,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       // The turn's answer is read from here: a tool call the client makes on it waits for its facts.
       if (answering && host === undefined && !route.free && options.turn) turnSpan = options.turn.begin();
       waitProvider();
-      let upstream = await forward(`${origin}${route.path}${query ? `?${query}` : ""}`, { method: route.method, headers, body: sent, signal: controller.signal });
+      let upstream = await forward(`${origin}${route.path}${query ? `?${query}` : ""}`, { method: route.method, headers, body: sent, signal: controller.signal, heard } as RequestInit);
       waitProvider();
       // The provider answered (and a paid request was paid): a host callback that throws must not lose the answer or
       // its booking.
@@ -1792,6 +1822,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         if (!out || res.destroyed) return;
         const bytes = Buffer.from(out, "utf8");
         sentBytes += bytes.byteLength;
+        sentEnd = (sentEnd + out).slice(-4);
         // A client that reads slowly holds the provider back: nothing more is read until what was written drains.
         if (!res.write(bytes)) {
           // One wait, and nothing left behind: whichever comes first takes both listeners off.
@@ -1816,7 +1847,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
           // A route's own fetch may end its answer on the stall's abort with an event of its own ("aborted"): never
           // passed on, the stall's answer below is the client's.
           if (stalled) throw controller.signal.reason;
-          clearTimeout(stallTimer);
+          holdStall();
           // What the watcher reads of a piece, it reads before the client has the piece.
           const text = decoder.decode(chunk, { stream: true });
           if (watcher) {
@@ -1869,7 +1900,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
           if (tail.length > 2 * USAGE_WINDOW) tail = tail.slice(-USAGE_WINDOW);
         }
         if (stalled) throw controller.signal.reason;
-        clearTimeout(stallTimer);
+        holdStall();
         // What the relay held at the answer's end: an error event's or an error body's rest, cut.
         const rest = relay.end();
         await write(rest);
@@ -1897,7 +1928,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         // a host that ends turns (onFinal) ends this one, its client's next answer request refused until its next turn.
         const words = stalledWords(stallMs);
         if (!res.headersSent) refuse(res, refusedStatus, words, req, MODEL_STALLED);
-        else if (eventStream) res.end(stalledEvent(words));
+        else if (eventStream) res.end(`${eventClose(sentEnd)}${stalledEvent(words)}`);
         else res.destroy();
         if (answering && options.onFinal) {
           stopTold = `stopped after ${Math.round(stallMs / 1000)} s with nothing from the model`;
@@ -1910,7 +1941,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       } else if (!res.headersSent) refuse(res, 502, "the provider did not answer", req);
       else res.destroy();
     } finally {
-      clearTimeout(stallTimer);
+      holdStall();
       inflight.delete(controller);
       try { watchEnd?.(); } catch {}
     }

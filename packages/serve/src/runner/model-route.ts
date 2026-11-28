@@ -17,7 +17,7 @@ import { randomUUID } from "node:crypto";
 import { calculateCost } from "@earendil-works/pi-ai";
 import type { ThinkingLevelMap } from "../port-models.js";
 import type { Wire } from "@parcha/agentrun-kernel";
-import { LOCAL_MODEL_STALL_MS, onOpenRouter, openRouterAttribution, ROUTE_ORIGIN, streamErrorOf } from "@parcha/agentrun-kernel/host";
+import { LOCAL_MODEL_STALL_MS, onOpenRouter, openRouterAttribution, type ProviderHeard, ROUTE_ORIGIN, streamErrorOf } from "@parcha/agentrun-kernel/host";
 import type { ToolsAs } from "../local-models.js";
 import { chooseModel, FAUX_PROVIDER, MODEL_PROVIDER, type PinnedModel, runModels, type Tier } from "../model.js";
 import { OLLAMA_PROVIDER, type OllamaAsks } from "../ollama-provider.js";
@@ -211,7 +211,7 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
     providerIds.set(safe, id);
     return safe;
   };
-  return (async (_url: unknown, init: { body?: unknown; signal?: AbortSignal; edgeAsks?: EdgeAsks } = {}) => {
+  return (async (_url: unknown, init: { body?: unknown; signal?: AbortSignal; edgeAsks?: EdgeAsks; heard?: ProviderHeard } = {}) => {
     const body = JSON.parse(String(init.body ?? "{}")) as MessagesRequest;
     const built = contextOf(body, target, (id) => providerIds.get(id) ?? id) as PiContext;
     // A model that takes its tools as text (its catalog entry's toolsAs): its tools in its system prompt, every call and
@@ -317,7 +317,11 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
               thinking = "";
               thinkingAt = open(at);
               send({ type: "content_block_start", index: thinkingAt, content_block: { type: "thinking", thinking: "", signature: "" } });
-            } else if (event.type === "thinking_delta") thinking += event.delta ?? "";
+            } else if (event.type === "thinking_delta") {
+              // Held to the block's end: the model proxy is told the provider is not silent (its stall bound).
+              thinking += event.delta ?? "";
+              init.heard?.();
+            }
             else if (event.type === "thinking_end") {
               // The whole thinking at its end, through the run's one redactor, in one delta: a held key the model quoted is
               // cut before pi's session journals it even where it spans two deltas (a cut per delta could miss a key split
@@ -378,7 +382,11 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
               let began = false;
               for await (const event of replies) {
                 if (event.type !== "done" && event.type !== "error") {
-                  if (event.type !== "start") began = true;
+                  // Read whole at its end: the model proxy is told the provider is not silent (its stall bound).
+                  if (event.type !== "start") {
+                    began = true;
+                    init.heard?.();
+                  }
                   continue;
                 }
                 const message = (event.type === "done" ? event.message : event.error) ?? {};
@@ -508,6 +516,19 @@ function forcedChoice(choice: unknown): string | undefined {
   return `tool_choice ${JSON.stringify(type ?? "(no type)")} is not taken on this model's route: "auto" and "none" only`;
 }
 
+/** An answer's text, read whole, the model proxy told of each piece as it comes (`heard`, its stall bound): the proxy
+ *  sees nothing of an answer asked whole until its end. */
+async function heardText(answer: Response, heard: ProviderHeard | undefined): Promise<string> {
+  if (!heard || !answer.body) return answer.text();
+  const decoder = new TextDecoder();
+  let text = "";
+  for await (const chunk of answer.body as unknown as AsyncIterable<Uint8Array>) {
+    text += decoder.decode(chunk, { stream: true });
+    heard();
+  }
+  return text + decoder.decode();
+}
+
 /** `route` (a translated route's fetch, which streams every answer, as pi-ai asks) for any Messages client on the wire it
  *  translates onto, which asks things pi-ai never does. It takes POST /v1/messages and POST /v1/messages/count_tokens
  *  alone; anything else is a 404, never run as a chat. Its token count (free, asked beside its turns) is answered here
@@ -537,7 +558,7 @@ export function forMessagesClients(route: typeof fetch): typeof fetch {
     // The schema rides the in-process call (messagesFetch reads edgeAsks on an Ollama model), never the body.
     const asked: RequestInit & { edgeAsks?: EdgeAsks } = output.schema ? { ...init, edgeAsks: { format: output.schema } } : init;
     const answer = await route(url, asked);
-    return streamed || answer.status !== 200 ? answer : wholeOf(await answer.text());
+    return streamed || answer.status !== 200 ? answer : wholeOf(await heardText(answer, (init as { heard?: ProviderHeard }).heard));
   }) as typeof fetch;
 }
 

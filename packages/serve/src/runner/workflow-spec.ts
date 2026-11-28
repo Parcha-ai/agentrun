@@ -17,7 +17,7 @@ import type { Revision } from "../agent-rows.js";
 import { chargedCost, type DecisionProvider, DecisionProviderError, EffectFailure, inspectWorkflow, type LoadImage, type Workflow, type WorkflowDeps } from "@parcha/agentrun-dsl";
 import type { DecisionModelPrice } from "@parcha/agentrun-decisions";
 import { type BeforeRequest, modelPortFor, type Refusal, type RunSessions, type SessionWriter, type Wire } from "@parcha/agentrun-kernel";
-import { type ModelProxy, type ProviderPolicy, type ProxyUsage, startModelProxy } from "@parcha/agentrun-kernel/host";
+import { LOCAL_MODEL_STALL_MS, type ModelProxy, type ProviderPolicy, type ProxyUsage, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { type CapModel, CapRefused, checkRaise, DecisionPriceUnreadable, DECISION_SESSION, type DecisionCapRequest, followUpOf, freeCeilingMessage, freeRequestLimitOf, maxRequestsOf, parkOf, type RaiseState, runCap, type RunDecisions } from "@parcha/agentrun-kernel/kernel/cap";
 import { completer } from "../llm.js";
 // The decision providers' list prices, the catalog's read and the replay check (decision-cap.ts), with holdOf, which the
@@ -95,6 +95,9 @@ export interface WorkflowProvider {
   readonly fetch?: typeof fetch;
   /** A ChatGPT plan's route: its policy keeps the plan's rules (pi.ts policyFor). */
   readonly plan?: boolean;
+  /** A model on the host's own machine (the route's `local`: an Ollama model), which says nothing while it loads: its
+   *  proxy waits LOCAL_MODEL_STALL_MS, and pi-ai's client of it as long, as a pi session's on one does. */
+  readonly local?: boolean;
   /** Told the credential an upstream 401 refused, so the next one is renewed (a ChatGPT plan's route). */
   readonly refused?: (credential: string) => Promise<void>;
 }
@@ -127,6 +130,7 @@ export async function providerFromRoute(route: ModelRoute): Promise<WorkflowProv
     capModel: capModelOf(route),
     ...(route.fetch ? { fetch: route.fetch } : {}),
     ...(route.provider.plan ? { plan: true } : {}),
+    ...(route.local ? { local: true } : {}),
     ...(route.provider.refused ? { refused: route.provider.refused } : {}),
   };
 }
@@ -296,10 +300,11 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
         ...(provider.headers ? { headers: provider.headers } : {}),
         ...(provider.fetch ? { fetch: provider.fetch } : {}),
         ...(provider.refused ? { credentialRefused: provider.refused } : {}),
+        ...(provider.local ? { stallMs: LOCAL_MODEL_STALL_MS } : {}),
       }, randomBytes(32).toString("base64url"));
       proxies.push(proxy);
       // pi-ai's client of the provider's wire at its proxy (port-models.ts sessionProvider), as pi's session reaches its own.
-      models.setProvider(sessionProvider(provider.api, proxy, provider.modelId, { provider: providerId(tier), keyName: "AGENTRUN_SESSION_KEY", ...(provider.like ? { like: provider.like } : {}), reasoning: false }));
+      models.setProvider(sessionProvider(provider.api, proxy, provider.modelId, { provider: providerId(tier), keyName: "AGENTRUN_SESSION_KEY", ...(provider.like ? { like: provider.like } : {}), reasoning: false, ...(provider.local ? { wait: LOCAL_MODEL_STALL_MS } : {}) }));
     }
 
     const modelOf = (tier: string | undefined): { provider: string; modelId: string; named?: string } => {

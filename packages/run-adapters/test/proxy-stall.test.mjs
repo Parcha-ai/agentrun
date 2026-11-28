@@ -54,6 +54,8 @@ async function drivenProxy(t, { onFinal, stallMs } = {}) {
       head: () => resolve(new Response(new ReadableStream({ start: (c) => void (stream = c) }), { status: 200, headers: { 'content-type': 'text/event-stream' } })),
       piece: (text) => stream.enqueue(encode(text)),
       end: () => { answer.ended = true; stream.close(); },
+      // The route's word that its provider sent something it holds back (ProviderHeard), as the host's translation tells it.
+      heard: () => init.heard(),
     };
     // The proxy lets go of every request once its client is answered; only an abort before the answer ended stops it.
     init.signal.addEventListener('abort', () => {
@@ -91,7 +93,24 @@ async function drivenProxy(t, { onFinal, stallMs } = {}) {
     req.end(JSON.stringify({ model: 'main-model', messages: [{ role: 'user', text: 'Hello.' }] }));
     return got;
   };
-  return { answers, booked, finals, send, proxy: p };
+  /** One request from a client that reads its first piece and then nothing until `resume()`. */
+  const sendPaused = () => {
+    const got = { body: '', ended: false, failed: false, resume: () => {} };
+    const req = request({ host: hostname, port, method: 'POST', path: '/v1/test', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` } }, (res) => {
+      res.setEncoding('utf8');
+      res.once('data', (text) => {
+        got.body += text;
+        res.pause();
+        got.resume = () => { res.on('data', (more) => (got.body += more)); res.resume(); };
+      });
+      res.on('end', () => (got.ended = true));
+      res.on('error', () => (got.failed = true));
+    });
+    req.on('error', () => (got.failed = true));
+    req.end(JSON.stringify({ model: 'main-model', messages: [{ role: 'user', text: 'Hello.' }] }));
+    return got;
+  };
+  return { answers, booked, finals, send, sendPaused, proxy: p };
 }
 
 /** The data of the stream's events, parsed. */
@@ -212,4 +231,92 @@ test('the default bound applies when the host sets none', async (t) => {
   t.mock.timers.tick(1);
   await until(() => got.ended || got.failed, 'the client\'s answer ended');
   assert.equal(JSON.parse(got.body).error.message, stalledWords(MODEL_STALL_MS));
+});
+
+test('a route that holds back what its provider sends (a thinking block sent whole) and tells the proxy so is never stopped: each word starts the bound again', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { answers, booked, finals, send } = await drivenProxy(t, { onFinal: true, stallMs: STALL_MS });
+  const got = send();
+  await until(() => answers.length === 1, 'the request reached the provider');
+  assert.equal(typeof answers[0].heard, 'function');
+  answers[0].head();
+  answers[0].piece(FIRST_EVENT);
+  await until(() => got.body.includes('message_start'), 'the client has the first event');
+  // Ten bounds' time with nothing written to the client, the route telling the proxy its provider is sending.
+  for (let i = 0; i < 10; i++) {
+    t.mock.timers.tick(STALL_MS - 1);
+    answers[0].heard();
+  }
+  await until(() => true, 'a turn');
+  assert.equal(answers[0].aborted, false, 'the provider was sending all along');
+  answers[0].piece('event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n');
+  answers[0].end();
+  await until(() => got.ended, 'the answer ended');
+  assert.deepEqual(eventsOf(got.body).map((event) => event.name), ['message_start', 'content_block_stop']);
+  await until(() => booked.length === 1, 'the request was booked');
+  assert.deepEqual(finals, []);
+});
+
+test('a stall after a data line, before the blank line that ends its event, ends that event first: the stall\'s error is an event of its own', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { answers, finals, send } = await drivenProxy(t, { onFinal: true, stallMs: STALL_MS });
+  const got = send();
+  await until(() => answers.length === 1, 'the request reached the provider');
+  answers[0].head();
+  answers[0].piece(FIRST_EVENT);
+  answers[0].piece('event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}\n');
+  await until(() => got.body.endsWith('"Hi"}}\n'), 'the client has the event\'s data line, and no blank line');
+  t.mock.timers.tick(STALL_MS);
+  await until(() => got.ended || got.failed, 'the client\'s answer ended');
+  assert.equal(got.ended, true);
+  const events = eventsOf(got.body);
+  assert.deepEqual(events.map((event) => event.name), ['message_start', 'content_block_delta', 'error']);
+  assert.deepEqual(events[1].data.delta, { type: 'text_delta', text: 'Hi' }, 'the event the client was in, whole');
+  assert.equal(events[2].data.code, MODEL_STALLED);
+  assert.equal(events[2].data.message, stalledWords(STALL_MS));
+  assert.equal(finals.length, 1);
+});
+
+test('a stall inside a line the client was sent part of ends that line and its event: the stall\'s error is still an event of its own', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { answers, send } = await drivenProxy(t, { onFinal: true, stallMs: STALL_MS });
+  const got = send();
+  await until(() => answers.length === 1, 'the request reached the provider');
+  answers[0].head();
+  answers[0].piece(FIRST_EVENT);
+  // The event is told healthy by its first data line, and passed as it comes: a second data line's start with it.
+  answers[0].piece('event: content_block_delta\ndata: {"type":"content_block_delta","index":0}\ndata: {"pa');
+  await until(() => got.body.endsWith('{"pa'), 'the client has part of a line');
+  t.mock.timers.tick(STALL_MS);
+  await until(() => got.ended || got.failed, 'the client\'s answer ended');
+  assert.equal(got.ended, true);
+  const blocks = got.body.split('\n\n').filter(Boolean);
+  assert.equal(blocks.length, 3, got.body);
+  const last = eventsOf(blocks.at(-1) + '\n\n')[0];
+  assert.equal(last.name, 'error');
+  assert.equal(last.data.code, MODEL_STALLED);
+});
+
+test('the route\'s word that its provider is sending never starts the bound while the proxy waits on a client that reads slowly', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { answers, booked, sendPaused } = await drivenProxy(t, { onFinal: true, stallMs: STALL_MS });
+  const got = sendPaused();
+  await until(() => answers.length === 1, 'the request reached the provider');
+  answers[0].head();
+  answers[0].piece(FIRST_EVENT);
+  await until(() => got.body.includes('message_start'), 'the client has the first event, and reads no more');
+  // More than the sockets hold: the proxy waits on the client to drain before it reads the provider again.
+  const delta = `event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"${'x'.repeat(4000)}"}}\n\n`;
+  answers[0].piece(delta.repeat(4096));
+  answers[0].piece('event: message_stop\ndata: {"type":"message_stop"}\n\n');
+  for (let turns = 0; turns < 2000; turns++) await new Promise((resolve) => setImmediate(resolve));
+  answers[0].heard();
+  t.mock.timers.tick(STALL_MS);
+  await until(() => true, 'a turn');
+  assert.equal(answers[0].aborted, false, 'the wait is the client\'s');
+  got.resume();
+  answers[0].end();
+  await until(() => got.ended, 'the answer ended');
+  assert.ok(got.body.endsWith('event: message_stop\ndata: {"type":"message_stop"}\n\n'));
+  await until(() => booked.length === 1, 'the request was booked');
 });

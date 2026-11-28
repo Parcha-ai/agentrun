@@ -4,7 +4,7 @@ export { ANTHROPIC_IMAGE_TOKENS_MAX, ANTHROPIC_TOOL_USE_SYSTEM_PROMPT_TOKENS, AS
 export { O200K_SHA256, O200K_VOCABULARY, o200kModel, o200kTokens } from "./o200k.js";
 export { CONVERSATION_HEADER, conversationLabel, COUNT_TIMEOUT_MS, countedInputOf, CredentialUnavailable, localInputOf, hostHeaderProblems, lastObjectOf, LOCAL_MODEL_STALL_MS, MODEL_STALL_MS, MODEL_STALLED, NATIVE_SEARCH_USD, ProxyRefusal, ROUTE_ORIGIN, sameKey, stalledWords, startModelProxy, statesUsageCost, streamErrorOf, usageCostOf } from "./proxy.js";
 export { OPENROUTER_APP, OPENROUTER_ATTRIBUTION_ENV, onOpenRouter, openRouterApp, openRouterAttribution } from "./openrouter-attribution.js";
-export type { InputCounter, ModelProxy, ModelProxyHooks, ModelProxyOptions, ModelUsageReport, ProviderPolicy, ProxyRequest, ProxyRequestContext, ProxyRoute, ProxyUsage, ReasoningSeen, StreamError } from "./proxy.js";
+export type { InputCounter, ModelProxy, ModelProxyHooks, ModelProxyOptions, ModelUsageReport, ProviderHeard, ProviderPolicy, ProxyRequest, ProxyRequestContext, ProxyRoute, ProxyUsage, ReasoningSeen, StreamError } from "./proxy.js";
 export { processAlive } from "./alive.js";
 export { serialWriter } from "./serial.js";
 export { PARENT_WATCH_SHIM, parentWatched, parentWatchHere, SETPRIV } from "./parent-death.js";

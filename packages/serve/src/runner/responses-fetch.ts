@@ -29,6 +29,7 @@
 // The answer runs through messagesFetch whole (a Responses body made a Messages one, its Messages stream made a Responses
 // one), so the Messages translation stays as it is. Split into a parser per wire, one driver and an encoder per wire if a
 // third wire arrives.
+import type { ProviderHeard } from "@parcha/agentrun-kernel/host";
 import { randomBytes } from "node:crypto";
 
 type Json = Record<string, unknown>;
@@ -269,7 +270,10 @@ type Open = { index: number; item: Json; text: string; kind: "message" | "reason
  * which the run's own log keeps.
  */
 export function responsesFetch(messages: typeof fetch, { reasons = false, warn = (line: string) => console.warn(line) }: { reasons?: boolean; warn?: (line: string) => void } = {}): typeof fetch {
-  return (async (url: unknown, init: { body?: unknown; signal?: AbortSignal; headers?: unknown } = {}) => {
+  return (async (url: unknown, init: { body?: unknown; signal?: AbortSignal; headers?: unknown; heard?: ProviderHeard } = {}) => {
+    // The model proxy's word for a provider that is not silent (its stall bound): the Messages route tells it what it
+    // holds back, and an answer asked whole is held here, each event of it told.
+    const heard = init.heard;
     let body: Json;
     let request: Json;
     let asks: EdgeAsks;
@@ -283,7 +287,7 @@ export function responsesFetch(messages: typeof fetch, { reasons = false, warn =
       return new Response(JSON.stringify({ error: { message, type: "invalid_request_error", param: null, code: null } }), { status: 400, headers: { "content-type": "application/json" } });
     }
     const target = String(url).replace(/\/v1\/responses(?=$|\?)/, "/v1/messages");
-    const answer = await messages(target, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(request), edgeAsks: asks, ...(init.signal ? { signal: init.signal } : {}) } as RequestInit);
+    const answer = await messages(target, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(request), edgeAsks: asks, ...(init.signal ? { signal: init.signal } : {}), ...(heard ? { heard } : {}) } as RequestInit);
     if (!answer.ok || !answer.body) {
       const text = await answer.text().catch(() => "");
       return new Response(JSON.stringify({ error: { message: text || `the model's request failed (${answer.status})`, type: "server_error", param: null, code: null } }), { status: answer.status >= 400 ? answer.status : 500, headers: { "content-type": "application/json" } });
@@ -316,7 +320,7 @@ export function responsesFetch(messages: typeof fetch, { reasons = false, warn =
     // OpenAI's own default: a body streams only when it asks to; one that names no stream is answered whole.
     if (body.stream !== true) {
       // The whole answer, then its final response as one body.
-      await translate(events, response, () => {}, dropped);
+      await translate(events, response, () => heard?.(), dropped);
       said();
       if (response.status === "failed") {
         // 500 for a failed answer, as the Messages side answers one asked whole (model-route.ts wholeOf: Anthropic's
