@@ -9,9 +9,10 @@ import type { Sandbox, SandboxInfo, SandboxOpts } from "e2b";
 import { boxE2bTemplate } from "./box-image.js";
 import { E2B } from "./descriptors/e2b.js";
 import { DEADLINE_LABEL, show } from "./drift.js";
-import { installedProxy, type ProxyEnv, proxyForDomain } from "./env-proxy.js";
+import { installedProxy, type ProxyEnv, proxyFor, proxyForDomain } from "./env-proxy.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
 import { deadlineOf, HostedProvider, type HostedOptions, type HostedTimeouts, isoOf, MAX_LABEL, timeoutsOf } from "./hosted/provider.js";
+import { httpsBase } from "./hosted/rest.js";
 import { dialLaunch } from "./hosted/scripts.js";
 import { connectOf } from "./descriptor.js";
 import { dateOf, DOMAIN, isWhole, sizeRefusals } from "./hosted/values.js";
@@ -68,8 +69,15 @@ export interface E2BProviderOptions extends Omit<HostedOptions, "maxLifetimeMs">
 	apiKey: string;
 	/** The SDK's Sandbox class: the host's `e2b` package's. */
 	Sandbox: E2BSandboxClass;
-	/** E2B's domain: the API is https://api.<domain>. Default e2b.app. */
+	/**
+	 * E2B's domain, or that of a cloud that speaks E2B's API (serve's AGENTRUN_E2B_DOMAIN): each sandbox's envd is under it,
+	 * and the API is https://api.<domain> unless apiUrl names another. Default e2b.app.
+	 */
 	domain?: string;
+	/** The API's URL, for a cloud whose API is not https://api.<domain> (serve's AGENTRUN_E2B_API_URL): https, no login, query or fragment. */
+	apiUrl?: string;
+	/** The template prepareImage() answers, in place of the box template (serve's AGENTRUN_E2B_TEMPLATE): an E2B template's name or id. */
+	template?: string;
 	/** desktop (default): a template with an X server, started through the daemon; linux: no screen. */
 	kind?: "desktop" | "linux";
 	/** The longest lifetime check takes: E2B Hobby's 1 h by default, Pro's 24 h at most. */
@@ -94,12 +102,19 @@ export interface E2BOptions extends Omit<E2BProviderOptions, "Sandbox"> {
 
 const DEFAULT_DOMAIN = "e2b.app";
 
-/** The connection options every SDK call is given. Exported for the test that hands them to the real SDK. */
-export function connectionOptions({ apiKey, domain }: { apiKey: string; domain: string }, env: ProxyEnv = installedProxy()): E2BConnectionOptions {
-	const proxy = proxyForDomain(domain, env);
+/** The server's name for the setting that fills `option` (its descriptor's key), for words that name what to fix. */
+const settingName = (option: string): string => E2B.keys.find((key) => key.option === option)?.name ?? option;
+
+/**
+ * The connection options every SDK call is given: the API at apiUrl when given, else https://api.<domain>. Exported for
+ * the test that hands them to the real SDK. The SDK sends every call through its one proxy, so it is given one unless
+ * NO_PROXY exempts the whole domain (proxyForDomain) and a given API URL's host too.
+ */
+export function connectionOptions({ apiKey, domain, apiUrl }: { apiKey: string; domain: string; apiUrl?: string }, env: ProxyEnv = installedProxy()): E2BConnectionOptions {
+	const proxy = proxyForDomain(domain, env) ?? (apiUrl === undefined ? undefined : proxyFor(new URL(apiUrl), env));
 	// HTTP/1.1 alone: when an idle HTTP/2 session times out, the SDK's undici client throws on a stream no one listens to,
 	// and that unhandled 'error' ends the whole process (index.mjs buildDispatchedFetch, allowH2 unless httpVersion "1.1").
-	return { apiKey, domain, apiUrl: `https://api.${domain}`, debug: false, httpVersion: "1.1", ...(proxy ? { proxy: proxy.href } : {}) };
+	return { apiKey, domain, apiUrl: apiUrl ?? `https://api.${domain}`, debug: false, httpVersion: "1.1", ...(proxy ? { proxy: proxy.href } : {}) };
 }
 
 /**
@@ -471,32 +486,42 @@ class E2BHost implements MachineHost {
 
 /**
  * Computers that are E2B sandboxes, on the shared adapter. A spec's image is an E2B template (its name or id). A server
- * starts every one, sandbox or desktop, from the box template prepareImage() answers: the box image (box/Dockerfile)
- * with Archil's client and its root helper, Xvfb, xfwm4 and the desktop's apps, which the provider starts through
- * computerd (desktop.ts). Any other template a spec names must carry what the computer's kind needs.
+ * starts every one, sandbox or desktop, from the template prepareImage() answers: by default the box template, the box
+ * image (box/Dockerfile) with Archil's client and its root helper, Xvfb, xfwm4 and the desktop's apps, which the provider
+ * starts through computerd (desktop.ts). Any other template, options.template's or a spec's, must carry what the
+ * computer's kind needs.
  */
 export class E2BProvider extends HostedProvider {
+	/** The template options.template names, or undefined for the box template. */
+	readonly #template: string | undefined;
+
 	/**
-	 * The provider contract's prepareImage (its descriptor declares it): the box template the release publishes,
-	 * public under its E2B team (box-image.ts boxE2bTemplate), which any E2B account starts by that name. No call: E2B
-	 * starts a public template at create with nothing to pull ahead of it, so onWait is never told. A desktop starts
-	 * from the same template as a sandbox: the kind is the provider's, not the image's.
+	 * The provider contract's prepareImage (its descriptor declares it): the template options.template names, else the
+	 * box template the release publishes, public under its E2B team (box-image.ts boxE2bTemplate), which any E2B account
+	 * starts by that name. No call: E2B starts a template at create with nothing to pull ahead of it, so onWait is never
+	 * told. A desktop starts from the same template as a sandbox: the kind is the provider's, not the image's.
 	 */
 	async prepareImage(): Promise<Result<string>> {
-		return ok(boxE2bTemplate());
+		return ok(this.#template ?? boxE2bTemplate());
 	}
 
 	constructor(options: E2BProviderOptions) {
 		// A caller who still names the option is told it is gone, whatever its value: it once let public traffic in.
 		if (typeof options === "object" && options !== null && Object.hasOwn(options, "publicStream")) throw new Error(PUBLIC);
-		const { apiKey, Sandbox, domain = DEFAULT_DOMAIN, kind = "desktop", maxLifetimeMs = HOBBY_MAX_MS, connect, ...rest } = options;
+		const { apiKey, Sandbox, domain = DEFAULT_DOMAIN, apiUrl, template, kind = "desktop", maxLifetimeMs = HOBBY_MAX_MS, connect, ...rest } = options;
 		const via = connectOf(E2B, { connect });
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the E2B API key, is required: the provider reads no environment, so the caller passes it");
 		const lacks = ["create", "connect", "getInfo", "setTimeout", "kill", "list"].filter((name) => typeof (Sandbox as unknown as Record<string, unknown>)?.[name] !== "function");
 		if (lacks.length > 0) throw new Error(`options.Sandbox must be the e2b SDK's Sandbox class; it lacks ${lacks.join(", ")}`);
 		const ambient = ambientProblem();
 		if (ambient) throw new Error(ambient);
-		if (typeof domain !== "string" || !DOMAIN.test(domain)) throw new Error(`the E2B domain must be a host name such as ${DEFAULT_DOMAIN}, not ${JSON.stringify(domain)}`);
-		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain }), timeoutsOf(rest.timeouts).requestMs, via), { ...rest, kind, maxLifetimeMs });
+		if (typeof domain !== "string" || !DOMAIN.test(domain)) throw new Error(`the E2B domain (${settingName("domain")}) must be a host name such as ${DEFAULT_DOMAIN}, not ${JSON.stringify(domain)}`);
+		// The key goes to the API URL: https alone, and words that give its origin alone (httpsBase).
+		const api = apiUrl === undefined ? undefined : httpsBase(String(apiUrl), `the E2B API URL (${settingName("apiUrl")})`);
+		if (template !== undefined && (typeof template !== "string" || !TEMPLATE.test(template))) {
+			throw new Error(`the E2B template (${settingName("template")}) is the name or id of an E2B template, such as "${boxE2bTemplate()}" (the box template), not ${JSON.stringify(template)}`);
+		}
+		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain, ...(api === undefined ? {} : { apiUrl: api }) }), timeoutsOf(rest.timeouts).requestMs, via), { ...rest, kind, maxLifetimeMs });
+		this.#template = template;
 	}
 }

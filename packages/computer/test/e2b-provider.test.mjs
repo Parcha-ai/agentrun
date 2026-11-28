@@ -307,8 +307,8 @@ test("options.domain names the domain the key goes to, as COMPUTER_E2B_DOMAIN do
 	assert.equal(opts.apiUrl, "https://api.e2b.example.com");
 	const conformance = await e2b.conformance();
 	for (const domain of ["https://e2b.app", "e2b.app/x", "localhost:3000", "E2B.app"]) {
-		await assert.rejects(create({ apiKey: KEY, domain, Sandbox: rec.Sandbox }), /E2B domain must be a host name/);
-		await assert.rejects(conformance.createProvider({ env: { [ENV.live]: "1", [ENV.key]: KEY, [ENV.domain]: domain }, Sandbox: rec.Sandbox }), /E2B domain must be a host name/);
+		await assert.rejects(create({ apiKey: KEY, domain, Sandbox: rec.Sandbox }), /E2B domain \(AGENTRUN_E2B_DOMAIN\) must be a host name/);
+		await assert.rejects(conformance.createProvider({ env: { [ENV.live]: "1", [ENV.key]: KEY, [ENV.domain]: domain }, Sandbox: rec.Sandbox }), /E2B domain \(AGENTRUN_E2B_DOMAIN\) must be a host name/);
 	}
 });
 

@@ -113,9 +113,9 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	// How E2B's, Modal's and Daytona's machines are reached: the provider's exec unless a server's settings say dial.
 	assert.deepEqual(extra.e2b.settings, [{ name: "e2bConnect", option: "connect" }]);
 	assert.deepEqual(extra.daytona.settings, [{ name: "daytonaConnect", option: "connect" }]);
-	// Daytona's image is the operator's snapshot when the server names one (an Archil mount needs box/Dockerfile's); no
-	// other provider declares one.
-	assert.deepEqual(Object.entries(extra).filter(([, one]) => one.imageEnv !== undefined).map(([id, one]) => [id, one.imageEnv]), [["daytona", "AGENTRUN_DAYTONA_SNAPSHOT"]]);
+	// Daytona's image is the operator's snapshot when the server names one (an Archil mount needs box/Dockerfile's), and
+	// E2B's the operator's template; no other provider declares one.
+	assert.deepEqual(Object.entries(extra).filter(([, one]) => one.imageEnv !== undefined).map(([id, one]) => [id, one.imageEnv]), [["daytona", "AGENTRUN_DAYTONA_SNAPSHOT"], ["e2b", "AGENTRUN_E2B_TEMPLATE"]]);
 	assert.deepEqual(extra["phone-harness"].ledger, { option: "ledger" });
 	assert.deepEqual(extra.orgo.ledger, { option: "ledger" });
 	// Local Chrome reads where Chrome is from the server's own environment: the names its findChrome reads, then what
