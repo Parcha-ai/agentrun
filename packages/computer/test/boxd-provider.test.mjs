@@ -483,6 +483,33 @@ test("prepareImage: the desktop recipe adds what boxd's own image lacks: Mousepa
 	assert.match(command, /for app in org\.xfce\.mousepad xfce4-terminal firefox-esr; do test -f "\/usr\/share\/applications\/\$app\.desktop"/);
 });
 
+test("prepareImage: the desktop recipe pins Mozilla's APT origin to firefox-esr alone, at 500, and everything else from it at -1, before apt reads the source", async () => {
+	const { rec, provider } = setup({ kind: "desktop" }, building());
+	assert.equal((await provider.prepareImage()).ok, true);
+	const { command } = rec.calls.find(([call]) => call === "streamExec")[2];
+	assert.ok(command.startsWith("sudo -n sh -c '") && command.endsWith("'"), "the recipe goes in one pair of single quotes");
+	const recipe = command.slice("sudo -n sh -c '".length, -1);
+	assert.ok(!recipe.includes("'"), "the recipe holds no single quote, so its quoting is one pair");
+	const lines = recipe.split("\n");
+	const pinAt = lines.findIndex((line) => line.endsWith("> /etc/apt/preferences.d/mozilla"));
+	const sourceAt = lines.findIndex((line) => line.endsWith("> /etc/apt/sources.list.d/mozilla.list"));
+	assert.ok(pinAt >= 0 && sourceAt >= 0, "the recipe writes both the pin file and the source");
+	assert.ok(pinAt < sourceAt, "the pin file is written before the source, so apt never reads the source unpinned");
+	const format = /^printf "([^"%]*)" > \/etc\/apt\/preferences\.d\/mozilla$/.exec(lines[pinAt]);
+	assert.ok(format, `the pin file is one printf of a plain format: ${lines[pinAt]}`);
+	const pin = format[1].replaceAll("\\n", "\n");
+	assert.equal(
+		pin,
+		"Package: firefox-esr*\nPin: origin packages.mozilla.org\nPin-Priority: 500\n\nPackage: *\nPin: origin packages.mozilla.org\nPin-Priority: -1\n",
+		"firefox-esr and its own packages from Mozilla at 500, everything else from Mozilla never installed",
+	);
+	assert.ok(!recipe.includes("Pin-Priority: 1000"), "no priority lets Mozilla's origin replace or downgrade a distro package");
+	for (const stanza of pin.split("\n\n")) {
+		const field = (name) => new RegExp(`^${name}: (.*)$`, "m").exec(stanza)?.[1];
+		if (field("Package") === "*" && field("Pin") === "origin packages.mozilla.org") assert.ok(Number(field("Pin-Priority")) <= -1, `every package from Mozilla's origin is held at -1 or below: ${stanza}`);
+	}
+});
+
 test("prepareImage: a desktop's snapshot is built once from boxd's own image: the recipe as root, the capture, the build machine deleted and gone", async () => {
 	const { rec, provider } = setup({ kind: "desktop" }, building());
 	const told = [];
