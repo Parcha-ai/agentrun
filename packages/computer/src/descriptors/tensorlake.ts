@@ -13,6 +13,9 @@ export const TENSORLAKE = defineProvider({
 	label: "Tensorlake",
 	keys: [{ name: "TENSORLAKE_API_KEY", option: "apiKey", required: true }],
 	metered: true,
+	// Its create answers the size the vendor runs the computer at (resources), which its time is priced by: every read
+	// of a sandbox carries its cpus, memory_mb and disk_mb (O SandboxInfo.resources, required).
+	sized: true,
 	mounts: [],
 	// All three are init's, through root in the microVM (tl-user's passwordless sudo).
 	network: ["none", "open", "allow"],

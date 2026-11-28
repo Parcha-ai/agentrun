@@ -724,7 +724,8 @@ test("a create answers the size Tensorlake says the sandbox runs at (its read's 
 	assert.equal(made.ok, true, made.ok ? "" : made.error.message);
 	assert.deepEqual(made.value.resources, { cpus: 1, memoryMb: 1024, diskGb: 10 }, "the fake's allocation for a create that named no size");
 	assert.equal(TENSORLAKE.sized, true);
-	assert.equal((await provider.release(made.value)).ok, true);
+	const released = await provider.release(made.value, "delete");
+	assert.equal(released.ok, true, JSON.stringify(released.error));
 	assert.equal(rest.live().length, 0);
 });
 
