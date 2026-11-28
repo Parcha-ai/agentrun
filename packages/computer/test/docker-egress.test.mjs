@@ -281,6 +281,32 @@ test("the egress option: another image for the proxy, a hint after its refusal's
 	}
 });
 
+test("the egress option maxTunnels: the proxy is made with --max-tunnels and reads back as made; a cap the proxy would refuse is refused when the provider is made", async () => {
+	const { provider, calls } = fakeDocker({ egressOptions: { maxTunnels: 128 } });
+	const made = await provider.create(SPEC, req());
+	assert.equal(made.ok, true, JSON.stringify(made));
+	const proxy = proxyRunOf(calls());
+	assert.deepEqual(proxy.slice(-2), ["--max-tunnels", "128"]);
+	assert.deepEqual(await provider.network(made.value), { ok: true, value: { allow: ALLOW } });
+	for (const maxTunnels of [0, 257, 1.5, -1, "64", Number.NaN]) {
+		assert.throws(() => new DockerProvider({ daemonPath: "/nonexistent", egress: { maxTunnels } }), /the egress proxy's maxTunnels must be a whole number from 1 to 256/, String(maxTunnels));
+	}
+	for (const maxTunnels of [1, 256]) assert.ok(new DockerProvider({ daemonPath: "/nonexistent", egress: { maxTunnels } }), String(maxTunnels));
+});
+
+test("a proxy's --max-tunnels reads back as made whatever the cap is set to now, unless it is one create never gives", async () => {
+	for (const [cap, words] of [["1", undefined], ["256", undefined], ["257", /runs with --max-tunnels "257", a cap create never gives/], ["0", /a cap create never gives/], ["64x", /a cap create never gives/]]) {
+		const seeded = allowed({ name: A, allow: ALLOW });
+		const [, made] = seeded.containers;
+		made.Config = { ...made.Config, Cmd: [...made.Config.Cmd, "--max-tunnels", cap] };
+		const { provider } = fakeDocker(seeded);
+		const read = await provider.network(ref(A));
+		assert.equal(read.ok, true, JSON.stringify(read));
+		if (words === undefined) assert.deepEqual(read.value, { allow: ALLOW }, cap);
+		else assert.match(read.value.other, words, cap);
+	}
+});
+
 test("the proxy's code must be built and readable by the computer's user, its directory searchable: the proxy runs as that user", async () => {
 	const { egressCodeProblem } = await import("../dist/docker/egress.js");
 	const dir = mkdtempSync(join(tmpdir(), "computer-egress-code-"));

@@ -554,6 +554,10 @@ its domain and paste `AGENTRUN_TOKEN` from the service's Variables tab as the se
 add a model key, and run your first agent. Walked from click to a finished first run in 46 seconds. Details:
 [deploy/README.md](deploy/README.md).
 
+The published template is being republished: today it deploys without one variable. Once the service is live, open its
+Variables tab, set `RAILWAY_DEPLOYMENT_DRAINING_SECONDS` to `45`, and redeploy. Without it, a redeploy stops the server
+at once, which cuts short the end of a run and can lose a ChatGPT sign-in that is renewing.
+
 **Self-host on Render.**
 
 <a href="https://render.com/deploy?repo=https://github.com/Parcha-ai/agentrun"><img alt="Deploy to Render" src="docs/assets/readme/pill-render.png" height="44"></a>

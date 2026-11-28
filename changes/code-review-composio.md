@@ -1,5 +1,0 @@
----
-packages: @parcha/agentrun-serve
-kind: feature
----
-New bundled template `code-review-composio`: code-review for a server that reaches GitHub through Composio alone, such as a hosted install with no GitHub App, no checkout and no shell. A package lists each toolkit once, so it is a sibling of code-review rather than a second GitHub need in it. Its rules, findings schema and reviewers' guides are code-review's: `packages/serve/scripts/code-review-composio.mjs` holds the passages that differ (the tool names, the missing checkout and the one-call post), each of which must occur exactly once in code-review's file, and its test fails on any other drift. One required Composio GitHub need reads the pull request, its files' patches, the repository's files and the earlier reviews, and posts one COMMENT review with a comment on each finding's line. Every call is pinned to the applied `owner` and `repo`, and the review to `event: COMMENT`. A Composio trigger starts a run on each new pull request; a push to an open one does not. New eval case `inline-at-line` on a fake Composio GitHub toolkit.

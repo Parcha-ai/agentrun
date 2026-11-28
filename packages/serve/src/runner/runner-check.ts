@@ -23,7 +23,7 @@ import { TOOL_KEY_ROWS } from "../key-words.js";
 import { PRIVATE_HOSTS_ENV } from "../mcp-private-hosts.js";
 import { HARNESS_MODULES_SETTING, HARNESS_RECIPES_SETTING } from "../harness-table.js";
 import { GATEWAY_IDS_ENV } from "../model-gateway.js";
-import { BOX_CPUS_ENV, BOX_MEMORY_ENV, BOX_PIDS_ENV, MCP_ALLOW_LOOPBACK_ENV } from "../start-switches.js";
+import { BOX_CPUS_ENV, BOX_MAX_TUNNELS_ENV, BOX_MEMORY_ENV, BOX_PIDS_ENV, MCP_ALLOW_LOOPBACK_ENV } from "../start-switches.js";
 import { DOCKER_IMAGE_ENV } from "../box-image.js";
 import { type Interfaces, RunnerLiveRefused, runnerLiveOf } from "../live-reach.js";
 import { bootSealKey } from "../seal-key.js";
@@ -69,12 +69,13 @@ const FIXED: ReadonlySet<string> = new Set([
   HARNESS_MODULES_SETTING,
   // And the harness recipes it runs (harness-table.ts), for the same reason.
   HARNESS_RECIPES_SETTING,
-  // A Docker computer's image and size (box-image.ts, workspace/computer-deps.ts dockerLimitsOf): read where the run's
-  // computer starts, the runner.
+  // A Docker computer's image, size and egress proxy cap (box-image.ts, workspace/computer-deps.ts dockerLimitsOf and
+  // boxMaxTunnelsOf): read where the run's computer starts, the runner.
   DOCKER_IMAGE_ENV,
   BOX_CPUS_ENV,
   BOX_MEMORY_ENV,
   BOX_PIDS_ENV,
+  BOX_MAX_TUNNELS_ENV,
 ].filter((name) => !NOT_RUN_FACING.has(name)));
 
 /** Whether `name` is one a run's claim reads from its runner's environment (FIXED, or an upstream's address). */

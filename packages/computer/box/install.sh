@@ -9,7 +9,8 @@
 #   sh install.sh checked    the last step alone: any sudo taken away, then every check. recipe.mjs's onImage runs it on
 #                            the published image, after E2B's template builder has added sudo there.
 #
-# It reads the network only through apt (Debian's mirrors) and for Archil's package. Run twice on one machine it ends the
+# It reads the network only through apt (Debian's mirrors), for Archil's package and for Node's release, the two checked by
+# sha256. Run twice on one machine it ends the
 # same, for a vendor's snapshot flow may retry it: each step that makes something looks for it first.
 set -eu
 
@@ -17,6 +18,12 @@ set -eu
 ARCHIL_VERSION=0.10.1-1793222256
 ARCHIL_SHA256_AMD64=f219e70287e8152f3f0c7222e1c3319f4665897235af7c33a8846e56a5a5786a
 ARCHIL_SHA256_ARM64=10ed430e51c268af095dd9e6c7aa6cdbb951d2430d62a76458719db168f40c0e
+# The Node release the server's image runs (packages/serve/docker/Dockerfile), for the agent's node, npm and npx: Debian's
+# nodejs comes with npm 9, older than the npm current packages are published for. The sums are the release's signed
+# SHASUMS256.txt lines, checked against the signer that Dockerfile pins.
+NODE_VERSION=24.22.3
+NODE_SHA256_AMD64=4f2b175a6d53a5c617a80dba2676238a0688cef28c6da4eba35c7d844e66fcfb
+NODE_SHA256_ARM64=6e51a2ada00f0011cc266f65d98922b403d7ad88f809ca2aa615a5fe1ce6e86c
 # Where the provider runs the root helper from.
 HELPER=/usr/local/sbin/agentrun-archil
 # The entrypoint of a machine that dials the server (dial below).
@@ -24,24 +31,31 @@ DIAL=/usr/local/bin/agentrun-dial
 
 here=$(dirname "$0")
 
-# A coding agent's tools, FUSE, nftables and the archil client (checked by sha256), the tool user, and /workspace.
+# A coding agent's tools, Node, FUSE, nftables and the archil client (Node and archil checked by sha256), the tool user,
+# and /workspace.
 packages() {
 	arch="$(dpkg --print-architecture)"
 	case "$arch" in
-	amd64) sum="$ARCHIL_SHA256_AMD64" ;;
-	arm64) sum="$ARCHIL_SHA256_ARM64" ;;
+	amd64) sum="$ARCHIL_SHA256_AMD64"; node_arch=x64; node_sum="$NODE_SHA256_AMD64" ;;
+	arm64) sum="$ARCHIL_SHA256_ARM64"; node_arch=arm64; node_sum="$NODE_SHA256_ARM64" ;;
 	*) echo "no archil client for $arch" >&2; exit 1 ;;
 	esac
 	case "$sum" in unpinned) echo "archil ${ARCHIL_VERSION} for $arch has no pinned sha256 yet: set ARCHIL_SHA256_$(echo "$arch" | tr a-z A-Z) to the package's sum" >&2; exit 1 ;; esac
 	apt-get update -qq
 	DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-		git curl ca-certificates nodejs npm ripgrep fuse3 nftables >/dev/null
+		git curl ca-certificates xz-utils ripgrep fuse3 nftables >/dev/null
+	if [ "$(/usr/local/bin/node --version 2>/dev/null)" != "v$NODE_VERSION" ]; then
+		curl -fsSL -o /tmp/node.tar.xz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz"
+		echo "$node_sum  /tmp/node.tar.xz" | sha256sum -c -
+		tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 --no-same-owner
+		rm -f /usr/local/CHANGELOG.md /usr/local/README.md /usr/local/LICENSE
+	fi
 	if [ "$(dpkg-query -W -f '${Version}' archil 2>/dev/null)" != "$ARCHIL_VERSION" ]; then
 		curl -fsSL -o /tmp/archil.deb "https://s3.amazonaws.com/archil-client/pkg/archil_${ARCHIL_VERSION}_${arch}.deb"
 		echo "$sum  /tmp/archil.deb" | sha256sum -c -
 		DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends /tmp/archil.deb >/dev/null
 	fi
-	rm -rf /var/lib/apt/lists/* /tmp/archil.deb
+	rm -rf /var/lib/apt/lists/* /tmp/archil.deb /tmp/node.tar.xz
 	getent group agentrun-tool >/dev/null || groupadd --gid 2510 agentrun-tool
 	id -u agentrun-tool >/dev/null 2>&1 || useradd --uid 2510 --gid 2510 --no-create-home --home-dir /tmp --shell /bin/sh agentrun-tool
 	install -d -o root -g root -m 0755 /workspace
@@ -211,6 +225,8 @@ checked() {
 	[ ! -e /etc/sudoers ] && [ ! -e /etc/sudoers.d ] || { echo "the image has a sudoers file" >&2; exit 1; }
 	ids="$(id -u agentrun-tool):$(id -g agentrun-tool)"
 	[ "$ids" = "2510:2510" ] || { echo "agentrun-tool is $ids" >&2; exit 1; }
+	[ "$(/usr/local/bin/node --version)" = "v$NODE_VERSION" ] || { echo "the image's node is not $NODE_VERSION" >&2; exit 1; }
+	for x in npm npx; do [ -x "/usr/local/bin/$x" ] || { echo "the image has no $x beside node" >&2; exit 1; }; done
 	archil --version | head -1
 }
 

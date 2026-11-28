@@ -61,7 +61,7 @@ it by them alone:
 | Split calls: one starts a process, one streams its output as text, one call per stdin write; maybe no end of stdin or kill | the three calls, handed to `framedExec`, which queues the writes, decodes the output and kills by pid ([below](#a-text-exec-in-split-calls)) | Daytona, [`src/daytona.ts`](src/daytona.ts): a session command, its log WebSocket, and its input call, which takes whole lines; the tests' REST-shaped vendor, [`test/fake-text-host.mjs`](test/fake-text-host.mjs) |
 | The same, with the output as server-sent events (`text/event-stream`) | the same calls, with `sse` reading the events ([below](#output-as-server-sent-events)) | none yet; Hyperbrowser's shape, the same fake |
 | A WebSocket per process whose binary frames carry stdin, stdout, stderr and the exit, with its kill a call apart | the socket's frames as `framedExec`'s pieces, the kill by the session id the socket names | Fly Sprites, [`src/sprites.ts`](src/sprites.ts): its exec socket, its session's kill call, and its `max_run_after_disconnect` set short, since a process whose socket is gone has no reader left |
-| SSH to an sshd in the machine | opens one SSH channel per process, as the user and with the auth your vendor gives | Agent37, [`src/hosted/ssh-exec.ts`](src/hosted/ssh-exec.ts): root with a private key (the caller's, else one the provider makes, keeps in the store its descriptor's `secrets` names, and registers on the workspace before its first machine; a login refused while the vendor is still handing the key out is tried again, `deniedUntil`), over a WebSocket tunnel to the instance's sshd, and the shared pid wrapper for `kill`. Morph, [`src/morph.ts`](src/morph.ts): the same SshExec over plain TCP to the vendor's gateway, as the instance id with the instance's own key, read over REST; never an account key in the username, since an unpinned gateway would read it |
+| SSH to an sshd in the machine | opens one SSH channel per process, as the user and with the auth your vendor gives | Agent37, [`src/hosted/ssh-exec.ts`](src/hosted/ssh-exec.ts): root with a private key (the caller's, else one the provider makes, keeps in the store its descriptor's `secrets` names, and registers on the workspace before its first machine; a login refused while the vendor is still handing the key out is tried again, `deniedUntil`), over a WebSocket tunnel to the instance's sshd, and the shared pid wrapper for `kill`. Morph, [`src/morph.ts`](src/morph.ts): the same SshExec over plain TCP to the vendor's gateway, as the instance id with the instance's own key, read over REST; never an account key in the username, since an unpinned gateway would read it. InstaBox, [`src/instabox.ts`](src/instabox.ts): the same over plain TCP to the vendor's gateway, as a per-machine token its REST API mints (the username, no key), with the gateway's host key pinned by the sha256 the token's answer names (`SshLogin.hostKey`), and the pin required (`SshExecOptions.pinned`: a login with none opens no connection): a login that carries a credential pins the host it goes to |
 | An exec only inside its SDK | calls the SDK, loaded lazily and pinned exactly ([Wire it up](#wire-it-up)) | Modal's `sandbox.exec(argv, { mode: "binary" })`, [`src/modal.ts`](src/modal.ts). Modal has no kill for an exec, so its `kill` kills by the pid the shared wrapper reports |
 | Any binary two-way stream into the machine (a WebSocket, an open port) | runs a relay of yours in the image that starts the process and carries its three streams and its kill | none yet |
 | No exec, only screen and input calls | none: this isn't a `MachineHost`. Write a `ComputerProvider` with daemon `none` that answers the methods itself | Orgo's Windows and macOS desktops, [`src/orgo-desktop.ts`](src/orgo-desktop.ts); the phone harness, [`src/phone-harness.ts`](src/phone-harness.ts) |
@@ -388,7 +388,8 @@ function codeOf(error: unknown): ComputerErrorCode {
 
 **Optional hooks.** `upload(id, path, bytes, ctx)` puts a file in the machine. E2B has one because it has a file API;
 without it, AgentRun streams its daemon through `exec`'s stdin as base64 text, so the image needs `head` and
-`base64` (coreutils and busybox both have them). `download(id, path, ctx)` hands back a file's bytes, read as root;
+`base64` (coreutils and busybox both have them). The file lands as root's: a file API that writes as its own user
+(InstaBox's) is no `upload`, so leave it out, or write to a temporary path and move the file as root through `exec`. `download(id, path, ctx)` hands back a file's bytes, read as root;
 give it when your exec's output is slow (Daytona's is a log read at about 0.3 MB/s). A `files.read` past one chunk then
 takes its first chunk from the daemon and the rest from a copy AgentRun makes as the daemon's user (`setpriv`,
 util-linux) and downloads, so the read shows nothing that user can't read. `extend(id, endsAt, ctx)` moves a machine's end when
@@ -738,6 +739,10 @@ deletes anything that run left behind and prints what is still there. Each run t
 fresh `mktemp -d` folder: `--before` refuses a file that is already there. `--kind sandbox` or `--kind desktop` runs one kind's cases, and `-- --help` lists every flag.
 Add `--long` to the run you send: it runs the long cases, which wait minutes on your vendor's timers. `lifetime.idle`
 leaves a computer quiet for 6 minutes and must find it still running, its daemon answering.
+
+Run it on a plan that gives what a computer needs. A free plan that refuses it (InstaBox's free plan pauses a machine
+after 30 idle minutes and won't switch that off) fails the first create, and your host's `explain` should say so in
+words: the vendor's 403, and that the live run needs a paid plan.
 
 The report's last lines say the most computers the run had alive at once. If your plan keeps fewer (a free tier's few
 machines), add `--concurrency <n>`: a create waits for a computer to go, and the run's own computer is deleted while a
