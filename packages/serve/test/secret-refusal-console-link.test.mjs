@@ -28,16 +28,16 @@ async function started(t) {
   return { server, origin, token };
 }
 
-/** The refusal `res` is: 403 forbidden in the one sentence, then "Finish it in the console: <link>", the link also in
- *  details.console_url. Answers the link. */
-function refusedWithLink(res, origin) {
+/** The refusal `res` is: 403 forbidden in the one sentence (`words`: an operation's own, else the secret write's), then
+ *  "Finish it in the console: <link>", the link also in details.console_url. Answers the link. */
+function refusedWithLink(res, origin, words = gate.SECRET_WRITE_REFUSAL) {
   assert.equal(res.status, 403, res.text);
   assert.equal(res.json?.error?.code, "forbidden");
   const { message, details } = res.json.error;
   const link = details?.console_url;
   assert.equal(typeof link, "string", `details.console_url: ${res.text}`);
   assert.ok(link.startsWith(`${origin}/#/`), `the link is on the console's own address: ${link}`);
-  assert.equal(message, `${gate.SECRET_WRITE_REFUSAL} Finish it in the console: ${link}`);
+  assert.equal(message, `${words} Finish it in the console: ${link}`);
   return link;
 }
 /** The hash route's query of `link`, read as the console reads it. */
@@ -141,7 +141,9 @@ test("a Composio link carries the toolkit as the preset takes it: trimmed and lo
   const upper = await token("PUT", "/settings/mcp-servers/slack/composio", { api_key: fake("composio"), toolkit: " SLACK ", tools: ["SLACK_SEND_MESSAGE"] });
   assert.deepEqual(queryOf(refusedWithLink(upper, origin)), { add: "slack", preset: "composio", toolkit: "slack", tools: "SLACK_SEND_MESSAGE" });
   const listing = await token("POST", "/settings/mcp-servers/composio/tools", { api_key: fake("composio"), toolkit: "google_sheets" });
-  assert.deepEqual(queryOf(refusedWithLink(listing, origin)), { add: "google-sheets", preset: "composio", toolkit: "google_sheets" });
+  // A listing saves nothing: its own words (mcp-secret-writes.ts COMPOSIO_LISTING_REFUSAL), with the same link.
+  const listingWords = "Listing Composio's toolkits or tools takes the owner's signed-in session in the console; the API token lists them only on an API-only server, with the key named by api_key_env.";
+  assert.deepEqual(queryOf(refusedWithLink(listing, origin, listingWords)), { add: "google-sheets", preset: "composio", toolkit: "google_sheets" });
   // A toolkit the preset would refuse opens the page alone, never the plain form under a Composio name.
   const bad = await token("PUT", "/settings/mcp-servers/slack/composio", { api_key: fake("composio"), toolkit: "not a toolkit" });
   assert.equal(refusedWithLink(bad, origin), `${origin}/#/settings/mcp`);

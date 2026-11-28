@@ -57,11 +57,14 @@ function chmodTree(dir) {
   for (const name of readdirSync(dir)) chmodTree(join(dir, name));
 }
 
-/** The GitHub App's rows, sealed under KEY as the server's sealed settings write them. */
+/** The GitHub App's rows, sealed under KEY as the server's sealed settings write them, and heldOf's claimed run, in no
+ *  workspace. */
 async function connected(store) {
   for (const [field, value] of [["app_id", "4242"], ["private_key", PEM], ["slug", "agentrun-test-app"]]) {
     await store.triggerSettings.put({ adapter: "github", scope: "server", field, sealed: seal(KEY, Buffer.from(value, "utf8"), `trigger_settings|github|server|${field}`).toString("base64") });
   }
+  await store.agents.create({ id: "agent-own", name: "agent-own" }, { id: "rev-own", kind: "agentic", body: { instructions: "Answer." } });
+  await store.runs.create({ id: "run-own", agentId: "agent-own", revisionId: "rev-own" });
 }
 
 /** A fake GitHub that makes installation 777's tokens; every request it is asked, kept. */

@@ -46,6 +46,50 @@ async function render(v2: unknown, label = "bench", rereadMs?: number) {
 }
 
 describe("Race: the runs one race:<label> label groups, side by side", () => {
+  it("a lane reads its run again when its approval rows change, though its state does not: the agent's next approval gets its own card", async () => {
+    const ask = (id: string, call: string, title: string) => ({ kind: "approval", id, tool: "acp_execute", call_id: call, args_preview: JSON.stringify({ title, kind: "execute", input: null }), requested_at: "2026-11-23T10:00:02Z" });
+    const waitingOn = (pending: ReturnType<typeof ask>) => ({ ...run("r1", { race: "bench", lane: "1", harness: "cursor" }), status: "input_required", state: "waiting", ended_at: null, pending } as Run);
+    const asked = (id: string, call: string, said: string, seq: number) => row({ id, seq, kind: "tool_approval_requested", tool_name: "acp_execute", tool_use_id: call, summary: said });
+    const waitingPage = (rows: TimelineRow[], next: number) => ({ ...page("r1", rows, false, 0.1), status: "input_required", state: "waiting", next_after: next } as TimelinePage);
+    let answered = false, nextServed = false;
+    const v2 = {
+      listRuns: async () => ({ runs: [waitingOn(ask("ap1", "c1", "python3 fib.py"))], next_cursor: null }),
+      // The answer is queued: the run reads its first call as pending until the agent has asked its next.
+      getRun: async () => waitingOn(nextServed ? ask("ap2", "c2", "python3 test.py") : ask("ap1", "c1", "python3 fib.py")),
+      getTimeline: async (_id: string, opts: { after?: number } = {}) => {
+        if (opts.after === undefined) return waitingPage([asked("u1", "c1", "Waiting for your approval: acp_execute python3 fib.py", 1)], 1);
+        if (answered && !nextServed) {
+          nextServed = true;
+          return waitingPage([asked("u1", "c1", "Asked your approval: acp_execute python3 fib.py", 1), asked("u2", "c2", "Waiting for your approval: acp_execute python3 test.py", 2)], 2);
+        }
+        return { ...waitingPage([], nextServed ? 2 : 1), unchanged: true } as TimelinePage;
+      },
+      answerApproval: async () => { answered = true; },
+    };
+    const host = await render(v2);
+    const lane = () => host.querySelector("[data-race-lane='r1']")!;
+    const allow = () => [...lane().querySelectorAll("button")].find((b) => b.textContent === "Allow once");
+    await act(async () => { allow()!.click(); await new Promise((r) => setTimeout(r, 5)); });
+    for (let i = 0; i < 100 && !lane().querySelector("pre[title*='test.py']"); i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(lane().querySelector("pre[title*='test.py']"), "the next call's card").toBeTruthy();
+    expect(allow(), "its Allow once").toBeTruthy();
+  });
+  it("a lane waiting on an approval offers the compact approval card and says it waits, with no Working spinner; Allow once answers it", async () => {
+    const pending = { kind: "approval", id: "ap1", tool: "acp_execute", call_id: "c1", args_preview: JSON.stringify({ title: "python3 fib.py", kind: "execute", input: null }), requested_at: "2026-11-23T10:00:02Z" };
+    const waiting = { ...run("r1", { race: "bench", lane: "1", harness: "cursor" }), status: "input_required", state: "waiting", ended_at: null, pending } as Run;
+    const rows = [row({ id: "u1", seq: 1, kind: "tool_approval_requested", tool_name: "acp_execute", tool_use_id: "c1", summary: "Waiting for your approval: acp_execute python3 fib.py" })];
+    const { v2 } = server([waiting], () => rows);
+    const answered: unknown[] = [];
+    Object.assign(v2, { answerApproval: async (...args: unknown[]) => { answered.push(args); } });
+    const host = await render(v2);
+    const lane = host.querySelector("[data-race-lane='r1']")!;
+    expect(lane.querySelector("section[aria-label='Approval required']")).toBeTruthy();
+    expect(lane.textContent).toContain("Waiting for your approval");
+    expect(lane.textContent).not.toContain("Steps appear as the agent takes them");
+    const allow = [...lane.querySelectorAll("button")].find((b) => b.textContent === "Allow once")!;
+    await act(async () => { allow.click(); await new Promise((r) => setTimeout(r, 5)); });
+    expect(answered).toEqual([["r1", "ap1", "allow", undefined, undefined]]);
+  });
   it("keeps the Race bar in view, with lanes or none yet: the lanes scroll in the one box under it", async () => {
     const { v2 } = server([run("r1", { race: "bench", lane: "1", harness: "pi", model: "anthropic/claude-sonnet-5-5" })]);
     expect(expectPinnedBar(await render(v2)).querySelector("[data-race-lane='r1']")).toBeTruthy();

@@ -183,6 +183,25 @@ export async function connectable(t, extra = {}) {
   return { ...server, github, lines };
 }
 
+/** A server whose GitHub App is connected (Connect runs on a server with a console), started again API-only on its data
+ *  with a workspace token. `api` is the operator's client, in no workspace; `scoped(method, path, body)` sends a request
+ *  in workspace `org:acme`, as a backend does. */
+export async function connectedApiOnly(t, extra = {}) {
+  const first = await connectable(t, { ...extra, runner: false });
+  await connect(first);
+  await first.close();
+  const token = randomBytes(24).toString("hex");
+  const server = await serve(t, { ...extra, data: first.data, publicUrl: PUBLIC, githubApi: first.github.url, apiOnly: true, token: randomBytes(24).toString("hex"), tokens: [{ id: "backend", token }], workspaceTokens: ["backend"] });
+  const scoped = async (method, path, body) => {
+    const res = await fetch(`${server.baseUrl}${path}`, { method, headers: { authorization: `Bearer ${token}`, "agentrun-workspace": "org:acme", ...(body === undefined ? {} : { "content-type": "application/json" }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    return { status: res.status, body: await res.json().catch(() => null) };
+  };
+  return { ...server, github: first.github, scoped };
+}
+
+/** The installation tokens the fake GitHub was asked to mint, after its `from`th request. */
+export const mintsAsked = (github, from = 0) => github.requests.slice(from).filter((request) => request.method === "POST" && /^\/app\/installations\/\d+\/access_tokens$/.test(request.url));
+
 /** The Connect flow as the owner's browser goes through it: connect (the console posts the manifest to GitHub), GitHub's
  *  redirect back with a code, then its redirect after the App is installed. */
 export async function connect(server) {
