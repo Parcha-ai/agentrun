@@ -259,27 +259,29 @@ export function titleOf(instruction) {
 
 const dashed = (domain) => domain.replace(/_/g, "-").toLowerCase();
 const FIND_DISPLAY = "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); eval $(xdotool getdisplaygeometry --shell 2>/dev/null)";
+const OSW_BYTES = readFileSync(new URL("../image/osw/osw.py", import.meta.url));
+// The check runs osw's bytes as one argv word (python3 -c), which Linux caps at 128 KiB.
+if (OSW_BYTES.length > MAX_INLINE_BYTES) throw new Error(`image/osw/osw.py is ${OSW_BYTES.length} bytes, over the ${MAX_INLINE_BYTES} the check can pass as one argv word`);
 /** The sha256 of the bench's osw.py, which every check pins: the check runs osw only when it is that file. */
-export const OSW_SHA256 = createHash("sha256").update(readFileSync(new URL("../image/osw/osw.py", import.meta.url))).digest("hex");
+export const OSW_SHA256 = createHash("sha256").update(OSW_BYTES).digest("hex");
 /** osw's environment: the desktop's display and size, and the run's own cache, which osw eval removes and makes again. */
 const OSW_ENV = `env DISPLAY="$DISPLAY" SCREEN_WIDTH="\${WIDTH:-1920}" SCREEN_HEIGHT="\${HEIGHT:-1080}" OSW_CACHE=/tmp/computer-bench-{{nonce}}-osw-cache`;
 /** osw setup as the desktop's own user, on the task's OSWorld JSON (the shell's $1) through stdin. */
 const OSW_SETUP = `${FIND_DISPLAY}; printf '%s' "$1" | ${OSW_ENV} osw setup /dev/stdin`;
 /**
- * osw eval the same way, but from a copy in a new folder, run by an isolated python3 (-I), and only when the copy's
- * sha256 is OSW_SHA256. The agent's turn ran as the same user and could have changed osw: then the check refuses in
- * words with 75, infra, never a score.
+ * osw eval the same way, but with osw's bytes read once into the shell (the trailing x keeps its last newlines), and
+ * those bytes run by an isolated python3 (-I -c) only when their sha256 is OSW_SHA256: no file between the check and
+ * the run. The agent's turn ran as the same user and could have changed osw: then the check refuses in words with 75,
+ * infra, never a score.
  */
 const OSW_EVAL = [
 	FIND_DISPLAY,
 	`o=$(command -v osw) || { echo 'osw is not on PATH' >&2; exit 75; }`,
-	"d=$(mktemp -d) || exit 75",
-	`cp "$o" "$d/osw.py" || { rm -rf "$d"; exit 75; }`,
-	`s=$(sha256sum "$d/osw.py" | cut -c1-64)`,
-	`if [ "$s" != ${OSW_SHA256} ]; then rm -rf "$d"; echo "osw ($o) is not the bench's osw.py: its sha256 is $s, the bench's is ${OSW_SHA256}; the check refuses to run it, and the task is not scored" >&2; exit 75; fi`,
-	`printf '%s' "$1" | ${OSW_ENV} python3 -I "$d/osw.py" eval /dev/stdin; c=$?`,
-	`rm -rf "$d"`,
-	"exit $c",
+	`src=$(cat "$o" && printf x) || { echo "osw ($o) could not be read" >&2; exit 75; }`,
+	"src=${src%x}",
+	`s=$(printf '%s' "$src" | sha256sum | cut -c1-64)`,
+	`if [ "$s" != ${OSW_SHA256} ]; then echo "osw ($o) is not the bench's osw.py: its sha256 is $s, the bench's is ${OSW_SHA256}; the check refuses to run it, and the task is not scored" >&2; exit 75; fi`,
+	`printf '%s' "$1" | ${OSW_ENV} python3 -I -c "$src" eval /dev/stdin`,
 ].join("; ");
 const SETUP_FILES = "/tmp/computer-bench-{{nonce}}-osw-setup";
 const SETUP_WAIT_S = 600;
