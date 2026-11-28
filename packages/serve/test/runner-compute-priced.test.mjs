@@ -5,6 +5,12 @@
 //
 // The desktop is --faux's machine (faux-computers.ts) behind a loopback vendor: nothing is rented. Its price is the
 // operator's per-resource setting, high enough that the run's few seconds book a figure well above float noise.
+//
+// And a stretch of computer time on the loop every runner the CLI starts runs a run on, a process of its own
+// (run-child-host.ts childLoops), beside the runner's own loop: its computer is the runner's and its cap the run's
+// process's, and a stretch it ran is booked on that cap and the next one held there, a cap with no room for it parking
+// the run in its words. The meter's clock and its stretches are the test's (computerForClaim's now, compute.every): the
+// stretch passes while the run's first model request waits at a loopback gateway, never in a sleep.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,6 +21,10 @@ import { Agent37Provider } from "@parcha/agentrun-computer/agent37";
 import { API_URL, fakeRest, KEY, keyPair, PROXY } from "../../computer/test/fake-agent37.mjs";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { closeOpenSessions, scriptedOrigin } from "./conformance-pi-adapter.mjs";
+import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
+
+// No host model setting or model key from this process reaches the runs below: their model is the loopback gateway's.
+for (const name of Object.keys(process.env)) if (/^(AGENT_MODEL|ANTHROPIC_|OPENAI_|OPENROUTER_|AWS_)/.test(name)) delete process.env[name];
 
 const { openSqliteStore } = await import("../dist/store/index.js");
 const { startRunner } = await import("../dist/runner/runner.js");
@@ -26,6 +36,9 @@ const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-sp
 const { computerForClaim } = await import("../dist/workspace/index.js");
 const { fauxComputers } = await import("../dist/faux-computers.js");
 const { runUsageOverStore } = await import("../dist/run-usage.js");
+const { childLoops } = await import("../dist/runner/run-child-host.js");
+const { routeOf } = await import("../dist/runner/model-route.js");
+const { putSealedKey } = await import("../dist/server-keys.js");
 
 const RUN = "run-1";
 const SEAL_KEY = Buffer.alloc(32, 7);
@@ -204,3 +217,109 @@ test("a run on an Agent37 computer whose create asks no size is priced at the si
   assert.ok(lines.every((line) => line.quantity !== null) && lines[0].quantity > 0 && lines[1].quantity > 0, `every quantity known: ${JSON.stringify(lines)}`);
   assert.ok(Math.abs(lines[0].usd - 4 * 0.01 * (interval.bookedMs / 1000)) < 1e-9, "the vCPU line is Agent37's 4 vCPUs at $0.01 for the booked seconds");
 });
+
+/** A stretch of the meter's clock (compute-cost.ts COMPUTE_STRETCH_S, in ms). */
+const STRETCH_MS = 300_000;
+
+/** The meter's clock and its stretches, the test's: `pass(ms)` moves the clock on and runs each stretch's tick. */
+function testClock() {
+  let at = Date.now();
+  const ticks = new Set();
+  return {
+    now: () => at,
+    every: (tick) => {
+      const one = { tick };
+      ticks.add(one);
+      return () => ticks.delete(one);
+    },
+    pass(ms) {
+      at += ms;
+      for (const one of [...ticks]) one.tick();
+    },
+  };
+}
+
+/** Whether `done` holds within `ms`: a bounded wait that never throws, so the assertions after it say what was missed. */
+const within = (done, ms) => until(done, "", ms).then(() => true, () => false);
+
+/** run-1 on a priced faux desktop, its model a loopback gateway that answers a `read` call first and then "done", run by a
+ *  runner on its own loop (`where`: "runner") or in a process of its own ("process"), under `capUsd` when given. While
+ *  the first model request waits, a stretch passes on the meter's clock, and the request is answered once that stretch
+ *  is booked, or once the cap paused the run for the next one. Its row, the store, the pauses and its interval. */
+async function stretchRun(t, { where, capUsd }) {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-compute-stretch-"));
+  const server = await openSqliteStore({ dataDir: dir, role: "server" });
+  const store = await openSqliteStore({ dataDir: dir, role: "runner" });
+  const clock = testClock();
+  const paused = [];
+  const interval = async () => (await server.computerIntervals.forRun(RUN))[0];
+  let asked = 0;
+  const gw = await startFauxGateway({
+    call: () => (asked === 1 ? { name: "read", input: { path: "notes.txt" } } : undefined),
+    text: "done",
+    wait: async (request) => {
+      if (!request.path.endsWith("/v1/messages") || (asked += 1) !== 1) return;
+      clock.pass(STRETCH_MS);
+      await within(async () => (capUsd === undefined ? (await interval())?.bookedMs >= STRETCH_MS : paused.length > 0), 15_000);
+    },
+  });
+  let runner;
+  t.after(async () => {
+    await runner?.close().catch(() => {});
+    await gw.close();
+    await store.close().catch(() => {});
+    await server.close().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await server.agents.create({ id: "agent-1", name: "Desk" }, { id: "rev-1", kind: "agentic", body: { instructions: "Look.", computer: { kind: "desktop", provider: "faux-desktop" }, tools: ["read"] } });
+  await putSealedKey(server, SEAL_KEY, "ANTHROPIC_API_KEY", `not-a-secret-${"compute-stretch"}`);
+  await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Look." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-5-5" }, ...(capUsd === undefined ? {} : { max_cost_usd: capUsd }) } });
+  await server.flush?.();
+  const env = { PATH: process.env.PATH, TMPDIR: dir, ANTHROPIC_BASE_URL: gw.url, NODE_TEST_CONTEXT: process.env.NODE_TEST_CONTEXT ?? "1", ...PRICES };
+  const vendor = fauxVendor();
+  const computerDeps = { kinds: FAUX.kinds, keyTable: FAUX.keyTable, providers: { "faux-desktop": () => vendor.provider }, spec: () => ({ image: "faux", lifetimeMs: 600_000, network: "open", cpus: 2, memoryMb: 4096 }), check: { readBackOf } };
+  // The runner's computerForClaim on the test's clock and stretches, each pause of the run's cap seen on its way.
+  const metered = (launch, on, given) => {
+    const compute = given.compute && { ...given.compute, every: clock.every, ledger: { ...given.compute.ledger, pause: async (refusal) => { await given.compute.ledger.pause(refusal); paused.push(refusal); } } };
+    return computerForClaim(launch, on, { ...given, now: clock.now, ...(compute ? { compute } : {}) });
+  };
+  const deps = { env, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf, computerForClaim: metered, computerDeps, log: () => {} };
+  const createLoop = where === "process"
+    ? childLoops({ deps, isolation: { kind: "process", why: "a test's runner" }, log: deps.log })
+    : createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: (name, given) => (name === "pi" ? createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(given, run, deps, claim)) : undefined) });
+  runner = startRunner({ store, name: "runner-a", ...CONFORMANCE_TIMING, leaseMs: 60_000, stopMarginMs: 5_000, createLoop });
+  const row = await until(async () => {
+    const now = await server.runs.get(RUN);
+    return ["ended", "failed", "stopped", "parked"].includes(now.state) && now.runner === null && now;
+  }, "the run rests", 60_000);
+  return { server, row, paused, interval: await interval() };
+}
+
+for (const where of ["runner", "process"]) {
+  const on = where === "runner" ? "on the runner's own loop" : "in a process of its own";
+  test(`${on}: a stretch of a priced computer's time is booked on the run's ledger, its usage lines priced at the prices the server reads, never unpriced`, { timeout: 120_000 }, async (t) => {
+    const { server, row, interval } = await stretchRun(t, { where });
+    assert.equal(row.state, "ended", `the run ran: ${JSON.stringify(row)}`);
+    assert.ok(interval.bookedMs >= STRETCH_MS, `a whole stretch and the rest of its time booked: ${interval.bookedMs} ms`);
+    const usage = await runUsageOverStore(server, RUN);
+    const lines = usage.lines.filter((line) => line.meter === "compute_time");
+    assert.deepEqual(lines.map((line) => [line.provider, line.resource, line.basis]), [["faux-desktop", "vcpu", "estimate"], ["faux-desktop", "memory", "estimate"]], JSON.stringify(lines));
+    assert.ok(Math.abs(lines[0].usd - 2 * 0.01 * (interval.bookedMs / 1000)) < 1e-6, `the vCPU line is 2 vCPUs at $0.01 for the booked seconds: ${JSON.stringify(lines[0])}`);
+    assert.ok(Math.abs(row.costUsd - usage.total.usd) < 1e-9 && row.costUsd >= 2 * 0.01 * 300 + 4 * 0.001 * 300, `the run's cost holds the stretch: ${row.costUsd}`);
+  });
+
+  test(`${on}: a run whose cap has no room for its computer's next stretch is paused in the cap's words, the stretch it ran booked`, { timeout: 120_000 }, async (t) => {
+    // A stretch is $7.20 (300 s of 2 vCPUs at $0.01 and 4 GiB at $0.001): the first is held and booked under $10, the
+    // second has no room.
+    const { server, row, paused, interval } = await stretchRun(t, { where, capUsd: 10 });
+    assert.equal(paused.length, 1, `the cap paused the run once: ${JSON.stringify(paused)}`);
+    assert.equal(paused[0].code, "spend_cap_reached");
+    assert.equal(paused[0].forGood, false, "a raise lets it go on");
+    assert.equal(row.state, "parked", `the run parked at its cap: ${JSON.stringify(row)}`);
+    assert.ok(interval?.bookedMs >= STRETCH_MS, `the stretch it ran is booked: ${interval?.bookedMs} ms`);
+    // Parked, the run's usage read waits for its end: its journal holds the stretch's bookings, by resource.
+    const records = await journalRecords(server.journal({ runId: RUN, runner: "reader", epoch: row.epoch, until: 0, from: row.state }), ctx);
+    const booked = records.entries.filter((entry) => entry.kind === "runner.request" && entry.data?.tool === "compute" && entry.data.hold !== true);
+    assert.deepEqual([...new Set(booked.map((entry) => entry.data.tag))].sort(), ["memory", "vcpu"], "its time booked by resource");
+  });
+}
