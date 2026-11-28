@@ -4072,14 +4072,16 @@ serves these routes alone:
 
   The names route above is the listing: there is no list or read of a server's address, auth or tools here. The
   generic save (`PUT /settings/mcp-servers/{name}`) is a `404` unless the operator names the MCP origins it may save at,
-  so by default the token saves no server at an address or with headers of its own. The preview, refresh, sign-in,
-  Composio tool listing and every other MCP settings route stay refused. On the full server the token's `api_key_env`
+  so by default the token saves no server at an address or with headers of its own. The preview is a `404` on the same
+  terms. The refresh, sign-in, Composio tool listing and every other MCP settings route stay refused. On the full server the token's `api_key_env`
   is `403`, as `api_key` is: the owner's session saves a Composio server there either way;
 - a per_run MCP server's save at an origin the operator names: `AGENTRUN_API_ONLY_MCP_ORIGINS`, comma-separated
   http(s) origins (`https://mcp.example.com`), a plain setting. With it, the token's `PUT /settings/mcp-servers/{name}`
-  saves `"auth": {"type": "per_run"}` at a listed origin, and each run hands its own credential in `mcp_auth`. A body
-  that carries a credential, or a save over a server the token did not save or one that seals a credential, is `403`;
-  any other origin or auth type, or a Composio server's name, is `404`. A wildcard, an entry that is not an http(s)
+  saves `"auth": {"type": "per_run"}` at a listed origin, and each run hands its own credential in `mcp_auth`. Its
+  `POST /settings/mcp-servers/preview` lists the tools of the same body before the save; any other preview body, a
+  saved server's name alone included, is `404`. A body that carries a credential is `403`; so is a save over a server
+  the token did not save or one that seals a credential, in words that name the server and say which. Any other origin
+  or auth type, or a Composio server's name, is `404`. A wildcard, an entry that is not an http(s)
   origin alone, or plain http to a host other than a loopback one (127.0.0.0/8, ::1, localhost) stops the start, and a
   loopback origin also needs `AGENTRUN_MCP_ALLOW_LOOPBACK=1`. The list holds past
   the save: a per_run server the token saved at an origin not listed is refused, and nothing is sent to it. Unset, the

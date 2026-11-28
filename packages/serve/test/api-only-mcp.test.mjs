@@ -18,6 +18,7 @@ import { queued, registryPin, storeOn } from "./store-helpers.mjs";
 import { asOwner, follow, serve, serverLog, storeBytes, withEnv } from "./support.mjs";
 
 const { SECRET_WRITE_REFUSAL } = await import("../dist/secret-writes.js");
+const { tokenWriteOverWords } = await import("../dist/mcp-secret-writes.js");
 const { composioMadeKey, storedMade } = await import("../dist/composio-made.js");
 const { mcpSourceKey, ownersRecord } = await import("../dist/mcp-sources.js");
 const { mcpClaim } = await import("../dist/runner/mcp-claim.js");
@@ -220,7 +221,7 @@ test("full profile: the owner's Composio server saved by api_key_env, sealing no
   const from = s.composio.calls.length;
   const refused = await s.token("DELETE", "/settings/mcp-servers/mail");
   assert.equal(refused.status, 403, JSON.stringify(refused.body));
-  assert.ok(String(refused.body.error?.message).startsWith(SECRET_WRITE_REFUSAL), refused.body.error?.message);
+  assert.ok(String(refused.body.error?.message).startsWith(tokenWriteOverWords("mail", false)), refused.body.error?.message);
   assert.equal(s.composio.calls.length, from, "nothing reached Composio");
   assert.ok(await s.server.store.mcp.server("mail"), "it stays");
   const deleted = await owner("DELETE", "/settings/mcp-servers/mail");
@@ -235,7 +236,7 @@ test("full profile: the owner's Composio server saved with its key sealed is 403
   const from = s.composio.calls.length;
   const refused = await s.token("DELETE", "/settings/mcp-servers/mail");
   assert.equal(refused.status, 403, JSON.stringify(refused.body));
-  assert.ok(String(refused.body.error?.message).startsWith(SECRET_WRITE_REFUSAL), refused.body.error?.message);
+  assert.ok(String(refused.body.error?.message).startsWith(tokenWriteOverWords("mail", true)), refused.body.error?.message);
   assert.equal(s.composio.calls.length, from, "nothing reached Composio");
   assert.ok(await s.server.store.mcp.server("mail"), "it stays");
 });
@@ -261,7 +262,7 @@ test("full profile: the token's ordinary save moving the owner's Composio server
   const from = s.composio.calls.length;
   const moved = await s.token("PUT", "/settings/mcp-servers/mail", { url: elsewhere.url, auth: { type: "none" } });
   assert.equal(moved.status, 403, JSON.stringify(moved.body));
-  assert.ok(String(moved.body.error?.message).startsWith(SECRET_WRITE_REFUSAL), moved.body.error?.message);
+  assert.ok(String(moved.body.error?.message).startsWith(tokenWriteOverWords("mail", false)), moved.body.error?.message);
   const sent = s.composio.calls.slice(from);
   assert.deepEqual(sent.filter((call) => call.method === "DELETE").map((call) => call.path), [], "no DELETE of its MCP server, account or auth config");
   assert.deepEqual(sent, [], "nothing reached Composio");
@@ -281,7 +282,7 @@ test("API-only: the token's Composio save over a Composio server it did not save
   const from = s.composio.calls.length;
   const again = await s.token("PUT", "/settings/mcp-servers/mail/composio", SAVE);
   assert.equal(again.status, 403, JSON.stringify(again.body));
-  assert.ok(String(again.body.error?.message).startsWith(SECRET_WRITE_REFUSAL), again.body.error?.message);
+  assert.ok(String(again.body.error?.message).startsWith(tokenWriteOverWords("mail", false)), again.body.error?.message);
   assert.deepEqual(s.composio.calls.slice(from), [], "nothing reached Composio");
   assert.deepEqual(await rowOf(store, "mail"), row, "the row is unchanged");
   assert.deepEqual([await store.settings.get(composioMadeKey("mail")), await store.settings.get(mcpSourceKey("mail"))], [made, source], "its records are unchanged");
@@ -412,7 +413,7 @@ test("API-only: a server the token did not save (a row written by hand, sealing 
   await s.server.store.mcp.put({ name: "gw", url: elsewhere.url, auth: "none", tools: [ADD_TOOL], sealed: null });
   const refused = await s.token("DELETE", "/settings/mcp-servers/gw");
   assert.equal(refused.status, 403, JSON.stringify(refused.body));
-  assert.ok(String(refused.body.error?.message).startsWith(SECRET_WRITE_REFUSAL), refused.body.error?.message);
+  assert.ok(String(refused.body.error?.message).startsWith(tokenWriteOverWords("gw", false)), refused.body.error?.message);
   assert.deepEqual((await s.token("GET", "/settings/mcp-server-names")).body, { names: ["gw"] }, "it stays");
 });
 
