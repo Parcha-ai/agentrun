@@ -1,0 +1,492 @@
+{
+  "server": "github",
+  "description": "A fake GitHub toolkit (Composio's) for the re-review-force-push case: pull request #14 on example/shop, reviewed once at a head the branch was since force-pushed away from. The earlier review's comments hold an active P1 the change still has and a P2 the author declined. It serves the six actions the package names, their arguments shaped as Composio's input_parameters (trimmed to what the package uses) and their answers in Composio's {data, successful, error} envelope, and records every call for the graders. It never reaches GitHub.",
+  "tools": {
+    "GITHUB_GET_A_PULL_REQUEST": {
+      "description": "Retrieves a specific pull request from a github repository using its owner, repository name, and pull request number.",
+      "input": {
+        "type": "object",
+        "required": [
+          "owner",
+          "repo",
+          "pull_number"
+        ],
+        "properties": {
+          "owner": {
+            "type": "string",
+            "description": "The username of the account that owns the repository. This value is not case sensitive."
+          },
+          "repo": {
+            "type": "string",
+            "description": "The name of the repository, without the .git extension. This value is not case sensitive."
+          },
+          "pull_number": {
+            "type": "integer",
+            "description": "The number that identifies the specific pull request."
+          }
+        }
+      },
+      "answers": [
+        {
+          "when": {
+            "owner": "example",
+            "repo": "shop",
+            "pull_number": 14
+          },
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "{\"data\":{\"number\":14,\"state\":\"open\",\"draft\":false,\"title\":\"Show initials beside the display name\",\"body\":\"Adds initials() for the avatar and simplifies displayName.\",\"user\":{\"login\":\"dev-ana\",\"type\":\"User\"},\"author_association\":\"MEMBER\",\"labels\":[],\"base\":{\"ref\":\"main\",\"sha\":\"5a2e9d1c7b3f4e8a6d0c2b1a9f8e7d6c5b4a3921\",\"repo\":{\"full_name\":\"example/shop\"}},\"head\":{\"ref\":\"feat/initials\",\"sha\":\"7081928a3b4c5d6e7f8091a2b3c4d5e6f7081929\",\"repo\":{\"full_name\":\"example/shop\"}},\"changed_files\":1,\"additions\":5,\"deletions\":1,\"commits\":1},\"successful\":true,\"error\":null}"
+              }
+            ]
+          }
+        }
+      ],
+      "default": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"data\":{},\"successful\":false,\"error\":\"Not Found (404)\"}"
+          }
+        ]
+      }
+    },
+    "GITHUB_LIST_PULL_REQUESTS_FILES": {
+      "description": "Lists all files (including additions, modifications, and removals) associated with a specific pull request in a github repository.",
+      "input": {
+        "type": "object",
+        "required": [
+          "owner",
+          "repo",
+          "pull_number"
+        ],
+        "properties": {
+          "owner": {
+            "type": "string",
+            "description": "The account owner of the repository (e.g., a GitHub username or organization name). This field is not case sensitive."
+          },
+          "repo": {
+            "type": "string",
+            "description": "The name of the repository, without the `.git` extension. This field is not case sensitive."
+          },
+          "pull_number": {
+            "type": "integer",
+            "description": "The numeric identifier of the pull request whose files are to be listed."
+          },
+          "page": {
+            "type": "integer",
+            "description": "Page number of the results to retrieve for pagination."
+          },
+          "per_page": {
+            "type": "integer",
+            "description": "Number of file results to return per page (max 100)."
+          }
+        }
+      },
+      "answers": [
+        {
+          "when": {
+            "owner": "example",
+            "repo": "shop",
+            "pull_number": 14,
+            "page": 1
+          },
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "{\"data\":{\"files\":[{\"sha\":\"b1c2d3e4f5a6978869504a3b2c1d0e9f8a7b6c5d\",\"filename\":\"src/users.js\",\"status\":\"modified\",\"additions\":5,\"deletions\":1,\"changes\":6,\"patch\":\"@@ -1,4 +1,8 @@\\n export function displayName(users, id) {\\n   const user = users.find((u) => u.id === id);\\n-  return user ? user.name : \\\"unknown\\\";\\n+  return user.name;\\n+}\\n+\\n+export function initials(name) {\\n+  return name.split(\\\" \\\").map((part) => part[0]).join(\\\"\\\");\\n }\"}]},\"successful\":true,\"error\":null}"
+              }
+            ]
+          }
+        },
+        {
+          "when": [
+            {
+              "owner": "example",
+              "repo": "shop",
+              "pull_number": 14,
+              "page": 2
+            },
+            {
+              "owner": "example",
+              "repo": "shop",
+              "pull_number": 14,
+              "page": 3
+            },
+            {
+              "owner": "example",
+              "repo": "shop",
+              "pull_number": 14,
+              "page": 4
+            },
+            {
+              "owner": "example",
+              "repo": "shop",
+              "pull_number": 14,
+              "page": 5
+            },
+            {
+              "owner": "example",
+              "repo": "shop",
+              "pull_number": 14,
+              "page": 6
+            },
+            {
+              "owner": "example",
+              "repo": "shop",
+              "pull_number": 14,
+              "page": 7
+            },
+            {
+              "owner": "example",
+              "repo": "shop",
+              "pull_number": 14,
+              "page": 8
+            },
+            {
+              "owner": "example",
+              "repo": "shop",
+              "pull_number": 14,
+              "page": 9
+            }
+          ],
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "{\"data\":{\"files\":[]},\"successful\":true,\"error\":null}"
+              }
+            ]
+          }
+        },
+        {
+          "when": {
+            "owner": "example",
+            "repo": "shop",
+            "pull_number": 14
+          },
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "{\"data\":{\"files\":[{\"sha\":\"b1c2d3e4f5a6978869504a3b2c1d0e9f8a7b6c5d\",\"filename\":\"src/users.js\",\"status\":\"modified\",\"additions\":5,\"deletions\":1,\"changes\":6,\"patch\":\"@@ -1,4 +1,8 @@\\n export function displayName(users, id) {\\n   const user = users.find((u) => u.id === id);\\n-  return user ? user.name : \\\"unknown\\\";\\n+  return user.name;\\n+}\\n+\\n+export function initials(name) {\\n+  return name.split(\\\" \\\").map((part) => part[0]).join(\\\"\\\");\\n }\"}]},\"successful\":true,\"error\":null}"
+              }
+            ]
+          }
+        }
+      ],
+      "default": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"data\":{},\"successful\":false,\"error\":\"Not Found (404)\"}"
+          }
+        ]
+      }
+    },
+    "GITHUB_GET_REPOSITORY_CONTENT": {
+      "description": "Retrieves a file's base64 encoded content or a directory's metadata (but not a listing of its contents) from a github repository path.",
+      "input": {
+        "type": "object",
+        "required": [
+          "owner",
+          "repo",
+          "path"
+        ],
+        "properties": {
+          "owner": {
+            "type": "string",
+            "description": "The account owner of the repository. This name is not case sensitive."
+          },
+          "repo": {
+            "type": "string",
+            "description": "The name of the repository, without the `.git` extension. This name is not case sensitive."
+          },
+          "path": {
+            "type": "string",
+            "description": "The path to the content in the repository. This can be a file or a directory path."
+          },
+          "ref": {
+            "type": "string",
+            "description": "The name of the commit, branch, or tag. If not provided, the repository's default branch will be used."
+          }
+        }
+      },
+      "answers": [
+        {
+          "when": {
+            "owner": "example",
+            "repo": "shop",
+            "path": "src/users.js"
+          },
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "{\"data\":{\"type\":\"file\",\"name\":\"users.js\",\"path\":\"src/users.js\",\"sha\":\"b1c2d3e4f5a6978869504a3b2c1d0e9f8a7b6c5d\",\"size\":204,\"encoding\":\"base64\",\"content\":\"ZXhwb3J0IGZ1bmN0aW9uIGRpc3BsYXlOYW1lKHVzZXJzLCBpZCkgewogIGNvbnN0IHVzZXIgPSB1c2Vycy5maW5kKCh1KSA9PiB1LmlkID09PSBpZCk7CiAgcmV0dXJuIHVzZXIubmFtZTsKfQoKZXhwb3J0IGZ1bmN0aW9uIGluaXRpYWxzKG5hbWUpIHsKICByZXR1cm4gbmFtZS5zcGxpdCgiICIpLm1hcCgocGFydCkgPT4gcGFydFswXSkuam9pbigiIik7Cn0K\"},\"successful\":true,\"error\":null}"
+              }
+            ]
+          }
+        }
+      ],
+      "default": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"data\":{},\"successful\":false,\"error\":\"Not Found (404)\"}"
+          }
+        ]
+      }
+    },
+    "GITHUB_LIST_REVIEW_COMMENTS_ON_A_PULL_REQUEST": {
+      "description": "Lists all review comments on a specific pull request within a github repository.",
+      "input": {
+        "type": "object",
+        "required": [
+          "owner",
+          "repo",
+          "pull_number"
+        ],
+        "properties": {
+          "owner": {
+            "type": "string",
+            "description": "Username of the account owning the repository. Not case sensitive."
+          },
+          "repo": {
+            "type": "string",
+            "description": "Name of the repository, without the `.git` extension. Not case sensitive."
+          },
+          "pull_number": {
+            "type": "integer",
+            "description": "Unique number identifying the pull request."
+          },
+          "page": {
+            "type": "integer",
+            "description": "Page number of results to retrieve."
+          },
+          "per_page": {
+            "type": "integer",
+            "description": "Number of comments per page (max 100)."
+          }
+        }
+      },
+      "answers": [
+        {
+          "when": {
+            "owner": "example",
+            "repo": "shop",
+            "pull_number": 14
+          },
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "{\"data\":[{\"id\":90001,\"pull_request_review_id\":70001,\"user\":{\"login\":\"shop-review-bot\",\"type\":\"User\"},\"body\":\"**P1** **displayName throws for an unknown id**\\n\\n`users.find` returns undefined when no user has the id, and `user.name` then throws a TypeError; the old code returned \\\"unknown\\\".\\n\\n<!-- fp: src/users.js:displayname:null-deref -->\",\"path\":\"src/users.js\",\"line\":3,\"original_line\":3,\"side\":\"RIGHT\",\"commit_id\":\"6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192\",\"original_commit_id\":\"6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192\",\"created_at\":\"2026-11-20T10:00:00Z\",\"author_association\":\"NONE\"},{\"id\":90002,\"pull_request_review_id\":70001,\"user\":{\"login\":\"shop-review-bot\",\"type\":\"User\"},\"body\":\"**P2** **initials returns an empty string for an empty name**\\n\\nAn empty `name` makes `initials` return \\\"\\\", and the avatar shows nothing.\\n\\n<!-- fp: src/users.js:initials:empty-name -->\",\"path\":\"src/users.js\",\"line\":7,\"original_line\":7,\"side\":\"RIGHT\",\"commit_id\":\"6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192\",\"original_commit_id\":\"6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192\",\"created_at\":\"2026-11-20T10:00:00Z\",\"author_association\":\"NONE\"},{\"id\":90003,\"pull_request_review_id\":70001,\"user\":{\"login\":\"dev-ana\",\"type\":\"User\"},\"body\":\"Declining: names are required and validated non-empty at signup, so initials never sees an empty one.\",\"path\":\"src/users.js\",\"line\":7,\"original_line\":7,\"side\":\"RIGHT\",\"commit_id\":\"6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192\",\"original_commit_id\":\"6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192\",\"created_at\":\"2026-11-20T11:00:00Z\",\"author_association\":\"MEMBER\",\"in_reply_to_id\":90002}],\"successful\":true,\"error\":null}"
+              }
+            ]
+          }
+        }
+      ],
+      "default": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"data\":{},\"successful\":false,\"error\":\"Not Found (404)\"}"
+          }
+        ]
+      }
+    },
+    "GITHUB_LIST_REVIEWS_FOR_A_PULL_REQUEST": {
+      "description": "Lists submitted reviews chronologically for a specific pull request within a github repository.",
+      "input": {
+        "type": "object",
+        "required": [
+          "owner",
+          "repo",
+          "pull_number"
+        ],
+        "properties": {
+          "owner": {
+            "type": "string",
+            "description": "The account owner of the repository (e.g., a GitHub username or organization name). This name is not case sensitive."
+          },
+          "repo": {
+            "type": "string",
+            "description": "The name of the repository, without the `.git` extension. This name is not case sensitive."
+          },
+          "pull_number": {
+            "type": "integer",
+            "description": "The unique number identifying the pull request within the repository."
+          },
+          "page": {
+            "type": "integer",
+            "description": "The page number for the set of results to retrieve."
+          },
+          "per_page": {
+            "type": "integer",
+            "description": "The number of review results to display per page. Maximum 100."
+          }
+        }
+      },
+      "answers": [
+        {
+          "when": {
+            "owner": "example",
+            "repo": "shop",
+            "pull_number": 14
+          },
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "{\"data\":[{\"id\":70001,\"user\":{\"login\":\"shop-review-bot\",\"type\":\"User\"},\"state\":\"COMMENTED\",\"commit_id\":\"6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192\",\"submitted_at\":\"2026-11-20T10:00:00Z\",\"body\":\"**Risk 3/5** (Greptile's confidence 3/5)\\n- displayName throws for an unknown id\\n\\nThe change drops displayName's guard for a missing user.\\n\\n1. **P1** displayName throws for an unknown id `src/users.js:3`\\n2. **P2** initials returns an empty string for an empty name `src/users.js:7`\\n<!-- code-review risk:3 head:6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192 -->\"}],\"successful\":true,\"error\":null}"
+              }
+            ]
+          }
+        }
+      ],
+      "default": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"data\":{},\"successful\":false,\"error\":\"Not Found (404)\"}"
+          }
+        ]
+      }
+    },
+    "GITHUB_CREATE_A_REVIEW_FOR_A_PULL_REQUEST": {
+      "description": "Creates a pull request review, allowing approval, change requests, or comments; `body` is required if `event` is `request changes` or `comment`, and omitting `event` makes the review `pending`.",
+      "input": {
+        "type": "object",
+        "required": [
+          "owner",
+          "repo",
+          "pull_number"
+        ],
+        "properties": {
+          "owner": {
+            "type": "string",
+            "description": "Username of the account owning the repository (case-insensitive)."
+          },
+          "repo": {
+            "type": "string",
+            "description": "Repository name, without the `.git` extension (case-insensitive)."
+          },
+          "pull_number": {
+            "type": "integer",
+            "description": "Identifying number of the pull request."
+          },
+          "commit_id": {
+            "type": "string",
+            "nullable": true,
+            "description": "SHA of the commit to review; defaults to the latest pull request commit. Outdated SHAs may lead to stale comments."
+          },
+          "body": {
+            "type": "string",
+            "nullable": true,
+            "description": "Review's main body text; required if `event` is `REQUEST_CHANGES` or `COMMENT`."
+          },
+          "event": {
+            "enum": [
+              "APPROVE",
+              "REQUEST_CHANGES",
+              "COMMENT"
+            ],
+            "type": "string",
+            "nullable": true,
+            "description": "Review action type (`APPROVE`, `REQUEST_CHANGES`, `COMMENT`); if omitted, review is `PENDING` and requires later submission."
+          },
+          "comments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "ReviewComment",
+              "required": [
+                "path",
+                "body"
+              ],
+              "properties": {
+                "body": {
+                  "type": "string",
+                  "title": "Body",
+                  "description": "The text of the comment"
+                },
+                "line": {
+                  "type": "integer",
+                  "title": "Line",
+                  "default": null,
+                  "nullable": true,
+                  "description": "The line number in the diff to comment on (required for single-line comments)"
+                },
+                "path": {
+                  "type": "string",
+                  "title": "Path",
+                  "description": "The relative path to the file being commented on"
+                },
+                "side": {
+                  "enum": [
+                    "LEFT",
+                    "RIGHT"
+                  ],
+                  "type": "string",
+                  "title": "SideEnm",
+                  "default": null,
+                  "nullable": true,
+                  "description": "The side of the diff to place the comment on (LEFT or RIGHT)"
+                },
+                "start_line": {
+                  "type": "integer",
+                  "title": "Start Line",
+                  "default": null,
+                  "nullable": true,
+                  "description": "The start line number for multi-line comments"
+                },
+                "start_side": {
+                  "enum": [
+                    "LEFT",
+                    "RIGHT"
+                  ],
+                  "type": "string",
+                  "title": "SideEnm",
+                  "default": null,
+                  "nullable": true,
+                  "description": "The side of the diff to start a multi-line comment on"
+                }
+              },
+              "description": "Schema for individual review comments"
+            },
+            "nullable": true,
+            "description": "Inline draft review comments. Each object requires `path` (relative file path) and `body` (comment text). Optionally, specify `line` (or `start_line` for multi-line), and `side` (or `start_side`) for diff location. `position` is deprecated; use `line`. Example: `[{'path': 'file.py', 'line': 10, 'body': 'Refactor this.'}]`"
+          }
+        }
+      },
+      "answers": [
+        {
+          "when": {
+            "owner": "example",
+            "repo": "shop",
+            "pull_number": 14
+          },
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "{\"data\":{\"id\":80002,\"state\":\"COMMENTED\",\"commit_id\":\"7081928a3b4c5d6e7f8091a2b3c4d5e6f7081929\",\"html_url\":\"https://github.com/example/shop/pull/14#pullrequestreview-80002\"},\"successful\":true,\"error\":null}"
+              }
+            ]
+          }
+        }
+      ],
+      "default": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"data\":{},\"successful\":false,\"error\":\"Not Found (404)\"}"
+          }
+        ]
+      }
+    }
+  }
+}
