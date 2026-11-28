@@ -1,7 +1,7 @@
 # Provider scorecard
 
 AgentRun is an open-source platform for running AI agents, and it gives each agent a computer on a vendor's machines.
-This page reads 26 sandbox and machine vendors against the provider contract in [PROVIDERS.md](PROVIDERS.md) and
+This page reads 28 sandbox and machine vendors against the provider contract in [PROVIDERS.md](PROVIDERS.md) and
 [spec/computer/provider.md](../../spec/computer/provider.md). For each it says whether a provider fits on the shared
 machine-host adapter, what the provider would take, and what is still open. It is for a vendor's engineer, or a
 contributor, deciding whether to write one.
@@ -26,7 +26,8 @@ documented calls, not from written code. The size column is an estimate, and siz
 Of 31 rows (27 vendors; Google, Fly.io, Beam and boxes.dev have two rows each): 0 clean, 5 fit if unverified facts hold,
 16 need a workaround, 10 are blocked. Render's row is built since (`src/render.ts`, a dial sandbox), and so are
 Vercel's (`src/vercel.ts`), Fly.io Sprites' (`src/sprites.ts`) and InstaBox's (`src/instabox.ts`), hosted sandboxes
-whose unverified facts wait on their live runs.
+whose unverified facts wait on their live runs. Maritime's row came after that count, built (`src/maritime.ts`, a dial
+sandbox whose unverified facts wait on its live run).
 
 | Vendor | Rents | Fit | Size (estimate) | Shared pieces it would use |
 | --- | --- | --- | --- | --- |
@@ -52,6 +53,7 @@ whose unverified facts wait on their live runs.
 | [InstaBox](https://instabox.sh/llms-full.txt) | Firecracker microVMs from InstaBox's templates | built (`src/instabox.ts`, a sandbox alone: exec over InstaBox's SSH gateway as a token the API mints per machine, the gateway's host key pinned; no upload, since its file API writes as the machine's user; no desktop or Archil, since a create names InstaBox's templates alone; a paid plan, since the free one won't switch the idle pause off; unverified until the live run: the token's none auth and host key, a taken name's 409, a deleted machine's read, sshd the one vendor listener, `minimal` on every paid plan, the 8 KiB metadata on compact JSON, 75 s of SSH silence) | 459, built | [ssh-exec][se], [packed labels][pl], [backstopAt][bs] |
 | [Kasm Workspaces](https://docs.kasm.com/docs/reference/developer-api) | a container session streamed to a person | blocked (`exec`: no two-way exec stream) | n/a | none |
 | [Koyeb Sandboxes](https://www.koyeb.com/docs/sandboxes) | microVMs as Koyeb services | fits if (unverified: `idle_timeout` 0 never sleeps; the exec WebSocket has no idle cut and runs as root; root makes a network namespace; a taken name's status; labels kept on our side or by the vendor, since a service has the name and no label) | 260-300 | [framedExec][fe] |
+| [Maritime](https://maritime.sh/docs) | micro-VMs with their own kernel, from an OCI image | built (`src/maritime.ts`, a dial sandbox: a command's stdin is one string given at its start, so the VM dials the server, `agentrun-dial` started as a background command over the VM's data plane; unverified until the live run: amd64, root and its network namespace, a background command's env, metadata limits, a reused name after an end) | 362, built | [dial][dl], [prepareImage][pi] |
 | [microsandbox](https://docs.microsandbox.dev/cloud/overview.md) | libkrun microVMs (hosted cloud in private beta) | needs a workaround (exec only through an SDK whose backend and key are process-wide) | 220-240 | [prepareImage][pi] |
 | [Morph Cloud](https://cloud.morph.so/docs) | VM instances booted from snapshots | fits if (unverified: SSH lands as root; `/ttl` counts from now; `morphvm-minimal` runs `install.sh`; root makes a network namespace) | 240-270 | [ssh-exec][se], [packed labels][pl], [prepareImage][pi] |
 | [Northflank Sandboxes](https://northflank.com/docs/v1/application/sandboxes) | microVMs as Northflank services | fits if (unverified: root makes a network namespace in the microVM; the exec proxy has no idle cut) | 280-300 | [framedExec][fe] (pid wrapper), [backstopAt][bs] |
@@ -379,6 +381,30 @@ provider spec.
   `egress.py`), so `allow` is init's proxy; blocking the network is hardening.
 - **Open:** ours, a docs line on finding the exec in a vendor's CLI, and a listing hint if a rate limit bites. The
   facts in the table are unverified.
+
+### Maritime
+
+- **Rents:** an isolated Linux micro-VM with its own kernel per sandbox, from a template, a snapshot or a public OCI
+  image ([docs](https://maritime.sh/docs)), over a REST control plane (`https://api.maritime.sh/v1`, a Bearer API key)
+  and a data plane per VM (its `dataPlaneUrl`, its `secret` in `X-Maritime-Token`).
+- **Built:** [`src/maritime.ts`](src/maritime.ts), a [dial](PROVIDERS.md#machines-that-dial-in) host, kind linux, key
+  `MARITIME_API_KEY` (the name Maritime's own SDK reads).
+- **Exec:** a command's `stdin` is one string given at its start ([SDK](https://www.npmjs.com/package/maritime-sdk)
+  0.13.0, `RunParams`), so there is no `exec`: the VM dials the server. Once it reads `running`, create starts
+  `agentrun-dial` as a background command with the boot env as the command's env, and keeps the command's id in the
+  process for `dialLog` (its stdout and stderr), `dialExit` (its exit code, or 128 and the signal of a killed one) and
+  `redial` (the same command again).
+- **Labels and lifetime:** a native name (a live one answers `200` to a create of it, which is `exists`) and a
+  `metadata` map, listed by `namePrefix` with the labels matched on our side. `timeLimitSeconds` (60 s to 24 h) is the
+  backstop; the janitor ends a VM at its deadline first. `keepAwake` keeps the idle pause off.
+- **Image:** the box image by its public tag, from [prepareImage](PROVIDERS.md#wire-it-up) with no call; Maritime pulls
+  it at the first create. Its templates and snapshots hold no `agentrun-dial`, so `check()` refuses a bare name.
+- **Network:** egress `all`, since the VM fetches its daemon and dials; `none`, `open` and an allow list are init's.
+- **Unverified until the live run:** amd64 and no vendor agent on a TCP port; commands run as root in a VM from the box
+  image, and root makes a network namespace there; a background command's env reaches its process; metadata takes
+  dotted keys with room for every label; whether a VM from an OCI image runs its CMD (create relies on neither); a name
+  reused after its VM ended makes a new one; `DELETE` takes the id alone; the box image's first pull fits `createMs`.
+- **Open:** ours, a dial log and exit read after the creating process restarts (the command id lives in its memory).
 
 ### microsandbox
 

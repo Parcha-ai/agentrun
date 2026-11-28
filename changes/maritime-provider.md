@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-computer, @parcha/agentrun-serve
+kind: feature
+---
+A new computer provider, `maritime`: a Linux sandbox on a Maritime VM (a micro-VM with its own kernel), over Maritime's REST API with no SDK. It takes `MARITIME_API_KEY`, the name Maritime's own SDK reads, and loads from `@parcha/agentrun-computer/maritime` or `providerFor("maritime", { apiKey })`. A command's stdin is one string given at its start, so its machines dial the server: create starts `agentrun-dial` as a background command once the VM runs, and a server with no public https address refuses a create in words. A computer starts from the box image by its public tag (`prepareImage()`), so it is a sandbox alone: no desktop and no Archil mount. Serve offers it as a box once `AGENTRUN_BOXES` lists `maritime` and the key is set, and the launcher holds `MARITIME_API_KEY` with the other secrets. No live run has been made yet: the arch, root and its network namespace in the VM, a background command's env, metadata limits, whether a VM runs its image's CMD, a reused name after an end and the box image's first pull time are unverified until then.
