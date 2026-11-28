@@ -234,7 +234,8 @@ test("a store a later server moved past this runner while it ran: it stops claim
   const db = new DatabaseSync(join(dir, STORE_FILE), { timeout: 10_000 });
   db.prepare("UPDATE store_meta SET schema_version = ?").run(SCHEMA_VERSION + 1);
   db.close();
-  // Read again at its next renewal (every 10 s), idle as it is.
+  // Read again soon after the store says its file changed (Store.watchSchema), idle as it is; at its next renewal
+  // (every 10 s) at the latest.
   assert.deepEqual(await child.exited, { code: 3, signal: null }, child.err.join("\n"));
   assert.match(child.err.join("\n"), new RegExp(`Runner runner-floor stops claiming and hands its runs back: the store is at schema version ${SCHEMA_VERSION + 1}, and its runner floor rose to ${SCHEMA_VERSION + 1}, above the version this runner knows \\(${SCHEMA_VERSION}\\)`));
 });

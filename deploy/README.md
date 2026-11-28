@@ -470,7 +470,7 @@ A runner exits with:
 | --- | --- |
 | 0 | It was stopped (SIGTERM or SIGINT) and handed its runs back. |
 | 2 | Bad arguments. |
-| 3 | It can't run on the store's schema. The store isn't set up yet, or the server hasn't migrated it to this runner's version yet (start the server first), or the store's runner floor is above this runner's version (run a runner of the server's release). A runner checks the floor at its start and every 10 s after. When the floor rises while it runs, it first claims nothing more, drains and hands its runs back. |
+| 3 | It can't run on the store's schema. The store isn't set up yet, or the server hasn't migrated it to this runner's version yet (start the server first), or the store's runner floor is above this runner's version (run a runner of the server's release). A runner checks the floor at its start and every 10 s after, and on SQLite again within about a second of any other process writing the store's file (a later server's upgrade among them). When the floor rises while it runs, it first claims nothing more, drains and hands its runs back. |
 | 1 | Anything else. |
 
 **Upgrading on Postgres.** Deploy the server first: it migrates the store under the running runners, then roll the
