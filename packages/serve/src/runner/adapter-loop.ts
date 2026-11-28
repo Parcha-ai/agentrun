@@ -465,8 +465,9 @@ export type AdapterRun = PiRun & {
   readonly incarnation?: string;
   /** A cut for the run's end's computer calls (RunTools.end, its endCut), made as the end begins: aborted when the
    *  runner's close cuts the tool hosts' release (LoopDeps.releaseBy: its window less its reserve), or, with no close,
-   *  at the release's own bound from then (releaseBoundMs). Absent where no loop gave one. */
-  readonly endCut?: () => AbortSignal;
+   *  at the release's own bound from then (releaseBoundMs). Its `done`, once the end has finished, lets the cut go: its
+   *  timer cleared, and no later close sets it again. Absent where no loop gave one. */
+  readonly endCut?: () => { readonly signal: AbortSignal; done(): void };
   /** LoopDeps.handBack: a request the run needs refused because the runner is closing hands the run back to resume
    *  (claim-secrets.ts: the plan's renewal). Absent where no loop gave one. */
   readonly handBack?: () => Promise<void>;
@@ -1120,8 +1121,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  its reserve, the point the tool hosts' release is cut by), or with no close the release's bound from now
    *  (releaseBoundMs). A shutdown or a close that comes while the end runs sets it again by the window (stop, closing), as it does
    *  the release's (releaseRearm). So an end on a daemon that never answers (it died mid-run) stops there, and the
-   *  claim's release after it (its cut written, the run handed back, the computer let go) lands inside the window. */
-  const endCut = (): AbortSignal => {
+   *  claim's release after it (its cut written, the run handed back, the computer let go) lands inside the window. Its
+   *  `done` (the end finished first) clears its timer and takes it out of the close's re-arming. */
+  const endCut = (): { readonly signal: AbortSignal; done(): void } => {
     const began = Date.now();
     const cut = new AbortController();
     const by = (): number => deps.releaseBy?.() ?? began + (deps.releaseBoundMs ?? releaseBoundMs());
@@ -1138,7 +1140,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     };
     endCuts.add(arm);
     arm();
-    return cut.signal;
+    return { signal: cut.signal, done: () => { clearTimeout(timer); endCuts.delete(arm); } };
   };
   /** Ends the hold a shutdown's stop puts on the claim's journal (holdForRelease), while it stands. */
   let releaseHold: (() => void) | undefined;
