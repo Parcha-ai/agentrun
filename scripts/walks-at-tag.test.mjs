@@ -67,9 +67,15 @@ test('a known failure is named as such in the table and still counts red; an unk
   assert.match(other.table, /\| Helm walk \| FAIL \| [^|]+ \| Railway's published template, on Railway, walk \|/);
 });
 
-test('after a publish, the runs this table finds name the tag: the daily walk and the install walk set a run-name on workflow_run, and keep their default name on every other event', () => {
-  for (const file of ['ways-in-daily.yml', 'install-walk.yml']) {
-    const name = workflowAt(file)['run-name'];
-    assert.match(name, /^\$\{\{ github\.event_name == 'workflow_run' && format\('[^']* at \{0\}', github\.event\.workflow_run\.head_branch\) \|\| ' ' \}\}$/, `${file}'s run-name`);
+test("after a publish, the runs this table finds walk the tag and name it: each walk the publish starts sets a run-name on workflow_run (its default name on every other event) and checks out the tag's commit", () => {
+  const afterPublish = WALKS.map(({ file }) => file).filter((file) => workflowAt(file).on.workflow_run?.workflows?.includes('Publish verified beta'));
+  assert.deepEqual(afterPublish.sort(), ['install-walk.yml', 'ways-in-daily.yml']);
+  for (const file of afterPublish) {
+    const workflow = workflowAt(file);
+    assert.match(workflow['run-name'], /^\$\{\{ github\.event_name == 'workflow_run' && format\('[^']* at \{0\}', github\.event\.workflow_run\.head_branch\) \|\| ' ' \}\}$/, `${file}'s run-name`);
+    // The run's own sha is main's tip; a run named for the tag walks the tag's scripts, not main's.
+    const steps = Object.entries(workflow.jobs).flatMap(([id, job]) => (job.steps ?? []).filter((s) => s.uses?.startsWith('actions/checkout@')).map((s) => [id, s]));
+    assert.ok(steps.length > 0, `${file} checks out`);
+    for (const [id, step] of steps) assert.ok(String(step.with?.ref).includes('github.event.workflow_run.head_sha'), `${file} ${id}'s checkout is at the tag`);
   }
 });
