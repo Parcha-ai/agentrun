@@ -532,11 +532,8 @@ it, or builds it once the way Morph's is built:
 - snapshot the VM under that slug (`POST /v5/vms/{id}/snapshot`).
 
 The build VM is deleted on every path, and has a two-hour `ttlSeconds` besides. A slug another build took first is the
-snapshot every caller answers.
-
-- **Gap: `install.sh` stops on Freestyle's Ubuntu 24.04 base.** Measured with Docker's `ubuntu:24.04`: `packages`
-  passes, then `desktop` stops at its `apt-get install`. `firefox-esr` has no Ubuntu package, and its checks name it
-  too. Until the recipe installs a browser Ubuntu has, a live build fails at that step, in its log's words.
+snapshot every caller answers. `install.sh` builds on Freestyle's Ubuntu 24.04 base: Ubuntu has no `firefox-esr`, so
+the `desktop` step takes it from Mozilla's APT repository.
 
 #### Worked example: Fly Machines
 

@@ -22,9 +22,8 @@
 // asked; metadata keys take the packed names; the VM is amd64, its own kernel's, where root makes network namespaces; the
 // public-egress rule lets the VM resolve names; a command of some 20 KB is taken whole; a VM booted from a snapshot taken
 // of a running VM starts afresh enough for agentrun-dial (O: a snapshot keeps memory and disk); a snapshot GET by slug
-// finds is ready to boot. Measured with Docker's ubuntu:24.04 (Freestyle's base is Ubuntu 24.04, D vms/base-snapshots):
-// box/install.sh's desktop step stops there, as firefox-esr has no Ubuntu package, so a live build fails until the recipe
-// installs a browser Ubuntu has.
+// finds is ready to boot. box/install.sh builds on Freestyle's base, Ubuntu 24.04 (D vms/base-snapshots): Ubuntu has no
+// firefox-esr, so its desktop step takes it from Mozilla's APT repository.
 import { createHash } from "node:crypto";
 import { readFile as recipeBytes } from "node:fs/promises";
 import { boxRecipeHash } from "./box-image.js";

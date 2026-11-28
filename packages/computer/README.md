@@ -3497,8 +3497,8 @@ snapshot by id or slug or a public `{owner}/{slug}` and no size (a VM has its sn
 retries included, ends at its caller's bound or abort. Output that echoes the dial token never reaches an error: it's
 shown as `<AGENTRUN_ATTACH_TOKEN>`.
 
-`install.sh` doesn't build on Ubuntu 24.04 yet. Measured with Docker's `ubuntu:24.04`, its `desktop` step stops on
-`firefox-esr`, which Ubuntu doesn't package, so a live `prepareImage()` fails at that step in its log's words.
+`install.sh` builds on Freestyle's Ubuntu 24.04 base. Ubuntu has no `firefox-esr`, so its `desktop` step takes it from
+Mozilla's APT repository.
 
 Unverified until the live run:
 - exec-await's env reaches its command, run as root;

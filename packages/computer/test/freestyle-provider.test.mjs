@@ -526,11 +526,11 @@ test("prepareImage builds the box snapshot once where the account has none: free
 });
 
 test("a build whose install.sh exits other than 0 fails in its log's words, takes no snapshot and deletes the build VM", async () => {
-	const { fake } = building({ exit: 100, log: "/tmp/node.tar.xz: OK\nE: Package 'firefox-esr' has no installation candidate\n" });
+	const { fake } = building({ exit: 100, log: "/tmp/node.tar.xz: OK\nE: Unable to fetch some archives, maybe run apt-get update\n" });
 	const prepared = await provider(fake).prepareImage();
 	assert.equal(prepared.ok, false);
 	assert.equal(prepared.error.code, "vendor");
-	assert.match(prepared.error.message, new RegExp(`^the box image ${BOX} as a Freestyle snapshot: box/install\\.sh exited 100 in the build VM ${VM}: .*firefox-esr' has no installation candidate`, "s"));
+	assert.match(prepared.error.message, new RegExp(`^the box image ${BOX} as a Freestyle snapshot: box/install\\.sh exited 100 in the build VM ${VM}: .*E: Unable to fetch some archives`, "s"));
 	assert.equal(fake.snapshots.size, 0);
 	assert.deepEqual(fake.deleted, [VM]);
 });
