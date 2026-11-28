@@ -3,7 +3,7 @@
 // card with no body here is never drawn, whatever it waits on. No number is one the year does not give: a price not
 // known is said as unknown, never $0, and requests with no known price are counted beside the price.
 import { harnessLabel } from "@/lib/agentForm";
-import { type CardBar, type CardBody, type CardChart, chartCapacity } from "@/lib/cardImage";
+import { type CardBar, type CardBody, type CardChart, chartCapacity, MAX_ROWS } from "@/lib/cardImage";
 import { compact, dollars } from "@/lib/format";
 import type { Wrapped } from "@/lib/v2";
 import type { CardWait, WrappedCard } from "@/lib/wrappedCards";
@@ -45,13 +45,26 @@ function busiest(counts: readonly number[]): number | undefined {
   return best;
 }
 
-/** The year's list price: unknown when no request was priced, and the requests with no known price as a row of their own. */
-function priceRows(data: Pick<Wrapped, "cost_usd" | "unpriced_requests" | "requests">): { label: string; value: string }[] {
+/** The year's list price: unknown when no request was priced, and the requests with no known price as a row of their own:
+ *  those whose tokens were recorded (a request with none has no price either, and tokenRows counts it). */
+function priceRows(data: Pick<Wrapped, "cost_usd" | "unpriced_requests" | "requests" | "tokens_unknown_requests">): { label: string; value: string }[] {
   const none = data.unpriced_requests >= data.requests;
   const rows = [{ label: "At list price", value: none ? "Unknown" : usd(data.cost_usd) }];
-  if (data.unpriced_requests > 0) rows.push({ label: "No known price", value: plural(data.unpriced_requests, "request", "requests") });
+  const unpriced = data.unpriced_requests - data.tokens_unknown_requests;
+  if (unpriced > 0) rows.push({ label: "No known price", value: plural(unpriced, "request", "requests") });
   return rows;
 }
+
+/** The year's tokens as a card's figure: unknown, never 0, when no request's tokens were recorded (Cursor keeps none). */
+const tokenFigure = (data: Pick<Wrapped, "tokens" | "requests" | "tokens_unknown_requests">) =>
+  ({ value: data.requests > 0 && data.tokens_unknown_requests >= data.requests ? "Unknown" : compact(allTokens(data.tokens)), unit: "tokens" });
+/** The requests whose tokens were not recorded, as a row, when there are any. */
+const tokenRows = (data: Pick<Wrapped, "tokens_unknown_requests">): { label: string; value: string }[] =>
+  data.tokens_unknown_requests > 0 ? [{ label: "Tokens not recorded", value: plural(data.tokens_unknown_requests, "request", "requests") }] : [];
+
+/** A cover's or summary's rows within what the card draws: a year with both requests of unknown tokens and requests of no
+ *  known price has a row too many, and leaves out its days at work, which the hours card shows. */
+const fitRows = (rows: { label: string; value: string }[]) => (rows.length > MAX_ROWS ? rows.filter((r) => r.label !== "Days at work") : rows);
 
 /** The foot line of a year read short: as the page says it. */
 const unreadNote = (data: Pick<Wrapped, "unread_files">): { footnote?: string } =>
@@ -87,14 +100,15 @@ function shareBars(shares: readonly Share[], capacity: number): CardBar[] {
 const cover: BodyOf = (data) => ({
   eyebrow: eyebrow(data),
   title: `Your ${data.year} in agents`,
-  figure: { value: compact(allTokens(data.tokens)), unit: "tokens" },
-  rows: [
+  figure: tokenFigure(data),
+  rows: fitRows([
     { label: "Sessions", value: count(data.sessions) },
     { label: "Prompts", value: count(data.turns) },
     { label: "Model requests", value: count(data.requests) },
     { label: "Days at work", value: count(data.days.length) },
+    ...tokenRows(data),
     ...priceRows(data),
-  ],
+  ]),
   ...unreadNote(data),
 });
 
@@ -141,14 +155,15 @@ const summary: BodyOf = (data) => {
   return {
     eyebrow: eyebrow(data),
     title: `${data.year} in agents`,
-    figure: { value: compact(allTokens(data.tokens)), unit: "tokens" },
-    rows: [
+    figure: tokenFigure(data),
+    rows: fitRows([
+      ...tokenRows(data),
       ...priceRows(data),
       { label: "Days at work", value: count(data.days.length) },
       ...(harness ? [{ label: "Top harness", value: harness }] : []),
       ...(model ? [{ label: "Top model", value: model }] : []),
       ...(hour === undefined ? [] : [{ label: "Busiest hour", value: hourWords(hour) }]),
-    ],
+    ]),
     ...unreadNote(data),
   };
 };

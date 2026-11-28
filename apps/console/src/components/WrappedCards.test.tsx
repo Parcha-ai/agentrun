@@ -17,11 +17,11 @@ afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.in
 
 const YEAR: Wrapped = {
   year: 2025, sessions: 12, turns: 40, requests: 300, tokens: { input: 1_000_000, output: 200_000, cache_read: 5_000_000, cache_write: 100_000 },
-  cost_usd: 42.5, unpriced_requests: 3, unread_files: 0, cache: null, secrets: null,
+  cost_usd: 42.5, unpriced_requests: 3, tokens_unknown_requests: 0, unread_files: 0, cache: null, secrets: null,
   days: [{ day: "2025-03-02", requests: 100, tokens: 4_000_000 }, { day: "2025-03-03", requests: 200, tokens: 2_300_000 }],
   hours: Array.from({ length: 24 }, (_, h) => (h === 14 ? 120 : 4)), weekdays: [0, 200, 100, 0, 0, 0, 0], active_ms: 7_200_000,
-  harnesses: [{ harness: "claude-agent", sessions: 10, requests: 250, tokens: 6_000_000, sources: ["claude-code"] }],
-  models: [{ model: "anthropic/claude-sonnet", requests: 250, tokens: 6_000_000, cost_usd: 42.5, unpriced_requests: 3 }],
+  harnesses: [{ harness: "claude-agent", sessions: 10, requests: 250, tokens: 6_000_000, tokens_unknown_requests: 0, sources: ["claude-code"] }],
+  models: [{ model: "anthropic/claude-sonnet", requests: 250, tokens: 6_000_000, cost_usd: 42.5, unpriced_requests: 3, tokens_unknown_requests: 0 }],
   sources: [], imported: [],
 };
 
