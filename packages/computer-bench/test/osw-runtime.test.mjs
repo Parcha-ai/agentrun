@@ -1,4 +1,4 @@
-// osw, the bench image's runtime for OSWorld tasks (image/osw/osw): `osw setup` and `osw eval` driven as the bench
+// osw, the bench image's runtime for OSWorld tasks (image/osw/osw.py): `osw setup` and `osw eval` driven as the bench
 // drives them, against a stand-in for OSWorld's code (fixtures/osworld-stub: its in-VM server, controllers, getters and
 // metrics, stdlib only) and a loopback file host for the pinned downloads and golds.
 import assert from "node:assert/strict";
@@ -11,7 +11,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { ROOT, tmp } from "./support.mjs";
 
-const OSW = join(ROOT, "image", "osw", "osw");
+const OSW = join(ROOT, "image", "osw", "osw.py");
 const STUB = join(ROOT, "test", "fixtures", "osworld-stub");
 const INFRA = 75;
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# osw: an OSWorld task's own setup and evaluator, run inside a bench desktop image.
+# osw: an OSWorld task's own setup and evaluator, run inside a bench desktop image, as `python3 osw.py <command>`.
 #
 #   osw setup <osworld.json>  starts OSWorld's in-VM server on 127.0.0.1 as the desktop user, runs the task's `config`
 #                             through OSWorld's SetupController, and stops the server. The apps it launched stay up.
