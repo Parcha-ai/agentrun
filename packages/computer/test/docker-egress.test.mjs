@@ -29,6 +29,14 @@ const proxyRunOf = (calls) => runs(calls).find((args) => valuesOf(args, "--entry
 const computerRunOf = (calls) => runs(calls).find((args) => valuesOf(args, "--entrypoint")[0] === "/opt/agentrun/computerd");
 const ref = (name) => ({ id: idOf(name), name });
 
+test("an expired release starts no Docker command", async () => {
+	const { provider, calls } = fakeDocker();
+	const result = await provider.release(ref(A), "delete", { signal: AbortSignal.abort() });
+	assert.equal(result.ok, false);
+	assert.equal(result.error.code, "aborted");
+	assert.deepEqual(calls(), []);
+});
+
 test("capabilities: network none, open and allow; an allowlist holds names and CIDRs together, 256 of each, on ports 80 and 443; read back from Docker", () => {
 	const { provider } = fakeDocker();
 	const declared = provider.capabilities();

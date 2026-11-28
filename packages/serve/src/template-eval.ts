@@ -52,6 +52,8 @@ import { INPUTS_DIR } from "./uploads.js";
 import { inputIssues, inputSchemaOf, isObject, type Json, MODEL_REF } from "./validate.js";
 import { RUN_FILE_CUT_MAX } from "./run-files.js";
 import { ON_DATA_WITH_SERVER } from "./template-eval-words.js";
+import { EvalComputerCleanup, type EvalComputerCleanupIssue } from "./eval-computer-cleanup.js";
+import { RUN_END_COMPUTERS_MS } from "./workspace/run-end-computers.js";
 
 /** What a grader run is told, whatever the rubric: blind, strict, and its verdict as one JSON block. */
 export const GRADER_INSTRUCTIONS = `You grade one run of an AI agent against one rubric. You see the rubric, the task the agent was given, its answer, and the tool calls it made; nothing else, and nothing else matters.
@@ -1588,6 +1590,8 @@ export type EvalOptions = {
   queueTimeoutMs?: number;
   /** How long one read of a run's final file may take, its body included (default FILE_READ_TIMEOUT_MS). */
   fileReadTimeoutMs?: number;
+  /** The shared wait for this local eval's Docker deletes (default RUN_END_COMPUTERS_MS). */
+  computerCleanupTimeoutMs?: number;
   /** Told each step as one line (the CLI's stderr). */
   log?: (line: string) => void;
   /** Stops the eval: the run in progress is cancelled, what the eval made is cleaned up as at its end, and the eval
@@ -1626,6 +1630,8 @@ export type Report = {
   pass: boolean;
   passed: number;
   cases: CaseResult[];
+  /** Local Docker releases whose completion could not be confirmed before exit. */
+  computer_cleanup?: EvalComputerCleanupIssue[];
   cost_usd: { runs: number; graders: number; total: number; unknown: number };
 };
 
@@ -1661,6 +1667,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
   const scratch = options.server ? undefined : mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-eval-"));
   // The in-process server's data: the owner's folder (options.data), which stays, or one in the scratch, gone with it.
   const data = options.server ? undefined : (options.data ?? join(scratch!, "data"));
+  const computerCleanup = options.server ? undefined : new EvalComputerCleanup();
   let close = async () => undefined as unknown;
   let api: Api;
   let owner: Record<string, string> | undefined;
@@ -1706,7 +1713,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     const { withoutFaux } = await import("./model.js");
     const serveOptions = options.serve ?? {};
     // Its run lines go to stderr: stdout is the eval's report.
-    const beside = await runnerBeside(data!, { mcpLoopback: serve.localInstall, mcpOwn: serve.own, ollamaHost: serve.ollamaHost, evalFakes: (agentId) => fakes.get(agentId), harnessInstall, onLine: (line) => console.error(line), ...(serveOptions.faux ? { env: { ...withoutFaux(process.env), ...fauxEnvOf({ data: data!, ...serveOptions } as Parameters<typeof fauxEnvOf>[0]) } } : {}) }).catch(async (error: unknown) => {
+    const beside = await runnerBeside(data!, { mcpLoopback: serve.localInstall, mcpOwn: serve.own, ollamaHost: serve.ollamaHost, evalFakes: (agentId) => fakes.get(agentId), harnessInstall, ...(computerCleanup ? { computerLoad: computerCleanup.load } : {}), onLine: (line) => console.error(line), ...(serveOptions.faux ? { env: { ...withoutFaux(process.env), ...fauxEnvOf({ data: data!, ...serveOptions } as Parameters<typeof fauxEnvOf>[0]) } } : {}) }).catch(async (error: unknown) => {
       await closeServe();
       removeTree(scratch!);
       throw error;
@@ -1757,6 +1764,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     }
   }
   const results: CaseResult[] = [];
+  let cleanupIssues: EvalComputerCleanupIssue[] = [];
   let grader: string | undefined;
   const made: Made = { agents: [], runs: new Set(), triggers: new Set() };
   // A previous case's earlier runs are written in the eval's own server's store (eval-previous.ts seedPrevious), opened
@@ -1783,10 +1791,13 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
       results.push(result);
     }
   } finally {
+    computerCleanup?.begin(options.computerCleanupTimeoutMs ?? RUN_END_COMPUTERS_MS);
     await cleanUp(api, made);
     // On an owner's server, what the eval made goes to the archive (an archived agent and its runs stay readable).
     if (options.server || options.data !== undefined) for (const id of made.agents) await api("POST", `/agents/${encodeURIComponent(id)}/archive`, {}).catch(() => undefined);
     await opened?.then((one) => one.close(), () => undefined);
+    cleanupIssues = await computerCleanup?.finish() ?? [];
+    if (options.signal?.aborted) for (const issue of cleanupIssues) log(computerCleanupLine(issue));
     await close();
     if (scratch) removeTree(scratch);
   }
@@ -1804,6 +1815,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     approvals: { measured: "never", package: pkg.approvals ?? "ask" },
     started_at: started, finished_at: new Date().toISOString(),
     pass: exitCodeOf({ cases: results }) === 0, passed: results.filter((c) => c.pass).length, cases: results,
+    ...(cleanupIssues.length ? { computer_cleanup: cleanupIssues } : {}),
     cost_usd: { runs: runCost, graders: graderCost, total: sum([runCost, graderCost]), unknown: runs.filter((r) => r.run_id && r.cost_usd === null).length + graders.filter((g) => g.run_id && g.cost_usd === null).length },
   };
 }
@@ -2301,6 +2313,9 @@ function removeTree(dir: string): void {
 const usd = (value: number) => `$${value > 0 && value < 0.01 ? value.toFixed(6) : value.toFixed(4)}`;
 const cell = (text: string) => text.replace(/\|/g, "\\|").replace(/\s*\n\s*/g, " ");
 
+const computerCleanupLine = ({ run_id, computer, ...issue }: EvalComputerCleanupIssue): string =>
+  `Run ${run_id}, Docker computer ${computer}: ${issue.status === "timed_out" ? "cleanup timed out" : `cleanup failed: ${issue.reason}`}`;
+
 /** The eval's exit code from its report (the CLI's, agentrun-serve eval-template): 0 when every case passed, 1 when
  *  any case failed, however many passed beside it. (2: nothing ran, and 130: stopped, are the CLI's own.) */
 export const exitCodeOf = (report: Pick<Report, "cases">): 0 | 1 => (report.cases.every((c) => c.pass) ? 0 : 1);
@@ -2327,6 +2342,7 @@ export function markdownReport(report: Report): string {
   // An email case's runs read a fake mailbox, never real mail: the report says so, and counts them per layout.
   if (report.cases.some((c) => c.runs.some((r) => r.layout))) lines.push("", "Email cases ran on a fake mailbox seeded from each case's fixture (no real mail was read or sent), each run on a fresh account, reported per layout.");
   const failed = report.cases.filter((c) => !c.pass);
+  if (report.computer_cleanup?.length) lines.push("", "## Computer cleanup", "", ...report.computer_cleanup.map((issue) => `- ${cell(computerCleanupLine(issue))}`));
   if (failed.length) lines.push("", "## Failures");
   for (const c of failed) {
     lines.push("", `### ${c.name}`, "");
