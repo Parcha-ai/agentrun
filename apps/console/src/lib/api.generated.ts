@@ -4835,7 +4835,8 @@ export interface operations {
   };
   listComposioToolkits: {
     body: {
-      api_key: string;
+      api_key?: string;
+      api_key_env?: "COMPOSIO_API_KEY";
     };
     answer: {
       toolkits: {
@@ -4846,8 +4847,9 @@ export interface operations {
   };
   listComposioTools: {
     body: {
-      api_key: string;
       toolkit: string;
+      api_key?: string;
+      api_key_env?: "COMPOSIO_API_KEY";
     };
     answer: {
       toolkit: string;
