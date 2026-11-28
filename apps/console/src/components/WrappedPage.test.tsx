@@ -16,14 +16,21 @@ afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.in
 
 const YEAR: Wrapped = {
   year: 2025, sessions: 12, turns: 40, requests: 300, tokens: { input: 1_000_000, output: 200_000, cache_read: 5_000_000, cache_write: 100_000 },
-  cost_usd: 42.5, unpriced_requests: 3, unread_files: 0, cache: null, secrets: null,
+  cost_usd: 42.5, unpriced_requests: 3, tokens_unknown_requests: 0, unread_files: 0, cache: null, secrets: null,
   days: [{ day: "2025-03-02", requests: 100, tokens: 4_000_000 }, { day: "2025-03-03", requests: 200, tokens: 2_300_000 }],
   hours: Array.from({ length: 24 }, (_, h) => (h === 14 ? 120 : h === 9 ? 80 : 4)), weekdays: [0, 200, 100, 0, 0, 0, 0], active_ms: 7_200_000,
-  harnesses: [{ harness: "claude-agent", sessions: 10, requests: 250, tokens: 6_000_000, sources: ["claude-code"] }, { harness: "pi", sessions: 2, requests: 50, tokens: 300_000, sources: ["gemini", "pi"] }],
-  models: [{ model: "anthropic/claude-sonnet", requests: 250, tokens: 6_000_000, cost_usd: 40, unpriced_requests: 3 }, { model: "openai/gpt", requests: 50, tokens: 300_000, cost_usd: 2.5, unpriced_requests: 0 }],
+  harnesses: [{ harness: "claude-agent", sessions: 10, requests: 250, tokens: 6_000_000, tokens_unknown_requests: 0, sources: ["claude-code"] }, { harness: "pi", sessions: 2, requests: 50, tokens: 300_000, tokens_unknown_requests: 0, sources: ["gemini", "pi"] }],
+  models: [{ model: "anthropic/claude-sonnet", requests: 250, tokens: 6_000_000, cost_usd: 40, unpriced_requests: 3, tokens_unknown_requests: 0 }, { model: "openai/gpt", requests: 50, tokens: 300_000, cost_usd: 2.5, unpriced_requests: 0, tokens_unknown_requests: 0 }],
   sources: [{ source: "claude-code", sessions: 10, requests: 250 }, { source: "codex", sessions: 2, requests: 50 }],
   imported: [{ source: "claude-code", runs: 7 }, { source: "gemini", runs: 4 }],
 };
+
+/** A year of Cursor alone: its chats record no tokens and name no model it can price. */
+const CURSOR_YEAR: Wrapped = { ...YEAR, sessions: 1, turns: 2, requests: 3, tokens: { input: 0, output: 0, cache_read: 0, cache_write: 0 }, tokens_unknown_requests: 3, cost_usd: 0, unpriced_requests: 3,
+  days: [{ day: "2025-07-10", requests: 3, tokens: 0 }], hours: Array.from({ length: 24 }, (_, h) => (h === 4 ? 3 : 0)), weekdays: [0, 0, 0, 0, 0, 3, 0], active_ms: 60_000,
+  harnesses: [{ harness: "cursor", sessions: 1, requests: 3, tokens: 0, tokens_unknown_requests: 3, sources: ["cursor"] }],
+  models: [{ model: "unknown", requests: 3, tokens: 0, cost_usd: 0, unpriced_requests: 3, tokens_unknown_requests: 3 }],
+  sources: [{ source: "cursor", sessions: 1, requests: 3 }], imported: [{ source: "cursor", runs: 1 }] };
 
 async function mount(wrapped: () => Promise<Wrapped>, go = vi.fn(), year?: number, cards?: CardRenderer) {
   const v2 = { wrapped: vi.fn(wrapped) } as unknown as Client;
@@ -69,6 +76,30 @@ describe("WrappedPage", () => {
     expect(row("openai/gpt")).not.toContain("priced only");
     expect(row("fx/unlisted")).toContain("no known price");
     expect(row("fx/unlisted")).not.toContain("$0.00");
+  });
+
+  it("says a Cursor-only year's tokens as not recorded, never 0, by Cursor's name, and its price as unknown, never $0", async () => {
+    await mount(async () => CURSOR_YEAR, vi.fn(), 2025);
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("Tokens not recorded");
+    expect(text).toContain("Cursor doesn't record tokens");
+    expect(text).not.toMatch(/(^|[^\d.])0 tokens/);
+    expect(text).not.toContain("0 in · 0 out");
+    expect(text).toContain("1 sessions · 2 prompts · 3 model requests · no known price");
+    expect(text).not.toContain("$0.0");
+    expect(text).toContain("Busiest day: 2025-07-10, 3 requests across 1 days at work.");
+    const row = (list: string) => document.querySelector(`[aria-label="${list}"] > li`)?.textContent ?? "";
+    expect(row("Harnesses")).toContain("Cursor");
+    expect(row("Harnesses")).toContain("tokens not recorded · 1 sessions");
+    expect(row("Models")).toContain("tokens not recorded · no known price");
+  });
+
+  it("says a year with some requests of unknown tokens beside the tokens it knows", async () => {
+    await mount(async () => ({ ...YEAR, tokens_unknown_requests: 4 }), vi.fn(), 2025);
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("6.3M tokens");
+    expect(text).toContain("+ 4 requests with no recorded tokens");
+    expect(text).not.toContain("doesn't record tokens");
   });
 
   it("lists a source that is only imported (its session files are gone), also in a year with no requests", async () => {
