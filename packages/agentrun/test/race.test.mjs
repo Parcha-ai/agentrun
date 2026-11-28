@@ -208,6 +208,47 @@ test("race start starts no lane when the server's computers do not read: a lane'
   assert.equal(seen.filter((r) => r.method === "POST").length, 0);
 });
 
+/** A host that does not serve GET /computers to a request in a workspace: a hosted install before it did. */
+const NOT_SCOPED = { status: 403, body: { error: { code: "forbidden", message: "/v2/computers is not served to a request in a workspace (AgentRun-Workspace).", retryable: false, details: { reason: "not_scoped" } } } };
+
+test("race start goes on where the server does not serve its computers to a workspace: the lanes get no runner shell", { timeout: 60_000 }, async (t) => {
+  const { seen, agentrun } = await fake(t, async (method, path, body) => {
+    if (path === "/capabilities") return { status: 200, body: CAPS };
+    if (path === "/computers") return NOT_SCOPED;
+    if (method === "POST" && path === "/agents") return { status: 201, body: { agent_id: body.definition.id, revision: "rv" } };
+    if (method === "POST" && path.endsWith("/runs")) return { status: 201, body: { run_id: `run-${path.split("-")[3]}`, status: "queued" } };
+    return { status: 404, body: {} };
+  });
+  const out = await agentrun(["race", "start", "--lane", "pi/a", "--lane", "pi/b", "--task", "x", "--label", "fake-4"]);
+  assert.equal(out.code, 0, out.err);
+  assert.doesNotMatch(out.err, /No lane was started/);
+  const printed = JSON.parse(out.out);
+  assert.deepEqual(printed.lanes.map((lane) => lane.run_id), ["run-1", "run-2"]);
+  const made = seen.filter((r) => r.method === "POST" && r.path === "/agents");
+  assert.equal(made.length, 2);
+  for (const r of made) assert.deepEqual(r.body.definition.tools, ["read"], "bash is box-only here: no runner shell runs it");
+});
+
+test("race start still starts no lane when the server refuses its computers for any other reason, in the server's words once", { timeout: 60_000 }, async (t) => {
+  const refusals = [
+    { status: 403, body: { error: { code: "forbidden", message: "This key may not read computers." } } },
+    { status: 503, body: { error: { code: "unavailable", message: "This key may not read computers.", details: { reason: "not_scoped" } } } },
+  ];
+  for (const [i, refusal] of refusals.entries()) {
+    const { seen, agentrun } = await fake(t, async (method, path) => (path === "/capabilities" ? { status: 200, body: CAPS } : path === "/computers" ? refusal : { status: 201, body: {} }));
+    const out = await agentrun(["race", "start", "--lane", "pi/a", "--lane", "pi/b", "--task", "x", "--label", `fake-5-${i}`]);
+    assert.equal(out.code, 1, `${refusal.status}: ${out.err}`);
+    assert.match(out.err, /^GET \/computers: This key may not read computers\. No lane was started\.$/m);
+    assert.equal(seen.filter((r) => r.method === "POST").length, 0);
+  }
+  // Only the computers read goes on without its answer: a lane's tools come from the capabilities.
+  const { seen, agentrun } = await fake(t, async (method, path) => (path === "/capabilities" ? NOT_SCOPED : path === "/computers" ? { status: 200, body: COMPUTERS } : { status: 201, body: {} }));
+  const out = await agentrun(["race", "start", "--lane", "pi/a", "--lane", "pi/b", "--task", "x", "--label", "fake-5-caps"]);
+  assert.equal(out.code, 1, out.err);
+  assert.match(out.err, /^GET \/capabilities: \/v2\/computers is not served to a request in a workspace \(AgentRun-Workspace\)\. No lane was started\.$/m);
+  assert.equal(seen.filter((r) => r.method === "POST").length, 0);
+});
+
 /** `--wait`'s fake runs: each run's timeline (long-polled, as `runs wait` reads it) and the run itself, from `runs`
  *  (run id -> the run as GET /runs/{id} answers it); a run whose status is not terminal answers an unchanged page. */
 const ENDED = new Set(["completed", "failed", "cancelled", "input_required", "paused"]);
