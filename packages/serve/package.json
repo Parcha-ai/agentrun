@@ -135,5 +135,8 @@
   "publishConfig": {
     "access": "public",
     "tag": "beta"
+  },
+  "optionalDependencies": {
+    "@pydantic/monty": "1.6.0"
   }
 }

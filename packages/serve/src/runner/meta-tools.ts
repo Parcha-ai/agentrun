@@ -17,6 +17,9 @@
 // its declarations in codemode's description): each of its calls is a nested call of the run's computer tools
 // (computer_observe, computer_act, computer_screenshot, computer_op), so the gate holds a command it runs to bash's
 // setting and a file it touches to write's or read's (tool-gate.ts heldAs), and a rerun answers it from its record.
+//
+// A script is JavaScript unless its call says `language: "python"`: then codemode-python.ts runs it in Monty, by the same
+// rules (its calls nested, gated, recorded and replayed, its answer worded the same), without `computer`.
 import { randomBytes } from "node:crypto";
 import { CodemodeSandbox, type CodemodeHostCall, type CodemodeOutcome, type CodemodeOutputItem, toCodemodeIdentifier } from "@earendil-works/pi-codemode";
 import { computerOver, withoutImageData } from "@parcha/agentrun-computer/surface";
@@ -34,7 +37,12 @@ export const SEARCH_DEFAULT_LIMIT = 8;
 export const SEARCH_MAX_LIMIT = 25;
 /** A script's whole run, its nested calls' time included, and the memory its VM may take. */
 export const CODEMODE_MS = 600_000;
-const CODEMODE_MEMORY_BYTES = 256 * 1024 * 1024;
+export const CODEMODE_MEMORY_BYTES = 256 * 1024 * 1024;
+/** The languages a script may be written in, the first the default. */
+export const CODEMODE_LANGUAGES = ["javascript", "python"] as const;
+
+/** What a script's call answers. */
+export type ScriptAnswer = { text: string; isError?: boolean; images?: readonly ToolImage[]; structured?: JsonValue; refused?: true };
 
 type SearchDocument = { readonly name: string; readonly text: string };
 type Rank = (query: string, documents: readonly SearchDocument[], limit: number) => string[];
@@ -121,7 +129,7 @@ function scriptComputer(computer: ScriptComputer, tools: string): string {
  *  card offers, less the ops the run's gate refuses whatever their arguments (opsRefused). */
 function computerWords(computer: ScriptComputer): string {
   return [
-    `The script has this run's computer as \`computer\`, typed by the declarations below. Each of its calls is a call of the run's own computer tools, asked about and recorded as that tool's: a command it runs is held to bash's setting; a file it writes needs write among this agent's tools, and a file it reads, lists or stats needs read among this agent's tools, each then held to that tool's setting. ${GUI_REACH}`,
+    `A JavaScript script has this run's computer as \`computer\`, typed by the declarations below (a Python script has no \`computer\`: it calls the computer tools among its \`tools\`). Each of its calls is a call of the run's own computer tools, asked about and recorded as that tool's: a command it runs is held to bash's setting; a file it writes needs write among this agent's tools, and a file it reads, lists or stats needs read among this agent's tools, each then held to that tool's setting. ${GUI_REACH}`,
     computerDeclarations(computer.card.groups, computer.opsRefused),
   ].join("\n");
 }
@@ -168,14 +176,25 @@ export function metaTools(options: MetaToolsOptions): HostTool[] {
       `Run a JavaScript script (the body of an async function: top-level await and return work) that calls this run's tools as \`await tools.<name>(args)\`; ${options.discovery.search ? `find them with ${TOOLS_SEARCH}, and ` : ""}\`ALL_TOOLS\` lists them. A call answers its value, and a call that fails throws. A tool is called by its own name, exactly as \`ALL_TOOLS\`${options.discovery.search ? ` and ${TOOLS_SEARCH}` : ""} give it${examples.length ? ` (here: ${examples.join(", ")})` : ""}, never by the name your own tool list may show for it with a harness's prefix (\`hands_\`, \`mcp__hands__\`): leave the prefix off.`,
       "The script's text(...) and console output, and its returned value, are the answer. It has no timers, network or files of its own: only the tools.",
       "Each call is asked about and recorded as that tool's own. A call that needs a person's approval stops the script: once they answer, that call runs (or is refused), its outcome is the answer, and the rest of the script does not run. A refused call ends the script with the refusal.",
+      `With \`language: "python"\` the script is Python instead (Monty's subset of Python 3: its standard library in part, no packages, files or network). It calls the same tools as \`await tools.<name>(args)\` or with keyword arguments, \`ALL_TOOLS\` lists them, and a call that fails raises. Its print() output and the value of a top-level \`return\` (or of its last expression) are the answer; \`image(value)\` shows an image.`,
     ].join(" ") + (options.computer ? `\n${computerWords(options.computer)}` : ""),
-    inputSchema: { type: "object", properties: { script: { type: "string", description: "The script: the body of an async function." } }, required: ["script"], additionalProperties: false },
+    inputSchema: {
+      type: "object",
+      properties: {
+        script: { type: "string", description: "The script: the body of an async function, or a Python script." },
+        language: { type: "string", enum: [...CODEMODE_LANGUAGES], description: "The script's language: javascript (the default) or python." },
+      },
+      required: ["script"],
+      additionalProperties: false,
+    },
     replay: "safe",
     nests: true,
     call: async (args, context) => {
-      const { script } = (args ?? {}) as { script?: unknown };
-      if (typeof script !== "string" || script.trim() === "") return { text: `${CODEMODE} needs a script: the body of an async function.`, isError: true };
+      const { script, language } = (args ?? {}) as { script?: unknown; language?: unknown };
+      if (language !== undefined && !CODEMODE_LANGUAGES.includes(language as (typeof CODEMODE_LANGUAGES)[number])) return { text: `${CODEMODE}'s language is javascript (the default) or python. Nothing was run.`, isError: true };
+      if (typeof script !== "string" || script.trim() === "") return { text: `${CODEMODE} needs a script: ${language === "python" ? "Python" : "the body of an async function"}.`, isError: true };
       if (!context.nested) return { text: NO_NESTED(CODEMODE), isError: true };
+      if (language === "python") return (await import("./codemode-python.js")).runPython(script, own(), context.nested, context.signal);
       return runScript(script, own(), context.nested, context.signal, options.hostName, options.computer);
     },
   };
@@ -203,7 +222,7 @@ function lineOf(index: number, name: string, result: NestedResult): string {
 
 /** The script's output and value, as the model reads them, and the images: the returned value's own first, then the ones
  *  it showed with image(...). The text names an image without its data. */
-function shownOf(output: readonly CodemodeOutputItem[], value: unknown): { text: string; images: ToolImage[] } {
+export function shownOf(output: readonly CodemodeOutputItem[], value: unknown): { text: string; images: ToolImage[] } {
   const words: string[] = [];
   const shown: ToolImage[] = [];
   for (const item of output) {
@@ -215,7 +234,7 @@ function shownOf(output: readonly CodemodeOutputItem[], value: unknown): { text:
 }
 
 /** Every image in `value` (`{ type: "image", data }`), in order. */
-function imagesIn(value: unknown): ToolImage[] {
+export function imagesIn(value: unknown): ToolImage[] {
   if (Array.isArray(value)) return value.flatMap(imagesIn);
   if (value === null || typeof value !== "object") return [];
   const record = value as Record<string, unknown>;
@@ -255,17 +274,27 @@ function scriptBody(script: string, toolNames: readonly string[], computer?: Scr
 }
 
 /**
+ * A script's start, memoized by the call's first run: its clock, its seed and its tools by the names it gave them. `rerun`:
+ * this is a later run of the call (after a park or a crash). `kept`: the tools the first run declared that this run still
+ * has, each by the name the script calls it (`jsName`).
+ */
+export async function scriptStart(tools: readonly HostTool[], nested: NestedCalls): Promise<{ start: { startedAt: number; seed: number }; rerun: boolean; kept: { name: string; jsName: string; description: string }[] }> {
+  const nonce = randomBytes(8).toString("hex");
+  const first = await nested.memo("start", { startedAt: Date.now(), seed: randomBytes(4).readUInt32BE(0), nonce, tools: tools.map((tool) => [tool.name, toCodemodeIdentifier(tool.name)]) } as unknown as JsonValue);
+  const start = first as unknown as { startedAt: number; seed: number; nonce: string; tools: [string, string][] };
+  const declared = new Map(tools.map((tool) => [tool.name, tool]));
+  const kept = start.tools.filter(([name]) => declared.has(name)).map(([name, jsName]) => ({ name, jsName, description: declared.get(name)!.description }));
+  return { start, rerun: start.nonce !== nonce, kept };
+}
+
+/**
  * Run `script` deterministically (pi-codemode's `start`: its clock, its randomness and its tools fixed by the call's first
  * run, memoized), each of its tool calls a nested call, answered one at a time in the order the script made them. A rerun
  * of the call (after a park or a crash) makes the same calls: the recorded ones are answered from their records, and the
  * first one that runs now ends the script with its outcome (Codex's rule), as does any refusal or interrupted call.
  */
-async function runScript(script: string, tools: readonly HostTool[], nested: NestedCalls, signal: AbortSignal, hostName?: (given: string) => string, computer?: ScriptComputer): Promise<{ text: string; isError?: boolean; images?: readonly ToolImage[]; structured?: JsonValue; refused?: true }> {
-  const nonce = randomBytes(8).toString("hex");
-  const first = await nested.memo("start", { startedAt: Date.now(), seed: randomBytes(4).readUInt32BE(0), nonce, tools: tools.map((tool) => [tool.name, toCodemodeIdentifier(tool.name)]) } as unknown as JsonValue);
-  const start = first as unknown as { startedAt: number; seed: number; nonce: string; tools: [string, string][] };
-  const rerun = start.nonce !== nonce;
-  const declared = new Map(tools.map((tool) => [tool.name, tool]));
+async function runScript(script: string, tools: readonly HostTool[], nested: NestedCalls, signal: AbortSignal, hostName?: (given: string) => string, computer?: ScriptComputer): Promise<ScriptAnswer> {
+  const { start, rerun, kept } = await scriptStart(tools, nested);
   const stop = new AbortController();
   const sandbox = new CodemodeSandbox({ memoryLimitBytes: CODEMODE_MEMORY_BYTES });
   const calls: CodemodeHostCall[] = [];
@@ -274,8 +303,6 @@ async function runScript(script: string, tools: readonly HostTool[], nested: Nes
   let failed: unknown;
   let wake: () => void = () => {};
   try {
-    // The tools the first run declared, by the names it gave them, that this run still has.
-    const kept = start.tools.filter(([name]) => declared.has(name)).map(([name, jsName]) => ({ name, jsName, description: declared.get(name)!.description }));
     const run = sandbox.start(scriptBody(script, kept.map((tool) => tool.jsName), computer), {
       startedAt: start.startedAt,
       seed: start.seed,
@@ -339,7 +366,7 @@ async function runScript(script: string, tools: readonly HostTool[], nested: Nes
  *  when it has one, each image in it given its data back from the answer's images, so a screenshot is pixels the script
  *  can show; else, when its answer is one text part (no image beside it) whose text parses as a JSON object or array,
  *  that value (a Composio answer comes as one); else its text. The text the model reads of the call is its text either way. */
-function scriptValue(result: NestedResult): unknown {
+export function scriptValue(result: NestedResult): unknown {
   if (result.structured !== undefined) return result.images?.length ? withImageData(result.structured, result.images) : result.structured;
   const text = result.text.trim();
   if (result.images?.length || !(text.startsWith("{") || text.startsWith("["))) return result.text;
@@ -353,7 +380,7 @@ function scriptValue(result: NestedResult): unknown {
 
 /** The answer of a script that ended at `last`: a refusal's words, or (`ranNow`: the first call that ran on the script's
  *  rerun, after a person's answer or a crash) that call's outcome, with every call before it as recorded. */
-function endedWith(told: readonly { name: string; result: NestedResult }[], last: NestedResult, ranNow: boolean): { text: string; isError: boolean; images?: readonly ToolImage[]; refused?: true } {
+export function endedWith(told: readonly { name: string; result: NestedResult }[], last: NestedResult, ranNow: boolean): { text: string; isError: boolean; images?: readonly ToolImage[]; refused?: true } {
   const lines = told.map(({ name, result }, i) => lineOf(i + 1, name, result));
   // Marked refused: the script's own row reads Refused, as the call it stopped at does, never a red Error.
   if (last.refused) return { text: `${last.text}\nThe script stopped at this refused call, and nothing after it ran. Its calls, in order:\n${lines.join("\n")}`, isError: true, refused: true };

@@ -2179,6 +2179,17 @@ them. None of them goes around the run's tool settings:
   call runs once (or is refused), its outcome is the script's answer, and the rest of the script does not run. The
   answer lists each call before it with its result as the script read it: a JSON value as itself, never quoted. A
   refused call ends the script with the refusal. A call cut off by a crash is told as possibly done and never run again.
+- `codemode {script, language: "python"}` runs a Python script by the same rules, in
+  [Monty](https://github.com/pydantic/monty) (`@pydantic/monty`, a Python 3 subset written in Rust, in a worker
+  subprocess of its own). The run's tools are the module `tools` (already imported): `await tools.<name>(args)` or
+  `await tools.<name>(key=value)`; `ALL_TOOLS` lists them, a failed call raises, `print()` output and the value of a
+  top-level `return` (or of the last expression) are the answer, and `image(value)` shows an image. Its clock reads the
+  call's first start, its `random` takes the first run's seed, and `time.sleep` returns at once, so a rerun makes the
+  same calls.
+  It runs at most 10 minutes (its calls' time included) in 256 MiB and makes at most 1,000 tool calls. A Python script
+  gets no `computer`: it calls the computer's tools among its `tools`. `@pydantic/monty` is an optional dependency,
+  loaded on the first Python script: an install without it runs JavaScript scripts, and a Python one answers that the
+  package is missing, with nothing run.
 
 A paid call made through `tools_call` or a script is held at its price before it is sent and settled once, as a direct
 call is, so the cap holds it. A run with a desktop or a phone has this same `codemode`, its computer's tools among

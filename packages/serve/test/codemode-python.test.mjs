@@ -78,6 +78,15 @@ test(`a Python script that calls a tool more than ${CODEMODE_PY_CALLS} times end
   assert.match(big.text, /^The script failed: [\s\S]*MemoryError/, big.text);
 });
 
+test("a Python script whose call is aborted mid-loop ends at once: its worker is killed, never left to run to the time bound", async () => {
+  const { nested } = nestedCalls();
+  const stop = new AbortController();
+  setTimeout(() => stop.abort(new Error("the session stopped")), 300);
+  const began = Date.now();
+  await assert.rejects(codemodeOf().call({ script: "n = 0\nwhile True:\n    n += 1", language: "python" }, { signal: stop.signal, nested }), /the session stopped/);
+  assert.ok(Date.now() - began < 10_000, `ended ${Date.now() - began} ms in`);
+});
+
 test("a Python script run again after a park answers its recorded calls from their records, runs the parked call once, and ends there: nothing after it runs", async () => {
   // The call's first run memoized its start; this is the run after the person's answer: read_file is recorded, send_email
   // runs now.
