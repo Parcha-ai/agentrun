@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { parse } from 'yaml';
-import { KNOWN, WALKS, allPages, best, report, runsAtTag } from './walks-at-tag.mjs';
+import { KNOWN, WALKS, allPages, best, findTag, issuePlan, report, runsAtTag } from './walks-at-tag.mjs';
 
 const workflowAt = (file) => parse(readFileSync(new URL(`../.github/workflows/${file}`, import.meta.url), 'utf8'));
 const TAG = 'v0.1.0-beta.68';
@@ -42,6 +42,10 @@ test('every page of runs is read, not only the newest 100: an older tag finds it
   assert.ok(runs.some(({ id }) => id === 3));
   assert.deepEqual(asked.map((p) => /[?&]page=(\d+)/.exec(p)[1]), ['1', '2']);
   assert.ok(asked.every((p) => p.includes('per_page=100')));
+  // A list GitHub answers as a bare array (the repository's tags), the same way.
+  const tags = [Array.from({ length: 100 }, (_, i) => ({ name: `v0.0.${i}` })), [{ name: TAG }]];
+  const byPage = (path) => tags[Number(/[?&]page=(\d+)/.exec(path)[1]) - 1] ?? [];
+  assert.equal(allPages(byPage, 'repos/o/r/tags').at(-1).name, TAG);
 });
 
 test('the run a walk is judged by: the latest that finished green, else the latest', () => {
@@ -95,4 +99,56 @@ test("after a publish, the runs this table finds walk the tag and name it: each 
     assert.ok(steps.length > 0, `${file} checks out`);
     for (const [id, step] of steps) assert.ok(String(step.with?.ref).includes('github.event.workflow_run.head_sha'), `${file} ${id}'s checkout is at the tag`);
   }
+});
+
+const TAGS = [{ name: TAG, commit: { sha: SHA } }, { name: 'v0.1.0-beta.67', commit: { sha: MAIN } }];
+
+test("the tag a finished walk ran for: the operator's input; the run's 'at <tag>' name after a publish; else a tag at its commit; only a tag that exists, by the shape of a release tag", () => {
+  assert.equal(findTag({ input: TAG, tags: TAGS }), TAG);
+  assert.throws(() => findTag({ input: `${TAG}; echo`, tags: TAGS }), /not a release tag/);
+  assert.equal(findTag({ event: 'workflow_run', title: `Ways in at ${TAG}`, sha: MAIN, tags: TAGS }), TAG, "a post-publish run, at main's tip, by its name");
+  assert.equal(findTag({ event: 'workflow_run', title: 'Ways in at v9.9.9-beta.1', sha: 'c'.repeat(40), tags: TAGS }), '', 'a name for a tag that does not exist');
+  assert.equal(findTag({ event: 'workflow_run', title: 'Ways in at $(id)', sha: 'c'.repeat(40), tags: TAGS }), '');
+  assert.equal(findTag({ event: 'push', title: 'release: 0.1.0-beta.68', sha: SHA, tags: TAGS }), TAG, "the release commit's own push");
+  assert.equal(findTag({ event: 'push', title: `Ways in at ${TAG}`, sha: 'c'.repeat(40), tags: TAGS }), '', 'only a post-publish run is read by its name');
+  assert.equal(findTag({ event: 'schedule', title: 'Ways in daily', sha: 'c'.repeat(40), tags: TAGS }), '', 'a daily run of a commit no tag names');
+  assert.equal(findTag({ event: 'push', sha: SHA, tags: [{ name: 'not-a-release', commit: { sha: SHA } }] }), '');
+});
+
+test('the issue: nothing while a walk still runs; a red tag opens the one issue, or moves it to this tag; a green tag closes it', () => {
+  const at = (failed) => ({ ...Object.fromEntries(WALKS.map(({ file }) => [file, { run: run(), failed: [] }])), ...failed });
+  const green = report(TAG, SHA, at({}));
+  const red = report(TAG, SHA, at({ 'helm-walk.yml': {} }));
+  const running = report(TAG, SHA, at({ 'helm-walk.yml': {}, 'install-walk.yml': { run: run({ status: 'queued', conclusion: null }) } }));
+  assert.deepEqual([green.pending, red.pending, running.pending], [false, false, true]);
+  assert.deepEqual(red.broken, ['Helm walk']);
+  const RUN = 'https://x/run';
+  assert.deepEqual(issuePlan({ ...running, tag: TAG, open: [], run: RUN }), []);
+  assert.deepEqual(issuePlan({ ...green, tag: TAG, open: [], run: RUN }), []);
+  assert.deepEqual(issuePlan({ ...red, tag: TAG, open: [{ number: 7, title: 'ways in: Railway (hosted) broke' }], run: RUN }), [
+    ['issue', 'create', '--title', `walks at ${TAG}: Helm walk not green`, '--body', red.table],
+  ]);
+  const ours = { number: 9, title: 'walks at v0.1.0-beta.67: Ways in not green' };
+  assert.deepEqual(issuePlan({ ...red, tag: TAG, open: [ours], run: RUN }), [
+    ['issue', 'edit', '9', '--title', `walks at ${TAG}: Helm walk not green`, '--body', red.table],
+    ['issue', 'comment', '9', '--body', `${TAG}: Helm walk not green. ${RUN}`],
+  ]);
+  assert.deepEqual(issuePlan({ ...green, tag: TAG, open: [ours], run: RUN }), [['issue', 'close', '9', '--comment', `Every walk green at ${TAG}: ${RUN}`]]);
+});
+
+test('the table runs itself when a walk finishes: one workflow on the four walks (never a pull request run), reading the tag through env, writing an issue only on that event', () => {
+  const workflow = workflowAt('walks-at-tag.yml');
+  assert.deepEqual(workflow.on.workflow_run, { workflows: WALKS.map(({ file }) => workflowAt(file).name), types: ['completed'] });
+  assert.equal(workflow.on.workflow_dispatch.inputs.tag.required, true);
+  assert.deepEqual(workflow.permissions, { contents: 'read' });
+  const [job, ...more] = Object.values(workflow.jobs);
+  assert.equal(more.length, 0);
+  assert.deepEqual(job.permissions, { contents: 'read', actions: 'read', issues: 'write' });
+  assert.match(job.if, /github\.event\.workflow_run\.event != 'pull_request'/);
+  const text = readFileSync(new URL('../.github/workflows/walks-at-tag.yml', import.meta.url), 'utf8');
+  for (const step of job.steps) assert.doesNotMatch(step.run ?? '', /\$\{\{/, `${step.name ?? step.uses}: no expression inside a shell line; values come in through env`);
+  assert.ok(text.includes('github.event.workflow_run.display_title'));
+  const issue = job.steps.find((step) => /--issue/.test(step.run ?? ''));
+  assert.match(issue.if, /github\.event_name == 'workflow_run'/);
+  for (const step of job.steps.filter((s) => s.uses?.startsWith('actions/checkout@'))) assert.equal(step.with?.['persist-credentials'], false);
 });
