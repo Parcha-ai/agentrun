@@ -26,8 +26,26 @@ export const COMPUTER_CALL = "computer_call";
 /** The journal entry kind the runner commits for each call. */
 export const CALL_KIND = "computer.call";
 
-/** The longest one call runs on the computer, a wait for a person's hand-back included, before the runner ends it. */
+/** The longest a call that names no time of its own runs on the computer, a wait for a person's hand-back included,
+ *  before the runner ends it (callBudgetMs). */
 export const CALL_MS = 120_000;
+/** The time on top of an exec.run's or a process.wait's own timeoutMs for its answer to come back (callBudgetMs). */
+export const CALL_GRACE_MS = 15_000;
+/** The longest any one call runs (callBudgetMs). Longer work is process.start, then process.wait calls. */
+export const CALL_MAX_MS = 30 * 60_000;
+
+/** The methods whose params name how long the call itself runs, as timeoutMs. */
+const TIMED_METHODS: ReadonlySet<string> = new Set(["exec.run", "process.wait"]);
+
+/** How long `call` runs on the channel: the server waits this long for its answer (after a runner takes its row), and the
+ *  runner cuts it here (runner/adapter-loop.ts). An exec.run or a process.wait runs its own timeoutMs and CALL_GRACE_MS,
+ *  never less than CALL_MS and at most CALL_MAX_MS; any other call, or one whose timeoutMs is not a finite number 0 or
+ *  more, runs CALL_MS. */
+export function callBudgetMs(call: ComputerCall): number {
+  const asked = TIMED_METHODS.has(call.method) ? call.params?.timeoutMs : undefined;
+  if (typeof asked !== "number" || !Number.isFinite(asked) || asked < 0) return CALL_MS;
+  return Math.min(CALL_MAX_MS, Math.max(CALL_MS, asked + CALL_GRACE_MS));
+}
 /** How long the server waits for a runner to take a call's row, on top of the call's own time. */
 export const TAKE_MS = 60_000;
 /** How often the server reads a call's row when no wake comes (a runner in another process). */
@@ -138,7 +156,7 @@ export async function callComputer(store: ChannelStore, runId: string, call: Com
   if (run.state !== "running") throw new ApiError("computer_not_live", `run ${runId}'s computer is not up now: the run is ${run.state}`);
   // The params as one JSON text: the store never reads into them, and a string Postgres's jsonb refuses (an escaped NUL, a
   // lone surrogate) is only escaped text inside it, so the row settles (store/dialect.ts settledBody) whatever was typed.
-  const id = await sendRow(store, runId, { kind: COMPUTER_CALL, body: { method: call.method, params: JSON.stringify(call.params ?? {}), answers: false } }, (options.takeMs ?? TAKE_MS) + CALL_MS, options.pollMs);
+  const id = await sendRow(store, runId, { kind: COMPUTER_CALL, body: { method: call.method, params: JSON.stringify(call.params ?? {}), answers: false } }, (options.takeMs ?? TAKE_MS) + callBudgetMs(call), options.pollMs);
   const answer = await store.answerOf(runId, id);
   return (answer?.value as ComputerAnswer | undefined) ?? { ok: false, error: { code: "gone", message: "the call's answer was already read" } };
 }
