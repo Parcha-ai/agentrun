@@ -10,10 +10,11 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, st
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { checkLifetime, computerNameFor as nameOf, readFile } from "../dist/index.js";
+import { checkLifetime, computerNameFor as nameOf, pullTar, readFile } from "../dist/index.js";
+import { TREE_COPY_BYTES } from "../dist/hosted/download.js";
 import { HostError } from "../dist/host.js";
 import { MAX_READ_BYTES } from "../dist/surface/index.js";
-import { DAEMON, DESKTOP_GROUPS, deferred, FAKE_DESCRIPTOR, fakeHost, gpuDescriptor, LINUX_GROUPS, NETWORK_DESCRIPTOR, NotFound, VERSION } from "./fake-host.mjs";
+import { DAEMON, DESKTOP_GROUPS, deferred, FAKE_DESCRIPTOR, fakeHost, gpuDescriptor, LINUX_GROUPS, NETWORK_DESCRIPTOR, NotFound, tarOfPath, VERSION } from "./fake-host.mjs";
 
 const { HostedProvider } = await import("../dist/hosted/provider.js");
 const { AGENTRUN_DIAL, dialLaunch, hostedCommands, initFlags, quote } = await import("../dist/hosted/scripts.js");
@@ -1238,6 +1239,169 @@ test("first chunks of many files copy nothing, and the copies held across paths 
 	assert.deepEqual(fromCopies, paths.slice(-2), "the newest two are held, the oldest let go");
 	assert.deepEqual(await copiesLeft(m), [], "no copy left in the machine");
 	await connection.close();
+});
+
+/** Waits for ready() to hold, up to 10 s: a loaded test machine can take far longer than a step should. */
+const until = async (ready) => {
+	for (const end = Date.now() + 10_000; !ready() && Date.now() < end; ) await new Promise((done) => setTimeout(done, 5));
+};
+/** The tar.pull.read calls the daemon in m was sent since request n. */
+const daemonPullReads = (fake, n) => fake.requests.slice(n).filter((r) => r.method === "tar.pull.read").length;
+/** A tree of a file of three chunks and some, and a small one a directory down. */
+const treeIn = (m) => {
+	m.files.set("/work/tree/big.bin", BIG);
+	m.files.set("/work/tree/sub/small.txt", Buffer.from("small\n"));
+};
+
+test("a tar.pull on a host with download: begun by the daemon, its tar made as the daemon's user, downloaded and removed, every read answered from the copy, and the daemon's own pull ended", async () => {
+	const { provider, fake } = setup({}, { download: true });
+	const ref = made(await create(provider));
+	const m = only(fake);
+	treeIn(m);
+	const connection = made(await provider.connect(ref));
+	const before = fake.requests.length;
+	const tar = made(await pullTar(connection.client, "/work/tree"));
+	assert.equal(Buffer.compare(Buffer.from(tar), tarOfPath(m, "/work/tree")), 0, "the daemon's tar, every byte, in order");
+	assert.equal(daemonPullReads(fake, before), 0, "no read through the bridge");
+	assert.equal(fake.treeStages.length, 1, "one copy");
+	const [staged] = fake.treeStages;
+	assert.deepEqual([staged.uid, staged.gid, staged.path, staged.blocks], ["2510", "2510", "/work/tree", TREE_COPY_BYTES / 512], "made as the daemon's user, within the copy's bound");
+	assert.match(staged.copy, /^\/run\/agentrun-read\/[0-9a-f]{32}$/);
+	assert.deepEqual(fake.downloads.map(({ path }) => path), [staged.copy], "the copy came through download");
+	assert.deepEqual(await copiesLeft(m), [], "the copy is removed");
+	const begun = fake.requests.slice(before).find((r) => r.method === "tar.pull.begin");
+	assert.ok(fake.requests.slice(before).some((r) => r.method === "tar.pull.end" && r.params.id === "pull-1"), "the daemon's pull is ended");
+	assert.equal(begun.params.path, "/work/tree");
+	assert.equal(m.pulls.size, 0, "no pull left open in the daemon");
+	// A file's pull takes the same way, and a second pull copies again: nothing of the first is kept past its end.
+	const one = made(await pullTar(connection.client, "/work/tree/big.bin"));
+	assert.equal(Buffer.compare(Buffer.from(one), tarOfPath(m, "/work/tree/big.bin")), 0);
+	assert.equal(fake.treeStages.length, 2);
+	assert.equal(daemonPullReads(fake, before), 0);
+	await connection.close();
+});
+
+test("a tar.pull's daemon pull ends as soon as its copy is held, before the caller ends it; a read after the caller's end is the daemon's, never the copy's", async () => {
+	const { provider, fake } = setup({}, { download: true });
+	const ref = made(await create(provider));
+	const m = only(fake);
+	treeIn(m);
+	const connection = made(await provider.connect(ref));
+	const begun = made(await connection.client.call("tar.pull.begin", { path: "/work/tree" }));
+	const first = made(await connection.client.call("tar.pull.read", { id: begun.id }));
+	assert.equal(first.eof, false, "the tar is more than one chunk");
+	assert.equal(m.pulls.size, 0, "the daemon's pull is ended mid-read: its slot is free while the copy is read");
+	made(await connection.client.call("tar.pull.end", { id: begun.id }));
+	const after = await connection.client.call("tar.pull.read", { id: begun.id });
+	assert.equal(after.error?.code, "not_found", "the ended pull's copy is let go: the daemon answers, and it has no such pull");
+	assert.equal(fake.treeStages.length, 1);
+	assert.deepEqual(await copiesLeft(m), [], "no copy left in the machine");
+	await connection.close();
+});
+
+test("a tar.pull stays the daemon's, from its first byte, where the host has no download, the tar fails to be made, or it is past the copy's bound; no copy is left behind", async () => {
+	for (const [what, fakeOptions, stages] of [
+		["no download", {}, 0],
+		["the tar fails", { download: true, treeStage: "fail" }, 1],
+		["the tar is past the bound", { download: true, treeStage: "big" }, 1],
+	]) {
+		const { provider, fake } = setup({}, fakeOptions);
+		const ref = made(await create(provider));
+		const m = only(fake);
+		treeIn(m);
+		const connection = made(await provider.connect(ref));
+		const before = fake.requests.length;
+		const tar = made(await pullTar(connection.client, "/work/tree"));
+		assert.equal(Buffer.compare(Buffer.from(tar), tarOfPath(m, "/work/tree")), 0, `${what}: the daemon's tar, whole`);
+		assert.ok(daemonPullReads(fake, before) > 1, `${what}: read through the bridge, chunk by chunk`);
+		assert.equal(fake.treeStages.length, stages, `${what}: copies tried`);
+		assert.deepEqual(fake.downloads, [], `${what}: nothing downloaded`);
+		assert.deepEqual(await copiesLeft(m), [], `${what}: no copy left`);
+		await connection.close();
+	}
+});
+
+test("a tar.pull the daemon refuses, or of a path under /proc, is never copied", async () => {
+	const { provider, fake } = setup({}, { download: true });
+	const ref = made(await create(provider));
+	const m = only(fake);
+	m.files.set("/proc/1/environ", Buffer.from("SECRET=1\0"));
+	const connection = made(await provider.connect(ref));
+	assert.equal((await pullTar(connection.client, "/work/missing")).error?.code, "not_found");
+	const proc = made(await pullTar(connection.client, "/proc/1/environ"));
+	assert.equal(Buffer.compare(Buffer.from(proc), tarOfPath(m, "/proc/1/environ")), 0, "the daemon's own tar");
+	assert.deepEqual(fake.treeStages, []);
+	assert.deepEqual(fake.downloads, []);
+	await connection.close();
+});
+
+test("pulls in flight at once make their copies one at a time, each read from its own", async () => {
+	const held = deferred();
+	let downloads = 0;
+	const { provider, fake } = setup({}, { download: true, onStep: (step) => (step === "download" && ++downloads === 1 ? held.promise : undefined) });
+	const ref = made(await create(provider));
+	const m = only(fake);
+	treeIn(m);
+	m.files.set("/work/other/c.bin", Buffer.alloc(CHUNK + 3, 7));
+	const connection = made(await provider.connect(ref));
+	const pulls = [pullTar(connection.client, "/work/tree"), pullTar(connection.client, "/work/other")];
+	await until(() => downloads > 0);
+	assert.equal(downloads, 1, "the first copy is downloading");
+	await new Promise((done) => setTimeout(done, 50));
+	assert.equal(fake.treeStages.length, 1, "the second waits for the first");
+	held.resolve();
+	const [tree, other] = await Promise.all(pulls);
+	assert.equal(Buffer.compare(Buffer.from(made(tree)), tarOfPath(m, "/work/tree")), 0);
+	assert.equal(Buffer.compare(Buffer.from(made(other)), tarOfPath(m, "/work/other")), 0);
+	assert.equal(fake.treeStages.length, 2);
+	assert.equal(fake.downloads.length, 2);
+	await connection.close();
+});
+
+test("the copies pulls hold at once stay within one copy's bound: a pull read once and paused keeps its bytes, the next copy is made with the room left, and an ended pull gives its room back", async () => {
+	const { provider, fake } = setup({}, { download: true });
+	const ref = made(await create(provider));
+	const m = only(fake);
+	treeIn(m);
+	m.files.set("/work/other/c.bin", Buffer.alloc(CHUNK + 3, 7));
+	const connection = made(await provider.connect(ref));
+	// One pull read once, then paused: its copy is held, and the daemon's pull is ended.
+	const paused = made(await connection.client.call("tar.pull.begin", { path: "/work/tree" }));
+	assert.equal(made(await connection.client.call("tar.pull.read", { id: paused.id })).eof, false);
+	const held = tarOfPath(m, "/work/tree").length;
+	// The next copy is made with what is left of the bound, so the two together never pass it.
+	const other = made(await pullTar(connection.client, "/work/other"));
+	assert.equal(Buffer.compare(Buffer.from(other), tarOfPath(m, "/work/other")), 0);
+	assert.equal(fake.treeStages[1].blocks, Math.floor((TREE_COPY_BYTES - held) / 512), "the next copy's limit is the room the paused one leaves");
+	// A pull read to its end lets its copy go: the paused one's is still held.
+	const again = made(await pullTar(connection.client, "/work/other"));
+	assert.equal(Buffer.compare(Buffer.from(again), tarOfPath(m, "/work/other")), 0);
+	assert.equal(fake.treeStages[2].blocks, Math.floor((TREE_COPY_BYTES - held) / 512), "a copy read to its end holds no room");
+	// The paused pull's end gives its room back.
+	made(await connection.client.call("tar.pull.end", { id: paused.id }));
+	made(await pullTar(connection.client, "/work/tree"));
+	assert.equal(fake.treeStages[3].blocks, TREE_COPY_BYTES / 512, "an ended pull holds no room");
+	assert.deepEqual(await copiesLeft(m), [], "no copy left in the machine");
+	await connection.close();
+});
+
+test("a tar.pull ended before its first read, or the connection closed while its copy downloads, leaves nothing open and no copy behind", async () => {
+	const held = deferred();
+	const { provider, fake } = setup({}, { download: true, onStep: (step) => (step === "download" ? held.promise : undefined) });
+	const ref = made(await create(provider));
+	const m = only(fake);
+	treeIn(m);
+	const connection = made(await provider.connect(ref));
+	const begun = made(await connection.client.call("tar.pull.begin", { path: "/work/tree" }));
+	made(await connection.client.call("tar.pull.end", { id: begun.id }));
+	assert.deepEqual(fake.treeStages, [], "an ended pull is never copied");
+	const second = made(await connection.client.call("tar.pull.begin", { path: "/work/tree" }));
+	const reading = connection.client.call("tar.pull.read", { id: second.id });
+	await until(() => fake.calls.some(([name]) => name === "download"));
+	await connection.close();
+	held.resolve();
+	assert.equal((await reading).ok, false, "the read waiting on the copy is the closed client's");
+	assert.deepEqual(await copiesLeft(m), [], "no copy left in the machine");
 });
 
 test("connect to a machine the vendor reads as gone (past its deadline or released, still being deleted) answers gone, not refused; releasing it again stays ok", async () => {
