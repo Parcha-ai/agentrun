@@ -29,7 +29,7 @@
 //
 // Unverified until the live run: ssh/enable with this host's key lets that key in as tl-user, and an enable with another
 // key (another process's) replaces it; sshd listens on 127.0.0.1:22 for the tunnel; host_key_fingerprint is OpenSSH's
-// sha256 form, or null; tunnel traffic counts as proxied traffic against the idle threshold; the processes API runs sudo
+// sha256 form and never null (a null is refused: no exec runs unpinned); tunnel traffic counts as proxied traffic against the idle threshold; the processes API runs sudo
 // with no password, so the labels file is root's; a name of 63 characters of [a-z0-9-] is taken; a taken name answers
 // 409; a sandbox deleted reads 404 or terminated; sandbox_url is in every get's answer; the sandbox is amd64; root makes
 // network namespaces in the microVM; a silent SSH channel stays open through 75 s.
@@ -68,9 +68,9 @@ interface Proxy {
 	host: string;
 }
 
-/** What ssh/enable answered: the sshd's host key, where it named one (O SandboxSshStatus.host_key_fingerprint). */
+/** What ssh/enable answered: the sshd's host key, which it must name (O SandboxSshStatus.host_key_fingerprint). */
 interface Login {
-	hostKey?: string;
+	hostKey: string;
 }
 
 /** What a processes/run call answered once its command ended. */
@@ -389,9 +389,11 @@ class TensorlakeHost implements MachineHost {
 			loginOf: (id) => {
 				const login = this.#held.get(id);
 				if (login === undefined) throw new HostError("denied", `SSH is not enabled on ${id} for this process's key`);
-				return { username: SSH_USER, privateKey: keyOfProcess().privateKey, ...(login.hostKey === undefined ? {} : { hostKey: login.hostKey }) };
+				return { username: SSH_USER, privateKey: keyOfProcess().privateKey, hostKey: login.hostKey };
 			},
 			tunnelOf: (id) => this.#tunnel(id),
+			// Every login carries the enable's host key: one without is refused before its tunnel opens.
+			pinned: true,
 		});
 	}
 
@@ -750,8 +752,9 @@ class TensorlakeHost implements MachineHost {
 
 	/**
 	 * POST /api/v1/ssh/enable through the sandbox's proxy (O SandboxSshEnableRequest): this process's public key as the
-	 * one the sshd takes, for tl-user. Its answer must say enabled; its host key fingerprint, where it names one, must be
-	 * OpenSSH's sha256 form, and the login then pins the sshd to it; null names none, and the login pins nothing.
+	 * one the sshd takes, for tl-user. Its answer must say enabled and name the sshd's host key fingerprint in OpenSSH's
+	 * sha256 form, which the login pins the sshd to: an answer with none (null) is refused, so no exec runs through an
+	 * sshd it can't verify.
 	 */
 	async #enable(id: string): Promise<Login> {
 		const where = `POST /api/v1/ssh/enable on ${id}`;
@@ -759,7 +762,7 @@ class TensorlakeHost implements MachineHost {
 		const body = orThrow(await proxy.api.json("POST", proxy.api.url("/api/v1/ssh/enable"), { json: { proxy_pubkey: keyOfProcess().line, backend_user: SSH_USER }, timeoutMs: CALL_MS, retry: true }));
 		const { enabled, host_key_fingerprint: fingerprint } = (body ?? {}) as { enabled?: unknown; host_key_fingerprint?: unknown };
 		if (enabled !== true) throw new HostError("vendor", `${where} answered that SSH is not enabled: ${show(enabled)}`);
-		if (fingerprint === undefined || fingerprint === null) return {};
+		if (fingerprint === undefined || fingerprint === null) throw new HostError("vendor", `${where} answered no host key fingerprint, so there is no host key to pin its sshd by, and this host never runs a command through an sshd it can't verify: no connection was made`);
 		if (typeof fingerprint !== "string" || !HOST_KEY_PIN.test(fingerprint)) throw new HostError("vendor", `${where} answered a host key fingerprint that is not OpenSSH's sha256 form (SHA256:...): ${show(fingerprint)}`);
 		return { hostKey: fingerprint };
 	}

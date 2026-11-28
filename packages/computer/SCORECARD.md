@@ -507,7 +507,9 @@ provider spec.
 - **Exec:** SSH with [`SshExec`](PROVIDERS.md#exec-shapes-that-work) to the sandbox's own sshd, as `tl-user` with its
   passwordless sudo ([images](https://docs.tensorlake.ai/sandboxes/tensorlake-images.md)): the proxy's
   `POST /api/v1/ssh/enable` takes this process's public key, and its TCP tunnel (`/api/v1/tunnels/tcp?port=22`, a
-  WebSocket, [tunnels](https://docs.tensorlake.ai/sandboxes/tunnels.md)) carries the stream. The processes API answers
+  WebSocket, [tunnels](https://docs.tensorlake.ai/sandboxes/tunnels.md)) carries the stream. The sshd's host key is
+  pinned to the enable's `host_key_fingerprint`, which is required: an enable that names none is refused before any
+  tunnel opens, so no command runs through an sshd it can't verify. The processes API answers
   output as lines with their line ends dropped, so it is used for the labels file alone. Dial is out: a sandbox boots
   only a registered image, never the box image by its OCI name.
 - **Labels and lifetime:** no labels, a name unique in the project, so the name carries the run's hash, the epoch and
@@ -521,7 +523,8 @@ provider spec.
 - **Built:** `src/tensorlake.ts`, key `TENSORLAKE_API_KEY`; its tests run on a fake of the API, the proxy, the tunnel
   and the sshd, the exec pre-check and the provider's Core cases included. No `upload` and no `extend`.
 - **Open:** no live run has been made. Unverified until one: the SSH enable letting this process's key in as `tl-user`
-  and another key's enable replacing it; sshd on 127.0.0.1:22 for the tunnel; `host_key_fingerprint`'s form; tunnel
+  and another key's enable replacing it; sshd on 127.0.0.1:22 for the tunnel; `host_key_fingerprint`'s form, and its
+  never being null (a null refuses every exec, and so every create); tunnel
   traffic keeping the sandbox awake; `sudo` with no password in the processes API; a 63-character name and a taken
   name's 409; a deleted sandbox reading 404 or `terminated`; `sandbox_url` in every read; amd64; root's `unshare -n`;
   the plan's longest `timeout_secs`; vendor listeners on 22 and 9501 alone; a silent SSH channel holding 75 s.

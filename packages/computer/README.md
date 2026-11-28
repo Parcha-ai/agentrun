@@ -3485,7 +3485,7 @@ with `fetch` and the shared REST client, and over SSH with the host's `ssh2` pac
 | `get` | `GET /sandboxes/{id}`: pending is starting, running and snapshotting are running, suspending, suspended and resume_failed are stopped (resume_failed in its `error_details` words); a 404 or `terminated` is none |
 | `list` | `GET /sandboxes`, every page by `next_cursor`; only sandboxes named as computers whose name may carry the labels asked, a label beyond the name's read from the labels file, which fails the listing closed, naming the sandbox, where it can't be read within the call's bound |
 | `delete` | `DELETE /sandboxes/{id}`, a 404 done; then the sandbox's SSH connections end |
-| `exec` | SSH with `SshExec` to the sandbox's own sshd, turned on for this process's ed25519 key by the proxy's `POST /api/v1/ssh/enable` (as `tl-user`, passwordless sudo) and reached through the proxy's TCP tunnel, `wss://<sandbox>/api/v1/tunnels/tcp?port=22` with the key and `X-Tensorlake-Sandbox-Id`; the host key pinned to the enable's `host_key_fingerprint` where it names one; a login the sshd refuses enables again, once, and execs refused at once share that enable; the enable is shared by the execs that ask at once and stopped by none of them, each waiting on it within its own time and signal |
+| `exec` | SSH with `SshExec` to the sandbox's own sshd, turned on for this process's ed25519 key by the proxy's `POST /api/v1/ssh/enable` (as `tl-user`, passwordless sudo) and reached through the proxy's TCP tunnel, `wss://<sandbox>/api/v1/tunnels/tcp?port=22` with the key and `X-Tensorlake-Sandbox-Id`; the host key pinned to the enable's `host_key_fingerprint`, which is required: an enable that names none (null), or one not `SHA256:` and 43 characters of unpadded base64, is refused (vendor) before any tunnel opens, so no command runs through an sshd it can't verify; a login the sshd refuses enables again, once, and execs refused at once share that enable; the enable is shared by the execs that ask at once and stopped by none of them, each waiting on it within its own time and signal |
 
 A sandbox has no labels, only a name unique in the project, so the name carries the adapter's name, the run's hash, the
 epoch and the deadline (`computer-<12 hex>-r<run hash>-e<epoch>-d<deadline>`, base 36, a DNS label): the janitor reads
@@ -3498,7 +3498,7 @@ a vCPU. The daemon user can't be uid 1000, `tl-user`'s.
 
 No live run has been made. Unverified until one: `ssh/enable` letting this process's key in as `tl-user`, and an enable
 with another key replacing it; sshd listening on 127.0.0.1:22 for the tunnel; `host_key_fingerprint` being OpenSSH's
-`SHA256:` form or null; tunnel traffic counting against the idle threshold; the processes API running `sudo` with no
+`SHA256:` form and never null (a null refuses every exec, and so every create); tunnel traffic counting against the idle threshold; the processes API running `sudo` with no
 password; a 63-character name of `[a-z0-9-]` being taken; a taken name answering 409; a deleted sandbox reading 404 or
 `terminated`; `sandbox_url` being in every read; the sandbox being amd64; root making a network namespace; a suspended
 sandbox with `auto_resume: false` staying suspended; the plan's longest `timeout_secs`; vendor listeners on 22 and 9501
