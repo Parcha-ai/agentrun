@@ -44,9 +44,10 @@ export type ScrubContext = {
   readonly source: string;
   readonly homes: readonly string[];
   readonly path?: string;
-  /** The shell command whose output the text is, when the caller knows it (ruling LVI): an env command's output is a
-   *  dump though the command stands in no line of the text. */
-  readonly command?: string;
+  /** What the rules read of the shell command whose output the text is, when the caller knows it (ruling LVI: an env
+   *  command's output is a dump though the command stands in no line of the text), made once (commandFacts). The rules
+   *  read the command only through these. */
+  readonly facts?: CommandFacts;
   /** The text is lines flattened onto one (a run's title): a prompt mid-line opens a command (flatDumps). */
   readonly flattened?: boolean;
   readonly lint: () => Promise<readonly LintFind[]>;
@@ -2271,7 +2272,7 @@ const DOCKER_AUTHS_BEFORE = 65_536;
 /** Each `"auths"` in the text and whether the call read a config.json are found once a text (ruling LXXIII), never
  *  once a match: a text of many `"auth"` keys is read in linear time. */
 const dockerAuth = (text: string, ctx: ScrubContext): ((m: RegExpExecArray) => Hit | undefined) => {
-  const read = (ctx.path !== undefined && dockerConfigPath(ctx.path)) || commandNames(ctx.command, dockerConfigPath);
+  const read = (ctx.path !== undefined && dockerConfigPath(ctx.path)) || commandNames(ctx.facts, dockerConfigPath);
   const auths: number[] = [];
   if (!read) for (let at = text.indexOf(DOCKER_AUTHS); at >= 0; at = text.indexOf(DOCKER_AUTHS, at + 1)) auths.push(at);
   return (m) => {
@@ -2546,22 +2547,18 @@ function envDumps(text: string): Hit[] {
 const READ_COMMAND = /^\s{0,8}(?:[$#%>❯]\s{0,3})?(?:sudo\s{1,3})?(?:cat|less|more|head|tail|bat|batcat|nl|type|Get-Content|gc)(?:\s{1,3}-{1,2}[A-Za-z0-9=-]{1,24}(?:\s{1,3}\d{1,6})?){0,4}\s{1,3}(["']?)([^\s"']{1,512})\1\s{0,8}$/;
 const READ_TOOL = /^\s{0,8}(?:⏺\s{0,2})?Read\(([^()\s]{1,512})\)\s{0,8}$/;
 const readPath = (body: string): string | undefined => READ_COMMAND.exec(body)?.[2] ?? READ_TOOL.exec(body)?.[1];
-/** The file a command prints whole, when it is one read alone (`cat ~/.pgpass`): its output is that file's content
- *  (ruling LVI). */
-export const commandReadPath = (command: string | undefined): string | undefined => (command === undefined ? undefined : factsOf(command).readPath);
-
-/** What the rules read of a call's command, read once for a run of reads with it: every string of a call's output is
- *  scrubbed with its command (run-export.ts, share-host.ts screenShare), so reading the command again for each would cost
- *  strings × command. The last command's alone is kept: a caller reads a call's strings together and hands each the same
- *  string, so a hit compares one reference, and a miss is a new run's first read. (No map: V8 hashes a long string by its
- *  length, so long commands of one length would be compared whole on each lookup.) */
-type CommandFacts = { readonly readPath: string | undefined; readonly paths: readonly string[]; readonly dumps: boolean; readonly names: Map<(path: string) => boolean, boolean> };
-let lastCommand: { readonly command: string; readonly facts: CommandFacts } | undefined;
-function factsOf(command: string): CommandFacts {
-  if (lastCommand?.command === command) return lastCommand.facts;
-  const facts: CommandFacts = { readPath: readPath(command), paths: pathWords(command), dumps: command.trim() !== "" && printsEnvironment(command), names: new Map() };
-  lastCommand = { command, facts };
-  return facts;
+/** What the rules read of a call's command (ruling LVI): the file it prints whole when it is one read alone (`cat
+ *  ~/.pgpass`: its output is that file's content), its path words, whether it prints the environment, and each path
+ *  test's answer over those words, asked once. Made once for a call (commandFacts) and handed to every scrub of its
+ *  output (ScrubOptions `commandFacts`: run-export.ts, share-host.ts screenShare), so a call's output read string by
+ *  string never reads its command again; a scrub given the command alone makes them once for all its views. Nothing is
+ *  kept between scrubs. */
+export type CommandFacts = { readonly command: string; readonly readPath: string | undefined; readonly paths: readonly string[]; readonly dumps: boolean; readonly names: Map<(path: string) => boolean, boolean> };
+/** How many times a command was read into its facts: a test's count that a call's command is read once. */
+export const commandFactsMade = { count: 0 };
+export function commandFacts(command: string): CommandFacts {
+  commandFactsMade.count += 1;
+  return { command, readPath: readPath(command), paths: pathWords(command), dumps: command.trim() !== "" && printsEnvironment(command), names: new Map() };
 }
 
 /** Quote and escape characters, dropped before a command line is read: a quoted script's words are the line's own
@@ -2715,7 +2712,7 @@ function flatDumps(text: string): Hit[] {
 /** A command's output, given apart from its command (ruling LVI): all of it is a dump when the command prints the
  *  environment or a variable's value, alone on its line or among others. An approval outcome's head line is cut with
  *  it (ruled so: never split on run-view's words). */
-const commandDumps = (text: string, given: string | undefined): Hit[] => (given !== undefined && factsOf(given).dumps ? wholeDump(text) : []);
+const commandDumps = (text: string, given: CommandFacts | undefined): Hit[] => (given?.dumps ? wholeDump(text) : []);
 
 const PATH_SEPARATOR = /[\\/]/;
 const ENV_FILE_NAME = /^(?:\.env(?:rc)?|\.env\.[A-Za-z0-9_.-]{1,64}|[A-Za-z0-9_.-]{1,64}\.env)$/;
@@ -2766,13 +2763,12 @@ const COMMAND_WORD_SPLIT = /[\s|;&<>()]{1,64}/;
 const OPTION_NAME = /^-{1,2}[A-Za-z0-9-]{1,64}=/;
 const WORD_QUOTES = /["']/g;
 const COMMAND_MAX = 65_536;
-/** Whether a command names, anywhere in its words, a path `fits` takes: asked once a command and predicate (factsOf),
+/** Whether a command names, anywhere in its words, a path `fits` takes: asked once a call and predicate (its facts),
  *  so a call's output read string by string never walks its command's words again. `fits` is a module-level function. */
-function commandNames(command: string | undefined, fits: (path: string) => boolean): boolean {
-  if (command === undefined) return false;
-  const { paths, names } = factsOf(command);
-  let named = names.get(fits);
-  if (named === undefined) names.set(fits, (named = paths.some(fits)));
+function commandNames(facts: CommandFacts | undefined, fits: (path: string) => boolean): boolean {
+  if (facts === undefined) return false;
+  let named = facts.names.get(fits);
+  if (named === undefined) facts.names.set(fits, (named = facts.paths.some(fits)));
   return named;
 }
 const dockerConfigPath = (path: string): boolean => DOCKER_CONFIG.test(path);
@@ -2781,7 +2777,7 @@ const pathWords = (command: string): string[] => command.slice(0, COMMAND_MAX).s
  *  read that file (`ctx.path`), or its command names one anywhere (ruling LXII d: `grep app ~/.pgpass`, `jq . ~/.docker/
  *  config.json`, `grep -v ^# .env`; an over-cut, `ls ~/.ssh/known_hosts`'s, fails closed). */
 const wholeText = (text: string, ctx: ScrubContext, fits: (path: string) => boolean): Hit[] => {
-  if (!((ctx.path !== undefined && fits(ctx.path)) || commandNames(ctx.command, fits)) || DUMP_MARKER_LINE.test(text)) return [];
+  if (!((ctx.path !== undefined && fits(ctx.path)) || commandNames(ctx.facts, fits)) || DUMP_MARKER_LINE.test(text)) return [];
   const end = text.trimEnd().length;
   return end > 0 ? [{ start: 0, end }] : [];
 };
@@ -2953,7 +2949,7 @@ export const SCRUB_RULES: readonly ScrubRule[] = Object.freeze([
   rule("base64-pem", "format", (text, ctx) => base64Pems(nestedBlanked(text, ctx?.source), linesOfContext(text, ctx))),
   SECRETLINT,
   HELD,
-  rule("env-dump", "dump", (text, ctx) => [...envDumps(text), ...commandDumps(text, ctx.command), ...(ctx.flattened ? flatDumps(text) : [])]),
+  rule("env-dump", "dump", (text, ctx) => [...envDumps(text), ...commandDumps(text, ctx.facts), ...(ctx.flattened ? flatDumps(text) : [])]),
   rule("env-file", "dump", (text, ctx) => [...wholeText(text, ctx, envFilePath), ...fileReads(text, envFilePath, (body) => ENV_FILE_LINE.test(body))]),
   rule("credential-file", "dump", (text, ctx) => [...wholeText(text, ctx, credentialFilePath), ...fileReads(text, credentialFilePath, (body) => notPrompt(body) && notMarker(body))]),
   // A key file read (authorized_keys, known_hosts, a key) or a config read is a dump; key lines printed with no read

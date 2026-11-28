@@ -14,7 +14,7 @@ import { secretValues } from "./api-token.js";
 import { MIN_SECRET, valueMatcher } from "./learn/secrets.js";
 import { SEPARATOR } from "./redact/match.js";
 import { userInfo } from "node:os";
-import { commandReadPath, type Cut, type CutKind, decodedTimes, type Hit, inputSpan, isPlaceholder, KEY_RUN_MAX, lineBounds, lineCount, type LintFind, RESTORABLE, SCRUB_RULES, type ScrubContext, type ScrubRule, shapeOf, type View, viewsOf } from "./secret-rules.js";
+import { type CommandFacts, commandFacts, type Cut, type CutKind, decodedTimes, type Hit, inputSpan, isPlaceholder, KEY_RUN_MAX, lineBounds, lineCount, type LintFind, RESTORABLE, SCRUB_RULES, type ScrubContext, type ScrubRule, shapeOf, type View, viewsOf } from "./secret-rules.js";
 
 export { type Cut, type CutKind, isPlaceholder, RESTORABLE, RULE_PATTERNS, SCRUB_RULES, type ScrubRule, viewsOf } from "./secret-rules.js";
 
@@ -164,6 +164,10 @@ export type ScrubOptions = {
    *  prepareLaunch): a prompt inside the line opens a command as a line's start would, and an env command's output
    *  runs on after it to the next prompt (env-dump). */
   readonly flattened?: boolean;
+  /** `command`'s facts, made once with commandFacts(command) by a caller that scrubs one call's output string by string
+   *  (run-export.ts, share-host.ts), so the command is read once for them all. They stand for `command`: given both, the
+   *  facts' command is the one read. Given `command` alone, a scrub makes them once for every view of its text. */
+  readonly commandFacts?: CommandFacts;
   /** The homes the caller holds (rulings E, VII): a bare `/home/<user>` with no segment after it, or a Claude project
    *  folder's `-home-<user>-` outside `.claude/projects/`, is cut only for one of these. When not given, this process's
    *  user's home and $HOME. */
@@ -372,6 +376,8 @@ export async function scrubWith(rules: readonly ScrubRule[], text: string, opts:
 export async function scrubWith(rules: readonly ScrubRule[], text: string, opts: ScrubOptions & { mode: "cut" }, limits?: ScrubLimits): Promise<ScrubResult>;
 export async function scrubWith(rules: readonly ScrubRule[], text: string, opts: ScrubOptions, limits?: ScrubLimits): Promise<ScrubCount | ScrubResult>;
 export async function scrubWith(rules: readonly ScrubRule[], text: string, opts: ScrubOptions, limits: ScrubLimits = {}): Promise<ScrubCount | ScrubResult> {
+  // A command is read into its facts once for the whole scrub (every chunk and view), unless the caller made them.
+  if (opts.commandFacts === undefined && opts.command !== undefined) opts = { ...opts, commandFacts: commandFacts(opts.command) };
   if (opts.mode === "count") {
     // A throw here rejects: a scorer must never read an error as zero cuts. The same output cut mode makes (no keep)
     // and the same final check say whether cut mode would fail closed.
@@ -420,7 +426,7 @@ export function processHomes(): string[] {
  *  finds in the view (one pass a view, on first ask). */
 function contextOf(view: View, opts: ScrubOptions): ScrubContext {
   let lint: Promise<LintFind[]> | undefined;
-  return { held: heldOf(opts), source: view.source, homes: opts.homes ?? processHomes(), path: opts.path ?? commandReadPath(opts.command), command: opts.command, flattened: opts.flattened === true, lint: () => (lint ??= lintFinds(view.text)), lines: lineBounds(view.text, ...view.decodedStrings, view.strings) };
+  return { held: heldOf(opts), source: view.source, homes: opts.homes ?? processHomes(), path: opts.path ?? opts.commandFacts?.readPath, facts: opts.commandFacts, flattened: opts.flattened === true, lint: () => (lint ??= lintFinds(view.text)), lines: lineBounds(view.text, ...view.decodedStrings, view.strings) };
 }
 
 /** Whether a cut text holds nothing the scrub must cut: no known format the format rules still find in any view of any
