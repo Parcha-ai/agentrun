@@ -21,11 +21,29 @@ function child(env, { killWhen } = {}) {
   return new Promise((resolve) => {
     const proc = spawn(process.execPath, [CHILD], { env: { ...process.env, CHROME, ...env }, stdio: ["ignore", "pipe", "pipe"] });
     let out = "", err = "";
-    proc.stdout.on("data", (chunk) => { out += chunk; });
+    // When each of the child's lines arrived, in order.
+    const lines = [];
+    let partial = "";
+    proc.stdout.on("data", (chunk) => {
+      out += chunk;
+      const parts = (partial + chunk).split("\n");
+      partial = parts.pop();
+      const at = Date.now();
+      for (const text of parts) if (text) lines.push({ at, text });
+    });
     proc.stderr.on("data", (chunk) => { err += chunk; });
     killWhen?.then(() => proc.kill("SIGKILL"));
-    proc.on("close", (code, signal) => resolve({ code, signal, out, err }));
+    proc.on("close", (code, signal) => resolve({ code, signal, out, err, lines }));
   });
+}
+
+/** From the child's last step to its DONE: the model's last turn, the release (the driver's close, then the session's) and
+ *  the child's own close. */
+function releaseMs(run) {
+  const step = run.lines.findLast((line) => line.text.startsWith("STEP "));
+  const done = run.lines.find((line) => line.text === "DONE");
+  assert.ok(step && done, `the child stepped and finished: ${run.out.slice(-500)}`);
+  return done.at - step.at;
 }
 
 /** The driver attaches once in this process, so a Chrome that cannot load the extension skips the test instead of
@@ -150,6 +168,9 @@ test("a CDP socket that dies under a live session: a read reconnects to the same
   const reads = read().results;
   assert.equal(reads[1].isError, false, `the snapshot reconnected and ran: ${reads[1].text.slice(0, 500)}`);
   assert.match(reads[1].text, /forty-two/, "the same session: page A, not a fresh blank one");
+  // The release closes the reconnected driver while the session's release ends Chrome. Under Stagehand's first disconnect
+  // bound (10 s): a close that waited on a Chrome already gone would run out its bounds instead.
+  assert.ok(releaseMs(readCut) < 10_000, `the release did not wait on a Chrome already gone (${releaseMs(readCut)} ms)`);
 
   // The socket dies just before a run: it is not repeated (it may have acted), and the next read reconnects to page A.
   fs.rmSync(env.DB, { force: true });
@@ -162,6 +183,7 @@ test("a CDP socket that dies under a live session: a read reconnects to the same
   assert.doesNotMatch(failure.message, /unavailable for this run/);
   assert.equal(runs[2].isError, false, runs[2].text.slice(0, 500));
   assert.match(runs[2].text, /forty-two/);
+  assert.ok(releaseMs(runCut) < 10_000, `the release did not wait on a Chrome already gone (${releaseMs(runCut)} ms)`);
 
   fs.rmSync(env.DB, { force: true });
   const gone = await child({ ...env, MODE: "second", SCRIPT: JSON.stringify([goto, ["snapshot", {}]]), CUT_BEFORE: "1", CUT_CLOSES: "1" });
