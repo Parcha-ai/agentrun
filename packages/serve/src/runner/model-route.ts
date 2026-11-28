@@ -249,7 +249,9 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
           }
           send({ type: "error", message: words, error: { type: failed.rateLimit ? "rate_limit_error" : "api_error", message: words } });
         };
-        send({ type: "message_start", message: { id: `msg_${Date.now().toString(36)}`, type: "message", role: "assistant", model: body.model ?? target.id, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } });
+        // Its own id, never the clock's: two answers started in the same millisecond (a stalled stream and the whole one asked
+        // again, or two requests side by side) are two messages, and the claude-agent transcript tells them apart by it.
+        send({ type: "message_start", message: { id: `msg_${randomUUID().replaceAll("-", "")}`, type: "message", role: "assistant", model: body.model ?? target.id, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } });
         // Messages blocks are numbered as sent. A thinking block is sent too, so the model's reasoning reaches the run's
         // record as a Timeline row; its text goes through the run's one redactor, so a held key the model quoted in its
         // thinking is cut before pi's session journals it, not only at read. It carries no signature here. Particle
