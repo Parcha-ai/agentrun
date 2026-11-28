@@ -58,6 +58,13 @@ test("the renderer with costWords false: the usage row says what it counted, a p
   assert.deepEqual(on.map(([kind, , usage]) => [kind, usage]), off.map(([kind, , usage]) => [kind, usage]));
 });
 
+test("a reply the cap's clamp cut short says so with costWords false, with no amount; off, as before", () => {
+  const entries = [user("go"), custom(REQUEST_STARTED, { heldUsd: 0.15, clamp: { tokens: 1_500, leftUsd: 0.15, capUsd: 0.5 } }), assistant([{ type: "text", text: "The first half" }], 0, { stopReason: "length", usage: { input: 10, output: 1_500, cost: { total: 0.15 } } })];
+  const clampRow = (options) => timelineOf(entries, { settled: true, ...options }).find((row) => row.id.endsWith(":clamp"))?.summary;
+  assert.equal(clampRow({}), "The reply stopped at 1,500 tokens: all that the $0.15 left of the run's $0.50 cap could buy.");
+  assert.equal(clampRow({ costWords: false }), "The reply stopped at 1,500 tokens: all that was left of the run's cap could buy.");
+});
+
 test("a workflow's usage row with costWords false counts its model requests and decisions, or says its decisions could not be read; no figure", () => {
   const usageRow = { id: "1:usage", timestamp: "2026-10-29T23:00:05.000Z", created_at: "2026-10-29T23:00:05.000Z", kind: "usage", summary: "x", agent_label: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, text: null, usage: { usd: 0.01, requests: 1 } };
   const receipt = { id: "d1", at: "2026-10-29T23:00:00.000Z", node: "checks", kind: "judge", request: { index: 0, count: 1 }, status: "answered", answers: { ok: { type: "noul", noul: 0.9 } }, cost_usd: 0.004 };

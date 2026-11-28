@@ -750,8 +750,8 @@ function amount(usd: number): string {
   for (let digits = 2; digits < 6; digits++) if (Number(usd.toFixed(digits)) === Number(usd.toFixed(6))) return `$${usd.toFixed(digits)}`;
   return `$${usd.toFixed(6)}`;
 }
-/** What a reply the cap's clamp cut short says. */
-const clampSaid = (clamp: Clamp) => `The reply stopped at ${clamp.tokens.toLocaleString("en-US")} tokens: all that the ${amount(clamp.leftUsd)} left of the run's ${amount(clamp.capUsd)} cap could buy.`;
+/** What a reply the cap's clamp cut short says; with no cost words (TimelineOptions.costWords), no amount. */
+const clampSaid = (clamp: Clamp, costWords: boolean) => `The reply stopped at ${clamp.tokens.toLocaleString("en-US")} tokens: all that ${costWords ? `the ${amount(clamp.leftUsd)} left of the run's ${amount(clamp.capUsd)} cap` : "was left of the run's cap"} could buy.`;
 /** The message of a result that is only the harness's diagnostics block (`<harness>`, then `[error] …` lines), as a
  *  call that threw or named a tool its run does not offer answers: its first error's, else its first line's, without
  *  the severity. Undefined for any other text, whose own first line says what happened. */
@@ -1105,7 +1105,7 @@ function createProjector(options: TimelineOptions) {
         }
         // A reply that stopped at the output its request's cap limited it to says so, with the numbers.
         const clamp = metered === "answer" && message.stopReason === "length" ? meter.clamp() : undefined;
-        if (clamp) add(make("phase", conv, `${base}:clamp`, { summary: clampSaid(clamp) }));
+        if (clamp) add(make("phase", conv, `${base}:clamp`, { summary: clampSaid(clamp, options.costWords !== false) }));
         blocks.forEach((block, index) => {
           const [id, name] = [str(block.id), str(block.name)];
           if (block.type !== "toolCall" || !id || !name) return;
