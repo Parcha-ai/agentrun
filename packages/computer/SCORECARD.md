@@ -25,8 +25,8 @@ documented calls, not from written code. The size column is an estimate, and siz
 
 Of 31 rows (27 vendors; Google, Fly.io, Beam and boxes.dev have two rows each): 0 clean, 5 fit if unverified facts hold,
 16 need a workaround, 10 are blocked. Render's row is built since (`src/render.ts`, a dial sandbox), and so are
-Vercel's (`src/vercel.ts`), Fly.io Sprites' (`src/sprites.ts`) and InstaBox's (`src/instabox.ts`), hosted sandboxes
-whose unverified facts wait on their live runs.
+Vercel's (`src/vercel.ts`), Fly.io Sprites' (`src/sprites.ts`), InstaBox's (`src/instabox.ts`) and Northflank's
+(`src/northflank.ts`), hosted sandboxes whose unverified facts wait on their live runs.
 
 | Vendor | Rents | Fit | Size (estimate) | Shared pieces it would use |
 | --- | --- | --- | --- | --- |
@@ -54,7 +54,7 @@ whose unverified facts wait on their live runs.
 | [Koyeb Sandboxes](https://www.koyeb.com/docs/sandboxes) | microVMs as Koyeb services | fits if (unverified: `idle_timeout` 0 never sleeps; the exec WebSocket has no idle cut and runs as root; root makes a network namespace; a taken name's status; labels kept on our side or by the vendor, since a service has the name and no label) | 260-300 | [framedExec][fe] |
 | [microsandbox](https://docs.microsandbox.dev/cloud/overview.md) | libkrun microVMs (hosted cloud in private beta) | needs a workaround (exec only through an SDK whose backend and key are process-wide) | 220-240 | [prepareImage][pi] |
 | [Morph Cloud](https://cloud.morph.so/docs) | VM instances booted from snapshots | fits if (unverified: SSH lands as root; `/ttl` counts from now; `morphvm-minimal` runs `install.sh`; root makes a network namespace) | 240-270 | [ssh-exec][se], [packed labels][pl], [prepareImage][pi] |
-| [Northflank Sandboxes](https://northflank.com/docs/v1/application/sandboxes) | microVMs as Northflank services | fits if (unverified: root makes a network namespace in the microVM; the exec proxy has no idle cut) | 280-300 | [framedExec][fe] (pid wrapper), [backstopAt][bs] |
+| [Northflank Sandboxes](https://northflank.com/docs/v1/application/sandboxes) | microVMs as Northflank services | built (`src/northflank.ts`, a sandbox alone in the customer's project, from the box image: exec over the command-exec WebSocket with the pid wrapper's kill; the expiry set at the backstop; no desktop or Archil yet; unverified until the live run: latin1 byte-exact both ways, 75 s of exec silence, output trailing the exit message, root, a taken name's 409, the id being the name, annotations read back as given, the scale call after create, a deleted service's 404, amd64 with no vendor agent on TCP, root's network namespace) | 439, built | [framedExec][fe] (pid wrapper), [backstopAt][bs] |
 | [OpenSandbox](https://github.com/opensandbox-group/OpenSandbox) | self-hosted containers, or microVMs with Kata | needs a workaround (an exec of ours over execd's PTY socket; isolation set per deployment; the fence needs user namespaces allowed) | about 280 | [packed labels][pl], [prepareImage][pi] |
 | [Railway Sandboxes](https://docs.railway.com/sandboxes) | VMs in a project environment | needs a workaround (no name or labels: labels kept in create's variables and read by exec; errors mapped by message text) | 420-470 | [prepareImage][pi] |
 | [Render Sandboxes](https://render.com/docs/sandboxes) | Firecracker microVMs | needs a workaround (built as a dial sandbox, `src/render.ts`: no stdin, so the sandbox dials the server, `agentrun-dial` started by one `runs/sync` call; no label, so the labels live in a file in the sandbox; Core passed live over dial) | 505, built | [dial][dl], [prepareImage][pi] |
@@ -415,9 +415,9 @@ provider spec.
 
 - **Rents:** a Northflank service; on Northflank's cloud a CPU sandbox runs in a microVM
   ([sandboxes on Northflank Cloud](https://northflank.com/docs/v1/application/sandboxes/sandboxes-on-northflank-cloud.md)).
-- **Exec:** a command stream through Northflank's exec proxy, from its JavaScript client
-  ([execute command](https://northflank.com/docs/v1/api/execute-command.md)), the
-  [SDK exec shape](PROVIDERS.md#exec-shapes-that-work), with a kill by pid.
+- **Exec:** a command stream through Northflank's exec proxy
+  ([execute command](https://northflank.com/docs/v1/api/execute-command.md)): the WebSocket its JavaScript client
+  opens, spoken directly with no SDK, JSON text messages with bytes as latin1 strings, and a kill by pid.
 - **Labels and lifetime:** annotations hold the labels; the service list carries none, so each pass reads every
   `computer-` service. A janitor host whose create sets the service's `expiryTime`, after which it "is paused and
   scheduled for deletion", from [backstopAt](PROVIDERS.md#the-eleven-members)
@@ -425,7 +425,12 @@ provider spec.
 - **Network:** network policies are documented for your own cluster
   ([network policies](https://northflank.com/docs/v1/application/network/configure-network-policies.md)), so `none`
   rests on init's fence.
-- **Open:** ours, a requests-per-hour hint for the adapter's polling. Unverified: the facts in the table.
+- **Built:** `src/northflank.ts`, key `NORTHFLANK_API_TOKEN`, with the project under `NORTHFLANK_COMPUTER_PROJECT_ID`
+  (required, no default; not `NORTHFLANK_PROJECT_ID`, which Northflank sets inside its own services) and an
+  organisation token's team under `NORTHFLANK_COMPUTER_TEAM_ID`. Its tests run on a fake of the REST API and the
+  command-exec socket, the exec pre-check and the provider's Core cases included. The adapter polls every 2 s, since a
+  token has 1000 requests an hour. No `upload` and no `extend`.
+- **Open:** unverified until the live run: the facts in the table.
 
 ### OpenSandbox
 

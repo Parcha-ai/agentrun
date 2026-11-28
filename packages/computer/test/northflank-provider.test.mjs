@@ -160,7 +160,7 @@ test("get reads a service: PENDING and IN_PROGRESS are starting, COMPLETED runni
 		const read = await host.get(NAME, CTX);
 		assert.equal(read.state, state, status);
 		if (status === "FAILED") assert.equal(read.why, "Northflank reads its deployment FAILED");
-		if (status === "PAUSING") assert.match(read.why, /PAUSING, which this provider does not know/);
+		if (status === "PAUSING") assert.match(read.why, /"PAUSING", which this provider does not know/);
 	}
 	service.status.deployment.status = "COMPLETED";
 	service.expiredAt = new Date().toISOString();
@@ -171,17 +171,29 @@ test("get reads a service: PENDING and IN_PROGRESS are starting, COMPLETED runni
 	await assert.rejects(host.get("../projects", CTX), (error) => error.code === "not_found");
 });
 
-test("list reads every page and keeps the project's computers alone: a listing that answers more (another app, another computer) is filtered here by the name the packed labels carry", async () => {
+test("list reads every page and keeps the project's computers alone: a listing that answers more (another app, another computer) is filtered here by the name the packed labels carry, and each kept one is read by get for its annotations", async () => {
 	const { vendor, host } = northflankOf({ pageSize: 2 });
 	for (let i = 0; i < 4; i++) await host.create(request({ name: `computer-00000000000${i}`, labels: { agentrun: `computer-00000000000${i}` } }), CTX);
 	vendor.add("computer-other00000", { annotations: { agentrun: "computer-other00000" } });
 	vendor.add("my-app");
+	const before = vendor.calls.length;
 	const one = await host.list({ agentrun: "computer-000000000002" }, CTX);
-	assert.deepEqual(one.map((machine) => [machine.id, machine.labels]), [["computer-000000000002", {}]], "the listing has no annotations: get reads them");
-	const pages = vendor.calls.filter((call) => call.path === `/v1/projects/${PROJECT}/services` && call.method === "GET");
+	assert.deepEqual(one.map((machine) => [machine.id, machine.labels]), [["computer-000000000002", { agentrun: "computer-000000000002" }]]);
+	const calls = vendor.calls.slice(before);
+	const pages = calls.filter((call) => call.path === `/v1/projects/${PROJECT}/services`);
 	assert.deepEqual(pages.map((call) => call.query.cursor), [undefined, "2", "4"]);
 	assert.equal(pages[0].query.per_page, "100");
-	assert.deepEqual((await host.list({}, CTX)).map((machine) => machine.id).sort(), ["computer-000000000000", "computer-000000000001", "computer-000000000002", "computer-000000000003", "computer-other00000"], "every computer- service, never my-app");
+	assert.deepEqual(calls.filter((call) => call.path !== `/v1/projects/${PROJECT}/services`).map((call) => [call.method, call.path]), [["GET", `/v1/projects/${PROJECT}/services/computer-000000000002`]], "one get, for the one kept");
+	const all = await host.list({}, CTX);
+	assert.deepEqual(all.map((machine) => machine.id).sort(), ["computer-000000000000", "computer-000000000001", "computer-000000000002", "computer-000000000003", "computer-other00000"], "every computer- service, never my-app");
+	assert.deepEqual(all.find((machine) => machine.id === "computer-other00000").labels, { agentrun: "computer-other00000" });
+	// One deleted between the listing and its get is left out, not an error.
+	const fetch = vendor.fetch;
+	const gone = new NorthflankProvider({ token: TOKEN, projectId: PROJECT, webSocket: vendor.webSocket, fetch: async (url, init) => {
+		if (new URL(url).pathname.endsWith("/services/computer-000000000001")) vendor.services.delete("computer-000000000001");
+		return fetch(url, init);
+	} }).host;
+	assert.equal((await gone.list({}, CTX)).some((machine) => machine.id === "computer-000000000001"), false);
 });
 
 test("delete deletes by id and reads back as none; one Northflank no longer has is done; release deletes and waits for the readback", async () => {
@@ -301,8 +313,9 @@ test("an init Northflank refuses is denied, in its words, the token never echoed
 	const { vendor, host } = northflankOf();
 	await host.create(request(), CTX);
 	const other = new NorthflankProvider({ token: "fake-test-key-other", projectId: PROJECT, fetch: vendor.fetch, webSocket: vendor.webSocket }).host;
-	const failed = await other.exec(NAME, ["true"], CTX).then((proc) => proc.wait(), (error) => error);
+	const failed = await other.exec(NAME, ["true"], CTX).then((proc) => proc.wait()).then((code) => `exited ${code}`, (error) => error);
 	assert.ok(failed instanceof Error, `the exec failed: ${failed}`);
+	assert.equal(failed.code, "denied");
 	assert.match(failed.message, /Northflank refused the command on computer-0123456789ab: Invalid API token/);
 	assert.doesNotMatch(failed.message, /fake-test-key-other/);
 });
