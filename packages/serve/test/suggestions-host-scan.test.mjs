@@ -120,9 +120,40 @@ test("a bind with another token, of a run not the scout's here, or after the cla
   assert.equal((await s.scan({ repo: REPO, start: "host" })).body.status, "starting");
 });
 
-test("a scan body takes start: host, or run_id with scan, never both nor one alone", async () => {
+test("a release with the claim's token frees the reservation: the next reserve goes through at once", async () => {
+  const { s, started } = service({ hostStarts: true });
+  const { body: claim } = await s.scan({ repo: REPO, start: "host" });
+  assert.equal((await refusal(s.scan({ repo: REPO, start: "host" }))).code, "home_busy");
+  const released = await s.scan({ repo: REPO, scan: claim.scan });
+  assert.deepEqual(released, { status: 200, body: { repo: REPO, status: "released" } });
+  assert.deepEqual(started, []);
+  const next = await s.scan({ repo: REPO, start: "host" });
+  assert.equal(next.body.status, "starting");
+  assert.notEqual(next.body.scan, claim.scan);
+  // The released claim binds nothing.
+  assert.equal((await refusal(s.scan({ repo: REPO, run_id: "run_scout_1", scan: claim.scan }))).code, "not_found");
+});
+
+test("a release with another token, of a bound scan, or after the claim lapsed is the one 404, and the row stays", async () => {
   const { s } = service({ hostStarts: true });
-  for (const body of [{ repo: REPO, start: "here" }, { repo: REPO, run_id: "run_scout_1" }, { repo: REPO, scan: "x" }, { repo: REPO, start: "host", run_id: "run_scout_1", scan: "x" }]) {
+  const { body: claim } = await s.scan({ repo: REPO, start: "host" });
+  const other = await refusal(s.scan({ repo: REPO, scan: "00000000-0000-4000-8000-000000000000" }));
+  assert.equal(other.code, "not_found");
+  assert.equal((await refusal(s.scan({ repo: REPO, start: "host" }))).code, "home_busy", "another token frees nothing");
+  // A bound scan is not released, not even by the token that bound it.
+  await s.scan({ repo: REPO, run_id: "run_scout_1", scan: claim.scan });
+  assert.deepEqual(await refusal(s.scan({ repo: REPO, scan: claim.scan })), other, "the same 404, whatever the token");
+  assert.equal((await s.list({})).repositories.find((r) => r.repo === REPO)?.scan?.run_id, "run_scout_1");
+  // A lapsed claim is not released by its token either.
+  const { s: later, tick } = service({ hostStarts: true });
+  const { body: old } = await later.scan({ repo: REPO, start: "host" });
+  tick(SCAN_CLAIM_MS);
+  assert.deepEqual(await refusal(later.scan({ repo: REPO, scan: old.scan })), other);
+});
+
+test("a scan body takes start: host, run_id with scan, or scan alone, never start with either", async () => {
+  const { s } = service({ hostStarts: true });
+  for (const body of [{ repo: REPO, start: "here" }, { repo: REPO, run_id: "run_scout_1" }, { repo: REPO, start: "host", scan: "x" }, { repo: REPO, start: "host", run_id: "run_scout_1", scan: "x" }, { repo: REPO, run_id: "", scan: "x" }]) {
     assert.equal((await refusal(s.scan(body))).code, "input_invalid", JSON.stringify(body));
   }
 });

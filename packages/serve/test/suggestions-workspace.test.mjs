@@ -260,3 +260,21 @@ test("there, a workspace's scan is reserved with start: host, the run its host s
   assert.ok(listed.suggestions.length > 0, JSON.stringify(listed));
   assert.deepEqual((await inW2(server, "GET", "/suggestions")).body.suggestions, []);
 });
+
+test("there, a reservation released with its token frees the repository at once, and another workspace's release is the one 404", { timeout: 180_000 }, async (t) => {
+  const { server } = await hostedServer(t);
+  const reserved = await inW1(server, "POST", "/suggestions/scans", { body: { repo: REPO, start: "host" } });
+  assert.equal(reserved.status, 200, reserved.text);
+  const foreign = await inW2(server, "POST", "/suggestions/scans", { body: { repo: REPO, scan: reserved.body.scan } });
+  const unknown = await inW2(server, "POST", "/suggestions/scans", { body: { repo: REPO, scan: "00000000-0000-4000-8000-000000000000" } });
+  assert.equal(foreign.status, 404, foreign.text);
+  assert.equal(shape(foreign, reserved.body.scan), shape(unknown, "00000000-0000-4000-8000-000000000000"));
+  // W1's reservation still holds.
+  assert.equal((await inW1(server, "POST", "/suggestions/scans", { body: { repo: REPO, start: "host" } })).status, 409);
+  const released = await inW1(server, "POST", "/suggestions/scans", { body: { repo: REPO, scan: reserved.body.scan } });
+  assert.deepEqual([released.status, released.body], [200, { repo: REPO, status: "released" }], released.text);
+  const again = await inW1(server, "POST", "/suggestions/scans", { body: { repo: REPO, start: "host" } });
+  assert.equal(again.status, 200, again.text);
+  assert.notEqual(again.body.scan, reserved.body.scan);
+  assert.deepEqual((await inW1(server, "GET", "/runs")).body.runs, [], "nothing started");
+});
