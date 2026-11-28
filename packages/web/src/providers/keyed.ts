@@ -53,7 +53,7 @@ export function keyedClient({ who, base, headers, feeOf, timeoutMs, refuseOn, ch
         // (readAhead), and one past the bound goes on with no body, unreadable as before; its charge is the hold. A 2xx
         // whose body breaks throws, charged its hold; a 408 or a 5xx whose body breaks goes on with none, its charge
         // read as for one that reported no count.
-        const bytes = response.ok ? await bytesOf(response) : await bytesOf(response).catch(() => undefined);
+        const bytes = response.ok ? await bytesOf(response).catch((error: unknown) => { throw brokeOff(error); }) : await bytesOf(response).catch(() => undefined);
         const json = bytes === undefined ? undefined : parsed(bytes);
         charge = chargeOf(fee, path, json, response.status);
         const read = new Response(bytes === undefined ? null : new Uint8Array(bytes), { status: response.status, statusText: response.statusText, headers: response.headers });
@@ -127,6 +127,15 @@ export function statusLimit(response: Response): Limit | undefined {
 /** A provider's machine code (Exa's `tag`, Firecrawl's `code`): upper-case words joined by underscores, else none. */
 export const codeOf = (said: unknown): string | undefined => (typeof said === "string" && /^[A-Z][A-Z0-9_]{2,63}$/.test(said) ? said : undefined);
 
+/** The errors of a body that broke while post read it for its credits (chargeOf): an answer came, so keyedCall words
+ *  one as an answer that broke off, never as a failure to connect. */
+const brokenOff = new WeakSet<object>();
+/** `error`, marked as a body that broke after its answer came (brokenOff) where it can be. */
+const brokeOff = (error: unknown): unknown => {
+  if (error !== null && typeof error === "object") brokenOff.add(error);
+  return error;
+};
+
 /** An answer's body, read to at most KEYED_MAX_BYTES; undefined when it has none or runs past them (the rest is not
  *  read). */
 async function bytesOf(response: Response): Promise<Buffer | undefined> {
@@ -198,7 +207,7 @@ export async function keyedCall(client: Keyed | null, who: string, keyEnv: strin
     response = await client.post(path, body, signal);
   } catch (error) {
     if (error instanceof PaidRefused) return failed("refused", "CAP_REFUSED", error.message);
-    return unanswered(error, false);
+    return unanswered(error, error !== null && typeof error === "object" && brokenOff.has(error));
   }
   if (!response.ok) {
     // The status says what it is; a body that broke only loses the provider's code.

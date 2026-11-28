@@ -230,11 +230,20 @@ test("a 2xx whose body breaks while it is read stays charged at the hold: Firecr
   assert.deepEqual(booked[0], { name: "Firecrawl's scrape", hold: credits(100), usd: credits(100) });
 });
 
+test("a 2xx whose body breaks reads to the agent as an answer that broke off, never as a failure to connect", async () => {
+  const searched = await firecrawlWeb(() => breaking(200)).w.search(...SEARCH);
+  assert.equal(searched.answer.error, "Firecrawl's search answer broke off");
+  const fetched = await firecrawlWeb(() => breaking(200), { pdfMaxPages: 100 }).w.fetch(PUBLIC);
+  assert.match(JSON.stringify(fetched.answer), /Firecrawl's fetch answer broke off/);
+  assert.doesNotMatch(JSON.stringify(fetched.answer), /failed to connect/);
+});
+
 test("a send that fails after the request may have left (a reset socket) stays charged at the hold: what Firecrawl billed is not known", async () => {
   const reset = () => Promise.reject(Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" }) }));
   const { w, booked } = firecrawlWeb(reset, { pdfMaxPages: 100 });
   const { answer } = await w.fetch(PUBLIC);
   assert.equal(answer.ok, false);
+  assert.match(JSON.stringify(answer), /Firecrawl's fetch failed to connect/, "no answer came: not an answer that broke off");
   assert.deepEqual(booked[0], { name: "Firecrawl's scrape", hold: credits(100), usd: credits(100) });
 });
 
