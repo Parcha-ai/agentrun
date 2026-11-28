@@ -638,7 +638,8 @@ class TensorlakeHost implements MachineHost {
 	}
 
 	/**
-	 * GET /sandboxes (O list_sandboxes: those not terminated), every page by next_cursor. Tensorlake filters by status
+	 * GET /sandboxes (O list_sandboxes: those not terminated), every page by next_cursor, all within this call's own
+	 * bound (a timeout past it, no page asked after it). Tensorlake filters by status
 	 * alone, so every label is matched here: only sandboxes named as computers whose name may carry the labels asked
 	 * (mayCarry), and a label asked that is not the name's is read from each one's labels file (#labelsOf), LABEL_READS
 	 * at once, all within this call's own bound; only those that carry every label asked are answered. A file that can't
@@ -653,11 +654,24 @@ class TensorlakeHost implements MachineHost {
 		const end = Date.now() + ctx.timeoutMs;
 		// Only what was kept before the listing began is let go: a sandbox made while it ran may not be on its pages.
 		const kept = [...new Set([...this.#labels.keys(), ...this.#ending])];
+		// One bound for the whole listing, its retries too: each page gets what is left of it, none is asked once it has
+		// passed, and one cut by it is a timeout.
+		const bound = AbortSignal.timeout(ctx.timeoutMs);
+		const signal = ctx.signal ? AbortSignal.any([ctx.signal, bound]) : bound;
+		const late = () => new HostError("timeout", `Tensorlake's sandbox listing had no last page within ${seconds(ctx.timeoutMs)}`);
 		const listed = orThrow(
 			await allPages<TensorlakeSandbox>(
 				async (cursor) => {
+					const left = end - Date.now();
+					if (left <= 0 || bound.aborted) throw late();
 					const query = new URLSearchParams({ limit: String(PAGE), ...(cursor === undefined ? {} : { cursor }) });
-					const { body } = await this.#call("GET", `/sandboxes?${query}`, ctx, { retry: true });
+					let body: unknown;
+					try {
+						({ body } = await this.#call("GET", `/sandboxes?${query}`, { timeoutMs: left, signal }, { retry: true }));
+					} catch (error) {
+						if (bound.aborted && !ctx.signal?.aborted) throw late();
+						throw error;
+					}
 					const page = body as { sandboxes?: unknown; next_cursor?: unknown } | null;
 					if (!Array.isArray(page?.sandboxes)) throw new HostError("vendor", "GET /sandboxes answered no list");
 					const items = (page.sandboxes as Array<TensorlakeSandbox | null>).filter((one): one is TensorlakeSandbox => typeof one?.id === "string" && typeof one.status === "string");
