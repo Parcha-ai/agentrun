@@ -9,11 +9,12 @@
 // no network.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startFakeComposio } from "./fixtures/fake-composio.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { follow, serve, serverLog, withEnv } from "./support.mjs";
+import { follow, scratch, serve, serverLog, whenFree, withEnv } from "./support.mjs";
 import { storeOn } from "./store-helpers.mjs";
 import { raw } from "./store-target.mjs";
 
@@ -370,6 +371,34 @@ for (const shared of [false, true]) {
     assert.equal((await s.server.store.agents.revision(revision))?.mcpPin?.contextforge?.url, s.one.fake.url, "pinned from W1's own row");
     assert.equal(calls(s.one), 1, "the run called W1's own server");
     assert.equal(calls(s.two), 0, "never the shared one");
+  });
+}
+
+/** A templates folder with one package, `forge`, that needs a url MCP server of the toolkit contextforge and grants its
+ *  add; its instructions name its `topic`, so an apply of another topic writes a new revision. */
+async function forgeTemplates(t) {
+  const dir = join(await scratch(t), "templates");
+  mkdirSync(join(dir, "forge"), { recursive: true });
+  writeFileSync(join(dir, "forge", "agent.md"), "---\nname: forge\nversion: 1.0.0\ndescription: Adds with contextforge.\ntools: []\nharness: [pi]\nparameters:\n  topic: { type: string, description: \"the topic\" }\nmcp:\n  - source: url\n    toolkit: contextforge\n    tools: [add]\n    required: true\n    allow: [add]\napprovals: never\n---\nAdd what you are asked to about ${parameters.topic}.\n");
+  return dir;
+}
+
+for (const shared of [false, true]) {
+  test(`the unscoped token's template update of a workspace's agent (apply with agent_id) maps and pins the package's MCP need to that workspace's own server (${shared ? "beside a shared one of the name at another origin" : "saved there alone"})`, async (t) => {
+    const s = await setup(t, { templates: await forgeTemplates(t) });
+    assert.equal((await s.w1("PUT", PATH, { ...perRun(s.one.fake.url), toolkit: "contextforge" })).status, 200);
+    if (shared) assert.equal((await s.ops("PUT", PATH, { ...perRun(s.two.fake.url), toolkit: "contextforge" })).status, 200);
+    const made = await whenFree(() => s.w1("POST", "/templates/forge/apply", { parameters: { topic: "cats" }, grants: ["mcp:contextforge/add"] }));
+    assert.equal(made.status, 201, JSON.stringify(made.body));
+    const agent = made.body.agent_id;
+    const before = (await s.w1("GET", `/agents/${agent}`)).body.revision;
+    assert.equal((await s.server.store.agents.revision(before))?.mcpPin?.contextforge?.url, s.one.fake.url, "made in W1, pinned from W1's own");
+
+    const updated = await whenFree(() => s.ops("POST", "/templates/forge/apply", { parameters: { topic: "dogs" }, grants: ["mcp:contextforge/add"], agent_id: agent }));
+    assert.equal(updated.status, 200, JSON.stringify(updated.body));
+    const after = (await s.ops("GET", `/agents/${agent}`)).body.revision;
+    assert.notEqual(after, before, "a new revision");
+    assert.equal((await s.server.store.agents.revision(after))?.mcpPin?.contextforge?.url, s.one.fake.url, "pinned from W1's own row, the one its runs call");
   });
 }
 

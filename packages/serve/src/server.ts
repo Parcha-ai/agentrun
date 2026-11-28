@@ -3788,8 +3788,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  listing in the harnesses' shape for the save's checks (blockersOf's `mcp`), and `pin` making the pin from them. A server
    *  that cannot be listed keeps the agent's `previous` pin for it when every tool the save grants from it is already
    *  there (an edit that grants nothing new from it, its instructions say); else the save is refused (422) in words naming
-   *  it: nothing is saved, and saving again once it answers pins it. */
-  async function mcpListingOf(revision: NewRevision, previous?: unknown): Promise<{ tools: (server: string) => ReturnType<typeof mcpTools>; pin: () => McpPin | undefined }> {
+   *  it: nothing is saved, and saving again once it answers pins it. Each server is the one `workspace` (the revision's
+   *  agent's; the request's unless named) means by its name (metaOf). */
+  async function mcpListingOf(revision: NewRevision, previous?: unknown, workspace: string | null | undefined = workspaceNow()): Promise<{ tools: (server: string) => ReturnType<typeof mcpTools>; pin: () => McpPin | undefined }> {
     const tools = revision.kind === "agentic" ? ((revision.body as { tools?: readonly string[] }).tools ?? []) : [];
     const granted = tools.filter((tool) => mcpToolOf(tool) !== undefined);
     const listings = new Map<string, NonNullable<Awaited<ReturnType<typeof mcpServers.pinListing>>>>();
@@ -3805,7 +3806,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const refused: InputIssue[] = [];
     await Promise.all([...new Set(granted.map((tool) => mcpToolOf(tool)!.server))].map(async (server) => {
       try {
-        const listing = await pinListingOf(server, stopping.signal);
+        const listing = await pinListingOf(server, stopping.signal, workspace);
         if (listing) listings.set(server, listing);
       } catch (error) {
         if (!(error instanceof ApiError)) throw error;
@@ -3818,7 +3819,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const bound = (server: string) => {
       const kept = carried.get(server);
       // A carried server's tools are checked as pinned, a meta tool marked at its URL then or now (as runnable does).
-      if (kept) return kept.tools.map((tool) => { const now = metaOf(server); const meta = metaToolOf(kept.url, tool.name) ?? (now ? metaToolOf(now.url, tool.name) : undefined); return meta ? { ...tool, grantable: false as const, reason: meta.reason } : tool; });
+      if (kept) return kept.tools.map((tool) => { const now = metaOf(server, workspace); const meta = metaToolOf(kept.url, tool.name) ?? (now ? metaToolOf(now.url, tool.name) : undefined); return meta ? { ...tool, grantable: false as const, reason: meta.reason } : tool; });
       return listings.get(server)?.tools.map((tool) => ({ ...boundTool(tool), ...(tool.grantable === false ? { grantable: false as const, reason: tool.reason! } : {}) }));
     };
     return {
@@ -3850,8 +3851,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks, and
    *  its pins (mcpListingOf, monidPinOf), each carrying from `previous` what its grants did not change. A revision that
    *  names no place is checked where it would run (fallbackPlace). `toolsUnnamed`: a create whose definition names no tools
-   *  (the store has given it its empty list by now), which would get a shell in the default box. */
-  async function saveable(revision: NewRevision, previous?: RevisionRow | null, { toolsUnnamed = false }: { toolsUnnamed?: boolean } = {}): Promise<{ warnings: InputIssue[]; stamp: SaveStamp }> {
+   *  (the store has given it its empty list by now), which would get a shell in the default box. `workspace`: the agent's,
+   *  whose MCP servers its runs call (the request's unless named). */
+  async function saveable(revision: NewRevision, previous?: RevisionRow | null, { toolsUnnamed = false, workspace = workspaceNow() }: { toolsUnnamed?: boolean; workspace?: string | null } = {}): Promise<{ warnings: InputIssue[]; stamp: SaveStamp }> {
     // The store's NewRevision keeps the revision's fields under `body` (AgenticBody|WorkflowBody); build the flat shape the
     // host checks (runnable.ts RevisionShape) from it, as shapeOf does for a run's Revision.
     const body = revision.body as AgenticBody & Partial<WorkflowBody>;
@@ -3885,7 +3887,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     const named = (revision.kind === "agentic" ? { kind: "agentic" as const, ...(body as AgenticBody) } : workflowShape(body as never)) as unknown as RevisionShape;
     const shape = named.place ? named : { ...named, place: await fallbackPlace(named.kind, named.tools ?? []), unnamed: true as const };
-    const listing = await mcpListingOf(revision, previous?.mcpPin);
+    const listing = await mcpListingOf(revision, previous?.mcpPin, workspace);
     const mcp = listing.tools;
     const { monid, warnings: usage = [] } = (await monidPinOf(revision, previous)) ?? {};
     const blockers = await blockersOf(envAtPlace(env, shape.place), shape, settings.get(), { boxes: boxOffers, computerReady, shellOf, noExec: await noExecNow(), offers, mcp, monid });
@@ -3982,12 +3984,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** A definition edit's body made into a new revision of agent `entry`, as PUT /agents/{id}/definition makes one
    *  (commitAgent: the definition's checks and what this host refuses of it, saveable), with what this host still lacks for
    *  it; then its computer reconciled. `template`: the package an apply with agent_id wrote it from; `fromPackage`: the
-   *  body is that package's whole definition, so what it leaves out that the package owns is gone (commitAgent). */
+   *  body is that package's whole definition, so what it leaves out that the package owns is gone (commitAgent). Its MCP
+   *  servers are the agent's workspace's, whoever edits it: the ones its runs call. */
   async function reviseAgentOf(entry: AgentEntry, body: Json, options: { contract?: boolean; ifCurrent?: string | null; template?: TemplatePackage; fromPackage?: boolean } = {}): Promise<{ entry: AgentEntry; warnings: InputIssue[] }> {
     let warnings: InputIssue[] = [];
+    const workspace = (await store.agents.workspace(entry.agent.id)) ?? null;
     const check = async (revision: NewRevision, on: RevisionRow | null) => {
       // The pins of the revision this try builds on (commitAgent's read, a retry's newer one) carry what it kept.
-      const saved = await saveable(revision, on);
+      const saved = await saveable(revision, on, { workspace });
       warnings = saved.warnings;
       return saved.stamp;
     };
@@ -4192,8 +4196,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const keyWarnings: InputIssue[] = brought.map((name) => ({ field: `secrets.${name}`, reason: NOT_SET_UP, message: `${name} is not set on this server: it takes it from each run (${RUN_KEYS_ENV}=1), so a run that does not carry it in keys is refused.`, fix: `Send keys.${name} with each run, or add it in Settings → API Keys.` }));
     // Each MCP need on the saved server whose source and toolkit match (the owner's pick when several do, never a silent
     // one: several and no pick is a 422); the package's
-    // tool names, mcp:<toolkit>/<tool>, read as that server's from here on (templates.ts onServers).
-    const mapped = serversFor(template, [...metaSeen()].map(([name, meta]) => ({ name, ...meta.source })), picks);
+    // tool names, mcp:<toolkit>/<tool>, read as that server's from here on (templates.ts onServers). An update's servers
+    // are its agent's workspace's, whoever applies it: the ones its runs call; a new agent's, the request's.
+    const workspace = onto ? ((await store.agents.workspace(onto.agent.id)) ?? null) : workspaceNow();
+    const mapped = serversFor(template, [...metaSeen(workspace)].map(([name, meta]) => ({ name, ...meta.source })), picks);
     const servers = Object.fromEntries(mapped.flatMap(({ need, server }) => (server ? [[need.toolkit, server]] : [])));
     const pkg = onServers(template, servers);
     const saved: McpServed[] = mapped.flatMap(({ need, server }) => (server ? [{ ...need, server }] : []));
@@ -4329,13 +4335,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // A package that names no tools and no computer list makes the agent a create that names no tools makes (createAgentOf),
     // whatever its grants compiled to: it would get Docker's box, and is refused where there is none (noPlaceOf).
     const toolsUnnamed = pkg.tools === undefined && !pick;
-    return { pkg, onto, missing, unsaved, saved, mapped, grants, pick, toolsUnnamed, made, emptyFeeds, hostless, unmade, hadByName, remade, resent, removing, digest, origin, warned: [...keyWarnings, ...skipped, ...kept, ...modelWarnings, ...computerWarnings] };
+    return { pkg, onto, workspace, missing, unsaved, saved, mapped, grants, pick, toolsUnnamed, made, emptyFeeds, hostless, unmade, hadByName, remade, resent, removing, digest, origin, warned: [...keyWarnings, ...skipped, ...kept, ...modelWarnings, ...computerWarnings] };
   }
 
   /** applyTemplate's work, in its turn on the agent where it has agent_id: prepareApply's reads and checks, then its
    *  writes. */
   async function applyWith(template: Package, body: Json) {
-    const { pkg, onto, saved, mapped, grants, toolsUnnamed, made, emptyFeeds, hostless, unmade, hadByName, remade, resent, removing, digest, origin, warned } = await prepareApply(template, body, { plan: false });
+    const { pkg, onto, workspace, saved, mapped, grants, toolsUnnamed, made, emptyFeeds, hostless, unmade, hadByName, remade, resent, removing, digest, origin, warned } = await prepareApply(template, body, { plan: false });
     // A fresh apply of what already made a live agent here (the same package and parameters) still makes one, and says
     // which is there: an apply with its agent_id updates that one instead. Read before this apply's agent is made.
     const twins: InputIssue[] = (await twinsOf(onto, pkg.id, digest))
@@ -4446,7 +4452,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // first call is refused; or that the check could not be made (template-github-permissions.ts). An unticked tool is
     // not the agent's, so nothing is said of it.
     const ticked = saved.map((need) => ({ ...need, tools: need.tools.filter((tool) => grants.includes(mcpToolName(need.server, tool))) }));
-    const appShort = await appPermissionWarnings({ name: pkg.name, mcp: ticked }, (server) => metaOf(server)?.auth === "github_app", () => githubConnect.installationPermissions(stopping.signal));
+    const appShort = await appPermissionWarnings({ name: pkg.name, mcp: ticked }, (server) => metaOf(server, workspace)?.auth === "github_app", () => githubConnect.installationPermissions(stopping.signal));
     // A webhook trigger's secret is in no apply answer: each one's warning sends the person to the console for it.
     const hooks = made.triggers.flatMap((trigger, i) => (!hostless.has(i) && isObject(trigger.source) && trigger.source.kind === "webhook" ? [templateTriggerSecret(i)] : []));
     // Each github trigger: what it runs on, when made (a note, never a lack); skipped, what to do about it.
