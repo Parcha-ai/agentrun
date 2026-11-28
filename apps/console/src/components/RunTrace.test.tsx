@@ -222,6 +222,24 @@ describe("the Dev tools tab", () => {
     expect(document.activeElement).toBe(opened);
   });
 
+  it("gives the keyboard back the same way where the run is itself shown in another page's panel", async () => {
+    const host = await open(TRACE);
+    // Agent Factory shows a run in an <aside> beside its board. Only what is inside Call details is no opener: a row of
+    // the trace is one, whatever panel the run sits in.
+    document.body.appendChild(document.createElement("aside")).appendChild(host);
+    const opened = rowOf(host, "+1:29.6")!.querySelector("button")!;
+    opened.focus();
+    await click(opened);
+    // A press takes the keyboard to what was pressed, as a browser does (jsdom's click does not): the keyboard is on
+    // Close when the panel goes, so it comes back to the row only if the row was kept as the opener.
+    const closing = panel(host)!.querySelector<HTMLButtonElement>("button[aria-label='Close call details']")!;
+    closing.focus();
+    expect(document.activeElement).toBe(closing);
+    await click(closing);
+    expect(panel(host)).toBeNull();
+    expect(document.activeElement).toBe(opened);
+  });
+
   it("says a charged call's charge, and that a computer's own time is not metered here", async () => {
     const host = await open(TRACE, { run: { ...RUN, computer: { kind: "browser", provider: "browserbase" } as Run["computer"] }, open: "t:0:call_08" });
     expect(panel(host)!.textContent).toContain("$0.0004 was charged under this call, and is in the run's cost. Time on the run's computer is billed by its provider and is not metered here.");
@@ -623,6 +641,15 @@ describe("the Dev tools tab", () => {
     expect(host.querySelectorAll("[data-overview] [data-span]")).toHaveLength(320);
     await click([...host.querySelectorAll("button")].find((b) => b.textContent === "Show all 320"));
     expect(callRows(host)).toHaveLength(320);
+  });
+
+  it("draws a call's panel as a drawer where it is beside the table: a line and the drawer's shadow at its left edge", async () => {
+    const host = await open(TRACE, { open: "m:0:24" });
+    const drawer = panel(host)!;
+    // Beside the table from xl, under it below: the shadow is the breakpoint's, and the panel is positioned, so the
+    // shadow is drawn over the table's own content.
+    for (const c of ["relative", "xl:border-l", "xl:shadow-drawer"]) expect(drawer.className.split(/\s+/), c).toContain(c);
+    expect(drawer.className).not.toMatch(/(^|\s)shadow-(float|drawer)(\s|$)/);
   });
 
   it("every pane of the tab that scrolls is the place its out-of-flow content is set against, so none of it scrolls the page", async () => {

@@ -1003,7 +1003,10 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // A run's own process reads no trigger's row: its runner answers the zone (held.ts runZone).
   const seam = deps.sealKey ? undefined : runnerSeam();
   const zone = seam ? await seam.runZone() : await runZone(deps.store, launch.inputOrigin);
-  const system =[environmentLine(now, zone), checkout?.note, instructions, outputContract(body.outputSchema), guidance].filter((line): line is string => Boolean(line));
+  // The folder is named by its absolute name in a computer (/workspace), whose shell's home is the computer's own: a local
+  // folder's shell has the folder as its home, and its path, one per run, would split the prompt's cache across runs.
+  const folder = tools.cwd === COMPUTER_ROOT ? COMPUTER_ROOT : undefined;
+  const system = [environmentLine(now, zone, folder), checkout?.note, instructions, outputContract(body.outputSchema), guidance].filter((line): line is string => Boolean(line));
 
   // The subagent tool, one of the session's own tools (no extension of its own): a child's tools are a subset of the
   // revision's grants (each by its session name: an MCP tool's wire name, the browser's registrations), its model the
@@ -1024,7 +1027,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
         if (at.unpriced && !at.provider.plan && launch.maxCostUsd !== undefined) return { why: `${at.model} has no known price here, so this run's cost cap cannot hold its requests.` };
         return { ref: { provider: tierProvider(subagentRoute(tier)), modelId: at.model } };
       },
-      preamble: environmentLine(now, zone),
+      preamble: environmentLine(now, zone, folder),
     }));
   }
 

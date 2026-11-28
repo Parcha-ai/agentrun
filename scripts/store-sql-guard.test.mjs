@@ -16,10 +16,11 @@ const TODAY = [
   "packages/serve/src/server-lock.ts",
 ];
 /** The files outside the store that read another program's SQLite database and write nothing: the import package's
- *  OpenCode reader reads OpenCode's history (its opencode.db) as it is. That is no state of agentrun's, which the Store
+ *  OpenCode reader reads OpenCode's history (its opencode.db), and its Cursor reader Cursor's chats (each chat's store.db), as they are. That is no state of agentrun's, which the Store
  *  interface would stand for. Each opens its database read-only, and each SQL string it holds is a SELECT. */
 const READ_ONLY = [
   "packages/import/src/readers/opencode.ts",
+  "packages/import/src/readers/cursor.ts",
 ];
 /** A SQL string that changes a database or its connection. */
 const WRITES = /\b(?:INSERT|REPLACE|UPDATE|DELETE|CREATE|ALTER|DROP|ATTACH|DETACH|PRAGMA|VACUUM|REINDEX|BEGIN|COMMIT|SAVEPOINT)\b/i;
@@ -180,8 +181,9 @@ test("no SQLite driver taken outside the store, but for today's files on the lis
 });
 
 test("a read-only reader takes the drivers it opens read-only, each seen however it names the module", () => {
-  // OpenCode's reader names node:sqlite and bun:sqlite through consts (a Bun build bundles node:sqlite as missing).
+  // OpenCode's and Cursor's readers name node:sqlite and bun:sqlite through consts (a Bun build bundles node:sqlite as missing).
   assert.deepEqual(driversIn(readFileSync(join(ROOT, "packages/import/src/readers/opencode.ts"), "utf8"), "opencode.ts"), ["bun:sqlite", "node:sqlite"]);
+  assert.deepEqual(driversIn(readFileSync(join(ROOT, "packages/import/src/readers/cursor.ts"), "utf8"), "cursor.ts"), ["bun:sqlite", "node:sqlite"]);
   assert.deepEqual(READ_ONLY.filter((file) => !withDriver.includes(file)), [], "a read-only reader that takes no driver now holds no database: take it off READ_ONLY");
 });
 

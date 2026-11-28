@@ -854,6 +854,8 @@ Scan a repository for places its app needs an agent.
 Route: `POST /suggestions/scans`.
 
 - `--repo STRING` (string, required): owner/name, or its https://github.com URL.
+- `--run-id STRING` (string): The run the host started for a reserved scan, sent with that reservation's `scan`.
+- `--scan STRING` (string): The reservation a host-started run is bound to (the reserve's `scan`); sent alone, the reservation released.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
@@ -950,6 +952,33 @@ Route: none, it runs on this machine.
 
 - `--data DIR` (string, this CLI's own): the data directory of the AgentRun to open (default ~/.agentrun)
 - `--setup-only` (boolean, this CLI's own): open nothing once the owner's password is set (the installer's last step)
+
+## race
+
+### `agentrun race show LABEL`
+
+A race's lanes: each lane's harness, model, run, status, cost and seconds, in lane order.
+
+Route: `GET /runs?label=race:LABEL`.
+
+- `--wait` (boolean, this CLI's own): then follow every lane's run to its end and print the lanes side by side: exit 0 when every lane completed, 1 when one failed, was cancelled, did not start or still runs past --timeout, 8 when one waits on a person
+- `--timeout SECONDS` (number, this CLI's own): with --wait: stop waiting after this long (default 1800), exit 1; the runs go on
+- `--json` (boolean, this CLI's own): with --wait: the lanes as JSON, in place of the table
+
+### `agentrun race start`
+
+Run one task on 2 to 4 harness and model lanes side by side, as the console's New race form does.
+
+Route: `POST /agents, then POST /agents/{agent_id}/runs, a lane each`.
+
+- `--lane HARNESS/MODEL` (string, this CLI's own): a lane, 2 to 4 times: the harness, then its model (pi/anthropic/claude-sonnet-4.5)
+- `--task TEXT|@FILE` (string, this CLI's own): the task every lane runs, the same on each
+- `--max-cost-usd USD` (string, this CLI's own): each lane's cap (default 1)
+- `--label LABEL` (string, this CLI's own): the race's label (default: the start time and random letters, as the console's)
+- `--file FILE_ID` (string, this CLI's own): a file uploaded with POST /files, given to every lane's run (repeatable)
+- `--wait` (boolean, this CLI's own): then follow every lane's run to its end and print the lanes side by side: exit 0 when every lane completed, 1 when one failed, was cancelled, did not start or still runs past --timeout, 8 when one waits on a person
+- `--timeout SECONDS` (number, this CLI's own): with --wait: stop waiting after this long (default 1800), exit 1; the runs go on
+- `--json` (boolean, this CLI's own): with --wait: the lanes as JSON, in place of the table
 
 ## revisions
 

@@ -85,7 +85,7 @@ test("keyless Firecrawl: its daily limit met on a fetch holds web_search too unt
   const w = web.createWeb({ order: { search: ["firecrawl-keyless"], fetch: ["firecrawl-keyless", "direct"] }, endpoints: { "firecrawl-keyless": fc.url }, guard: guardOf(network()), now: () => now });
   assert.equal((await w.fetch(PUBLIC)).answer.via, "direct");
   spent = false;
-  assert.deepEqual((await w.search("widgets")).answer, { error: SEARCH_UNAVAILABLE }, "search is held");
+  assert.deepEqual((await w.search("widgets")).answer, { error: "search is unavailable: firecrawl-keyless is out of quota until 2026-11-25T00:00:00Z; answer from what you have" }, "search is held, to the reset the limit named");
   assert.equal(fc.calls("firecrawl_search"), 0);
   now = Date.parse("2026-11-25T00:00:00Z");
   assert.equal((await w.search("widgets")).answer.provider, "firecrawl-keyless", "asked again at 00:00 UTC");

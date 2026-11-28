@@ -627,7 +627,7 @@ test("agentrun deploy DIR to an API-only install with its token: the upload, pla
   assert.deepEqual([made.body.revision, made.body.template.id], [done.revision_id, "upload:pr-alert"]);
   // Neither trigger is made there, and the plan says each, with the server's reason.
   assert.match(first.err, /! trigger\s+daily\s+schedule skipped: The pr-alert template's trigger daily \(schedule\) was not made: this server serves the run API only \(AGENTRUN_API_ONLY=1\) and has no launch hook/);
-  assert.match(first.err, /! trigger\s+inbound\s+webhook skipped: The pr-alert template's trigger inbound \(webhook\) was not made: this server serves the run API only \(AGENTRUN_API_ONLY=1\), which serves no route or setting a webhook trigger needs/);
+  assert.match(first.err, /! trigger\s+inbound\s+webhook skipped: The pr-alert template's trigger inbound \(webhook\) was not made: on this server \(AGENTRUN_API_ONLY=1\) a webhook trigger is made with POST \/v2\/triggers in a workspace \(AgentRun-Workspace\) alone, whose first answer shows its signing secret once; an apply's answer shows none/);
   assert.deepEqual(await hosted.store.triggers.list(done.agent_id), [], "no trigger made there");
   // And stdout's answer says the same: each skipped trigger is a warning with its reason.
   const skipped = done.warnings.filter((one) => one.field.startsWith("triggers.")).map((one) => [one.field, one.reason, one.message.match(/trigger (\w+) \((\w+)\) was not made/)?.slice(1)]);
@@ -671,7 +671,7 @@ test("agentrun deploy DIR to an API-only install of a package whose one trigger 
 
   const first = await cli(env, ["deploy", pkg, "--to", proxy.base, "--yes"], key);
   assert.equal(first.code, 0, first.err);
-  assert.match(first.err, /! trigger\s+inbound\s+webhook skipped: .*serves no route or setting a webhook trigger needs/);
+  assert.match(first.err, /! trigger\s+inbound\s+webhook skipped: .*a webhook trigger is made with POST \/v2\/triggers in a workspace \(AgentRun-Workspace\) alone/);
   assert.doesNotMatch(first.err, /Not made on/, "a trigger this install never makes is not one it makes later");
   assert.match(first.json().package_sha256 ?? "", /^[0-9a-f]{64}$/, "the lock names the package");
 

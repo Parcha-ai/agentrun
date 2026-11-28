@@ -1,7 +1,7 @@
-// Each Wrapped card as a CardBody: what it says, from the year the server counted (GET /v2/wrapped) and nothing else.
-// A card is drawn when every wait of its is met (SATISFIED_WAITS) and the year has sessions; a card with no body here
-// is never drawn, whatever it waits on. No number is one the year does not give: a price not known is said as unknown,
-// never $0, and requests with no known price are counted beside the price.
+// Each Wrapped card as a CardBody: what it says, from the year the server counted (GET /v2/wrapped) and nothing else. A
+// card is drawn when every wait of its is met (SATISFIED_WAITS) and the year has sessions (or the store keeps it); a
+// card with no body here is never drawn, whatever it waits on. No number is one the year does not give: a price not
+// known is said as unknown, never $0, and requests with no known price are counted beside the price.
 import { harnessLabel } from "@/lib/agentForm";
 import { type CardBar, type CardBody, type CardChart, chartCapacity } from "@/lib/cardImage";
 import { compact, dollars } from "@/lib/format";
@@ -211,9 +211,14 @@ const leak: BodyOf = (data) => {
 /** The cards with a body, by id. The others (laptop, type, launch) need what the year does not hold. */
 export const CARD_BODIES: Readonly<Record<string, BodyOf>> = { cover, split, hours, cache, leak, summary };
 
-/** `card`'s body from `data`: none for an empty year (no sessions or no requests) or a card with no body in `bodies`. */
+/** The cards drawn from what the store keeps of the year's imported runs (its cache, the keys their import cut), not from
+ *  the session files: a year whose files are gone keeps them, while the store does. */
+const STORED: ReadonlySet<string> = new Set(["cache", "leak"]);
+
+/** `card`'s body from `data`: none for an empty year (no sessions or no requests) unless the store keeps it (STORED),
+ *  or a card with no body in `bodies`. */
 export function toBody(card: WrappedCard, data: Wrapped, bodies: Readonly<Record<string, BodyOf>> = CARD_BODIES): CardBody | null {
-  if (data.sessions === 0 || data.requests === 0) return null;
+  if ((data.sessions === 0 || data.requests === 0) && !STORED.has(card.id)) return null;
   return bodies[card.id]?.(data) ?? null;
 }
 

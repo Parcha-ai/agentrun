@@ -45,6 +45,8 @@ export function ApprovalCard({ pending, onAnswer, compact = false, heading }: Ap
     opener.current?.focus();
   }, [confirming]);
   const price = priceLine(pending.price);
+  // The call's arguments laid out; none at all (an ACP agent's call that gave none: its summary says what it runs) shows no box.
+  const args = argsShown(pending.args_preview);
   const answer = async (decision: "allow" | "deny", confirmed?: true) => {
     if (sending.current) return;
     sending.current = true;
@@ -61,7 +63,8 @@ export function ApprovalCard({ pending, onAnswer, compact = false, heading }: Ap
       <p className={cn("caps flex items-center gap-2 text-label text-warning-text", heading && "mt-2")}><ShieldQuestion className="size-3.5" aria-hidden /> Approval required</p>
       <p className="mt-2 text-prose leading-snug">The agent wants to run <span className="break-all font-mono text-lead">{pending.tool}</span>.{destructive && <> <Chip tone="error" title="Its server marks this tool destructive: it may delete or overwrite.">Destructive</Chip></>}</p>
       {pending.asks_because && <p className="mt-2 text-prose leading-snug">Asks because {pending.asks_because}.</p>}
-      <pre aria-label={`${pending.tool} arguments`} title={pending.args_preview} className={cn("mt-2 overflow-auto whitespace-pre-wrap break-all border bg-card p-3 font-mono text-small leading-[1.6]", compact ? "max-h-28" : "max-h-64")}>{argsShown(pending.args_preview)}</pre>
+      {pending.summary && <pre aria-label={`${pending.tool} does`} className={cn("mt-2 overflow-auto whitespace-pre-wrap break-all font-mono text-small leading-[1.6] text-foreground", compact ? "max-h-28" : "max-h-64")}>{pending.summary}</pre>}
+      {args && <pre aria-label={`${pending.tool} arguments`} title={pending.args_preview} className={cn("mt-2 overflow-auto whitespace-pre-wrap break-all border bg-card p-3 font-mono text-small leading-[1.6]", compact ? "max-h-28" : "max-h-64")}>{args}</pre>}
       {price && <p className="mt-2 font-mono text-small text-muted-foreground">{price}</p>}
       {said ? (
         <p className="mt-3 font-mono text-body text-success-text" role="status">{said === "allow" ? "Allowed. The run goes on." : "Denied. The agent reads why and goes on."}</p>

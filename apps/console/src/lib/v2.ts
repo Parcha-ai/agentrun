@@ -278,8 +278,9 @@ export type SuggestionDetail = Answer<"getSuggestion">;
 export type SuggestionReadiness = SuggestionDetail["github"];
 /** POST /v2/suggestions/{id}/create's answer: the suggestion with its agent, branch and pull request. */
 export type SuggestionCreated = Answer<"createSuggestedAgent">;
-/** POST /v2/suggestions/scans's answer: the scan's run. */
-export type ScanStarted = Answer<"scanForSuggestions">;
+/** POST /v2/suggestions/scans's answer to a scan sent with `repo` alone, as the console sends it: the scan's run. A host's
+ *  reservation and its release answer without one. */
+export type ScanStarted = Extract<Answer<"scanForSuggestions">, { run_id: string }>;
 
 /** PATCH /v2/runs/{id} {max_cost_usd}'s answer: the cap now. */
 export type RaiseAnswer = Answer<"raiseRunCap">;

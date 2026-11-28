@@ -86,17 +86,24 @@ test("a key the server makes is cut by the same shape, in a learned note and in 
   const store = await openSqliteStore({ dataDir: dir });
   t.after(() => store.close());
   const keys = new ApiKeys(store, randomBytes(32));
-  // Several, so the test does not pass by one key's luck: each is random, and "-" and "_" are among its characters.
-  for (let i = 0; i < 25; i++) {
-    const made = await keys.create({ name: `key ${i}` });
-    const text = `curl -H "Authorization: ${SCHEME} ${made.api_key}" then AGENTRUN_API_KEY=${made.api_key} done`;
+  // Several, so the test does not pass by one key's luck: each is random, and "-" and "_" are among its characters. The
+  // first is fixed: a key whose 43 random characters start with "sk-", as about one in 160,000 the server makes do.
+  const made = [`${PREFIX}sk-${BODY.slice(0, 40)}`];
+  for (let i = 0; i < 25; i++) made.push((await keys.create({ name: `key ${i}` })).api_key);
+  assert.equal(made[0].length, made[1].length, "the fixed key is as long as a key the server makes");
+  for (const api_key of made) {
+    const text = `curl -H "Authorization: ${SCHEME} ${api_key}" then AGENTRUN_API_KEY=${api_key} done`;
     const want = `curl -H "Authorization: ${SCHEME} [redacted]" then AGENTRUN_API_KEY=[redacted] done`;
     assert.equal(redactSecrets(text, []), want);
     assert.equal(redactLearned(text, []), want, "a learned note");
     // A run's views cut by the values the server holds; it holds none of this key, and the shape still finds it.
     assert.equal(redacted(text, ["a-value-the-server-holds"]), want, "a run's view");
     assert.equal(redactedAnswer(text, ["a-value-the-server-holds"]), want, "a run's answer");
-    // With no scheme or parameter name beside it, the key's own shape alone finds it.
-    assert.deepEqual(secretShapes(`the app sends ${made.api_key} on each call`), [KIND]);
+    // With no scheme or parameter name beside it, the key's own shape alone finds it. Another shape may read a run
+    // inside it too: the kinds are every shape a text holds, as a Slack token inside a URL's credential parameter is.
+    assert.ok(secretShapes(`the app sends ${api_key} on each call`).includes(KIND), api_key);
   }
+  // The fixed key holds an sk- key's run after its prefix's "_": both kinds are read, and the one key is one cut.
+  assert.deepEqual(secretShapes(`the app sends ${made[0]} on each call`), ["sk- key", KIND]);
+  assert.equal(cut(`the app sends ${made[0]} on each call`), "the app sends [redacted] on each call");
 });

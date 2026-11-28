@@ -161,11 +161,12 @@ export type TriggerFailed = { trigger_id: string; name: string; agent_id: string
 export type RunTrigger = { id: string; firing_key: string; name?: string; attrs?: Record<string, string> };
 /** A host's start of a firing the launch hook handed it (Triggers.handedStart): the firing's key, the trigger, input
  *  origin and title a start here would give the run, and the target and previous-result flag it starts on
- *  (TriggerDeps.start's, so a handed run gets its target's cap, effort and previous result as one started here does; the
- *  host may lower the cap, and its effort holds when the target sets none). The start writes its run with the firing's
- *  start in the same write (store.runs.create `firing`), so a release of the firing meanwhile refuses it (FiringMoved)
- *  and leaves no run. */
-export type HandedStart = { key: string; trigger: RunTrigger; from: MessageOrigin; title: string; target: Extract<Target, { kind: "start_run" }>; previous: boolean };
+ *  (TriggerDeps.start's, so a handed run gets its target's effort and previous result as one started here does, and its
+ *  effort holds when the target sets none), and `told`, the lowest cap the hook told the host for the firing
+ *  (FiringRow.hooked; absent when the firing keeps none), which the run takes the lower of with the target's (toldCap);
+ *  the host may lower it again. The start writes its run with the firing's start in the same write (store.runs.create `firing`), so a
+ *  release of the firing meanwhile refuses it (FiringMoved) and leaves no run. */
+export type HandedStart = { key: string; trigger: RunTrigger; from: MessageOrigin; title: string; target: Extract<Target, { kind: "start_run" }>; told?: FiringHooked; previous: boolean };
 /** The engine's clock and its one timer: Date.now and setTimeout, or a test's. */
 export type TriggerClock = { now(): number; arm(fire: () => void, ms: number): { clear(): void } };
 export type TriggerDeps = {
@@ -508,11 +509,12 @@ export class Triggers {
 
   /** The source of trigger `id` when it is hookable: what its pushed source's check and parse read (its filter). With no
    *  `kind`, the source of any pushed trigger `id` that is on, so the hook's resolution can read its kind to find its
-   *  adapter (push-handler.ts): a path that names no such trigger is checked against the decoy, and learns no id. */
-  async hookSource(id: string, kind?: string): Promise<Source | undefined> {
+   *  adapter (push-handler.ts): a path that names no such trigger is checked against the decoy, and learns no id.
+   *  `takes`, when given, must also take the trigger's source and target kinds (an API-only server's: apiOnlyTurnsOn). */
+  async hookSource(id: string, kind?: string, takes?: (source: string, target: string) => boolean): Promise<Source | undefined> {
     const row = await this.store.triggers.get(id);
     const trigger = row && asTrigger(row);
-    return trigger !== undefined && (kind === undefined || trigger.source.kind === kind) && this.adapter(trigger.source)?.delivery === "push" && trigger.enabled ? trigger.source : undefined;
+    return trigger !== undefined && (kind === undefined || trigger.source.kind === kind) && this.adapter(trigger.source)?.delivery === "push" && trigger.enabled && (takes === undefined || takes(trigger.source.kind, trigger.target.kind)) ? trigger.source : undefined;
   }
 
   /** The triggers of the pushed source `kind` that are on and listen on `scope` (its adapter's scopeOf): the ones an
@@ -1287,7 +1289,8 @@ export class Triggers {
     if (trigger.target.kind !== "start_run") return;
     const agentId = trigger.target.agent_id;
     // The cap is kept with the firing before the host hears it (store.triggers.hooked): every hand of the firing names the
-    // first's, and the host's start runs under it (handedStart), whatever the target says by then.
+    // lowest cap told so far or the target's now, whichever is lower, and the host's start never passes it (handedStart),
+    // so a target lowered since lowers it and one raised since, even back to where it was, never raises it.
     const told = (await this.store.triggers.hooked(trigger.id, firing.key, { max_cost_usd: trigger.target.max_cost_usd ?? null })) ?? { max_cost_usd: trigger.target.max_cost_usd ?? null };
     if (this.closed) return;
     const sent: HookFiring = {
@@ -1313,9 +1316,10 @@ export class Triggers {
   /** The run the host starts through the API for a firing the launch hook handed it (RunCreate `trigger_firing`),
    *  written by `start` from the firing's key (the run's origin key, so the firing finds it), the trigger, input origin
    *  and title its own start would give the run, and the target and previous-result flag it starts on (the policy's
-   *  start, as drive's): the target under the cap the hook told the host for the firing (toldTarget), so a target
-   *  raised after the hand never raises the run. `start` starts the firing in the run's own write (store.runs.create `firing`), which throws
-   *  FiringMoved once the firing has moved since its room was checked. It can also answer a run that write never linked
+   *  start, as drive's): the target as it stands and the lowest cap the hook told the host for the firing (`told`), so
+   *  the run takes the lower of the two (toldCap): a target raised after the hand never raises the run. `start` starts the
+   *  firing in the run's own write (store.runs.create `firing`), which throws FiringMoved once the firing has moved
+   *  since its room was checked. It can also answer a run that write never linked
    *  (startRun's re-delivery under the origin key, or another writer's run after a constraint), and handedRan then
    *  starts the firing with it. Or the run already started under that key, `replayed`. Refused, in words, unless this
    *  server has the hook and the firing, of a start_run trigger on `agentId`, may start now (startRoom). */
@@ -1360,7 +1364,7 @@ export class Triggers {
         try {
           run = await start({
             key, trigger: { id: triggerId, firing_key: key, name: trigger.name, ...(attrs && Object.keys(attrs).length ? { attrs } : {}) }, from: this.originOf(trigger), title: this.titleOf(trigger, room.firing),
-            target: toldTarget(trigger.target, room.firing.hooked), previous: carriesPrevious(this.adapter(trigger.source)),
+            target: trigger.target, ...(room.firing.hooked ? { told: room.firing.hooked } : {}), previous: carriesPrevious(this.adapter(trigger.source)),
           });
         } catch (error) {
           // The run's write found the firing moved since its room was checked (its host released it): nothing was
@@ -1842,16 +1846,6 @@ function firingView(firing: FiringRow) {
 /** A payload tag's attributes from its source's `attrs`, each ` name="value"`: a name of lowercase letters, digits, `_` and
  *  `-` (never one the tag sets itself), a value cut to 200 characters with `&`, `<`, `>`, `"` escaped and line breaks
  *  made spaces, so a sender's words cannot end the tag or open another. */
-/** The target a host's start for a handed firing runs on: the trigger's as it stands, under the cap the hook told the host
- *  (`hooked`), never the target's own now. A told null leaves the target uncapped, so the agent's default when the host
- *  starts bounds the run (TriggerTargets.start). A firing that keeps none (handed by a build that kept none) runs on the
- *  target as it stands. The host's own max_cost_usd may still lower the cap, never raise it (handedCap). */
-function toldTarget(target: Extract<Target, { kind: "start_run" }>, hooked: FiringHooked | null): Extract<Target, { kind: "start_run" }> {
-  if (!hooked) return target;
-  const { max_cost_usd: _now, ...rest } = target;
-  return hooked.max_cost_usd === null ? rest : { ...rest, max_cost_usd: hooked.max_cost_usd };
-}
-
 function tagAttrs(attrs: unknown): string {
   if (!isObject(attrs)) return "";
   const escape = (value: string) => value.slice(0, 200).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!).replace(/[\r\n\t]/g, " ");

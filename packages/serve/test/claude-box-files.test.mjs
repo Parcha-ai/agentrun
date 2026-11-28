@@ -218,6 +218,7 @@ test("a claude-agent run with a box: Claude's file tools are the host's (mcp__ha
   const offered = [...new Set(fake.messages().flatMap((m) => m.tools))];
   assert.deepEqual(offered.filter((name) => BUILT_INS.includes(name)), [], `no CLI built-in is offered: ${offered.join(", ")}`);
   for (const tool of ["read", "write", "edit", "bash"]) assert.ok(offered.includes(`mcp__hands__${tool}`), `${tool} is the host's: ${offered.join(", ")}`);
+  assert.match(fake.messages()[0]?.text ?? "", /your working directory, \/workspace, and file paths are relative to it\. Only files under \/workspace are the run's files/, "the system prompt names the box's folder by its absolute name");
 
   // 3. Every call succeeded, and each answered from the box.
   const results = timeline.filter((r) => r.kind === "tool_result").map((r) => [r.tool_name, r.tool_status]);

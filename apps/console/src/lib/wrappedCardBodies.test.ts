@@ -54,11 +54,15 @@ describe("the cards drawn now", () => {
     for (const id of ["laptop", "type", "launch"]) expect(drawnBody(card(id), YEAR, new Set<CardWait>(["race-card-renderer", "cache-analyzer", "secret-count", "opt-in", "benchmark", "derived"]))).toBeNull();
   });
 
-  it("draws no card for an empty year: no sessions, or no requests", () => {
+  it("draws no card for an empty year (no sessions, or no requests) but those the store keeps: cache and leak, from the imported runs, while it keeps them", () => {
+    // EMPTY is a year whose session files are gone: nothing read from disk, the store's cache and keys cut still there.
+    const kept = new Set(["cache", "leak"]);
     for (const c of WRAPPED_CARDS) {
-      expect(toBody(c, EMPTY), c.id).toBeNull();
-      expect(toBody(c, { ...YEAR, sessions: 0 }), c.id).toBeNull();
-      expect(toBody(c, { ...YEAR, requests: 0 }), c.id).toBeNull();
+      for (const year of [EMPTY, { ...YEAR, sessions: 0 }, { ...YEAR, requests: 0 }]) {
+        if (kept.has(c.id)) expect(toBody(c, year), c.id).not.toBeNull();
+        else expect(toBody(c, year), c.id).toBeNull();
+      }
+      expect(toBody(c, { ...EMPTY, cache: null, secrets: null }), `${c.id}: nothing kept`).toBeNull();
     }
   });
 
