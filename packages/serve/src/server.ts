@@ -2947,7 +2947,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       });
       return run?.agentId === agentId;
     },
-    agentFrom:async (id, sha) => (await agents.list()).find((one) => one.template?.id === id && one.template.sha === sha && !one.agent.archivedAt)?.agent.id,
+    agentFrom: async (id, sha) => (await agents.list()).find((one) => one.template?.id === id && one.template.sha === sha && !one.agent.archivedAt)?.agent.id,
     makeAgent: async (id, origin, files) => {
       const made = await applyImported({ registry, store, apply: (pkg) => applyTemplate(pkg, { parameters: {} }) }, id, origin, files);
       return { agentId: made.applied.agent_id, warnings: made.applied.warnings };

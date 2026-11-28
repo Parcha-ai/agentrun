@@ -9,6 +9,7 @@
 // a missing one, with the same 404; lists hold the workspace's rows alone; what it makes is stamped with the workspace.
 import { AsyncLocalStorage } from "node:async_hooks";
 import { API_ONLY_ENV } from "./env-switch.js";
+import { GITHUB_UNUSABLE } from "./runner/mcp-github.js";
 import type { Settings } from "./store/index.js";
 
 /** The header a scoped request carries, as its words name it, and lower case, as Node keeps request headers. */
@@ -18,8 +19,9 @@ export const WORKSPACE_HEADER = "agentrun-workspace";
 export const WORKSPACE_TOKENS_ENV = "AGENTRUN_WORKSPACE_TOKENS";
 /** A workspace's name: 1 to 128 letters, digits, `:`, `.`, `_` or `-`. */
 export const WORKSPACE = /^[A-Za-z0-9:._-]{1,128}$/;
-/** Why a scoped request has no GitHub: the server's App is its operator's, and a workspace's request never uses it. */
-export const WORKSPACE_NO_GITHUB = "No GitHub App is connected for this workspace: this server's App is its operator's, and a workspace's requests read GitHub anonymously.";
+/** Why a scoped request has no GitHub: the server's App is its operator's, and a workspace never uses it. The words its
+ *  runs are refused in, so a workspace hears one reason. */
+export const WORKSPACE_NO_GITHUB = GITHUB_UNUSABLE.inWorkspace;
 
 const scope = new AsyncLocalStorage<string>();
 
