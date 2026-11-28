@@ -5,7 +5,7 @@
 // script as the JavaScript path's failures do. The model is a scripted origin and every tool local: nothing leaves
 // this process.
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -107,8 +107,24 @@ test("a Python script whose call is stopped while it starts runs no step of the 
   }
   assert.deepEqual(calls, [], "no tool call: the script never ran");
   assert.equal(killed.length, 1, "its worker was killed");
-  assert.throws(() => kill.call(process, killed[0], 0), { code: "ESRCH" }, "the worker is gone");
+  // A SIGKILL lands a moment after it is sent: the worker is gone (or dead, waiting to be reaped) soon after.
+  await until(async () => !running(killed[0]), "the worker is gone", 5_000);
 });
+
+/** Whether process `pid` runs: on Linux not a zombie (dead, waiting to be reaped), elsewhere any process at all. */
+function running(pid) {
+  try {
+    return readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1].split(" ")[0] !== "Z";
+  } catch (error) {
+    if (error.code !== "ENOENT" || existsSync("/proc/self")) return false;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 test("a Python script past its deadline ends there, and the tool call it waits on is cut with it", async () => {
   let seen = "not called";

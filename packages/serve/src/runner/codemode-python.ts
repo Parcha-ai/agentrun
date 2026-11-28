@@ -12,10 +12,11 @@
 // environment, files, network or packages; time.sleep returns at once and the clock reads the first run's start.
 //
 // Limits, as the JavaScript script's: 256 MB of memory and 600 s for the whole script, its calls' time included (Monty's
-// own limits bound its memory and its execution time; the host's deadline kills the worker past the whole). Beyond the
-// JavaScript path's: at most CODEMODE_PY_CALLS tool calls, and a recursion depth of Monty's 1,000.
+// own limits bound its memory and its execution time; the host's deadline kills the worker past the whole, and cuts the
+// tool call the script waits on). Beyond the JavaScript path's: at most CODEMODE_PY_CALLS tool calls, printed output of
+// at most HOST_RESULT_MAX_CHARS characters, and a recursion depth of Monty's 1,000.
 import type { CodemodeOutputItem } from "@earendil-works/pi-codemode";
-import type { HostTool, JsonValue, NestedCalls, NestedResult } from "@parcha/agentrun-kernel";
+import { HOST_RESULT_MAX_CHARS, type HostTool, type JsonValue, type NestedCalls, type NestedResult } from "@parcha/agentrun-kernel";
 import { withoutImageData } from "@parcha/agentrun-computer/surface";
 import type { FunctionSnapshot, FutureResolution, MontySession, Snapshot } from "@pydantic/monty";
 
@@ -81,8 +82,9 @@ function notInstalled(error: unknown): boolean {
   return true;
 }
 
-/** Run `script` in Monty over `tools`, each call a nested call answered in the order the script made them. */
-export async function runPython(script: string, tools: readonly HostTool[], nested: NestedCalls, signal: AbortSignal): Promise<ScriptAnswer> {
+/** Run `script` in Monty over `tools`, each call a nested call answered in the order the script made them, for at most
+ *  `ms` (CODEMODE_MS; a test's shorter one). */
+export async function runPython(script: string, tools: readonly HostTool[], nested: NestedCalls, signal: AbortSignal, ms = CODEMODE_MS): Promise<ScriptAnswer> {
   let lib: Monty;
   try {
     lib = await monty();
@@ -96,17 +98,32 @@ export async function runPython(script: string, tools: readonly HostTool[], nest
   } catch (error) {
     return { text: `${CODEMODE} can't run Python here: ${MONTY_PACKAGE} could not start its worker: ${error instanceof Error ? error.message : String(error)}. Write the script in JavaScript instead. Nothing was run.`, isError: true };
   }
-  const deadline = AbortSignal.timeout(CODEMODE_MS);
+  const deadline = AbortSignal.timeout(ms);
   const stop = AbortSignal.any([signal, deadline]);
   let session: MontySession | undefined;
   let kill = () => {};
   const output: CodemodeOutputItem[] = [];
   let printed = "";
+  // print() output kept so far, across flushes: at most HOST_RESULT_MAX_CHARS, past which the script is killed.
+  let kept = 0;
+  let overPrinted = false;
+  const print = (text: string) => {
+    if (overPrinted) return;
+    const room = HOST_RESULT_MAX_CHARS - kept;
+    printed += text.slice(0, room);
+    kept += Math.min(text.length, room);
+    if (text.length > room) {
+      overPrinted = true;
+      kill();
+    }
+  };
   // print() output so far, as one text item of the answer (its last newline off, as console.log's item has none).
   const flush = () => {
     if (printed) output.push({ type: "text", text: printed.replace(/\n$/, "") });
     printed = "";
   };
+  const overPrint = () => failed(`it printed more than ${HOST_RESULT_MAX_CHARS} characters, the most one script may: its output up to there is above, and nothing after it ran.`);
+  const pastDeadline = () => failed(`the script ran past ${ms} ms.`);
   const told: { name: string; result: NestedResult }[] = [];
   const failed = (why: string): ScriptAnswer => {
     flush();
@@ -114,12 +131,12 @@ export async function runPython(script: string, tools: readonly HostTool[], nest
     return { text: [shown.text, `The script failed: ${why}`].filter(Boolean).join("\n"), isError: true, ...(shown.images.length ? { images: shown.images } : {}) };
   };
   try {
-    const { start, rerun, kept } = await scriptStart(tools, nested);
-    const byName = new Map(kept.map((tool) => [pythonName(tool.jsName), tool]));
+    const { start, rerun, kept: offered } = await scriptStart(tools, nested);
+    const byName = new Map(offered.map((tool) => [pythonName(tool.jsName), tool]));
     session = await pool.checkout({
       scriptName: "script.py",
       externalModules: { tools: new lib.ExternalModule(Object.fromEntries([...byName.keys()].map((name) => [name, () => undefined]))) },
-      limits: { maxMemory: CODEMODE_MEMORY_BYTES, maxFeedDurationSecs: CODEMODE_MS / 1000, maxSuspensions: MONTY_SUSPENSIONS },
+      limits: { maxMemory: CODEMODE_MEMORY_BYTES, maxFeedDurationSecs: ms / 1000, maxSuspensions: MONTY_SUSPENSIONS },
       osPolicy: { datetime: new Date(start.startedAt), randomStart: { seed: start.seed }, sleep: "zero" },
     });
     // The worker is this script's alone (a pool of one, never reused): past the deadline, or once the call is aborted, it
@@ -133,14 +150,21 @@ export async function runPython(script: string, tools: readonly HostTool[], nest
       }
     };
     stop.addEventListener("abort", kill, { once: true });
+    // A stop that came while the script started (its start read, its worker checked out): an abort listener added
+    // after it never hears it, so the worker goes now and no step of the script runs.
+    if (stop.aborted) {
+      kill();
+      stop.throwIfAborted();
+    }
     const answers = new Map<number, FutureResolution>();
     let calls = 0;
     // `tools` imported by a feed of its own, ahead of the script's: the script's lines keep their numbers.
     await session.feedRun("import tools");
+    stop.throwIfAborted();
     let snap: Snapshot = await session.feedStart(script, {
-      inputs: { ALL_TOOLS: kept.map((tool) => ({ name: pythonName(tool.jsName), description: tool.description })) },
+      inputs: { ALL_TOOLS: offered.map((tool) => ({ name: pythonName(tool.jsName), description: tool.description })) },
       externalLookup: { image: () => undefined },
-      printCallback: (_stream, text) => void (printed += text),
+      printCallback: (_stream, text) => print(text),
     });
     while (!(snap instanceof lib.MontyComplete)) {
       if (snap instanceof lib.FutureSnapshot) {
@@ -179,7 +203,9 @@ export async function runPython(script: string, tools: readonly HostTool[], nest
       }
       calls += 1;
       if (calls > CODEMODE_PY_CALLS) return failed(`it called a tool more than ${CODEMODE_PY_CALLS} times, the most one script may: the calls before ran, and nothing after them.`);
-      const result = await nested.call(tool.name, args, `s${snap.callId}`);
+      if (overPrinted) return overPrint();
+      // The call runs on the script's stop as well as the run's: past the deadline the host's work is cut too.
+      const result = await nested.call(tool.name, args, `s${snap.callId}`, stop);
       told.push({ name: tool.name, result });
       // A refusal, a call cut by a crash, or (in a rerun) the first call that ran now: the script ends with it.
       if (result.refused || result.interrupted || (rerun && result.fresh)) return endedWith(told, result, rerun && result.fresh && !result.refused);
@@ -188,7 +214,8 @@ export async function runPython(script: string, tools: readonly HostTool[], nest
       snap = await snap.resumeFuture();
     }
     if (signal.aborted) throw signal.reason ?? new Error(`${CODEMODE} was stopped`);
-    if (deadline.aborted) return failed(`the script ran past ${CODEMODE_MS} ms.`);
+    if (deadline.aborted) return pastDeadline();
+    if (overPrinted) return overPrint();
     flush();
     // A script whose last line is no expression ends with None: it returned nothing.
     const value = snap instanceof lib.MontyComplete && snap.output !== null ? plain(snap.output) : undefined;
@@ -196,7 +223,8 @@ export async function runPython(script: string, tools: readonly HostTool[], nest
     return { text: shown.text || "(the script returned nothing and showed nothing)", ...(shown.images.length ? { images: shown.images } : {}), ...(value !== undefined ? { structured: withoutImageData(value) as JsonValue } : {}) };
   } catch (error) {
     if (signal.aborted) throw signal.reason ?? new Error(`${CODEMODE} was stopped`);
-    if (deadline.aborted) return failed(`the script ran past ${CODEMODE_MS} ms.`);
+    if (deadline.aborted) return pastDeadline();
+    if (overPrinted) return overPrint();
     const why = failureOf(lib, error);
     if (why === undefined) throw error;
     return failed(why);
