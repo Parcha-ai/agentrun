@@ -161,12 +161,18 @@ test("a 429 or 503 Retry-After longer than the backoff is waited out, in seconds
 	const one = client(seconds.fetch, { timeoutMs: 60_000 });
 	assert.equal((await one.api.call("GET", "https://api.example.test/r", { retry: true })).ok, true);
 	assert.deepEqual(one.pauses, [3000]);
-	// An HTTP date about 5 s ahead (the date has whole seconds, so 4-5 s).
-	const dated = replies(after(503, new Date(Date.now() + 5_000).toUTCString()), ok200);
-	const two = client(dated.fetch, { timeoutMs: 60_000 });
-	assert.equal((await two.api.call("GET", "https://api.example.test/r", { retry: true })).ok, true);
-	assert.equal(two.pauses.length, 1);
-	assert.ok(two.pauses[0] >= 4_000 && two.pauses[0] <= 5_000, `paused ${two.pauses[0]} ms`);
+	// An HTTP date 5 s ahead, read on a clock held at a whole second (an HTTP date has no milliseconds): exactly 5 s.
+	const now = Date.now;
+	const frozen = Date.UTC(2026, 10, 28, 12, 0, 0);
+	Date.now = () => frozen;
+	try {
+		const dated = replies(after(503, new Date(frozen + 5_000).toUTCString()), ok200);
+		const two = client(dated.fetch, { timeoutMs: 60_000 });
+		assert.equal((await two.api.call("GET", "https://api.example.test/r", { retry: true })).ok, true);
+		assert.deepEqual(two.pauses, [5000]);
+	} finally {
+		Date.now = now;
+	}
 	// A retry rule of the vendor's own honours it too.
 	const own = replies(after(503, "2"), ok200);
 	const three = client(own.fetch, { timeoutMs: 60_000 });
