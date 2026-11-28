@@ -23,6 +23,8 @@ import { capWords } from "@/components/NeedsYou";
 import { sendUpload, type Upload } from "@/lib/uploads";
 import { cn } from "@/lib/utils";
 
+/** No agents, one array for every render: the selection's effect follows the list by identity. */
+const NO_AGENTS: Agent[] = [];
 const NOTES = { "input.content": "Required. The run's first message.", file_ids: "Empty names none.", revision: "Empty runs the current revision.", effort: "How hard the model thinks. Empty uses the agent's own.", max_cost_usd: "This run's spend cap in dollars. Empty uses the agent's default cap, or none if it has none.", repo: "The GitHub repository the run reaches, owner/name. It must be one the agent is bound to; empty takes the agent’s one repository." } as const;
 
 export type StartResult = { status: number; ms: number; body: unknown; runId?: string };
@@ -32,7 +34,10 @@ export type StartResult = { status: number; ms: number; body: unknown; runId?: s
 export const startFailure = (e: unknown, ms: number): StartResult =>
   e instanceof ClientError ? { status: e.status, ms, body: { error: { ...e.toApiError(), ...(e.fields ? { fields: e.fields } : {}) } } } : { status: 0, ms, body: { error: { code: "network", message: String(e) } } };
 export type PlaygroundProps = {
-  agents: Agent[];
+  /** The agents to start a run on; undefined while the page reads them (or could not): the row with `lead` and `notice`
+   *  only. The Playground draws `lead` in the same place throughout, so the page's field there is one element, kept (an
+   *  open list on it stays open) when the read lands. */
+  agents?: Agent[];
   revisions?: { revision: string; version: number; current: boolean; note: string | null; definition?: Record<string, unknown> }[];
   efforts: string[];
   origin: string;
@@ -63,7 +68,8 @@ export type PlaygroundProps = {
 
 /** The hosted console's API playground for starting a run: the request on the left (a form, or its JSON), the same
  *  request as code on the right, and the server's answer, with a way into the run it started. */
-export function Playground({ lead, notice, agents, revisions = [], efforts, origin, agentId: initialAgent, onAgent, onRevision, onSend, onOpenRun, result: initialResult = null, live, limits, upload = sendUpload, removeUpload, onMoveToRunner }: PlaygroundProps) {
+export function Playground({ lead, notice, agents: given, revisions = [], efforts, origin, agentId: initialAgent, onAgent, onRevision, onSend, onOpenRun, result: initialResult = null, live, limits, upload = sendUpload, removeUpload, onMoveToRunner }: PlaygroundProps) {
+  const agents = given ?? NO_AGENTS;
   const [agentId, setAgentId] = useState(initialAgent ?? agents[0]?.agent_id ?? "");
   // The selection follows the list and the page's choice: an agent that left the list (archived) is not kept. Another
   // agent runs its current revision: a revision picked for the last one is not its.
@@ -189,7 +195,16 @@ export function Playground({ lead, notice, agents, revisions = [], efforts, orig
     if (r.status >= 200 && r.status < 300) attachments.clear();
   };
   const placeholder = !json ? `The run's ${form ? "message" : "first message"}, e.g. Summarize the standup: we ship Friday.` : kind === "workflow" ? '{ "subject": "...", "body": "..." }' : "The agent's input, as JSON";
-  if (!agents.length) return <>{lead && <div className="flex shrink-0 flex-wrap items-center gap-3 border-b px-5 py-3 md:px-6">{lead}</div>}{notice}<section aria-label="Request" className="space-y-4 p-5 md:p-8"><h2 className="text-lg font-semibold">Start a run</h2><p className="text-body text-muted-foreground">Connect an existing native agent or create an agent before starting a run.</p><a href="#/agents/connect" className="block text-body underline underline-offset-2">Connect agent</a><a href="#/agents/new" className="block text-body underline underline-offset-2">Create an agent</a><a href="#/templates" className="block text-body underline underline-offset-2">Browse templates</a><dl className="space-y-2">{Object.entries(NOTES).map(([name, note]) => <div key={name}><dt className="font-mono text-body">{name}</dt><dd className="text-small text-muted-foreground">{note}</dd></div>)}</dl><code className="text-small">/v2/agents/{"{agent_id}"}/runs</code></section></>;
+  // No agents, or none read yet: the same outer element and row as below, so `lead` keeps its place, and its element,
+  // when the list lands (the wrapper lays out as nothing, display: contents, as a fragment did; the agent field's place
+  // in the row is held empty).
+  if (!agents.length) return (
+    <div className="contents">
+      {(lead || !given) && <div className="flex shrink-0 flex-wrap items-center gap-3 border-b px-5 py-3 md:px-6">{lead}{null}{!given && <span className="min-w-0 break-all font-mono text-small">{!lead && <><span className="text-primary-text">POST</span> </>}<span className="text-muted-foreground">/v2/agents/{"{agent_id}"}/runs</span></span>}</div>}
+      {notice}
+      {given && <section aria-label="Request" className="space-y-4 p-5 md:p-8"><h2 className="text-lg font-semibold">Start a run</h2><p className="text-body text-muted-foreground">Connect an existing native agent or create an agent before starting a run.</p><a href="#/agents/connect" className="block text-body underline underline-offset-2">Connect agent</a><a href="#/agents/new" className="block text-body underline underline-offset-2">Create an agent</a><a href="#/templates" className="block text-body underline underline-offset-2">Browse templates</a><dl className="space-y-2">{Object.entries(NOTES).map(([name, note]) => <div key={name}><dt className="font-mono text-body">{name}</dt><dd className="text-small text-muted-foreground">{note}</dd></div>)}</dl><code className="text-small">/v2/agents/{"{agent_id}"}/runs</code></section>}
+    </div>
+  );
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
       <div aria-label="Playground agent" className="flex shrink-0 flex-wrap items-center gap-3 border-b px-5 py-3 md:px-6">
