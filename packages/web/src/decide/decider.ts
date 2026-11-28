@@ -258,7 +258,14 @@ export function deciderFrom(provider: DecisionAsker, options: DeciderOptions): W
     const text = JSON.stringify({ state: request.state, questions: request.questions });
     const bytes = Buffer.byteLength(text);
     const fee: Fee = { name, by: provider.id, usd: holdOf(price, bytes), basis: `the most a request of ${bytes} bytes may cost at ${provider.id}'s price` };
-    const go = () => provider.decide(request, { decisionId: `web-${request.kind}-${sha256(text).slice(0, 24)}`, signal: ctx.signal, deadlineMs: ctx.deadlineMs });
+    // A request on a call already stopped asks no hold. One stopped while its hold was admitted is never sent, and is
+    // unsent, so decisionPay settles it at $0: a provider's own pre-send stop reads as a failure that may have billed.
+    const unsent = () => Object.assign(new DecideError("aborted", `${provider.id}'s request was stopped before it was sent`), { unsent: true });
+    if (ctx.signal.aborted) throw unsent();
+    const go = async () => {
+      if (ctx.signal.aborted) throw unsent();
+      return provider.decide(request, { decisionId: `web-${request.kind}-${sha256(text).slice(0, 24)}`, signal: ctx.signal, deadlineMs: ctx.deadlineMs });
+    };
     const outcome = await (ctx.pay ? ctx.pay(fee, go, (answered) => ({ usd: answered.cost_usd, basis: answered.cost_basis })) : go());
     const cost: Cost = { usd: outcome.cost_usd, basis: outcome.cost_basis };
     const tokens: Tokens | null = outcome.usage
