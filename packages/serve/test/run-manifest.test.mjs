@@ -78,6 +78,37 @@ for (const harness of ["claude-agent", "codex"]) {
     const { said } = await run(api, `on-${harness}`, "Look at these.", ids);
     assert.deepEqual(said, ['Look at these.\n\nFiles for this run: "inputs/a.md" (5 B), "inputs/docs/b.csv" (1.5 KB).']);
   });
+
+  // An agent with no tool that reads files (no read, no bash) is still handed them, so its start warns of the gap, and its
+  // first message says they are attached but out of its reach, so its model never says it will open one and then can't.
+  test(`a ${harness} run given files its agent has no tool to read: its start warns, and its first message says so`, { timeout: 90_000 }, async (t) => {
+    const server = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
+    const { api } = server;
+    const ids = [await upload(server, "a.md", Buffer.from("alpha"))];
+    assert.equal((await api("POST", "/agents", agent(`blind-${harness}`, { harness, tools: [] }))).status, 201);
+    const started = await api("POST", `/agents/blind-${harness}/runs`, { input: { content: "Look at this." }, file_ids: ids });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    const { rows } = await follow(api, started.body.run_id, ["completed"], { deadlineMs: 55_000 });
+    // The warning and the line, as one: each is what the start and the model are told.
+    assert.deepEqual({
+      warnings: started.body.warnings?.map((w) => [w.field, w.reason, /no tool that reads files/.test(w.message)]),
+      said: rows.filter((row) => row.kind === "user_message").map((row) => row.text),
+    }, {
+      warnings: [["file_ids", "no_file_tool", true]],
+      said: ['Look at this.\n\nFiles attached to this run, but this agent has no tool that reads files: "inputs/a.md" (5 B).'],
+    });
+
+    // The same files, inline (POST /runs): the same warning. An agent that reads, or a run with no files: none.
+    const inline = await api("POST", "/runs", { external: { source: "walk", kind: "x", id: `blind-${harness}`, version: 1 }, definition: { name: "Blind", instructions: "Answer.", harness, skills: [], tools: [] }, input: { content: "Look at this." }, file_ids: ids });
+    assert.equal(inline.status, 202, JSON.stringify(inline.body));
+    assert.deepEqual(inline.body.warnings?.map((w) => w.field), ["file_ids"]);
+    assert.equal((await api("POST", "/agents", agent(`reader-${harness}`, { harness, tools: ["read"] }))).status, 201);
+    const reads = await api("POST", `/agents/reader-${harness}/runs`, { input: { content: "Look at this." }, file_ids: ids });
+    assert.equal(reads.body.warnings, undefined, "a reader: no warning");
+    const none = await api("POST", `/agents/blind-${harness}/runs`, { input: { content: "Hi." } });
+    assert.equal(none.body.warnings, undefined, "no files: no warning");
+    for (const id of [inline.body.run_id, reads.body.run_id, none.body.run_id]) await follow(api, id, ["completed"], { deadlineMs: 55_000 });
+  });
 }
 
 test("the line names at most MANIFEST_ENTRIES files, then counts the rest; sizes read as a person reads them; each name quoted, so no name breaks the line", () => {
