@@ -196,3 +196,66 @@ test("a poll that answered pending is kept when the next call of its tool asks f
   const text = graderInput(GRADER, "task", run);
   assert.ok(!text.includes("[collapsed"), text.slice(0, 400));
 });
+
+test("a file the cut leaves out of <files> is never pointed at: each call that held its content keeps it", () => {
+  // Own files of 130k, a 10k cache under a dot folder (tool state, left out first past the room) and 130k of calls.
+  const MARK = "cache-7f3a: the layout the composition held at frame 0";
+  const cache = pretty({ note: MARK, frames: Array.from({ length: 110 }, (_, i) => ({ frame: i, layout: "l".repeat(60) })) });
+  const notes = (k) => `# Notes ${k}\n${"A line of the run's own notes, whole when it fits.\n".repeat(1_300)}`;
+  const run = {
+    answer: "{}",
+    calls: [
+      call("read", { path: "film/.hyperframes/cache.json" }, cache),
+      call("mcp:hf/inspect", { what: "layout" }, pretty({ ok: true, cache: JSON.parse(cache) })),
+      ...Array.from({ length: 11 }, (_, i) => call("codemode", { script: `step(${i})` }, `${i} `.padEnd(10_000, "r"))),
+    ],
+    mcpCalls: [],
+    finalFiles: [
+      ...[notes(1), notes(2)].map((text, i) => ({ name: `notes/${i + 1}.md`, bytes: text.length, text })),
+      { name: "film/.hyperframes/cache.json", bytes: cache.length, text: cache },
+    ],
+  };
+  const text = graderInput(GRADER, "Make a film", run);
+  assert.match(text, /tool state[^\n]*film\/\.hyperframes\/cache\.json \(\d+\)/, "the cut lists the cache by name alone");
+  assert.ok(!text.includes("[the file film/.hyperframes/cache.json in <files>]"), "no call points at it");
+  assert.ok(lineOf(text, 1, "read").includes(MARK), "the read shows the cache's head");
+  assert.ok(lineOf(text, 2, "mcp:hf/inspect").includes(MARK), "the answer that nested it shows it too");
+});
+
+test("an answer's echo of its own arguments stays when the cut takes those arguments", () => {
+  // A call whose arguments are long enough that their list is cut, and whose answer repeats them.
+  const MIDDLE = "the-middle-of-the-sent-text";
+  const sent = `${"head of the text sent ".repeat(800)}${MIDDLE}${" tail of the text sent".repeat(800)}`;
+  const run = {
+    answer: "{}",
+    calls: [
+      call("mcp:tts/submit", { text: sent }, pretty({ status: "queued", recipe: { text: sent }, request_id: "r-1" })),
+      ...Array.from({ length: 30 }, (_, i) => call("codemode", { script: `step(${i}) ${"s".repeat(4_000)}` }, `${i} `.padEnd(4_000, "r"))),
+    ],
+    mcpCalls: [],
+  };
+  const max = 60_000;
+  const text = graderInput(GRADER, "Voice it", run, max);
+  const line = lineOf(text, 1, "mcp:tts/submit");
+  assert.ok(!line.slice(0, line.indexOf(" -> ")).includes(MIDDLE), "the cut takes the argument's middle");
+  assert.ok(!line.includes("[the same as this call's arguments]"), "the answer does not point at what the cut took");
+});
+
+test("the link check matches a cited link against the calls as the run made them, not as shown once", () => {
+  const URL = "https://cdn.example/files/render-42/final.mp4";
+  const answerOf = pretty({ request_id: "render-42", video: { url: URL, content_type: "video/mp4", file_size: 8_170_794 }, log: "rendered ".repeat(60) });
+  const run = {
+    answer: `{"status":"saved","video":"${URL}"}`,
+    calls: [
+      call("web_fetch", { url: "https://lang.example/about/" }, JSON.stringify({ ok: true, url: "https://lang.example/about/", status: 200, text: "About." })),
+      call("mcp:render/result", { request_id: "render-42" }, answerOf),
+      call("codemode", { script: "x" }, "p".repeat(200_000)),
+    ],
+    mcpCalls: [],
+    finalFiles: [{ name: "evidence/render.json", bytes: answerOf.length, text: answerOf }],
+  };
+  const text = graderInput(GRADER, "Render it", run);
+  assert.ok(lineOf(text, 2, "mcp:render/result").includes("[the file evidence/render.json in <files>]"), "the answer is shown once, as a pointer");
+  const links = text.slice(text.indexOf("<link-check"), text.indexOf("</link-check>"));
+  assert.match(links, /final\.mp4 — matches call 2/);
+});

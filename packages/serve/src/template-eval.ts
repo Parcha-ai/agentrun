@@ -912,14 +912,26 @@ export function outputVerdict(pkg: Package, result: unknown): GraderResult | und
 export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: string, run: RunRecord, max = GRADER_PROMPT_MAX): string {
   const plain = inputOf(grader, input, run, max);
   if (plain.fits) return plain.text();
-  // Past the cap, what the input would show twice is shown once before anything is cut (shownOnce), each kind counted.
-  const once = shownOnce(run);
-  return once ? inputOf(grader, input, once.run, max, once.counts).text() : plain.text();
+  // Past the cap, what the input would show twice is shown once before anything is cut (shownOnce), each kind counted. A
+  // pointer stands only where the input still shows whole what it points at: one whose file or arguments the cut takes
+  // is undone and the input built again. Each pass undoes at least one pointer, so this ends.
+  const skip = { files: new Set<string>(), echoes: new Set<number>() };
+  for (;;) {
+    const once = shownOnce(run, skip);
+    if (!once) return plain.text();
+    const text = inputOf(grader, input, once.run, max, once.counts, run).text();
+    const lostFiles = [...once.shows.files].filter(([, whole]) => !text.includes(whole));
+    const lostEchoes = [...once.shows.echoes].filter(([, args]) => args.some((arg) => !text.includes(arg)));
+    if (!lostFiles.length && !lostEchoes.length) return text;
+    for (const [name] of lostFiles) skip.files.add(name);
+    for (const [call] of lostEchoes) skip.echoes.add(call);
+  }
 }
 
 /** graderInput for `run` as given (`once` absent) or as shownOnce made it (`once` its counts, the agent's skill copies
- *  listed by name): whether it fits whole, and its text. */
-function inputOf(grader: Extract<Grader, { type: "llm" }>, input: string, run: RunRecord, max: number, once?: ShownOnce): { fits: boolean; text: () => string } {
+ *  listed by name): whether it fits whole, and its text. The link check reads `source`'s calls, the run as it was: a
+ *  link a call's answer held is matched there, whatever pointer shows that answer once. */
+function inputOf(grader: Extract<Grader, { type: "llm" }>, input: string, run: RunRecord, max: number, once?: ShownOnce, source: RunRecord = run): { fits: boolean; text: () => string } {
   const target = grader.target ? targetOf(run.answer, grader.target) : undefined;
   const at = run.now === undefined ? undefined : instantOf(run.now);
   const before = [
@@ -958,7 +970,7 @@ function inputOf(grader: Extract<Grader, { type: "llm" }>, input: string, run: R
   const wrap = (text: string) => `<tool-calls untrusted>\n${text}\n</tool-calls>`;
   const wrapMcp = (text: string) => `<mcp-calls untrusted>\nThe calls the MCP servers received, with their arguments, in order:\n${text}\n</mcp-calls>`;
   // A run that searched or fetched: each link its answer cites, matched against its web calls' urls in code (link-check.ts).
-  const links = linkCheck(run.answer, run.calls);
+  const links = linkCheck(run.answer, source.calls);
   const linked = links === undefined ? [] : [`<link-check untrusted>\n${links}\n</link-check>`];
   const wrapFiles = (text: string) => `<files untrusted>\nThe files in the run's work folder when it ended, each text file whole unless marked cut (a call below that shows one only in part shows a cut of it):\n${text}\n</files>`;
   const wholeOf = (list: readonly { head: string; result: string }[]) => list.reduce((sum, one) => sum + one.head.length + one.result.length + 3, 0);
@@ -1051,9 +1063,16 @@ export function skillCopy(name: string | undefined): boolean {
  *    more, is a pointer to that file, which <files> shows: files come ahead of calls, so the bytes stay where a cut
  *    reaches them last;
  *  - the agent's skill copies (skillCopy) are listed by name (inputOf, once given).
- *  Undefined when there is nothing to show once. */
-export function shownOnce(run: RunRecord): { run: RunRecord; counts: ShownOnce } | undefined {
+ *  `skip` names the files never pointed at and the calls (by index) whose answers never point at their arguments.
+ *  `shows` is what the pointers stand on: each pointed file's text, and each pointing call's echoed arguments as their
+ *  JSON in its arguments' JSON, which graderInput checks its input still shows whole. Undefined when there is nothing
+ *  to show once. */
+export function shownOnce(
+  run: RunRecord,
+  skip: { files?: ReadonlySet<string>; echoes?: ReadonlySet<number> } = {},
+): { run: RunRecord; counts: ShownOnce; shows: { files: Map<string, string>; echoes: Map<number, string[]> } } | undefined {
   const counts: ShownOnce = { polls: 0, echoes: 0, files: 0, skills: 0 };
+  const shows = { files: new Map<string, string>(), echoes: new Map<number, string[]>() };
   const parsed = run.calls.map((call) => jsonOf(call.result));
   const pendingOnly = parsed.map((value) => {
     const statuses: unknown[] = [];
@@ -1062,12 +1081,13 @@ export function shownOnce(run: RunRecord): { run: RunRecord; counts: ShownOnce }
   });
   const asked = run.calls.map((call) => keyOf(call.arguments ?? null));
   const nextOf = (i: number) => run.calls.findIndex((call, j) => j > i && call.tool === run.calls[i]!.tool);
-  const shown = (run.finalFiles ?? []).filter((file) => file.text !== undefined && file.name !== undefined && !skillCopy(file.name) && file.text.length >= ONCE_MIN_CHARS);
+  const shown = (run.finalFiles ?? []).filter((file) => file.text !== undefined && file.name !== undefined && !skillCopy(file.name) && !skip.files?.has(file.name) && file.text.length >= ONCE_MIN_CHARS);
   const fileKeys = new Map<string, string>();
+  const textOf = new Map<string, string>();
   for (const file of shown) {
     const value = jsonOf(file.text);
     const key = value === undefined ? JSON.stringify(file.text) : keyOf(value);
-    if (!fileKeys.has(key)) fileKeys.set(key, file.name!);
+    if (!fileKeys.has(key)) fileKeys.set(key, file.name!), textOf.set(file.name!, file.text!);
   }
   const pointed = new Set<string>();
   const calls = run.calls.map((call, i) => {
@@ -1084,15 +1104,16 @@ export function shownOnce(run: RunRecord): { run: RunRecord; counts: ShownOnce }
       return { ...call, result: `[the file ${fileOfAll} in <files>]` };
     }
     if (parsed[i] === undefined || typeof parsed[i] !== "object" || parsed[i] === null) return call;
-    const own = new Set<string>();
-    if (call.arguments !== undefined) walkJson(call.arguments, (_key, item) => void (sizeOf(item) >= ONCE_MIN_CHARS && own.add(keyOf(item))));
+    const own = new Map<string, string>();
+    if (call.arguments !== undefined && !skip.echoes?.has(i)) walkJson(call.arguments, (_key, item) => void (sizeOf(item) >= ONCE_MIN_CHARS && !own.has(keyOf(item)) && own.set(keyOf(item), JSON.stringify(item))));
     let echoed = false;
+    const args = new Set<string>();
     const replace = (value: unknown, root: boolean): unknown => {
       if (!root && sizeOf(value) >= ONCE_MIN_CHARS) {
         const key = keyOf(value);
         const file = fileKeys.get(key);
         if (file !== undefined) return pointed.add(file), `[the file ${file} in <files>]`;
-        if (own.has(key)) return (echoed = true), "[the same as this call's arguments]";
+        if (own.has(key)) return (echoed = true), args.add(own.get(key)!), "[the same as this call's arguments]";
       }
       if (Array.isArray(value)) return value.map((item) => replace(item, false));
       if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, replace(item, false)]));
@@ -1101,14 +1122,15 @@ export function shownOnce(run: RunRecord): { run: RunRecord; counts: ShownOnce }
     const before = pointed.size;
     const value = replace(parsed[i], true);
     const changed = echoed || pointed.size !== before || JSON.stringify(value) !== JSON.stringify(parsed[i]);
-    if (echoed) counts.echoes++;
+    if (echoed) counts.echoes++, shows.echoes.set(i, [...args]);
     if (!changed) return call;
     return { ...call, result: JSON.stringify(value, null, indentOf(call.result)) };
   });
   counts.files = pointed.size;
+  for (const name of pointed) shows.files.set(name, textOf.get(name)!);
   counts.skills = (run.finalFiles ?? []).filter((file) => file.text !== undefined && skillCopy(file.name)).length;
   if (!counts.polls && !counts.echoes && !counts.files && !counts.skills) return undefined;
-  return { run: { ...run, calls }, counts };
+  return { run: { ...run, calls }, counts, shows };
 }
 
 /** A JSON value as one text whatever its objects' key order: equal values, equal keys. */

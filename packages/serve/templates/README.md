@@ -389,6 +389,8 @@ answer when it is one JSON object and nothing else. The report lists it as the g
   - a value of 200 characters or more in a call's answer that equals one of its own arguments points at them;
   - a value equal to a final file's whole content points at that file in `<files>`;
   - the package's skills copied under `.agents/skills` are listed by path and size.
+  A pointer stands only where the input still shows whole what it points at; one whose file or arguments the cut
+  takes is undone. The link check reads the calls as the run made them.
 
   Then the run's final files take room first, but never so much that the calls'
   arguments get less than half of it (or all they need); the files under a folder whose name starts with `.` (a
