@@ -126,7 +126,7 @@ const agents = {
       { hash: "#/agents", bar: "Agents", whole: true },
       { hash: "#/agents?archived=true", bar: "Archived agents", whole: true },
       { hash: "#/agents/new?editor", bar: "New agent" },
-      { hash: "#/agents/connect", bar: "Connect agent" },
+      { hash: "#/agents/connect", bar: "Connect agent", whole: true },
       { hash: "#/agents/sorter", bar: "Sample sorter" },
       { hash: "#/agents/sorter/runs", bar: "Sample sorter" },
       { hash: "#/agents/sorter/versions", bar: "Sample sorter" },

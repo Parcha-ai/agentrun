@@ -42,8 +42,9 @@ export function NativeConnections({ v2, initialSource = "server" }: { v2: Client
     } catch (e) { setError(problemOf(e)); }
     finally { setBusy(false); }
   };
-  // The shared frame of a page under Agents (a connected agent's, New agent): the bar with the back arrow and the page's
-  // name stays in view, and the body under it is the box that scrolls. Each tab's hand-off stays in its own section.
+  // The shared frame of a page under Agents (a connected agent's, New agent): beside the sidebar the bar with the back arrow
+  // and the page's name stays in view and the body under it is the box that scrolls; on a phone the page scrolls as a
+  // whole, bar and all (pageClass). Each tab's hand-off stays in its own section.
   return <section className={pageClass} aria-label="Connect agent">
     <header className={cn(pageToolbarClass, "gap-2 px-5")}>
       <Button size="icon" variant="ghost" aria-label="Back" title="Back" onClick={() => goBack("#/agents")}><ArrowLeft aria-hidden /></Button>
