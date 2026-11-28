@@ -369,18 +369,22 @@ test("a character split across two SSH data frames arrives whole, on stdout and 
 	const { fake, host } = await setup(t);
 	const id = await running(host);
 	const text = "é😀ü\r\nend";
+	const pieces = { stdout: [...Buffer.from(text)].map((byte) => [byte]), stderr: [[0xf0], [0x9f, 0x98], [0x80]] };
+	// Lockstep: the gateway writes each piece only once the one before it has reached the exec's reader, so no two can
+	// be read as one, however late the reader runs.
+	const arrivals = { stdout: [], stderr: [] };
+	const waiting = { stdout: undefined, stderr: undefined };
+	const arrived = (which, count) => (arrivals[which].length >= count ? Promise.resolve() : new Promise((resolve) => (waiting[which] = { count, resolve })));
 	fake.gateway.script = (command, stream) => {
 		if (!command.includes("split")) return false;
 		void (async () => {
 			// The pid wrapper's line first, as its sh writes it.
 			stream.stderr.write("4242 4243\n");
-			for (const byte of Buffer.from(text)) {
-				stream.write(Buffer.from([byte]));
-				await new Promise((resolve) => setImmediate(resolve));
-			}
-			for (const piece of [[0xf0], [0x9f, 0x98], [0x80]]) {
-				stream.stderr.write(Buffer.from(piece));
-				await new Promise((resolve) => setImmediate(resolve));
+			for (const [which, to] of [["stdout", stream], ["stderr", stream.stderr]]) {
+				for (const [i, piece] of pieces[which].entries()) {
+					to.write(Buffer.from(piece));
+					await arrived(which, i + 1);
+				}
 			}
 			stream.exit(0);
 			stream.end();
@@ -389,8 +393,19 @@ test("a character split across two SSH data frames arrives whole, on stdout and 
 	};
 	const proc = await host.exec(id, ["split"], CTX);
 	await proc.end();
-	const [out, err] = await Promise.all([proc.stdout.toArray(), proc.stderr.toArray()]);
-	assert.ok(out.length > 1, "the output came in more than one frame");
+	const read = async (which) => {
+		for await (const chunk of proc[which]) {
+			arrivals[which].push(Buffer.from(chunk));
+			if (waiting[which] && arrivals[which].length >= waiting[which].count) {
+				waiting[which].resolve();
+				waiting[which] = undefined;
+			}
+		}
+		return arrivals[which];
+	};
+	const [out, err] = await Promise.all([read("stdout"), read("stderr")]);
+	assert.equal(out.length, pieces.stdout.length, "each byte of the output came in a frame of its own");
+	assert.equal(err.length, pieces.stderr.length, "each piece of the split character came in a frame of its own");
 	assert.equal(await proc.wait(), 0);
 	assert.equal(Buffer.concat(out).toString("utf8"), text);
 	assert.equal(Buffer.concat(err).toString("utf8"), "😀", "the pid line is the adapter's; past it, the split character");
