@@ -47,7 +47,7 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { readLaunchBody } = await import("../dist/run-launch.js");
 const { promotionsOf, putGrade, GRADER_PROMPT, graderVerdictOf, gradeAnswers, compareAnswers, answersPair, COMPARE_UNREAD, COMPARE_CAP_HELD, COMPARE_STALE } = await import("../dist/learn/promote.js");
-const { answerJudged, answerOf, decideCheck, differentDecisionWords, notDecidedWords, unreadWords, NEVER_WORD_FOR_WORD } = await import("../dist/runner/promotion.js");
+const { answerJudged, answerOf, checkScoreOf, decideCheck, differentDecisionWords, notDecidedWords, unreadWords, NEVER_WORD_FOR_WORD } = await import("../dist/runner/promotion.js");
 const { graderAsk } = await import("../dist/runner/compare-end.js");
 const { check: checkFields, READABLE_MIN } = await import("../dist/learn/field-check.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
@@ -56,7 +56,7 @@ const { workflowDigest } = await import("../dist/runner/workflow-first.js");
 const { askedForCompile } = await import("../dist/learn/compile.js");
 const { secretsShown } = await import("../dist/learning.js");
 const { readAudits } = await import("../dist/learn/audit.js");
-const { agentCostOverStore } = await import("../dist/store-reads/learning.js");
+const { agentCostOverStore, servingReplayOf } = await import("../dist/store-reads/learning.js");
 
 const SEAL_KEY = Buffer.alloc(32, 7);
 const MODEL = "claude-sonnet-5-5";
@@ -688,6 +688,19 @@ test("an unread comparison counts neither way: promoted on 2 of 2 readable, held
   assert.deepEqual([stopped.decided, stopped.check.stopped, stopped.check.undecided], ["hold", true, true], stopped.reason);
   assert.ok(stopped.reason.includes(notDecidedWords(0, 3, 3)), stopped.reason);
   assert.match(stopped.reason, /, and this was the recompile's check, so it stops: /);
+});
+
+test("an unread comparison is out of both sides' accuracy: the agent's count, the cost summary's shares and the replay's score read the inputs that could be compared", async () => {
+  const same = { same: true, grader: "fast-1" };
+  const unread = { same: false, unread: true, grader: "fast-1", differs_on: `${COMPARE_UNREAD}: its reply was not the verdict asked for, twice` };
+  const promoted = await decide({}, [same, same, unread]);
+  assert.equal(promoted.decided, "promote", promoted.reason);
+  // Neither side: the agent's answer on the unread input is not counted right, as the workflow's is not counted wrong.
+  assert.deepEqual([promoted.check.alone, promoted.check.agreed, promoted.check.agent_agreed, promoted.check.unread], [3, 2, 2, 1]);
+  // Promoted on 2 of 2 read: the cost summary says 100%, never 66.7%, on the 2 it could compare.
+  assert.deepEqual(servingReplayOf([promoted], [{ path: "workflow", workflow: "answer" }]), { n: 3, workflow_pct: 100, agent_pct: 100, cleared: true, agreed: 2, alone: 2, agree_min: 0.8 });
+  // The replay's score: decided on the 2 it could compare, no accuracy lost on the unread one.
+  assert.deepEqual(checkScoreOf(promoted.check), { n: 2, agree: 2, agent_acc: 1, wf_acc: 1, delta: 0, handed_back: 0 });
 });
 
 test("graderAsk: a reply's text, a cap refusal as refused (nothing sent), any other failure as failed, with pi-ai's retries off", async () => {
