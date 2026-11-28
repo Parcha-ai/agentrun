@@ -36,19 +36,19 @@ import { WORKSPACE_NAME } from "./workspace-scope.js";
  *    revision back, and archives it before its delete (or unarchives it, the triggers its archive turned off on again
  *    when the server has the launch hook, each one the apply would make). That is more than inline runs give its token:
  *    it makes agents and revisions that stay, archives and deletes any agent made here and purges any run of one, as the
- *    whole server's token does, and with the launch hook its apply makes schedule, feed and webhook triggers (a webhook
- *    outside a workspace alone). A trigger the apply can't make here is skipped, and said (apiOnlyTriggerSkipped). One
+ *    whole server's token does, and with the launch hook its apply makes schedule and feed triggers (never a webhook,
+ *    whose secret its answer would not show). A trigger the apply can't make here is skipped, and said (apiOnlyTriggerSkipped). One
  *    the agent had before the profile stays as it was:
  *    without the hook, an enabled one still fires here on this server's keys until it is turned off (below) or the agent
  *    is archived;
  *  - a backend reads the triggers (their list, one, its firings) and turns one on or off (updateTrigger, `enabled` alone:
  *    apiOnlyTriggerEdit), since a trigger whose firings failed FAILURES_TO_PAUSE times in a row turns itself off and
- *    there is no console here to turn it on in. It turns one on under the apply's rule: a schedule, a feed or a webhook,
- *    with the launch hook. Making, deleting, firing a trigger and rotating its secret stay refused to an unscoped request
+ *    there is no console here to turn it on in. It turns one on under one rule: a schedule, a feed or a webhook (made in
+ *    a workspace), with the launch hook. Making, deleting, firing a trigger and rotating its secret stay refused to an unscoped request
  *    (a scoped one: WORKSPACE_ROUTES, where a webhook's make and its rotation show its signing secret once);
  *  - with the launch hook, a webhook trigger's sender POSTs to its own hook (receiveHook on /v2/hooks/{trigger_id}, no
- *    token: its signature is the check, push-handler.ts), so the firing goes to the backend. Only a trigger the apply
- *    would make takes one (apiOnlyTurnsOn): any other id answers as one that names no trigger, and so does GitHub's hook,
+ *    token: its signature is the check, push-handler.ts), so the firing goes to the backend. Only a trigger it would
+ *    turn on takes one (apiOnlyTurnsOn): any other id answers as one that names no trigger, and so does GitHub's hook,
  *    which every agent here shares. A path under a hook (Composio's) is not served;
  *  - an API-only server has no owner, so the token is the backend's own, as with take-over: it saves the Composio servers
  *    its agents need through the preset (saveComposioServer), saves over or deletes only a server it saved
@@ -81,23 +81,23 @@ export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "getWrapped",
 ]);
 
-/** The trigger sources an apply on an API-only server makes once the server has the launch hook. A schedule and a feed
- *  fire on its own clock; a webhook fires on a signed request to its own hook (/v2/hooks/{trigger_id}, served with the
- *  launch hook: servedApiOnly). Each firing goes to the backend in front of it (trigger-launch-hook.ts), which starts the
+/** The trigger sources an API-only server with the launch hook turns on and fires. A schedule and a feed fire on its own
+ *  clock, and its apply makes them; a webhook, made with POST /triggers in a workspace alone (apiOnlyTriggerSkipped),
+ *  fires on a signed request to its own hook (/v2/hooks/{trigger_id}, served with the launch hook: servedApiOnly). Each firing goes to the backend in front of it (trigger-launch-hook.ts), which starts the
  *  run through the API on its own keys and budget, never on this server's model key. A GitHub or Composio trigger is
  *  delivered to a hook every agent here shares, and an email trigger reads the account Settings → Email saves: none of
  *  them is made here, hook or not. */
 export const API_ONLY_HOOKED_KINDS: ReadonlySet<string> = new Set(["schedule", "feed", "webhook"]);
 
 /** Why an apply on an API-only server (and its dry run's plan) does not make `trigger` of the `packageName` template, or
- *  undefined for one it makes: a source of API_ONLY_HOOKED_KINDS when the server has the launch hook (`hooked`). Without
- *  it, those are not_set_up_here (set the hook and apply again); any other source is not_an_option, hook or not. A
- *  webhook is not_an_option in a workspace (`scoped`), hook or not: an apply's answer shows no signing secret, so there
- *  it is made with POST /triggers alone, whose first answer shows it once. */
-export function apiOnlyTriggerSkipped(packageName: string, trigger: { name?: unknown; source?: unknown }, hooked: boolean, scoped: boolean): { reason: typeof NOT_SET_UP | "not_an_option"; message: string } | undefined {
+ *  undefined for one it makes: a schedule or a feed when the server has the launch hook (`hooked`). Without it, those are
+ *  not_set_up_here (set the hook and apply again); any other source is not_an_option, hook or not. A webhook is one of
+ *  them: an apply's answer shows no signing secret (its Idempotency-Key record would keep it), so it is made with POST
+ *  /triggers in a workspace alone, whose first answer shows it once. */
+export function apiOnlyTriggerSkipped(packageName: string, trigger: { name?: unknown; source?: unknown }, hooked: boolean): { reason: typeof NOT_SET_UP | "not_an_option"; message: string } | undefined {
   const kind = trigger.source !== null && typeof trigger.source === "object" ? String((trigger.source as { kind?: unknown }).kind) : "";
   const name = `The ${packageName} template's trigger ${String(trigger.name).trim()} (${kind}) was not made`;
-  if (scoped && kind === "webhook") return { reason: "not_an_option", message: `${name}: this request is in a workspace (${WORKSPACE_NAME}), where a webhook trigger is made with POST /v2/triggers alone, whose first answer shows its signing secret once. Make it there, or start its runs through the API.` };
+  if (kind === "webhook") return { reason: "not_an_option", message: `${name}: on this server (${API_ONLY_ENV}=1) a webhook trigger is made with POST /v2/triggers in a workspace (${WORKSPACE_NAME}) alone, whose first answer shows its signing secret once; an apply's answer shows none. Make it there, or start its runs through the API.` };
   const named = `${name}: this server serves the run API only (${API_ONLY_ENV}=1)`;
   if (!API_ONLY_HOOKED_KINDS.has(kind)) return { reason: "not_an_option", message: `${named}, which serves no route or setting a ${kind} trigger needs. Start its runs through the API instead.` };
   if (hooked) return undefined;
@@ -105,7 +105,7 @@ export function apiOnlyTriggerSkipped(packageName: string, trigger: { name?: unk
 }
 
 /** Whether an API-only server turns on a trigger whose source is `kind` and whose target is `target` (its PATCH, its
- *  agent's unarchive): only one the apply would make, a source of API_ONLY_HOOKED_KINDS aimed at an agent (start_run),
+ *  agent's unarchive): only a source of API_ONLY_HOOKED_KINDS aimed at an agent (start_run),
  *  with the launch hook `hooked`, so each firing goes to the backend. A message_run firing never goes to the hook
  *  (triggers.ts): on, it would open its run on this server's keys. */
 export function apiOnlyTurnsOn(kind: string, target: string, hooked: boolean): boolean {

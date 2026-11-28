@@ -4216,14 +4216,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // by the triggers' own clock, the one POST /triggers checks by and they fire by (a template eval case's `now`).
     // A feed trigger whose urls are one array parameter given empty reads no feed: skipped, never the apply (feedLeftEmpty).
     const emptyFeeds = new Set(made.triggers.flatMap((trigger, i) => (feedLeftEmpty(trigger) ? [i] : [])));
-    // A trigger is made only when its firings have somewhere to go: on an API-only server, a schedule, a feed or (outside a
-    // workspace) a webhook with the launch hook set (api-only.ts); under the run-keys setting, for an agent whose runs owe
-    // keys, only with the launch hook, the one way a firing's run carries them (run-keys.ts). Each other is said, and stays
-    // listed, so a trigger the agent has by its name is left as it is, never removed. One left on still fires, so its skip
-    // says so and how to stop it.
+    // A trigger is made only when its firings have somewhere to go: on an API-only server, a schedule or a feed with the
+    // launch hook set (api-only.ts); under the run-keys setting, for an agent whose runs owe keys, only with the launch
+    // hook, the one way a firing's run carries them (run-keys.ts). Each other is said, and stays listed, so a trigger the
+    // agent has by its name is left as it is, never removed. One left on still fires, so its skip says so and how to stop it.
     const hooked = options.launchHook !== undefined;
     const hostless = new Map(made.triggers.flatMap((trigger, i) => {
-      const apiOnlySkip = options.apiOnly ? apiOnlyTriggerSkipped(pkg.name, trigger, hooked, workspaceNow() !== undefined) : undefined;
+      const apiOnlySkip = options.apiOnly ? apiOnlyTriggerSkipped(pkg.name, trigger, hooked) : undefined;
       const skip = apiOnlySkip ?? runKeysTriggerSkipped(pkg.name, trigger, brought, hooked);
       if (!skip) return [];
       const keptOn = had.find((row) => row.enabled && row.name === String(trigger.name).trim());
@@ -5351,7 +5350,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // read (push-handler.ts).
     if (found.name === "receiveHook") {
       // An API-only server takes a trigger's own hook alone (no source's whose key is the server's, as GitHub's is), for a
-      // trigger its apply would make, so the firing goes to the backend (api-only.ts).
+      // trigger it would turn on, so the firing goes to the backend (api-only.ts).
       const hookAdapters = options.apiOnly ? adapters.filter((adapter) => adapter.settings?.scope === "trigger") : adapters;
       const takes = options.apiOnly ? (source: string, target: string) => apiOnlyTurnsOn(source, target, options.launchHook !== undefined) : undefined;
       // A body cut at its cap or its time is answered, then its socket closed: never read to its end.

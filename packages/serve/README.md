@@ -3984,16 +3984,17 @@ serves these routes alone:
   its `agent_id`), the agent's read (`GET /agents/{id}`), its revisions (`GET /agents/{id}/revisions`), a rollback
   (`POST /agents/{id}/current`), and its archive and unarchive (`POST /agents/{id}/archive`, `/unarchive`). The archive
   is what its delete (`DELETE /agents/{id}`) needs first. With the [launch hook](#launch-hook) set, the apply makes the
-  package's schedule, feed and webhook triggers, and every firing that starts a run goes to the backend, which starts it
-  through the API with the keys and budget it sends, a trigger the agent had before the profile included; the unarchive
-  turns them on again. A webhook fires on a signed request to its own hook (`POST /hooks/{trigger_id}`, no token), which
-  this profile serves only with the launch hook set and only for a webhook trigger whose firings start a run. Without
-  the hook it makes none of them (`not_set_up_here`: set the hook, or start those runs through the API), and a trigger
-  the agent already had stays as it was: an enabled one still fires here, on this server's keys, until it is turned off
-  (below) or the agent is archived, and the skip's warning says so. An apply in a workspace (`AgentRun-Workspace`)
-  makes no webhook trigger (`not_an_option`): there one is made with `POST /triggers` alone, whose first answer shows
-  its signing secret once ([Workspaces](#workspaces)). A GitHub, Composio or email
-  trigger is never made here, hook or not, since this profile refuses the hook or setting each needs (`not_an_option`).
+  package's schedule and feed triggers, and every firing that starts a run goes to the backend, which starts it through
+  the API with the keys and budget it sends, a trigger the agent had before the profile included; the unarchive turns
+  them on again. Without the hook it makes neither (`not_set_up_here`: set the hook, or start those runs through the
+  API), and a trigger the agent already had stays as it was: an enabled one still fires here, on this server's keys,
+  until it is turned off (below) or the agent is archived, and the skip's warning says so. An apply makes no webhook
+  trigger, in a workspace or not (`not_an_option`), since its answer shows no signing secret: one is made with
+  `POST /triggers` in a workspace (`AgentRun-Workspace`) alone, whose first answer shows it once
+  ([Workspaces](#workspaces)). It fires on a signed request to its own hook (`POST /hooks/{trigger_id}`, no token),
+  which this profile serves only with the launch hook set and only for a webhook trigger whose firings start a run. A
+  GitHub, Composio or email trigger is never made here, hook or not, since this profile refuses the hook or setting each
+  needs (`not_an_option`).
   Each skipped trigger is a warning under `warnings` (`triggers.<i>`), and the dry run (`dry_run: true`) plans it as
   `skip` in the same words;
 - the triggers, for a backend to see one that is off and turn it on again: their list (`GET /triggers`), one
@@ -4001,8 +4002,8 @@ serves these routes alone:
   (`PATCH /triggers/{id}` with `{"enabled": true}` or `{"enabled": false}`; from the CLI,
   `agentrun triggers update <id> --enabled` or `--no-enabled`). A trigger whose firings failed 5 times in
   a row turns itself off (`disabled.reason` `auto_paused`), and there is no console here to turn it on in. The PATCH
-  takes `enabled` alone (any other field is `422 not_allowed`), and turns on only what the apply would make: a schedule,
-  a feed or a webhook, with the launch hook set (`422` under `enabled` otherwise, since its firings would start runs on this
+  takes `enabled` alone (any other field is `422 not_allowed`), and turns on only a schedule, a feed or a webhook
+  (made in a workspace), with the launch hook set (`422` under `enabled` otherwise, since its firings would start runs on this
   server's keys or wait on a hook this profile refuses). Turning one off always works. Making, deleting or firing a
   trigger, and its secret, stay refused;
 - a Composio server's save (a new name, or a server the token saved) and the delete of a server the token saved, for a
