@@ -3024,8 +3024,9 @@ key's org has none, it builds it once, telling `onWait` "build" first:
    (a restore carries a snapshot's labels over to every machine made from it) and boxd's delete timer at 2 hours;
 2. the recipe as root through the image user's passwordless sudo: `mousepad` and `xfce4-terminal` from Ubuntu's
    universe, and `firefox-esr` from Mozilla's APT repository (Ubuntu 24.04's `firefox` is a snap, and a microVM runs no
-   snapd), its signing key held to a pinned sha256 before apt reads anything it signs; each program and its desktop
-   file (`org.xfce.mousepad`, `xfce4-terminal`, `firefox-esr`) checked;
+   snapd), its signing key held to a pinned sha256 before apt reads anything it signs, and that origin pinned before
+   its source is written: `firefox-esr*` at 500, every other package from it at -1, so it never replaces a distro
+   package; each program and its desktop file (`org.xfce.mousepad`, `xfce4-terminal`, `firefox-esr`) checked;
 3. `snapshots.create` under the name, read until boxd says `ready`;
 4. the build machine deleted and read gone, pass, fail or cancel: the id create answered, read through `get` (a
    lagging list can't hide it), and any machine of its name in the org's list, so a create whose reply was lost is
