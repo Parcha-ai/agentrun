@@ -1121,10 +1121,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  way and those after it, and writes the cut on the run's root (KINDS.releaseCut), so a release that did not finish is
    *  never silent. What the hooks booked before the cut stands; a hook still running then writes nothing more on a
    *  shutdown (the seal stands again). Before the cut is written each host's releaseCut books what it knows of the time
-   *  it could not let go (a browser session's, through now), within RELEASE_MARGIN_MS. A runner's close bounds the
-   *  release by its own window too (LoopDeps.releaseBy), whichever ends first, and a release already under way when the
-   *  shutdown comes (one a run began in the close's drain) takes both from then: its cut is set again by the window, and
-   *  its commits, the cut's charge and record among them, are taken through the seal the shutdown makes. */
+   *  it could not let go (a browser session's, through now), within the release's margin (LoopDeps.releaseMarginMs). A
+   *  runner's close bounds the release by its own window too (LoopDeps.releaseBy), whichever ends first, and a release
+   *  already under way when the shutdown comes (one a run began in the close's drain) takes both from then: its cut is set
+   *  again by the window, and its commits, the cut's charge and record among them, are taken through the seal the
+   *  shutdown makes. */
   const releaseHost = async (on: Harness | undefined): Promise<void> => {
     try {
       await releaseHostNow(on);
@@ -1173,7 +1174,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       if (books.length > 0) {
         let bookTimer: NodeJS.Timeout | undefined;
         const booking = Promise.all(books.map((book) => Promise.resolve().then(() => book(on)).catch((error: unknown) => console.warn(`[runner] a tool host's releaseCut failed: ${(error as Error)?.message ?? String(error)}`))));
-        await Promise.race([booking, new Promise<void>((resolve) => (bookTimer = setTimeout(resolve, RELEASE_MARGIN_MS)))]);
+        await Promise.race([booking, new Promise<void>((resolve) => (bookTimer = setTimeout(resolve, deps.releaseMarginMs ?? RELEASE_MARGIN_MS)))]);
         clearTimeout(bookTimer);
       }
       await on.commit((tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: KINDS.releaseCut, data }), BACKGROUND_CONTEXT).catch((error: unknown) => console.warn(`[runner] the release's cut could not be written: ${(error as Error)?.message ?? String(error)}`));

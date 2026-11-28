@@ -31,7 +31,9 @@
 // With $FAUX_BROWSER_STATE (a file), the backend's sessions outlive the run's process, as a vendor's do: each one created
 // or released is written there, and a process that starts finds the ones still running.
 // With $FAUX_BROWSER_RELEASE_HOLD (a path), a release writes `<path>.asked` and answers only once `<path>` exists: a
-// vendor's release that hangs until the test lets it go.
+// vendor's release that hangs until the test lets it go. With $FAUX_BROWSER_LIST_HOLD (a path) too, a list made once that
+// release was asked writes `<path>.asked` and answers only once `<path>` exists: a cut's let-go of the run's unheld
+// sessions (its releaseCut's booking) that hangs on the vendor's list.
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
@@ -201,6 +203,12 @@ export default function browser(env = process.env, vendor = "browserbase", signI
     },
     async list(labels) {
       try {
+        const listHold = process.env.FAUX_BROWSER_LIST_HOLD;
+        const releaseHold = process.env.FAUX_BROWSER_RELEASE_HOLD;
+        if (listHold && releaseHold && existsSync(`${releaseHold}.asked`)) {
+          writeFileSync(`${listHold}.asked`, "");
+          while (!existsSync(listHold)) await new Promise((resolve) => setTimeout(resolve, 25));
+        }
         // A list by tag is the backend's own lookup by that tag alone (a failure it was told to give, its log line); a list
         // with no tag holds each session to all of the labels asked.
         const tagged = TAG in labels ? new Set((await fake.findByTag(labels[TAG])).map((ref) => ref.id)) : undefined;
