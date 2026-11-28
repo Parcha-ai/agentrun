@@ -72,6 +72,7 @@ export const ALLOWED_MARKS = {
     [/^dist\/console\/assets\/index-[A-Za-z0-9_-]+\.js$/, '"Vercel eve"', 1, 'the connected-agent runtime display label'],
     [/^dist\/console\/assets\/index-[A-Za-z0-9_-]+\.js$/, 'using Vercel eve. Read', 2, 'run and edit handoffs to the existing eve application'],
     ['dist/workspace/run-end-computers.js', 'Vercel Sandbox', 1, "the Vercel Sandbox provider's label in a run's end line (nominative use)"],
+    ['CHANGELOG.md', 'Vercel', 3, "the Vercel Sandbox provider's changelog entry (nominative use)"],
   ],
 };
 
