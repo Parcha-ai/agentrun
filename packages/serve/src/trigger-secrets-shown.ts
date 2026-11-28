@@ -6,13 +6,21 @@
 // send the person to the console for it.
 // Rotating a trigger's secret, or the outbound webhook's, is a secret write: the token is refused it in the secret-write
 // words, at the one check in the server's dispatch.
+// A request in a workspace (workspace-scope.ts: a server token of an API-only server, its workspace named) is the backend
+// in front of this server, which has no console: a webhook trigger's make and its rotation show it the secret once, and
+// the backend decides who in the workspace is shown it and keeps none.
 import { registerSecretPage, registerSecretWrite, type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
+import { workspaceNow } from "./workspace-scope.js";
+
+/** Whether this request is one in a workspace: shown a webhook trigger's secret when it makes or rotates one. */
+export const scopedShown = (): boolean => workspaceNow() !== undefined;
 
 // Replacing a trigger's secret or the outbound webhook's, and removing the outbound webhook (its secret goes with it), are
 // secret writes. A trigger's create and the outbound webhook's first save mint one and write none the caller gave: the
-// token may make them, and is shown no value.
-registerSecretWrite("rotateTriggerSecret", () => true);
+// token may make them, and is shown no value. A trigger's rotation in a workspace is no secret write: it writes none the
+// caller gave, and its answer is the backend's.
+registerSecretWrite("rotateTriggerSecret", () => !scopedShown());
 registerSecretWrite("rotateWebhookSecret", () => true);
 registerSecretWrite("deleteWebhook", () => true);
 // Where the owner finishes each in the console: the trigger's own page (Rotate), and Settings → Webhook (Rotate secret,
@@ -40,7 +48,8 @@ export function triggerMade(made: Record<string, unknown>, minted: string | unde
   return mayHold ? { ...made, secret, signing_secret: minted } : { ...made, secret, secret_set: true, note: TRIGGER_SECRET_WORDS };
 }
 
-/** POST /triggers/{id}/secret's answer (the owner's session alone reaches it): the new value, and its metadata. */
+/** POST /triggers/{id}/secret's answer (the owner's session, or a request in a workspace, alone reaches it): the new
+ *  value, and its metadata. */
 export const triggerRotated = (id: string, minted: string | undefined, at: string) => ({ secret: triggerSecretMeta(id, true, at), ...(minted !== undefined ? { signing_secret: minted } : {}) });
 
 /** A template's apply answer's warning for its webhook trigger `i`: its secret is in no apply answer (the Idempotency-Key
