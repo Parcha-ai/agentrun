@@ -834,7 +834,9 @@ export type FiringStatus = "due" | "started" | "sent" | "skipped" | "failed" | "
  *  for its key's day. `retryAt`: a due firing's next try; `waitsOn`: what a due firing waits behind for its trigger's
  *  room, a run's id, or a firing's key while the trigger has no run yet (triggers.ts busy).
  *  `startBy`: a firing its launch hook's host took with no run (sent), the time until which the host may still start
- *  its run (triggers.ts handedStart); null on any other. */
+ *  its run (triggers.ts handedStart); null on any other. `hooked`: what the launch hook told the host of the firing's
+ *  run, written once at its first hand (Triggers.hooked) and kept: the cap that run takes; null for a firing never handed
+ *  (or handed by a build that kept none). */
 export interface FiringRow {
   readonly triggerId: string;
   readonly key: string;
@@ -856,6 +858,12 @@ export interface FiringRow {
   readonly paused: boolean;
   readonly shown: boolean;
   readonly waitsOn: string | null;
+  readonly hooked: FiringHooked | null;
+}
+/** What the launch hook told the host of a firing's run (HookFiring): its cap, null for the agent's default when the host
+ *  starts it. */
+export interface FiringHooked {
+  readonly max_cost_usd: number | null;
 }
 /** A firing recorded: due (to be driven), or settled at once (skipped, missed, ignored). */
 export interface NewFiring {
@@ -1104,6 +1112,9 @@ export interface Triggers {
   firing(triggerId: string, key: string): Promise<FiringRow | undefined>;
   /** The trigger's history, newest first: its shown firings. */
   firings(triggerId: string): Promise<FiringRow[]>;
+  /** What the launch hook tells the host of firing `key`'s run, `told`, kept unless the firing already keeps one: the
+   *  one it keeps after, so every hand of a firing names the same cap. Undefined when there is no such firing. */
+  hooked(triggerId: string, key: string, told: FiringHooked): Promise<FiringHooked | undefined>;
   /** The firing changed (with its trigger's last_run_id moved to a newer run it names, and `streak`), in one transaction:
    *  undefined when the firing is gone (its trigger deleted), or is no longer the change's `from`. `paused`: this failure
    *  turned the trigger off. */
