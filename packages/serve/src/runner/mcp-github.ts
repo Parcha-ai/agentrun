@@ -37,7 +37,7 @@ export const REFRESH_BEFORE_MS = 5 * 60_000;
 /** Why a github_app server's calls are refused unsent, in the words the gateway gives the model. */
 export const GITHUB_UNUSABLE = {
   noAccess: "this server has no GitHub App set up for its runs (Settings → GitHub)",
-  inWorkspace: "a run in a workspace doesn't use this server's GitHub App, so only public repositories are read",
+  inWorkspace: "a workspace doesn't use this server's GitHub App, so only public repositories are read",
   noRepo: "this run names no GitHub repository, so the GitHub App has no repository to make a token for. The server is connected: start the run with a repository (`repo` in the start body, or https://github.com/<owner>/<repo> in its first message), or bind the agent to one repository with a GitHub trigger",
   notInstalled: (repo: string) => `the GitHub App is not installed on ${repo}: install it from Settings → GitHub`,
   failed: (message: string) => `GitHub did not make a token for this run (${message})`,

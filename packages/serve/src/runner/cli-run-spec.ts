@@ -42,7 +42,7 @@ import { learningStartOf, personStarted, seedFailed, type RunLaunch } from "../r
 import { readsFiles, systemOf } from "../skills.js";
 import { DATA_ENV } from "../server-fs.js";
 import { filesToCopy, placeRunInputs } from "../uploads.js";
-import { recordingsFolder, runFolder, scratchFolder } from "../workspace/paths.js";
+import { COMPUTER_ROOT, recordingsFolder, runFolder, scratchFolder } from "../workspace/paths.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
 import type { Workspace } from "../workspace/workspace.js";
 import { withoutKindSkill } from "../workspace/kind-skills.js";
@@ -819,7 +819,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   const session: SessionSpec = {
     key: `run:${claim.runId}`,
     label: runRow.agentId,
-    system: [environmentLine(now, zone), checkout?.note, instructions, outputContract(body.outputSchema), guidance].filter((line): line is string => Boolean(line)),
+    system: [environmentLine(now, zone, tools.cwd === COMPUTER_ROOT ? COMPUTER_ROOT : undefined), checkout?.note, instructions, outputContract(body.outputSchema), guidance].filter((line): line is string => Boolean(line)),
     // The web tools and the learned workflow's call nodes run on the claim's keys: their answers pass the runner's one
     // redactor, as pi's do. Listed in the order the agent grants them, as main lists a CLI run's tools.
     tools: inGrantOrder([...tools.hostTools(withKindTools(granted, tools), { results, writes: gate.writes(), opsRefused: gate.opsRefused() }),...[...webTools, ...browserTools, ...(askTool ? [askTool] : []), ...(learnedTool ? [learnedTool] : [])].map((tool) => answersCut(tool, held))], granted),

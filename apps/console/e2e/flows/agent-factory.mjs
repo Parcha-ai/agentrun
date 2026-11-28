@@ -1,6 +1,8 @@
 // Real runs through the faux model adapter: two simultaneous sessions of one agent stay working on file gates, while
 // a third asks its person. The factory must keep all three identities, classify the ask as attention, and never turn
 // an owner's GitHub-looking prose into trusted repository context. No factory response or component is mocked.
+// A card opens its session in a panel over the board: the run's own page a press away, the board's filters kept in the
+// address through it, and the waiting session answered there, which the board then shows without a reload.
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,7 +12,9 @@ const AGENT = "factory-builder";
 const NAME = "ConsoleBuilderAccessibilityAndRepositorySynchronization";
 const ACTIVE = '[aria-label="Active agent sessions"]';
 // The pane under the page's top bar: the sessions scroll in it, the bar stays.
-const PANE = 'section[aria-label="Agent Factory"] > header + div';
+const PANE = "[data-factory-pane]";
+const PANEL = 'aside[aria-label="Session"]';
+const sessionHash = (runId, more = "") => `#/factory?session=${encodeURIComponent(runId)}${more}`;
 
 /** Measure the rendered boxes, including text that could overflow a correctly sized card. */
 function layout(paneSelector) {
@@ -31,6 +35,16 @@ function layout(paneSelector) {
     wrong,
     laneTops: [...board.querySelectorAll("[data-factory-lane]")].map((el) => Math.round(el.getBoundingClientRect().top)),
     cards: board.querySelectorAll("article").length,
+  };
+}
+
+/** Where the open session's panel sits against the main pane and the pane of sessions, and whether anything scrolls sideways. */
+function beside([paneSelector, panelSelector]) {
+  const main = document.querySelector("main"), panel = document.querySelector(panelSelector);
+  const edge = main.getBoundingClientRect(), box = panel.getBoundingClientRect(), pane = document.querySelector(paneSelector).getBoundingClientRect();
+  return {
+    right: Math.round(edge.right - box.right), left: Math.round(box.left - edge.left), top: Math.round(box.top - pane.top), bottom: Math.round(pane.bottom - box.bottom),
+    sideways: Math.max(document.documentElement.scrollWidth - innerWidth, main.scrollWidth - main.clientWidth, panel.scrollWidth - panel.clientWidth),
   };
 }
 
@@ -65,9 +79,11 @@ export default {
       const board = page.locator(ACTIVE);
       check(await board.locator("article").count() === 3, "three sessions of the same agent must remain three cards");
       for (const runId of runIds) {
-        const link = board.locator(`h3 a[href="#/runs/${encodeURIComponent(runId)}"]`);
-        check(await link.count() === 1, `the factory must expose exactly one link for session ${runId}`);
+        // A session's name opens it beside the board; its label leads to the run's own page.
+        const link = board.locator(`h3 a[href="${sessionHash(runId)}"]`);
+        check(await link.count() === 1, `the factory must expose exactly one name link for session ${runId}`);
         check((await link.innerText()).includes(NAME), "the session card must retain its agent name");
+        check(await board.locator(`article a[href="#/runs/${encodeURIComponent(runId)}"]`).count() === 1, `session ${runId}'s card must link its run's own page once`);
       }
       await page.locator('[aria-label="Loaded active session totals"]').getByText("3 active sessions loaded", { exact: true }).waitFor();
       await page.locator('[data-factory-lane="attention"]').getByText("Which region should I use?").waitFor();
@@ -112,13 +128,39 @@ export default {
       check(await page.locator('[aria-label="Matching sessions"]').innerText() === "3 of 3 loaded active sessions match", "filtering must report matching and loaded session counts separately");
       check(await repository.getAttribute("data-value") === "unreported", "the repository filter must keep its selected value");
 
-      // A card leads to that exact run's existing detail page, where the same pending question is actionable.
-      await board.locator(`h3 a[href="#/runs/${encodeURIComponent(runIds[2])}"]`).click();
+      // The filter is in the address, so every way back to the board finds it.
+      await page.waitForURL((url) => url.hash === "#/factory?repo=unreported");
+
+      // A card opens that exact run beside the board, under the same filter: the run's own view, its question in it.
+      const panel = page.locator(PANEL);
+      await board.locator(`h3 a[href="${sessionHash(runIds[2], "&repo=unreported")}"]`).click();
+      await page.waitForURL((url) => url.hash === sessionHash(runIds[2], "&repo=unreported"));
+      await panel.getByText("Which region should I use?", { exact: true }).first().waitFor();
+      check(await panel.getAttribute("data-factory-session") === runIds[2], "the panel must show the session whose card was opened");
+      check(await board.locator("article").count() === 3, "the board must stay whole under the open session");
+      check(await board.locator('article[aria-current="true"]').count() === 1, "the open session's card must say it is the one open");
+      check(await page.getByRole("heading", { level: 1 }).count() === 1, "the page must keep one h1 with a run open beside the board");
+      check(await panel.getByRole("button", { name: "Close session" }).evaluate((el) => el === document.activeElement), "opening a session must move the keyboard to its Close");
+      // The run's own page is one press away, and the way back opens the same board: session, filter and all.
+      await panel.getByRole("link", { name: "Open run", exact: true }).click();
       await page.waitForURL((url) => url.hash === `#/runs/${encodeURIComponent(runIds[2])}`);
       await page.getByText("Which region should I use?", { exact: true }).first().waitFor();
       await page.getByRole("tab", { name: /^Timeline/ }).waitFor();
-      await page.getByRole("button", { name: "Agent Factory", exact: true }).click();
+      await page.getByRole("button", { name: "Back", exact: true }).click();
+      await page.waitForURL((url) => url.hash === sessionHash(runIds[2], "&repo=unreported"));
+      await panel.getByText("Which region should I use?", { exact: true }).first().waitFor();
+      check(await repository.getAttribute("data-value") === "unreported", "the way back from a run must open the board under the same filter");
+      // Closing drops the session, keeps the filter, and gives the keyboard back to the card that opened it.
+      await panel.getByRole("button", { name: "Close session" }).click();
+      await page.waitForURL((url) => url.hash === "#/factory?repo=unreported");
+      await panel.waitFor({ state: "detached" });
+      check(await board.locator(`h3 a[href="${sessionHash(runIds[2], "&repo=unreported")}"]`).evaluate((el) => el === document.activeElement), "closing a session must give the keyboard back to its card");
+      // A reload opens the same filter; Clear filters is the board's own address again.
+      await page.reload();
       await board.locator("article").nth(2).waitFor();
+      check(await repository.getAttribute("data-value") === "unreported", "a reload must keep the filter the address names");
+      await page.getByRole("button", { name: "Clear filters", exact: true }).click();
+      await page.waitForURL((url) => url.hash === "#/factory");
 
       // The same sessions as a list grouped by state: one row each, linked to its run, with no sideways scroll on a
       // desktop or a phone.
@@ -131,7 +173,12 @@ export default {
       check(await page.locator("[data-factory-lane]").count() === 0, "the list must replace the lanes");
       const grouped = await page.locator(`table${ACTIVE} tbody[data-factory-group]`).evaluateAll((groups) => groups.map((group) => [group.getAttribute("data-factory-group"), group.querySelectorAll("tr[data-factory-row]").length]));
       check(JSON.stringify(grouped) === JSON.stringify([["working", 2], ["attention", 1]]), `the list must group its rows by state, in the lanes' order: ${JSON.stringify(grouped)}`);
-      for (const runId of runIds) check(await rows.locator(`a[href="#/runs/${encodeURIComponent(runId)}"]`).count() === 1, `the list must link session ${runId} once`);
+      for (const runId of runIds) {
+        check(await rows.locator(`a[href="#/runs/${encodeURIComponent(runId)}"]`).count() === 1, `the list must link session ${runId}'s own page once`);
+        check(await rows.locator(`td > a[href="${sessionHash(runId)}"]`).count() === 1, `the list must open session ${runId} from its name`);
+      }
+      // The session that waits on a person names its next step on its row.
+      check(await rows.locator("a[data-factory-action]").evaluateAll((links) => links.map((a) => a.textContent).join()) === "Answer", "the waiting session's row must name its next step");
       // A state's heading folds its rows away and back; its count stays.
       const working = page.locator(`table${ACTIVE} tbody[data-factory-group="working"]`);
       const fold = working.getByRole("button", { expanded: true });
@@ -182,6 +229,57 @@ export default {
           }
         }
       }
+
+      // The waiting session, answered from the board. Its card names the step; the panel takes the answer; the board
+      // shows what that made true with no reload, and the panel keeps the run as it ended.
+      await page.setViewportSize({ width: 1280, height: 900 });
+      await page.getByRole("button", { name: "Light", exact: true }).click();
+      await board.locator('[data-factory-lane="attention"] a[data-factory-action]').click();
+      await page.waitForURL((url) => url.hash === sessionHash(runIds[2]));
+      const open = page.locator(PANEL);
+      const answer = open.getByPlaceholder("Answer the question...");
+      await answer.waitFor();
+      // Beside the board on a wide page: the panel ends at the page's right edge, leaves the board's left side in view, and
+      // nothing scrolls sideways. On a phone it covers the board.
+      const wide = await page.evaluate(beside, [PANE, PANEL]);
+      check(wide.right === 0 && wide.left > 200 && wide.top === 0 && wide.bottom === 0 && wide.sideways <= 0, `at 1280px the panel must sit over the board's right side, as tall as the pane: ${JSON.stringify(wide)}`);
+      // Over the board's right side the panel is a drawer: a soft shadow cast to its left only (no drop, a negative x)
+      // says it is above the board.
+      const cast = () => page.evaluate((selector) => getComputedStyle(document.querySelector(selector)).boxShadow, PANEL);
+      check(/rgba\(0, 0, 0, 0\.\d+\) -\d+px 0px \d+px -\d+px$/.test(await cast()), `at 1280px the panel must cast the drawer's shadow to its left: ${await cast()}`);
+      if (shots) await page.screenshot({ path: join(shots, "agent-factory-session-light-1280.png") });
+      await page.setViewportSize({ width: 390, height: 844 });
+      check((await cast()) === "none", `at 390px the panel covers the board and casts no shadow: ${await cast()}`);
+      const phone = await page.evaluate(beside, [PANE, PANEL]);
+      check(phone.right === 0 && phone.left === 0 && phone.sideways <= 0, `at 390px the panel must cover the board with no sideways scroll: ${JSON.stringify(phone)}`);
+      // Covered whole, the board is out of the keyboard's way: Shift+Tab from the panel's first control lands on nothing
+      // hidden under it. Beside the panel on a wide page it stays in reach.
+      const reach = () => page.evaluate((paneSelector) => ({ pane: getComputedStyle(document.querySelector(paneSelector)).visibility, inPane: !!document.activeElement?.closest(paneSelector) }), PANE);
+      await open.getByRole("link", { name: "Open run", exact: true }).focus();
+      await page.keyboard.press("Shift+Tab");
+      const covered = await reach();
+      check(covered.pane === "hidden" && !covered.inPane, `at 390px the covered board must be out of the keyboard's reach: ${JSON.stringify(covered)}`);
+      if (shots) await page.screenshot({ path: join(shots, "agent-factory-session-light-390.png") });
+      await page.setViewportSize({ width: 1280, height: 900 });
+      await open.getByRole("link", { name: "Open run", exact: true }).focus();
+      await page.keyboard.press("Shift+Tab");
+      const besideIt = await reach();
+      check(besideIt.pane === "visible" && besideIt.inPane, `at 1280px the board beside the panel must stay in the keyboard's reach: ${JSON.stringify(besideIt)}`);
+      await answer.fill("eu");
+      // Escape from the field a person is typing in never closes the panel under their draft.
+      await answer.press("Escape");
+      check(await open.count() === 1 && await answer.inputValue() === "eu", "Escape in the message box must keep the panel and the draft");
+      await open.getByRole("button", { name: /^Send/ }).click();
+      // The run takes the answer and ends: its card leaves Needs you, and the totals follow, on the open page.
+      await page.waitForFunction(() => document.querySelectorAll('[data-factory-lane="attention"] article').length === 0, null, { timeout: 30_000 });
+      await page.locator('[aria-label="Loaded active session totals"]').getByText("2 active sessions loaded", { exact: true }).waitFor({ timeout: 30_000 });
+      check(page.url().endsWith(sessionHash(runIds[2])), "answering from the panel must leave the person on the board");
+      await open.getByText('"region"').first().waitFor({ timeout: 30_000 });
+      // Escape from anywhere else in the panel closes it.
+      await open.getByRole("button", { name: "Close session" }).focus();
+      await page.keyboard.press("Escape");
+      await page.waitForURL((url) => url.hash === "#/factory");
+      await open.waitFor({ state: "detached" });
     } finally {
       // The files are never released: the harness stops the faux server and aborts the pending model calls.
       rmSync(gates, { recursive: true, force: true });

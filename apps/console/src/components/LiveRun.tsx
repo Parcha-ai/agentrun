@@ -31,8 +31,11 @@ const failure = (e: unknown): Failure => ({ api: asApiError(e), title: refusalTi
 const RECORDING_REREAD_MS = 3_000;
 
 /** A run from the live server: its record, its timeline followed from the cursor, its files, and stop, cancel and
- *  messages. A write's acceptance is not its effect: the page shows what the run and its timeline say afterwards. */
-export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: string; caps: MessageCaps | null; agentName: (id: string) => string }) {
+ *  messages. A write's acceptance is not its effect: the page shows what the run and its timeline say afterwards.
+ *  `embedded`: the run beside another page (Agent Factory's panel), which has its own way back, so the header has none
+ *  and its title is a section's heading. `onChanged`: something a person did here has been read back (a message, an
+ *  answer, a stop), so a list beside it reads again at once. */
+export function LiveRun({ v2, runId, caps, agentName, embedded, onChanged }: { v2: Client; runId: string; caps: MessageCaps | null; agentName: (id: string) => string; embedded?: boolean; onChanged?: () => void }) {
   const [run, setRun] = useState<Run | null>(null);
   // The newest timeline page's cost: each page carries the run's cost as it stands, so while the run works the header
   // follows it (the first read of the run can be older than every priced request); once it ends, the run's own read has it.
@@ -100,10 +103,13 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
     return () => ctl.abort();
   }, [runId, follows]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // A read that follows something a person did here, which nothing waits for: whoever holds this view (the Agent
+  // Factory's board) is told once it has landed, so the run's card is read anew at once, not at the board's next read.
+  const rereadAndTell = () => { void refresh().then(() => onChanged?.()); };
   const act = async (what: "stop" | "cancel") => {
     setBusy(what);
     try { await v2[what](runId); setError(null); } catch (e) { setError(failure(e)); }
-    setBusy(null); await refresh(); setFollows((n) => n + 1);
+    setBusy(null); await refresh(); setFollows((n) => n + 1); onChanged?.();
   };
   // Only the archive's own effect is taken from its answer, at once: the run may have moved on since it was read (a final
   // timeline page's read can land first). The run and its files are read again after it, and that read is the newest.
@@ -114,13 +120,13 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
       const r = await (run.archived_at ? v2.unarchiveRun(runId) : v2.archiveRun(runId));
       setRun((cur) => (cur ? { ...cur, archived_at: r.archived_at } : r)); setError(null);
     } catch (e) { setError(failure(e)); }
-    setBusy(null); void refresh();
+    setBusy(null); rereadAndTell();
   };
   // A raise is taken from its answer only by reading the run again (the pause gives way), and the timeline is followed
   // anew; a refusal goes back to the raise control, which says it there.
   const thenReread = async <A,>(call: () => Promise<A>) => {
     const answer = await call();
-    await refresh(); setFollows((n) => n + 1);
+    await refresh(); setFollows((n) => n + 1); onChanged?.();
     return answer;
   };
   const raiseCap = (usd: number) => thenReread(() => v2.raiseCap(runId, usd));
@@ -131,7 +137,7 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
     let ok = true;
     // The same text sent again after a lost or refused answer goes under the same key: the server never takes it twice.
     try { await sendOnce(messageKeys, runId, text, v2.sendMessage); setError(null); } catch (e) { setError(failure(e)); ok = false; }
-    await refresh(); setFollows((n) => n + 1);
+    await refresh(); setFollows((n) => n + 1); onChanged?.();
     return ok;
   };
 
@@ -140,7 +146,7 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
   const approve = async (approvalId: string, decision: "allow" | "deny", note?: string, confirmed?: true) => {
     let refused: string | null = null;
     try { await v2.answerApproval(runId, approvalId, decision, note, confirmed); } catch (e) { refused = approvalRefusal(e); }
-    await refresh(); setFollows((n) => n + 1);
+    await refresh(); setFollows((n) => n + 1); onChanged?.();
     return refused;
   };
 
@@ -148,7 +154,7 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
   // (who drives, or the refusal) as soon as it comes, and the run and its timeline are read again after it either way (an
   // answered ask moves the run on), without the tab waiting for that read.
   const computerMove = async <T,>(go: () => Promise<T>): Promise<T> => {
-    try { return await go(); } finally { void refresh(); setFollows((n) => n + 1); }
+    try { return await go(); } finally { rereadAndTell(); setFollows((n) => n + 1); }
   };
 
   // A workflow run's graph is read here, outside the tabs, so the header's cost (its totals) stays current whichever tab is
@@ -167,8 +173,8 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
   return (
     <div className="flex h-full min-h-0 flex-col short:h-auto">
       {error && <div className="border-b p-3"><RunError title={error.title} error={error.api} /></div>}
-      <RunDetail key={run.run_id} run={shown} agentName={agentName(run.agent_id)} inFlight={FINAL_RUN.has(run.status) ? [] : inFlight} messages={offer.messages} harnessSteers={offer.steers}
-        graphView={run.kind === "workflow" && !noGraph ? <LiveGraph v2={v2} runId={runId} graph={graph} onMoved={() => { void refresh(); }} /> : undefined}
+      <RunDetail key={run.run_id} run={shown} agentName={agentName(run.agent_id)} embedded={embedded} inFlight={FINAL_RUN.has(run.status) ? [] : inFlight} messages={offer.messages} harnessSteers={offer.steers}
+        graphView={run.kind === "workflow" && !noGraph ? <LiveGraph v2={v2} runId={runId} graph={graph} onMoved={rereadAndTell} /> : undefined}
         costText={run.kind === "workflow" && !FINAL_RUN.has(run.status) && graph.data ? graphCostText(graph.data) : undefined}
         outputSchema={harness.state === "read" ? harness.outputSchema : undefined}
         rows={rows} files={files} readFile={(f) => v2.readFile(runId, f.path)} fileUrl={(path) => v2.fileUrl(runId, path)} readTrace={() => v2.runTrace(runId)} readUsage={() => v2.runUsage(runId)} freeRequests={caps?.limits?.free_model_requests} readLearningDiff={() => v2.runLearningDiff(runId)} readLearning={() => v2.runLearning(runId)} readLearningResult={() => v2.runLearningResult(runId)} readComputer={() => v2.runComputer(runId)} onTakeOver={() => computerMove(() => v2.takeOverComputer(runId))} onHandBack={(outcome) => computerMove(() => v2.handBackComputer(runId, outcome))} readComputers={() => v2.computers()} onMessage={message} onApprove={approve} onGrade={grade}

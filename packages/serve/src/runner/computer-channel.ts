@@ -56,14 +56,19 @@ export function channelCallOf(command: Pick<Command, "body">): ComputerCall | { 
 export type ChannelAnswer = { readonly answer: ComputerAnswer; readonly record: ComputerCallRecord; readonly at: number };
 
 const words = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+/** A call the run's end cut answers `aborted` in the end's words: it ran out of no time of its own. */
+const cutAnswer = (signal: AbortSignal, ended: AbortSignal | undefined): ComputerAnswer | undefined =>
+  ended?.aborted && signal.reason === ended.reason ? { ok: false, error: { code: "aborted", message: words(ended.reason) } } : undefined;
 
 /**
  * Runs `call` on `computer` and answers what came of it; never throws. While a person holds the computer the call waits,
- * as the agent's calls do, and counts as in flight once it runs, so a take asked meanwhile waits for it. `signal` bounds
- * the whole of it (the loop's: CALL_MS, and the claim's): a wait or a call it cuts answers `timeout`, a call whose client
- * failed answers `gone`. The call is no tool call's, so it is recorded on none.
+ * as the agent's calls do, and counts as in flight once it runs, so a take asked meanwhile waits for it. `timed` bounds
+ * the whole of it (the loop's: callBudgetMs, and the claim's): a wait or a call it cuts answers `timeout`. `ended`, the
+ * run's end, cuts it too, answering `aborted`. A call whose client failed answers `gone`. The call is no tool call's, so
+ * it is recorded on none.
  */
-export async function runChannelCall(computer: LoopComputer, call: ComputerCall, signal: AbortSignal, now: () => number = Date.now): Promise<ChannelAnswer> {
+export async function runChannelCall(computer: LoopComputer, call: ComputerCall, timed: AbortSignal, now: () => number = Date.now, ended?: AbortSignal): Promise<ChannelAnswer> {
+  const signal = ended ? AbortSignal.any([timed, ended]) : timed;
   const started = performance.now();
   const startedAt = now();
   let answer: ComputerAnswer;
@@ -73,10 +78,10 @@ export async function runChannelCall(computer: LoopComputer, call: ComputerCall,
     answer = (await unrecorded(() => computer.client.call(call.method as never, call.params as never, { signal }))) as ComputerAnswer;
     // A client answers its signal's abort with an error answer of its own (the daemon client's), never a throw: the same
     // `timeout` as a wait the signal cut.
-    if (!answer.ok && signal.aborted) answer = { ok: false, error: { code: "timeout", message: `the call did not end in time: ${words(signal.reason)}` } };
+    if (!answer.ok && signal.aborted) answer = cutAnswer(signal, ended) ?? { ok: false, error: { code: "timeout", message: `the call did not end in time: ${words(signal.reason)}` } };
   } catch (error) {
     answer = signal.aborted
-      ? { ok: false, error: { code: "timeout", message: leave || !computer.hold ? `the call did not end in time: ${words(signal.reason)}` : `a person held the run's computer for the whole of the call's time: ${words(signal.reason)}` } }
+      ? cutAnswer(signal, ended) ?? { ok: false, error: { code: "timeout", message: leave || !computer.hold ? `the call did not end in time: ${words(signal.reason)}` : `a person held the run's computer for the whole of the call's time: ${words(signal.reason)}` } }
       : { ok: false, error: { code: "gone", message: words(error) } };
   } finally {
     leave?.();

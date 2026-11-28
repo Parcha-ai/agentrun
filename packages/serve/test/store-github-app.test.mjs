@@ -24,6 +24,7 @@ const { mcpClaim } = await import("../dist/runner/mcp-claim.js");
 const { mcpGateway } = await import("../dist/mcp-gateway.js");
 const { heldRedactor, keepText } = await import("../dist/runner/redact.js");
 const { githubTokens, GITHUB_UNUSABLE } = await import("../dist/runner/mcp-github.js");
+const { WORKSPACE_NO_GITHUB } = await import("../dist/workspace-scope.js");
 const { mcpForClaim } = await import("../dist/runner/mcp-run.js");
 const KEY = randomBytes(32);
 const { privateKey: PEM } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs1", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
@@ -90,8 +91,9 @@ test("no App the runner can open is no access: never connected, no seal key, or 
   assert.equal(await githubAppAccess(store, undefined, { content: "https://github.com/acme/widgets" }), undefined, "no seal key");
 });
 
-/** Why a run in a workspace has no token of the server's App, in the words its checkout and its github_app calls give. */
-const IN_WORKSPACE = "a run in a workspace doesn't use this server's GitHub App, so only public repositories are read";
+/** Why a workspace has no token of the server's App, in the words a run's checkout and its github_app calls give, and a
+ *  workspace's suggestions and GitHub requests too (WORKSPACE_NO_GITHUB). */
+const IN_WORKSPACE = "a workspace doesn't use this server's GitHub App, so only public repositories are read";
 
 test("a run in a workspace, its own agent's or its own, is withheld the App in words and mints nothing; a run the store does not hold has no access: the App is never opened and GitHub is asked nothing", async (t) => {
   const { store } = await storeOn(t);
@@ -102,6 +104,7 @@ test("a run in a workspace, its own agent's or its own, is withheld the App in w
   await agentWithRevision(store);
   await store.runs.create({ id: "run-own", agentId: "agent-1", revisionId: "rev-1", workspace: "org:acme" });
   assert.equal(GITHUB_UNUSABLE.inWorkspace, IN_WORKSPACE);
+  assert.equal(WORKSPACE_NO_GITHUB, IN_WORKSPACE, "a workspace's requests are refused in the same words");
   for (const run of ["run-scoped", "run-own"]) {
     const access = await accessOf(store, KEY, { content: "Fix https://github.com/acme/widgets" }, { run, api: github.api });
     assert.equal(access?.withheld, IN_WORKSPACE, run);
