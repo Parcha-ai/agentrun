@@ -9,7 +9,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { createServer } from "node:net";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -23,15 +22,9 @@ const MCP_TOKEN = `not-a-secret-${"runner-mcp-loopback-cli-bearer"}`;
 const ADD = "mcp:fake/add";
 const CALL = { content: 'Call mcp__fake__add with {"a":2,"b":3}' };
 
-/** A port free now on this machine, for a server whose address the runs' MCP rule must know before it starts. */
-const freePort = () => new Promise((resolve, reject) => {
-  const probe = createServer();
-  probe.once("error", reject);
-  probe.listen(0, "127.0.0.1", () => {
-    const { port } = probe.address();
-    probe.close(() => resolve(port));
-  });
-});
+// PORT0: each server is started on --port 0 and takes a port of its own, read from the API base it prints. A port probed
+// free and then handed to it could be taken in between by any connection on this machine (the ephemeral range), and the
+// server would exit EADDRINUSE before it starts.
 
 /** `args` of the CLI as its own process, with `env` beside this one's, until `ready` is printed; stopped at the test's end. */
 async function started(t, args, env, ready) {
@@ -45,8 +38,9 @@ async function started(t, args, env, ready) {
     await exited;
   };
   t.after(stop);
-  await printed(child, ready);
-  return { stop, stderr: () => err };
+  const out = await printed(child, ready);
+  // The API base it printed: with --port 0, the port the server took itself.
+  return { stop, stderr: () => err, api: (token) => client(/^agentrun-serve on (\S+)/m.exec(out)[1], token) };
 }
 
 /** The store as the build before pins were made at save left it: revisions with no mcp_pin column (the server's next
@@ -73,15 +67,15 @@ test("a --no-runner server and two standalone runners, all with AGENTRUN_MCP_ALL
   const fake = await startFakeMcp({ token: MCP_TOKEN });
   t.after(() => fake.close());
   assert.equal(new URL(fake.url).hostname, "127.0.0.1", "the MCP server is on loopback");
-  const port = await freePort();
   const base = { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENTRUN_TOKEN: TOKEN, AGENTRUN_MCP_ALLOW_LOOPBACK: "1" };
-  const serverArgs = ["--data", data, "--listen", "0.0.0.0", "--port", String(port), "--faux", FAUX_MCP, "--no-runner"];
+  // Port 0: each server takes a port of its own (PORT0 below).
+  const serverArgs = ["--data", data, "--listen", "0.0.0.0", "--port", "0", "--faux", FAUX_MCP, "--no-runner"];
   const serverEnv = { ...base, AGENTRUN_PUBLIC_URL: "https://agents.example.test" };
-  const api = client(`http://127.0.0.1:${port}/v2`, TOKEN);
   const calls = () => fake.log.filter((entry) => entry.method === "tools/call" && entry.tool === "add").length;
 
   // The earlier build's data: the MCP server and an agent granting its tool, saved, then the store as that build left it.
   const before = await started(t, serverArgs, serverEnv, /^agentrun-serve on /m);
+  let api = before.api(TOKEN);
   const saved = await api("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "bearer", token: MCP_TOKEN } });
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   assert.equal((await api("POST", "/agents", agent("earlier", { tools: [ADD], approvals: "never" }))).status, 201);
@@ -89,7 +83,7 @@ test("a --no-runner server and two standalone runners, all with AGENTRUN_MCP_ALL
   asBeforePins(data);
 
   // The upgrade: the server again, then two runners in their own processes on its data directory.
-  await started(t, serverArgs, serverEnv, /^agentrun-serve on /m);
+  api = (await started(t, serverArgs, serverEnv, /^agentrun-serve on /m)).api(TOKEN);
   assert.equal((await api("GET", "/agents/earlier")).body.mcp_pin, null, "the earlier revision has no pin after the upgrade");
   const runners = [];
   for (const name of ["r1", "r2"]) runners.push(await started(t, ["runner", "--data", data, "--name", name, "--faux", FAUX_MCP], base, /^Runner \S+ ready: /m));
@@ -114,17 +108,17 @@ test("a server started without AGENTRUN_MCP_ALLOW_LOOPBACK=1 refuses an upgraded
   const data = join(await scratch(t), "data");
   const fake = await startFakeMcp({ token: MCP_TOKEN });
   t.after(() => fake.close());
-  const port = await freePort();
   const base = { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENTRUN_TOKEN: TOKEN };
-  const serverArgs = ["--data", data, "--port", String(port), "--faux", FAUX_MCP, "--no-runner"];
-  const api = client(`http://127.0.0.1:${port}/v2`, TOKEN);
+  // Port 0: each server takes a port of its own (PORT0 below).
+  const serverArgs = ["--data", data, "--port", "0", "--faux", FAUX_MCP, "--no-runner"];
   const before = await started(t, serverArgs, { ...base, AGENTRUN_MCP_ALLOW_LOOPBACK: "1" }, /^agentrun-serve on /m);
+  let api = before.api(TOKEN);
   assert.equal((await api("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "bearer", token: MCP_TOKEN } })).status, 200);
   assert.equal((await api("POST", "/agents", agent("earlier", { tools: [ADD], approvals: "never" }))).status, 201);
   await before.stop();
   asBeforePins(data);
 
-  await started(t, serverArgs, base, /^agentrun-serve on /m);
+  api = (await started(t, serverArgs, base, /^agentrun-serve on /m)).api(TOKEN);
   const refused = await api("POST", "/agents/earlier/runs", { input: CALL });
   assert.equal(refused.status, 409, JSON.stringify(refused.body));
   assert.match(refused.body.error.message, /The MCP tool mcp:fake\/add was not pinned when this revision was saved: its server fake can't be listed here to pin it: 127\.0\.0\.1 is this machine; restart the server with AGENTRUN_MCP_ALLOW_LOOPBACK=1 to allow it, only on a machine you alone use\./);
