@@ -63,22 +63,24 @@ const parsed = (bytes) => {
 };
 
 /** One request whose refusal is a value, not an exit: the server's code and message, so one lane's refusal leaves the
- *  others started. */
-async function call(cli, client, method, path, value, headers = {}) {
-  const refused = client.refused;
+ *  others started. Each request has a client of its own, so lanes asked at once never read one another's refusal. A
+ *  server not reached throws (cli.request's unreachable). */
+async function call(cli, target, io, method, path, value, headers = {}) {
   let said;
-  client.refused = (response, bytes) => {
-    const answer = parsed(bytes);
-    said = { status: response.status, code: answer?.error?.code ?? answer?.code ?? `http_${response.status}`, message: answer?.error?.message ?? answer?.message ?? `HTTP ${response.status}` };
-    return 1;
+  const client = {
+    ...cli.clientOf(target, io),
+    refused: (response, bytes) => {
+      const answer = parsed(bytes);
+      said = { status: response.status, code: answer?.error?.code ?? answer?.code ?? `http_${response.status}`, message: answer?.error?.message ?? answer?.message ?? `HTTP ${response.status}` };
+      return 1;
+    },
   };
-  try {
-    const { bytes, code } = await cli.request(client, { method, path, headers, ...(value === undefined ? {} : jsonBody(value)) });
-    return code !== undefined ? { refused: said } : { answer: parsed(bytes) };
-  } finally {
-    client.refused = refused;
-  }
+  const { bytes, code } = await cli.request(client, { method, path, headers, ...(value === undefined ? {} : jsonBody(value)) });
+  return code !== undefined ? { refused: said } : { answer: parsed(bytes) };
 }
+
+/** What went wrong with a request that threw, in its own words (an Exit's message names the server not reached). */
+const wordsOf = (error) => (error instanceof Error ? error.message : String(error));
 
 function taskOf(value, cli) {
   if (value === undefined) throw cli.fail(REFUSED, "--task TEXT|@FILE is the task every lane runs.");
@@ -119,32 +121,57 @@ export const RACE_START = {
     const label = values.label ?? newRaceLabel();
     if (!LABEL.test(label)) throw cli.fail(REFUSED, `--label ${label}: a race's label is 1 to 64 letters, digits, dots, dashes or underscores, starting with a letter or digit.`);
     const files = values.file ?? [];
-    const client = cli.clientOf(cli.targetOf(values, env), io);
+    const reads = {};
+    const target = cli.targetOf(values, env);
     // What a new agent gets here: the server's tools for each harness, where its default place is, and the runner's shell.
-    const caps = await call(cli, client, "GET", "/capabilities");
-    if (caps.refused) throw cli.fail(1, `GET /capabilities: ${caps.refused.message}. No lane was started.`);
-    const comps = await call(cli, client, "GET", "/computers");
-    const computers = comps.refused ? undefined : comps.answer;
-    // Every lane at once, each on its own: one refused leaves the others started.
+    // Both are read before any lane starts, as the console's form waits for them: without the computers, a lane on the
+    // runner would start without the shell its runner runs.
+    for (const path of ["/capabilities", "/computers"]) {
+      const read = await call(cli, target, io, "GET", path);
+      if (read.refused) throw cli.fail(1, `GET ${path}: ${read.refused.message}. No lane was started.`);
+      reads[path] = read.answer;
+    }
+    // Every lane at once, each on its own: one refused, or cut off, leaves the others started and every lane reported.
     const started = await Promise.all(lanes.map(async (lane, i) => {
       const n = i + 1;
       const said = { lane: n, harness: lane.harness, model: lane.model };
-      const definition = { id: `race-${label}-${n}-1`, version: 1, name: `Race ${label}, lane ${n}`, instructions: LANE_INSTRUCTIONS, harness: lane.harness, model: lane.model, tools: laneTools(lane.harness, caps.answer, computers), skills: [] };
-      const made = await call(cli, client, "POST", "/agents", { definition });
+      const definition = { id: `race-${label}-${n}-1`, version: 1, name: `Race ${label}, lane ${n}`, instructions: LANE_INSTRUCTIONS, harness: lane.harness, model: lane.model, tools: laneTools(lane.harness, reads["/capabilities"], reads["/computers"]), skills: [] };
+      const agentPath = `/agents/${encodeURIComponent(definition.id)}`;
+      let made, run;
+      try {
+        made = await call(cli, target, io, "POST", "/agents", { definition });
+      } catch (error) {
+        // No answer: the agent may have been made, but no run of it was asked for.
+        return { ...said, error: `its agent was not confirmed made: ${wordsOf(error)}` };
+      }
       if (made.refused) return { ...said, error: `${made.refused.code}: ${made.refused.message}` };
       const body = { input: { content: task }, revision: made.answer?.revision, max_cost_usd: cap, labels: { [RACE_KEY]: label, [LANE_KEY]: String(n), harness: lane.harness, model: lane.model }, ...(files.length ? { file_ids: files } : {}) };
-      const run = await call(cli, client, "POST", `/agents/${encodeURIComponent(definition.id)}/runs`, body, { "idempotency-key": `race-${label}-${n}` });
+      try {
+        run = await call(cli, target, io, "POST", `${agentPath}/runs`, body, { "idempotency-key": `race-${label}-${n}` });
+      } catch (error) {
+        // Asked, with no answer: the run may have started. A refusal is only what the server said.
+        return { ...said, agent_id: definition.id, unsure: wordsOf(error) };
+      }
       if (run.refused) {
-        // A lane's agent is the race's own: one whose run never started is archived, as the console lets one go.
-        await call(cli, client, "POST", `/agents/${encodeURIComponent(definition.id)}/archive`);
-        return { ...said, agent_id: definition.id, error: `${run.refused.code}: ${run.refused.message}` };
+        const refusal = { ...said, agent_id: definition.id, error: `${run.refused.code}: ${run.refused.message}` };
+        // A lane's agent is the race's own: one whose run never started is archived, as the console lets one go. An
+        // archive that fails is said beside the refusal, never in its place.
+        try {
+          const archived = await call(cli, target, io, "POST", `${agentPath}/archive`);
+          return archived.refused ? { ...refusal, archive: `${archived.refused.code}: ${archived.refused.message}` } : refusal;
+        } catch (error) {
+          return { ...refusal, archive: wordsOf(error) };
+        }
       }
       return { ...said, agent_id: definition.id, run_id: run.answer?.run_id, status: run.answer?.status };
     }));
     io.stdout.write(`${JSON.stringify({ label, filter: `${RACE_KEY}:${label}`, console: `#/races/${encodeURIComponent(label)}`, lanes: started }, null, 2)}\n`);
-    const failed = started.filter((lane) => lane.error);
-    for (const lane of failed) io.stderr.write(`Lane ${lane.lane} (${lane.harness}/${lane.model}) did not start: ${lane.error}\n`);
-    return failed.length ? 1 : 0;
+    for (const lane of started) {
+      const name = `Lane ${lane.lane} (${lane.harness}/${lane.model})`;
+      if (lane.error) io.stderr.write(`${name} did not start: ${lane.error}${lane.archive ? ` (its agent was not archived: ${lane.archive})` : ""}\n`);
+      if (lane.unsure) io.stderr.write(`${name} may have started: its start had no answer (${lane.unsure}). See agentrun race show ${label}.\n`);
+    }
+    return started.some((lane) => lane.error || lane.unsure) ? 1 : 0;
   },
 };
 
@@ -164,9 +191,8 @@ export const RACE_SHOW = {
   async run({ args, values, env, io, cli }) {
     const label = args[0];
     if (!LABEL.test(label)) throw cli.fail(REFUSED, `${label}: a race's label is 1 to 64 letters, digits, dots, dashes or underscores, starting with a letter or digit.`);
-    const client = cli.clientOf(cli.targetOf(values, env), io);
     const query = new URLSearchParams({ limit: String(RACE_READ), label: `${RACE_KEY}:${label}` });
-    const read = await call(cli, client, "GET", `/runs?${query}`);
+    const read = await call(cli, cli.targetOf(values, env), io, "GET", `/runs?${query}`);
     if (read.refused) throw cli.fail(1, `GET /runs: ${read.refused.message}`);
     const runs = Array.isArray(read.answer?.runs) ? read.answer.runs : [];
     if (!runs.length) throw cli.fail(REFUSED, `No run carries the label ${RACE_KEY}:${label}.`);
