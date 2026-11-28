@@ -102,6 +102,16 @@ describe("WrappedPage", () => {
     expect(text).not.toContain("doesn't record tokens");
   });
 
+  it("says a harness that records tokens recorded none this year, never that it doesn't record them", async () => {
+    // Only aborted pi requests this year: pi records tokens, these requests have none.
+    const piYear: Wrapped = { ...CURSOR_YEAR, harnesses: [{ harness: "pi", sessions: 1, requests: 3, tokens: 0, tokens_unknown_requests: 3, sources: ["pi"] }], sources: [{ source: "pi", sessions: 1, requests: 3 }], imported: [] };
+    await mount(async () => piYear, vi.fn(), 2025);
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("Tokens not recorded");
+    expect(text).not.toContain("doesn't record tokens");
+    expect(text).toContain("No tokens were recorded for Pi's requests this year, so they count here without them.");
+  });
+
   it("lists a source that is only imported (its session files are gone), also in a year with no requests", async () => {
     await mount(async () => ({ ...YEAR, sources: [], imported: [{ source: "codex", runs: 3 }] }), vi.fn(), 2025);
     expect(document.body.textContent).toContain("codex: no session files read in this year");

@@ -246,6 +246,21 @@ describe("tokens a session does not record", () => {
     }
     expect(body("cover")!.rows!.some((r) => r.label === "Tokens not recorded"), "none unknown: no row").toBe(false);
   });
+
+  it("a year with requests of unknown tokens and others of no known price draws every price and token row on the cover and the summary", () => {
+    // 3 requests with no tokens (Cursor's) and 4 more whose model has no listed price: both rows, and the price, fit on
+    // the card as drawn (its alt is what it draws), never cut from its end.
+    const mixed: Wrapped = { ...YEAR, tokens_unknown_requests: 3, unpriced_requests: 7 };
+    const want = { cover: ["Sessions", "Prompts", "Model requests", "Tokens not recorded", "At list price", "No known price"], summary: ["Tokens not recorded", "At list price", "No known price", "Top harness", "Top model", "Busiest hour"] };
+    for (const id of ["cover", "summary"] as const) {
+      const drawn = body(id, mixed)!;
+      expect(drawn.rows!.map((r) => r.label), id).toEqual(want[id]);
+      const { alt } = renderCard(drawn);
+      for (const words of ["Tokens not recorded", "3 requests", "No known price", "4 requests", "At list price", ...(id === "summary" ? ["Busiest hour"] : [])]) expect(alt, `${id}: ${words}`).toContain(words);
+    }
+    expect(body("cover")!.rows!.map((r) => r.label), "a year that fits keeps its days").toContain("Days at work");
+    expect(body("summary")!.rows!.map((r) => r.label), "a year that fits keeps its days").toContain("Days at work");
+  });
 });
 
 describe("summary", () => {
