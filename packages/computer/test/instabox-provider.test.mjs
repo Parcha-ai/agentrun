@@ -285,12 +285,48 @@ test("exec mints one SSH token for the machine, logs in as the token alone with 
 	assert.ok(!JSON.stringify(fake.gateway.logins).includes(KEY), "the API key never goes over SSH");
 });
 
-test("a gateway whose host key is not the one the token names is refused before any login: the token never reaches it", async (t) => {
+test("a gateway whose host key is not the one the token names is refused in the handshake, before any login: the connection is made, and the gateway never reads a username or the token", async (t) => {
 	const { fake, rest, host } = await setup(t);
 	const id = await running(host);
 	rest.gateway.fingerprint = fingerprintOf(keyPair().public);
 	await assert.rejects(host.exec(id, ["true"], CTX), (error) => /verification failed/.test(error.message));
-	assert.deepEqual(fake.gateway.logins, []);
+	assert.equal(rest.tokens.size, 1, "a token was minted");
+	assert.equal(fake.sshd.state.connections, 1, "the gateway was reached once, and the handshake not tried again");
+	assert.deepEqual(fake.gateway.logins, [], "no username, so no token, reached the gateway");
+	assert.equal(fake.sshd.state.logins, 0);
+});
+
+/**
+ * Each token answer names the real gateway and a token it takes, with fingerprintsOf(the gateway's own pin) in place of
+ * the pin: a refusal is the pin's alone.
+ */
+async function unpinned(t, fingerprintsOf) {
+	const { fake, rest, host } = await setup(t);
+	const id = await running(host);
+	const pin = rest.gateway.fingerprint;
+	assert.match(pin, /^SHA256:[A-Za-z0-9+/]{43}$/);
+	const fingerprints = fingerprintsOf(pin);
+	for (const fingerprint of fingerprints) {
+		rest.gateway.fingerprint = fingerprint;
+		await assert.rejects(host.exec(id, ["true"], CTX), (error) => error.code === "vendor" && /no host key fingerprint \(SHA256:\.\.\.\) to pin the gateway by/.test(error.message), JSON.stringify(fingerprint));
+	}
+	assert.equal(rest.tokens.size, fingerprints.length, "each answer minted a token");
+	assert.equal(fake.sshd.state.connections, 0, "no TCP connection reached the gateway");
+	assert.deepEqual(fake.gateway.logins, [], "no username, so no token, reached the gateway");
+	rest.gateway.fingerprint = pin;
+	assert.deepEqual(await run(host, id, ["echo", "ok"]), { code: 0, stdout: "ok\n", stderr: "" }, "the gateway's own pin after them works");
+	assert.equal(fake.sshd.state.connections, 1);
+}
+
+test("a token answer with no host key fingerprint is refused before any connection: the gateway sees no TCP connection, no username and no token", async (t) => {
+	await unpinned(t, () => [undefined, null, ""]);
+});
+
+test("a token answer whose fingerprint is not SHA256: and 43 characters of unpadded base64 is refused before any connection, the same way", async (t) => {
+	await unpinned(t, (pin) => {
+		const body = pin.slice("SHA256:".length);
+		return [`SHA256:${body.slice(0, 42)}`, `${pin}A`, `${pin}=`, `sha256:${body}`, `SHA256:${body.slice(0, 42)}-`, `SHA256:${body.slice(0, 42)}_`, `${pin}\n`, ` ${pin}`, `MD5:${"ab:".repeat(15)}ab`, body, 42];
+	});
 });
 
 test("a token answer is held to its form before ssh2 or a socket sees it: no fingerprint, a host or port that is none, or another token form fail in words", async (t) => {
