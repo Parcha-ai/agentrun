@@ -1,6 +1,6 @@
 // The Northflank host: a Linux sandbox on a Northflank service, a Kata microVM on Northflank Cloud, in the customer's own
 // project, over Northflank's REST API (https://api.northflank.com/v1, a Bearer token). Sources: D = the docs
-// (northflank.com/docs/v1: sandboxes/quickstart, sandboxes/configure-and-manage-sandboxes, api/use-the-api), S =
+// (https://northflank.com/docs/v1/: sandboxes/quickstart, sandboxes/configure-and-manage-sandboxes, api/use-the-api), S =
 // @northflank/js-client 0.13.0, Northflank's own client, whose calls this host makes without it. A sandbox is a service
 // (D quickstart): its name is the request's and its id (computer-<12 hex>), its image the box image or the spec's, its
 // command `sleep infinity`. The labels are packed into the workload's annotations, whose keys must be Kubernetes names.
@@ -84,7 +84,7 @@ const DRAIN_MS = 30_000;
 /** The output a command may have waiting, unread: at it the exec ends (the socket has no flow control). */
 const QUEUE_BYTES = 64 * 1024 * 1024;
 /**
- * The plans a size maps to (northflank.com/pricing: vCPUs and MB a plan). A spec names cpus, memoryMb or both; one
+ * The plans a size maps to (https://northflank.com/pricing: vCPUs and MB a plan). A spec names cpus, memoryMb or both; one
  * alone takes its plan's other.
  */
 const PLANS: ReadonlyArray<{ id: string; cpus: number; memoryMb: number }> = [

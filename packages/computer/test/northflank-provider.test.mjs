@@ -66,7 +66,7 @@ test("the descriptor: a sandbox under NORTHFLANK_API_TOKEN and a project of the 
 	assert.throws(() => new NorthflankProvider({ token: TOKEN }), /options\.projectId is required/, "no default project");
 	assert.throws(() => new NorthflankProvider({ token: TOKEN, projectId: "My Project" }), /options\.projectId is required/);
 	assert.throws(() => new NorthflankProvider({ token: TOKEN, projectId: PROJECT, teamId: "../x" }), /options\.teamId/);
-	assert.throws(() => new NorthflankProvider({ token: TOKEN, projectId: PROJECT, apiUrl: "http://api.northflank.com" }), /the Northflank API URL must be https/);
+	assert.throws(() => new NorthflankProvider({ token: TOKEN, projectId: PROJECT, apiUrl: "http://api.example.test" }), /the Northflank API URL must be https/);
 });
 
 test("prepareImage answers the box image's public tag, with no call", async () => {
