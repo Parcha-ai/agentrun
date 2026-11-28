@@ -51,9 +51,19 @@ const REFRESH_CALL_MS = 15_000;
  *  database's on Postgres), never a process's own, so a reader whose clock runs ahead of the holder's never takes a lease
  *  still live and sends a refresh token the holder may be spending (which OpenAI answers by revoking the sign-in). A
  *  holder that dies holds the others up for the lease's length at most. A write-back that faults uses most of the spare:
- *  its read back, a write again and a read once more, each up to STORE_WRITE_DEADLINE_MS (57 s in all at worst, more
- *  only when a stall holds the event loop past those deadlines). */
+ *  its read back, a write again and a read once more, each up to STORE_WRITE_DEADLINE_MS, the read back tried again only
+ *  within READ_BACK_MARGIN_MS of its bound (more only when a stall holds the event loop past those deadlines). */
 const REFRESH_LEASE_MS = REFRESH_CALL_MS + STORE_WRITE_DEADLINE_MS + 35_000;
+/** What a read back that faults keeps spare before its lease ends (readBackRead): 5 s. A read back tried again (busy, past
+ *  its deadline or unanswered) starts only while that read, the store calls that may follow it (a write again and a read
+ *  once more after the first read back, none after the read once more), each up to STORE_WRITE_DEADLINE_MS, and this
+ *  margin fit before the lease ends. The worst case: a retry of the first read back starts 25 s after the lease was taken
+ *  (60 - 5 - 3 x 10), and it, the write again and the read once more end by 55 s; a retry of the read once more starts by
+ *  45 s and ends by 55 s. Either way the last store call ends 5 s before another holder may take the lease, so no read
+ *  answering late lands under another holder's lease, and no write again does. */
+const READ_BACK_MARGIN_MS = 5_000;
+/** How long a read back that faulted waits before it reads again. */
+const READ_BACK_WAIT_MS = 500;
 /** How often a reader waiting on a peer's renewal reads the row again. */
 const LEASE_WAIT_MS = 200;
 const RENEW_LATER = "OpenAI could not renew the ChatGPT sign-in just now: try again in a moment.";
@@ -294,6 +304,10 @@ const faultClass = (error: unknown): string => {
 /** A write that faulted with `error` and surely wrote nothing: the store refused it (busy) or rolled it back (past its
  *  deadline). Any other fault, Postgres's commit Unanswered first, may still land after it was told. */
 const rolledBack = (error: unknown): boolean => error instanceof StoreBusy || error instanceof StoreDeadline;
+
+/** A read that faulted with `error` for a while only: the store busy, past its deadline, or Postgres's query unanswered. A
+ *  read changes nothing, so it may be sent again. */
+const transientRead = (error: unknown): boolean => rolledBack(error) || (error as Error | undefined)?.name === "Unanswered";
 
 /** `startedAt`: when it started (the clock's ms), which its hint counts from. `codeIn`: a code came back (the browser's
  *  return or a paste) and OpenAI is answering it: no hint, and a timeout says the exchange was cut off. `answered`: OpenAI
@@ -820,6 +834,9 @@ export class ChatGPTPlan implements PlanReader {
       if (row.state === "expired") throw new PlanUnavailable(EXPIRED);
       // A peer renewed it since: its pair is the row's now.
       if (row.credential.refresh !== seen && this.fresh(row)) return row.credential.access;
+      // This process's clock before the store stamps the lease: the lease ends no sooner than `from` + REFRESH_LEASE_MS
+      // on it, whatever the skew between the two (readBackRead).
+      const from = this.now();
       const at = await this.storeNow();
       if (row.lease && row.lease.until > at) {
         if (row.credential.access !== this.#refusedAccess && row.credential.expires > this.now()) return row.credential.access;
@@ -835,13 +852,14 @@ export class ChatGPTPlan implements PlanReader {
       // Changed since it was read (a peer leased or renewed it, or the owner signed in again): read it again.
       const mine = await this.swap(bytes, leased);
       if (!mine) continue;
-      return this.renewUnder(leased, mine);
+      return this.renewUnder(leased, mine, from);
     }
   }
 
-  /** The renewal itself, under this holder's lease on `row` (sealed as `bytes`). Every write back is a compare-and-set
-   *  against the leased row, so a sign-out or a new sign-in meanwhile is never overwritten: ours is dropped. */
-  private async renewUnder(row: Row, bytes: Uint8Array): Promise<string> {
+  /** The renewal itself, under this holder's lease on `row` (sealed as `bytes`), taken at `from` (this process's clock).
+   *  Every write back is a compare-and-set against the leased row, so a sign-out or a new sign-in meanwhile is never
+   *  overwritten: ours is dropped. */
+  private async renewUnder(row: Row, bytes: Uint8Array, from: number): Promise<string> {
     const { lease: _, ...bare } = row;
     const { openaiProvider } = await import("@earendil-works/pi-ai/providers/openai");
     // Its store's stop began while the lease was taken (a write that can take the store's whole deadline): the refresh
@@ -894,7 +912,7 @@ export class ChatGPTPlan implements PlanReader {
         await this.revoke(renewed.credential);
         throw new PlanUnavailable(RENEW_LATER);
       }
-      saved = await this.readBack(bytes, renewed, error);
+      saved = await this.readBack(bytes, renewed, error, from);
     }
     if (saved) {
       this.wrote(renewed);
@@ -913,15 +931,18 @@ export class ChatGPTPlan implements PlanReader {
    *  again waited on its row lock, so it has ended now), and the row read once more says which. A write again refused
    *  unsent (the store closed): revoked only when the first surely wrote nothing (rolledBack). Only a read back or a write
    *  again that faults otherwise, or a first that may still land, leaves the outcome unknown: the row may hold the pair,
-   *  so it is kept, never revoked, and the log says so with the fault's class (never its words). */
-  private async readBack(leased: Uint8Array, renewed: Row, fault: unknown): Promise<Uint8Array | undefined> {
+   *  so it is kept, never revoked, and the log says so with the fault's class (never its words). A read that faults for a
+   *  while is read again within the lease taken at `from` (readBackRead); the write is never sent again for it, so the
+   *  refresh token is spent once, and a read still faulting at that bound leaves the outcome unknown: the lease is held to
+   *  its end, never given back with the old pair as if the write had failed. */
+  private async readBack(leased: Uint8Array, renewed: Row, fault: unknown, from: number): Promise<Uint8Array | undefined> {
     const unknown = (error: unknown): never => {
       this.#deps.log?.({ chatgpt: "renewed_pair_unsaved", write: "unknown", reason: faultClass(error) });
       throw new PlanUnavailable(RENEW_LATER);
     };
     let now: { row: Row; bytes: Uint8Array } | undefined;
     try {
-      now = await this.readSealed();
+      now = await this.readBackRead(from, 2);
     } catch {
       return unknown(fault);
     }
@@ -940,11 +961,29 @@ export class ChatGPTPlan implements PlanReader {
     if (again) return again;
     let last: { row: Row; bytes: Uint8Array } | undefined;
     try {
-      last = await this.readSealed();
+      last = await this.readBackRead(from, 0);
     } catch (error) {
       return unknown(error);
     }
     return last?.row.credential.refresh === renewed.credential.refresh ? last.bytes : undefined;
+  }
+
+  /** The row read back under this holder's lease, taken at `from` (this process's clock). A read that faults for a while
+   *  (transientRead) is read again, a read only, while its store's stop has not begun and the next read, the `after` store
+   *  calls that may follow it and READ_BACK_MARGIN_MS fit before the lease ends: each call up to STORE_WRITE_DEADLINE_MS.
+   *  Any other fault, or one past that bound, is thrown. */
+  private async readBackRead(from: number, after: number): Promise<{ row: Row; bytes: Uint8Array } | undefined> {
+    for (let tried = 1; ; tried += 1) {
+      try {
+        return await this.readSealed();
+      } catch (error) {
+        const starts = this.now() + READ_BACK_WAIT_MS;
+        const fits = starts + (1 + after) * STORE_WRITE_DEADLINE_MS + READ_BACK_MARGIN_MS <= from + REFRESH_LEASE_MS;
+        if (!transientRead(error) || this.stopping() || !fits) throw error;
+        this.#deps.log?.({ chatgpt: "read_back_retry", fault: faultClass(error), try: String(tried + 1) });
+        await sleep(READ_BACK_WAIT_MS);
+      }
+    }
   }
 
   /** A pair this holder got and could not save (a renewal whose write back lost: renewUnder), whose revocation OpenAI

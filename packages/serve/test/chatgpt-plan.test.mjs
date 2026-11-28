@@ -2066,6 +2066,9 @@ test("a renewal's write-back that faults: refused unsent by a closed store, its 
     const { get, replaceIf } = store.sealedKeys;
     let writes = 0;
     let landing;
+    // The plan's clock moves a store deadline at each read that faults, so a read back tried again reaches its bound
+    // within the lease (READ_BACK_MARGIN_MS) at once, never on the wall clock.
+    let offset = 0;
     // The lease's write lands; the write-back (the second) faults, having written (`lands`), not yet (`late`: it lands
     // once the next read has answered) or not at all; the write again (the third) faults with `again`.
     store.sealedKeys.replaceIf = async (...args) => {
@@ -2078,8 +2081,14 @@ test("a renewal's write-back that faults: refused unsent by a closed store, its 
       throw fault();
     };
     store.sealedKeys.get = async (...args) => {
-      if (readFaults && writes >= 2) throw fault();
-      if (rereadFaults && writes >= 3) throw rereadFaults();
+      if (readFaults && writes >= 2) {
+        offset += 10_000;
+        throw fault();
+      }
+      if (rereadFaults && writes >= 3) {
+        offset += 10_000;
+        throw rereadFaults();
+      }
       const bytes = await get(...args);
       if (landing) {
         const commit = landing;
@@ -2090,7 +2099,7 @@ test("a renewal's write-back that faults: refused unsent by a closed store, its 
     };
     const logged = [];
     const before = openai.revoked.length;
-    const answer = await new ChatGPTPlan({ store, sealKey, log: (fields) => logged.push(fields) }).token().catch((e) => e);
+    const answer = await new ChatGPTPlan({ store, sealKey, now: () => Date.now() + offset, log: (fields) => logged.push(fields) }).token().catch((e) => e);
     const issued = openai.issued.at(-1);
     assert.equal(openai.revoked.slice(before).filter((r) => r.token === issued.refresh).length, revoked, `${what}: revoked`);
     store.sealedKeys.get = get;
@@ -2108,9 +2117,9 @@ test("a renewal's write-back that faults: refused unsent by a closed store, its 
   }
 });
 
-/** A renewal's write back that faults with `fault` (landed when `lands`), then reads back through `read`
- *  (null: the store's own answer; a function: throw what it returns), on a plan whose own clock is moved by `clock.step`
- *  at each read that faults. What happened: the store's writes (the lease, the write back, any after), the reads after
+/** A renewal's write back that faults with `fault` (landed when `lands`), then reads back through `read` (none: the
+ *  store's own answer; a function: throw what it returns for the nth read), on a plan whose own clock is moved by `step`
+ *  at each read that faults; each read's start is told on that clock, from the lease's write. `stopAt: "write"`: its store's stop begins at the write back. What happened: the store's writes (the lease, the write back, any after), the reads after
  *  the write back with each one's clock offset from the lease's, OpenAI's refreshes, the plan's answer and log. */
 async function readBackRun(t, { fault, lands = false, read, step = 4_000, stopAt } = {}) {
   const openai = fakeOpenAI(t);
@@ -2120,12 +2129,13 @@ async function readBackRun(t, { fault, lands = false, read, step = 4_000, stopAt
   const stale = await seatRow(store, sealKey, -1_000);
   const { get, replaceIf } = store.sealedKeys;
   let offset = 0;
+  const clock = () => Date.now() + offset;
   let leaseAt;
   const writes = [];
   const reads = [];
   store.sealedKeys.replaceIf = async (...args) => {
     writes.push(offset);
-    if (writes.length === 1) leaseAt = offset;
+    if (writes.length === 1) leaseAt = clock();
     if (writes.length !== 2) return replaceIf(...args);
     if (lands) await replaceIf(...args);
     if (stopAt === "write") void stopRenewals(store);
@@ -2133,7 +2143,7 @@ async function readBackRun(t, { fault, lands = false, read, step = 4_000, stopAt
   };
   store.sealedKeys.get = async (...args) => {
     if (writes.length < 2) return get(...args);
-    reads.push(offset - leaseAt);
+    reads.push(clock() - leaseAt);
     const error = read?.(reads.length);
     if (error) {
       offset += step;
@@ -2143,7 +2153,7 @@ async function readBackRun(t, { fault, lands = false, read, step = 4_000, stopAt
   };
   const refreshesBefore = openai.refreshes;
   const logged = [];
-  const answer = await new ChatGPTPlan({ store, sealKey, now: () => Date.now() + offset, log: (fields) => logged.push(fields) }).token().catch((e) => e);
+  const answer = await new ChatGPTPlan({ store, sealKey, now: clock, log: (fields) => logged.push(fields) }).token().catch((e) => e);
   store.sealedKeys.get = get;
   store.sealedKeys.replaceIf = replaceIf;
   return { openai, store, sealKey, stale, writes, reads, refreshes: openai.refreshes - refreshesBefore, answer, logged, issued: openai.issued.at(-1) };
@@ -2173,7 +2183,8 @@ test("a renewal's read back that faults on every try is tried again only while t
   // The lease is 60 s (REFRESH_LEASE_MS). A retried read starts only while its own deadline (10 s), the write again and
   // the read once more (10 s each) and the 5 s margin still fit: by 25 s after the lease was taken.
   assert.ok(run.reads.at(-1) <= 25_000, `the last read starts by lease - margin - three store deadlines: ${JSON.stringify(run.reads)}`);
-  assert.ok(run.reads.at(-1) + 4_000 > 25_000, `and reads are tried up to that bound: ${JSON.stringify(run.reads)}`);
+  // The next would start one step (4 s) and one wait (0.5 s) later: past the bound, with 1 s spare for this host's time.
+  assert.ok(run.reads.at(-1) > 25_000 - 4_000 - 500 - 1_000, `and reads are tried up to that bound: ${JSON.stringify(run.reads)}`);
   assert.equal(run.openai.revocationsOf(run.issued.refresh), 0, "the pair is kept, never revoked: the row may hold it");
   const row = await openRow(run.store, run.sealKey);
   assert.equal(row.credential.refresh, run.stale.refresh, "the row read now still holds the old pair");
