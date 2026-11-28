@@ -154,8 +154,9 @@ export interface HostedOptions {
 	 * The operator's public egress, `<IPv4>:<port>` such as 192.0.2.40:8443 (publicEgressOf): for a vendor whose machines
 	 * reach only addresses the operator allows. A computer with a network (open, or a list) has its egress proxy send each
 	 * tunnel to port 443 (HTTP or SOCKS5 CONNECT) there once every check has passed, in place of the checked public
-	 * address, with the program's bytes unchanged, so the operator's gate admits by the ClientHello's server name; init
-	 * takes it as --public-egress. Plain HTTP and every other port dial the checked address. Unset or empty, nothing
+	 * address, with the program's bytes unchanged, so the operator's gate admits by the ClientHello's server name, which
+	 * the proxy holds to the host its checks passed (another name, none, or an IP literal, and the tunnel is closed with
+	 * nothing sent); init takes it as --public-egress. Plain HTTP and every other port dial the checked address. Unset or empty, nothing
 	 * changes; a computer with no network has no proxy and ignores it.
 	 */
 	publicEgress?: string;

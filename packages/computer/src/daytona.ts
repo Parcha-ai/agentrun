@@ -64,7 +64,8 @@ export interface DaytonaProviderOptions extends Omit<HostedOptions, "desktop" | 
 	 * The operator's public egress, `<IPv4>:<port>` (HostedOptions.publicEgress, publicEgressOf): for a self-hosted
 	 * Daytona target whose runners drop every sandbox connection outside an allow list, with a gate on it that admits by
 	 * the TLS server name. A computer with a network (open, or a list) has its egress proxy send every tunnel to port 443
-	 * that passed its checks there, the program's bytes unchanged; plain HTTP and other ports dial the checked address.
+	 * that passed its checks there, the program's bytes unchanged, when its ClientHello names the host the checks passed
+	 * (else the tunnel is closed); plain HTTP and other ports dial the checked address.
 	 * Unset, every connection dials the address it was checked at.
 	 */
 	publicEgress?: string;

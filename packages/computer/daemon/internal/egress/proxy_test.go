@@ -3,6 +3,8 @@ package egress
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net"
@@ -32,6 +34,8 @@ type harness struct {
 	dialled []string
 	looked  []string
 	logged  []string
+	// records are the TLS records the upstream was sent first on each connection, in hex.
+	records []string
 }
 
 func newHarness(t *testing.T, allow *Allow, names map[string][]string) *harness {
@@ -48,6 +52,7 @@ func newHarnessThrough(t *testing.T, allow *Allow, names map[string][]string, pu
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = upstream.Close() })
+	h := &harness{}
 	go func() {
 		for {
 			conn, err := upstream.Accept()
@@ -57,6 +62,23 @@ func newHarnessThrough(t *testing.T, allow *Allow, names map[string][]string, pu
 			go func() {
 				defer conn.Close()
 				reader := bufio.NewReader(conn)
+				// A TLS record (a ClientHello) is answered with its bytes in hex, so a test sees exactly what came.
+				if first, err := reader.Peek(1); err == nil && first[0] == 0x16 {
+					header := make([]byte, 5)
+					if _, err := io.ReadFull(reader, header); err != nil {
+						return
+					}
+					body := make([]byte, int(header[3])<<8|int(header[4]))
+					if _, err := io.ReadFull(reader, body); err != nil {
+						return
+					}
+					record := hex.EncodeToString(append(header, body...))
+					h.mu.Lock()
+					h.records = append(h.records, record)
+					h.mu.Unlock()
+					_, _ = io.WriteString(conn, "tls "+record+"\n")
+					return
+				}
 				line, _ := reader.ReadString('\n')
 				if strings.HasPrefix(line, "GET ") {
 					req, err := http.ReadRequest(bufio.NewReader(io.MultiReader(strings.NewReader(line), reader)))
@@ -82,7 +104,6 @@ func newHarnessThrough(t *testing.T, allow *Allow, names map[string][]string, pu
 			}()
 		}
 	}()
-	h := &harness{}
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -563,38 +584,134 @@ func TestNetworkOfReadsOpenAndAListBackAsWritten(t *testing.T) {
 // gate is a public egress in the documentation range: the operator's address a tunnel to 443 goes to.
 var gate = netip.MustParseAddrPort("192.0.2.40:8443")
 
-// With a public egress, an HTTP CONNECT and a SOCKS5 CONNECT to port 443 whose checks pass open TCP to the gate, not to
-// the checked address, and the client's bytes (here a ClientHello's first bytes and a line) reach it unchanged.
-func TestAPublicEgressCarriesATunnelTo443ToTheGateWithTheClientsBytes(t *testing.T) {
-	h := newHarnessThrough(t, nil, map[string][]string{"example.com": {"93.184.215.14"}}, gate)
-	status, refused, conn := h.connect(t, "example.com:443")
-	if !strings.HasPrefix(status, "200") || refused != "" {
-		t.Fatalf("CONNECT example.com:443: %q refused %q; want 200", status, refused)
+// clientHello is the first flight a TLS client sends naming name (none when name is ""): its ClientHello, as crypto/tls
+// writes one.
+func clientHello(t *testing.T, name string) []byte {
+	t.Helper()
+	client, server := net.Pipe()
+	defer server.Close()
+	go func() {
+		_ = tls.Client(client, &tls.Config{ServerName: name, InsecureSkipVerify: name == ""}).Handshake()
+		_ = client.Close()
+	}()
+	_ = server.SetReadDeadline(time.Now().Add(wait))
+	header := make([]byte, 5)
+	if _, err := io.ReadFull(server, header); err != nil {
+		t.Fatal(err)
 	}
-	hello := "\x16\x03\x01\x00\xa5\x01 server name example.com\n"
-	_, _ = io.WriteString(conn, hello)
-	line, err := bufio.NewReader(conn).ReadString('\n')
-	if err != nil || line != "echo "+hello {
-		t.Fatalf("through the tunnel: %q, %v; want the gate to see the client's bytes unchanged", line, err)
+	body := make([]byte, int(header[3])<<8|int(header[4]))
+	if _, err := io.ReadFull(server, body); err != nil {
+		t.Fatal(err)
 	}
-	conn, err = net.DialTimeout("tcp", h.address, wait)
+	return append(header, body...)
+}
+
+// socksConnect sends a SOCKS5 CONNECT to name:port and gives the reply code and the connection.
+func (h *harness) socksConnect(t *testing.T, name string, port int) (byte, net.Conn) {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", h.address, wait)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	t.Cleanup(func() { _ = conn.Close() })
 	_ = conn.SetDeadline(time.Now().Add(wait))
 	_, _ = conn.Write([]byte{5, 1, 0})
 	greeting := make([]byte, 2)
 	if _, err := io.ReadFull(conn, greeting); err != nil || greeting[1] != 0 {
 		t.Fatalf("socks greeting: %v %v", greeting, err)
 	}
-	_, _ = conn.Write(append(append([]byte{5, 1, 0, 3, byte(len("example.com"))}, "example.com"...), 1, 187))
+	_, _ = conn.Write(append(append([]byte{5, 1, 0, 3, byte(len(name))}, name...), byte(port>>8), byte(port)))
 	reply := make([]byte, 10)
-	if _, err := io.ReadFull(conn, reply); err != nil || reply[1] != 0 {
-		t.Fatalf("socks CONNECT example.com:443: reply %v, %v; want 0", reply, err)
+	if _, err := io.ReadFull(conn, reply); err != nil {
+		t.Fatalf("socks CONNECT %s:%d: %v", name, port, err)
+	}
+	return reply[1], conn
+}
+
+func (h *harness) sent() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string{}, h.records...)
+}
+
+func (h *harness) logs() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string{}, h.logged...)
+}
+
+// With a public egress, an HTTP CONNECT and a SOCKS5 CONNECT to port 443 whose checks pass open TCP to the gate, not to
+// the checked address, and the client's ClientHello, naming the host it asked for, reaches it byte for byte.
+func TestAPublicEgressCarriesATunnelTo443ToTheGateWithTheClientsBytes(t *testing.T) {
+	h := newHarnessThrough(t, nil, map[string][]string{"example.com": {"93.184.215.14"}}, gate)
+	hello := clientHello(t, "example.com")
+	status, refused, conn := h.connect(t, "example.com:443")
+	if !strings.HasPrefix(status, "200") || refused != "" {
+		t.Fatalf("CONNECT example.com:443: %q refused %q; want 200", status, refused)
+	}
+	_, _ = conn.Write(hello)
+	line, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil || line != "tls "+hex.EncodeToString(hello)+"\n" {
+		t.Fatalf("through the tunnel: %q, %v; want the gate to see the ClientHello unchanged", line, err)
+	}
+	// A server name in any case, as a client may write it, is the host still.
+	code, socks := h.socksConnect(t, "example.com", 443)
+	if code != 0 {
+		t.Fatalf("socks CONNECT example.com:443: reply %d; want 0", code)
+	}
+	upper := clientHello(t, "Example.COM")
+	_, _ = socks.Write(upper)
+	line, err = bufio.NewReader(socks).ReadString('\n')
+	if err != nil || line != "tls "+hex.EncodeToString(upper)+"\n" {
+		t.Fatalf("through the SOCKS tunnel: %q, %v; want the ClientHello unchanged", line, err)
 	}
 	if got := h.dials(); len(got) != 2 || got[0] != gate.String() || got[1] != gate.String() {
 		t.Fatalf("dialled %q; want the gate %s twice, never the checked address", got, gate)
+	}
+}
+
+// With a public egress, a tunnel whose ClientHello names another host than the one its checks passed, names none, or
+// is no ClientHello, and a tunnel to an IP literal (which no server name names), is closed with nothing sent to the
+// gate: the gate admits by that name, so a listed host's tunnel may not carry an off-list host's.
+func TestAPublicEgressCarriesOnlyAClientHelloNamingTheCheckedHost(t *testing.T) {
+	allow, err := ParseAllow("example.com,93.184.215.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newHarnessThrough(t, &allow, map[string][]string{"example.com": {"93.184.215.14"}}, gate)
+	for _, test := range []struct {
+		target string
+		first  []byte
+		class  string
+	}{
+		{"example.com:443", clientHello(t, "evil.example"), "server name not the host"},
+		{"example.com:443", clientHello(t, "sub.example.com"), "server name not the host"},
+		{"example.com:443", clientHello(t, ""), "no server name"},
+		{"example.com:443", []byte("GET / HTTP/1.1\r\nHost: evil.example\r\n\r\n"), "not a tls client hello"},
+		{"93.184.215.14:443", clientHello(t, "evil.example"), "server name not the host"},
+	} {
+		status, refused, conn := h.connect(t, test.target)
+		if !strings.HasPrefix(status, "200") || refused != "" {
+			t.Fatalf("CONNECT %s: %q refused %q; want 200 before the hello", test.target, status, refused)
+		}
+		_, _ = conn.Write(test.first)
+		if got, err := io.ReadAll(conn); len(got) != 0 || err != nil {
+			t.Fatalf("CONNECT %s sending %.20q: read %q, %v; want the tunnel closed, nothing back", test.target, test.first, got, err)
+		}
+		if logs := h.logs(); !strings.HasSuffix(logs[len(logs)-1], "class="+test.class) {
+			t.Fatalf("CONNECT %s: logged %q; want class=%s", test.target, logs[len(logs)-1], test.class)
+		}
+	}
+	code, socks := h.socksConnect(t, "example.com", 443)
+	if code != 0 {
+		t.Fatalf("socks CONNECT example.com:443: reply %d; want 0", code)
+	}
+	_, _ = socks.Write(clientHello(t, "evil.example"))
+	if got, err := io.ReadAll(socks); len(got) != 0 || err != nil {
+		t.Fatalf("socks tunnel naming another host: read %q, %v; want it closed", got, err)
+	}
+	if sent := h.sent(); len(sent) != 0 {
+		t.Fatalf("the gate was sent %d records; want none", len(sent))
 	}
 }
 

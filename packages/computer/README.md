@@ -130,7 +130,10 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
   stays their loopback alone. With `--network` it also takes `--public-egress <IPv4>:<port>` (the adapter's
   `publicEgress`): the proxy then opens each tunnel to port 443 (HTTP CONNECT or SOCKS5 CONNECT) that passed every
   check to that address instead of the checked one, carrying the program's bytes unchanged, so a gate there admits by
-  the TLS ClientHello's server name; plain HTTP and every other port dial the checked address. Unset, nothing changes;
+  the TLS ClientHello's server name. The proxy reads that ClientHello first and carries the tunnel only when its server
+  name is the host the checks passed (so a listed host's tunnel never carries an off-list name to the gate); a tunnel
+  to an IP literal, or whose first bytes name no host or another, is closed with nothing sent. Plain HTTP and every
+  other port dial the checked address. Unset, nothing changes;
   a malformed value, or one without `--network`, and init refuses to start. The code is `daemon/internal/isolate`; `test/docker/loopback-block.docker.test.mjs` runs each
   provider's start in a root container beside a stand-in agent on 2280 and 49983.
 - **Where root may not make the network namespace, init makes it inside a user namespace.** Root holds no
@@ -1856,7 +1859,9 @@ What each part of a dial sandbox rests on:
   `publicEgress` (`DAYTONA_PUBLIC_EGRESS` in Settings), `<IPv4>:<port>`, checked at construction: init is given
   `--public-egress`, and the computer's egress proxy opens each tunnel to port 443 (HTTP CONNECT or SOCKS5 CONNECT)
   that passed its checks (the list, the resolve, the egress table) to the gate in place of the checked address, with
-  the program's bytes unchanged, so the gate admits by the ClientHello's server name and TLS stays end to end. Plain
+  the program's bytes unchanged, so the gate admits by the ClientHello's server name and TLS stays end to end. That
+  name must be the host the checks passed, or the tunnel is closed with nothing sent to the gate, so a tunnel to a
+  listed host can't carry another; an IP literal on port 443 has no such name and is closed too. Plain
   HTTP and every other port dial the checked address, as before. Unset, nothing changes; a computer with network
   `none` has no proxy and is given none. It rides exec and dial alike (a dial machine's `AGENTRUN_INIT_ARGS`).
 - **No GPU on dial**, refused in words: `daytona-gpu` holds no `agentrun-dial`, and Daytona runs a GPU sandbox

@@ -82,7 +82,8 @@ export const throughProxy = (network: unknown): boolean => network === "open" ||
  * Reads a public egress, `<IPv4>:<port>` such as 192.0.2.40:8443: the operator's address that a computer's egress proxy
  * opens a tunnel to port 443 to (an HTTP or SOCKS5 CONNECT) once every check has passed, in place of the checked public
  * address, carrying the program's bytes unchanged, so the TLS ClientHello names the host for the operator's gate to
- * admit. Plain HTTP and every other port dial the checked address. For a vendor whose machines reach only addresses
+ * admit; the proxy carries the tunnel only when that server name is the host its checks passed. Plain HTTP and every
+ * other port dial the checked address. For a vendor whose machines reach only addresses
  * the operator allows. computerd's --public-egress holds it to the same shape. Anything else throws, in words.
  */
 export function publicEgressOf(text: string): string {

@@ -22,13 +22,18 @@ package egress
 //     allows), a tunnel to port 443 (HTTP CONNECT or SOCKS5 CONNECT) that every check above passed opens TCP to that
 //     address instead of the checked one, and carries the client's bytes unchanged: the TLS a program speaks inside the
 //     tunnel, its ClientHello's server name included, reaches the operator's gate as the program sent it, and the
-//     certificate check stays the program's, end to end. Plain HTTP and every other port dial the checked address.
+//     certificate check stays the program's, end to end. The gate admits by that server name, so the proxy reads the
+//     ClientHello first and carries the tunnel only when its server name is the host the checks passed; a tunnel to an
+//     IP literal, one whose first bytes are no ClientHello, one that names no host or another host is closed with
+//     nothing sent to the gate. Plain HTTP and every other port dial the checked address.
 // The machine's own addresses (every interface's, read at each dial) are refused as this-host, so a program reaches
 // neither the vendor's agent nor any service of the machine by the network.
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -83,6 +88,8 @@ const (
 	greetFor   = 30 * time.Second
 	resolveFor = 10 * time.Second
 	proxyDial  = 10 * time.Second
+	// helloFor bounds the wait for a ClientHello on a tunnel to the public egress.
+	helloFor = 10 * time.Second
 )
 
 // maxHead bounds the bytes read for a request's head (its line and headers), as net/http's MaxHeaderBytes and Node's
@@ -403,6 +410,17 @@ func (p *proxy) http(conn net.Conn, reader *bufio.Reader, head *io.LimitedReader
 			_ = conn.Close()
 			return
 		}
+		if p.throughPublicEgress("connect", port) {
+			hello, ok := p.helloNaming(conn, reader, "connect", host, port)
+			if ok {
+				_, err = upstream.Write(hello)
+			}
+			if !ok || err != nil {
+				_ = upstream.Close()
+				_ = conn.Close()
+				return
+			}
+		}
 		splice(conn, reader, upstream)
 		return
 	}
@@ -583,8 +601,83 @@ func (p *proxy) socks(conn net.Conn, reader *bufio.Reader) {
 	reply(0)
 	// What the client sent past its request: the limited reader's buffer, then the rest of the connection's.
 	rest := io.MultiReader(bytesOf(limited), reader)
+	if p.throughPublicEgress("socks", port) {
+		hello, ok := p.helloNaming(conn, rest, "socks", host, port)
+		if !ok {
+			_ = upstream.Close()
+			_ = conn.Close()
+			return
+		}
+		rest = io.MultiReader(bytes.NewReader(hello), rest)
+	}
 	spliceReader(conn, rest, upstream)
 }
+
+// helloNaming reads the client's TLS ClientHello from client, within helloFor, and answers the bytes it read, which the
+// tunnel then carries first, when its server name is host (any case, a trailing dot aside); else it logs the tunnel
+// refused, by its class, and answers false. The public egress admits by that name, so a tunnel that passed its checks
+// for one host may not name another there. Nothing is written to the client.
+func (p *proxy) helloNaming(conn net.Conn, client io.Reader, kind, host string, port int) ([]byte, bool) {
+	_ = conn.SetReadDeadline(time.Now().Add(helloFor))
+	defer conn.SetReadDeadline(time.Time{})
+	read := &recording{from: client}
+	name, err := serverNameOf(read)
+	class := ""
+	switch {
+	case err != nil:
+		class = "not a tls client hello"
+	case name == "":
+		class = "no server name"
+	case !strings.EqualFold(strings.TrimSuffix(name, "."), strings.TrimSuffix(host, ".")):
+		class = "server name not the host"
+	}
+	if class != "" {
+		p.logLine(kind, host, port, "-", class)
+		return nil, false
+	}
+	return read.bytes.Bytes(), true
+}
+
+// errHelloRead stops the handshake serverNameOf runs once the ClientHello is in.
+var errHelloRead = errors.New("client hello read")
+
+// serverNameOf reads a TLS ClientHello from client, as crypto/tls's server reads one (a hello over several records
+// included), and answers its server name, "" where it names none. Nothing is written back: the handshake stops at the
+// hello, and what the server would send goes nowhere.
+func serverNameOf(client io.Reader) (string, error) {
+	name, read := "", false
+	err := tls.Server(helloConn{client}, &tls.Config{GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+		name, read = hello.ServerName, true
+		return nil, errHelloRead
+	}}).Handshake()
+	if !read {
+		return "", err
+	}
+	return name, nil
+}
+
+// recording is a reader that keeps every byte it reads.
+type recording struct {
+	from  io.Reader
+	bytes bytes.Buffer
+}
+
+func (r *recording) Read(b []byte) (int, error) {
+	n, err := r.from.Read(b)
+	r.bytes.Write(b[:n])
+	return n, err
+}
+
+// helloConn is a net.Conn that reads from a reader and drops what is written: serverNameOf's handshake's.
+type helloConn struct{ io.Reader }
+
+func (helloConn) Write(b []byte) (int, error)      { return len(b), nil }
+func (helloConn) Close() error                     { return nil }
+func (helloConn) LocalAddr() net.Addr              { return &net.TCPAddr{} }
+func (helloConn) RemoteAddr() net.Addr             { return &net.TCPAddr{} }
+func (helloConn) SetDeadline(time.Time) error      { return nil }
+func (helloConn) SetReadDeadline(time.Time) error  { return nil }
+func (helloConn) SetWriteDeadline(time.Time) error { return nil }
 
 func bytesOf(reader *bufio.Reader) io.Reader {
 	n := reader.Buffered()
