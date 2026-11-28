@@ -2187,10 +2187,11 @@ them. None of them goes around the run's tool settings:
   top-level `return` (or of the last expression) are the answer, and `image(value)` shows an image. Its clock reads the
   call's first start, its `random` takes the first run's seed, and `time.sleep` returns at once, so a rerun makes the
   same calls.
-  It runs at most 10 minutes (its calls' time included) in 256 MiB and makes at most 1,000 tool calls. A Python script
-  gets no `computer`: it calls the computer's tools among its `tools`. `@pydantic/monty` is an optional dependency,
-  loaded on the first Python script: an install without it runs JavaScript scripts, and a Python one answers that the
-  package is missing, with nothing run.
+  It runs at most 10 minutes (its calls' time included: the tool call it waits on is cut at the deadline too) in 256
+  MiB, prints at most 120,000 characters (the host's tool-result bound), and makes at most 1,000 tool calls. A Python
+  script gets no `computer`: it calls the computer's tools among its `tools`. `@pydantic/monty` is an optional
+  dependency, loaded on the first Python script: an install without it, or without its build for the platform (none for
+  musl), runs JavaScript scripts, and a Python one answers that the package is missing, with nothing run.
 
 A paid call made through `tools_call` or a script is held at its price before it is sent and settled once, as a direct
 call is, so the cap holds it. A run with a desktop or a phone has this same `codemode`, its computer's tools among
@@ -5656,7 +5657,7 @@ step is sent only when the run's spend plus that step's least (its whole input b
 1,024-token answer) fits. So a small cap pauses a run well before it has spent it. Measured on a pi desktop run on Sonnet
 ($3 / $15, cache write $3.75, cache read $0.30 a million) through the dispatch's own system prompt and tools (read,
 write, edit, the desktop's and `codemode`, with the desktop skill named in the system prompt), five requests (four
-screenshots, then the answer), spending about $0.04 in all. Through a gateway the first request's byte bound is 10,445
+screenshots, then the answer), spending about $0.04 in all. Through a gateway the first request's byte bound is 10,703
 tokens, the server's note that the desktop's disk is not the run's files among them, so it needs $0.055; each later request is bounded by the last one's bill and the bytes it adds, so the whole run
 needs $0.082;
 straight to Anthropic the count is one recorded from a real desktop run on Sonnet (3,146 tokens at first), and the note,

@@ -129,7 +129,7 @@ function scriptComputer(computer: ScriptComputer, tools: string): string {
  *  card offers, less the ops the run's gate refuses whatever their arguments (opsRefused). */
 function computerWords(computer: ScriptComputer): string {
   return [
-    `A JavaScript script has this run's computer as \`computer\`, typed by the declarations below (a Python script has no \`computer\`: it calls the computer tools among its \`tools\`). Each of its calls is a call of the run's own computer tools, asked about and recorded as that tool's: a command it runs is held to bash's setting; a file it writes needs write among this agent's tools, and a file it reads, lists or stats needs read among this agent's tools, each then held to that tool's setting. ${GUI_REACH}`,
+    `A JavaScript script has this run's computer as \`computer\`, typed by the declarations below. Each of its calls is a call of the run's own computer tools, asked about and recorded as that tool's: a command it runs is held to bash's setting; a file it writes needs write among this agent's tools, and a file it reads, lists or stats needs read among this agent's tools, each then held to that tool's setting. ${GUI_REACH}`,
     computerDeclarations(computer.card.groups, computer.opsRefused),
   ].join("\n");
 }
@@ -176,13 +176,13 @@ export function metaTools(options: MetaToolsOptions): HostTool[] {
       `Run a JavaScript script (the body of an async function: top-level await and return work) that calls this run's tools as \`await tools.<name>(args)\`; ${options.discovery.search ? `find them with ${TOOLS_SEARCH}, and ` : ""}\`ALL_TOOLS\` lists them. A call answers its value, and a call that fails throws. A tool is called by its own name, exactly as \`ALL_TOOLS\`${options.discovery.search ? ` and ${TOOLS_SEARCH}` : ""} give it${examples.length ? ` (here: ${examples.join(", ")})` : ""}, never by the name your own tool list may show for it with a harness's prefix (\`hands_\`, \`mcp__hands__\`): leave the prefix off.`,
       "The script's text(...) and console output, and its returned value, are the answer. It has no timers, network or files of its own: only the tools.",
       "Each call is asked about and recorded as that tool's own. A call that needs a person's approval stops the script: once they answer, that call runs (or is refused), its outcome is the answer, and the rest of the script does not run. A refused call ends the script with the refusal.",
-      `With \`language: "python"\` the script is Python instead (Monty's subset of Python 3: its standard library in part, no packages, files or network). It calls the same tools as \`await tools.<name>(args)\` or with keyword arguments, \`ALL_TOOLS\` lists them, and a call that fails raises. Its print() output and the value of a top-level \`return\` (or of its last expression) are the answer; \`image(value)\` shows an image.`,
+      `With \`language: "python"\` it is Python (Monty's subset, no packages): \`await tools.<name>(...)\` takes a dict or keyword arguments, and print() output and the returned or last value are the answer.`,
     ].join(" ") + (options.computer ? `\n${computerWords(options.computer)}` : ""),
     inputSchema: {
       type: "object",
       properties: {
-        script: { type: "string", description: "The script: the body of an async function, or a Python script." },
-        language: { type: "string", enum: [...CODEMODE_LANGUAGES], description: "The script's language: javascript (the default) or python." },
+        script: { type: "string", description: "The script: the body of an async function." },
+        language: { type: "string", enum: [...CODEMODE_LANGUAGES] },
       },
       required: ["script"],
       additionalProperties: false,
