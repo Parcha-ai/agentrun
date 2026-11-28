@@ -509,16 +509,18 @@ jobs:
       - name: Postgres for the two-process shape
         if: steps.paths.outputs.run == 'true'
         run: docker pull postgres:17-alpine
-      - name: One process, the server with its runner beside it
+      # The three shapes side by side (scripts/ci-at-once.sh), each with containers, a network and a Postgres of its own,
+      # named by its own process: `one`, the server with its runner beside it in one process; `seal-file`, one process
+      # with the seal key the server keeps in its data directory; `two`, the server and its runner as two processes on a
+      # Postgres store. Every line is prefixed with its shape, each shape that fails is named, and one failing never
+      # stops the others.
+      - name: The three shapes, at once
         if: steps.paths.outputs.run == 'true'
-        run: sh packages/serve/docker/image-custody.sh agentrun-custody:ci
-      - name: One process, with the seal key the server keeps in its data directory
-        if: ${{ !cancelled() && steps.image.outcome == 'success' }}
-        run: sh packages/serve/docker/image-custody.sh --seal-file agentrun-custody:ci
-      - name: Two processes, the server and its runner, on a Postgres store
-        # Read whatever the one-process shape found: each shape's lines are their own.
-        if: ${{ !cancelled() && steps.image.outcome == 'success' }}
-        run: sh packages/serve/docker/image-custody.sh --two agentrun-custody:ci
+        run: >-
+          sh scripts/ci-at-once.sh
+          'one=sh packages/serve/docker/image-custody.sh agentrun-custody:ci'
+          'seal-file=sh packages/serve/docker/image-custody.sh --seal-file agentrun-custody:ci'
+          'two=sh packages/serve/docker/image-custody.sh --two agentrun-custody:ci'
 
   real-chrome:
     # @parcha/pi-browser's suites that drive a real local Chrome (the local Chrome provider, the cdp provider, Stagehand's
