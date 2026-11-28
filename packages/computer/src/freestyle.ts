@@ -373,9 +373,11 @@ class FreestyleHost implements MachineHost {
 	/**
 	 * GET /v5/vms with the labels asked as one metadata filter (O list_vms: comma-separated key:value pairs), every page
 	 * by offset until totalCount; a label whose name or value holds a comma or a colon, which the filter can't say, is
-	 * matched here alone. Every label asked is matched here too, so a listing that answers more is filtered.
+	 * matched here alone. Every label asked is matched here too, so a listing that answers more is filtered. The pages
+	 * share ctx.timeoutMs: each is given only the time left, and none is asked once it is spent.
 	 */
 	async list(labels: Record<string, string>, ctx: HostCall): Promise<Machine[]> {
+		const end = Date.now() + ctx.timeoutMs;
 		const asked = Object.entries(labels);
 		const filter = asked
 			.filter(([name, value]) => !/[,:]/.test(name) && !/[,:]/.test(value))
@@ -384,7 +386,9 @@ class FreestyleHost implements MachineHost {
 		const page = async (cursor?: string) => {
 			const offset = Number(cursor ?? 0);
 			const query = new URLSearchParams({ ...(filter === "" ? {} : { metadata: filter }), limit: String(PAGE), offset: String(offset) });
-			const { body } = await this.#call("GET", `/v5/vms?${query}`, ctx, { retry: true });
+			const left = end - Date.now();
+			if (left <= 0) throw new HostError("timeout", `GET /v5/vms did not list every page within ${seconds(ctx.timeoutMs)}`);
+			const { body } = await this.#call("GET", `/v5/vms?${query}`, { ...ctx, timeoutMs: left }, { retry: true });
 			const read = body as { vms?: unknown; totalCount?: unknown } | null;
 			if (!Array.isArray(read?.vms)) throw new HostError("vendor", "GET /v5/vms answered no list of VMs");
 			const items = read.vms as FreestyleVm[];

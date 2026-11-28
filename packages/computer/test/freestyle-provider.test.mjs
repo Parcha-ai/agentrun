@@ -257,6 +257,26 @@ test("list asks Freestyle by metadata, every pair at once, reads every page by o
 	assert.equal(fake.calls.at(-1).url.searchParams.get("metadata"), `agentrun:${NAME}`);
 });
 
+test("a listing of many pages is held to the caller's timeout as a whole, each page given only the time left", async () => {
+	const slow = (signal) =>
+		new Promise((resolve, reject) => {
+			const timer = setTimeout(() => resolve(undefined), 150);
+			signal?.addEventListener("abort", () => (clearTimeout(timer), reject(signal.reason)), { once: true });
+		});
+	const fake = fakeFreestyle({ answer: (method, path, body, { signal }) => (method === "GET" && path === "/vms" ? slow(signal) : undefined) });
+	const { host } = provider(fake);
+	for (let n = 0; n < 350; n++) fake.add({ agentrun: NAME });
+	const started = Date.now();
+	const late = await host.list({ agentrun: NAME }, { timeoutMs: 400 }).catch((caught) => caught);
+	const took = Date.now() - started;
+	assert.equal(codeOfError(host, late), "timeout", late?.message);
+	assert.ok(took < 1_000, `the whole listing ended near its 400 ms (${took} ms)`);
+	const pages = fake.calls.filter(({ method, url }) => method === "GET" && url.pathname === "/v5/vms").length;
+	assert.ok(pages <= 3, `no page asked once the time was spent (${pages} asked)`);
+	await new Promise((resolve) => setTimeout(resolve, 300));
+	assert.equal(fake.calls.filter(({ method, url }) => method === "GET" && url.pathname === "/v5/vms").length, pages, "nothing fetched after the listing gave up");
+});
+
 test("delete deletes the VM, a missing one is done, and a VM deleted reads none after", async () => {
 	const fake = fakeFreestyle();
 	const { host } = provider(fake);
