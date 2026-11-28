@@ -393,12 +393,15 @@ for (const shared of [false, true]) {
     const agent = made.body.agent_id;
     const before = (await s.w1("GET", `/agents/${agent}`)).body.revision;
     assert.equal((await s.server.store.agents.revision(before))?.mcpPin?.contextforge?.url, s.one.fake.url, "made in W1, pinned from W1's own");
+    assert.equal(await s.server.store.agents.workspace(agent), W1, "made in W1");
 
     const updated = await whenFree(() => s.ops("POST", "/templates/forge/apply", { parameters: { topic: "dogs" }, grants: ["mcp:contextforge/add"], agent_id: agent }));
     assert.equal(updated.status, 200, JSON.stringify(updated.body));
     const after = (await s.ops("GET", `/agents/${agent}`)).body.revision;
     assert.notEqual(after, before, "a new revision");
     assert.equal((await s.server.store.agents.revision(after))?.mcpPin?.contextforge?.url, s.one.fake.url, "pinned from W1's own row, the one its runs call");
+    assert.equal(await s.server.store.agents.workspace(agent), W1, "the update keeps the agent in W1");
+    assert.equal((await s.w1("GET", `/agents/${agent}`)).body.revision, after, "W1 reads the updated agent as its own");
   });
 }
 
