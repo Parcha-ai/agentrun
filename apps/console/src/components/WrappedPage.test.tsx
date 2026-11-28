@@ -16,7 +16,7 @@ afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.in
 
 const YEAR: Wrapped = {
   year: 2025, sessions: 12, turns: 40, requests: 300, tokens: { input: 1_000_000, output: 200_000, cache_read: 5_000_000, cache_write: 100_000 },
-  cost_usd: 42.5, unpriced_requests: 3, tokens_unknown_requests: 0, unread_files: 0, cache: null, secrets: null,
+  cost_usd: 42.5, unpriced_requests: 3, tokens_unknown_requests: 0, time_unknown_requests: 0, unread_files: 0, cache: null, secrets: null,
   days: [{ day: "2025-03-02", requests: 100, tokens: 4_000_000 }, { day: "2025-03-03", requests: 200, tokens: 2_300_000 }],
   hours: Array.from({ length: 24 }, (_, h) => (h === 14 ? 120 : h === 9 ? 80 : 4)), weekdays: [0, 200, 100, 0, 0, 0, 0], active_ms: 7_200_000,
   harnesses: [{ harness: "claude-agent", sessions: 10, requests: 250, tokens: 6_000_000, tokens_unknown_requests: 0, sources: ["claude-code"] }, { harness: "pi", sessions: 2, requests: 50, tokens: 300_000, tokens_unknown_requests: 0, sources: ["gemini", "pi"] }],
@@ -26,8 +26,8 @@ const YEAR: Wrapped = {
 };
 
 /** A year of Cursor alone: its chats record no tokens and name no model it can price. */
-const CURSOR_YEAR: Wrapped = { ...YEAR, sessions: 1, turns: 2, requests: 3, tokens: { input: 0, output: 0, cache_read: 0, cache_write: 0 }, tokens_unknown_requests: 3, cost_usd: 0, unpriced_requests: 3,
-  days: [{ day: "2025-07-10", requests: 3, tokens: 0 }], hours: Array.from({ length: 24 }, (_, h) => (h === 4 ? 3 : 0)), weekdays: [0, 0, 0, 0, 0, 3, 0], active_ms: 60_000,
+const CURSOR_YEAR: Wrapped = { ...YEAR, sessions: 1, turns: 2, requests: 3, tokens: { input: 0, output: 0, cache_read: 0, cache_write: 0 }, tokens_unknown_requests: 3, time_unknown_requests: 3, cost_usd: 0, unpriced_requests: 3,
+  days: [{ day: "2025-07-10", requests: 3, tokens: 0 }], hours: Array.from({ length: 24 }, (_, h) => (h === 4 ? 3 : 0)), weekdays: [0, 0, 0, 0, 0, 3, 0], active_ms: 0,
   harnesses: [{ harness: "cursor", sessions: 1, requests: 3, tokens: 0, tokens_unknown_requests: 3, sources: ["cursor"] }],
   models: [{ model: "unknown", requests: 3, tokens: 0, cost_usd: 0, unpriced_requests: 3, tokens_unknown_requests: 3 }],
   sources: [{ source: "cursor", sessions: 1, requests: 3 }], imported: [{ source: "cursor", runs: 1 }] };
@@ -92,6 +92,15 @@ describe("WrappedPage", () => {
     expect(row("Harnesses")).toContain("Cursor");
     expect(row("Harnesses")).toContain("tokens not recorded · 1 sessions");
     expect(row("Models")).toContain("tokens not recorded · no known price");
+    expect(text).toContain("Time at work not recorded: these sessions keep no time for each request.");
+    expect(text).not.toContain("0.0 h at work");
+  });
+
+  it("says a year with some requests of unknown time beside the time at work it knows", async () => {
+    await mount(async () => ({ ...YEAR, time_unknown_requests: 4 }), vi.fn(), 2025);
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("2.0 h at work, + 4 requests with no recorded time, in this machine's time zone.");
+    expect(text).not.toContain("Time at work not recorded");
   });
 
   it("says a year with some requests of unknown tokens beside the tokens it knows", async () => {

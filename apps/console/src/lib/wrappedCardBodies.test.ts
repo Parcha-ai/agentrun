@@ -8,7 +8,7 @@ import type { Wrapped } from "./v2";
 // wait it has is met and the year has sessions; no number on a card is one the year does not give.
 const YEAR: Wrapped = {
   year: 2025, sessions: 12, turns: 40, requests: 300, tokens: { input: 1_000_000, output: 200_000, cache_read: 5_000_000, cache_write: 100_000 },
-  cost_usd: 42.5, unpriced_requests: 3, tokens_unknown_requests: 0, unread_files: 0,
+  cost_usd: 42.5, unpriced_requests: 3, tokens_unknown_requests: 0, time_unknown_requests: 0, unread_files: 0,
   days: [{ day: "2025-03-02", requests: 100, tokens: 4_000_000 }, { day: "2025-03-03", requests: 200, tokens: 2_300_000 }],
   hours: Array.from({ length: 24 }, (_, h) => (h === 14 ? 120 : h === 9 ? 80 : 4)), weekdays: [0, 200, 100, 0, 0, 0, 0], active_ms: 7_200_000,
   harnesses: [{ harness: "claude-agent", sessions: 10, requests: 250, tokens: 6_000_000, tokens_unknown_requests: 0, sources: ["claude-code"] }, { harness: "pi", sessions: 2, requests: 50, tokens: 300_000, tokens_unknown_requests: 0, sources: ["gemini", "pi"] }],
@@ -19,8 +19,8 @@ const YEAR: Wrapped = {
   secrets: { runs: 9, runs_holding: 2, removed: 3 },
 };
 const NO_CACHE: Wrapped = { ...YEAR, cache: null };
-const CURSOR_YEAR: Wrapped = { ...YEAR, sessions: 1, turns: 2, requests: 3, tokens: { input: 0, output: 0, cache_read: 0, cache_write: 0 }, tokens_unknown_requests: 3, cost_usd: 0, unpriced_requests: 3,
-  days: [{ day: "2025-07-10", requests: 3, tokens: 0 }], hours: Array.from({ length: 24 }, (_, h) => (h === 4 ? 3 : 0)), weekdays: [0, 0, 0, 0, 0, 3, 0], active_ms: 60_000,
+const CURSOR_YEAR: Wrapped = { ...YEAR, sessions: 1, turns: 2, requests: 3, tokens: { input: 0, output: 0, cache_read: 0, cache_write: 0 }, tokens_unknown_requests: 3, time_unknown_requests: 3, cost_usd: 0, unpriced_requests: 3,
+  days: [{ day: "2025-07-10", requests: 3, tokens: 0 }], hours: Array.from({ length: 24 }, (_, h) => (h === 4 ? 3 : 0)), weekdays: [0, 0, 0, 0, 0, 3, 0], active_ms: 0,
   harnesses: [{ harness: "cursor", sessions: 1, requests: 3, tokens: 0, tokens_unknown_requests: 3, sources: ["cursor"] }],
   models: [{ model: "unknown", requests: 3, tokens: 0, cost_usd: 0, unpriced_requests: 3, tokens_unknown_requests: 3 }],
   sources: [{ source: "cursor", sessions: 1, requests: 3 }], imported: [{ source: "cursor", runs: 1 }] };
@@ -221,6 +221,11 @@ describe("hours", () => {
     const at = (h: number) => body("hours", { ...YEAR, hours: Array.from({ length: 24 }, (_, i) => (i === h ? 9 : 1)) })!.figure!.value;
     expect([at(0), at(11), at(12), at(23)]).toEqual(["12 am", "11 am", "12 pm", "11 pm"]);
     expect(body("hours", { ...YEAR, hours: Array.from({ length: 24 }, (_, i) => (i === 3 || i === 20 ? 9 : 1)) })!.figure!.value).toBe("3 am");
+  });
+
+  it("says a Cursor-only year's time at work as unknown, never 0.0 h", () => {
+    expect(body("hours", CURSOR_YEAR)!.rows).toContainEqual({ label: "Time at work", value: "Unknown" });
+    expect(body("hours", { ...YEAR, time_unknown_requests: 1 })!.rows).toContainEqual({ label: "Time at work", value: "2.0 h" });
   });
 
   it("groups a long year's hours at work", () => {
