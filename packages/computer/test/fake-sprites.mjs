@@ -48,9 +48,10 @@ class FakeSocket {
 /**
  * The fake. pageSize is the listing's (at most max_results); others are sprites of the account not made by this
  * provider (another prefix match, no labels or other labels), which a listing answers too; rateLimited makes every
- * create a 429 sprite_creation_rate_limited.
+ * create a 429 sprite_creation_rate_limited; holdSessionInfo keeps a session's session_info message until the test
+ * sends it (session(id).sessionInfo()), as a slow server may after the socket's open.
  */
-export function fakeSprites({ backend, pageSize = 2, rateLimited = false } = {}) {
+export function fakeSprites({ backend, pageSize = 2, rateLimited = false, holdSessionInfo = false } = {}) {
 	const sprites = new Map();
 	const sessions = new Map();
 	const sockets = [];
@@ -141,7 +142,8 @@ export function fakeSprites({ backend, pageSize = 2, rateLimited = false } = {})
 			sessions.set(record.id, record);
 			call.session = record.id;
 			socket.emit("open");
-			socket.emit("message", { data: JSON.stringify({ type: "session_info", session_id: record.id, command: call.query.path, created: Date.now(), cols: 0, rows: 0, is_owner: true, tty: false }) });
+			record.sessionInfo = () => socket.emit("message", { data: JSON.stringify({ type: "session_info", session_id: record.id, command: call.query.path, created: Date.now(), cols: 0, rows: 0, is_owner: true, tty: false }) });
+			if (!holdSessionInfo) record.sessionInfo();
 			if (backend) void run(record, one.backendId ?? one.sprite.name);
 		});
 		return socket;

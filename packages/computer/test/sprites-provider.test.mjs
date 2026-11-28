@@ -199,6 +199,21 @@ test("kill is the session's kill call, SIGKILL, by the id session_info named; th
 	assert.deepEqual([vendor.sockets[0].readyState, vendor.sockets[0].closedWith], [3, 1000]);
 });
 
+test("a kill between the socket's open and session_info waits for Fly to name the session, then sends the kill call: the command is killed, not left to run on after the close", async () => {
+	const { vendor, host } = spritesOf({ holdSessionInfo: true });
+	await host.create(request(), CTX);
+	const proc = await host.exec(NAME, ["sleep", "600"], CTX);
+	const session = await sessionOf(vendor);
+	const killing = proc.kill();
+	await new Promise((resolve) => setImmediate(resolve));
+	session.sessionInfo();
+	await killing;
+	const call = vendor.calls.findLast((one) => one.method === "POST");
+	assert.deepEqual([call?.method, call?.path, call?.query], ["POST", `/v1/sprites/${NAME}/exec/${session.id}/kill`, { signal: "SIGKILL" }]);
+	assert.equal(session.killed, "SIGKILL");
+	assert.deepEqual([vendor.sockets[0].readyState, vendor.sockets[0].closedWith], [3, 1000]);
+});
+
 test("an exec on a name Fly lacks is not_found: the socket never opens, and get says why", async () => {
 	const { host } = spritesOf();
 	await assert.rejects(host.exec("computer-ffffffffffff", ["true"], CTX), (error) => error.code === "not_found" && /no sprite computer-ffffffffffff/.test(error.message));
