@@ -511,7 +511,11 @@ A server is its data directory, its store and its seal key. Back up all three, t
 
 - **The data directory** (`--data DIR`; `/data` in the image, on the `agentrun-data` volume). It holds the runs' folders
   (`DIR/disk/`), the API token (`DIR/.token`), the password's hash (`DIR/owner.json`), the key that signs session cookies
-  (`DIR/.session-secret`), the remembered public address and, on SQLite, the store.
+  (`DIR/.session-secret`), the remembered public address and, on SQLite, the store. Two things are not in it. Tokens
+  that `AGENTRUN_TOKEN` or `AGENTRUN_TOKENS` hand the server are in no file (a start with `AGENTRUN_TOKEN` removes `DIR/.token`):
+  keep them as you keep the seal key, and hand the same ones to the restored server. With Archil on (Mode 2,
+  `PUT /v2/workspace/archil`), runs' folders and uploads are on each agent's Archil disk, not in `DIR/disk/`:
+  the store keeps which disk is each agent's, and the files stay on Archil, so a copy of `DIR` does not hold them.
 - **The store**. On SQLite (the default) it is `DIR/store.sqlite`, in the data directory. With `AGENTRUN_STORE_URL` set to
   a Postgres, it is the schema `AGENTRUN_STORE_SCHEMA` names (`agentrun` by default) in that database.
 - **The seal key**. Saved keys, MCP server credentials, webhook trigger secrets, the outbound webhook's secret and
@@ -533,7 +537,7 @@ cp -a DIR /backups/agentrun-data
 
 To restore, put the copy where `--data` points (on Postgres, `pg_restore --dbname="$AGENTRUN_STORE_URL"
 /backups/agentrun-store.dump` into a database that does not hold the schema yet), and start the server with the same
-`AGENTRUN_SEAL_KEY` when you set one. It comes back as it was: the same token, the same password, every agent, run and
+`AGENTRUN_SEAL_KEY` and tokens when you set them. It comes back as it was: the same token, the same password, every agent, run and
 trigger, and each sealed secret opens. A store serves one server at a time: a restored copy started while the
 original still runs on the same Postgres schema is refused.
 
