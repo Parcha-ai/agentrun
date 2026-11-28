@@ -57,8 +57,8 @@ const page = await web.fetch("https://example.org/", { offset: 0, maxChars: 20_0
   empty objective is `{ error: "web_search needs an objective" }`, and no provider is asked. Each provider is sent what
   it takes: Parallel the objective and the queries (`objective`, `search_queries`, mode `fast`, plus `client_model` and
   `session_id` when `client` names them); Exa, keyed and keyless, the objective as its query; Firecrawl, keyed and
-  keyless, up to 3 of the queries at once, each asked for `ceil(n / k)` results scraped as markdown (main content only),
-  the results merged by URL in first-seen order and cut at `n`, each snippet its page's markdown; keyless Firecrawl
+  keyless, up to 3 of the queries at once, each asked for `ceil(n / k)` results (keyless: each result scraped as markdown, main content only;
+  keyed: no scrape, each snippet Firecrawl's description of the result), the results merged by URL in first-seen order and cut at `n`, each snippet its page's markdown where it has one, else its description; keyless Firecrawl
   sends the objective too, which its tool requires; `native` the first query. The answer is `{ provider, objective,
   queries, results }`.
 - `client` (WebConfig) is `{ model?, session? }`: the model the run calls, as a bare id (`claude-opus-4-7`), and an id of
