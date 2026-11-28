@@ -142,6 +142,7 @@ export async function runCheck(check: Check, context: CheckContext): Promise<Che
 				const stderr = fromBase64(value.stderr);
 				const output = `exit ${value.exitCode}${value.timedOut ? " (timed out)" : ""}\nstdout: ${stdout.trim()}${stderr.trim() ? `\nstderr: ${stderr.trim()}` : ""}`;
 				if (value.timedOut) return done("error", output, `the program ran past ${check.timeoutMs ?? 30_000} ms`);
+				if (value.exitCode !== null && check.infra?.includes(value.exitCode)) return done("error", output, `exited ${value.exitCode}, which the check names infra: it could not run`);
 				const exit = check.exit ?? 0;
 				if (value.exitCode !== exit) return done("fail", output, `exited ${value.exitCode}, not ${exit}`);
 				if (check.stdout && !matches(stdout, check.stdout)) return done("fail", output, `stdout does not ${describe(check.stdout)}`);

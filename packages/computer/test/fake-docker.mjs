@@ -295,6 +295,8 @@ const noSuch = (key) => { process.stderr.write("Error response from daemon: No s
 // A held step waits for its proceed file, at most a minute.
 const held = (step, then) => {
 	if (!config.hold.includes(step)) return then();
+	// Which process is held (heldPid): a call cut while it waits kills it.
+	writeFileSync(config.dir + "/held-" + step + ".pid", String(process.pid));
 	const bound = Date.now() + 60_000;
 	const timer = setInterval(() => {
 		if (!existsSync(config.dir + "/proceed-" + step) && Date.now() < bound) return;
@@ -609,6 +611,8 @@ switch (args[0]) {
 					const data = exited && request.params.offset === 0 ? Buffer.from("(EE) Fatal server error:\\n(EE) no screens found\\n").toString("base64") : "";
 					answer({ data, nextOffset: Buffer.from(data, "base64").length, dropped: 0, exited });
 				}
+				// Any other call (a file call, an exec) the fake never answers: its method is recorded, for unanswered().
+				if (!["hello", "ping", "process.start", "process.wait", "process.read"].includes(request.method)) appendFileSync(config.dir + "/unanswered.jsonl", JSON.stringify({ method: request.method }) + "\\n");
 			}
 		});
 		process.stdin.on("end", () => process.exit(0));
@@ -626,6 +630,8 @@ switch (args[0]) {
 	const names = () => JSON.parse(readFileSync(state, "utf8")).filter((c) => !(typeof c.RemovalEnds === "number" && c.RemovalEnds <= Date.now())).map((c) => c.Name.slice(1));
 	const proceed = (step) => writeFileSync(join(dir, `proceed-${step}`), "");
 	const started = () => records(join(dir, "started.jsonl"));
+	/** The methods of the daemon calls the fake left unanswered (with no fake computerd), in the order they came. */
+	const unanswered = () => records(join(dir, "unanswered.jsonl")).map((request) => request.method);
 	const volumeNames =() => JSON.parse(readFileSync(volumeState, "utf8")).map((v) => v.Name);
 	const networkNames = () => JSON.parse(readFileSync(networkState, "utf8")).map((n) => n.Name);
 	/** Changes a container in the fake's state, by name: what Docker would do under the provider (a proxy that crashed). */
@@ -653,7 +659,9 @@ switch (args[0]) {
 	/** lateRun's marks: whether the daemon's late create has begun, and the container it made (its name), if it did. */
 	const late = () => ({ started: existsSync(join(dir, "late-started")), committed: existsSync(join(dir, "late-committed")) ? readFileSync(join(dir, "late-committed"), "utf8").replace(/^\//, "") : undefined });
 	const runHeld = () => existsSync(join(dir, "run-held"));
-	return { provider: new DockerProvider(options), options, calls, envs, names, volumeNames, networkNames, alter, add, daemonPath, bound, cache, program, proceed, started, late, runHeld };
+	/** The pid of the last docker process held at `step`, once one is. */
+	const heldPid = (step) => (existsSync(join(dir, `held-${step}.pid`)) ? Number(readFileSync(join(dir, `held-${step}.pid`), "utf8")) : undefined);
+	return { provider: new DockerProvider(options), options, calls, envs, names, volumeNames, networkNames, alter, add, daemonPath, bound, cache, program, proceed, started, unanswered, late, runHeld, heldPid };
 }
 
 /** The docker calls that delete computer `name` with nothing else of its own: look for its egress proxy by its label and

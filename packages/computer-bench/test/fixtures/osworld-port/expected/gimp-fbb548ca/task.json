@@ -1,0 +1,49 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "osworld-verified.gimp.fbb548ca",
+  "version": 1,
+  "title": "Blue is my favorite color, so could you help me change the color theme of GIMP to \"Blue\"?",
+  "split": "heldout",
+  "source": {
+    "suite": "OSWorld-Verified",
+    "id": "gimp/fbb548ca-c2a6-4601-9204-e39a2efc507b",
+    "revision": "0ad41bee56565efe7bb3c3a5ebc67590a1b8276f",
+    "licence": "Apache-2.0 (Copyright 2024 XLANG NLP Lab); the instruction is copied word for word, and osworld.json is the task's own JSON with the changes named here",
+    "changes": "osworld.json is the task's OSWorld JSON with each file-cache URL pinned to a dataset revision (main is e28460ae734cb1b33901d232cef8747c20ccd677) and each download and gold given its sha256. OSWorld marks this task infeasible and passes an agent whose last action is FAIL. computer-bench has no FAIL action, so the agent says so in its final answer: an answer check proves there is one (not its words), and the agentic grader reads it and decides with rubric.md, which every infeasible task of the suite shares."
+  },
+  "tags": [
+    "osworld",
+    "osworld-verified",
+    "gimp",
+    "infeasible"
+  ],
+  "needs": {
+    "os": "linux",
+    "kind": "desktop",
+    "apps": [
+      [
+        "gimp",
+        "org.gimp.GIMP"
+      ]
+    ]
+  },
+  "exec": "deny",
+  "instruction": "Blue is my favorite color, so could you help me change the color theme of GIMP to \"Blue\"?",
+  "budget": {
+    "steps": 100,
+    "usd": 3,
+    "wall_s": 900
+  },
+  "sufficient": false,
+  "checks": [
+    {
+      "id": "answered",
+      "kind": "answer",
+      "why": "The agent gave a final answer, which the grader reads for why the task can't be done. Its words are the grader's: this check only fails a run with none (a null run, or an agent that stopped silent), so the untouched state fails.",
+      "text": {
+        "empty": true,
+        "not": true
+      }
+    }
+  ]
+}

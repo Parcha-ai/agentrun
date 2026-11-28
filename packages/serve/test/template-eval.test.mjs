@@ -7,9 +7,10 @@ import { createServer } from "node:http";
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
+import { pathToFileURL } from "node:url";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import Ajv2020 from "ajv/dist/2020.js";
-import { CaseError, CLAIM_READ_TIMEOUT_MS, callsOf, evalTemplate, exitCodeOf, fakeAnswer, gradeDeterministic, graderInput, markdownReport, metricsOf, outputVerdict, PAGE_READ_TIMEOUT_MS, readBound, readCases, searched, startFake, verdictOf, waitRun } from "../dist/template-eval.js";
+import { CaseError, CLAIM_READ_TIMEOUT_MS, callsOf, evalTemplate, exitCodeOf, fakeAnswer, gradeDeterministic, graderInput, markdownReport, metricsOf, outputVerdict, PAGE_READ_TIMEOUT_MS, PATTERN_MS, readBound, readCases, searched, startFake, verdictOf, waitRun } from "../dist/template-eval.js";
 import { lastJsonBlock, structuredAnswer } from "../dist/answer-json.js";
 import { MAX_EVAL_FILE_BYTES, MAX_FILE_BYTES, MAX_PACKAGE_BYTES, PackageError, readPackage, readPackages, TEMPLATES_DIR } from "../dist/templates.js";
 import { scratch, serve, withEnv } from "./support.mjs";
@@ -277,6 +278,91 @@ test("tool_used's at_most passes on at least one and at most that many matching 
     ]) assert.match(e.message, said);
     return true;
   });
+});
+
+test("tool_used's args take {\"$pattern\": <regex>} as a fixture's when does: a call's string matched whole; a pattern that is no string, does not compile or sits beside another key is refused", async (t) => {
+  const read = (path) => ({ tool: "read", arguments: { path }, status: "success", result: "" });
+  const runOf = (...paths) => ({ answer: "", calls: paths.map(read), mcpCalls: [], files: [] });
+  const grade = (args, expect, run) => gradeDeterministic({ file: "r.md", type: "tool_used", tools: ["read"], expect, args }, run, []);
+  // A read outside the skill's own folder and the run's message: a grader that expects none of them.
+  const outside = { path: { $pattern: String.raw`(?!\.agents/skills/review/[^/]+$|inputs/message\.md$).*` } };
+  const kept = [".agents/skills/review/SKILL.md", "inputs/message.md"];
+  assert.deepEqual(grade(outside, "not_called", runOf(...kept)), { pass: true, reason: `0 calls of read with ${JSON.stringify(outside)}; the grader expects none` }, "reads of the skill and the message pass");
+  for (const path of ["src/totals.ts", "CODEREVIEW.md", ".agents/skills/code-review-knowledge/rules.md", "inputs/message.md.bak", "x/inputs/message.md"]) {
+    assert.deepEqual(grade(outside, "not_called", runOf(...kept, path)), { pass: false, reason: `1 call of read with ${JSON.stringify(outside)}; the grader expects none` }, `a read of ${path} fails`);
+  }
+  // Whole, never a prefix or a part: "src" matches no call of src/totals.ts, "src/.*" does.
+  const src = runOf("src/totals.ts");
+  assert.equal(grade({ path: { $pattern: "src" } }, "called", src).pass, false, "a pattern matches the whole string");
+  assert.equal(grade({ path: { $pattern: "totals" } }, "called", src).pass, false, "a pattern matches the whole string, not a part");
+  assert.equal(grade({ path: { $pattern: "src/.*" } }, "called", src).pass, true);
+  assert.equal(grade({ path: { $pattern: ".*" } }, "called", runOf(7)).pass, false, "a value that is no string matches no pattern");
+  // Inside an object argument, as carries compares an object's fields, and beside a value compared equal.
+  const nested = { answer: "", calls: [{ tool: "read", arguments: { path: "a.md", opts: { range: "1-20", mode: "text" } }, status: "success", result: "" }], mcpCalls: [], files: [] };
+  assert.equal(grade({ path: "a.md", opts: { range: { $pattern: String.raw`\d+-\d+` } } }, "called", nested).pass, true);
+  assert.equal(grade({ path: "b.md", opts: { range: { $pattern: ".*" } } }, "called", nested).pass, false, "every other key still compares equal");
+  // Read from a grader's front matter: kept as written, or refused as a fixture's when is.
+  const dir = await webPackage(t, "graded", "unavailable", [["web_search", { query: "x" }]]);
+  const grader = (name, front) => writeFileSync(join(dir, "evals", "graded", "graders", name), `---\ntype: tool_used\ntool: web_search\n${front}\n---\n`);
+  grader("pattern.md", "expect: not_called\nargs: { query: { $pattern: 'rob.*' }, page: { n: { $pattern: '\\d+' } } }");
+  assert.deepEqual(readCases(dir, ["graded"]).cases[0].graders.find((g) => g.file === "pattern.md"), { file: "pattern.md", type: "tool_used", tools: ["web_search"], expect: "not_called", args: { query: { $pattern: "rob.*" }, page: { n: { $pattern: "\\d+" } } } });
+  grader("broken.md", "args: { query: { $pattern: '(' } }");
+  grader("flagged.md", "args: { query: { $pattern: 'x', flags: i } }");
+  grader("number.md", "args: { page: { n: { $pattern: 3 } } }");
+  assert.throws(() => readCases(dir, ["graded"]), (e) => {
+    for (const said of [
+      /graders\/broken\.md: args\.query: its \$pattern does not compile: /,
+      /graders\/flagged\.md: args\.query: a \{"\$pattern": \.\.\.\} value holds no other key, and this one holds flags/,
+      /graders\/number\.md: args\.page\.n: \$pattern is a regular expression's source, a string/,
+    ]) assert.match(e.message, said);
+    return true;
+  });
+});
+
+test("a $pattern that backtracks without end stops at its limit: the tool_used grade fails naming it, a fake answers an error naming it, and the next pattern still matches", () => {
+  // (a+)+b over 40 a's tries every split of them: hours on the regex engine, so only the limit ends it.
+  const stuck = "a".repeat(40);
+  const run = (path) => ({ answer: "", calls: [{ tool: "read", arguments: { path }, status: "success", result: "" }], mcpCalls: [], files: [] });
+  const grade = (args, path) => gradeDeterministic({ file: "r.md", type: "tool_used", tools: ["read"], expect: "not_called", args }, run(path), []);
+  const started = Date.now();
+  assert.deepEqual(grade({ path: { $pattern: "(a+)+b" } }, stuck), { pass: false, reason: `the $pattern at args.path did not finish within ${PATTERN_MS} ms on a call's value, so the grader can't say whether a call carries args: a pattern that can't backtrack without end (no quantifier inside a quantified group) can` }, "expect: not_called fails, never passes on a match it could not finish");
+  assert.ok(Date.now() - started < PATTERN_MS + 5_000, `stopped near its limit, ${Date.now() - started} ms`);
+  assert.equal(grade({ path: { $pattern: "a+" } }, stuck).pass, false, "the next pattern runs on a fresh worker and matches");
+  assert.equal(grade({ path: { $pattern: "b+" } }, stuck).pass, true);
+  // A fake's when: the call gets an error naming the pattern's limit, not an answer by a match it could not finish.
+  const fixture = { server: "files", description: "Files.", tools: { open: { description: "Opens a file.", input: { type: "object" }, answers: [{ when: { path: { $pattern: "(a+)+b" } }, result: { content: [{ type: "text", text: "opened" }] } }] } } };
+  const answered = fakeAnswer(fixture, "open", { path: stuck });
+  assert.equal(answered.isError, true);
+  assert.match(answered.content[0].text, new RegExp(`The fake files's open: a when \\$pattern did not finish within ${PATTERN_MS} ms`));
+  assert.deepEqual(fakeAnswer(fixture, "open", { path: "aab" }), { content: [{ type: "text", text: "opened" }] }, "the same pattern on a short value still answers");
+});
+
+test("a $pattern test waits for its own job's answer: a notify that comes late, after the next test started, never answers that test", async (t) => {
+  // dist/pattern-bound.js loads ./pattern-worker.js beside itself: a copy of it beside the late-notify stand-in runs the
+  // real caller against a worker that wakes it early on every job after its first.
+  const dir = await scratch(t);
+  writeFileSync(join(dir, "package.json"), '{"type": "module"}\n');
+  cpSync(new URL("../dist/pattern-bound.js", import.meta.url), join(dir, "pattern-bound.js"));
+  cpSync(new URL("./fixtures/pattern-worker-late-notify.mjs", import.meta.url), join(dir, "pattern-worker.js"));
+  const { testPattern } = await import(pathToFileURL(join(dir, "pattern-bound.js")).href);
+  for (const [source, text, matched] of [["a+", "aaa", true], ["b+", "aaa", false], ["inputs/.*", "inputs/message.md", true], ["src/.*", "inputs/message.md", false]]) {
+    const started = Date.now();
+    assert.equal(testPattern(source, text), matched, `${source} on ${text}: the job's own answer, after the early wake-up`);
+    assert.ok(Date.now() - started >= 250, `the answer came after the stand-in's 300 ms pause, not at the early wake-up (${Date.now() - started} ms)`);
+  }
+});
+
+test("code-review's off-by-one passes a read of the skill's folder or the run's message however its path is spelled, and fails any other read, a .. in it included", () => {
+  const graders = readCases(join(TEMPLATES_DIR, "code-review"), ["off-by-one"]).cases[0].graders;
+  const reads = graders.find((g) => g.file === "reads-only-skill.md");
+  assert.ok(reads && graders.some((g) => g.file === "no-bash.md"), "off-by-one checks its reads and its bash calls in code");
+  const grade = (path) => gradeDeterministic(reads, { answer: "", calls: [{ tool: "read", arguments: { path }, status: "success", result: "" }], mcpCalls: [], files: [] }, []);
+  for (const path of [".agents/skills/review/SKILL.md", ".agents/skills/review/findings.schema.json", "inputs/message.md", "./inputs/message.md", "@inputs/message.md", "./.agents/skills/review/DEEP.md", "@.agents/skills/review/CODEREVIEW.md", "/workspace/run/.agents/skills/review/REVIEWER.md", "/work/inputs/message.md"]) {
+    assert.equal(grade(path).pass, true, `a read of ${path} passes`);
+  }
+  for (const path of ["src/totals.ts", "./src/totals.ts", "/work/src/totals.ts", "CODEREVIEW.md", "REVIEW.md", ".git/HEAD", ".agents/skills/code-review-knowledge/rules.md", ".agents/skills/review/sub/x.md", "inputs/message.md.bak", "inputs/other.md", "inputs/../src/totals.ts", ".agents/skills/review/../../../src/totals.ts", "/work/../src/.agents/skills/review/SKILL.md", "..", "./"]) {
+    assert.equal(grade(path).pass, false, `a read of ${path} fails`);
+  }
 });
 
 test("tool_used's args_file is read from a grader's front matter: a path in the run's work folder, never beside expect: not_called, at_least or at_most", async (t) => {

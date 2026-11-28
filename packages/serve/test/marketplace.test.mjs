@@ -3,6 +3,7 @@
 // each entry checked field by field, and each matched to the package here that it is. Off under --faux unless
 // AGENTRUN_MARKETPLACE names an address. A fake marketplace on loopback stands in for the site: no test reaches it.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
@@ -17,17 +18,28 @@ const LIST = [
   { name: "company-brief", title: "Company research brief", summary: "A one-page brief on a company.", category: "research", tags: ["research", "Bad Tag"], url: "/templates/company-brief/", needs: [], source: `github:Parcha-ai/agentrun-templates/templates/company-brief@${SHA}` },
 ];
 
-/** A fake marketplace on loopback: answers /search.json with `answer()` ({status, body, headers}), counting reads. */
+/** A fake marketplace on loopback: answers /search.json with `answer()` ({status, body, headers}), counting reads. It is
+ *  served under a random path of its own, the one `url` names (a site may be served under a path), so only a read made
+ *  from `url` is counted: another process on the host that reaches its port (a scan probing each loopback port) gets a
+ *  404 and is not kept. */
 async function fakeMarketplace(t, answer) {
   const seen = [];
+  const own = `/${randomBytes(8).toString("hex")}`;
   const server = createServer((req, res) => {
-    seen.push(`${req.method} ${req.url} ${req.headers["user-agent"]}`);
+    if (!req.url.startsWith(`${own}/`)) return void res.writeHead(404).end();
+    seen.push(`${req.method} ${req.url.slice(own.length)} ${req.headers["user-agent"]}`);
     const { status = 200, body = LIST, headers = {} } = answer();
     res.writeHead(status, { "content-type": "application/json", ...headers }).end(typeof body === "string" ? body : JSON.stringify(body));
   });
   await new Promise((done) => server.listen(0, "127.0.0.1", done));
   t.after(() => new Promise((done) => server.close(done)));
-  return { url: `http://127.0.0.1:${server.address().port}`, seen };
+  return { url: `http://127.0.0.1:${server.address().port}${own}`, seen };
+}
+
+/** What a port scan on this host sends a new loopback listener: `GET /` at its address and again at localhost's. */
+async function probe(url) {
+  const { port } = new URL(url);
+  for (const host of ["127.0.0.1", "localhost"]) await fetch(`http://${host}:${port}/`).then((res) => res.body?.cancel());
 }
 
 test("AGENTRUN_MARKETPLACE: unset, the public marketplace (none under --faux); off turns it off; an https address, or http on loopback, reads that site; anything else stops the start", () => {
@@ -154,6 +166,8 @@ test("a read that never answers, or answers and then stalls, ends at the deadlin
 test("GET /v2/marketplace/templates answers the marketplace's list with the package here that each is, read once for callers within 5 minutes; off and unreachable answer 200 with an empty list", { timeout: 60_000 }, async (t) => {
   let answer = () => ({});
   const market = await fakeMarketplace(t, () => answer());
+  // Another process on this host probing the fake's port, as a port scan does, is not a read of the marketplace.
+  await probe(market.url);
   const { api } = await serve(t, { marketplace: market.url, runner: false });
   const read = await api("GET", "/marketplace/templates");
   assert.equal(read.status, 200, JSON.stringify(read.body));

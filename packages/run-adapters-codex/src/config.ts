@@ -87,6 +87,9 @@ export interface CodexConfigOptions {
    * else), less any name the policy excludes.
    */
   commandEnv?: Readonly<Record<string, string>>;
+  /** How long Codex waits on a streamed answer that sends nothing (`stream_idle_timeout_ms` on its provider). Absent:
+   *  Codex's own limit, five minutes. A host sets it for a model on its own machine (LOCAL_STREAM_IDLE_MS). */
+  streamIdleMs?: number;
   /** Merged over the generated config, last. */
   extra?: Record<string, TomlValue>;
 }
@@ -127,6 +130,7 @@ export function codexConfig(options: CodexConfigOptions): Record<string, TomlVal
         env_key: options.envKey,
         wire_api: 'responses',
         supports_websockets: false,
+        ...(options.streamIdleMs !== undefined ? { stream_idle_timeout_ms: Math.max(1, Math.floor(options.streamIdleMs)) } : {}),
       },
     },
     ...(options.cwd ? { projects: { [options.cwd]: { trust_level: 'untrusted' } } } : {}),

@@ -355,17 +355,27 @@ test("a capped workflow's polled call held at its cap past its poll window is se
   }
 });
 
-test("a polled call held at its cap and resumed by a raise while its window still has time runs under the window the hold moved, not the old one, and still under its own deadline_s", { timeout: 300_000 }, async (t) => {
+test("a polled call held at its cap and resumed by a raise while its window still has time runs under the window the hold moved, not the old one, and still under its own deadline_s", { timeout: 300_000, concurrency: 2 }, async (t) => {
   // An 18 s poll window, held from its start (the pause, about when it opened); the search answers after 9 s. Let go,
   // and raised 12 s after the pause: the next process resumes with at most 6 s of the old window left, 3 s or more short
   // of the search, and above 0 unless it takes 6 s to come up. The hold moves the window by the time held, so it ends
-  // 18 s after the resume, 9 s past the search's end. The call's own deadline_s is 18 s (twice the search: room), then
-  // 4.5 s (half: none), which still ends it. That one runs first, so a run that fails the other has passed it.
+  // 18 s after the resume, 9 s past the search's end. The call's own deadline_s is 18 s (twice the search: room) in one
+  // case and 4.5 s (half: none) in the other, which still ends it. The two cases run side by side, each on a server of its
+  // own whose Parallel fake is a module of the case's, filing that case's calls in a file of its own: the file the
+  // environment names (AGENTRUN_TEST_FAUX_PARALLEL_CALLS) is one for the whole test process, and each case would count
+  // the other's search.
+  withEnv(t, { PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_PARALLEL_SEARCH: "slow:9000" }, KEYS);
   const cases = [{ deadline: 4.5, want: "failed" }, { deadline: 18, want: "completed" }];
-  for (const { deadline, want } of cases) {
-    const calls = join(await scratch(t), `parallel-calls-${deadline}.jsonl`);
-    withEnv(t, { PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: calls, AGENTRUN_TEST_FAUX_PARALLEL_SEARCH: "slow:9000" }, KEYS);
-    const { api, store } = await serve(t, { fauxParallel: FAUX_PARALLEL });
+  await Promise.all(cases.map(({ deadline, want }) => t.test(`deadline_s ${deadline}: ${want}`, async (t) => {
+    const dir = await scratch(t);
+    const calls = join(dir, "parallel-calls.jsonl");
+    const fauxParallel = join(dir, "faux-parallel.mjs");
+    await writeFile(fauxParallel, [
+      `import { appendFileSync } from "node:fs";`,
+      `import faux from ${JSON.stringify(new URL("./fixtures/faux-parallel.mjs", import.meta.url).href)};`,
+      `export default async (url, init = {}) => (appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ path: new URL(String(url)).pathname }) + "\\n"), faux(url, init));`,
+    ].join("\n"));
+    const { api, store } = await serve(t, { fauxParallel });
     const flow = {
       v: 2, name: "polled-resumed",
       schemas: {
@@ -393,7 +403,7 @@ test("a polled call held at its cap and resumed by a raise while its window stil
     const run = await view(api, runId);
     assert.deepEqual([deadline, run.status], [deadline, want], JSON.stringify(run.error));
     assert.equal((await lines(calls)).filter((call) => call.path === "/v1/search").length, 1, "sent once, after the raise");
-  }
+  })));
 });
 
 // A decision's booking lost by a crash while its receipt names its charge does not happen on the runner: its settle commits

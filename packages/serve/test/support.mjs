@@ -21,7 +21,7 @@ import { fauxEnvOf } from "../dist/server.js";
 import { FAUX_VENDOR_API_ENV } from "../dist/tools.js";
 import { resolve } from "node:path";
 import { openSqliteStore, openStore } from "../dist/store/index.js";
-import { END_RETRY_BACKOFF_MS, END_RETRY_CAP_MS, startRunner } from "../dist/runner/runner.js";
+import { END_RETRY_BACKOFF_MS, END_RETRY_CAP_MS, INTERRUPT_BACKOFF_MS, RESUME_BACKOFF_MS, RUNNER_POLL_MS, startRunner } from "../dist/runner/runner.js";
 import { runCensus } from "../dist/run-census.js";
 import { maxRunsOf } from "../dist/host.js";
 import { claimInstallsStopped } from "../dist/harness-install.js";
@@ -888,8 +888,9 @@ export const retried = (api) => (...args) => whenFree(() => api(...args));
 
 /** The runner's poll and the waits it puts between two claims of one run, as startRunner defaults them (runner.ts): a run
  *  whose loop closed itself is claimed again after interruptBackoffMs, one whose parked resume threw after resumeBackoffMs,
- *  one whose stopped end was refused after endRetryBackoffMs (each doubling, the last up to endRetryCapMs). */
-const RUNNER_BEAT_DEFAULTS = { pollMs: 1_000, interruptBackoffMs: 1_000, resumeBackoffMs: 5_000, endRetryBackoffMs: END_RETRY_BACKOFF_MS, endRetryCapMs: END_RETRY_CAP_MS };
+ *  one whose stopped end was refused after endRetryBackoffMs (each doubling, the last up to endRetryCapMs). Each is read
+ *  from the constant startRunner defaults it to, so a default changed there moves FAST_BEATS with it. */
+export const RUNNER_BEAT_DEFAULTS = Object.freeze({ pollMs: RUNNER_POLL_MS, interruptBackoffMs: INTERRUPT_BACKOFF_MS, resumeBackoffMs: RESUME_BACKOFF_MS, endRetryBackoffMs: END_RETRY_BACKOFF_MS, endRetryCapMs: END_RETRY_CAP_MS });
 
 /** `runnerTiming` for a case that counts the runner's beats (runnerBeats, claimsAfterRow) to show a run is not claimed, or
  *  claimed once and never again: those defaults, every one a tenth (a 100 ms poll). The rule is that they scale together.

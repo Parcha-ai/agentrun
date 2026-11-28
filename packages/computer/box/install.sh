@@ -9,8 +9,9 @@
 #   sh install.sh checked    the last step alone: any sudo taken away, then every check. recipe.mjs's onImage runs it on
 #                            the published image, after E2B's template builder has added sudo there.
 #
-# It reads the network only through apt (Debian's mirrors), for Archil's package and for Node's release, the two checked by
-# sha256. Run twice on one machine it ends the
+# It reads the network only through apt (the base's mirrors), for Archil's package and for Node's release, the two checked
+# by sha256, and, on a base whose apt has no firefox-esr (Ubuntu 24.04, whose firefox is a snap), for Mozilla's APT
+# repository, its key checked by fingerprint (mozilla_apt). Run twice on one machine it ends the
 # same, for a vendor's snapshot flow may retry it: each step that makes something looks for it first.
 set -eu
 
@@ -28,6 +29,12 @@ NODE_SHA256_ARM64=6e51a2ada00f0011cc266f65d98922b403d7ad88f809ca2aa615a5fe1ce6e8
 HELPER=/usr/local/sbin/agentrun-archil
 # The entrypoint of a machine that dials the server (dial below).
 DIAL=/usr/local/bin/agentrun-dial
+# Mozilla's APT repository, for firefox-esr where the base's apt has none (mozilla_apt below): the fingerprint of its
+# signing key as Mozilla publishes it, where the key is kept, apt's pin for the repository, and the source signed by it.
+MOZILLA_FPR=35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3
+MOZILLA_KEY=/etc/apt/keyrings/packages.mozilla.org.asc
+MOZILLA_PIN=/etc/apt/preferences.d/mozilla
+MOZILLA_LIST=/etc/apt/sources.list.d/mozilla.list
 
 here=$(dirname "$0")
 
@@ -61,11 +68,42 @@ packages() {
 	install -d -o root -g root -m 0755 /workspace
 }
 
+# firefox-esr's source where the base's apt has none: Ubuntu 24.04 has no firefox-esr, and its firefox is a snap, which
+# no image here runs. The test is apt's own: `apt-cache policy firefox-esr` in the C locale (its words are translated
+# otherwise) reads no candidate, or nothing for a name apt never heard of. A base whose apt has one (Debian's) keeps it,
+# and nothing below runs. Else Mozilla's key is fetched over https alone and read with gpg (installed for this alone,
+# never imported into a keyring): the file must hold one key, MOZILLA_FPR, for apt trusts every key in a signed-by file.
+# The pin is written before the source, so apt never reads the source unpinned: packages.mozilla.org supplies
+# firefox-esr and its own firefox-esr-* packages and nothing else (-1 is never installed), so this source can never
+# replace a package of the base's. A second run finds the candidate this one added, and runs nothing.
+mozilla_apt() {
+	case "$(LC_ALL=C apt-cache policy firefox-esr | awk '$1 == "Candidate:" { print $2 }')" in
+	"" | "(none)") ;;
+	*) return 0 ;;
+	esac
+	DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends gnupg >/dev/null
+	install -d -m 0755 "${MOZILLA_KEY%/*}"
+	curl -fsSL --proto =https -o "$MOZILLA_KEY" https://packages.mozilla.org/apt/repo-signing-key.gpg
+	home=$(mktemp -d)
+	fpr=$(gpg --homedir "$home" --quiet --show-keys --with-colons "$MOZILLA_KEY" | awk -F: '$1 == "pub" { pub = 1; next } $1 == "fpr" && pub { print $10; pub = 0 }' | tr '\n' ' ')
+	rm -rf "$home"
+	fpr=${fpr% }
+	if [ "$fpr" != "$MOZILLA_FPR" ]; then
+		rm -f "$MOZILLA_KEY"
+		echo "the APT signing key from packages.mozilla.org has the fingerprint ${fpr:-(none: gpg read no key)}, not Mozilla's published $MOZILLA_FPR: apt is given nothing from packages.mozilla.org" >&2
+		exit 1
+	fi
+	printf 'Package: firefox-esr*\nPin: origin packages.mozilla.org\nPin-Priority: 500\n\nPackage: *\nPin: origin packages.mozilla.org\nPin-Priority: -1\n' >"$MOZILLA_PIN"
+	echo "deb [signed-by=$MOZILLA_KEY] https://packages.mozilla.org/apt mozilla main" >"$MOZILLA_LIST"
+	apt-get update -qq
+}
+
 # The desktop: Xvfb and xfwm4, which the provider starts through computerd as the tool user on :0, and the apps an agent
 # opens. Each program and each app's desktop file is checked here. It comes before the last step, so a package that
 # brought sudo is taken away and checked gone there (a check here would refuse E2B's build, whose builder adds sudo first).
 desktop() {
 	apt-get update -qq
+	mozilla_apt
 	DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
 		xvfb xfwm4 x11-xserver-utils xfce4-terminal mousepad firefox-esr thunar xdotool fonts-dejavu-core adwaita-icon-theme >/dev/null
 	rm -rf /var/lib/apt/lists/*

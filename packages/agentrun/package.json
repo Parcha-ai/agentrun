@@ -17,6 +17,7 @@
     "NOTICE"
   ],
   "dependencies": {
+    "@earendil-works/pi-ai": "1.5.2",
     "@parcha/agentrun-serve": "0.1.0-beta.68"
   },
   "scripts": {

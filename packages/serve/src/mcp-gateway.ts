@@ -226,9 +226,10 @@ export interface McpGatewayOptions {
   commit?: () => McpCommit | undefined;
   /** Where each request to a server may go, asked before anything is sent to it: the runner's MCP claim passes the
    *  address rule (mcp-oauth.ts mcpServerAt) with the owner's private-network hosts read now, and a fetch dialled at the
-   *  address it checked (`send`; none, `fetch` as it is). A refusal is said to the model, nothing sent. None: every
+   *  address it checked (`send`; none, `fetch` as it is), for the server named (`server`). A refusal is said to the model,
+   *  nothing sent. None: every
    *  request goes as `fetch` sends it. */
-  reach?: (url: string, signal: AbortSignal) => Promise<{ refused: string } | { send?: typeof fetch }>;
+  reach?: (url: string, signal: AbortSignal, server: string) => Promise<{ refused: string } | { send?: typeof fetch }>;
   /** The claim's per-call check of a server's credential (its custody stamp): awaited before each call is checked for
    *  sending, it may drop the credential (`credentials[server].unopened`), which the call then refuses unsent; one that
    *  throws (a store read failed, the call was stopped) refuses the call unsent too, in words, and the run goes on. Only
@@ -365,7 +366,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     // (its credential among it) leaves, and the request is dialled at the address checked.
     let through = send;
     if (options.reach) {
-      const at = await options.reach(input instanceof Request ? input.url : String(input), init.signal ?? AbortSignal.timeout(options.bounds?.connectMs ?? CONNECT_MS));
+      const at = await options.reach(input instanceof Request ? input.url : String(input), init.signal ?? AbortSignal.timeout(options.bounds?.connectMs ?? CONNECT_MS), server);
       if ("refused" in at) {
         throw new AddressRefused(at.refused);
       }

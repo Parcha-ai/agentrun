@@ -505,6 +505,53 @@ serverless exec, for at most 295 s. A known limit: a command, once sent, cannot 
 once, but the command runs on to its own deadline, and the run's next command, or a write to its folder, waits until it
 has ended. A command not yet sent when the call is stopped is never sent.
 
+## Back up and restore
+
+A server is its data directory, its store and its seal key. Back up all three, together:
+
+- **The data directory** (`--data DIR`; `/data` in the image, on the `agentrun-data` volume). It holds the runs' folders
+  (`DIR/disk/`), the API token (`DIR/.token`), the password's hash (`DIR/owner.json`), the key that signs session cookies
+  (`DIR/.session-secret`), the remembered public address and, on SQLite, the store. Two things are not in it. Tokens
+  that `AGENTRUN_TOKEN` or `AGENTRUN_TOKENS` hand the server are in no file (a start with `AGENTRUN_TOKEN` removes `DIR/.token`):
+  keep them as you keep the seal key, and hand the same ones to the restored server. With Archil on (Mode 2,
+  `PUT /v2/workspace/archil`), runs' folders and uploads are on each agent's Archil disk, not in `DIR/disk/`:
+  the store keeps which disk is each agent's, and the files stay on Archil, so a copy of `DIR` does not hold them.
+- **The store**. On SQLite (the default) it is `DIR/store.sqlite`, in the data directory. With `AGENTRUN_STORE_URL` set to
+  a Postgres, it is the schema `AGENTRUN_STORE_SCHEMA` names (`agentrun` by default) in that database.
+- **The seal key**. Saved keys, MCP server credentials, webhook trigger secrets, the outbound webhook's secret and
+  sign-ins are sealed under it in the store ([Tool keys](#tool-keys)). With `AGENTRUN_SEAL_KEY` set, the key is
+  that value and is in no file: keep a copy of it where you keep your other secrets. Without it, the key is
+  `DIR/seal/seal.key` and a copy of the data directory carries it, so anyone who holds that copy can open every
+  sealed secret: keep the copy as you would the key.
+
+To back up, stop the server and every runner on its store, then copy. A copy taken while the server runs can catch
+the store between writes.
+
+```sh
+# SQLite: the whole data directory, modes kept
+cp -a DIR /backups/agentrun-data
+# Postgres: the store's schema (agentrun, or the one AGENTRUN_STORE_SCHEMA names), then the data directory
+pg_dump --format=custom --schema=agentrun --file=/backups/agentrun-store.dump "$AGENTRUN_STORE_URL"
+cp -a DIR /backups/agentrun-data
+```
+
+To restore, put the copy where `--data` points (on Postgres, `pg_restore --dbname="$AGENTRUN_STORE_URL"
+/backups/agentrun-store.dump` into a database that does not hold the schema yet), and start the server with the same
+`AGENTRUN_SEAL_KEY` and tokens when you set them. It comes back as it was: the same token, the same password, every agent, run and
+trigger, and each sealed secret opens. A store serves one server at a time: a restored copy started while the
+original still runs on the same Postgres schema is refused.
+
+**Losing the seal key loses every sealed secret.** Nothing opens them without it, and the server never makes a new key
+over them: a restore with the store and a missing or different key does not start. Missing, it says
+
+```
+agentrun-serve does not start: this store's secrets were sealed with another key; hand the server the original AGENTRUN_SEAL_KEY. There is no key in DIR/seal/seal.key: put the original there (mode 0600, in a 0700 directory), or hand it as AGENTRUN_SEAL_KEY.
+```
+
+and with another key it ends `The AGENTRUN_SEAL_KEY handed now is not it.` Put the original key back and start again.
+Without it, that store does not start: start over on a new data directory (and, on Postgres, a new schema), which
+holds no agents, runs or secrets, and enter the keys and secrets again.
+
 ## Upgrading from 0.1.0-beta.26
 
 0.1.0-beta.27 keeps every agent in one store, `DIR/store.sqlite`, with its revisions (and this version also keeps each run
@@ -2948,7 +2995,9 @@ What can go wrong, told apart:
   not), which only the owner's console changes or deletes. The link opens Settings → MCP servers with the form filled in
   (name, URL, kind of credential, toolkit; for a saved server, its Change form), never the credential. A URL that could
   hold one is left out. An [API-only](#api-only) server has no owner's session and serves no console: its `403` has no
-  `details.console_url`, and a save over or delete of a server the token did not save says to use another name.
+  `details.console_url`, and a save over or delete of a server the token did not save says to use another name. A
+  credential's value from the token there says what it can send instead: a `per_run` server whose runs hand it in
+  `mcp_auth`, or a Composio key named by `api_key_env` (a Composio listing's `403` names `api_key_env` alone).
 - `412 precondition_failed`: the server changed while the save or delete ran (another save, a sign-in, a removal), so
   nothing was written over it: read it again and try again. An owner's save that lands while the token's save or delete
   of a server it saved is under way makes the server the owner's, and the token's is this `412`.
@@ -4146,6 +4195,23 @@ serves these routes alone:
   session with API-only off; the start names the servers off the list in one log line (`api_only_mcp_off_list`), never
   their addresses. A server the owner's session saved is not governed by the list, and its runs' `mcp_auth` still
   goes there;
+- a workspace's `per_run` MCP server at any public https origin: `AGENTRUN_API_ONLY_WORKSPACE_MCP_PUBLIC_HTTPS=1`
+  (off by default; `1` or `true` on, `0`, `false` or unset off, any other value stops the start). With it, a
+  workspace's token (the `AgentRun-Workspace` header) saves and previews `"auth": {"type": "per_run"}` at an https
+  origin `AGENTRUN_API_ONLY_MCP_ORIGINS` does not list, and its runs use it. Plain http, or any other scheme, is the
+  refused route's `404`, and so are headers, a bearer token and a Composio server there: those stay at the listed
+  origins, and the token with no header still saves at the listed origins alone. Every request to such a server, at its
+  save, preview and refresh and at each request of a run's calls, resolves its name then and is sent only to a public
+  address it resolves to, the connection pinned to the address checked: never loopback, a private network (10/8,
+  172.16/12, 192.168/16, fc00::/7, CGNAT 100.64/10), link-local (169.254/16, fe80::/10, cloud metadata
+  169.254.169.254 and `fd00:ec2::254` among it), `0.0.0.0/8` or `::`, an IPv4-mapped IPv6 address of any of them, or a
+  literal address in the URL in any of them, whatever `AGENTRUN_MCP_ALLOW_LOOPBACK` or the owner's private hosts allow.
+  The metadata names (`metadata.google.internal`, `metadata.goog`, `metadata`, `instance-data`,
+  `instance-data.ec2.internal`) are refused by name. A name that resolves public at the save and inward later is
+  refused at that request, nothing sent. No redirect is followed: at a save or preview a `3xx` is `422` (reason
+  `redirect`), and in a run the call fails with nothing sent past it. A refused save is `422 not_allowed` at `url`; a
+  refused call says so to the model. The setting is held in the store with the list: a server saved under it whose
+  server later starts without it is refused at its runs, as one off the list is;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
 
 Here a run's computer routes take the server's token. `POST /runs/{id}/computer/viewer` mints a 5-minute link on
@@ -4211,7 +4277,8 @@ shared server is not the workspace's to read, change or delete. `GET /settings/m
 names and the shared ones', what its agents may grant; with no header, the shared ones alone. An agent of the workspace
 reaches its own server of a name before the shared one, at its save and at each run's claim; one that reaches neither is
 refused as a server never saved. A save in a workspace is of an address at the operator's MCP origins
-(`AGENTRUN_API_ONLY_MCP_ORIGINS`): `per_run` (each run hands its own in `mcp_auth`), or `headers` or `bearer`, whose
+(`AGENTRUN_API_ONLY_MCP_ORIGINS`), or, with `AGENTRUN_API_ONLY_WORKSPACE_MCP_PUBLIC_HTTPS=1`, a `per_run` one at any
+public https origin (above): `per_run` (each run hands its own in `mcp_auth`), or `headers` or `bearer`, whose
 credential is sealed in the workspace's own row and sent by its own agents' runs alone (a re-save that sends none keeps
 it); or a per-run Composio save (`user_id: "per_run"`, no `auth_config_id`, else `422 not_allowed`) whose key the install
 names (`api_key_env`). Anything else is the refused route's `404`, before anything is sent. A save or delete over a row
@@ -6170,7 +6237,8 @@ carries no cost at all, as from a provider that does not price the model. The te
   package guidance asks). The drift test fails, naming the provider and the key, on a pi-ai that reads a key neither
   names. A pi-ai installed past that test that reads a key neither
   names would leave it in the server's environment and out of every run's, and a run on that provider would fail at
-  its start for want of the key.
+  its start for want of the key. `npx @parcha/agentrun` pins the pi-ai this package is tested with, so this is for a
+  host that installs the server beside another pi-ai.
 - The cut is by name alone. A variable named like no key whose value is one reaches a run's environment and is not cut
   from what an import or a harness's log keeps: a URL with a user and password in it (`DATABASE_URL`, `HTTPS_PROXY`),
   headers that carry a token (`OTEL_EXPORTER_OTLP_HEADERS`), or a held key's

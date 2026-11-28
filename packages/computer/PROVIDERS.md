@@ -628,7 +628,8 @@ with no call; Agent37 registers the published image as a template (`agentrun-box
 
 If your vendor builds images in your account (a snapshot, a blueprint, a template), build the box image there.
 `box/install.sh` is every step of its build, as POSIX shell. Boot your vendor's base (`python:3.12-slim`, the box
-Dockerfile's `FROM`), put `install.sh` and `agentrun-archil` in one folder, run `install.sh` as root, and snapshot the
+Dockerfile's `FROM`, or an Ubuntu 24.04 base, where the desktop step takes `firefox-esr` from Mozilla's APT repository,
+key-checked and pinned: `box/README.md`), put `install.sh` and `agentrun-archil` in one folder, run `install.sh` as root, and snapshot the
 machine under a name that carries the recipe's hash. The provider in `test/conformance-image.test.mjs` runs this on the
 fake host, with an in-memory vendor:
 

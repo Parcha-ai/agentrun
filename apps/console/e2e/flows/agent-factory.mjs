@@ -67,6 +67,14 @@ export default {
         check(started.status === 202, `starting a factory session answered ${started.status}`);
         runIds.push(started.body.run_id);
       }
+      // The sessions in their states (two held on their gates, the third asking) before the board opens: its first read
+      // shows them, not its next one a poll (FACTORY_POLL_MS, 10 s) later.
+      for (let i = 0; ; i++) {
+        const states = await Promise.all(runIds.map(async (runId) => (await api("GET", `/runs/${encodeURIComponent(runId)}`)).body?.status));
+        if (states.join() === "working,working,input_required") break;
+        check(i < 450 && !states.some((s) => ["completed", "failed", "cancelled"].includes(s)), `the factory sessions never reached their states: ${states.join()}`);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
 
       // Enter through the real sidebar; this also exercises the factory route registration.
       await page.setViewportSize({ width: 1280, height: 1000 });

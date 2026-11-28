@@ -45,7 +45,7 @@ const stubRoute = async () => ({ model: "faux-1", provider: { api: "anthropic-me
  *  local folder (`scratch`), so the attached Workspace's own writes (its .agentrun/tmp) go through the computer, as they
  *  do in a real one. `mounts` records where in the disk's calls each mount came (`at`) and where its release let the
  *  delegation go (`releasedAt`). `computer` is that fake, made by the caller, its every call recorded. */
-function sandboxOverArchil(disk, scratch, mounts, computer) {
+function sandboxOverArchil(disk, scratch, mounts, computer, providerAttach) {
   // What the provider reads back as mounted at /workspace: the Archil mount it was made with, under the claim's epoch.
   let mounted;
   let epoch;
@@ -62,7 +62,10 @@ function sandboxOverArchil(disk, scratch, mounts, computer) {
       return { ok: true, value: { id: `c${mounts.length}`, name: `c${mounts.length}` } };
     },
     connect: async () => ({ ok: true, value: { client: computer.client, hello: { version: "0", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] }, close: async () => {} } }),
-    attach: async ({ id }) => ({ ok: true, value: { id, name: id, spec: { image: "i", user: "1000:1000", network: "none", mount: mounted } } }),
+    attach: async ({ id }, context) => {
+      const found = { ok: true, value: { id, name: id, spec: { image: "i", user: "1000:1000", network: "none", mount: mounted } } };
+      return providerAttach ? providerAttach({ id }, context, found) : found;
+    },
     release: async ({ id }) => {
       const mount = mounts[Number(id.slice(1)) - 1];
       if (mount) mount.releasedAt ??= disk.calls.length;
@@ -86,8 +89,9 @@ function sandboxOverArchil(disk, scratch, mounts, computer) {
  *  `body`: more of the revision's body (its `checkout`); `launch`: more of the run's launch (its input, inputOrigin or
  *  repo); `deps`: more of the claim's deps (githubWeb). `processes`: the computer's process calls run for real in its
  *  folder (realProcesses), as a sandbox's own exec runs them. `revision`: more of the revision's row (its monidPin); `env`:
- *  more of the runner's environment (a monid key). */
-export async function mode2Run(t, { harness, disk, learns = false, mcp, computer = true, region = ARCHIL_SETTINGS.region, body = {}, launch: given = {}, deps: more = {}, processes = false, revision = {}, env: moreEnv = {} }) {
+ *  more of the runner's environment (a monid key). `providerAttach(ref, context, found)`: what the provider's read of a
+ *  machine answers in place of `found` (a read that never answers). */
+export async function mode2Run(t, { harness, disk, learns = false, mcp, computer = true, region = ARCHIL_SETTINGS.region, body = {}, launch: given = {}, deps: more = {}, processes = false, revision = {}, env: moreEnv = {}, providerAttach }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mode2-skills-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -125,7 +129,7 @@ export async function mode2Run(t, { harness, disk, learns = false, mcp, computer
     env, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf: stubRoute,
     makeArchilDisk: () => disk,
     mountControl: { baseUrl: control.baseUrl, fetch: control.fetch },
-    computerForClaim: sandboxOverArchil(disk, scratch, mounts, fake),
+    computerForClaim: sandboxOverArchil(disk, scratch, mounts, fake, providerAttach),
     ...mcp?.deps,
     ...more,
   };

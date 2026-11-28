@@ -11,8 +11,10 @@ npx @parcha/agentrun
 It starts [AgentRun Server](https://github.com/Parcha-ai/agentrun/tree/main/packages/serve) on the first free port from
 7340 on this machine's loopback, keeps its data in `~/.agentrun`, prints the address the server says to open and opens
 it in your browser (`--no-open`, a CI run or a machine with no display skips that). The server,
-`@parcha/agentrun-serve`, is this package's one dependency, at its exact version, so `npx` installs the two together and
-each version of this command runs the server it was released with. Node.js 24.22.3 or newer, on macOS or Linux; an older
+`@parcha/agentrun-serve`, is this package's dependency at its exact version, so `npx` installs the two together and
+each version of this command runs the server it was released with. Beside it, this package pins `@earendil-works/pi-ai`,
+which the server takes as a peer, at the version the server is tested with, so `npx` installs one pi-ai and not the
+newest one beside a copy of the tested one under each pi package. Node.js 24.22.3 or newer, on macOS or Linux; an older
 Node gets one line naming that floor and the installer's command.
 
 No Node.js on the machine, or an older one? The installer brings its own and keeps AgentRun running after the terminal
@@ -202,9 +204,11 @@ which would read the arguments again.
 a run and does the same. Its exit code says how it stopped: 0 completed, 1 failed or cancelled, 8 it waits on a person
 (a question, its spend cap, a stopped turn, a paused workflow run), with a line on stderr saying what to do next, such as
 `runs message RUN_ID --content "..."` to answer. `--timeout SECONDS` stops waiting after that long and exits 1; the run
-goes on. `runs timeline RUN_ID --follow` prints the timeline as it changes, one page per line (NDJSON): upsert its
-`rows` by `id`, delete its `drop` ids, and drop everything first on a page with `reset: true`. It resumes a dropped
-connection where it left off and ends when the run ends, 0 completed, 1 failed or cancelled.
+goes on. `runs timeline RUN_ID --follow` prints the timeline as it changes. On a terminal it prints one line per row
+(its time, kind and what it says, the run's text without control characters) and the run's status as it changes. Piped,
+it prints one page per line (NDJSON): upsert its `rows` by `id`, delete its `drop` ids, and drop everything first on a
+page with `reset: true`. It resumes a dropped connection where it left off and ends when the run ends, 0 completed, 1
+failed or cancelled.
 
 The TypeScript client for this server is `@parcha/agentrun-client` (packages/client), and the Python client is
 `parcha-agentrun` (python/).

@@ -15,14 +15,21 @@ const SIZE = { width: 1440, height: 520 };
 const PHONES = [{ width: 390, height: 844 }, { width: 844, height: 390 }];
 const BAR = "header, nav[aria-label=Settings], [class*='min-h-12']";
 
+/** The page's reads answer: what is laid out under the bar is the page's, not its skeleton's. A page's skeleton (and a
+ *  section's) is aria-busy until its first read answers: Mission Control's is taller than the window, so main scrolls
+ *  while it shows, for longer than any fixed wait on a loaded machine. Then a moment more for a page with no skeleton. */
+async function settled(page) {
+  await page.waitForFunction(() => !document.querySelector("main [aria-busy=true]"));
+  await page.waitForTimeout(300);
+}
+
 /** Opens `hash` fresh, waits for its bar (the one with `bar` in it, or the Settings tab `tab` current), then measures. */
 async function framed(page, base, { hash, bar, tab }) {
   await page.goto(`${base}/${hash}`);
   await page.reload();
   const ready = tab ? page.locator(`main nav[aria-label=Settings] a[aria-current=page]`, { hasText: tab }) : page.locator(`main :is(${BAR})`, { hasText: bar });
   await ready.first().waitFor();
-  // The page's reads answer: what is laid out under the bar is the page's, not its skeleton's.
-  await page.waitForTimeout(300);
+  await settled(page);
   const m = await page.evaluate((selector) => {
     const main = document.querySelector("main");
     const top = main.querySelector(selector);
@@ -57,7 +64,7 @@ async function whole(page, base, { hash, bar }, size) {
   await page.goto(`${base}/${hash}`);
   await page.reload();
   await page.locator(`main :is(${BAR})`, { hasText: bar }).first().waitFor();
-  await page.waitForTimeout(300);
+  await settled(page);
   const m = await page.evaluate((selector) => {
     const main = document.querySelector("main");
     const top = main.querySelector(selector);
