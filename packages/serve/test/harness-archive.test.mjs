@@ -298,6 +298,18 @@ test("a file beside the launcher that is not the pin's is refused before anythin
   assert.deepEqual(served.asked, ["/cursor.tar.gz"], "the blind install downloaded nothing");
 });
 
+test("a stray request at the origin (another test's client on a reused port) is not this test's: asked counts only the test's own", async (t) => {
+  const release = await fakeCursor(t);
+  const served = await origin(t, release.bytes, "/cursor.tar.gz");
+  const dir = join(await scratch(t), "harnesses", "cursor");
+  const port = new URL(served.url).origin;
+  for (const stray of ["/", "/", "/elsewhere"]) await fetch(`${port}${stray}`).then((r) => r.arrayBuffer());
+  assert.deepEqual(served.asked, [], "strays are not the test's requests");
+  await installArchive(cursorOf(served.url, release), dir, { platform: PLATFORM });
+  await fetch(`${port}/`).then((r) => r.arrayBuffer());
+  assert.deepEqual(served.asked, ["/cursor.tar.gz"], "the test's one download, and nothing else");
+});
+
 test("a format this installer does not unpack is refused before anything downloads", async (t) => {
   const release = await fakeCursor(t);
   const served = await origin(t, release.bytes, "/cursor.tar.gz");
