@@ -6729,7 +6729,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, await suggestions.list({ ...(url.searchParams.has("repo") ? { repo: url.searchParams.get("repo")! } : {}), ...(url.searchParams.has("status") ? { status: url.searchParams.get("status")! } : {}) }), { "cache-control": "no-store" });
       case "scanForSuggestions": {
         const scanned = await suggestions.scan(await bodyOf(req));
-        return send(res, scanned.status, scanned.body, { location: `/v2/runs/${String(scanned.body.run_id)}` });
+        // A host's reservation and its release name no run, so they carry no Location.
+        const runId = scanned.body.run_id;
+        return send(res, scanned.status, scanned.body, typeof runId === "string" ? { location: `/v2/runs/${runId}` } : {});
       }
       case "getSuggestion":
         return send(res, 200, await suggestions.get(id, stopping.signal, url.searchParams.get("name") ?? undefined), { "cache-control": "no-store" });
