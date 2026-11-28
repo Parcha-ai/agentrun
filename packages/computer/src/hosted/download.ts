@@ -2,16 +2,18 @@
 // every read, and the rest comes from one copy of the file, made as the daemon's user (read-stage) and downloaded whole.
 // On Daytona the bridge is a session command's log, read at about 0.3 MB/s (the sandbox bench, 11-25); its toolbox's
 // files/download is not. The daemon's read is the check: a file it refuses is never copied, and the copy, opened as its
-// user, holds what that user can read and nothing more, whatever the path names by the time it is copied.
+// user, holds what that user can read and nothing more, whatever the path names by the time it is copied. A tar.pull
+// takes the same way out: once the daemon has begun it (its check), the tar is made as the daemon's user (tree-stage)
+// and downloaded whole, and its reads are answered from that copy.
 import { randomBytes } from "node:crypto";
 import { posix } from "node:path";
 import type { MachineHost } from "../host.js";
 import type { ComputerConnection } from "../provider.js";
-import { type ComputerClient, type DaemonMethod, type DaemonMethods, type FilesReadParams, MAX_CHUNK_BYTES } from "../protocol.js";
+import { type ComputerClient, type DaemonMethod, type DaemonMethods, type FilesReadParams, MAX_CHUNK_BYTES, type TarPullBeginParams, type TarPullBeginResult, type TarPullReadParams } from "../protocol.js";
 import { ok, type Result } from "../result.js";
 import { MAX_READ_BYTES } from "../surface/core.js";
 import { hostCall, runToExit, untilAborted } from "./process.js";
-import { READ_COPIES, readStage, readUnstage } from "./scripts.js";
+import { READ_COPIES, readStage, readUnstage, treeStage } from "./scripts.js";
 
 export interface DownloadBounds {
 	/** Each of read-stage and read-unstage, and the daemon's read of its own /proc/self/status. */
@@ -32,6 +34,20 @@ const copyable = ({ path, length }: FilesReadParams) => path.startsWith("/") && 
 
 /** The bytes one connection's copies may hold at once: two files at the read limit. */
 const COPIES_BYTES = 2 * MAX_READ_BYTES;
+
+/**
+ * The most bytes a pull's copy holds: tree-stage's tar is cut off past it (its file-size limit, in 512-byte blocks), and
+ * the pull is the daemon's. One copy is made at a time per connection, so this bounds what pulls' copies hold at once.
+ */
+export const TREE_COPY_BYTES = 256 * 1024 * 1024;
+
+/** A pull the daemon began: the copy of its tar starts at its first read, and stop ends it; read is how far it was read. */
+interface TreeCopy {
+	path: string;
+	stop: AbortController;
+	read: number;
+	bytes?: Promise<Uint8Array | undefined>;
+}
 
 /** A file a first chunk found worth copying: the copy starts at the first read past that chunk, and stop ends it. */
 interface Copy {
@@ -54,6 +70,15 @@ interface Copy {
  * host with no download. The copy in the machine is removed once it is downloaded, without holding up the read. A close
  * of the connection or of its client lets every copy go: each read after it, or still waiting on a copy, is the closed
  * daemon client's (gone).
+ *
+ * A tar.pull of an absolute path outside /proc is read from a copy too. The daemon begins it, so a path it refuses is
+ * never copied; at the pull's first read, tree-stage makes its tar as the daemon's user (one pull's at a time per
+ * connection, at most TREE_COPY_BYTES), it is downloaded and removed from the machine, and the daemon's own pull is
+ * ended. Every read of the pull is then answered from the copy, as the daemon answers (maxBytes of it, fewer only at
+ * its end, which eof marks), and the copy goes at its end, at tar.pull.end, or at the connection's close. A copy that
+ * fails at any step (the daemon's user unread, tree-stage refused or cut off, the download) leaves the pull the
+ * daemon's, from its first byte, since nothing of the copy was answered yet. A call of another method does not let a
+ * pull's copy go: once read from, the daemon's pull is ended, and the copy is the one tar of the pull there is.
  */
 export function downloadingConnection(
 	host: MachineHost,
@@ -64,6 +89,10 @@ export function downloadingConnection(
 ): ComputerConnection {
 	const { client } = connection;
 	const copies = new Map<string, Copy>();
+	/** Pulls the daemon began, by its id. */
+	const trees = new Map<string, TreeCopy>();
+	/** The last pull's copy, so the next starts after it: one at a time. */
+	let treeTurn: Promise<unknown> = Promise.resolve();
 	let closed = false;
 	let user: Promise<[string, string] | undefined> | undefined;
 
@@ -98,6 +127,37 @@ export function downloadingConnection(
 		return got.ok && got.value.length === size ? got.value : undefined;
 	};
 
+	/** The tar of path's pull, made as the daemon's user and downloaded until signal aborts: its bytes, else undefined. */
+	const treeCopyOf = async (path: string, signal: AbortSignal): Promise<Uint8Array | undefined> => {
+		const who = await userOf();
+		if (who === undefined || signal.aborted) return undefined;
+		const copy = `${READ_COPIES}/${randomBytes(16).toString("hex")}`;
+		const unstage = () => void runToExit(host, id, readUnstage(copy), { ms: bounds.execMs, what: `removing the tar of ${path}` });
+		const staged = await runToExit(host, id, treeStage(who[0], who[1], path, copy, TREE_COPY_BYTES / 512), { ms: bounds.execMs, signal, what: `making the tar of ${path} as the daemon's user` });
+		if (!staged.ok || staged.value.exitCode !== 0) {
+			if (!staged.ok) unstage();
+			return undefined;
+		}
+		const got = await hostCall(host, `downloading the tar of ${path}`, (ctx) => download(id, copy, ctx), bounds.downloadMs, signal);
+		unstage();
+		return got.ok ? got.value : undefined;
+	};
+
+	/** pullId's copy, one at a time: made after the last pull's copy settles; once it is held, the daemon's pull is ended. */
+	const treeBytes = (pullId: string, tree: TreeCopy): Promise<Uint8Array | undefined> => {
+		const made = treeTurn.then(() => (tree.stop.signal.aborted ? undefined : treeCopyOf(tree.path, tree.stop.signal)));
+		treeTurn = made.catch(() => undefined);
+		return made.then(
+			async (bytes) => {
+				if (bytes === undefined || tree.stop.signal.aborted) return undefined;
+				// The daemon's tar is no longer read: its pull is ended, and frees its slot of the daemon's MaxPulls.
+				await client.call("tar.pull.end", { id: pullId }).catch(() => undefined);
+				return bytes;
+			},
+			() => undefined,
+		);
+	};
+
 	/** key's copy let go, and stopped if it is still coming. */
 	const letGo = (key: string) => {
 		copies.get(key)?.stop.abort();
@@ -109,10 +169,47 @@ export function downloadingConnection(
 	const drop = () => {
 		closed = true;
 		letAllGo();
+		for (const tree of trees.values()) tree.stop.abort();
+		trees.clear();
+	};
+
+	/** A tar.pull's call: begin noted for a copy, read answered from the copy where it is held, end lets it go. */
+	const pullCall = async <M extends DaemonMethod>(method: M, params: DaemonMethods[M]["params"], options?: { signal?: AbortSignal }): Promise<Result<DaemonMethods[M]["result"]>> => {
+		if (method === "tar.pull.begin") {
+			const begun = await client.call(method, params, options);
+			const { path } = params as TarPullBeginParams;
+			if (begun.ok && !closed && path.startsWith("/") && !cleaned(path).startsWith("/proc/")) {
+				trees.set((begun.value as TarPullBeginResult).id, { path: cleaned(path), stop: new AbortController(), read: 0 });
+			}
+			return begun;
+		}
+		if (method === "tar.pull.end") {
+			const { id: pullId } = params as { id: string };
+			trees.get(pullId)?.stop.abort();
+			trees.delete(pullId);
+			return client.call(method, params, options);
+		}
+		const { id: pullId, maxBytes } = params as TarPullReadParams;
+		const tree = trees.get(pullId);
+		const size = maxBytes ?? MAX_CHUNK_BYTES;
+		if (tree === undefined || !Number.isSafeInteger(size) || size < 1 || size > MAX_CHUNK_BYTES) return client.call(method, params, options);
+		tree.bytes ??= treeBytes(pullId, tree);
+		const bytes = await untilAborted(tree.bytes, [options?.signal, tree.stop.signal]);
+		if (bytes === undefined) {
+			// Nothing of the copy was answered (a copy is answered only once held), so the daemon's pull is read from its start.
+			if (!options?.signal?.aborted) trees.delete(pullId);
+			return client.call(method, params, options);
+		}
+		const data = bytes.subarray(tree.read, tree.read + size);
+		tree.read += data.length;
+		const eof = data.length < size;
+		if (eof) trees.delete(pullId);
+		return ok({ data: Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString("base64"), eof }) as Result<DaemonMethods[M]["result"]>;
 	};
 
 	const reading: ComputerClient = {
 		async call<M extends DaemonMethod>(method: M, params: DaemonMethods[M]["params"], options?: { signal?: AbortSignal }): Promise<Result<DaemonMethods[M]["result"]>> {
+			if (!closed && (method === "tar.pull.begin" || method === "tar.pull.read" || method === "tar.pull.end")) return pullCall(method, params, options);
 			if (method !== "files.read" || closed) {
 				letAllGo();
 				return client.call(method, params, options);

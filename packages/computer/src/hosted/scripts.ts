@@ -138,6 +138,34 @@ export const readStage = (uid: string, gid: string, path: string, copy: string):
 export const readUnstage = (copy: string): string[] => argvOf(READ_UNSTAGE_SCRIPT, [copy]);
 
 /**
+ * tree-stage: [uid, gid, path, copy, blocks]. Writes to copy the tar computerd's tar.pull gives of path, made as uid:gid
+ * with no supplementary groups (setpriv), so it holds only what the daemon's user can read: a directory's entries named
+ * relative to it (a directory's name ending in "/"), a file one entry named for it; a hard link as a file of its own, a
+ * symlink as a link, and sockets, devices and pipes left out (find's types f, d and l). A name past ustar's 100 bytes
+ * goes in a pax header. root writes the listing and the copy under umask 077 in READ_COPIES. The tar's file-size limit
+ * is `blocks` 512-byte blocks (ulimit -f in a POSIX sh: dash, busybox, and bash run as sh), so a tree past it fails
+ * rather than filling the machine's /run. Any failure (a directory the user can't read, a file changed while it was read, a path
+ * whose resolved name is not its own, find or tar missing) removes the copy and fails the script, and the daemon's pull
+ * is read instead.
+ */
+const TREE_STAGE_SCRIPT = [
+	"# agentrun-computer: tree-stage",
+	ROOT,
+	`exec $p sh -c 'umask 077; cd / && mkdir -p "\${3%/*}" && chmod 0700 "\${3%/*}" && r=$(realpath -e -- "$2") || exit 1
+if [ -d "$r" ]; then
+  setpriv --reuid="$0" --regid="$1" --clear-groups -- find "$r" -mindepth 1 \\( -type f -o -type d -o -type l \\) -printf "%P\\0" >"$3.list" &&
+  ( ulimit -f "$4" && exec setpriv --reuid="$0" --regid="$1" --clear-groups -- tar -C "$r" --null --no-recursion -T - --hard-dereference --format=pax -cf - ) <"$3.list" >"$3"
+else
+  [ -f "$r" ] && [ "\${r##*/}" = "\${2##*/}" ] && printf "%s\\0" "\${r##*/}" >"$3.list" &&
+  ( ulimit -f "$4" && exec setpriv --reuid="$0" --regid="$1" --clear-groups -- tar -C "\${r%/*}" --null --no-recursion -T - --format=pax -cf - ) <"$3.list" >"$3"
+fi
+s=$?; rm -f -- "$3.list"; [ "$s" = 0 ] || { rm -f -- "$3"; exit 1; }' "$@"`,
+].join("\n");
+
+/** The tree-stage argv: the tar of path written to copy, made as uid:gid, at most `blocks` 512-byte blocks long. */
+export const treeStage = (uid: string, gid: string, path: string, copy: string, blocks: number): string[] => argvOf(TREE_STAGE_SCRIPT, [uid, gid, path, copy, String(blocks)]);
+
+/**
  * The session buses a vendor's own processes leave in /tmp (Daytona's D-Bus, /tmp/dbus-Y8OW6E3FDx), which no network
  * namespace cuts: every child host's create closes them to the computer's user before init starts. The window
  * manager's bus is its own, at an abstract address, so closing these takes nothing from it.

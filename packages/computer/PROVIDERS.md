@@ -391,7 +391,10 @@ without it, AgentRun streams its daemon through `exec`'s stdin as base64 text, s
 `base64` (coreutils and busybox both have them). `download(id, path, ctx)` hands back a file's bytes, read as root;
 give it when your exec's output is slow (Daytona's is a log read at about 0.3 MB/s). A `files.read` past one chunk then
 takes its first chunk from the daemon and the rest from a copy AgentRun makes as the daemon's user (`setpriv`,
-util-linux) and downloads, so the read shows nothing that user can't read. `extend(id, endsAt, ctx)` moves a machine's end when
+util-linux) and downloads, so the read shows nothing that user can't read. A `tar.pull` (a synced folder's new
+directory, or a file past one chunk) is begun by the daemon, then made as a tar by that user (`find` and GNU `tar` in
+the image; at most 256 MiB, one pull's at a time) and downloaded; where a step fails, the daemon's pull is read as
+before. `extend(id, endsAt, ctx)` moves a machine's end when
 an agent extends its deadline: your timer with `lifetime: "vendor"`, AgentRun's deadline label with `"janitor"`. Never
 move it past its `agentrun.computer.max-deadline` label, which AgentRun writes only on a host with `extend`. When no end your API takes lands there, throw
 `HostError("limit", <why>)` and move nothing. AgentRun reads the end back through `get`, from the deadline label: if
