@@ -5149,7 +5149,6 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     description: `${useOnly.description.replace(/ 422 not_an_option for anything else\.$/, "")} An object \`{settings?}\` (\`capabilities.features.run_learning\`): the run learns for its agent with those loop numbers, whatever its revision's \`learning\` says (one that says none included), its corrections and learned workflows its agent's as for any run that learns. All of its learning work spends the run's own \`model_key\` inside its own \`max_cost_usd\`: its compile turn inside its claim, a check's replay runs each on its share of what the cap leaves (one that does not fit is dropped, nothing spent, \`learning_work.dropped\` says so), an audit's shadow on what is left after. Without both \`model_key\` and \`max_cost_usd\` it is \`400 learning_needs_cap\` and nothing starts or is stored; settings a definition's \`learning\` would refuse are 422 at \`learning.settings.<field>\`. On a server whose learning is off it is given nothing, as every run there. 422 not_an_option for anything else.`,
     "x-agentrun-serve": "runlearning/1",
   };
-  fields.push("RunCreate.learning.settings");
   const learningWork = (schemas.Run as Json & { properties: Record<string, Json & { properties: Record<string, Json> }> }).properties.learning_work!;
   learningWork.properties.dropped = {
     type: "array",

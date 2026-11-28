@@ -10,6 +10,7 @@ import type { Store } from "../store/store.js";
  *  `body`'s (its revision's definition). A served run's launch that can't be read reads as none. */
 export async function childLearningOf(store: Pick<Store, "runs">, launch: RunLaunch, body: unknown): Promise<unknown> {
   if (launch.learning?.settings) return runLearningOf(launch, body);
-  const served = launch.audit ? await store.runs.launch(launch.audit.of).then((one) => readLaunchBody(one.body), () => undefined) : undefined;
+  const of = launch.audit?.of;
+  const served = of ? await Promise.resolve().then(() => store.runs.launch(of)).then((one) => readLaunchBody(one.body), () => undefined) : undefined;
   return runLearningOf(served, body);
 }

@@ -513,7 +513,8 @@ async function learningOfRun(store: Store, runId: string): Promise<unknown> {
   try {
     const run = await store.runs.get(runId);
     if (!run) return undefined;
-    const launch = await store.runs.launch(runId).then((one) => readLaunchBody(one.body), () => undefined);
+    // A launch that can't be read (none kept, or a store that keeps none) is no settings: the revision's are read.
+    const launch = await Promise.resolve().then(() => store.runs.launch(runId)).then((one) => readLaunchBody(one.body), () => undefined);
     if (launch?.learning?.settings) return runLearningOf(launch, undefined);
     const revision = await store.agents.revision(run.revisionId);
     return runLearningOf(launch, revision?.body);
