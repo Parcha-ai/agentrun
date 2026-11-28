@@ -2285,16 +2285,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const workspace = workspaceNow();
     return workspace === undefined ? {} : { workspace };
   };
-  /** The packages of `pkgs` a scoped request sees: the bundled ones and the ones its workspace imported. */
-  const templatesSeen = async <T extends { id: string; origin: unknown }>(pkgs: T[]): Promise<T[]> => {
-    if (workspaceNow() === undefined) return pkgs;
-    const held = await store.importedTemplates.workspaces();
-    return pkgs.filter((pkg) => pkg.origin === null || !outOfScope(held.get(pkg.id)));
-  };
-  const templateSeen = async (id: string) => {
-    const pkg = registry.get(id);
-    return pkg && (await templatesSeen([pkg]))[0];
-  };
   /** Whether the agent or run `id` is in another workspace than the scoped request's, or in none: read as missing. */
   const agentOutOfScope = async (id: string) => workspaceNow() !== undefined && outOfScope(await store.agents.workspace(id));
   const runOutOfScope = async (id: string) => workspaceNow() !== undefined && outOfScope(await store.runs.workspace(id));
@@ -5836,7 +5826,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           definition: definitionOf(agent, revision, entry.version),
           skills: (isObject(revision.skills) ? revision.skills : {}) as Record<string, string>,
           template: entry.template ? { id: entry.template.id, version: entry.template.version, ...(entry.template.secrets ? { secrets: entry.template.secrets } : {}) } : null,
-          origin: entry.template ? registry.get(entry.template.id) : undefined,
+          // The package of its template id in the agent's own workspace, whoever exports it.
+          origin: entry.template ? registry.get(entry.template.id, (await store.agents.workspace(id)) ?? null) : undefined,
           servers: mcpMeta,
           triggers: views,
           signIns: await store.signIns.list(id),
@@ -7031,8 +7022,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "listTemplates": {
         // Each package's computer list read against this server now: what an apply here would pick (pickComputer).
-        // Its subagents' tiers likewise: what an apply here would keep of the package's (packageTiers).
-        const listed = await templatesSeen(registry.list());
+        // Its subagents' tiers likewise: what an apply here would keep of the package's (packageTiers). The bundled ones
+        // and those imported in the request's workspace (none's, unscoped): TemplateRegistry.
+        const listed = registry.list();
         const [pickView, tiersView] = await Promise.all([computerHere(listed), tiersHere(listed)]);
         return send(res, 200, { templates: listed.map((pkg) => ({ ...packageView(pkg), computer_here: pickView(pkg), model_tiers_here: tiersView(pkg) })) });
       }
@@ -7057,17 +7049,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "getTemplate": {
         // One package whole, a bundled one's too: as the list shows it, with the files an import's answer shows, for a
         // person (or a coding agent) to read before they apply it.
-        const pkg = await templateSeen(id);
+        const pkg = registry.get(id);
         if (!pkg) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
         return send(res, 200, { ...packageDetail(pkg, await computerHere([pkg]), await tiersHere([pkg])), console_url: templateLink(linkOrigin(req), pkg.id) });
       }
       case "deleteTemplate":
-        // A scoped request deletes its own workspace's package alone: another's reads as a missing one.
-        if (!(await templateSeen(id))) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
+        // A request deletes its own workspace's package alone (deleteTemplate): another's reads as a missing one.
         await deleteTemplate(importDeps, id);
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "applyTemplate": {
-        const pkg = await templateSeen(id);
+        const pkg = registry.get(id);
         if (!pkg) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
         const body = await bodyOf(req);
         // A dry run writes nothing, so it keeps no Idempotency-Key record either: a retry reads the plan again.
