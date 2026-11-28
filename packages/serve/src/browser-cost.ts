@@ -31,6 +31,7 @@ import { BROWSERS_UNHELD } from "./timeline/index.js";
 import type { ClaimBrowser, UnheldOptions, UnheldSession, UnheldSessions } from "./workspace/resolve-computer.js";
 import { type PaidBooking, paidStep, unbookedRefusal } from "./paid-calls.js";
 import { logLine } from "./print.js";
+import { isSeal } from "./runner/loop.js";
 import { forModel } from "./result.js";
 
 /** The run journal's record of a browser session about to be created at its provider: its tag (pi-browser's, which a
@@ -404,8 +405,10 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     // the root (bookRootCharges). pi ends a commit observer only when its Session closes (session.js close: a normal close
     // ends it `failed` with "session closed", a failed Session `failed` with its error), and the Session's own end
     // (`closed`, settled by that same close once its Storage closed) says which, tagged by kind: `closed` is said
-    // nothing, on every close path; `failed` (the store failed, or could not close) is said. A listener error, which only
-    // a throw out of advance could cause, is said at once.
+    // nothing, on every close path; `failed` (the store failed, or could not close) is said. A Session failed by a loop's
+    // seal (a stop or a shutdown sealed the run's journal, and pi wrote after it) is said nothing: the refused write never
+    // reached the store, and every commit stored before it reached advance. A listener error, which only a throw out of
+    // advance could cause, is said at once.
     let said = false;
     const uncounted = (why: string) => {
       if (said) return;
@@ -430,7 +433,7 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
         const why = (kind: string, error: unknown) => `its commits stopped reaching the count: ${kind}${error === undefined ? "" : `, ${String((error as Error)?.message ?? error)}`}`;
         if (end.kind === "listener_error") return uncounted(why(end.kind, end.error));
         harness.closed.then(
-          (ended) => void (ended.kind === "failed" && uncounted(why("the Session failed", ended.error))),
+          (ended) => void (ended.kind === "failed" && !isSeal(ended.error) && uncounted(why("the Session failed", ended.error))),
           (error: unknown) => uncounted(why("the Session's end is unknown", error)),
         );
       },

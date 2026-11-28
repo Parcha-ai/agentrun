@@ -3734,7 +3734,8 @@ export type ListComposioEventsResponse = {
 
 /** List the toolkits Composio offers, for the console's toolkit picker; stores nothing (POST /settings/mcp-servers/composio/toolkits). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
 export type ListComposioToolkitsBody = {
-  api_key: string;
+  api_key?: string;
+  api_key_env?: "COMPOSIO_API_KEY";
 };
 export type ListComposioToolkitsResponse = {
   toolkits: Array<{
@@ -3745,8 +3746,9 @@ export type ListComposioToolkitsResponse = {
 
 /** List the actions of a Composio toolkit, for the console's picker; stores nothing (POST /settings/mcp-servers/composio/tools). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
 export type ListComposioToolsBody = {
-  api_key: string;
   toolkit: string;
+  api_key?: string;
+  api_key_env?: "COMPOSIO_API_KEY";
 };
 export type ListComposioToolsResponse = {
   toolkit: string;

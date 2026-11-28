@@ -5662,8 +5662,9 @@ class ListComposioEventsResponseEventsItem(_ListComposioEventsResponseEventsItem
     instructions: str
 
 
-class ListComposioToolkitsBody(TypedDict):
+class ListComposioToolkitsBody(TypedDict, total=False):
     api_key: str
+    api_key_env: Literal["COMPOSIO_API_KEY"]
 
 
 class ListComposioToolkitsResponse(TypedDict):
@@ -5675,9 +5676,13 @@ class ListComposioToolkitsResponseToolkitsItem(TypedDict):
     name: str
 
 
-class ListComposioToolsBody(TypedDict):
-    api_key: str
+class _ListComposioToolsBodyRequired(TypedDict):
     toolkit: str
+
+
+class ListComposioToolsBody(_ListComposioToolsBodyRequired, total=False):
+    api_key: str
+    api_key_env: Literal["COMPOSIO_API_KEY"]
 
 
 class ListComposioToolsResponse(TypedDict):
