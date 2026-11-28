@@ -858,7 +858,7 @@ key.
   package's own build, bound read-only with its `package.json`. It is on the provider's egress bridge alone (below),
   publishes no port, and runs as the computer's uid:gid with a read-only root, `--cap-drop ALL`, `no-new-privileges`, 256 MiB, 64
   pids, half a CPU (a fixed quota, not the computer's own cpus), 1024 open files and a bounded log. Its argv holds the list (or `--open public`), the computer's deadline (it ends itself then), this machine's own
-  public addresses (refused as `this-host`), and `egress.hint`, the words a refusal adds (printable ASCII).
+  public addresses (refused as `this-host`), `egress.hint`, the words a refusal adds (printable ASCII), and `--max-tunnels` when `egress.maxTunnels` is set.
   `EGRESS_IMAGE` is the one place its digest is written. `create` pulls it at the first allow computer when the host
   lacks it (see Lifetime), so a host with no registry access pulls it ahead, reading the name from this package:
   `docker pull "$(node --input-type=module -e 'import { EGRESS_IMAGE } from "@parcha/agentrun-computer"; console.log(EGRESS_IMAGE)')"`
@@ -895,7 +895,9 @@ key.
   leaves the host; an IP literal outside a listed CIDR of its own family; any port but 80 and 443; a listed name or
   address that is private, loopback, link-local, metadata, multicast or reserved, in any form it is written (decimal,
   octal, hex, IPv4-mapped, NAT64, 6to4), or one of this machine's own; a Host header that names another host than the
-  URI; SOCKS5 BIND and UDP ASSOCIATE; an HTTP upgrade; past 64 connections open at once or 20,000 in all. A name is
+  URI; SOCKS5 BIND and UDP ASSOCIATE; an HTTP upgrade; past its cap of connections open at once (64 unless
+  `egress.maxTunnels` sets a whole number from 1 to 256: the proxy's 1024 open files hold two per connection; anything
+  else is refused when the provider is made) or 20,000 in all; past the cap a new one is answered 429. A name is
   resolved once, every answer is checked, and the checked address is the one dialled, so rebinding a name between the
   check and the dial reaches nothing new; a redirect reaches the client as sent and is never followed. A log line holds
   the host, port, address and class, never a path, query or header. A refusal reads `403 <host> is not on this box's
@@ -923,7 +925,8 @@ key.
   deadline, runs while the computer runs, is hardened and bounded as above (its memory and swap, pids limit, private
   IPC and cgroup namespaces, and json-file log of 1m and 2 files included) with exactly its volume and code, and whose
   argv holds the list (or `--open public`) and refuses every one of the Docker host's own addresses the provider
-  requires now (more is fine). Anything less is `{ other: "network allow, but its egress proxy ... <why>" }` (or
+  requires now (more is fine), and whose `--max-tunnels`, if any, is a cap create gives (1 to 256), whatever the cap is
+  set to now, so a changed setting leaves running proxies as they are. Anything less is `{ other: "network allow, but its egress proxy ... <why>" }` (or
   `network open, ...`). **A crashed proxy** is not
   restarted: the computer then reaches nothing, its network reads back `other` ("is not running"), and `attach` refuses
   it, so a caller makes a new computer. `list` reads every listed computer's proxy in one more inspect.
@@ -1073,7 +1076,9 @@ const made = await docker.create({ image: image.value, lifetimeMs: 600_000, netw
     built.
 - `DockerProvider`'s `image` option is that source; the default is `{ recipe: DOCKER_RECIPE }`, the provider's own
   image (`DEFAULT_DOCKER_IMAGE`): `python:3.12-slim` pinned by its index digest (`DOCKER_BASE`), with git, curl,
-  nodejs, npm, ripgrep and socat from apt. `docker.image({ signal?, timeoutMs?, onWait? })` is `ensureImage` of it with the
+  xz-utils, ripgrep and socat from apt, and Node.js with its npm in `/usr/local` from the release's own tarball
+  (`DOCKER_NODE_VERSION`, checked against `DOCKER_NODE_SHA256` for the host's architecture before it is unpacked), the
+  release the box image and serve's own image run. `docker.image({ signal?, timeoutMs?, onWait? })` is `ensureImage` of it with the
   provider's docker CLI. A source that is neither throws at construction, in words.
 - **The docker CLI gets only what it reads.** The provider reads no environment: its `env` option is the host's (serve
   passes its own values of the docker descriptor's `hostEnv`), and every docker call it makes (`dockerArch`,

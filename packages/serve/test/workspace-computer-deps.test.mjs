@@ -21,7 +21,7 @@ import { fauxComputers } from "../dist/faux-computers.js";
 import { DEFAULT_BOX_ALLOW } from "../dist/box-settings.js";
 import { startServe } from "../dist/index.js";
 import { putSealedKey } from "../dist/server-keys.js";
-import { computerDepsFrom as depsFrom, computerSpecOf, dockerHostAddressesOf, dockerVolumeOf, localWorkspace } from "../dist/workspace/index.js";
+import { boxMaxTunnelsOf, computerDepsFrom as depsFrom, computerSpecOf, dockerHostAddressesOf, dockerVolumeOf, localWorkspace } from "../dist/workspace/index.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { KINDS } from "./workspace-kinds-fixture.mjs";
 import { withEnv } from "./support.mjs";
@@ -584,6 +584,45 @@ test("the claim's Docker provider gets the Docker host's addresses as its egress
   await unset.answer.release();
   // The computer package's own Docker provider takes the option as given (its egress options' check), built with no call
   // to Docker.
+  const provider = await providerFor("docker", { daemonPath: join(scratch(), "computerd"), user: "1000:1000", egress: options.egress, image: { image: DEFAULT_DOCKER_IMAGE } });
+  assert.equal(typeof provider.create, "function");
+});
+
+// AGENTRUN_BOX_MAX_TUNNELS: how many connections a Docker computer's egress proxy holds open at once. A whole number
+// from 1 to 256 (the proxy's descriptor limit holds two per connection); anything else is refused in words at the start,
+// never clamped.
+test("AGENTRUN_BOX_MAX_TUNNELS is a whole number from 1 to 256; unset or empty is the proxy's default; anything else is refused, named", () => {
+  assert.equal(boxMaxTunnelsOf({}), undefined);
+  assert.equal(boxMaxTunnelsOf({ AGENTRUN_BOX_MAX_TUNNELS: "  " }), undefined);
+  assert.equal(boxMaxTunnelsOf({ AGENTRUN_BOX_MAX_TUNNELS: "1" }), 1);
+  assert.equal(boxMaxTunnelsOf({ AGENTRUN_BOX_MAX_TUNNELS: " 128 " }), 128);
+  assert.equal(boxMaxTunnelsOf({ AGENTRUN_BOX_MAX_TUNNELS: "256" }), 256);
+  for (const bad of ["0", "257", "1000", "064", "12.5", "-1", "abc", "1e2"]) {
+    assert.throws(() => boxMaxTunnelsOf({ AGENTRUN_BOX_MAX_TUNNELS: bad }), { message: `AGENTRUN_BOX_MAX_TUNNELS ${JSON.stringify(bad)} is not a whole number from 1 to 256: it caps the connections a Docker computer's egress proxy holds open at once (unset, 64)` }, bad);
+  }
+});
+
+test("a server whose AGENTRUN_BOX_MAX_TUNNELS is out of range doesn't start, in words naming the setting", async (t) => {
+  withEnv(t, { AGENTRUN_BOX_MAX_TUNNELS: "300" }, ["AGENTRUN_BOX_MAX_TUNNELS"]);
+  const data = join(scratch(), "agents");
+  // A server that starts anyway is closed, so the test fails instead of holding the process open.
+  const started = startServe({ data, port: 0, faux: new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname });
+  await assert.rejects(started.then(async (serve) => (await serve.close(), serve)), { message: /^AGENTRUN_BOX_MAX_TUNNELS "300" is not a whole number from 1 to 256/ });
+});
+
+test("the claim's Docker provider gets the egress proxy's cap as its egress.maxTunnels when the setting names one, beside the host's addresses, and none otherwise", async () => {
+  const capped = await placeClaim({ mode: "sandbox", box: "docker" }, [...DEFAULT_BOX_ALLOW], {}, { ...ENV, AGENTRUN_BOX_MAX_TUNNELS: "128" });
+  const [[id, options]] = capped.record.loaded;
+  assert.equal(id, "docker");
+  assert.deepEqual(options.egress, { maxTunnels: 128 });
+  await capped.answer.release();
+  const both = await placeClaim({ mode: "sandbox", box: "docker" }, [...DEFAULT_BOX_ALLOW], {}, { ...ENV, AGENTRUN_BOX_MAX_TUNNELS: "32", AGENTRUN_DOCKER_HOST_ADDRESSES: "172.17.0.1" });
+  assert.deepEqual(both.record.loaded[0][1].egress, { hostAddresses: ["172.17.0.1"], maxTunnels: 32 });
+  await both.answer.release();
+  const unset = await placeClaim({ mode: "sandbox", box: "docker" }, [...DEFAULT_BOX_ALLOW]);
+  assert.equal(unset.record.loaded[0][1].egress, undefined, "no cap is made up");
+  await unset.answer.release();
+  // The computer package's own Docker provider takes the cap as given (its egress options' check), built with no call to Docker.
   const provider = await providerFor("docker", { daemonPath: join(scratch(), "computerd"), user: "1000:1000", egress: options.egress, image: { image: DEFAULT_DOCKER_IMAGE } });
   assert.equal(typeof provider.create, "function");
 });
