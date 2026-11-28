@@ -816,6 +816,7 @@ export type Run = {
   }>;
   input?: Record<string, unknown> | null;
   file_ids?: Array<string>;
+  warnings?: Array<InputIssue>;
   claim?: {
     runner: string;
     epoch: number;
