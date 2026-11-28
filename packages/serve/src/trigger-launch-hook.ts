@@ -34,8 +34,9 @@ export type LaunchHook = { readonly url: string; readonly secret: string; readon
 
 /** What the host is sent for a firing: its id (the message's webhook-id too), its trigger, the agent and the revision a
  *  run would start on now, the run's input as the trigger gives it, the firing's time, and the trigger's cap: the most
- *  its run may cost, which the host's own max_cost_usd may lower and never raise (null when the target sets none, and
- *  the agent's default then bounds the run). */
+ *  its run may cost, which the host's own max_cost_usd may lower and never raise. The firing keeps the cap it was first
+ *  handed with (FiringRow.hooked): a retry sends the same, and the host's start runs under it whatever the target says
+ *  by then. A null means the agent's default when the host starts the run. */
 export type HookFiring = { firing_id: string; trigger_id: string; agent_id: string; revision_id: string | null; input: Json; fired_at: string; max_cost_usd: number | null };
 
 /** The host's answer: taken (2xx); or `stopped`, the server's stop cut it short and the firing is left as it was. Any

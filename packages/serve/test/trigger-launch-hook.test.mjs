@@ -534,6 +534,53 @@ test("the host's start runs on its trigger's target: the target's cap, else the 
   );
 });
 
+test("the host's start runs under the cap its hook was told for that firing: a target raised after the hook's 2xx never raises the run, a told null is the agent's default, and a retried hand names the cap its first try did", { timeout: 120_000 }, async (t) => {
+  const clock = fakeClock("2026-06-01T00:00:00Z");
+  const ids = {};
+  // The "retry" trigger's first hand is answered 500; every other hand 202, with no run started.
+  const hook = await hookServer(t, (res, sent) => answerJson(res, sent.trigger_id === ids.retry && hook.got.filter((got) => got.sent.trigger_id === ids.retry).length === 1 ? 500 : 202, {}));
+  const { api } = await serve(t, { triggerClock: clock, runner: false, launchHook: { url: hook.url, secret: mintSecret() } });
+  await made(api, "nightly", { max_cost_usd: 5 });
+  const targetOf = (cap) => ({ kind: "start_run", agent_id: "nightly", input: { content: "Say hello." }, ...(cap === null ? {} : { max_cost_usd: cap }) });
+  for (const [name, cap] of [["told", 0.5], ["open", null], ["retry", 0.5]]) {
+    const created = await api("POST", "/triggers", { ...schedule("nightly", { every_s: 3600, start_at: "2026-06-01T00:10:00Z" }), name, target: targetOf(cap) });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    ids[name] = created.body.id;
+  }
+  clock.to("2026-06-01T00:10:00Z");
+  const handed = async (name) => {
+    const [firing] = await firings(api, ids[name], 1);
+    assert.deepEqual([firing.status, firing.run_id], ["sent", null], JSON.stringify(firing));
+    return firing;
+  };
+  const told = await handed("told");
+  const open = await handed("open");
+  const first = await tried(api, ids.retry, 1);
+  assert.deepEqual([first.status, first.attempts], ["due", 1], JSON.stringify(first));
+  const toldOf = (name) => hook.got.filter((got) => got.sent.trigger_id === ids[name]).map((got) => got.sent.max_cost_usd);
+  assert.deepEqual([toldOf("told"), toldOf("open"), toldOf("retry")], [[0.5], [null], [0.5]]);
+
+  // Each target is raised after its hand: past the cap the hook named, and past the agent's $5 default.
+  for (const [name, cap] of [["told", 5], ["open", 50], ["retry", 5]]) {
+    const patched = await api("PATCH", `/triggers/${ids[name]}`, { target: targetOf(cap) });
+    assert.equal(patched.status, 200, JSON.stringify(patched.body));
+    assert.equal(patched.body.target.max_cost_usd, cap);
+  }
+  // Each host start asks for $100, more than any cap here: a host's own cap lowers the run's, never raises it.
+  const capOf = async (name, firing) => {
+    const started = await api("POST", "/agents/nightly/runs", { input: { content: "Say hello." }, max_cost_usd: 100, trigger_firing: { trigger_id: ids[name], firing_id: firing.key } });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    return (await api("GET", `/runs/${started.body.run_id}`)).body.cost.cap_usd;
+  };
+  assert.equal(await capOf("told", told), 0.5, "the cap the hook named, never the target's $5 raised after the host's 2xx");
+  assert.equal(await capOf("open", open), 5, "a told null: the agent's $5 default when the host starts, never the target's $50 set after");
+
+  clock.to(first.retry_at);
+  const retried = await handed("retry");
+  assert.deepEqual(toldOf("retry"), [0.5, 0.5], "the retry is handed under the same webhook-id with the same cap: one firing, one body");
+  assert.equal(await capOf("retry", retried), 0.5, "the cap both tries named");
+});
+
 /** Every model setting a keyless server's tests set or clear: it holds no model key of its own. */
 const MODEL_NAMES = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "AGENT_MODEL_PRICE", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_GATEWAY_IDS", "AGENTRUN_SERVE_GRADE_MODEL", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENROUTER_API_KEY"];
 
