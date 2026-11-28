@@ -110,8 +110,8 @@ async function runFlow(flow) {
       result = failed(error);
     } finally {
       await context?.close().catch(() => {});
-      // The server stops while the next flow starts: one with a run still in its turn waits out its drain (up to the
-      // harness's SIGKILL at 10 s), and nothing of the next flow is its. Results print once every one has stopped, and
+      // The server stops while the next flow starts: one with a run still in its turn waits out its drain (DRAIN_MS,
+      // inside the harness's SIGKILL at STOP_MS), and nothing of the next flow is its. Results print once every one has stopped, and
       // a stop that failed (the server would not die, left a process running, or its directory stayed) fails its flow.
       // One that had to be killed (SIGKILL) passes, and is reported with its flow and counted.
       if (server) stopping.push(server.stop().then((how) => { if (how?.killed) killed = how.pid; }, (error) => { unstopped = error; }));
