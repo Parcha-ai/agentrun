@@ -378,14 +378,24 @@ export function App() {
   // Setup's list, offered at once where the server can import this machine's sessions (on loopback, before an owner), its
   // projects read until the server has them. A read that fails once the offer shows leaves it, its projects unknown; one that
   // fails before it shows (a 5xx, the network) is tried again at the next poll while setup is open, so a passing failure
-  // never hides the offer. A 404 or a 403 is the server offering none: no box, and no more reads.
+  // never hides the offer. A 404 or a 403 is the server offering none: no box, and no more reads. None is sent while the
+  // password is being set (`settingUp`): the server could take it after the owner is set, and answers this browser,
+  // not signed in yet, 404, which the browser logs as an error. A read already out when the password is sent is let
+  // finish first (`importReading`), so none can reach the server behind the setup.
   const [offer, setOffer] = useState<ImportOffer | null>(null);
+  const settingUp = useRef(false);
+  const importReading = useRef<Promise<unknown> | null>(null);
   useEffect(() => {
     if (auth !== "setup") return;
     let live = true;
+    settingUp.current = false;
     (async () => {
       for (let shown = false; live; ) {
-        const r = await v2.setupImport().then((x) => x, () => undefined);
+        if (settingUp.current) { await new Promise((done) => setTimeout(done, IMPORT_POLL_MS)); continue; }
+        const reading = v2.setupImport().then((x) => x, () => undefined);
+        importReading.current = reading;
+        const r = await reading;
+        if (importReading.current === reading) importReading.current = null;
         if (!live) return;
         if (r === undefined && shown) return void setOffer({ projects: null, sessions: null });
         if (r !== undefined) {
@@ -404,8 +414,11 @@ export function App() {
   if (auth !== "signed_in") {
     return (
       <SignIn key={auth} mode={auth} code={setupCode} codeNeeded={codeNeeded} offer={offer} problem={signedOutElsewhere && auth === "sign_in" ? "You were signed out. Sign in to go on." : null} onSubmit={async (password, code, importProjects) => {
+        settingUp.current = auth === "setup";
+        if (settingUp.current) await importReading.current;
         try { await (auth === "setup" ? v2.setup(password, code, importProjects) : v2.signIn(password)); setSignedOutElsewhere(false); setAuth("signed_in"); return null; }
         catch (e) {
+          settingUp.current = false;
           // Another browser set the owner up first: the page reads the session again, which now asks to sign in.
           if (e instanceof ClientError && e.status === 403 && auth === "setup") { await readSession().catch(() => {}); }
           return e instanceof ClientError ? signInProblem(e) : e instanceof Error ? e.message : String(e);
@@ -992,16 +1005,17 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
         : where.section === "playground"
         ? <section className="flex h-full min-h-0 flex-col">
             <header className={cn(pageToolbarClass, "gap-2 px-5")}><h1 className={pageTitleClass}><Code className="size-4" aria-hidden />API playground</h1></header>
-            {/* Start a run draws this row itself, with its agent beside the operation: one row, not two. */}
-            {(where.operation || !agents) && <div className="flex flex-wrap items-center gap-3 border-b px-5 py-3 md:px-6">
+            {/* Start a run's row is the Playground's, with its agent beside the operation: one row, not two. The Playground
+                draws it while the agents are read too, so the operation field is one element across the read. */}
+            {where.operation && <div className="flex flex-wrap items-center gap-3 border-b px-5 py-3 md:px-6">
               {operationPicker}
               <span className="min-w-0 break-all font-mono text-small text-muted-foreground">{where.operation === "apply-template" ? `/v2/templates/${where.template ? encodeURIComponent(where.template) : "{template}"}/apply` : where.operation === "list-runs" ? (where.playgroundAgent ? `/v2/agents/${where.playgroundAgent}/runs` : "/v2/runs") : where.operation === "create-agent" ? "/v2/agents" : where.operation === "edit-agent" ? `/v2/agents/${where.playgroundAgent ?? "{agent_id}"}/definition` : "/v2/agents/{agent_id}/runs"}</span>
             </div>}
             {where.operation === "apply-template" ? <div className="min-h-0 flex-1 overflow-auto"><TemplatesPage key={where.template ?? ""} v2={v2} name={where.template} go={go} playground draft={where.draft} freeIds={c ? freeModels(c.harnesses).map((m) => m.id) : undefined} /></div> : where.operation === "list-runs" ? <RunsRequest key={`list:${where.playgroundAgent ?? ""}:${where.status ?? ""}:${where.archived ?? false}:${where.source ?? ""}:${where.from ?? ""}:${where.to ?? ""}:${where.model ?? ""}`} v2={v2} origin={location.origin} agentId={where.playgroundAgent} filter={{ status: where.status, archived: where.archived, source: where.source, from: where.from, to: where.to, model: where.model }} /> : where.operation ? <AgentRequest key={`${where.operation}:${where.playgroundAgent ?? ""}:${where.draft ?? ""}`} v2={v2} operation={where.operation} origin={location.origin} agentId={where.playgroundAgent} draft={where.draft} harnesses={editorCaps.harnesses} routePrefix={c?.models?.route_prefix} /> : <>
-              {!agents && noModel}
+              {/* Another requested agent is another request: a fresh Playground, its draft not carried over. */}
+              <Playground key={where.playgroundAgent ?? ""} lead={operationPicker} notice={noModel} agents={agents?.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onRevision={(revision, definition) => setPlaygroundRevision({ revision, definition })} onSend={send} limits={caps?.limits} {...(demo ? { upload: demoUpload } : {})} removeUpload={v2.deleteUpload} onMoveToRunner={moveToRunner} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
+                live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />
               {startError && <div className="m-8 border p-4" role="alert"><p className="text-lead text-destructive-text">The agents could not be read: {startError}</p><Button size="sm" className="mt-3" type="button" onClick={() => setRetry((n) => n + 1)}>Try again</Button></div>}
-              {agents && <Playground lead={operationPicker} notice={noModel} agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onRevision={(revision, definition) => setPlaygroundRevision({ revision, definition })} onSend={send} limits={caps?.limits} {...(demo ? { upload: demoUpload } : {})} removeUpload={v2.deleteUpload} onMoveToRunner={moveToRunner} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
-                live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />}
             </>}
           </section>
         : where.section === "agents"

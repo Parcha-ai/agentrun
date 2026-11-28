@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { mkdir, readdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { filesLine, FIRST_MESSAGE_BYTES, firstMessage, inputFiles, MANIFEST_ENTRIES, sizeOf } from "../dist/run-manifest.js";
+import { filesLine, FIRST_MESSAGE_BYTES, firstMessage, inputFiles, MANIFEST_ENTRIES, opensFiles, sizeOf } from "../dist/run-manifest.js";
 import { uploadTestHooks } from "../dist/uploads.js";
 import { localWorkspace } from "../dist/workspace/index.js";
 import { agent, follow, runDir, scratch, serve } from "./support.mjs";
@@ -78,7 +78,54 @@ for (const harness of ["claude-agent", "codex"]) {
     const { said } = await run(api, `on-${harness}`, "Look at these.", ids);
     assert.deepEqual(said, ['Look at these.\n\nFiles for this run: "inputs/a.md" (5 B), "inputs/docs/b.csv" (1.5 KB).']);
   });
+
+  // An agent with no tool that reads files (no read, no bash) is still handed them, so its start warns of the gap, and its
+  // first message says they are attached but out of its reach, so its model never says it will open one and then can't.
+  test(`a ${harness} run given files its agent has no tool to read: its start warns, and its first message says so`, { timeout: 90_000 }, async (t) => {
+    const server = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
+    const { api } = server;
+    const ids = [await upload(server, "a.md", Buffer.from("alpha"))];
+    assert.equal((await api("POST", "/agents", agent(`blind-${harness}`, { harness, tools: [] }))).status, 201);
+    const started = await api("POST", `/agents/blind-${harness}/runs`, { input: { content: "Look at this." }, file_ids: ids });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    const { rows } = await follow(api, started.body.run_id, ["completed"], { deadlineMs: 55_000 });
+    // The warning and the line, as one: each is what the start and the model are told.
+    assert.deepEqual({
+      warnings: started.body.warnings?.map((w) => [w.field, w.reason, /no tool that reads files/.test(w.message)]),
+      said: rows.filter((row) => row.kind === "user_message").map((row) => row.text),
+    }, {
+      warnings: [["file_ids", "no_file_tool", true]],
+      said: ['Look at this.\n\nFiles attached to this run, but this agent has no tool that reads files: "inputs/a.md" (5 B).'],
+    });
+
+    // The same files, inline (POST /runs): the same warning. An agent that reads, or a run with no files: none.
+    const inline = await api("POST", "/runs", { external: { source: "walk", kind: "x", id: `blind-${harness}`, version: 1 }, definition: { name: "Blind", instructions: "Answer.", harness, skills: [], tools: [] }, input: { content: "Look at this." }, file_ids: ids });
+    assert.equal(inline.status, 202, JSON.stringify(inline.body));
+    assert.deepEqual(inline.body.warnings?.map((w) => w.field), ["file_ids"]);
+    assert.equal((await api("POST", "/agents", agent(`reader-${harness}`, { harness, tools: ["read"] }))).status, 201);
+    const reads = await api("POST", `/agents/reader-${harness}/runs`, { input: { content: "Look at this." }, file_ids: ids });
+    assert.equal(reads.body.warnings, undefined, "a reader: no warning");
+    // read granted but denied by the agent's own setting: every read refused, so the same warning.
+    assert.equal((await api("POST", "/agents", agent(`denied-${harness}`, { harness, tools: ["read"], tool_settings: { read: { permission: "deny" } } }))).status, 201);
+    const denied = await api("POST", `/agents/denied-${harness}/runs`, { input: { content: "Look at this." }, file_ids: ids });
+    assert.deepEqual(denied.body.warnings?.map((w) => w.reason), ["no_file_tool"], "a denied reader: the warning");
+    const none = await api("POST", `/agents/blind-${harness}/runs`, { input: { content: "Hi." } });
+    assert.equal(none.body.warnings, undefined, "no files: no warning");
+    for (const id of [inline.body.run_id, reads.body.run_id, denied.body.run_id, none.body.run_id]) await follow(api, id, ["completed"], { deadlineMs: 55_000 });
+  });
 }
+
+test("which runs can open their files: an agent granted read or bash; an ACP agent, with tools of its own; a workflow, whose nodes name theirs", () => {
+  for (const tools of [["read"], ["bash"], ["web_search", "read"]]) assert.equal(opensFiles("agentic", tools), true, tools.join());
+  for (const tools of [[], undefined, ["web_search", "write", "edit"]]) assert.equal(opensFiles("agentic", tools), false, String(tools));
+  assert.equal(opensFiles("agentic", [], "every_call"), false, "pi, codex, claude-agent: the host's tools alone");
+  assert.equal(opensFiles("agentic", [], "config"), false, "goose: its own tools off");
+  assert.equal(opensFiles("agentic", [], "permission"), true, "an ACP agent reads with its own tools");
+  assert.equal(opensFiles("workflow", []), true);
+  const denied = (tool) => tool === "read";
+  assert.equal(opensFiles("agentic", ["read"], undefined, denied), false, "a reader denied reads nothing");
+  assert.equal(opensFiles("agentic", ["read", "bash"], undefined, denied), true, "bash still reads");
+});
 
 test("the line names at most MANIFEST_ENTRIES files, then counts the rest; sizes read as a person reads them; each name quoted, so no name breaks the line", () => {
   const files = Array.from({ length: MANIFEST_ENTRIES + 5 }, (_, i) => ({ path: `inputs/f${String(i).padStart(2, "0")}.txt`, size: i }));
@@ -124,7 +171,7 @@ test("a name can neither forge an entry nor reorder the line: a quote and a comm
   const { api } = server;
   const forged = 'x", y.txt (2 B), z.txt';
   const ids = [await upload(server, "a\u202eb.txt", Buffer.from("rtl")), await upload(server, forged, Buffer.from("q")), await upload(server, "c\u200bd\u2066.txt", Buffer.from("zw"))];
-  assert.equal((await api("POST", "/agents", agent("quoter"))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("quoter", { tools: ["read"] }))).status, 201);
   const { said } = await run(api, "quoter", "Look.", ids);
   assert.deepEqual(said, [String.raw`Look.
 

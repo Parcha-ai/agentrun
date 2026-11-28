@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { agent, serve, withEnv } from "./support.mjs";
+import { likelyModel, modelFormWhy } from "../dist/model-form.js";
 
 const MODEL_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "PARTICLE_API_KEY"];
 const withKey = (t, env) => {
@@ -76,4 +77,22 @@ test("behind a gateway, Claude is offered no OpenAI model, pi is offered the gat
   const claude = harnesses.find((h) => h.id === "claude-agent");
   for (const model of claude.models) assert.match(model, /^anthropic\//, `claude-agent lists ${model}`);
   assert.ok(harnesses.find((h) => h.id === "pi").models.includes("openai/gpt-6.1-sol"));
+});
+
+test("a model one letter off a pickable one is refused with that one as the likely id: a letter added, dropped, changed or two swapped", async (t) => {
+  const { api } = await withKey(t, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}` });
+  const refused = await api("POST", "/agents", agent("typo", { model: "anthropic/claude-sonet-5-5" }));
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  const router = { OPENROUTER_API_KEY: "-" };
+  assert.deepEqual({
+    saved: message(refused).match(/Did you mean ([^?]+)\?/)?.[1],
+    codex: modelFormWhy(router, "codex", "openai/gpt-6.1-sool", false),
+    likely: ["openai/gpt-6.1-sool", "openai/gpt-61-sol", "openai/gtp-6.1-terra", "openai/gpt-6-lunar", "anthropic/claude-opsu-5-5", "haiku-5.4"].map((given) => likelyModel({}, "pi", given)),
+  }, {
+    saved: "anthropic/claude-sonnet-5-5",
+    codex: "On codex, a model is <provider>/<model id>, like openrouter/openai/gpt-6.1-sol: openai/gpt-6.1-sool is not a model codex runs here. Did you mean openrouter/openai/gpt-6.1-sol?",
+    likely: ["openai/gpt-6.1-sol", "openai/gpt-6.1-sol", "openai/gpt-6.1-terra", "openai/gpt-6-luna", "anthropic/claude-opus-5-5", "anthropic/claude-haiku-5-5"],
+  });
+  // Two letters off any id: none is obvious, so none is named.
+  assert.deepEqual(["openai/gpt-7-mars", "anthropic/claude-sonnet-4-4", "openai/x"].map((given) => likelyModel({}, "pi", given)), [undefined, undefined, undefined]);
 });

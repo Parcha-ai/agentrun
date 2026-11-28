@@ -3,7 +3,7 @@
 // them causes names it, the value that allows it and the restart it takes (restartWith).
 
 import { BOX_ALLOW_ENV, boxAllowOf, boxAllowSetIn } from "./box-settings.js";
-import { API_ONLY_MCP_ORIGINS_ENV } from "./env-switch.js";
+import { API_ONLY_MCP_ORIGINS_ENV, WORKSPACE_MCP_PUBLIC_HTTPS_ENV } from "./env-switch.js";
 import { PRIVATE_HOSTS_ENV, privateHostsSwitchValue } from "./mcp-private-hosts.js";
 
 /** The env that says this server is a local install (cli.ts), the one kind an MCP server may be on loopback for. */
@@ -31,7 +31,7 @@ export type StartSwitch = { on: boolean; value: string | null; allows: string };
 /** The switches as this server was started: from `env`, but for those the server takes as options (ServeOptions
  *  mcpLoopback and webhookPrivateTargets, which the CLI sets from their variables, and the API-only profile's MCP origins
  *  as the server holds them, `apiOnlyMcpOrigins`). Never a secret: each is a yes or no, a host list or a size. */
-export function startSwitches(env: NodeJS.ProcessEnv, { mcpLoopback, webhookPrivateTargets, apiOnlyMcpOrigins = [] }: { mcpLoopback: boolean; webhookPrivateTargets: boolean; apiOnlyMcpOrigins?: readonly string[] }): Record<string, StartSwitch> {
+export function startSwitches(env: NodeJS.ProcessEnv, { mcpLoopback, webhookPrivateTargets, apiOnlyMcpOrigins = [], workspaceMcpPublicHttps = false }: { mcpLoopback: boolean; webhookPrivateTargets: boolean; apiOnlyMcpOrigins?: readonly string[]; workspaceMcpPublicHttps?: boolean }): Record<string, StartSwitch> {
   const flag = (on: boolean, allows: string): StartSwitch => ({ on, value: on ? "1" : null, allows });
   const allow = boxAllowOf(env);
   const size = (name: string, allows: string): StartSwitch => {
@@ -50,5 +50,6 @@ export function startSwitches(env: NodeJS.ProcessEnv, { mcpLoopback, webhookPriv
     // Its origins are withheld: every caller of an API-only server is its token, which learns only whether an origin it
     // saves at is listed (the save's 404 or not). A full server holds no list: off.
     [API_ONLY_MCP_ORIGINS_ENV]: { on: apiOnlyMcpOrigins.length > 0, value: null, allows: "On an API-only server (AGENTRUN_API_ONLY=1), the exact origins (scheme, host and port) its token may save a per_run MCP server at, which keeps no credential: a comma list of https origins, or http ones for a loopback host alone (127.0.0.0/8, ::1, localhost), which also needs AGENTRUN_MCP_ALLOW_LOOPBACK=1. Unset, none. The server keeps the list it started with in its store, and each run's claim of a server the token saved checks it. The list itself is never shown here." },
+    [WORKSPACE_MCP_PUBLIC_HTTPS_ENV]: flag(workspaceMcpPublicHttps, "On an API-only server (AGENTRUN_API_ONLY=1), a workspace's token (AgentRun-Workspace) saving a per_run MCP server, which keeps no credential, at any https origin, not only at AGENTRUN_API_ONLY_MCP_ORIGINS. Every request to such a server, at its save, preview, refresh and each run's call, goes only to a public address its name resolves to then: never a private network (a host the owner allows included), loopback, link-local or cloud metadata, and no redirect is followed. Headers, a bearer token and Composio stay at the listed origins. Off, the list alone."),
   };
 }

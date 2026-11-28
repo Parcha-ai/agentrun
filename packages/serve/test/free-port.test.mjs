@@ -41,6 +41,9 @@ test("a listen error other than the port being in use rejects with its own code,
 test("a port in use is passed over: under a range from 1025 the one candidate is 1024, and with 1024 held it fails by name instead of handing it out", async () => {
   // Held here, or already held by something else on this machine: either way it is in use when it is tried.
   const holder = createServer();
+  // A process on the box GETs / on each new loopback listener (fixtures/stranger.mjs): a connection kept open would hold
+  // this holder's close until the test's timeout, so it drops each one as it comes.
+  holder.on("connection", (socket) => socket.destroy());
   const held = await new Promise((resolve) => {
     holder.once("error", () => resolve(false));
     holder.listen(1024, "127.0.0.1", () => resolve(true));
@@ -72,6 +75,9 @@ test("two freePort calls at once never get the same port, and a port found in us
   const low = 15000;
   const from = 14000;
   const holder = createServer();
+  // A process on the box GETs / on each new loopback listener (fixtures/stranger.mjs): a connection kept open would hold
+  // this holder's close until the test's timeout, so it drops each one as it comes.
+  holder.on("connection", (socket) => socket.destroy());
   let held;
   for (let port = from; port < low - 2 && held === undefined; port++) {
     if (!(await listenOn(holder, port))) continue;

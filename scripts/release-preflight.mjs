@@ -5,7 +5,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { auditBlockers } from './audit-exceptions.mjs';
@@ -119,7 +119,24 @@ export async function checkPublished(names, view = npmView) {
   if (problems.length) throw new Error(problems.join('\n'));
 }
 
-export function checkManifest(manifest, directory, version, license, workspaceVersion = version) {
+/** What `npx @parcha/agentrun` pins beside the server: each @earendil-works peer the server takes by a range rather than
+ *  an exact version (pi-ai's is `*`, as Pi's package guidance asks: a package takes pi as a peer, the application chooses
+ *  its version), at the version this repository's lockfile installs (`lock` is its `packages`). The command is that
+ *  application. Unpinned, npm installs the newest release for the peer while the pi packages pin the tested one exactly,
+ *  and nests a copy of that under each of them: five pi-ai copies, each with its own provider SDKs, and the server on a
+ *  pi-ai it was never tested with. */
+export function launcherPins(serve, lock) {
+  const pins = {};
+  for (const [name, range] of Object.entries(serve.peerDependencies ?? {})) {
+    if (!name.startsWith('@earendil-works/') || /^\d+\.\d+\.\d+$/.test(range)) continue;
+    const version = lock?.[`node_modules/${name}`]?.version;
+    assert.ok(version, `${name} is a peer of @parcha/agentrun-serve at ${range}, and package-lock.json installs no ${name}: @parcha/agentrun pins it at the version the lockfile installs`);
+    pins[name] = version;
+  }
+  return pins;
+}
+
+export function checkManifest(manifest, directory, version, license, workspaceVersion = version, launcher = {}) {
   assert.equal(manifest.name, releasePackageNames[directory], 'Unexpected package name');
   assert.equal(manifest.version, version, 'Package versions must match the workspace version');
   assert.equal(manifest.license, license, 'Every package must use the approved root license');
@@ -134,8 +151,10 @@ export function checkManifest(manifest, directory, version, license, workspaceVe
   if (directory === 'eve') for (const dependency of ['@parcha/agentrun-client', '@parcha/agentrun-dsl']) {
     assert.equal(manifest.dependencies?.[dependency], version, `eve must pin ${dependency} to the exact release version`);
   }
-  // `npx @parcha/agentrun` installs the server it was released with: its one dependency, at this release's exact version.
-  if (directory === 'agentrun') assert.deepEqual(manifest.dependencies, { '@parcha/agentrun-serve': workspaceVersion }, `@parcha/agentrun must depend on @parcha/agentrun-serve at the release version ${workspaceVersion}, and on nothing else`);
+  // `npx @parcha/agentrun` installs the server it was released with, at this release's exact version, and the pi packages
+  // the server takes by a range at the versions this repository installs (launcherPins): nothing else.
+  const pinned = Object.entries(launcher).map(([name, at]) => ` and on ${name} at ${at}`).join('');
+  if (directory === 'agentrun') assert.deepEqual(manifest.dependencies, { '@parcha/agentrun-serve': workspaceVersion, ...launcher }, `@parcha/agentrun must depend on @parcha/agentrun-serve at the release version ${workspaceVersion}${pinned}, and on nothing else`);
 }
 
 // A high or critical advisory blocks publication unless a scoped, expiring exception in
@@ -244,12 +263,15 @@ export async function releasePreflight(root, tag, { checkGit = true, npmView: vi
     const held = await json(join(root, 'packages', directory, 'package.json'));
     assert.equal(held.version, workspace.version, `Held package ${releasePackageNames[directory]} must be at the workspace version ${workspace.version}, found ${held.version}`);
   }
+  // The pi packages the command pins beside the server: the server's ranged @earendil-works peers, at the lockfile's versions.
+  const lockPath = join(root, 'package-lock.json');
+  const launcher = launcherPins(await json(join(root, 'packages', 'serve', 'package.json')), existsSync(lockPath) ? (await json(lockPath)).packages : undefined);
   const temporary = await mkdtemp(join(tmpdir(), 'agentrun-release-preflight-'));
   const packages = [];
   try {
     for (const directory of releaseHere) {
       const manifest = await json(join(root, 'packages', directory, 'package.json'));
-      checkManifest(manifest, directory, releaseVersion(directory, manifest, workspace.version), workspace.license, workspace.version);
+      checkManifest(manifest, directory, releaseVersion(directory, manifest, workspace.version), workspace.license, workspace.version, launcher);
       if (ownVersionPackages.includes(directory)) assert.match(manifest.version, /^\d+\.\d+\.\d+$/, `${manifest.name} is on its own version line, x.y.z; found ${manifest.version}`);
       const verified = receipt.packages.find(entry => entry.name === manifest.name);
       assert.ok(verified, `Missing verification receipt for ${manifest.name}`);

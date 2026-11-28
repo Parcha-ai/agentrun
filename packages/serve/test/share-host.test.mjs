@@ -34,7 +34,8 @@ async function portProbe(url) {
 const { exportBundle } = await import("../dist/run-export.js");
 const { packageSha256 } = await import("../dist/agent-package.js");
 const { stable } = await import("../dist/validate.js");
-const { checkShareBundle, screenShare, ShareStore, SHARE_QUOTA, SHARE_STRINGS, SHARE_HOST_CSP, SHARE_HOST_ROUTES } = await import("../dist/share-host.js");
+const { checkShareBundle, screenShare, ShareStore, SHARE_EFFECTS, SHARE_QUOTA, SHARE_STRINGS, SHARE_HOST_CSP, SHARE_HOST_ROUTES } = await import("../dist/share-host.js");
+const { commandFacts, commandFactsMade } = await import("../dist/secret-rules.js");
 const { SHARE_HOST_ENV, switchFrom } = await import("../dist/env-switch.js");
 const { banner } = await import("../dist/print.js");
 const { startServe } = await import("../dist/server.js");
@@ -426,10 +427,52 @@ test("LVI (11-26): the host reads a bundle's /run/title as the export cuts it, l
   await screenShare(await bundleOf({ answer: "Run $ env SYNTH_MODE=dev node app.js" }), []);
 });
 
-test("a call's long command is read once per call, never once per string of its output: ≥1 MiB of command over 5,000 strings screens in bounded time", { timeout: 900_000 }, async () => {
-  // Each string of a call's output is read with the call's context (its command): a read key, or any per-string work,
-  // that copies or re-reads the command costs strings × command, minutes and gigabytes here, while every other upload
-  // on the host waits. One effect, a long command that prints no environment, and many short distinct strings.
+test("LVI (11-26 r2): an exported title holding any env command's output is cut, and the host takes the export's own cut", async () => {
+  const seed = `meadow${nonce()}basalt`;
+  for (const title of [`Say: $ printenv SYNTH_ROOM ${seed} $ ls`, `Say: $ echo $SYNTH_ROOM ${seed}`, `Say: $ cat .env ${seed} $ ls`, `$ env | sort SYNTH_A=1 SYNTH_ROOM=${seed} $ ls`]) {
+    const body = await bundleOf({ title });
+    assert.ok(!body.includes(seed), title);
+    await screenShare(body, []);
+    // Built by hand, uncut: refused.
+    const doc = JSON.parse(await bundleOf());
+    await assert.rejects(screenShare(resigned({ ...doc, run: { ...doc.run, title } }), []), (error) => error.code === "input_invalid" && (error.extra.details.counts["env-dump"] ?? 0) >= 1, title);
+  }
+  // A value ahead of a cut marker is output, not the export's cut: refused.
+  const doc = JSON.parse(await bundleOf());
+  const title = `Say: $ echo $SYNTH_ROOM ${seed} [redacted:env-dump 1 lines]`;
+  await assert.rejects(screenShare(resigned({ ...doc, run: { ...doc.run, title } }), []), (error) => error.code === "input_invalid" && (error.extra.details.counts["env-dump"] ?? 0) >= 1, title);
+});
+
+test("a workflow call's output is read knowing its call at any index: one past a million empty effects still refuses", { timeout: 900_000 }, async () => {
+  // An effect's index is any number of digits: a pointer the host reads as no call's would leave the call's output to the
+  // context-free rules, and a bare .pgpass line passes those.
+  const pgpass = `db.example:5432:app:alice:orchard${nonce()}plain`;
+  const doc = JSON.parse(await bundleOf());
+  const read = { node: "step", executionPath: "step", item: null, tool: "bash", status: "done", input: { command: "cat ~/.pgpass" }, output: [`${pgpass}`], error: null, startedAt: "2026-01-02T03:04:05.000Z", endedAt: "2026-01-02T03:04:06.000Z" };
+  const effects = [...Array.from({ length: 1_000_000 }, () => ({})), read];
+  const body = resigned({ ...doc, graph: { ...GRAPH, effects, totals: { ...GRAPH.totals, effects: effects.length } } });
+  await assert.rejects(screenShare(body, []), (error) => error.code === "input_invalid" && (error.extra.details.counts["credential-file"] ?? 0) + (error.extra.details.counts["env-dump"] ?? 0) >= 1);
+});
+
+test("a graph holds no more effects than an export can write: one effect over the bound is 400", async () => {
+  // The graph view writes each effect with ten keys (graph-view.ts); with one character a value, the least any takes,
+  // and a comma between, an 8 MiB export holds no more effects than this.
+  const keys = ["node", "executionPath", "item", "tool", "status", "input", "output", "error", "startedAt", "endedAt"];
+  const least = JSON.stringify(Object.fromEntries(keys.map((key) => [key, 0]))).length + 1;
+  const bound = Math.floor((8 * 1024 * 1024) / least);
+  assert.equal(SHARE_EFFECTS, bound);
+  const doc = JSON.parse(await bundleOf());
+  const graphOf = (count) => resigned({ ...doc, graph: { ...GRAPH, effects: Array.from({ length: count }, () => ({})), totals: { ...GRAPH.totals, effects: count } } });
+  assert.throws(() => checkShareBundle(graphOf(bound + 1)), (error) => error.status === 400 && /effects/.test(error.message));
+  assert.equal(checkShareBundle(graphOf(bound)).sha256, JSON.parse(graphOf(bound)).sha256);
+});
+
+test("a call's long command is read once per call, never once per string of its output: ≥1 MiB of command over 5,000 strings makes its facts once", { timeout: 900_000 }, async () => {
+  // Each string of a call's output is read with the call's context (its command). The rules' reading of the command
+  // (its read path, its path words, whether it prints the environment) is made once for the context and handed to each
+  // read, so the count of those readings is the pin, not a clock. A command over 64 KiB counts as printing the
+  // environment (secret-rules.ts printsEnvironment), so this call's whole output is a dump and the upload is refused:
+  // no command that long is ever taken.
   const strings = Number(process.env.SHARE_LONG_COMMAND_STRINGS ?? 5_000);
   const doc = JSON.parse(await bundleOf());
   const script = Array.from({ length: Math.ceil((1 << 20) / 26) }, (_, i) => `printf '%s' row${String(i).padStart(8, "0")}x; `).join("");
@@ -437,12 +480,24 @@ test("a call's long command is read once per call, never once per string of its 
   const effect = { node: "step", executionPath: "step", item: null, tool: "bash", status: "done", input: { command: script }, output, error: null, startedAt: "2026-01-02T03:04:05.000Z", endedAt: "2026-01-02T03:04:06.000Z" };
   const body = resigned({ ...doc, graph: { ...GRAPH, effects: [effect], totals: { ...GRAPH.totals, effects: 1 } } });
   assert.ok(script.length >= 1 << 20);
-  const started = performance.now();
-  await screenShare(body, []).catch((error) => assert.ok(error.status === 413 || error.code === "input_invalid", String(error)));
-  const ms = performance.now() - started;
-  // Under a second at the fix on an idle box (a pass per string, the command read once; about 6 s at a load of 160, as
-  // with a two-character command): 60 s is far over that, and far under strings × command (about 5 minutes before).
-  assert.ok(ms < 60_000, `${Math.round(ms)} ms`);
+  const before = commandFactsMade.count;
+  await assert.rejects(screenShare(body, []), (error) => error.code === "input_invalid" && error.extra.details.reason === "scrub_found" && error.extra.details.counts["env-dump"] >= 1);
+  assert.equal(commandFactsMade.count - before, 1, "one reading of the call's command for all of its strings");
+});
+
+test("a context's command facts are its own: scrubs of two calls' outputs, interleaved, never read either command again", async () => {
+  // Facts the caller made once go with every read of that call's output, whatever other scrub runs between: nothing is
+  // kept between scrubs. A scrub given the command alone reads it once, not once per view of its text.
+  const commands = ["cat ~/.pgpass", "cat ~/.docker/config.json"].map((command) => `${command} # ${"x".repeat(20_000)}`);
+  const facts = commands.map((command) => commandFacts(command));
+  const before = commandFactsMade.count;
+  for (let i = 0; i < 40; i++) {
+    const result = await scrub(`db.example:5432:app:alice:orchard${i}plain\n`, { mode: "cut", commandFacts: facts[i % 2] });
+    assert.ok(result.ok);
+  }
+  assert.equal(commandFactsMade.count, before, "no scrub handed facts reads its command");
+  await scrub('{"a":"b\\u0041"} %41 one line', { mode: "cut", command: commands[0] });
+  assert.equal(commandFactsMade.count - before, 1, "a scrub reads a command it is given once, for every view of its text");
 });
 
 test("the string cap counts a text once per call context it is read under, and bounds the reads: past it is 413 before any scrub", async () => {
@@ -774,6 +829,15 @@ test("its owner deletes a share: 204, its bytes gone, its page and bundle 410; a
     assert.equal(res.status, 410, path);
     assert.ok(!res.text.includes("Six times seven"), "nothing of the share");
   }
+  // A person who opens a deleted share's link gets the share page, not a JSON error: the page reads its bundle, gets the
+  // 410, and says the share was deleted (SharePage.tsx). Its status stays 410, under the hosted page's CSP.
+  const page = await send(s.port, { path: `/r/${id}` });
+  assert.match(page.headers["content-type"], /^text\/html/);
+  assert.equal(page.headers["content-security-policy"], SHARE_HOST_CSP);
+  assert.equal(page.headers["x-robots-tag"], "noindex");
+  assert.match(page.text, /\/r\/_assets\/share-/);
+  assert.equal((await send(s.port, { method: "HEAD", path: `/r/${id}/` })).status, 410);
+  assert.match((await send(s.port, { path: `/r/${id}/bundle.json` })).headers["content-type"], /^application\/json/);
   assert.equal((await send(s.port, { method: "DELETE", path: `/r/v2/shares/${id}`, token: s.alice.token })).status, 204, "a second delete is 204 too");
   assert.deepEqual((await send(s.port, { path: "/r/v2/shares", token: s.alice.token })).json.shares, []);
 });
@@ -823,6 +887,11 @@ test("the page and its assets load under /r/: share.html at /r/<id> with every a
   // The hosted page's CSP is the local preview's, never a looser copy of it.
   assert.equal(SHARE_HOST_CSP, (await import("../dist/page.js")).SHARE_PAGE_CSP);
   assert.equal((await send(s.port, { method: "HEAD", path: `/r/${id}` })).status, 200);
+  // A link to no share on this host gets the page too, which says so; its status is 404.
+  const unknown = await send(s.port, { path: `/r/${"b".repeat(26)}` });
+  assert.equal(unknown.status, 404);
+  assert.match(unknown.headers["content-type"], /^text\/html/);
+  assert.equal(unknown.headers["content-security-policy"], SHARE_HOST_CSP);
   for (const path of [`/r/${"b".repeat(26)}`, "/r/not-an-id", "/r/_assets/missing.js", "/r/_assets/../share.html", "/r/_assets/%2e%2e/share.html", "/r/_assets/.hidden.js", "/r/_assets/x.html", `/r/${id}/other.json`, `/r/${id}/bundle.json/x`]) {
     assert.equal((await send(s.port, { path })).status, 404, path);
   }

@@ -86,11 +86,12 @@ const MOUNT_AT: typeof WORKSPACE = "/workspace";
  *  the runner's Workspace across the run channel, where a function is a handle whose call is answered later. */
 export type MountCheck = { readonly readBackOf: (spec: MountSpec, epoch?: number) => MountReadBack | Promise<MountReadBack>; readonly epoch?: number; readonly sync?: true };
 
-/** A computer as attach takes it: its ref, its computerd client, and D's read-back of what it mounts at /workspace. */
+/** A computer as attach takes it: its ref, its computerd client, and D's read-back of what it mounts at /workspace (the
+ *  provider's read of the machine; `signal` cuts it: the claim's, so a provider that never answers holds no close). */
 export interface AttachableComputer {
   readonly id: string;
   readonly client: ComputerClient;
-  readBack(): Promise<Result<MountReadBack>>;
+  readBack(options?: { readonly signal?: AbortSignal }): Promise<Result<MountReadBack>>;
 }
 
 /** A computer's background processes, computerd's process calls: what the background tools call, through the

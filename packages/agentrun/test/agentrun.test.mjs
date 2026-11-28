@@ -15,6 +15,7 @@ import { onLoopback, openLineUrl, openUrl } from "../lib/start.mjs";
 import { chosenPublicUrl, publicUrlOf } from "../lib/public-url.mjs";
 import { tailnetHint, tailnetNameOf } from "../lib/tailscale.mjs";
 import { removeAtEnd } from "./support.mjs";
+import { launcherPins } from "../../../scripts/release-preflight.mjs";
 
 const PACKAGE = new URL("..", import.meta.url).pathname;
 const BIN = join(PACKAGE, "bin", "agentrun.mjs");
@@ -144,16 +145,25 @@ test("npm exec of the packed package runs this package's own agentrun bin", { ti
   const clean = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^npm_/i.test(name)));
   const npm = (args) => execFileSync("npm", args, { cwd: dir, encoding: "utf8", env: { ...clean, npm_config_cache: join(dir, "cache"), npm_config_update_notifier: "false" } });
   const tarball = npm(["pack", PACKAGE, "--pack-destination", dir, "--silent"]).trim().split("\n").at(-1);
-  // The server it depends on, as a stand-in at the pinned version: offline, npm installs that and no registry copy.
-  mkdirSync(join(dir, "serve"));
-  writeFileSync(join(dir, "serve", "package.json"), JSON.stringify({ name: "@parcha/agentrun-serve", version: SERVE_VERSION }));
-  const serve = npm(["pack", join(dir, "serve"), "--pack-destination", dir, "--silent"]).trim().split("\n").at(-1);
-  const out = npm(["exec", "--offline", "--yes", `--package=file:${join(dir, serve)}`, `--package=file:${join(dir, tarball)}`, "--", "agentrun", "--help"]);
+  // What it depends on (the server, and the pi packages it pins), each a stand-in at its pinned version: offline, npm
+  // installs those and no registry copy.
+  const standIns = Object.entries(MANIFEST.dependencies).map(([name, version], at) => {
+    mkdirSync(join(dir, `dep${at}`));
+    writeFileSync(join(dir, `dep${at}`, "package.json"), JSON.stringify({ name, version }));
+    return `--package=file:${join(dir, npm(["pack", join(dir, `dep${at}`), "--pack-destination", dir, "--silent"]).trim().split("\n").at(-1))}`;
+  });
+  const out = npm(["exec", "--offline", "--yes", ...standIns, `--package=file:${join(dir, tarball)}`, "--", "agentrun", "--help"]);
   assert.match(out, /^Usage: npx @parcha\/agentrun /);
 });
 
-test("the server is this package's one dependency, at the exact version of the server in this repository: npx installs the two together", () => {
-  assert.deepEqual(MANIFEST.dependencies, { "@parcha/agentrun-serve": SERVE_VERSION });
+test("the server is this package's dependency at the exact version of the server in this repository, beside the pi packages it takes by a range at the versions this repository installs: npx installs them together", () => {
+  const serve = JSON.parse(readFileSync(new URL("../../serve/package.json", import.meta.url), "utf8"));
+  const lock = JSON.parse(readFileSync(new URL("../../../package-lock.json", import.meta.url), "utf8")).packages;
+  const pins = launcherPins(serve, lock);
+  // pi-ai is the server's peer at "*": the one pin today, at the version the repository tests on.
+  assert.deepEqual(Object.keys(pins), ["@earendil-works/pi-ai"]);
+  assert.equal(pins["@earendil-works/pi-ai"], lock["node_modules/@earendil-works/pi-ai"].version);
+  assert.deepEqual(MANIFEST.dependencies, { "@parcha/agentrun-serve": SERVE_VERSION, ...pins });
   assert.ok(existsSync(new URL("../../serve/launcher/agentrun-serve", import.meta.url)), "the server ships the launcher this runs");
   const installed = () => join("/opt", "app", "node_modules", "@parcha", "agentrun-serve", "package.json");
   assert.equal(start.installedServer(installed), join("/opt", "app", "node_modules", "@parcha", "agentrun-serve", "launcher", "agentrun-serve"));
