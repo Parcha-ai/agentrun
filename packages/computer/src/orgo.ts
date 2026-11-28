@@ -594,7 +594,9 @@ export class OrgoProvider implements ComputerProvider {
 					if (inside.ok) {
 						// The workspace's listing carries no size: Orgo's read of the computer says the one it runs at.
 						const read = await this.#get(record.id, signal);
-						const size = orgoSize(read.ok ? read.value : undefined, { ...(file.value.cpus === undefined ? {} : { cpus: file.value.cpus }), ...(file.value.memoryMb === undefined ? {} : { memoryMb: file.value.memoryMb }) });
+						// A read that fails says no size: the size asked is never taken for the one it runs at.
+						if (!read.ok) return read;
+						const size = orgoSize(read.value, { ...(file.value.cpus === undefined ? {} : { cpus: file.value.cpus }), ...(file.value.memoryMb === undefined ? {} : { memoryMb: file.value.memoryMb }) });
 						return ok({ ...ref, ...(inside.value.length > 0 ? { notes: inside.value } : {}), ...size });
 					}
 					if (inside.error.code === "aborted") return inside;

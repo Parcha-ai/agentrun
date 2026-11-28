@@ -223,6 +223,14 @@ test("Orgo create: the computer's size is the one Orgo's answer says it ran (ram
 	assert.equal(again.ok, true, JSON.stringify(again));
 	assert.equal(again.value.id, first.value.id);
 	assert.deepEqual(again.value.resources, { cpus: 4, memoryMb: 16_384 });
+	// A retry whose read of the computer fails answers that failure, never the size it asked for in the read's place.
+	const refusing = async (url, init) => {
+		const { pathname } = new URL(String(url));
+		if ((init?.method ?? "GET") === "GET" && pathname.endsWith(`/computers/${first.value.id}`)) return new Response(JSON.stringify({ error: "forbidden" }), { status: 403, headers: { "content-type": "application/json" } });
+		return api.fetch(url, init);
+	};
+	const unread = await create({ ...options, fetch: refusing }).create(SPEC, request);
+	assert.equal(unread.ok, false, JSON.stringify(unread));
 });
 
 test("Orgo create: a computer Orgo answers creating is waited for until it runs; the start goes through a named session when asked", async () => {
