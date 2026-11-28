@@ -23,12 +23,14 @@ function landed(stamped, now, lagMs = LAG_MS) {
 
 /**
  * Follows the container's stdout until pattern matches it, and gives all of it up to then. Fails in words, with what
- * the log held, when withinMs passes first or the log ends without it.
+ * the log held and what docker logs said on stderr (and its exit, when it ended), when withinMs passes first or the log
+ * ends without it.
  */
 export function logsWith(name, pattern, { withinMs = 30_000 } = {}) {
 	return new Promise((resolve, reject) => {
-		const follow = spawn("docker", ["logs", "--follow", "--timestamps", name], { stdio: ["ignore", "pipe", "ignore"] });
+		const follow = spawn("docker", ["logs", "--follow", "--timestamps", name], { stdio: ["ignore", "pipe", "pipe"] });
 		let stamped = "";
+		let errors = "";
 		let finished = false;
 		const finish = (error) => {
 			if (finished) return;
@@ -43,16 +45,20 @@ export function logsWith(name, pattern, { withinMs = 30_000 } = {}) {
 			if (pattern.test(landed(stamped, Date.now()))) finish();
 		};
 		const tick = setInterval(check, 50);
-		const limit = setTimeout(() => finish(new Error(`${name}'s log held no ${pattern} within ${withinMs} ms: ${JSON.stringify(landed(stamped, Date.now()))}`)), withinMs);
+		const limit = setTimeout(() => finish(new Error(`${name}'s log held no ${pattern} within ${withinMs} ms${errors.trim() ? ` (docker logs said: ${errors.trim()})` : ""}: ${JSON.stringify(landed(stamped, Date.now()))}`)), withinMs);
 		follow.stdout.setEncoding("utf8");
 		follow.stdout.on("data", (chunk) => {
 			stamped += chunk;
 			check();
 		});
+		follow.stderr.setEncoding("utf8");
+		follow.stderr.on("data", (chunk) => {
+			errors += chunk;
+		});
 		follow.on("error", (error) => finish(error));
-		follow.on("close", () => {
+		follow.on("close", (code, signal) => {
 			check();
-			finish(new Error(`${name}'s log ended with no ${pattern}: ${JSON.stringify(landed(stamped, Date.now()))}`));
+			finish(new Error(`${name}'s log ended with no ${pattern} (docker logs exited ${code ?? signal}${errors.trim() ? `: ${errors.trim()}` : ""}): ${JSON.stringify(landed(stamped, Date.now()))}`));
 		});
 	});
 }
