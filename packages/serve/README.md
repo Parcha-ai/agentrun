@@ -4159,7 +4159,9 @@ refused as a server never saved. A save in a workspace is of an address at the o
 (`AGENTRUN_API_ONLY_MCP_ORIGINS`): `per_run` (each run hands its own in `mcp_auth`), or `headers` or `bearer`, whose
 credential is sealed in the workspace's own row and sent by its own agents' runs alone (a re-save that sends none keeps
 it); or a per-run Composio save (`user_id: "per_run"`, no `auth_config_id`, else `422 not_allowed`) whose key the install
-names (`api_key_env`). Anything else is the refused route's `404`, before anything is sent. The token with no header still
+names (`api_key_env`). Anything else is the refused route's `404`, before anything is sent. A save or delete over a row
+of its name that its token did not save is `403`, in the words every token write over a saved server gets: they name the
+server and say the token did not save it. The token with no header still
 writes no credential. One of a workspace's sealed servers at an origin taken off the list can't be used, as a token's
 `per_run` one can't: a run already going when the list changes stops sending its credential at its next call, and its
 preview or refresh by name is the refused route's `404`, nothing sent. A run started on a workspace's agent, by its
