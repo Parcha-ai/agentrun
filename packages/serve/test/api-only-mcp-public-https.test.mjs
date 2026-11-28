@@ -301,6 +301,68 @@ test("at run time the stricter rule is a workspace's mode server's alone: the ow
   assert.equal(network.dialled.at(-1)[1], "10.20.30.40");
 });
 
+test("a call's rule is the one its claim opened: a workspace's mode server stays strict for the whole call when its row is removed mid-call (the owner's shared server of that name left) or the mode is turned off mid-call, so a request after it to a host the owner allows on a private network is refused unsent", async (t) => {
+  const seen = [];
+  for (const change of ["row removed", "mode off"]) {
+    const fake = await startFakeMcp();
+    t.after(() => fake.close());
+    const base = fake.url.replace(/\/mcp$/, "");
+    let armed = false;
+    let looks = 0;
+    let store;
+    const network = routed({
+      "midcall.example.test": async () => {
+        if (!armed) return [PUBLIC];
+        looks += 1;
+        if (looks > 1) return ["10.20.30.40"];
+        if (change === "row removed") await store.mcp.remove(mcpRowKey("srv", W1));
+        else await holdApiOnlyMcpOrigins(store, true, [LISTED], false);
+        return [PUBLIC];
+      },
+      "shared.example.test": [PUBLIC],
+    }, { "midcall.example.test": base, "shared.example.test": base });
+    const opened = await registryOn(t, network);
+    store = opened.store;
+    if (change === "row removed") await opened.registry.save("srv", { url: "https://shared.example.test/mcp", auth: { type: "none" } });
+    const url = "https://midcall.example.test/mcp";
+    await savedInW1(opened.registry, "srv", url);
+    await savePrivateOAuthHosts(store, ["midcall.example.test"]);
+    const { call } = await w1Run(t, store, opened.dir, network, "srv", url);
+    const from = network.dialled.length;
+    armed = true;
+    const result = await call(`call-${change}`);
+    seen.push({ change, requestAfterChange: looks >= 2, privateDials: network.dialled.slice(from).filter(([, address]) => address !== PUBLIC).length, isError: result.isError === true });
+  }
+  assert.deepEqual(seen, ["row removed", "mode off"].map((change) => ({ change, requestAfterChange: true, privateDials: 0, isError: true })));
+});
+
+test("a workspace's preview under the mode that a server answers 401 for OAuth discovers its sign-in under the same rule: a name that answers a host the owner allows on a private network at the discovery is refused there, nothing sent", async (t) => {
+  let after = false;
+  const server = createServer((req, res) => {
+    if (req.url.startsWith("/.well-known/")) return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ resource: "https://signin.example.test/mcp", authorization_servers: ["https://signin.example.test"] }));
+    res.writeHead(401, { "www-authenticate": 'Bearer resource_metadata="https://signin.example.test/.well-known/oauth-protected-resource/mcp"' }).end();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const signIn = async (scoped) => {
+    after = false;
+    const network = routed({ "signin.example.test": () => { const answer = after ? ["10.20.30.40"] : [PUBLIC]; after = true; return answer; } }, { "signin.example.test": `http://127.0.0.1:${server.address().port}` });
+    const { store, registry } = await registryOn(t, network);
+    await savePrivateOAuthHosts(store, ["signin.example.test"]);
+    const body = { url: "https://signin.example.test/mcp", auth: { type: "per_run" } };
+    await assert.rejects(scoped ? inWorkspace(W1, () => registry.preview(body, undefined, true)) : registry.preview(body), (error) => {
+      assert.equal(error.code, "auth_required", error.message);
+      assert.equal(error.extra.details.auth, "oauth");
+      return true;
+    });
+    assert.ok(network.looked.length >= 2, `the discovery looked the name up again (${network.looked.length})`);
+    return network.dialled.filter(([, address]) => address !== PUBLIC).map(([, address]) => address);
+  };
+  assert.deepEqual(await signIn(true), [], "the workspace's: nothing dialled at the private address");
+  // The control: the owner's own preview, unscoped, discovers on the owner's rule as before, at the host it allows.
+  assert.ok((await signIn(false)).includes("10.20.30.40"), "the owner's: its discovery reaches the host the owner allows");
+});
+
 test("the claim: a workspace's per_run server the token saved at an https origin off the list is usable while the store holds the mode, and refused in the off-list words once it does not; a shared one, a sealed one and a plain-http one stay refused", async (t) => {
   const { store } = await storeOn(t);
   const save = async (key, url, auth = "per_run", sealed = null) => {

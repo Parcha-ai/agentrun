@@ -246,8 +246,9 @@ export class McpServersOverStore {
       const name = String(body.name);
       const kept = await this.need(name);
       const url = new URL(kept.url);
-      const send = await this.reached(kept.auth, url, stop);
-      return marked(kept.url, await this.signInNoted(url, this.listServer(url, await this.withAppToken(kept.auth, url, (await this.opened(name, kept, "name")).headers, stop), send, stop, await this.perRunComposio(name, kept)), stop));
+      const strict = await this.strictAt(url);
+      const send = await this.reached(kept.auth, url, stop, undefined, strict);
+      return marked(kept.url, await this.signInNoted(url, this.listServer(url, await this.withAppToken(kept.auth, url, (await this.opened(name, kept, "name")).headers, stop), send, stop, await this.perRunComposio(name, kept)), stop, strict));
     }
     // `name` with a url: the saved server the form is editing. Its address as every read shows it (shownUrl), sent back
     // unchanged, is the saved one here too (as save and sign-in map it): the browser never gets the real address back.
@@ -258,10 +259,11 @@ export class McpServersOverStore {
     // A github_app server's credential is a token of the App, minted here, as for a saved one: its static headers are optional.
     // A per_run server's are optional too: they only list its tools, for a server that lists them only to a caller it knows.
     if (auth.type !== "none" && auth.type !== "github_app" && auth.type !== "per_run" && !auth.headers) throw invalid([credentialMissing(auth.type, "A preview needs the credential it is to connect with.")]);
-    const send = await this.reached(auth.type, url, stop);
+    const strict = await this.strictAt(url);
+    const send = await this.reached(auth.type, url, stop, undefined, strict);
     // The edit form of a per-run Composio server at its saved address lists it as a preview by name does.
     const perRun = !!saved && auth.type === "headers" && saved.url === url.href && (await this.perRunComposio(String(editing), saved));
-    return marked(url.href, await this.signInNoted(url, this.listServer(url, await this.withAppToken(auth.type, url, auth.headers ?? {}, stop), send, stop, perRun), stop));
+    return marked(url.href, await this.signInNoted(url, this.listServer(url, await this.withAppToken(auth.type, url, auth.headers ?? {}, stop), send, stop, perRun), stop, strict));
   }
 
   /** What an agent's save pins of the saved server `name` (mcp-gateway.ts mcpPinOf): its URL, its tools as it lists them
@@ -293,14 +295,15 @@ export class McpServersOverStore {
 
   /** `listing`, and when it is refused as a server that signs in with OAuth (auth_required, `auth: oauth`), whether that
    *  sign-in can start with no Client ID entered (`details.oauth.registration`, McpSignIns.registration), so the console
-   *  asks for one up front. `stop`: the preview's, which cuts that discovery too. */
-  private async signInNoted(url: URL, listing: Promise<Listed>, stop?: AbortSignal): Promise<Listed> {
+   *  asks for one up front. `stop`: the preview's, which cuts that discovery too. `strict`: the preview's own rule
+   *  (strictAt), which every request of that discovery is held to as well. */
+  private async signInNoted(url: URL, listing: Promise<Listed>, stop?: AbortSignal, strict = false): Promise<Listed> {
     try {
       return await listing;
     } catch (error) {
       const details = error instanceof ApiError && error.code === "auth_required" ? (error.extra.details as { auth?: string; oauth?: unknown } | undefined) : undefined;
       if (details?.auth === "oauth") {
-        const registration = await this.signIns.registration(url, stop);
+        const registration = await this.signIns.registration(url, stop, strict);
         if (registration) details.oauth = registration;
       }
       throw error;
@@ -777,7 +780,7 @@ export class McpServersOverStore {
    *  or the saved row `of` that is one, as a runner's listing reads it) that stands on the workspace public-https mode
    *  alone (mcp-api-only-origins.ts onPublicHttpsAlone) is held to publicMcpServerAt instead: no private host the owner
    *  allows, no loopback even on a local install, no cloud metadata name. */
-  private async reached(type: string, url: URL, stop?: AbortSignal, of?: { name: string; row: { sealedAs?: string } }): Promise<typeof fetch> {
+  private async reached(type: string, url: URL, stop?: AbortSignal, of?: { name: string; row: { sealedAs?: string } }, decided?: boolean): Promise<typeof fetch> {
     // A saved row's URL is held to the save's rule too: one with a credential in its query is refused, nothing sent.
     const inQuery = credentialInQuery(url);
     if (inQuery) throw invalid([{ field: "url", reason: "invalid", message: credentialInQueryWords(inQuery) }]);
@@ -785,7 +788,7 @@ export class McpServersOverStore {
       if (!githubMcpUrl(url, this.appOrigin)) throw invalid([{ field: "url", reason: "not_allowed", message: GITHUB_MCP_ONLY }]);
       return fetch;
     }
-    const strict = (workspaceNow() !== undefined || (of !== undefined && workspaceMcpRow(of.name, of.row))) && (await onPublicHttpsAlone(this.store, url));
+    const strict = decided ?? (await this.strictAt(url, of));
     // A URL on loopback as written, on a server its operator never said is a local install: refused, saying how to say so.
     if (!strict && !this.loopback && LOOPBACK.test(url.hostname)) throw invalid([{ field: "url", reason: "not_allowed", message: loopbackWords(url.hostname) }]);
     const signal = AbortSignal.any([AbortSignal.timeout(ADDRESS_CHECK_MS), this.stopped.signal, ...(stop ? [stop] : [])]);
@@ -802,6 +805,12 @@ export class McpServersOverStore {
       throw invalid([{ field: "url", reason: "not_allowed", message: `${at.refused.charAt(0).toUpperCase()}${at.refused.slice(1)}.` }]);
     }
     return dialAt(this.network, at.address) as typeof fetch;
+  }
+
+  /** Whether a request to `url` is held to publicMcpServerAt's rule: a workspace's server (a request in a workspace, or the
+   *  saved row `of` that is one) that stands on the workspace public-https mode alone. */
+  private async strictAt(url: URL, of?: { name: string; row: { sealedAs?: string } }): Promise<boolean> {
+    return (workspaceNow() !== undefined || (of !== undefined && workspaceMcpRow(of.name, of.row))) && (await onPublicHttpsAlone(this.store, url));
   }
 
   private async need(name: string): Promise<McpServerRow> {

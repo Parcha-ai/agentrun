@@ -199,6 +199,14 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
   }
   const network = options.network ?? systemNetwork;
   const media = options.media;
+  // Each pinned server's rule, decided once from the rows the claim opened: a workspace's server on the public-https
+  // mode alone is held to publicMcpServerAt for every request of this claim. Nothing that changes in the store later (its
+  // row removed so a shared one of the name shows through, the mode turned off) relaxes it; a change may only make a
+  // request stricter.
+  const workspace = await options.store.runs.workspace(options.claim.runId);
+  const strictNow = async (url: string, server: string) => (await onPublicHttpsAlone(options.store, url)) && (await workspaceServer(options.store, workspace, server));
+  const strictAtClaim = new Set<string>();
+  for (const [server, pinned] of Object.entries(pin)) if (await strictNow(pinned.url, server)) strictAtClaim.add(server);
   const gateway = mcpGateway({
     pin,
     credentials: step.credentials,
@@ -209,10 +217,10 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
     // one host's local install never opens loopback for another host's runner on a shared store; and never at that
     // server's own ports (options.own).
     // A workspace's server that stands on the workspace public-https mode alone (mcp-api-only-origins.ts
-    // onPublicHttpsAlone) is held to publicMcpServerAt at each request instead, whatever its save checked: no private
-    // host the owner allows, no loopback, no cloud metadata name.
+    // onPublicHttpsAlone), at the claim (strictAtClaim) or now, is held to publicMcpServerAt at each request instead,
+    // whatever its save checked: no private host the owner allows, no loopback, no cloud metadata name.
     reach: async (url, signal, server) => {
-      const strict = (await onPublicHttpsAlone(options.store, url)) && (await workspaceServer(options.store, await options.store.runs.workspace(options.claim.runId), server));
+      const strict = strictAtClaim.has(server) || (await strictNow(url, server));
       const at = strict ? await publicMcpServerAt(new URL(url), signal, network, options.own ?? []) : await mcpServerAt(new URL(url), signal, network, { allowed: await privateOAuthHosts(options.store), loopback: options.loopback === true, own: options.own ?? [] });
       return "refused" in at ? { refused: at.refused } : { send: dialAt(network, at.address, options.fetch ?? fetch) as typeof fetch };
     },

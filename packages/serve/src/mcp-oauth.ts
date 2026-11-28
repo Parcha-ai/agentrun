@@ -423,9 +423,11 @@ export class McpSignIns {
    *  publishes no metadata or the metadata offers neither; `callback`, the callback URL a hand-made app names. undefined
    *  when the discovery could not be made (refused, unreachable, not OAuth): the start's own words say why. `stop`: the
    *  preview's, so a server that stops cuts the discovery's requests and lookups with the preview's own. */
-  async registration(url: URL, stop?: AbortSignal): Promise<{ registration: boolean; callback: string } | undefined> {
-    // The start's reach, loopback included: a local install's sign-in is told as its start will find it.
-    const found = await this.discovered(url, { own: this.own, allowed: await this.allowed(), loopback: this.loopback }, stop);
+  async registration(url: URL, stop?: AbortSignal, strict = false): Promise<{ registration: boolean; callback: string } | undefined> {
+    // The start's reach, loopback included: a local install's sign-in is told as its start will find it. `strict`: the
+    // server is held to publicMcpServerAt's rule (a workspace's on the public-https mode alone), and so is every request
+    // of its discovery: no host the owner allows, no loopback.
+    const found = await this.discovered(url, strict ? { own: this.own } : { own: this.own, allowed: await this.allowed(), loopback: this.loopback }, stop);
     return found && { registration: found.registration, callback: this.callback };
   }
 
