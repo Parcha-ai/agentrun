@@ -599,7 +599,7 @@ export function shareHost(deps: ShareHostDeps): (req: IncomingMessage, res: Serv
     deps.authFailed?.(route, req.headers.authorization === undefined ? "no_token" : "wrong_token");
     throw new ApiError("unauthenticated", "the share host's API takes one of its tokens as a Bearer header");
   };
-  /** A share for its page or bytes: live, else 410 for a deleted one, 404 for none. */
+  /** A share for its bytes: live, else 410 for a deleted one, 404 for none (its page answers the same status as HTML). */
   const live = async (id: string, raw: string): Promise<ShareMeta> => {
     const meta = await store.get(id);
     if (!meta) throw notFound(raw);
@@ -645,8 +645,13 @@ export function shareHost(deps: ShareHostDeps): (req: IncomingMessage, res: Serv
     const bytes = /^([^/]+)\/bundle\.json$/.exec(rest);
     const id = (page ?? bytes)?.[1];
     if (id === undefined || !SHARE_ID.test(id)) throw notFound(raw);
+    if (page) {
+      // A person opened the link: a deleted or unknown share is still the page, with the bundle's status, and the page
+      // says why from its own read of the bundle (410 deleted, 404 none). Never the API's JSON error.
+      const meta = await store.get(id);
+      return sendHostedSharePage(req, res, deps.console, meta === undefined ? 404 : meta.deleted_at ? 410 : 200);
+    }
     await live(id, raw);
-    if (page) return sendHostedSharePage(req, res, deps.console);
     const body = await store.bytes(id).catch(() => undefined);
     if (body === undefined) throw notFound(raw);
     res.writeHead(200, {
