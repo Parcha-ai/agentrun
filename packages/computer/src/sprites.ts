@@ -71,8 +71,11 @@ const FRAME = { stdin: 0, stdout: 1, stderr: 2, exit: 3, eof: 4 } as const;
 
 /** A sprite as the API answers it (S SpriteInfo), as far as this host reads it. */
 type Sprite = { name: string; status?: string; labels?: string[]; created_at?: string };
-/** A command as the exec pieces hold it: its socket, its events not yet read, and its session once Fly names it. */
-type Exec = { socket: SpritesSocket; queue: FramedEvent[]; closed: boolean; failure?: Error; session?: string; wake: () => void };
+/**
+ * A command as the exec pieces hold it: its socket, its events not yet read, and its session once Fly names it (named
+ * settles then, or when the socket closes first).
+ */
+type Exec = { socket: SpritesSocket; queue: FramedEvent[]; closed: boolean; failure?: Error; session?: string; named: Promise<void>; wake: () => void };
 
 /** Fly's statuses: cold and warm are a sprite asleep, which the next exec wakes. */
 const STATES: Readonly<Record<string, Machine["state"]>> = { running: "running", warm: "running", cold: "running" };
@@ -179,9 +182,12 @@ class SpritesHost implements MachineHost {
 				end: async (exec) => {
 					if (exec.socket.readyState === 1) exec.socket.send(framed(FRAME.eof));
 				},
-				// The session's kill call (D exec kill), SIGKILL, by the id Fly's session_info named; then the socket closes.
+				// The session's kill call (D exec kill), SIGKILL, by the id Fly's session_info named; then the socket closes. A kill
+				// that comes after the open and before session_info waits for it (at most CALL_MS): closing alone would leave the
+				// command to run on for AFTER_DISCONNECT.
 				kill: async (exec) => {
 					try {
+						if (exec.session === undefined) await settledWithin(exec.named, CALL_MS);
 						if (exec.session !== undefined) await this.#call("POST", `/v1/sprites/${encodeURIComponent(id)}/exec/${encodeURIComponent(exec.session)}/kill`, { signal: "SIGKILL" }, { timeoutMs: CALL_MS });
 					} finally {
 						exec.socket.close(1000);
@@ -206,7 +212,8 @@ class SpritesHost implements MachineHost {
 		url.searchParams.set("max_run_after_disconnect", AFTER_DISCONNECT);
 		const socket = this.#webSocket(url.href, { headers: { Authorization: `Bearer ${this.#token}` } });
 		socket.binaryType = "arraybuffer";
-		const exec: Exec = { socket, queue: [], closed: false, wake: () => {} };
+		let named!: () => void;
+		const exec: Exec = { socket, queue: [], closed: false, named: new Promise<void>((done) => (named = done)), wake: () => {} };
 		const push = (event: FramedEvent) => {
 			exec.queue.push(event);
 			exec.wake();
@@ -217,8 +224,10 @@ class SpritesHost implements MachineHost {
 		socket.addEventListener("message", ({ data }) => {
 			if (typeof data === "string") {
 				const message = jsonOf(Buffer.from(data)) as { type?: unknown; session_id?: unknown; exit_code?: unknown } | null;
-				if (message?.type === "session_info" && (typeof message.session_id === "string" || typeof message.session_id === "number")) exec.session = String(message.session_id);
-				else if (message?.type === "exit" && typeof message.exit_code === "number") push({ exit: message.exit_code });
+				if (message?.type === "session_info" && (typeof message.session_id === "string" || typeof message.session_id === "number")) {
+					exec.session = String(message.session_id);
+					named();
+				} else if (message?.type === "exit" && typeof message.exit_code === "number") push({ exit: message.exit_code });
 				return;
 			}
 			const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : undefined;
@@ -234,6 +243,7 @@ class SpritesHost implements MachineHost {
 		socket.addEventListener("close", ({ code }) => {
 			exec.closed = true;
 			opened(new Error(`the exec socket closed before it opened (code ${code ?? "none"})`));
+			named();
 			exec.wake();
 		});
 		let timer: ReturnType<typeof setTimeout> | undefined;
@@ -276,6 +286,12 @@ class SpritesHost implements MachineHost {
 		if (spec.image !== undefined && spec.image !== SPRITES_IMAGE) refusals.push({ field: "image", message: `a sprite starts from Fly's own Ubuntu image alone, "${SPRITES_IMAGE}"` });
 		return refusals;
 	}
+}
+
+/** Waits for a promise to settle, or for ms, whichever comes first; the timer goes either way. */
+async function settledWithin(promise: Promise<void>, ms: number): Promise<void> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	await Promise.race([promise, new Promise<void>((done) => (timer = setTimeout(done, ms)))]).finally(() => clearTimeout(timer));
 }
 
 /** One exec frame: its stream's byte, then the bytes. */
