@@ -49,8 +49,8 @@ test("what a vendor's box reaches is its descriptor's: the host list where its c
   assert.deepEqual([none.e2b.network, none.e2b.network_reason, none.boxd.network, none.boxd.network_reason], ["none", undefined, "none", undefined]);
 });
 
-// What Northflank injects into every service it runs: its runtime variables and build arguments
-// (https://northflank.com/docs/v1/application/secure/inject-secrets, "Access Northflank injected secrets").
+// What Northflank injects into every service it runs: its runtime variables and build arguments (Northflank's docs,
+// v1/application/secure/inject-secrets, "Access Northflank injected secrets").
 const NORTHFLANK_INJECTED = {
   NF_HOSTS: "a.example.test",
   NF_HOSTS_CUSTOM: "b.example.test",
@@ -65,7 +65,7 @@ const NORTHFLANK_INJECTED = {
 };
 // What an operator's host on Northflank may carry beside them: a CLI or SDK token under NF_API_TOKEN, a project, team,
 // service or region under NF_ or NORTHFLANK_ names, the CLI's config directory (NF_CONFIG_DIR, NORTHFLANK_CONFIG_DIR:
-// https://northflank.com/docs/v1/api/use-the-cli).
+// Northflank's docs, v1/api/use-the-cli).
 const OPERATOR_HOST = {
   NF_API_TOKEN: "fake-test-key-nf",
   NORTHFLANK_PROJECT_ID: "a-project",
