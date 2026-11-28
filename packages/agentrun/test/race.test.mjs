@@ -3,6 +3,7 @@
 // its label, in lane order. Against a server in this process with no runner: the runs are taken, and nothing runs.
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { serve } from "../../serve/test/support.mjs";
@@ -125,4 +126,84 @@ test("a lane is HARNESS/MODEL split at the first slash; a new label is the minut
   assert.equal(laneOf("/gpt-5"), undefined);
   assert.equal(laneOf("codex/"), undefined);
   assert.equal(newRaceLabel(new Date("2026-11-28T01:23:45Z"), () => "0123abcd-4567-89ef-0123-456789abcdef"), "20261128-0123-0123abcd4567");
+});
+
+/** A fake server: GET /capabilities and /computers, POST /agents and its runs and archive, each answered by `answer`
+ *  (path, method, body) after its own delay; every request recorded. */
+async function fake(t, answer) {
+  const seen = [];
+  const server = createServer((req, res) => {
+    let raw = "";
+    req.on("data", (chunk) => (raw += chunk));
+    req.on("end", async () => {
+      const path = req.url.replace(/^\/v2/, "");
+      const body = raw ? JSON.parse(raw) : undefined;
+      seen.push({ method: req.method, path, body });
+      const said = await answer(req.method, path, body);
+      if (said === "drop") return req.socket.destroy();
+      res.writeHead(said.status, { "content-type": "application/json" });
+      res.end(JSON.stringify(said.body));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const { env } = scratch("race-fake");
+  const base = `http://127.0.0.1:${server.address().port}/v2`;
+  return { seen, agentrun: (args) => cli({ ...env, AGENTRUN_API_KEY: "t0k-fake" }, [...args, "--base-url", base]) };
+}
+const later = (ms, value) => new Promise((resolve) => setTimeout(() => resolve(value), ms));
+const CAPS = { tools: [{ name: "read", available: true, harnesses: ["pi"] }, { name: "bash", available: true, sandbox_only: true, harnesses: ["pi"] }], places: { default_place: { mode: "runner" } } };
+const COMPUTERS = { kinds: [{ kind: "none", shell: "local" }] };
+const served = (method, path) => (path === "/capabilities" ? { status: 200, body: CAPS } : path === "/computers" ? { status: 200, body: COMPUTERS } : undefined);
+
+test("a lane refused while another lane's request is still out reads as refused, not started: each request is judged on its own", { timeout: 60_000 }, async (t) => {
+  const { seen, agentrun } = await fake(t, async (method, path, body) => {
+    const read = served(method, path);
+    if (read) return read;
+    if (method === "POST" && path === "/agents") {
+      // Lane 1 is refused while lane 2's agent is still being made.
+      return body.definition.id.endsWith("-1-1") ? later(50, { status: 422, body: { error: { code: "input_invalid", message: "lane one is refused" } } }) : later(300, { status: 201, body: { agent_id: body.definition.id, revision: "rv-2" } });
+    }
+    if (method === "POST" && path.endsWith("/runs")) return { status: 201, body: { run_id: "run-2", status: "queued" } };
+    return { status: 404, body: {} };
+  });
+  const out = await agentrun(["race", "start", "--lane", "pi/m-one", "--lane", "pi/m-two", "--task", "x", "--label", "fake-1"]);
+  assert.equal(out.code, 1, out.err);
+  const printed = JSON.parse(out.out);
+  assert.equal(printed.lanes[0].error, "input_invalid: lane one is refused");
+  assert.equal(printed.lanes[0].run_id, undefined);
+  assert.equal(printed.lanes[1].run_id, "run-2");
+  assert.match(out.err, /^Lane 1 \(pi\/m-one\) did not start: input_invalid: lane one is refused$/m);
+  assert.deepEqual(seen.filter((r) => r.path.endsWith("/runs")).map((r) => r.path), ["/agents/race-fake-1-2-1/runs"]);
+});
+
+test("a lane whose start was cut off reads as unsure, the label and every other lane still printed; an archive that fails keeps the refusal", { timeout: 60_000 }, async (t) => {
+  const { agentrun } = await fake(t, async (method, path, body) => {
+    const read = served(method, path);
+    if (read) return read;
+    if (method === "POST" && path === "/agents") return { status: 201, body: { agent_id: body.definition.id, revision: "rv" } };
+    if (path === "/agents/race-fake-2-1-1/runs") return { status: 201, body: { run_id: "run-1", status: "queued" } };
+    if (path === "/agents/race-fake-2-2-1/runs") return "drop";
+    if (path === "/agents/race-fake-2-3-1/runs") return { status: 409, body: { error: { code: "idempotency_conflict", message: "lane three is refused" } } };
+    if (path === "/agents/race-fake-2-3-1/archive") return "drop";
+    return { status: 404, body: {} };
+  });
+  const out = await agentrun(["race", "start", "--lane", "pi/a", "--lane", "pi/b", "--lane", "pi/c", "--task", "x", "--label", "fake-2"]);
+  assert.equal(out.code, 1, out.err);
+  const printed = JSON.parse(out.out);
+  assert.equal(printed.label, "fake-2");
+  assert.equal(printed.lanes[0].run_id, "run-1");
+  assert.match(printed.lanes[1].unsure ?? "", /Cannot reach the server/);
+  assert.equal(printed.lanes[1].error, undefined, "a start cut off is no refusal: it may have started");
+  assert.equal(printed.lanes[2].error, "idempotency_conflict: lane three is refused");
+  assert.match(printed.lanes[2].archive ?? "", /Cannot reach the server/);
+  assert.match(out.err, /^Lane 2 \(pi\/b\) may have started: .*agentrun race show fake-2/m);
+});
+
+test("race start starts no lane when the server's computers do not read: a lane's tools would miss the runner's shell", { timeout: 60_000 }, async (t) => {
+  const { seen, agentrun } = await fake(t, async (method, path) => (path === "/capabilities" ? { status: 200, body: CAPS } : path === "/computers" ? { status: 503, body: { error: { code: "unavailable", message: "try again" } } } : { status: 201, body: {} }));
+  const out = await agentrun(["race", "start", "--lane", "pi/a", "--lane", "pi/b", "--task", "x", "--label", "fake-3"]);
+  assert.equal(out.code, 1, out.err);
+  assert.match(out.err, /GET \/computers: try again\. No lane was started\./);
+  assert.equal(seen.filter((r) => r.method === "POST").length, 0);
 });
