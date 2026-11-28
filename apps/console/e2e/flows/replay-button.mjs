@@ -42,7 +42,8 @@ export default {
       promotions: [promo(DIGESTS[0], "2026-11-03T15:00:00.000Z", "promote", "checked on 6 of the agent's inputs: answered 6 alone (100.0%, the bar 70.0%), and 6 of those said what the agent said (100.0%, the bar 80.0%): promoted", 6, 6), promo(DIGESTS[2], "2026-11-05T15:00:00.000Z", "hold", HELD, 6, 4)],
       serving: [{ workflow: "invoice-sorter", digest: DIGESTS[0], replaying: null }],
     } }));
-    // The replay: POST answers 202, then two reads say running, then done and held; a second POST is refused 409.
+    // The replay: POST answers 202, then a read says running (the card's progress), then the next (POLL_MS later) done and
+    // held; a second POST is refused 409.
     let posts = 0, reads = 0;
     await page.route(new RegExp(`${at}/learning/workflows/invoice-sorter/revisions/${DIGESTS[2]}/replays(/.*)?$`), (route) => {
       const request = route.request();
@@ -52,7 +53,7 @@ export default {
         return route.fulfill({ status: 202, json: { replay: REPLAY.replay, inputs: REPLAY.inputs } });
       }
       reads += 1;
-      return route.fulfill({ json: reads < 3
+      return route.fulfill({ json: reads < 2
         ? replay({ outcomes: { answered: reads, handed_back: 0, failed: 0, skipped_write: 0 } })
         : replay({ status: "done", decided: "hold", reason: HELD, outcomes: { answered: 6, handed_back: 0, failed: 0, skipped_write: 0 }, score: { n: 6, agree: 4, agent_acc: 1, wf_acc: 0.6667, delta: -0.3333, handed_back: 0 } }) });
     });
