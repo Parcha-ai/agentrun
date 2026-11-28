@@ -74,7 +74,8 @@ no answer. With no answer at all, say so in `summary` and post no finding.
 
 - **Same finding**: same `path`, `line` within 10 of each other, and the same failure (the same input breaks the same
   thing; a shared title is not enough). Keep one: the one whose `Evidence:` quotes the most lines, with the highest
-  priority any reviewer gave it. It was raised by as many reviewers as gave it.
+  priority any reviewer gave it, but P2 at most when its `failure` says `Not shown:`. It was raised by as many
+  reviewers as gave it.
 - **Verify**, in at most 8 calls, then post: read a kept finding's cited lines in its file's `patch` or at head
   (`GITHUB_GET_REPOSITORY_CONTENT`). Never add a finding. Your only drops are `duplicate` (the merge above), `limit`
   (the cap) and `unverified`, which needs a line you read that contradicts the failure, quoted in its `note`. Never
