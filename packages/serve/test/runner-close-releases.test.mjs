@@ -4,7 +4,8 @@
 // go after close() has resolved, and no tool host's beforeRelease fails for a loop already stopped. On pi (the browser
 // tool, on the faux browser) and on a CLI harness (claude-agent's faux harness, on a priced faux desktop), each through
 // the real loop: startRunner over createDispatchLoop and the adapter or CLI spec, on a real store. The release is
-// bounded: a provider's cleanup bound and a margin (releaseBoundMs). A release under the cleanup bound is awaited; a tool
+// bounded: a provider's cleanup bound and a margin (releaseBoundMs; here the runner's releaseMarginMs, shorter than the
+// default RELEASE_MARGIN_MS). A release under the cleanup bound is awaited; a tool
 // host that never lets go holds close() only to the bound, what the release booked before it stands, and the run's root
 // says the release was cut.
 import assert from "node:assert/strict";
@@ -41,8 +42,11 @@ const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pat
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 /** Test keys, no real ones. */
 const BROWSERBASE = { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project" };
-const TIMING = { leaseMs: 30_000, renewEveryMs: 5_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
-/** A provider's cleanup bound for the tests of a release's bound, short: the release's bound is it and RELEASE_MARGIN_MS. */
+/** The release's margin these runners are given (RunnerOptions.releaseMarginMs), short: what the tool hosts get beyond the
+ *  cleanup bound, and what a cut's booking gets, the default RELEASE_MARGIN_MS (5 s) being a production runner's. */
+const MARGIN_MS = 1_000;
+const TIMING = { leaseMs: 30_000, renewEveryMs: 5_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30, releaseMarginMs: MARGIN_MS };
+/** A provider's cleanup bound for the tests of a release's bound, short: the release's bound is it and MARGIN_MS. */
 const CLEANUP_MS = 1_500;
 /** How long after close() a late release would still land: longer than any the loop's teardown takes. */
 const AFTER_CLOSE_MS = 3_500;
@@ -222,8 +226,7 @@ test("pi: a runner's graceful close releases the run's browser session once and 
 });
 
 test("pi: a vendor's release that never answers is cut at the release's bound: the session's time to the cut is charged, not final, and the run says its release was cut; the next runner's claim gives back what the cut left held, and its release bills only the rest", { timeout: 120_000 }, async (t) => {
-  const { RELEASE_MARGIN_MS } = await import("../dist/runner/loop-contract.js");
-  const bound = CLEANUP_MS + RELEASE_MARGIN_MS;
+  const bound = CLEANUP_MS + MARGIN_MS;
   const hold = join(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "release-hold-")), "let-go");
   const { server, runner, live, releases, again } = await piRun(t, "runner-close-browser-cut-", { runnerOptions: { cleanupMs: CLEANUP_MS }, launch: { max_cost_usd: 1 }, env: { FAUX_BROWSER_RELEASE_HOLD: hold } });
 
@@ -628,8 +631,7 @@ test("claude-agent (faux harness): a runner's graceful close books the run's pri
 
 
 test("a tool host whose beforeRelease never resolves holds close() no longer than the release's bound: the computer's time is booked, and the run says its release was cut", { timeout: 60_000 }, async (t) => {
-  const { RELEASE_MARGIN_MS } = await import("../dist/runner/loop-contract.js");
-  const bound = CLEANUP_MS + RELEASE_MARGIN_MS;
+  const bound = CLEANUP_MS + MARGIN_MS;
   const { server, runner } = await cliRun(t, "runner-close-hung-", { runnerOptions: { cleanupMs: CLEANUP_MS }, hooks: (registered) => [...registered, () => new Promise(() => {})] });
 
   const began = Date.now();
@@ -649,8 +651,7 @@ test("a tool host whose beforeRelease never resolves holds close() no longer tha
 });
 
 test("a release's cut whose timer comes before Date.now() reads its bound waits out the rest: the cut is never recorded before its bound", { timeout: 60_000 }, async (t) => {
-  const { RELEASE_MARGIN_MS } = await import("../dist/runner/loop-contract.js");
-  const bound = CLEANUP_MS + RELEASE_MARGIN_MS;
+  const bound = CLEANUP_MS + MARGIN_MS;
   // Timers run on the process's monotonic clock and Date.now() on the wall clock, which may read behind it when a timer
   // comes. Here the wall clock runs 1% slow, so a timer set for the bound by Date.now() comes before Date.now() reads it.
   const realNow = Date.now;
@@ -723,9 +724,11 @@ test("pi: a run that ends in the close's drain, its browser's release never answ
   // A 4 s lease less its 1 s margin is a 3 s stop, after a 4 s drain: the close's window ends 7.5 s from its start, its
   // release cut at 6.5 s (CLEANUP_MS and its margin). The run ends 2.5 s into the drain, so a release bound from its own
   // start would be cut at 9 s, past the window; the drain's end at 4 s stops the run mid-release and seals its journal.
-  const window = { leaseMs: 4_000, renewEveryMs: 500, stopMarginMs: 1_000, drainMs: 4_000, cleanupMs: CLEANUP_MS };
+  // The default margin (RELEASE_MARGIN_MS), not MARGIN_MS: the release's window must outlast the drain and the stop after
+  // it, or the close's window is the lease's and the cut is never set again by the window from the close's start.
+  const window = { leaseMs: 4_000, renewEveryMs: 500, stopMarginMs: 1_000, drainMs: 4_000, cleanupMs: CLEANUP_MS, releaseMarginMs: RELEASE_MARGIN_MS };
   const releaseBy = CLEANUP_MS + RELEASE_MARGIN_MS;
-  assert.equal(runnerStopBy(0, window.drainMs, window.leaseMs, window.stopMarginMs, CLEANUP_MS), releaseBy + window.stopMarginMs);
+  assert.equal(runnerStopBy(0, window.drainMs, window.leaseMs, window.stopMarginMs, CLEANUP_MS, RELEASE_MARGIN_MS), releaseBy + window.stopMarginMs);
   const hold = join(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "release-hold-")), "let-go");
   t.after(() => writeFileSync(hold, ""));
   let answer;
@@ -767,9 +770,11 @@ test("pi: a person's stop in the close's drain, its browser's release never answ
   // As above: the close's window ends 7.5 s from its start, its release cut at 6.5 s. The stop comes 2.5 s into the
   // drain, so a release bound from its own start would be cut at 9 s, past the window. A stopping loop is sent no
   // shutdown stop at the drain's end: only the window the drain's end sets moves its cut.
-  const window = { leaseMs: 4_000, renewEveryMs: 500, stopMarginMs: 1_000, drainMs: 4_000, cleanupMs: CLEANUP_MS };
+  // The default margin (RELEASE_MARGIN_MS), not MARGIN_MS: the release's window must outlast the drain and the stop after
+  // it, or the close's window is the lease's and the cut is never set again by the window from the close's start.
+  const window = { leaseMs: 4_000, renewEveryMs: 500, stopMarginMs: 1_000, drainMs: 4_000, cleanupMs: CLEANUP_MS, releaseMarginMs: RELEASE_MARGIN_MS };
   const releaseBy = CLEANUP_MS + RELEASE_MARGIN_MS;
-  assert.equal(runnerStopBy(0, window.drainMs, window.leaseMs, window.stopMarginMs, CLEANUP_MS), releaseBy + window.stopMarginMs);
+  assert.equal(runnerStopBy(0, window.drainMs, window.leaseMs, window.stopMarginMs, CLEANUP_MS, RELEASE_MARGIN_MS), releaseBy + window.stopMarginMs);
   const hold = join(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "release-hold-")), "let-go");
   t.after(() => writeFileSync(hold, ""));
   const { server, runner, live } = await piRun(t, "runner-close-stop-release-", { runnerOptions: window, launch: { max_cost_usd: 1 }, env: { FAUX_BROWSER_RELEASE_HOLD: hold } });
@@ -804,9 +809,11 @@ test("the close's window runs from its start: a drain, then a release that never
   // A 4 s lease less its 1 s margin is a 3 s stop; a 4 s drain first. The release's window from the close's start is
   // CLEANUP_MS and its margin (6.5 s), the cut's booking the stop's margin after it (7.5 s): past the old 3 s stop after
   // the drain (7 s from the start), and past the lease, so the claim lives only by its renewals.
-  const window = { leaseMs: 4_000, renewEveryMs: 500, stopMarginMs: 1_000, drainMs: 4_000, cleanupMs: CLEANUP_MS };
+  // The default margin (RELEASE_MARGIN_MS), not MARGIN_MS: the release's window must outlast the drain and the stop after
+  // it, or the close's window is the lease's and the cut is never set again by the window from the close's start.
+  const window = { leaseMs: 4_000, renewEveryMs: 500, stopMarginMs: 1_000, drainMs: 4_000, cleanupMs: CLEANUP_MS, releaseMarginMs: RELEASE_MARGIN_MS };
   const releaseBy = CLEANUP_MS + RELEASE_MARGIN_MS;
-  assert.equal(runnerStopBy(0, window.drainMs, window.leaseMs, window.stopMarginMs, CLEANUP_MS), releaseBy + window.stopMarginMs);
+  assert.equal(runnerStopBy(0, window.drainMs, window.leaseMs, window.stopMarginMs, CLEANUP_MS, RELEASE_MARGIN_MS), releaseBy + window.stopMarginMs);
   const { dir, server, runner } = await cliRun(t, "runner-close-window-", { runnerOptions: window, hooks: (registered) => [...registered, () => new Promise(() => {})] });
   const other = await bystander(t, dir, "runner-b");
 
@@ -840,7 +847,6 @@ test("a lost create's recovery under way when a runner's close begins is waited 
 });
 
 test("a recovery that never ends holds a runner's close only to its own bound, from when it began, and the release's margin", { timeout: 30_000 }, async (t) => {
-  const { RELEASE_MARGIN_MS } = await import("../dist/runner/loop-contract.js");
   const { recoverCreate, recoveriesInFlight } = await import("@parcha/agentrun-computer");
   const { store } = await stores(t, "runner-close-recovery-hung-");
   const runner = startRunner({ store, name: "runner-a", ...TIMING, cleanupMs: CLEANUP_MS, createLoop: () => assert.fail("no run to claim") });
@@ -856,6 +862,6 @@ test("a recovery that never ends holds a runner's close only to its own bound, f
   await runner.close();
   const ended = Date.now();
 
-  const until = recovery.by + RELEASE_MARGIN_MS;
+  const until = recovery.by + MARGIN_MS;
   assert.ok(ended >= until - 50 && ended < until + 600, `the close waited to the recovery's own bound and the margin, ${until - began} ms after it began: ${ended - began} ms`);
 });

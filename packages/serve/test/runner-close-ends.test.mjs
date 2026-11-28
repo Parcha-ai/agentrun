@@ -48,11 +48,11 @@ test("a close's read of the stop rows and its loops' stop share one window (runn
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
-  // No computer provider here: no cleanup bound to wait out (cleanupMs 0), so the window is the release's margin and the
-  // stop's (8 s), longer than the lease less its margin (5 s).
-  const window = { leaseMs: 8_000, stopMarginMs: 3_000, renewEveryMs: 1_000, cleanupMs: 0 };
-  const bound = runnerStopBy(0, 0, window.leaseMs, window.stopMarginMs, window.cleanupMs);
-  assert.equal(bound, 8_000);
+  // No computer provider here: no cleanup bound to wait out (cleanupMs 0), so the window is the release's margin (2 s,
+  // shorter than the default's 5 s) and the stop's (5 s), longer than the lease less its margin (3 s).
+  const window = { leaseMs: 6_000, stopMarginMs: 3_000, renewEveryMs: 1_000, cleanupMs: 0, releaseMarginMs: 2_000 };
+  const bound = runnerStopBy(0, 0, window.leaseMs, window.stopMarginMs, window.cleanupMs, window.releaseMarginMs);
+  assert.equal(bound, 5_000);
   const runner = startRunner({ store: stalled, createLoop: faux.createLoop, name: "runner-a", ...TIMING, ...window });
   t.after(() => runner.close());
   await queue(server, "run-1");
@@ -61,7 +61,7 @@ test("a close's read of the stop rows and its loops' stop share one window (runn
   const startedAt = Date.now();
   await runner.close();
   const took = Date.now() - startedAt;
-  // runnerStopBy's window (no drain here): 8 s, the read's 3 s inside it, never 3 s + 8 s.
+  // runnerStopBy's window (no drain here): 5 s, the read's 3 s inside it, never 3 s + 5 s.
   assert.ok(took >= bound - 100 && took < bound + 2_000, `the close took the one window: ${took} ms`);
 });
 
@@ -146,7 +146,9 @@ test("a loop a stop row stops, still going at the end of the close's window, has
       stop: async (reason) => void seen.stops.push(reason.kind),
     };
   };
-  const runner = startRunner({ store, createLoop, name: "runner-a", ...TIMING, leaseMs: 8_000, stopMarginMs: 3_000 });
+  // No computer provider here (cleanupMs 0) and a 1 s release margin: the close's window is the lease less its margin
+  // (5 s), not the default cleanup bound and margins (38 s).
+  const runner = startRunner({ store, createLoop, name: "runner-a", ...TIMING, leaseMs: 8_000, stopMarginMs: 3_000, cleanupMs: 0, releaseMarginMs: 1_000 });
   t.after(() => runner.close());
   await queue(server, "run-1");
   await until(() => firstDelivery !== undefined, "the run claimed, its loop made");

@@ -34,6 +34,8 @@ export interface ChildInit {
   readonly traced?: true;
   /** The runner's bound on the claim's tool hosts' release (LoopDeps.releaseBoundMs), when it sets one. */
   readonly releaseBoundMs?: number;
+  /** The runner's margin on that release and its cut's booking (LoopDeps.releaseMarginMs), when it sets one. */
+  readonly releaseMarginMs?: number;
   /** The plane the runner capped and chose this process's keys by (run-child-host.ts): the claim's, as it is. */
   readonly plane?: AdapterSpecDeps["claimedPlane"];
 }
