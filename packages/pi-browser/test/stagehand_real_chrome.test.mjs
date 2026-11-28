@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { cdpCall } from "../dist/core/cdp-call.js";
 import { DEFAULT_BATCH_TIMEOUT_MS, stagehandDriver } from "../dist/driver/stagehand.js";
 import { cdpProvider } from "../dist/providers/cdp.js";
-import { COPY, STAGEHAND_EXTENSION } from "../dist/providers/worker-extension.js";
+import { COPY, COPY_NOTICE, REWRITE_MARK, STAGEHAND_EXTENSION } from "../dist/providers/worker-extension.js";
 import { CHROME, NO_CHROME, skipIncapable } from "./fixtures/local-chrome.mjs";
 import { scratch } from "./fixtures/scratch.mjs";
 import { startSite } from "./fixtures/site.mjs";
@@ -216,6 +216,9 @@ test("a form submitted by a run a SIGKILL cut reaches the server once: the repea
   // The browser runs the lease's copy, not Stagehand's own directory: a launch that fell back to it would pass for the wrong reason.
   const [extension, ...others] = await loadedStagehand(env.PROFILE_ROOT);
   assert.deepEqual([path.basename(extension?.path ?? ""), others.length], [COPY, 0], `Chrome holds one Stagehand extension, the lease's copy: ${JSON.stringify([extension, ...others])}`);
+  assert.ok(fs.readFileSync(path.join(extension.path, "service-worker.js"), "utf8").startsWith(REWRITE_MARK), "and the copy's worker is the rewritten one");
+  assert.equal(fs.readFileSync(path.join(extension.path, "NOTICE"), "utf8"), COPY_NOTICE, "its NOTICE names what changed");
+  assert.match(fs.readFileSync(path.join(extension.path, "LICENSE"), "utf8"), /^MIT License\n\nCopyright \(c\) .+ Browserbase/, "beside Stagehand's LICENSE");
 
   // The dead client's batch would hold the extension's next init until its own deadline (the policy's batchTimeoutMs, here the
   // default, DEFAULT_BATCH_TIMEOUT_MS): the reattach would take about that long. The lease's copy ends that batch when the
