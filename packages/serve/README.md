@@ -4135,17 +4135,22 @@ ids of the tokens whose every request must carry it (comma-separated): such a to
 backend that forgot the header is refused rather than handed every tenant's rows. A request with no header is served
 as before.
 
-A request in a workspace is served only: the runs' reads and lists (`GET /runs`, `/runs/{id}`, its timeline, files and
-export), a run's message, stop and cancel; the agents' list, read, create, revisions, definition and current revision,
-archive, unarchive and delete, a run started on one, and its Archil disk (`/agents/{id}/archil`, read and removed); the
-computers this server offers (`GET /computers`, never a paired computer of the operator's) and the runs of the
-workspace's own going on one (`GET /computers/running`); the templates' list, read, import, apply and delete (a bundled
-package stays `403`); the marketplace's list (`/marketplace/templates`, each entry's `here` naming only a package the
-workspace sees); the uploaded files' create, upload, list, read and delete (`/files`); the triggers' list, read,
-firings, create, edit, delete, run now and a webhook's new secret (`/triggers`); the MCP servers' list, names, read,
-preview, save, Composio save, refresh and delete (`/settings/mcp-servers`); and `/capabilities`, `/health` and
-`/openapi.json`. Every other route is `403 forbidden` with
-`details.reason: "not_scoped"`. In it, an agent, run, imported template package or file of another workspace (or of none)
+A request in a workspace is served only: the runs' reads and lists (`GET /runs`, `/runs/{id}`, its timeline, files,
+export, graph and trace), a run's message, stop, cancel, cap raise, pause, resume, archive, unarchive, grade, held start
+and purge (`DELETE /runs/{id}`); the agents' list, read, create, revisions, definition and current revision,
+archive, unarchive, delete and package, a revision's skills, its home's list, reads and removals (not a write: nothing
+bounds a home's size on a disk the workspaces share), a run started on one, and its Archil disk (`/agents/{id}/archil`,
+read and removed); the computers this server offers (`GET /computers`, never a paired computer of the operator's) and the
+runs of the workspace's own going on one (`GET /computers/running`); a workflow's check (`POST /workflows/validate`); the
+templates' list, read, import, apply and delete (a bundled package stays `403`); the marketplace's list
+(`/marketplace/templates`, each entry's `here` naming only a package the workspace sees); the uploaded files' create,
+upload, list, read and delete (`/files`); the triggers' list, read, firings, create, edit, delete, run now and a
+webhook's new secret (`/triggers`); the MCP servers' list, names, read, preview, save, Composio save, refresh and delete
+(`/settings/mcp-servers`); and `/capabilities`, `/health` and `/openapi.json`. Every other route is `403 forbidden` with
+`details.reason: "not_scoped"`, a sign-in's removal among them (removing a secret takes the owner's session). An agent's
+package in a workspace reads the workspace's own MCP servers alone: a shared one is not the workspace's to read, so a
+granted tool of one is blocked as a server saved nowhere. In it, an agent, run, imported template package or file of
+another workspace (or of none)
 answers the same `404` as an id no row has, and every list holds the workspace's rows alone, paged within them; bundled
 template packages are every workspace's. What it makes is the workspace's: an agent (made or applied), an imported
 package (its name is the workspace's own: another workspace imports the same name as its own package), a file. A run is its agent's workspace's,

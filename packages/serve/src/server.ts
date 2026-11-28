@@ -1702,6 +1702,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (workspace !== null && workspace !== undefined) for (const [key, meta] of mcpMeta) if (mcpRowWorkspace(key) === workspace) seen.set(key.slice(workspace.length + 1), meta);
     return new Map([...seen].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
   };
+  /** The saved servers an agent's package reads: the operator's, the shared ones; a workspace's, its own alone (a shared
+   *  server is not the workspace's to read, so its package names it as one saved nowhere and carries nothing of it). */
+  const metaPackaged = (workspace: string | null | undefined = workspaceNow()): Map<string, McpMeta> =>
+    workspace === null || workspace === undefined ? metaSeen(workspace) : new Map([...metaSeen(workspace)].filter(([name]) => mcpMeta.has(mcpRowKey(name, workspace))));
   /** A server's listing to pin, from the row `server` means in `workspace` (the request's, unless an agent's is named):
    *  its workspace's own when it saved one, read there, else the shared one (read as the server's own work, which reaches
    *  the shared rows). */
@@ -5922,7 +5926,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           template: entry.template ? { id: entry.template.id, version: entry.template.version, ...(entry.template.secrets ? { secrets: entry.template.secrets } : {}) } : null,
           // The package of its template id in the agent's own workspace, whoever exports it.
           origin: entry.template ? registry.get(entry.template.id, (await store.agents.workspace(id)) ?? null) : undefined,
-          servers: metaSeen(),
+          servers: metaPackaged(),
           triggers: views,
           signIns: await store.signIns.list(id),
           now: options.triggerClock?.now() ?? Date.now(),
