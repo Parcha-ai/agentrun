@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createSecureServer } from "node:http2";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -382,6 +383,64 @@ test("the real SDK, given the provider's connection options, takes none of an am
 		assert.equal(config.debug, false);
 		assert.equal(config.sandboxUrl, undefined);
 	});
+});
+
+test("every SDK call is given httpVersion 1.1, create, getInfo, connect, list, setTimeout and kill alike: the SDK never opens HTTP/2", async () => {
+	const calls = [];
+	const startedAt = new Date();
+	const info = (id) => ({ sandboxId: id, templateId: "base", metadata: { "agentrun.computer.max-deadline": new Date(startedAt.getTime() + HOUR).toISOString() }, startedAt, endAt: new Date(startedAt.getTime() + 600_000), state: "running" });
+	const sandbox = (id) => ({ sandboxId: id, files: { write: async () => {} } });
+	const record = (name, answer) => async (...args) => (calls.push([name, ...args]), answer(...args));
+	const Sandbox = {
+		create: record("Sandbox.create", () => sandbox("sbx-made")),
+		connect: record("Sandbox.connect", (id) => sandbox(id)),
+		getInfo: record("Sandbox.getInfo", (id) => info(id)),
+		setTimeout: record("Sandbox.setTimeout", () => {}),
+		kill: record("Sandbox.kill", () => true),
+		list(opts) {
+			calls.push(["Sandbox.list", opts]);
+			let done = false;
+			return { get hasNext() { return !done; }, nextItems: async () => ((done = true), []) };
+		},
+	};
+	const { host } = new E2BProvider({ apiKey: KEY, Sandbox, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const ctx = { timeoutMs: 2_000 };
+	await host.create({ image: "desktop", lifetimeMs: 600_000, labels: {}, egress: false }, ctx);
+	await host.get("sbx-other", ctx);
+	await host.list({ [COMPUTER]: "1" }, ctx);
+	await host.upload("sbx-other", "/tmp/x", new Uint8Array([1]), ctx);
+	await host.extend("sbx-other", new Date(startedAt.getTime() + 1_200_000), ctx);
+	await host.delete("sbx-made", ctx);
+	assert.deepEqual([...new Set(calls.map(([name]) => name))].sort(), ["Sandbox.connect", "Sandbox.create", "Sandbox.getInfo", "Sandbox.kill", "Sandbox.list", "Sandbox.setTimeout"]);
+	for (const [name, ...args] of calls) assert.equal(args.at(-1).httpVersion, "1.1", `${name} is given httpVersion "1.1"`);
+});
+
+test("the real SDK, given the provider's connection options, speaks HTTP/1.1 to a server that offers HTTP/2", async (t) => {
+	const sdk = await import("e2b").catch(() => undefined);
+	if (sdk === undefined) return t.skip("the e2b package is not installed here; it is the host's, as Modal's SDK is");
+	const tls = mkdtempSync(join(tmpdir(), "computer-e2b-tls-"));
+	t.after(() => rmSync(tls, { recursive: true, force: true }));
+	const [key, cert] = [join(tls, "key.pem"), join(tls, "cert.pem")];
+	const openssl = ["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-days", "1", "-subj", "/CN=127.0.0.1", "-keyout", key, "-out", cert];
+	if (spawnSync("openssl", openssl, { stdio: "ignore" }).status !== 0) return t.skip("openssl made no self-signed certificate here");
+	// A server that takes both and prefers HTTP/2, as E2B's does: an h2 client gets h2 by ALPN.
+	const seen = [];
+	const sockets = new Set();
+	const server = createSecureServer({ key: readFileSync(key), cert: readFileSync(cert), allowHTTP1: true }, (req, res) => {
+		// Only the SDK's call: something else on this machine may probe a new loopback listener.
+		if (req.url.startsWith("/sandboxes/sbx-h1")) seen.push(req.httpVersion);
+		res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ code: 404, message: "no such sandbox" }));
+	});
+	server.on("secureConnection", (socket) => sockets.add(socket));
+	await new Promise((ready) => server.listen(0, "127.0.0.1", ready));
+	t.after(() => {
+		for (const socket of sockets) socket.destroy();
+		server.close();
+	});
+	const options = { ...e2b.connectionOptions({ apiKey: KEY, domain: "e2b.app" }, {}), apiUrl: `https://127.0.0.1:${server.address().port}` };
+	// The certificate is this test's own, so the call checks none: the TLS check is read at each connect, this one alone.
+	await withProcessEnv({ NODE_TLS_REJECT_UNAUTHORIZED: "0" }, () => assert.rejects(sdk.Sandbox.getInfo("sbx-h1", options)));
+	assert.deepEqual(seen, ["1.1"]);
 });
 
 test("get reads what E2B gave the sandbox (getInfo's cpuCount and memoryMB) as its resources, and none where getInfo says none", async () => {

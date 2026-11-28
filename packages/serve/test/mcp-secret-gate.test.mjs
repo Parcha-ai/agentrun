@@ -15,6 +15,7 @@ const TOKEN = `not-a-secret-${randomBytes(12).toString("hex")}`;
 test("a token's PUT of a bearer token is 403 in the one refusal and keeps nothing; the owner's session saves it; the token edits only the servers it saved", { timeout: 120_000 }, async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
   const { SECRET_WRITE_REFUSAL } = await import("../dist/secret-writes.js");
+  const { tokenWriteOverWords } = await import("../dist/mcp-secret-writes.js");
   const { asOwner } = await import("./support.mjs");
   const server = await serve(t, { runner: false });
   const fake = await startFakeMcp({ token: TOKEN });
@@ -41,12 +42,12 @@ test("a token's PUT of a bearer token is 403 in the one refusal and keeps nothin
   assert.match(changed, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/, `changed_at is an ISO time: ${changed}`);
   assert.ok(asked <= changed && changed <= answered, `changed_at ${changed} is the save's time (${asked} .. ${answered})`);
 
-  // The owner's server stays the owner's: the token's edit of its prices alone, the sealed token kept, is refused in the
-  // one refusal, with the console's Change form for it, and nothing of the row changes.
+  // The owner's server stays the owner's: the token's edit of its prices alone, the sealed token kept, is refused in
+  // words naming the server, with the console's Change form for it, and nothing of the row changes.
   const before = (await call(server.port, { path: "/v2/settings/mcp-servers/fake", headers: bearer })).json;
   const prices = await put("fake", { url: fake.url, auth: { type: "bearer" }, prices: { add: 0.01 } });
   assert.equal(prices.status, 403, `a token's edit of the owner's server is refused: ${prices.text}`);
-  assert.ok(String(prices.json?.error?.message).startsWith(SECRET_WRITE_REFUSAL));
+  assert.ok(String(prices.json?.error?.message).startsWith(tokenWriteOverWords("fake", true)));
   assert.match(String(prices.json?.error?.details?.console_url), /[#&?]change=fake\b/, "the link opens the server's Change form");
   assert.deepEqual((await call(server.port, { path: "/v2/settings/mcp-servers/fake", headers: bearer })).json, before, "the owner's row is as it was");
   const owners = await owner("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "bearer" }, prices: { add: 0.01 } });
