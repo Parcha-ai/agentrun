@@ -3,7 +3,7 @@
 // card with no body here is never drawn, whatever it waits on. No number is one the year does not give: a price not
 // known is said as unknown, never $0, and requests with no known price are counted beside the price.
 import { harnessLabel } from "@/lib/agentForm";
-import { type CardBar, type CardBody, type CardChart, chartCapacity } from "@/lib/cardImage";
+import { type CardBar, type CardBody, type CardChart, chartCapacity, MAX_ROWS } from "@/lib/cardImage";
 import { compact, dollars } from "@/lib/format";
 import type { Wrapped } from "@/lib/v2";
 import type { CardWait, WrappedCard } from "@/lib/wrappedCards";
@@ -62,6 +62,10 @@ const tokenFigure = (data: Pick<Wrapped, "tokens" | "requests" | "tokens_unknown
 const tokenRows = (data: Pick<Wrapped, "tokens_unknown_requests">): { label: string; value: string }[] =>
   data.tokens_unknown_requests > 0 ? [{ label: "Tokens not recorded", value: plural(data.tokens_unknown_requests, "request", "requests") }] : [];
 
+/** A cover's or summary's rows within what the card draws: a year with both requests of unknown tokens and requests of no
+ *  known price has a row too many, and leaves out its days at work, which the hours card shows. */
+const fitRows = (rows: { label: string; value: string }[]) => (rows.length > MAX_ROWS ? rows.filter((r) => r.label !== "Days at work") : rows);
+
 /** The foot line of a year read short: as the page says it. */
 const unreadNote = (data: Pick<Wrapped, "unread_files">): { footnote?: string } =>
   data.unread_files > 0 ? { footnote: `${plural(data.unread_files, "session file", "session files")} could not be read, so these numbers may be incomplete.` } : {};
@@ -97,14 +101,14 @@ const cover: BodyOf = (data) => ({
   eyebrow: eyebrow(data),
   title: `Your ${data.year} in agents`,
   figure: tokenFigure(data),
-  rows: [
+  rows: fitRows([
     { label: "Sessions", value: count(data.sessions) },
     { label: "Prompts", value: count(data.turns) },
     { label: "Model requests", value: count(data.requests) },
     { label: "Days at work", value: count(data.days.length) },
     ...tokenRows(data),
     ...priceRows(data),
-  ],
+  ]),
   ...unreadNote(data),
 });
 
@@ -152,14 +156,14 @@ const summary: BodyOf = (data) => {
     eyebrow: eyebrow(data),
     title: `${data.year} in agents`,
     figure: tokenFigure(data),
-    rows: [
+    rows: fitRows([
       ...tokenRows(data),
       ...priceRows(data),
       { label: "Days at work", value: count(data.days.length) },
       ...(harness ? [{ label: "Top harness", value: harness }] : []),
       ...(model ? [{ label: "Top model", value: model }] : []),
       ...(hour === undefined ? [] : [{ label: "Busiest hour", value: hourWords(hour) }]),
-    ],
+    ]),
     ...unreadNote(data),
   };
 };

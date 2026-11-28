@@ -59,6 +59,8 @@ function wrappedProblem(e: unknown): Problem {
 /** A model's price, by its own requests: whole, the priced part of them, or none known. */
 const priceOf = (m: Wrapped["models"][number]) => (m.unpriced_requests >= m.requests && m.requests > 0 ? "no known price" : `${dollars(m.cost_usd)}${m.unpriced_requests > 0 ? " priced only" : ""}`);
 /** Whether none of a year's (or a row's) requests had its tokens recorded: its tokens are unknown, never 0. */
+/** The harnesses whose sessions never record tokens (Cursor's chat store keeps none). */
+const NO_TOKENS: ReadonlySet<string> = new Set(["cursor"]);
 const unrecorded = (r: { requests: number; tokens_unknown_requests: number }) => r.requests > 0 && r.tokens_unknown_requests >= r.requests;
 /** A harness's or model's tokens: compact, or not recorded when none of its requests' were. */
 const tokensOf = (r: { requests: number; tokens: number; tokens_unknown_requests: number }) => (unrecorded(r) ? "tokens not recorded" : compact(r.tokens));
@@ -99,8 +101,10 @@ export function WrappedPage({ v2, year, go, cards = wrappedCards }: { v2: Client
   // The busiest day by tokens, or by requests in a year whose tokens were not recorded.
   const weight = (d: Wrapped["days"][number]) => (noTokens ? d.requests : d.tokens);
   const busiest = data?.days.reduce<Wrapped["days"][number] | null>((best, d) => (!best || weight(d) > weight(best) ? d : best), null) ?? null;
-  // The harnesses none of whose requests' tokens were recorded, by name: "Cursor doesn't record tokens".
-  const silent = data ? data.harnesses.filter(unrecorded).map((h) => harnessLabel(h.harness)) : [];
+  // The harnesses none of whose requests' tokens were recorded, by name: one that never records them ("Cursor doesn't
+  // record tokens"), and one that does but recorded none this year (only aborted requests), said apart.
+  const silent = data ? data.harnesses.filter((h) => unrecorded(h) && NO_TOKENS.has(h.harness)).map((h) => harnessLabel(h.harness)) : [];
+  const none = data ? data.harnesses.filter((h) => unrecorded(h) && !NO_TOKENS.has(h.harness)).map((h) => `${harnessLabel(h.harness)}'s`) : [];
   const modelTokens = data ? data.models.reduce((n, m) => n + m.tokens, 0) : 0;
   const harnessTokens = data ? data.harnesses.reduce((n, h) => n + h.tokens, 0) : 0;
 
@@ -175,6 +179,7 @@ export function WrappedPage({ v2, year, go, cards = wrappedCards }: { v2: Client
                 <h2 id="w-year" className={heading}>Your year in tokens</h2>
                 <p className="mt-2 font-mono text-figure font-semibold tabular-nums">{noTokens ? "Tokens not recorded" : `${compact(total)} tokens`}</p>
                 {silent.length > 0 && <p className="mt-1 font-sans text-body text-muted-foreground">{silent.join(" and ")} {silent.length === 1 ? "doesn't" : "don't"} record tokens, so {silent.length === 1 ? "its" : "their"} requests count here without them.</p>}
+                {none.length > 0 && <p className="mt-1 font-sans text-body text-muted-foreground">No tokens were recorded for {none.join(" and ")} requests this year, so they count here without them.</p>}
                 <p className="mt-1 font-mono text-body text-muted-foreground">
                   {data.sessions.toLocaleString("en-US")} sessions · {data.turns.toLocaleString("en-US")} prompts · {data.requests.toLocaleString("en-US")} model requests · {data.unpriced_requests >= data.requests && data.requests > 0 ? "no known price" : dollars(data.cost_usd)}
                   {data.unpriced_requests > 0 && data.unpriced_requests < data.requests ? ` + ${data.unpriced_requests.toLocaleString("en-US")} requests with no known price` : ""}
