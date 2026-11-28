@@ -1010,7 +1010,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       // A Mode 2 computer that mounts the run's folder holds the disk's write delegation: what the claim's MCP files then
       // goes through it, attached here as the run's process attaches it. A failed attach leaves the MCP on the disk's file
       // API, which says in its answer that the file could not be saved.
-      if (mode === 2) mountedFolder = await attachedIn(ws.workspace, (got as { computer?: RunComputer } | undefined)?.computer).catch((error: unknown) => {
+      if (mode === 2) mountedFolder = await attachedIn(ws.workspace, (got as { computer?: RunComputer } | undefined)?.computer, ask.signal instanceof AbortSignal ? ask.signal : undefined).catch((error: unknown) => {
         log(`the run's folder could not be attached for the MCP's files: ${(error as Error)?.message ?? String(error)}`);
         return undefined;
       });
