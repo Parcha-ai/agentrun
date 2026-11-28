@@ -28,6 +28,9 @@ const TIMESTAMPS = JSON.stringify({ voice: "narrator", words: WORDS, padding: "x
 // under a key's name: the eval's own server holds it (hostSecrets), so it is in the run's cut, which cuts it from the
 // calls and from a file read under the cut.
 const HELD = ["not", "a", "real", "key", "0123456789abcdef"].join("-");
+/** The cap the inputs of the fit tests below were sized against (their files and calls pass it), given to graderInput as
+ *  its max: what they check is how a cut shares the room, at any cap. */
+const CAP = 120_000;
 process.env.AGENTRUN_TEST_FINAL_FILES_API_KEY = HELD;
 
 test("a run whose final file is past what its write call shows still grades PASS on the file's whole content", { timeout: 300_000 }, async (t) => {
@@ -140,8 +143,8 @@ test("a call whose arguments pass half the calls' room shows them whole when its
 test("with a large file in <files>, a call's 8,000-character argument still shows whole: the calls get what they need first", () => {
   const file = { name: "big.txt", bytes: 150_000, text: "f".repeat(150_000) };
   const calls = [{ tool: "create_issue", arguments: { body: `${"b".repeat(8_000)}BODYEND` }, status: "ok", result: "created #12" }];
-  const input = graderInput(GRADER, "File it.", record(calls, [file]));
-  assert.ok(input.length <= GRADER_PROMPT_MAX, String(input.length));
+  const input = graderInput(GRADER, "File it.", record(calls, [file]), CAP);
+  assert.ok(input.length <= CAP, String(input.length));
   assert.match(input.slice(input.indexOf("<files untrusted>"), input.indexOf("</files>")), /f \[\.\.\. \d+ characters cut \.\.\.\] f/);
   assert.ok(input.includes(`1. create_issue ${JSON.stringify(calls[0].arguments)} -> ok: created #12`));
 });
@@ -195,7 +198,7 @@ test("a write whose text the cut of its file takes from <files> is not cut at 2,
   assert.match(shown, /1\. append \{"path":"big\.md","content":"p+ \[\.\.\. \d+ characters cut \.\.\.\] p+APPENDMK"\}/);
 });
 
-// A grader reads at most 120,000 bytes of a run's files (finalFilesOf), so a cut file is about this size.
+// A grader read at most 120,000 bytes of a run's files (finalFilesOf) under CAP, so a cut file is about this size.
 test("a write of a whole file that <files> shows cut is cut at 2,000 in its call: its head and tail are there already, and the other calls keep their results' room", () => {
   const text = `${"h".repeat(60_000)}MIDMK${"t".repeat(39_995)}`;
   const file = { name: "report.md", bytes: 100_000, text };
@@ -203,8 +206,8 @@ test("a write of a whole file that <files> shows cut is cut at 2,000 in its call
     { tool: "write", arguments: { path: "report.md", content: text }, status: "ok", result: "wrote" },
     ...Array.from({ length: 20 }, (_, i) => ({ tool: "read", arguments: { path: `src-${i}.txt` }, status: "ok", result: `${"r".repeat(3_000)}${i}` })),
   ];
-  const input = graderInput(GRADER, "Write it.", record(calls, [file]));
-  assert.ok(input.length <= GRADER_PROMPT_MAX, String(input.length));
+  const input = graderInput(GRADER, "Write it.", record(calls, [file]), CAP);
+  assert.ok(input.length <= CAP, String(input.length));
   assert.match(input.slice(input.indexOf("<files untrusted>"), input.indexOf("</files>")), /h \[\.\.\. \d+ characters cut \.\.\.\] t/);
   const shown = input.slice(input.indexOf("<tool-calls untrusted>"));
   assert.match(shown, /1\. write \{"path":"report\.md","content":"h{1997}\.\.\."\} -> ok \[the file report\.md is in <files>, whole unless marked cut\]: wrote/);
@@ -256,8 +259,8 @@ test("an append whose tail <files> shows but whose head it cuts stays in its cal
     { tool: "append", arguments: { path: "log.md", content: added }, status: "ok", result: "appended" },
     ...reads,
   ];
-  const input = graderInput(GRADER, "Log it.", record(calls, [file]));
-  assert.ok(input.length <= GRADER_PROMPT_MAX, String(input.length));
+  const input = graderInput(GRADER, "Log it.", record(calls, [file]), CAP);
+  assert.ok(input.length <= CAP, String(input.length));
   const files = input.slice(input.indexOf("<files untrusted>"), input.indexOf("</files>"));
   assert.match(files, /h \[\.\.\. \d+ characters cut \.\.\.\] /);
   assert.ok(files.includes("app 03999") && !files.includes("app 00000") && !files.includes("app 00300"), "<files> shows the append's tail, not its head");
@@ -273,8 +276,8 @@ test("a first write whose head <files> shows but whose tail it cuts stays in its
     { tool: "append", arguments: { path: "log.md", content: added }, status: "ok", result: "appended" },
     ...reads,
   ];
-  const input = graderInput(GRADER, "Log it.", record(calls, [file]));
-  assert.ok(input.length <= GRADER_PROMPT_MAX, String(input.length));
+  const input = graderInput(GRADER, "Log it.", record(calls, [file]), CAP);
+  assert.ok(input.length <= CAP, String(input.length));
   const files = input.slice(input.indexOf("<files untrusted>"), input.indexOf("</files>"));
   assert.ok(files.includes("wri 00000") && !files.includes("WEND"), "<files> shows the write's head, not its end");
   assert.ok(input.includes("wri 06999\\nWEND"), "the first write's end is in the grader's input");
@@ -345,8 +348,8 @@ test("a final file whose server stalls mid-body is cut at the read's bound, and 
 });
 
 test("the files' budget is in UTF-8 bytes: a text past it in bytes is left out, under it in characters or not, and the next file is read", { timeout: 30_000 }, async (t) => {
-  // Listed small, then grown: 70,000 two-byte characters, 140,000 bytes, past GRADER_PROMPT_MAX in bytes alone.
-  const grown = "é".repeat(70_000);
+  // Listed small, then grown: two-byte characters, fewer than GRADER_PROMPT_MAX and past it in bytes alone.
+  const grown = "é".repeat(Math.ceil(GRADER_PROMPT_MAX * 0.6));
   assert.ok(grown.length < GRADER_PROMPT_MAX && Buffer.byteLength(grown) > GRADER_PROMPT_MAX);
   const { api } = await filesServer(t, { "grown.txt": grown, "after.txt": "after" });
   const files = await finalFilesOf(api, "r1", listedOf([["grown.txt", 10], ["after.txt", 11]]));

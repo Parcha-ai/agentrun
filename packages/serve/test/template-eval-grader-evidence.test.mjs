@@ -49,8 +49,9 @@ const RUN = { answer: "Made the film: media/film.mp4.", calls: TIMELINE, mcpCall
 const section = (input, tag) => input.match(new RegExp(`<${tag} untrusted>\\n([\\s\\S]*?)\\n</${tag}>`))?.[1] ?? "";
 
 test("a media run's grader input shows every clip it sent to the fake whole: the package's skills and a tool's cache are listed by name, not given the room", () => {
-  const input = graderInput(GRADER, "Make a 60 second music video.", RUN);
-  assert.ok(input.length <= GRADER_PROMPT_MAX, String(input.length));
+  // At the cap this run was sized against: its 168k of calls and 92k of files pass it.
+  const input = graderInput(GRADER, "Make a 60 second music video.", RUN, 120_000);
+  assert.ok(input.length <= 120_000, String(input.length));
   const fake = section(input, "mcp-calls");
   // Before: each argument list cut to about 15 characters ({"endpoint_i [... 425 characters cut ...] ity"}}).
   for (let i = 0; i < 12; i += 1) assert.ok(fake.includes(`mcp:fal/submit_job: ${JSON.stringify(clipArgs(i))}`), `clip ${i + 1} whole in <mcp-calls>:\n${fake.slice(0, 600)}`);
@@ -64,7 +65,10 @@ test("a media run's grader input shows every clip it sent to the fake whole: the
   }
   // Every cut is said once, ahead of the evidence: what was cut, counted, and that what it left out was not seen.
   const note = input.match(/<cuts>\n([\s\S]*?)\n<\/cuts>/)?.[1] ?? "";
-  assert.match(note, /<files>: 7 files of tool state \(under a folder whose name starts with "\."\) listed by name alone/);
+  // The package's five skill files are copies of its skills, listed by name once the input is past its cap; the tool's
+  // two cache files are left out as tool state, ahead of any file of the run's own.
+  assert.match(note, /- Shown once: [^\n]*5 copies of the agent's own skills \(under \.agents\/skills\) listed by name/);
+  assert.match(note, /<files>: 2 files of tool state \(under a folder whose name starts with "\."\) listed by name alone/);
   assert.match(note, /<tool-calls>: \d+ calls' arguments cut in the middle; \d+ results cut or left out\./);
   assert.match(note, /What a cut leaves out was not seen: a condition only it could show is not shown to hold\./);
   assert.ok(input.indexOf("<cuts>") < input.indexOf("<files untrusted>"), "the note comes before the evidence");
@@ -104,9 +108,11 @@ test("fitFiles leaves the tool state's texts out before it cuts a file of the ru
 });
 
 test("finalFilesOf reads the run's own files before tool state: a cache never takes the budget a file of the run's own needed", async () => {
+  // Half and seven twelfths of the budget: either fits alone, both pass it, and the smaller is the cache.
+  const [CACHE, LIST] = [Math.floor(GRADER_PROMPT_MAX / 2), Math.floor((GRADER_PROMPT_MAX * 7) / 12)];
   const listed = [
-    { path: "film/.hyperframes/video-state.json", name: "film/.hyperframes/video-state.json", bytes: 60_000, type: "application/json", unreadable: false },
-    { path: "media/clips.json", name: "media/clips.json", bytes: 70_000, type: "application/json", unreadable: false },
+    { path: "film/.hyperframes/video-state.json", name: "film/.hyperframes/video-state.json", bytes: CACHE, type: "application/json", unreadable: false },
+    { path: "media/clips.json", name: "media/clips.json", bytes: LIST, type: "application/json", unreadable: false },
   ];
   const asked = [];
   const api = async (_method, path) => {
@@ -115,8 +121,8 @@ test("finalFilesOf reads the run's own files before tool state: a cache never ta
     return { status: 200, headers: new Headers({ "x-agentrun-cut": "run" }), body: "c".repeat(file.bytes) };
   };
   const files = await finalFilesOf(api, "run_1", listed);
-  // Before: smallest first, so the 60k cache was read and the 70k list was past what was left of the 120k.
-  assert.equal(files.find((file) => file.name === "media/clips.json").text?.length, 70_000);
+  // Before: smallest first, so the cache was read and the list was past what was left of the budget.
+  assert.equal(files.find((file) => file.name === "media/clips.json").text?.length, LIST);
   assert.equal(files.find((file) => file.name === "film/.hyperframes/video-state.json").text, undefined);
   assert.equal(asked.length, 1, asked.join(", "));
 });

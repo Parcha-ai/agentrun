@@ -108,8 +108,8 @@ export const CAPS = { summary: 500, preview: 500, text: 2000, thinking: 100 };
  *  every such row is made by, so a reader that pairs a row with the message it came from (runner/learning-end.ts
  *  messagesOf) reads the message's text by it, never by a rule of its own. */
 export const shownMessage = (text: string, max: number = CAPS.text): string => cut(text.trim(), max);
-/** The most of a call's output a read for a grader shows (`calls`, tool_result_text): as much as a grader's whole prompt
- *  takes (template-eval.ts GRADER_PROMPT_MAX), so a grader judges what the run read, not a head of it; the grader's own
+/** The most of a call's output a read for a grader shows (`calls`, tool_result_text): most of what a grader's whole
+ *  prompt takes (template-eval.ts GRADER_PROMPT_MAX), so a grader judges what the run read, not a head of it; the grader's own
  *  fit (fitCalls) shares that room among the calls. The run's redaction reads it in pieces of an answer's size
  *  (key-refusal.ts redactedCall), so a long head costs no more a pass than a short one. Past it, a tool's output's head; a
  *  web call's is not its head: a
