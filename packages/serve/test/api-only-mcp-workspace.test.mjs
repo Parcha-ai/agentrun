@@ -27,6 +27,9 @@ const { API_ONLY_MCP_ORIGINS_KEY, offApiOnlyMcpOrigins } = await import("../dist
 const { composioMadeKey } = await import("../dist/store/mcp-record-keys.js");
 const { storedMade } = await import("../dist/composio-made.js");
 const { storedSource } = await import("../dist/mcp-sources.js");
+const { sealRunMcpAuth } = await import("../dist/store/index.js");
+const { holdApiOnlyMcpOrigins } = await import("../dist/mcp-api-only-origins.js");
+const { mcpClaim } = await import("../dist/runner/mcp-claim.js");
 
 const W1 = "org:w1";
 const W2 = "org:w2";
@@ -509,6 +512,46 @@ test("the owner's shared servers still guard a workspace: its run is refused a b
   assert.equal(standing.status, 403, JSON.stringify(standing.body));
   assert.match(standing.body.error.message, /gmail-managed/);
   assert.equal(await s.server.store.mcp.server(mcpRowKey("mail", W2)), undefined, "nothing saved");
+});
+
+test("a workspace run's claim reads every server the owner saved for its Composio users: one saved after the run was queued, under the name of the workspace's own server it calls, still refuses the owner's user, and hands on another", async (t) => {
+  withEnv(t, { [KEY_ENV]: COMPOSIO_KEY });
+  const composio = await startFakeComposio({ apiKey: COMPOSIO_KEY, toolkits: { gmail: { no_auth: false, tools: [{ slug: "add", name: "Add", description: "Add two numbers." }] } } });
+  t.after(() => composio.close());
+  const { store } = await storeOn(t);
+  const sealKey = randomBytes(32);
+  await holdApiOnlyMcpOrigins(store, true, ["http://127.0.0.1:4001"]);
+  // W1's own per-run Composio server "mail", the token's save, under its row key.
+  const own = mcpRowKey("mail", W1);
+  const url = `${composio.mcpOrigin}/v3/mcp/srv_w1/mcp?include_composio_helper_actions=true`;
+  await store.mcp.put({ name: own, url, auth: "headers", tools: [ADD_TOOL], sealed: null });
+  const row = await store.mcp.server(own);
+  await store.settings.put(mcpSourceKey(own), storedSource({ source: "composio", toolkit: "gmail" }, row, false, true));
+  await store.settings.put(composioMadeKey(own), storedMade({ user: "per_run", auth_config: { id: MANAGED, made: false }, accounts: [], per_run: true, key_env: KEY_ENV }, row));
+  await store.agents.create({ id: "agent-1", name: "a", workspace: W1 }, { id: "rev-1", kind: "agentic", body: {}, mcpPin: { mail: { url, tools: [ADD_TOOL] } } });
+  const origin = new URL(url).origin;
+  const queue = (runId, user, account) => store.runs.create({ id: runId, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "go" }, title: "go", place: { mode: "runner" } }, sealed: sealRunMcpAuth(sealKey, runId, { mail: { composio: { user_id: user, connected_account_id: account }, origin } }) });
+  // Both runs are queued (their bindings sealed, the start's check passed) before the owner saves anything.
+  await queue("run-owner", OWNER, "ca_owner_gmail");
+  await queue("run-theirs", "u_1", "ca_u1_gmail");
+  // Then the owner saves a shared "mail" standing on OWNER: the run's view shows W1's "mail" in its place.
+  await store.mcp.put({ name: "mail", url: `${composio.mcpOrigin}/v3/mcp/srv_owner/mcp`, auth: "headers", tools: [ADD_TOOL], sealed: null });
+  const shared = await store.mcp.server("mail");
+  await store.settings.put(mcpSourceKey("mail"), storedSource({ source: "composio", toolkit: "gmail" }, shared, false, false));
+  await store.settings.put(composioMadeKey("mail"), storedMade({ user: OWNER, auth_config: { id: "ac_owners_own", made: false }, accounts: [], key_env: KEY_ENV }, shared));
+
+  const claimOf = async (runId) => {
+    const claim = await store.claim(runId, "runner-a", { leaseMs: 600_000 });
+    const step = await mcpClaim({ loopback: true, store, claim, grants: ["mcp:mail/add"], sealKey, signal: new AbortController().signal, composioMcpOrigin: composio.mcpOrigin });
+    t.after(() => step.release());
+    return step;
+  };
+  const refused = await claimOf("run-owner");
+  assert.match(refused.credentials.mail?.unopened ?? "", /owner calls as here/, `handed on as ${JSON.stringify(refused.credentials.mail?.query ?? null)}`);
+  assert.equal(refused.credentials.mail.query, undefined, "nothing calls as the owner's user");
+  const handed = await claimOf("run-theirs");
+  assert.equal(handed.credentials.mail?.unopened, undefined, handed.credentials.mail?.unopened);
+  assert.equal(handed.credentials.mail.query?.user_id, "u_1", "another user's binding is handed on");
 });
 
 test("a row key never collides: a workspace never holds '/', nor a server's name, so ('a', 'b/c') and ('a/b', 'c') never reach the one row 'a/b/c'", async (t) => {

@@ -168,6 +168,8 @@ export async function mcpClaim(given: McpClaimOptions): Promise<McpClaimStep> {
   // that name (mcp-workspace.ts runMcp): a workspace's run never reads another's.
   const granted = [...new Set(given.grants.flatMap((name) => mcpNameOf(name)?.server ?? []))];
   const options: McpClaimOptions = { ...given, store: await runMcp(given.store, await given.store.runs.workspace(given.claim.runId), granted) };
+  /** The registry as stored, every row under its row key: what the owner saved is read here, never through the run's view. */
+  const registry = given.store;
   const { store, claim, sealKey, signal } = options;
   const now = options.now ?? Date.now;
   const timer = options.timer ?? systemTimer;
@@ -467,7 +469,9 @@ export async function mcpClaim(given: McpClaimOptions): Promise<McpClaimStep> {
     if (!composioPerRun(row, await store.settings.get(composioMadeKey(name)))) return undefined;
     const given = await handed(name, row.url, "composio");
     if ("unopened" in given) return given;
-    const owners = await ownersComposioUsers(store);
+    // Every server the owner saved (`registry`), never the run's view: there a shared one under the name of the run's
+    // workspace's own server is hidden behind it, and its user is the owner's all the same.
+    const owners = await ownersComposioUsers(registry);
     const apiOnly = (await heldApiOnlyMcpOrigins(store)) !== undefined;
     if (apiOnly ? ownersUser(owners, given.composio.user_id) : !bindingRuns(given.composio, owners)) return { unopened: apiOnly ? COMPOSIO_OWNERS_USER_WORDS : UNUSABLE.composioOwnersUser };
     return { query: composioRunQuery(given.composio) };
