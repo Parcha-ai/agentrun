@@ -103,3 +103,29 @@ test("the kind's own setting still holds: a desktop set to ask asks with write a
   assert.match(decision.deny, /desktop/, decision.deny);
   assert.doesNotMatch(decision.deny, /write is set to deny/, "the kind's deny comes first");
 });
+
+/** A run whose agent has the browser: its screenshot (the browser's registration) held to the browser's setting, and with
+ *  save_as to write's too. */
+const browserGateOf = async (toolSettings, { approvers = true, tools = ["read", "write", "browser"] } = {}) => {
+  const { server, runners } = await stores({ runners: 1 });
+  if (!approvers) await server.settings.put("approvers", { approvers: false });
+  return adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask", tools, toolSettings } }, root(), "none", { facts: undefined });
+};
+const browserSaved = { callId: "c-bsaved", tool: "screenshot", args: { save_as: "shots/walk.png" } };
+const browserPlain = { callId: "c-bplain", tool: "screenshot", args: {} };
+
+test("a browser screenshot's save_as is held to write's setting as computer_screenshot's is: not given write, write's deny and an unapprovable ask refuse it, write's ask asks; one with no save_as is the browser's alone", async () => {
+  const notGiven = await (await browserGateOf({ browser: { permission: "allow" }, write: { permission: "allow" } }, { tools: ["read", "browser"] }))(browserSaved);
+  assert.match(notGiven.deny, /screenshot with save_as \(it writes a file into the run's files\) needs write among this agent's tools/, notGiven.deny);
+  assert.match(notGiven.deny, /It was not run/, notGiven.deny);
+  const denied = await (await browserGateOf({ browser: { permission: "allow" }, write: { permission: "deny" } }))(browserSaved);
+  assert.match(denied.deny, /write is set to deny for this agent/, denied.deny);
+  assert.match(denied.deny, /screenshot with save_as writes a file into the run's files/, denied.deny);
+  assert.equal(await (await browserGateOf({ browser: { permission: "allow" }, write: { permission: "ask" } }))(browserSaved), "ask");
+  const none = await (await browserGateOf({ browser: { permission: "allow" }, write: { permission: "ask" } }, { approvers: false }))(browserSaved);
+  assert.match(none.deny, /save_as/, none.deny);
+  for (const [settings, tools] of [[{ browser: { permission: "allow" }, write: { permission: "deny" } }, undefined], [{ browser: { permission: "allow" } }, ["read", "browser"]]]) {
+    assert.equal(await (await browserGateOf(settings, tools ? { tools } : {}))(browserPlain), "allow", `no save_as: the browser's allow alone (${JSON.stringify(settings)})`);
+  }
+  assert.equal(await (await browserGateOf({ browser: { permission: "allow" } }))(browserSaved), "allow", "write given and allowed");
+});

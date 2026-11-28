@@ -38,7 +38,7 @@ const NO_EXEC_FIX = "Give the agent a sandbox computer (a box): set computer to 
 export const noExecIssue = (region: string): InputIssue => ({
   field: "definition.computer",
   reason: "missing",
-  message: `name a sandbox computer: ${noExecWords(region)}, so a run with no computer has no shell, and the docker box can't mount Archil. ${NO_EXEC_FIX}`,
+  message: `bash needs a box (a sandbox computer): ${noExecWords(region)}, so a run with no computer has no shell, and the docker box can't mount Archil. ${NO_EXEC_FIX}`,
   fix: NO_EXEC_FIX,
 });
 

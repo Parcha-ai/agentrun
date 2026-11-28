@@ -15,7 +15,7 @@ import { delimiter, dirname, join, relative } from "node:path";
 import { after, test } from "node:test";
 import * as claude from "@parcha/agentrun-harness-claude";
 import { API_ONLY_ROUTES } from "../dist/api-only.js";
-import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_ROUTES, CLAUDE_LOGIN_SETTING, claudeLoginOf, claudeLoginServed, claudeLoginSwitchedOff, claudeLoginView, dropRefusedLogin, envAtPlace, homeOf, LOGIN_ANSWERS_DIR, LOGIN_REFUSES_API_KEYS, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt as checkedLoginAt, loginBeforeRun, loginForRun, loginOnRunnerOnly, loginServes, settingFor, signOutClaudeLogin, startLoginHere, turnOffClaudeLogin, turnOnBody, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
+import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_ROUTES, CLAUDE_LOGIN_SETTING, claudeLoginOf, claudeLoginServed, claudeLoginSwitchedOff, claudeLoginView, dropRefusedLogin, envAtPlace, homeOf, LOGIN_ANSWERS_DIR, LOGIN_REFUSES_API_KEYS, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt as checkedLoginAt, loginBeforeRun, loginForRun, loginOnRunnerOnly, loginServes, settingFor, signInHereOff, signOutClaudeLogin, startLoginHere, turnOffClaudeLogin, turnOnBody, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
 import { ClaudeSignIns } from "../dist/claude-sign-in.js";
 import { MODEL_KEYS, hostModel } from "../dist/model.js";
 import { providerFor } from "../dist/provider.js";
@@ -103,6 +103,43 @@ async function until(done, what) {
   }
 }
 
+// A server with a public address (AGENTRUN_PUBLIC_URL), a placeholder one too, may be opened from another machine, so it
+// never starts the CLI's sign-in, which opens a browser on its own machine: the view says so, naming the address, and so
+// does a start it refuses, in the same words.
+test("a server with a public address never starts the CLI's sign-in itself, and says why in words that name the address and what to do", { timeout: 120_000 }, async (t) => {
+  const fake = await fakeCli(t);
+  withEnv(t, { PATH: `${dirname(fake.cli)}${delimiter}${process.env.PATH}` }, MODEL_VARS);
+  const PUBLIC = "https://agentrun.example.test";
+  const { api } = await serve(t, { faux: undefined, harnesses: false, runner: false, publicUrl: PUBLIC });
+  const view = await api("GET", "/settings/claude-login");
+  assert.equal(view.status, 200, JSON.stringify(view.body));
+  assert.equal(view.body.can_start, false);
+  assert.match(view.body.start_off ?? "", /^In-browser sign-in is off because AGENTRUN_PUBLIC_URL is set to https:\/\/agentrun\.example\.test\b/);
+  assert.match(view.body.start_off, /run the command shown in a terminal on this machine/);
+  assert.match(view.body.start_off, /unset AGENTRUN_PUBLIC_URL and restart the server/);
+  const on = await api("PUT", "/settings/claude-login", { only_me: true });
+  assert.equal(on.status, 200, JSON.stringify(on.body));
+  assert.equal(on.body.start_off, view.body.start_off, "the view after Turn on says it too");
+  const started = await api("POST", "/settings/claude-login/login");
+  assert.equal(started.status, 403, JSON.stringify(started.body));
+  assert.equal(started.body.error.message, view.body.start_off, "a start it refuses says the same");
+  assert.equal(fake.calls().filter((call) => call.argv.startsWith("auth login")).length, 0, "no sign-in started");
+});
+
+test("the words for a sign-in that never starts here name the variable the public address came from, and what to do there", () => {
+  const PUBLIC = "https://agentrun.example.test";
+  assert.equal(signInHereOff("127.0.0.1", undefined, true), undefined, "loopback with no public address starts it");
+  assert.match(signInHereOff("127.0.0.1", PUBLIC, true), /^In-browser sign-in is off because AGENTRUN_PUBLIC_URL is set to https:\/\/agentrun\.example\.test\b.*unset AGENTRUN_PUBLIC_URL and restart the server\.$/);
+  assert.equal(signInHereOff("127.0.0.1", PUBLIC, true, "AGENTRUN_PUBLIC_URL"), signInHereOff("127.0.0.1", PUBLIC, true));
+  // On Render, RENDER_EXTERNAL_URL gives the address when AGENTRUN_PUBLIC_URL is unset (cli.ts): no advice to unset a
+  // variable that is not set, and none to unset one Render sets on every web service.
+  const render = signInHereOff("0.0.0.0", PUBLIC, false, "RENDER_EXTERNAL_URL");
+  assert.match(render, /^In-browser sign-in is off because this server's public address is https:\/\/agentrun\.example\.test, from Render's RENDER_EXTERNAL_URL\b/);
+  assert.doesNotMatch(render, /AGENTRUN_PUBLIC_URL|unset/);
+  assert.match(render, /run the command shown in a terminal on the server's machine\.$/);
+  assert.match(signInHereOff("0.0.0.0", undefined, false), /^In-browser sign-in is off because this server listens on 0\.0\.0\.0, past loopback\b/);
+});
+
 test("Claude Code's login on this machine: turned on with the owner's word, its status asked of the CLI alone, the CLI's own sign-in started here, turned off", { timeout: 180_000 }, async (t) => {
   // No pinned CLI here (claude-agent installs on first use), so the server asks the `claude` on PATH: the fake. A Claude
   // token a person may set in their own server env is never passed on.
@@ -118,6 +155,7 @@ test("Claude Code's login on this machine: turned on with the owner's word, its 
   assert.equal(before.body.state, "off");
   assert.equal(before.body.place, "agentrun");
   assert.equal(before.body.can_start, true, "a server on loopback with no public address starts the sign-in on its own machine");
+  assert.equal(before.body.start_off, undefined, "and says nothing of a sign-in that is off");
   assert.match(before.body.command, new RegExp(`CLAUDE_SECURESTORAGE_CONFIG_DIR=${login.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} .* auth login$`));
 
   // The owner's word that they alone run agents here, and a place the mode knows.
@@ -846,7 +884,6 @@ test("the CLI's sign-in is refused for a login turned on over another data folde
     env: { HOME: data, PATH: "/usr/bin:/bin" },
     pinned: async () => pinned,
     refused: () => undefined,
-    sameMachine: true,
     claude: async () => ({
       claudeLoginCommand: () => "claude auth login",
       claudeLoginStatus: async () => ({ signedIn: false, method: "none" }),
@@ -919,7 +956,7 @@ async function loginRig(t) {
     },
     claudeLogout: async () => ({ signedOut: true, leftoverGone: true }),
   };
-  const deps = (over) => ({ signIns, settings, data, env, pinned: async () => pinned, refused: () => undefined, turn: (work) => work(), sameMachine: true, claude: async () => cli, saved: () => {}, changed: async () => {}, ...over });
+  const deps = (over) => ({ signIns, settings, data, env, pinned: async () => pinned, refused: () => undefined, turn: (work) => work(), claude: async () => cli, saved: () => {}, changed: async () => {}, ...over });
   const stale = (keeps) => started.filter((one) => !one.stopped && one.dir !== keeps);
   return { data, env, rows, settings, started, signIns, pinned, deps, stale };
 }
@@ -1349,7 +1386,7 @@ test("the person's home is read once, where the login is made: with the server's
     const env = { HOME: person, PATH: `${dirname(fake.cli)}${delimiter}${process.env.PATH}`, ...extra };
     const rows = new Map([[CLAUDE_LOGIN_SETTING, settingFor(place, data)]]);
     const settings = { get: async (key) => rows.get(key) ?? null, put: async (key, value) => void rows.set(key, value), remove: async (key) => void rows.delete(key) };
-    const deps = { signIns, settings, data, env, pinned: async () => undefined, refused: () => undefined, sameMachine: true, claude: async () => claude, changed: async () => {} };
+    const deps = { signIns, settings, data, env, pinned: async () => undefined, refused: () => undefined, claude: async () => claude, changed: async () => {} };
     const from = fake.calls().length;
     assert.equal((await claudeLoginView(deps)).state, "signed_out", place);
     await startLoginHere(deps);
@@ -2750,7 +2787,7 @@ test("the Settings view feeds the same answer: after it read the login signed in
     env: { HOME: data, PATH: "/usr/bin:/bin" },
     pinned: async () => pinned,
     refused: () => undefined,
-    sameMachine: false,
+    startOff: "In-browser sign-in is off here.",
     claude: async () => ({
       claudeLoginCommand: () => "claude auth login",
       claudeLoginStatus: async () => {
@@ -2816,7 +2853,7 @@ test("a runner in a process of its own on the same data folder takes the Setting
     env: { HOME: data, PATH: "/usr/bin:/bin" },
     pinned: async () => pinned,
     refused: () => undefined,
-    sameMachine: false,
+    startOff: "In-browser sign-in is off here.",
     claude: async () => ({ claudeLoginCommand: () => "claude auth login", claudeLoginStatus: async () => said }),
     changed: async () => {},
   };

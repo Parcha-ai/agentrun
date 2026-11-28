@@ -749,6 +749,12 @@ The model gateway in force: the environment's, the one saved here, or none.
 
 Route: `GET /settings/model-gateway`.
 
+### `agentrun local get-prices`
+
+The prices this server meters computer time and browser time at, with where each comes from.
+
+Route: `GET /settings/prices`.
+
 ### `agentrun local get-suggestion SUGGESTION_ID`
 
 One suggested agent whole: its instructions, the files a create adds, and whether GitHub lets it.
@@ -848,6 +854,8 @@ Scan a repository for places its app needs an agent.
 Route: `POST /suggestions/scans`.
 
 - `--repo STRING` (string, required): owner/name, or its https://github.com URL.
+- `--run-id STRING` (string): The run the host started for a reserved scan, sent with that reservation's `scan`.
+- `--scan STRING` (string): The reservation a host-started run is bound to (the reserve's `scan`); sent alone, the reservation released.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
@@ -944,6 +952,33 @@ Route: none, it runs on this machine.
 
 - `--data DIR` (string, this CLI's own): the data directory of the AgentRun to open (default ~/.agentrun)
 - `--setup-only` (boolean, this CLI's own): open nothing once the owner's password is set (the installer's last step)
+
+## race
+
+### `agentrun race show LABEL`
+
+A race's lanes: each lane's harness, model, run, status, cost and seconds, in lane order.
+
+Route: `GET /runs?label=race:LABEL`.
+
+- `--wait` (boolean, this CLI's own): then follow every lane's run to its end and print the lanes side by side: exit 0 when every lane completed, 1 when one failed, was cancelled, did not start or still runs past --timeout, 8 when one waits on a person
+- `--timeout SECONDS` (number, this CLI's own): with --wait: stop waiting after this long (default 1800), exit 1; the runs go on
+- `--json` (boolean, this CLI's own): with --wait: the lanes as JSON, in place of the table
+
+### `agentrun race start`
+
+Run one task on 2 to 4 harness and model lanes side by side, as the console's New race form does.
+
+Route: `POST /agents, then POST /agents/{agent_id}/runs, a lane each`.
+
+- `--lane HARNESS/MODEL` (string, this CLI's own): a lane, 2 to 4 times: the harness, then its model (pi/anthropic/claude-sonnet-4.5)
+- `--task TEXT|@FILE` (string, this CLI's own): the task every lane runs, the same on each
+- `--max-cost-usd USD` (string, this CLI's own): each lane's cap (default 1)
+- `--label LABEL` (string, this CLI's own): the race's label (default: the start time and random letters, as the console's)
+- `--file FILE_ID` (string, this CLI's own): a file uploaded with POST /files, given to every lane's run (repeatable)
+- `--wait` (boolean, this CLI's own): then follow every lane's run to its end and print the lanes side by side: exit 0 when every lane completed, 1 when one failed, was cancelled, did not start or still runs past --timeout, 8 when one waits on a person
+- `--timeout SECONDS` (number, this CLI's own): with --wait: stop waiting after this long (default 1800), exit 1; the runs go on
+- `--json` (boolean, this CLI's own): with --wait: the lanes as JSON, in place of the table
 
 ## revisions
 
@@ -1131,6 +1166,7 @@ Route: `POST /runs/{run_id}/messages`.
 
 - `--idempotency-key STRING` (string): Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first answer with `Idempotent-Replayed: true`; another body is `409 idempotency_mismatch`; a retry while the first is in flight is `409 idempotency_in_progress`. Keys are scoped to the credential's account and the route.
 - `--content STRING` (string, required): At most `limits.max_message_chars`. Not only whitespace.
+- `--said STRING` (string): The person's own words, when `content` is a host's text around them (a preamble, an earlier report, turn instructions): what the run's learning keeps of this message (the one line it appends to the agent's corrections.md, and the follow-up in its compile turn's traces), in place of `content`. The model gets `content` only, never `said`; `said` need not appear inside it. Absent, learning keeps `content`, as before. 422 `input_invalid` at `said`, nothing written: reason `wrong_type` when it is not a string, `empty` when it is empty after trimming, `too_long` past 4000 characters, counted in Unicode code points (an emoji is one). Text shaped like a secret is not refused here: the learning's checks refuse its line, as any correction's. Offered where `features.messages.said` is true.
 - `--model-key STRING` (string): The run's own model key: a key for the model gateway at AGENT_MODEL_BASE_URL, such as a LiteLLM virtual key minted for this run, which every model request tied to the run carries in place of the server's own key (its turns, its subagents, its learned workflows' nodes, a workflow's model nodes, its end-of-run compile turn, and the learning work it starts: a learned workflow's check replay runs and an audit's shadow run). AgentRun never mints, lists or revokes it. Sealed into the run's launch bound to the gateway's origin, read at each claim (a reclaim after a crash among them), erased from the store by the write that ends the run's turn. A replay or shadow run the run starts while its claim holds the key takes a copy sealed for that run alone, erased by the write that ends that run (or its purge): such a run starts at the run's end, capped at its share of what the run's cap leaves then (none left: it is dropped, nothing spent), and it is listed in the run's `learning_work` until it ends; revoke the key once the run is terminal and `learning_work.state` is not `running`. Never in its saved body, its timeline, its view, a log or an Idempotency-Key's fingerprint (a retry with a new key answers the first request's run, its first key kept). The harness, its tools and its sandbox never see it. 422 `invalid` at `model_key` for a key under 8 characters (no cut could hold it) or one with a character that is not visible ASCII (a space, a control character, anything past ASCII); 422 at `model_key` when the run's model never goes to that gateway (no AGENT_MODEL_BASE_URL here, a native run, or a model routed elsewhere). Absent, the run spends on the server's key for its route; where the server holds none (no AGENT_MODEL_API_KEY, none saved in Settings), a start without it is 422 `model_key_required`, never a failure at its first model call. On a message it replaces the run's key from the run's next model request on, a turn still going included, and it is the first key of a run that started on the server's (mint one per turn); a message without one keeps the key the run holds, which is none once its last turn ended: then, where the server holds no key for the run's model, the message is 422 `model_key_required` and nothing is written.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
@@ -1535,7 +1571,7 @@ Import a template package from GitHub (github:OWNER/REPO[/PATH][@REF]) and print
 Route: none, it runs on this machine.
 
 - `--dry-run` (boolean, this CLI's own): check the package and print it whole (instructions, skill files); store nothing
-- `--trust` (boolean, this CLI's own): trust the package's publisher (the GitHub owner): the first package from one needs it
+- `--trust` (boolean, this CLI's own): trust the package's publisher (the GitHub owner): the first package from one needs it, and every install on a server that takes uploads only, where this command reads GitHub itself
 
 ### `agentrun template list`
 

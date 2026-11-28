@@ -11,6 +11,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { readBackOf } from "@parcha/agentrun-computer";
+import { Agent37Provider } from "@parcha/agentrun-computer/agent37";
+import { API_URL, fakeRest, KEY, keyPair, PROXY } from "../../computer/test/fake-agent37.mjs";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { closeOpenSessions, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 
@@ -86,8 +88,8 @@ function fauxVendor() {
 }
 
 /** run-1 on a priced faux desktop, run by a runner on the pi spec with a scripted model that answers at once, until it
- *  rests (within `ms`); `patch` changes the vendor first. Its row and vendor. */
-async function pricedRun(t, { patch = () => {}, ms = 60_000, env = PRICES } = {}) {
+ *  rests (within `ms`); `patch` changes the vendor first, and `spec` is the sizes its create asks. Its row and vendor. */
+async function pricedRun(t, { patch = () => {}, ms = 60_000, env = PRICES, spec = { cpus: 2, memoryMb: 4096 } } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-compute-priced-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -104,7 +106,7 @@ async function pricedRun(t, { patch = () => {}, ms = 60_000, env = PRICES } = {}
   const route = { model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" }, fetch: scriptedOrigin([{ say: "done" }], []), price: () => 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 100 };
   const vendor = fauxVendor();
   patch(vendor);
-  const computerDeps = { kinds: FAUX.kinds, keyTable: FAUX.keyTable, providers: { "faux-desktop": () => vendor.provider }, spec: () => ({ image: "faux", lifetimeMs: 600_000, network: "open", cpus: 2, memoryMb: 4096 }), check: { readBackOf } };
+  const computerDeps = { kinds: FAUX.kinds, keyTable: FAUX.keyTable, providers: { "faux-desktop": () => vendor.provider }, spec: () => ({ image: "faux", lifetimeMs: 600_000, network: "open", ...spec }), check: { readBackOf } };
   const deps = { env, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim, computerDeps };
   runner = startRunner({
     store, name: "runner-a", ...CONFORMANCE_TIMING, leaseMs: 30_000, stopMarginMs: 5_000,
@@ -168,4 +170,37 @@ test("a run on a computer whose resources the operator priced at $0 reads $0 on 
   const lines = usage.lines.filter((line) => line.meter === "compute_time");
   assert.deepEqual(lines.map((line) => [line.resource, line.basis, line.usd]), [["vcpu", "estimate", 0], ["memory", "estimate", 0]]);
   assert.equal(usage.total.usd, 0, "the usage total is $0");
+});
+
+test("a run on an Agent37 computer whose create asks no size is priced at the size Agent37's answer gives: its compute lines are booked, never unpriced", { timeout: 120_000 }, async (t) => {
+  // The figures an Agent37 machine is read back with: the provider's own reading of an instance Agent37 answered
+  // (resources { cpu: 4, memory: 8, disk: 4 }, in vCPUs and GB), handed back by the vendor's create as the hosted adapter does.
+  const rest = fakeRest();
+  const agent37 = new Agent37Provider({ apiKey: KEY, sshKey: keyPair().private, ssh2: { Client: class {} }, fetch: rest.fetch, apiUrl: API_URL, proxyDomain: PROXY });
+  const made = await agent37.host.create({ name: "computer-0123456789ab", image: "agent37-base", labels: { "agentrun.computer": "1" }, lifetimeMs: 600_000, egress: false, cpus: 4, memoryMb: 8192 }, { timeoutMs: 10_000 });
+  const { resources } = await agent37.host.get(made.id, { timeoutMs: 10_000 });
+  assert.deepEqual(resources, { cpus: 4, memoryMb: 8192, diskGb: 4 }, "Agent37's own figures");
+
+  const env = { ...PRICES, AGENTRUN_COMPUTE_USD_PER_DISK_GB_MONTH_FAUX_DESKTOP: "100" };
+  const { server, row } = await pricedRun(t, {
+    env,
+    spec: {},
+    patch: (one) => {
+      const create = one.provider.create;
+      one.provider.create = async (spec) => {
+        const answer = await create(spec);
+        return answer.ok ? { ok: true, value: { ...answer.value, resources } } : answer;
+      };
+    },
+  });
+  assert.equal(row.state, "ended", `the run ran: ${JSON.stringify(row)}`);
+  const [interval] = await server.computerIntervals.forRun(RUN);
+  assert.deepEqual([interval.cpus, interval.memoryMb, interval.diskGb], [4, 8192, 4], "its interval holds Agent37's figures, the create having asked none");
+  const usage = await runUsageOverStore(server, RUN);
+  const lines = usage.lines.filter((line) => line.meter === "compute_time");
+  assert.deepEqual(lines.map((line) => [line.resource, line.basis]), [["vcpu", "estimate"], ["memory", "estimate"], ["disk", "estimate"]], "every resource priced, none unpriced");
+  assert.ok(lines.every((line) => line.usd > 0), `every line booked money: ${JSON.stringify(lines)}`);
+  // A run of a second or so is a few vCPU- and GiB-seconds, and well under a millionth of a GB-month of disk (its quantity's grain).
+  assert.ok(lines.every((line) => line.quantity !== null) && lines[0].quantity > 0 && lines[1].quantity > 0, `every quantity known: ${JSON.stringify(lines)}`);
+  assert.ok(Math.abs(lines[0].usd - 4 * 0.01 * (interval.bookedMs / 1000)) < 1e-9, "the vCPU line is Agent37's 4 vCPUs at $0.01 for the booked seconds");
 });

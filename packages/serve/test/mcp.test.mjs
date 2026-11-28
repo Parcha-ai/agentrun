@@ -355,3 +355,22 @@ test("a run paused at its spend cap: the instructions, runs_get and runs_respond
   const refused = await mcp.tool("runs_respond", { run_id: started.body.run_id, content: "go on" }, { ok: false });
   assert.match(JSON.stringify(refused), /budget_reached/);
 });
+
+test("runs_start takes a spend cap: its schema lists max_cost_usd (a number above 0), the run it starts carries that cap, and a cap of 0 or a word is refused on the field", async (t) => {
+  const server = await serve(t, { accounts: true, openSetup: true });
+  const mcp = mcpClient(server);
+  await mcp.request("initialize", INIT);
+  const { tools } = (await mcp.request("tools/list")).result;
+  const start = tools.find((tool) => tool.name === "runs_start");
+  assert.deepEqual(start.inputSchema.properties.max_cost_usd?.type, "number", JSON.stringify(start.inputSchema.properties));
+  assert.equal(start.inputSchema.properties.max_cost_usd.exclusiveMinimum, 0);
+  assert.match(start.description, /max_cost_usd/);
+  await mcp.tool("agents_create", { id: "capped", name: "Capped", instructions: "Answer.", tools: ["read"], model: "faux/faux-1" });
+  const run = (await mcp.tool("runs_start", { agent_id: "capped", input: { content: "What is six times seven?" }, max_cost_usd: 0.25 })).structuredContent;
+  const read = (await v2(server, "GET", `/runs/${run.run_id}`)).body;
+  assert.equal(read.cost.cap_usd, 0.25, "the run carries the cap");
+  for (const bad of [0, "1"]) {
+    const refused = await mcp.tool("runs_start", { agent_id: "capped", input: { content: "hi" }, max_cost_usd: bad }, { ok: false });
+    assert.equal(refused.structuredContent.error.fields?.[0]?.field, "max_cost_usd", JSON.stringify(refused.structuredContent));
+  }
+});

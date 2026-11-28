@@ -22,7 +22,11 @@
 // and each computer a run made, from its create to its proven delete (computer_intervals, COMPUTER_INTERVALS). Each runner's
 // version and slots (runners.version, .slots: RUNNERS_ADDED), each hand-back (hand_backs, HAND_BACKS) and each claim of a
 // run with the turn it works and its attempt at it (run_attempts, RUN_ATTEMPTS) are added the same way, and so is the
-// learning ledger (learning_ledger, learning_spend: LEARNING_LEDGER, LEARNING_SPEND).
+// learning ledger (learning_ledger, learning_spend: LEARNING_LEDGER, LEARNING_SPEND), and each agent's, run's and imported
+// package's workspace (WORKSPACE_ADDED), and what the launch hook told a firing's host (trigger_firings.hooked,
+// TRIGGER_FIRINGS_HOOKED). Each imported package is keyed by its workspace and id (IMPORTED_TEMPLATES_KEYS), so each
+// workspace's package name is its own: the server makes the table again without the key on its id alone, at its open to
+// a store an earlier build of this version made (uploadKeysUpgrade). No runner reads or writes the table.
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
 // in the clear. Foreign keys are on (the connection's pragma).
@@ -44,10 +48,15 @@
 // (learning_ledger; 15 kept one, which a runner of 15 writes at each end and this build's end does not). Version 17 keeps
 // each agent's learning as rows (LEARNING_ROWS) in place of a git folder and settings keys: a runner of an earlier build
 // would still write learning where this server neither reads nor purges it, so it must not open the store (it opens only
-// its own version). The server upgrades these in place at its open (listingUpgrade from 11, relayUpgrade from 12,
-// purgeUpgrade from 13, diskUpgrade from 14, ledgerUpgrade from 15, then learningRowsUpgrade from 16); a runner of this
+// its own version). Version 18 keeps whether the server has recorded again each ledger row a build before the follow-up
+// split wrote (store_meta.ledger_rerecorded, run-patch.ts backfillLedger): a runner of 17 still writes a reopened run's
+// row with its job at the first round's figure, after the pass that records it again, so it must not open the store;
+// and each runner's row says the version its build knows (runners.knows), so the server marks that pass done only once
+// none of 17 is there.
+// The server upgrades these in place at its open (listingUpgrade from 11, relayUpgrade from 12, purgeUpgrade from 13,
+// diskUpgrade from 14, ledgerUpgrade from 15, learningRowsUpgrade from 16, then splitUpgrade from 17); a runner of this
 // build waits for it.
-export const SCHEMA_VERSION = 17;
+export const SCHEMA_VERSION = 18;
 
 /** One answer per approval of a run: a second approve or deny command naming the same approval is refused
  *  (StoreConstraint), so the first answer a person gives wins from the moment it is written, before the runner takes it
@@ -94,10 +103,22 @@ export function diskUpgrade(runColumns: ReadonlySet<string>): readonly string[] 
 export function learningRowsUpgrade(): readonly string[] {
   return [...LEARNING_ROWS, "UPDATE store_meta SET schema_version = 17 WHERE singleton = 1"];
 }
+/** Version 17 → 18 on SQLite (the server's open, sqlite/store.ts, last), given the runners' columns now: the version
+ *  each runner's build knows (runners.knows, RUNNERS) where missing, every row there null (a runner of 17's), and the
+ *  version; its mark (STORE_META_LEDGER_RERECORDED) added at the same open. No runner of 17, whose end writes a reopened
+ *  run's ledger row under the split before (its job the first round's figure), opens the store again; one still there
+ *  holds the mark until its row goes stale and its claims are handed back (run-patch.ts backfillLedger). */
+export function splitUpgrade(runnerColumns: ReadonlySet<string>): readonly string[] {
+  return [...(runnerColumns.has("knows") ? [] : ["ALTER TABLE runners ADD COLUMN knows INTEGER"]), "UPDATE store_meta SET schema_version = 18 WHERE singleton = 1"];
+}
 /** A trigger's package mark (TriggerRow.templateId): the id of the template package whose apply made or last kept it, null
  *  for one a person made. In STORE_DDL, and added at a server open to a store an earlier build of this version made, as
  *  RUNS_LABELS is (a trigger made before reads as no package's). */
 export const TRIGGERS_TEMPLATE_ID = "ALTER TABLE triggers ADD COLUMN template_id TEXT";
+/** What the launch hook told the host of a firing's run (FiringRow.hooked). In STORE_DDL, and added at a server open to a
+ *  store an earlier build of this version made, as TRIGGERS_TEMPLATE_ID is (a firing handed before reads as told nothing).
+ *  No runner reads firings, so none waits for it. */
+export const TRIGGER_FIRINGS_HOOKED = `ALTER TABLE trigger_firings ADD COLUMN ${json("hooked", true)}`;
 /** A run's census (RunLaunchRow.census, run-census.ts): in STORE_DDL, and added at a server open to a store an earlier
  *  build of this version made, as RUNS_LABELS is (a run ended before reads as never handed a secret). */
 export const RUN_LAUNCH_CENSUS = `ALTER TABLE run_launch ADD COLUMN ${json("census", true)}`;
@@ -116,19 +137,56 @@ export const RUN_LAUNCH_CENSUS_ERASED = `CREATE TRIGGER IF NOT EXISTS run_launch
 /** Whether the store holds RUN_LAUNCH_CENSUS_ERASED: a store no server of this build opened yet holds none. */
 export const RUN_LAUNCH_CENSUS_ERASED_MADE = `SELECT 1 AS found FROM sqlite_master WHERE type = 'trigger' AND name = 'run_launch_census_erased'`;
 
-/** A template package imported from GitHub (POST /v2/templates/import), by its id (`github:<owner>/<repo>[/<path>]`): its
- *  source as given (ref and all), the full commit SHA read, the GitHub account that publishes it, and its files as read
- *  (`files`, a JSON object of path to base64). A re-import of the id replaces the row. The server checks the files again
- *  as it loads them at its start (templates.ts readPackage); nothing in them runs. In STORE_DDL, and added at a server
- *  open to a store an earlier build of this version made. */
-export const IMPORTED_TEMPLATES = `CREATE TABLE IF NOT EXISTS imported_templates (
-    id TEXT PRIMARY KEY,
+/** The table of the template packages imported (POST /v2/templates/import), named `table`: each one's id
+ *  (`github:<owner>/<repo>[/<path>]`, or `upload:<name>`), its source as given (ref and all), the full commit SHA read,
+ *  the GitHub account that publishes it, its files as read (`files`, a JSON object of path to base64) and its workspace.
+ *  Keyed by workspace and id (IMPORTED_TEMPLATES_KEYS): a re-import of the id in its workspace replaces the row. */
+const importedTemplatesTable = (table: string) => `CREATE TABLE IF NOT EXISTS ${table} (
+    id TEXT NOT NULL,
     source TEXT NOT NULL,
     sha TEXT NOT NULL,
     publisher TEXT NOT NULL,
     ${json("files")},
-    imported_at INTEGER NOT NULL
+    imported_at INTEGER NOT NULL,
+    workspace TEXT
   ) STRICT`;
+/** The imported template packages (importedTemplatesTable). The server checks the files again as it loads them at its
+ *  start (templates.ts readPackage); nothing in them runs. In STORE_DDL, and added at a server open to a store an earlier
+ *  build of this version made. */
+export const IMPORTED_TEMPLATES = importedTemplatesTable("imported_templates");
+/** An imported package's key: its workspace and id, or its id alone among those of no workspace (workspace null). */
+export const IMPORTED_TEMPLATES_KEYS: readonly string[] = [
+  "CREATE UNIQUE INDEX IF NOT EXISTS imported_templates_in_workspace ON imported_templates (workspace, id) WHERE workspace IS NOT NULL",
+  "CREATE UNIQUE INDEX IF NOT EXISTS imported_templates_of_none ON imported_templates (id) WHERE workspace IS NULL",
+];
+/** An imported_templates an earlier build of this version made, keyed by its id alone (`id TEXT PRIMARY KEY`), made again
+ *  at a server's open (sqlite/store.ts addWorkspaceColumns): each row copied in the workspace it had (the column is there
+ *  by then: WORKSPACE_ADDED), keyed by IMPORTED_TEMPLATES_KEYS. The version stays, as no runner reads the table. */
+export function uploadKeysUpgrade(): readonly string[] {
+  return [
+    "DROP TABLE IF EXISTS imported_templates_keyed",
+    importedTemplatesTable("imported_templates_keyed"),
+    "INSERT INTO imported_templates_keyed (id, source, sha, publisher, files, imported_at, workspace) SELECT id, source, sha, publisher, files, imported_at, workspace FROM imported_templates",
+    "DROP TABLE imported_templates",
+    "ALTER TABLE imported_templates_keyed RENAME TO imported_templates",
+    ...IMPORTED_TEMPLATES_KEYS,
+  ];
+}
+
+/** The workspace of each agent, run and imported template package (workspace-scope.ts): the opaque name a scoped request
+ *  made the row in, null for one made unscoped (every row before it). A run with none reads as its agent's. In STORE_DDL,
+ *  and added where missing at a server open to a store an earlier build of this version made, with its indexes
+ *  (WORKSPACE_INDEXES), as LEARNING_LEDGER_ADDED is. No runner reads or writes it, so a runner waits for nothing. */
+export const WORKSPACE_ADDED: Readonly<Record<"agents" | "runs" | "imported_templates", string>> = {
+  agents: "ALTER TABLE agents ADD COLUMN workspace TEXT",
+  runs: "ALTER TABLE runs ADD COLUMN workspace TEXT",
+  imported_templates: "ALTER TABLE imported_templates ADD COLUMN workspace TEXT",
+};
+/** A workspace's agents and runs in the lists' order (Agents.list, Runs.listed with a workspace). */
+export const WORKSPACE_INDEXES: readonly string[] = [
+  "CREATE INDEX IF NOT EXISTS agents_by_workspace ON agents (workspace, created_at)",
+  "CREATE INDEX IF NOT EXISTS runs_by_workspace ON runs (workspace, started_at)",
+];
 
 /** A hosted machine's minted token (a dial provider's create, spec/computer/attach.md): its computerd dials the attach
  *  socket and fetches the daemon with it. By the machine (its name, from its create's request id): the token's SHA-256
@@ -198,7 +256,9 @@ export const COMPUTER_INTERVALS_RUN = "CREATE INDEX IF NOT EXISTS computer_inter
  *  capabilities' runner_refused, health's runner check) and where to relay a dial (computer-attach.ts liveRelays). In
  *  STORE_DDL. A store an earlier build of version 13 made kept the relays in a table of their own (runner_relays): the
  *  server's open drops it and makes this one (sqlite/store.ts), as it drops browser_viewers, with no version: the rows
- *  are heartbeats renewed every 10 s, so none is copied, and a runner waits for that server (StoreAwaitsServer). */
+ *  are heartbeats renewed every 10 s, so none is copied, and a runner waits for that server (StoreAwaitsServer).
+ *  `knows`: the store's schema version the runner's build knows (RunnerRow.knows), null on a row a runner of 17 wrote:
+ *  added where missing by the split's step (splitUpgrade). */
 export const RUNNERS = `CREATE TABLE IF NOT EXISTS runners (
     runner TEXT PRIMARY KEY,
     incarnation TEXT NOT NULL,
@@ -207,7 +267,8 @@ export const RUNNERS = `CREATE TABLE IF NOT EXISTS runners (
     port INTEGER,
     seen_at INTEGER NOT NULL,
     version TEXT,
-    slots INTEGER
+    slots INTEGER,
+    knows INTEGER
   ) STRICT`;
 /** What a runner says of itself for the server's capacity read (GET /v2/capacity, capacity.ts): its build's version
  *  (`version`) and the most runs it holds at once (`slots`), each null on a row an earlier build wrote. In RUNNERS, and
@@ -385,6 +446,15 @@ export function ledgerUpgrade(ledgerColumns: ReadonlySet<string>): readonly stri
  *  open to a store an earlier build of this version made. */
 const LEDGER_BACKFILLED = "ledger_backfilled INTEGER NOT NULL DEFAULT 0 CHECK (ledger_backfilled IN (0, 1))";
 export const STORE_META_LEDGER_BACKFILLED = `ALTER TABLE store_meta ADD COLUMN ${LEDGER_BACKFILLED}`;
+/** Whether every final run not purged whose learning kept more than one round (a follow-up opened it again) has had its
+ *  ledger row recorded again under this build's split (learn/ledger.ts roundsLooked: its job the row less every round's
+ *  look-back), which backfillLedger writes once it has recorded the last in a pass that started with no runner of an
+ *  earlier build there (RunnerRow.knows) and no run held by a claim taken before the server's open and RUNNER_STALE_MS:
+ *  a build before wrote such a row with its job at its first round's figure, and
+ *  the row is the journal's, so it is recorded again, never read two ways. 0 on a store no server of this build marked
+ *  yet. In STORE_DDL, and added at the server open that brings a store to 18. */
+const LEDGER_RERECORDED = "ledger_rerecorded INTEGER NOT NULL DEFAULT 0 CHECK (ledger_rerecorded IN (0, 1))";
+export const STORE_META_LEDGER_RERECORDED = `ALTER TABLE store_meta ADD COLUMN ${LEDGER_RERECORDED}`;
 /** Each learning cost, by the revision it is for (learn/ledger.ts SpendRow): a compile turn (`round`, the round that asked
  *  it), a check's replay run or an audit's shadow run (round 0, `of_run` the run it audits or whose key paid it), with its
  *  $ (null: unknown). Written with its run's ledger row, replaced whole each time; gone with its run's delete, and with
@@ -522,7 +592,8 @@ export const STORE_DDL: readonly string[] = [
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     schema_version INTEGER NOT NULL,
     flushes INTEGER NOT NULL DEFAULT 0,
-    ${LEDGER_BACKFILLED}
+    ${LEDGER_BACKFILLED},
+    ${LEDGER_RERECORDED}
   ) STRICT`,
 
   // Agents and their revisions. A revision made from a template keeps its package: {name, version (SemVer), source
@@ -540,7 +611,9 @@ export const STORE_DDL: readonly string[] = [
     external_ref TEXT,
     -- When the agent was purged (DELETE /agents/{id} of an archived agent made here): its row is then a tombstone, its
     -- name, description and revisions' content blanked, kept for its runs' tombstones and their cost. Null: not purged.
-    purged_at INTEGER
+    purged_at INTEGER,
+    -- WORKSPACE_ADDED.
+    workspace TEXT
   ) STRICT`,
   `CREATE UNIQUE INDEX IF NOT EXISTS agents_external ON agents (external_ref) WHERE external_ref IS NOT NULL`,
   // A revision's skills (the P4 fold of the old agent store's skill table): the revision's own skill files, a JSON object
@@ -621,7 +694,9 @@ export const STORE_DDL: readonly string[] = [
     ${RUN_LISTING_COLUMNS.join(",\n    ")},
     -- When the run was purged (DELETE /runs/{id}, Runs.purge): its row is then a tombstone, every record of what it was
     -- given or did gone and its cost kept, which no list shows and every total still sums. Null: not purged.
-    purged_at INTEGER
+    purged_at INTEGER,
+    -- WORKSPACE_ADDED.
+    workspace TEXT
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS runs_by_agent ON runs (agent_id, started_at)`,
   `CREATE INDEX IF NOT EXISTS runs_by_revision ON runs (revision_id, started_at)`,
@@ -741,6 +816,10 @@ export const STORE_DDL: readonly string[] = [
     ${json("attrs", true)},
     shown INTEGER,
     waits_on TEXT,
+    -- What the launch hook told the host of the firing's run (FiringRow.hooked): the lowest cap any hand of it told, so
+    -- the host's start never runs past it. Added at a server open to a store an earlier build of this version made
+    -- (TRIGGER_FIRINGS_HOOKED).
+    ${json("hooked", true)},
     PRIMARY KEY (trigger_id, key)
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS trigger_firings_retry ON trigger_firings (status, retry_at)`,
@@ -873,6 +952,8 @@ export const STORE_DDL: readonly string[] = [
   ) STRICT`,
   ...LEARNING_ROWS,
   IMPORTED_TEMPLATES,
+  ...IMPORTED_TEMPLATES_KEYS,
+  ...WORKSPACE_INDEXES,
   MINTED_TOKENS,
   RUNNERS,
   HAND_BACKS,

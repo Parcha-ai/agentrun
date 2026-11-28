@@ -10,7 +10,7 @@ import type { GithubPermissions } from "../github.js";
 /** The App's answer for one repository: a token and when it expires (ms), or why not. `permissions` narrows the token
  *  below the App's own (a checkout's: contents read alone). */
 export type GithubAppMint = (target: { installation?: number; repo: string }, permissions?: GithubPermissions) => Promise<
-  { ok: true; token: string; expires_at: number } | { ok: false; reason: "not_installed" | "no_repo" | "github_failed" | "disconnected"; message: string }
+  { ok: true; token: string; expires_at: number } | { ok: false; reason: "not_installed" | "no_repo" | "github_failed" | "disconnected" | "withheld"; message: string }
 >;
 
 /** What the runner gives the step for a run's github_app servers: the bound mint, and the run's repository (from its
@@ -23,6 +23,9 @@ export interface GithubAppAccess {
   /** Whether the App is still the one this access mints with (its id and key): read before each call, so a disconnect
    *  or a new App stops a run's token at its next call, not at its next mint. */
   readonly same?: () => Promise<boolean>;
+  /** Why this run may not use the App at all (a run in a workspace: GITHUB_UNUSABLE.inWorkspace): its calls are refused
+   *  in these words, its mint refuses in them too, and GitHub is asked nothing. */
+  readonly withheld?: string;
 }
 
 /** A timer the step arms: the refresh before expiry, the expiry itself. */
@@ -34,6 +37,7 @@ export const REFRESH_BEFORE_MS = 5 * 60_000;
 /** Why a github_app server's calls are refused unsent, in the words the gateway gives the model. */
 export const GITHUB_UNUSABLE = {
   noAccess: "this server has no GitHub App set up for its runs (Settings → GitHub)",
+  inWorkspace: "a workspace doesn't use this server's GitHub App, so only public repositories are read",
   noRepo: "this run names no GitHub repository, so the GitHub App has no repository to make a token for. The server is connected: start the run with a repository (`repo` in the start body, or https://github.com/<owner>/<repo> in its first message), or bind the agent to one repository with a GitHub trigger",
   notInstalled: (repo: string) => `the GitHub App is not installed on ${repo}: install it from Settings → GitHub`,
   failed: (message: string) => `GitHub did not make a token for this run (${message})`,
@@ -82,6 +86,7 @@ export function githubTokens(access: GithubAppAccess | undefined, { now = Date.n
    *  working until it expires, then the server's calls are refused in words. */
   const mint = async (name: string, put: (entry: Entry) => void, refreshing: boolean): Promise<void> => {
     if (!access) return put({ unopened: GITHUB_UNUSABLE.noAccess });
+    if (access.withheld) return put({ unopened: access.withheld });
     if (!access.target) return put({ unopened: GITHUB_UNUSABLE.noRepo });
     const epoch = epochOf(name);
     let got: Awaited<ReturnType<GithubAppMint>>;

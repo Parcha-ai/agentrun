@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { sendCommand } from "../dist/runner/commands.js";
-import { startRunner } from "../dist/runner/runner.js";
+import { runnerStopBy, startRunner } from "../dist/runner/runner.js";
 import * as plan from "../dist/chatgpt-plan.js";
 import { commandRow, fauxLoops, queue, stores, until } from "./runner-support.mjs";
 
@@ -34,7 +34,7 @@ for (const kind of ["cancel", "stop"]) {
   });
 }
 
-test("a close's read of the stop rows and its loops' stop share one window, the lease less its margin: a stalled read and a loop that never stops end the close at that window, never later", async (t) => {
+test("a close's read of the stop rows and its loops' stop share one window (runnerStopBy): a stalled read and a loop that never stops end the close at that window, never later", async (t) => {
   const { server, runners: [store] } = await stores({ runners: 1 });
   // A loop that ignores its stop and keeps committing, beside a read that never answers.
   const faux = fauxLoops({ stubborn: true, turnMs: 20 });
@@ -48,7 +48,11 @@ test("a close's read of the stop rows and its loops' stop share one window, the 
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
-  const window = { leaseMs: 8_000, stopMarginMs: 3_000, renewEveryMs: 1_000 };
+  // No computer provider here: no cleanup bound to wait out (cleanupMs 0), so the window is the release's margin and the
+  // stop's (8 s), longer than the lease less its margin (5 s).
+  const window = { leaseMs: 8_000, stopMarginMs: 3_000, renewEveryMs: 1_000, cleanupMs: 0 };
+  const bound = runnerStopBy(0, 0, window.leaseMs, window.stopMarginMs, window.cleanupMs);
+  assert.equal(bound, 8_000);
   const runner = startRunner({ store: stalled, createLoop: faux.createLoop, name: "runner-a", ...TIMING, ...window });
   t.after(() => runner.close());
   await queue(server, "run-1");
@@ -57,8 +61,8 @@ test("a close's read of the stop rows and its loops' stop share one window, the 
   const startedAt = Date.now();
   await runner.close();
   const took = Date.now() - startedAt;
-  // runnerCloseBoundMs's window after the drain (none here): 5 s, the read's 3 s inside it, never 3 s + 5 s.
-  assert.ok(took >= 4_900 && took < 7_000, `the close took the one window: ${took} ms`);
+  // runnerStopBy's window (no drain here): 8 s, the read's 3 s inside it, never 3 s + 8 s.
+  assert.ok(took >= bound - 100 && took < bound + 2_000, `the close took the one window: ${took} ms`);
 });
 
 // What a runner's caller stops when told (loopsStopping: a ChatGPT renewal) is served at most RUNNER_RENEWALS_SERVED_MS
@@ -194,3 +198,40 @@ test("a close whose read of the stop rows never answers is bounded by the stop m
   assert.deepEqual(faux.loops[0].stopCalls.map((call) => call.kind), ["shutdown"]);
   assert.ok(events.some((event) => event.type === "error" && event.step === "commands" && /took longer than 1000 ms/.test(event.message)), `the close said why: ${JSON.stringify(events.filter((event) => event.type === "error"))}`);
 });
+
+// A run its ChatGPT renewal hands back in a close (LoopDeps.handBack: PlanStopping in the drain) is handed no more rows,
+// and the close reads none for it: a person's stop or cancel sent before it, that no delivery had handed on yet, is read
+// by the hand-back itself, so the run ends on it at this close rather than resuming on the next start to end there.
+for (const kind of ["cancel", "stop"]) {
+  test(`a run handed back in a close (LoopDeps.handBack) ends on a ${kind} sent before it that no delivery handed on: stopped by its row, never for a shutdown, its row taken`, async (t) => {
+    const { server, runners: [store] } = await stores({ runners: 1 });
+    const faux = fauxLoops({ turns: 1_000, turnMs: 20 });
+    // Rows reach the runner only through its reads (no write's wake hands one on); the claim's first read is told.
+    let delivered = () => {};
+    const firstDelivery = new Promise((resolve) => (delivered = resolve));
+    const quiet = new Proxy(store, {
+      get(target, prop) {
+        if (prop === "commands") return (...args) => target.commands(...args).finally(() => delivered());
+        if (prop === "watchCommands") return () => () => {};
+        const value = Reflect.get(target, prop, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const runner = startRunner({ store: quiet, createLoop: faux.createLoop, name: "runner-a", ...TIMING, drainMs: 10_000 });
+    t.after(() => runner.close());
+    await queue(server, "run-1");
+    await until(() => faux.loops.length === 1, "the run claimed");
+    await firstDelivery;
+    // One turn more: the runner's own continuation of that read has run.
+    await new Promise((resolve) => setImmediate(resolve));
+    const row = await sendCommand(server, "run-1", { kind });
+    const closing = runner.close();
+    // In the drain, a renewal the run needs is refused as the runner stops: its plan reader hands the run back.
+    await faux.loops[0].deps.handBack();
+    assert.deepEqual(faux.loops[0].stopCalls.map((call) => [call.kind, call.commandId, call.cancel ?? false]), [["command", row.id, kind === "cancel"]], "stopped by its row, never for a shutdown");
+    await closing;
+    const ended = await server.runs.get("run-1");
+    assert.deepEqual([ended.state, ended.runner], ["stopped", null], `ended at the close: ${JSON.stringify(ended)}`);
+    assert.notEqual((await commandRow(server, "run-1", row.id)).takenAt, null, "its row is taken");
+  });
+}

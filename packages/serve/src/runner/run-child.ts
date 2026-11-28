@@ -11,7 +11,7 @@ import { Socket } from "node:net";
 import { setHeld, type Held } from "./held.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { resolveRunnerLoop } from "./harness-loops.js";
-import { type Claim, type Command, type HeldState, type Journal, type Loop, type LoopDeps, type StopReason } from "./loop-contract.js";
+import { type Claim, type Command, type HeldState, type Journal, type Loop, type LoopDeps, recoveriesDone, type StopReason } from "./loop-contract.js";
 import { heldRedactor, processSecretRedactor } from "./redact.js";
 import { Channel } from "./run-channel.js";
 import { childDeps, type ChildInit } from "./run-child-deps.js";
@@ -28,9 +28,10 @@ registerRunErrors();
 
 const socket = new Socket({ fd: 4, readable: true, writable: true });
 const channel = new Channel(socket, {
-  // The runner closed the channel (the loop's end answered) or is gone: nothing of the run's goes on. Its trace is the
-  // runner's to send (postedTracing): nothing here waits on a collector.
-  onClose: () => void setImmediate(() => process.exit(0)),
+  // The runner closed the channel (the loop's end answered) or is gone: nothing of the run's goes on but a lost create's
+  // recovery under way here (its browser released, to its own bound and the release's margin: recoveriesDone), then the
+  // process exits. Its trace is the runner's to send (postedTracing): nothing here waits on a collector.
+  onClose: () => void recoveriesDone(Date.now(), 0, Infinity).finally(() => setImmediate(() => process.exit(0))),
   // Each call carries the ledger of the tool call it is made in: what the runner does for it (an MCP tool's call, a
   // computer's) books on the run's one ledger, as it would in the run's own process.
   context: carriedLedger,
@@ -80,6 +81,8 @@ function remoteJournal(claim: Claim): Journal {
 }
 
 let loop: Loop | undefined;
+/** When the runner's close cuts the claim's tool hosts' release (LoopDeps.releaseBy), as its stop or closing said. */
+let releaseBy: number | undefined;
 let made!: (loop: Loop) => void;
 const loopMade = new Promise<Loop>((resolve) => (made = resolve));
 
@@ -104,8 +107,12 @@ channel.expose("loop", async (method, args) => {
         ...(init.pastDeadline ? { pastDeadline: init.pastDeadline } : {}),
         delivered: (channel.call("runner", "delivered", []) as Promise<void>).catch(() => undefined),
         deliverNow: () => channel.call("runner", "deliverNow", []) as Promise<void>,
+        // A row this process's dispatch took for now and its loop then refused: written refused by the runner, under its claim.
+        refuse: (commandId, reason) => channel.call("runner", "refuse", [commandId, reason]) as Promise<void>,
         live: (reader) => void (read = reader),
         redact: heldRedactor(processSecretRedactor()),
+        ...(init.releaseBoundMs === undefined ? {} : { releaseBoundMs: init.releaseBoundMs }),
+        releaseBy: () => releaseBy,
       };
       // Its runner counted the harness's key rows before it made this process (staysInRunner): never again here.
       loop = createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: resolveRunnerLoop(deps, { keysCounted: true }) })(loopDeps);
@@ -139,7 +146,13 @@ channel.expose("loop", async (method, args) => {
     case "command":
       return (await loopMade).command(args[0] as Command);
     case "stop":
+      // A shutdown's stop carries when the runner's close cuts the release (run-child-host.ts): the same clock, one host.
+      if (typeof args[1] === "number") releaseBy = args[1];
       return (await loopMade).stop(args[0] as StopReason);
+    case "closing":
+      // The close's cut of the release, for a loop already stopping (run-child-host.ts closing).
+      if (typeof args[0] === "number") releaseBy = args[0];
+      return (await loopMade).closing?.();
     default:
       throw new Error(`a run's loop has no ${method}`);
   }

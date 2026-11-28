@@ -206,6 +206,8 @@ export interface ListedFilter {
   readonly after?: { readonly startedAt: number; readonly id: string };
   readonly limit: number;
   readonly offset?: number;
+  /** Only runs in this workspace (Runs.workspace: the run's own, else its agent's). */
+  readonly workspace?: string;
 }
 /** A run as a list reads it (Runs.listed): its row, its agent's archive time, and its listing as kept (null: none built). */
 export interface ListedRun {
@@ -832,7 +834,9 @@ export type FiringStatus = "due" | "started" | "sent" | "skipped" | "failed" | "
  *  for its key's day. `retryAt`: a due firing's next try; `waitsOn`: what a due firing waits behind for its trigger's
  *  room, a run's id, or a firing's key while the trigger has no run yet (triggers.ts busy).
  *  `startBy`: a firing its launch hook's host took with no run (sent), the time until which the host may still start
- *  its run (triggers.ts handedStart); null on any other. */
+ *  its run (triggers.ts handedStart); null on any other. `hooked`: what the launch hook told the host of the firing's
+ *  run, written at its first hand (Triggers.hooked) and lowered by any later hand that told less: the lowest cap the
+ *  host was told, which that run never passes; null for a firing never handed (or handed by a build that kept none). */
 export interface FiringRow {
   readonly triggerId: string;
   readonly key: string;
@@ -854,6 +858,14 @@ export interface FiringRow {
   readonly paused: boolean;
   readonly shown: boolean;
   readonly waitsOn: string | null;
+  readonly hooked: FiringHooked | null;
+}
+/** What the launch hook told the host of a firing's run (HookFiring): the lowest cap any hand told, null for the agent's
+ *  default when the host starts it. `under_default`: the first hand told null, so the run stays under the agent's default
+ *  as well as under a cap told since. */
+export interface FiringHooked {
+  readonly max_cost_usd: number | null;
+  readonly under_default?: true;
 }
 /** A firing recorded: due (to be driven), or settled at once (skipped, missed, ignored). */
 export interface NewFiring {
@@ -991,8 +1003,9 @@ export class ExternalBodyConflict extends Error {
 export interface Agents {
   /** Creates the agent, or renames it (name, description) when it exists. */
   put(agent: { id: string; name: string; description?: string | null }): Promise<void>;
-  /** The agent row and its first revision, current, in one transaction: both or neither. */
-  create(agent: { id: string; name: string; description?: string | null }, firstRevision: NewRevision): Promise<void>;
+  /** The agent row and its first revision, current, in one transaction: both or neither. `workspace`: the workspace a
+   *  scoped request made it in (workspace-scope.ts), written with it; absent, none. */
+  create(agent: { id: string; name: string; description?: string | null; workspace?: string }, firstRevision: NewRevision): Promise<void>;
   get(id: string): Promise<AgentRow | undefined>;
   /** The agent an external reference ("<source>:<kind>:<id>") maps to (Runs.createInline), or undefined before its first
    *  run. */
@@ -1002,7 +1015,14 @@ export interface Agents {
   /** The revision that maps `version` of its owning system, or undefined before that version's first run. */
   externalRevision(agentId: string, version: string): Promise<RevisionRow | undefined>;
   /** The agents, by `archived` (default false). A purged agent (Agents.purge) only with `purged`: what a total counts. */
-  list(options?: { archived?: boolean; purged?: boolean }): Promise<AgentRow[]>;
+  list(options?: { archived?: boolean; purged?: boolean; workspace?: string }): Promise<AgentRow[]>;
+  /** The agent's workspace (null: none, made unscoped), or undefined when there is no such agent. `workspace` given to
+   *  `list`: only the agents in it. */
+  workspace(id: string): Promise<string | null | undefined>;
+  /** Puts the agent in `workspace` only while it is in none, and answers the workspace it is in after (`workspace` when it
+   *  was put there or was there already; another when it was in that one, nothing written), or undefined when there is no
+   *  such agent: an operator's backfill (workspace-backfill.ts). */
+  adoptWorkspace(id: string, workspace: string): Promise<string | null | undefined>;
   /** Archives the agent, or unarchives it. Archived, every trigger of it that is on is turned off in the same transaction
    *  (`disabled` set to `why`, JSON; its scope rows dropped), and those are the answer: from its commit no firing starts a
    *  run of the agent (triggers.fire refuses it, AgentArchived), and none of its triggers is made on or turned on.
@@ -1094,6 +1114,10 @@ export interface Triggers {
   firing(triggerId: string, key: string): Promise<FiringRow | undefined>;
   /** The trigger's history, newest first: its shown firings. */
   firings(triggerId: string): Promise<FiringRow[]>;
+  /** What the launch hook tells the host of firing `key`'s run, given its target's cap `now`: `now` at its first hand,
+   *  else the lower of the kept cap and `now`, kept and answered, so every hand names the lowest cap told so far and a
+   *  raised target never raises it. Undefined when there is no such firing. */
+  hooked(triggerId: string, key: string, now: FiringHooked): Promise<FiringHooked | undefined>;
   /** The firing changed (with its trigger's last_run_id moved to a newer run it names, and `streak`), in one transaction:
    *  undefined when the firing is gone (its trigger deleted), or is no longer the change's `from`. `paused`: this failure
    *  turned the trigger off. */
@@ -1138,9 +1162,10 @@ export interface Runs {
    *  `started_at`); absent, now. With `firing` (a launch hook's host starting the firing it was handed), that firing is
    *  started with the run in the same transaction, its trigger's last run and failure streak as a started firing's
    *  are, only while it has no run and is still due or sent with a start_by: any other (released, failed, settled) is
-   *  refused (FiringMoved), and nothing is written. */
+   *  refused (FiringMoved), and nothing is written. `workspace`: the run's own, written only when given. The server's
+   *  start gives none: a run is its agent's workspace's (Runs.workspace), never the request's that started it. */
   create(run:{ id: string; agentId: string; revisionId: string; origin?: RunOrigin; labels?: RunLabels;
-    expectedCurrent?: string | null; settingsGuards?: readonly SettingsGuard[]; startedAt?: number; firing?: { triggerId: string; key: string } }, launch?: RunLaunchInput): Promise<RunRow>;
+    expectedCurrent?: string | null; settingsGuards?: readonly SettingsGuard[]; startedAt?: number; firing?: { triggerId: string; key: string }; workspace?: string }, launch?: RunLaunchInput): Promise<RunRow>;
   /** A run whose agent is given inline and mapped to a source system by `agent.ref` and `revision.version`. In one
    *  transaction: the agent (one per `ref`, written on its first run, its name and description brought up to the version
    *  whose first use this is) and the revision (one per `version`, made current on its first use) are written or read, then
@@ -1154,9 +1179,18 @@ export interface Runs {
     launch: RunLaunchInput;
   }): Promise<RunRow>;
   get(id: string): Promise<RunRow | undefined>;
+  /** The run's workspace: its own, else its agent's (null: neither has one), or undefined when there is no such run. A run
+   *  started unscoped of an agent in a workspace is in that workspace. */
+  workspace(id: string): Promise<string | null | undefined>;
   /** The run's launch row (the runner reads it at its claim; the server for views). StoreLaunchMissing when the run has
    *  none (it was not started with one), never a default. */
   launch(runId: string): Promise<RunLaunchRow>;
+  /** Writes `learning` as run `runId`'s learning start, in place of the one its launch body named (the body's `learning`
+   *  member; nothing else of the launch changes): a claim that read its seed again once its agent's open rounds ended
+   *  (runner/learning-reseed.ts), before the run's spec reads its launch. Fenced by that claim (fence.ts claimFence):
+   *  written only while the run's epoch is still `epoch` and its lease has not run out, else nothing (false: the claim
+   *  was lost or lapsed). StoreLaunchMissing when the run has no launch. */
+  reseedLearning(runId: string, learning: unknown, epoch: number): Promise<boolean>;
   /** The learning deadlines (ms) of those of `runIds` that are learning children (a check's replay run, an audit's shadow
    *  run): its launch's replay or audit `deadline_at` (run-launch.ts Replay.deadlineAt). One read for every id, projecting
    *  that member alone: what a runner reads for a whole batch of claims before any loop starts on them. A run that is no
@@ -1196,8 +1230,9 @@ export interface Runs {
    *  import's read of the sessions it holds, never a reader of a run's content.
    *  `scope` selects, before the limit, the runs the Agent Factory shows, never an imported one: `active`, every
    *  execution still going (a resumable agentic stop and a built-in learning run included); `review`, unarchived ended
-   *  escalations and failures. `before` is an exclusive keyset boundary in descending (startedAt, id) order. */
-  list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; labels?: RunLabels; disk?: string | null; limit?: number; purged?: boolean; scope?: "active" | "review"; before?: { startedAt: number; id: string } }): Promise<RunRow[]>;
+   *  escalations and failures. `before` is an exclusive keyset boundary in descending (startedAt, id) order. `workspace`:
+   *  only the runs in it (Runs.workspace: the run's own, else its agent's). */
+  list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; labels?: RunLabels; disk?: string | null; limit?: number; purged?: boolean; scope?: "active" | "review"; before?: { startedAt: number; id: string }; workspace?: string }): Promise<RunRow[]>;
   /** A page of a runs list, in one read: newest first, `offset` rows on, at most `limit`, and whether more follow (`more`).
    *  Each with its listing as its row keeps it (RUN_LISTING_COLUMNS: null while none has been built), whether that is
    *  behind, and its agent's archive time. `archived` filters on the run's archive or its agent's (true: either; false:
@@ -1357,6 +1392,9 @@ export interface RunChanges {
  *  credential sealed (store/seal.ts): bytes the store never opens. `tools` and `prices` are JSON. */
 export interface McpServerRow {
   readonly name: string;
+  /** The row's key in the store when a view shows it under another name (a workspace's server, mcp-workspace.ts): its
+   *  credential is sealed at that key. Absent on a row as the store reads it, whose name is its key. */
+  readonly sealedAs?: string;
   readonly url: string;
   readonly auth: string;
   readonly protocol: string | null;
@@ -1782,6 +1820,12 @@ export interface RunnerRow {
    *  row a runner of an earlier build wrote, or one that said neither (a refusing runner says no slots). */
   readonly version: string | null;
   readonly slots: number | null;
+  /** The store's schema version the runner's build knows (Runners.knows, which keepPresence writes): null on a row a
+   *  runner of a build before this column wrote. A live row whose `knows` is null or below the store's runner floor is a
+   *  runner of an earlier build, which holds the reopened runs' mark, as its claims do once a later build's runner took
+   *  its name (run-patch.ts backfillLedger). Not the package
+   *  version, which a build says the same before and after a breaking change until its release. */
+  readonly knows: number | null;
 }
 
 /** The store's runs and hand-backs as the capacity read counts them (GET /v2/capacity, capacity.ts), on the deadlines'
@@ -1822,12 +1866,15 @@ export const KEPT_PREFIX = "computer_kept:";
 
 /** Every runner's word that it is there (runner/presence.ts). */
 export interface Runners {
+  /** The store's schema version this build knows (its newest migration on Postgres, SCHEMA_VERSION on SQLite: what a
+   *  runner's open checks the store against), which keepPresence says on each row it keeps (RunnerRow.knows). */
+  readonly knows: number;
   /** Keeps `row` for its runner, replacing any earlier incarnation's, seen now; rows no runner renewed for
    *  RUNNER_ROWS_KEPT_MS go in the same write. Its host and port go together: both absent (or null) for no relay. With
    *  `unlessLiveMs`, not over another incarnation's row of the same name seen within that: a process's put again of a row
    *  that went (pruned, a store restored) never takes back a later process's live one. False when such a row is there and
    *  nothing was written. */
-  put(row: Omit<RunnerRow, "seenAt" | "host" | "port" | "version" | "slots"> & { readonly host?: string | null; readonly port?: number | null; readonly version?: string | null; readonly slots?: number | null }, options?: { readonly unlessLiveMs?: number }): Promise<boolean>;
+  put(row: Omit<RunnerRow, "seenAt" | "host" | "port" | "version" | "slots" | "knows"> & { readonly host?: string | null; readonly port?: number | null; readonly version?: string | null; readonly slots?: number | null; readonly knows?: number | null }, options?: { readonly unlessLiveMs?: number }): Promise<boolean>;
   /** Marks the runner's row seen now and says on it where its relay answers (`at`, or null for nowhere), while the row is
    *  still this incarnation's. False when it is not (or there is none), and nothing was written. */
   renew(runner: string, incarnation: string, at: { readonly host: string; readonly port: number } | null): Promise<boolean>;
@@ -1859,17 +1906,27 @@ export interface ImportedTemplateRow {
   readonly files: Readonly<Record<string, string>>;
   /** When it was last imported (stamped by the store). */
   readonly importedAt: number;
+  /** The workspace a scoped request imported it in (workspace-scope.ts), null for none: its id is that workspace's own. */
+  readonly workspace: string | null;
 }
 
+/** The imported packages, each keyed by its workspace and id: one id is a package in each workspace, and one among those
+ *  of none. Each call's `workspace` is the one it reaches (a scoped request's, workspace-scope.ts); absent, none. */
 export interface ImportedTemplates {
-  /** Every imported package, by id. */
+  /** Every imported package of every workspace, by id, those of none first. */
   list(): Promise<ImportedTemplateRow[]>;
-  /** Every imported package's id, sorted, with none of its files read. */
-  ids(): Promise<string[]>;
-  /** Keeps the package under its id, in place of the one there (a re-import at a new SHA replaces it). */
-  put(row: Omit<ImportedTemplateRow, "importedAt">): Promise<void>;
-  /** Removes the package: false when none had that id. */
-  remove(id: string): Promise<boolean>;
+  /** Every imported package's id and workspace, in list's order, with none of its files read. */
+  keys(): Promise<Pick<ImportedTemplateRow, "id" | "workspace">[]>;
+  /** Keeps the package under its id in `workspace`, in place of the one of that id there (a re-import at a new SHA
+   *  replaces it). */
+  put(row: Omit<ImportedTemplateRow, "importedAt" | "workspace">, workspace?: string): Promise<void>;
+  /** The sha and import time of the package of that id in `workspace`, with none of its files read: undefined when it
+   *  has none. */
+  stamp(id: string, workspace?: string): Promise<Pick<ImportedTemplateRow, "sha" | "importedAt"> | undefined>;
+  /** Removes the package of that id in `workspace`: false when it has none. `read`: removes it only while it is still the
+   *  row a caller read (its sha and import time), in the same write, so an import of that id that replaced the row since
+   *  is kept and the answer is false. */
+  remove(id: string, workspace?: string, read?: Pick<ImportedTemplateRow, "sha" | "importedAt">): Promise<boolean>;
 }
 
 /** A trigger source's sealed setting as a row (store schema `trigger_settings`): its adapter, scope ("server" for the one
@@ -2098,6 +2155,12 @@ export interface Store {
   /** Reads the store's schema version and its runner floor now, without a lock or a write: a runner reads it at each
    *  renewal (runner/main.ts), and stops once the floor is above the version its build knows. */
   schemaState?(): Promise<StoreSchemaState>;
+  /** The server's pass over the ledger (run-patch.ts backfillLedger), as its open runs it: true once the reopened runs are
+   *  marked recorded again under this build's split (store_meta.ledger_rerecorded), which only a pass that started with
+   *  no runner of an earlier build there and no run held by a claim taken before the open and RUNNER_STALE_MS marks
+   *  (run-patch.ts ledgerPasses). The server tries again every RUNNER_STALE_MS until it is true (server.ts).
+   *  On a store opened as the server. */
+  rerecordReopened?(): Promise<boolean>;
   /** The clock a claim's lease is judged and stamped on (its `until`), when it is this process's own: the store's clock on
    *  SQLite (one host), or a test's. A runner reckons a claim's deadline from its `until` on it, so a claim or renew that
    *  waited for the writer lock keeps the lease the store granted from the lock. Absent when the lease is the database's

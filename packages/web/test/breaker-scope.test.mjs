@@ -85,7 +85,9 @@ test("Parallel: a rate limit on an extract holds nothing, and one on a search ho
   assert.deepEqual([(await w.fetch(PUBLIC)).answer.parallel], ["answered 429"]);
   assert.equal((await w.search("widgets")).answer.provider, "parallel", "search is asked after extract's rate limit");
   assert.equal((await w.fetch(NOTES)).answer.via, "parallel", "and extract again too");
-  assert.match((await w.search("gadgets")).answer.error, /Parallel's search answered 429/);
+  const limited = await w.search("gadgets");
+  assert.deepEqual(limited.answer, { error: "search is busy; try again in 60 s, or answer from what you have" }, "the search that met the limit answers the breaker's words, not Parallel's 429");
+  assert.match(limited.receipt.tries[0].failure.message, /Parallel's search answered 429/, "the receipt keeps Parallel's");
   assert.match((await w.search("sprockets")).answer.error, /^search is busy/, "search waits");
   assert.equal((await w.fetch(`${PUBLIC}?again`)).answer.via, "parallel", "extract is still asked");
   assert.deepEqual(got, ["/v1/extract", "/v1/search", "/v1/extract", "/v1/search", "/v1/extract"]);

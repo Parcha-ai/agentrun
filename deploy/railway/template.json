@@ -21,8 +21,8 @@
           "description": "Starts the container as root so the start command can give the volume, which Railway mounts as root, to the server's own user. The server itself runs as that user (1000), never as root."
         },
         "RAILWAY_DEPLOYMENT_DRAINING_SECONDS": {
-          "defaultValue": "3${{secret(1, \"5\")}}",
-          "description": "How long Railway waits after SIGTERM before it kills the server at a redeploy or a stop: 35 s, so the runner's stop (31 s) and a ChatGPT renewal saving its new pair (up to 25 s) finish. Railway's own default is 0."
+          "defaultValue": "4${{secret(1, \"5\")}}",
+          "description": "How long Railway waits after SIGTERM before it kills the server at a redeploy or a stop: 45 s, so the runner's stop (40 s, a browser's release included) and a ChatGPT renewal saving its new pair (up to 25 s) finish. Railway's own default is 0."
         },
         "AGENTRUN_TOKEN": {
           "defaultValue": "${{secret(64, \"abcdef0123456789\")}}",

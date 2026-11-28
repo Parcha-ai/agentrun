@@ -121,3 +121,16 @@ test("browser_upload chooses a file from the disk, by its path in the run's fold
   assert.deepEqual(await uploadsFrom(growing, 16, () => "text/plain").resolve("reports/q3.pdf"), { refused: "reports/q3.pdf changed while it was read; try again" });
   for (const outside of ["../other-run/secret.txt", "/etc/passwd"]) assert.deepEqual(await files.resolve(outside), { refused: `${outside} resolves outside the workspace` }, outside);
 });
+
+test("a browser screenshot's save_as is written on the disk through the run's Workspace: its folders made, a file there replaced, nothing outside the run's folder", async () => {
+  const { disk, work } = fresh();
+  const files = uploadsFrom(work, 16, () => "image/png");
+  assert.deepEqual(await files.write("shots/a/walk.png", Buffer.from("one")), { path: "shots/a/walk.png" });
+  assert.deepEqual(await files.write("shots/a/walk.png", Buffer.from("two")), { path: "shots/a/walk.png" });
+  assert.equal(text(await work.read("shots/a/walk.png")), "two");
+  await work.write("dir/inner.txt", "x");
+  assert.match((await files.write("dir", Buffer.from("x"))).refused, /^dir could not be written/);
+  const before = [...disk.files.keys()].sort();
+  for (const outside of ["../other-run/walk.png", "/etc/walk.png", "shots/../../walk.png"]) assert.deepEqual(await files.write(outside, Buffer.from("x")), { refused: `${outside} resolves outside the workspace, or a link is on the way to it` }, outside);
+  assert.deepEqual([...disk.files.keys()].sort(), before, "nothing was written");
+});

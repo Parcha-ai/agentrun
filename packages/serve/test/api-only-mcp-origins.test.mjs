@@ -24,6 +24,10 @@ const { mcpSourceKey, ownersRecord, storedSource } = await import("../dist/mcp-s
 const { sealMcpCredential, sealRunMcpAuth } = await import("../dist/store/index.js");
 const { holdApiOnlyMcpOrigins, offApiOnlyMcpOriginsWords } = await import("../dist/mcp-api-only-origins.js");
 const { mcpClaim } = await import("../dist/runner/mcp-claim.js");
+const { mcpRowKey, mcpView, requestNames } = await import("../dist/mcp-workspace.js");
+const { saveMcpServer } = await import("../dist/mcp-store.js");
+const { inWorkspace } = await import("../dist/workspace-scope.js");
+const { tokenWriteOverWords } = await import("../dist/mcp-secret-writes.js");
 
 const LIST = `not-a-secret-${"cf-list-token-0001"}`;
 const RUN = `not-a-secret-${"cf-run-token-0002"}`;
@@ -192,6 +196,36 @@ test("API-only with one origin listed: a per_run save at another origin, a save 
   assert.equal((await s.token("GET", PATH)).status, 404, "still no read");
 });
 
+test("API-only with the origin listed: the token previews a per_run server there (200, its tools listed with the listing's headers, nothing saved); at another origin, of another auth type, with no auth, or by a saved name alone, the preview is the refused route's 404 and no address gets anything", async (t) => {
+  const gw = await gateway(t);
+  const elsewhere = await gateway(t);
+  const s = await setup(t, [gw.origin]);
+  const shown = await s.token("POST", "/settings/mcp-servers/preview", perRun(gw.fake.url));
+  assert.equal(shown.status, 200, JSON.stringify(shown.body));
+  assert.ok(shown.body.tools?.some((tool) => tool.name === "add"), JSON.stringify(shown.body));
+  assert.ok(gw.sent.includes(`Bearer ${LIST}`), "listed with the preview's own headers");
+  assert.deepEqual(await names(s), { names: [] }, "a preview saves nothing");
+  const before = gw.fake.log.length;
+  const refusal = apiOnlyRefusal("/v2/settings/mcp-servers/preview");
+  for (const [why, body] of [
+    ["another origin", perRun(elsewhere.fake.url)], ["auth none", { url: gw.fake.url, auth: { type: "none" } }], ["no auth", { url: gw.fake.url }],
+    ["headers", { url: gw.fake.url, auth: { type: "headers", headers: { authorization: `Bearer ${OTHER}` } } }], ["a name alone", { name: "contextforge" }],
+  ]) {
+    const refused = await s.token("POST", "/settings/mcp-servers/preview", body);
+    assert.deepEqual([refused.status, refused.body.error?.message], [404, refusal], `${why}: ${JSON.stringify(refused.body)}`);
+  }
+  assert.deepEqual([gw.fake.log.length, elsewhere.fake.log], [before, []], "no address got anything");
+  assert.equal(gw.sent.includes(`Bearer ${OTHER}`), false, "the refused headers went nowhere");
+});
+
+test("API-only with no MCP origin named: the token's per_run preview is the refused route's 404, and the address gets nothing", async (t) => {
+  const gw = await gateway(t);
+  const s = await setup(t, []);
+  const refused = await s.token("POST", "/settings/mcp-servers/preview", perRun(gw.fake.url));
+  assert.deepEqual([refused.status, refused.body.error?.message], [404, apiOnlyRefusal("/v2/settings/mcp-servers/preview")], JSON.stringify(refused.body));
+  assert.deepEqual(gw.fake.log, [], "the address got nothing");
+});
+
 test("API-only with the origin listed: the token's per_run save over a server it did not save, or over one that seals a credential, is 403; the row is unchanged and the address gets nothing", async (t) => {
   const gw = await gateway(t);
   const s = await setup(t, [gw.origin]);
@@ -209,7 +243,9 @@ test("API-only with the origin listed: the token's per_run save over a server it
     const before = await rowOf(store, name);
     const refused = await s.token("PUT", `/settings/mcp-servers/${name}`, perRun(gw.fake.url));
     assert.equal(refused.status, 403, `${name}: ${JSON.stringify(refused.body)}`);
-    assert.ok(String(refused.body.error?.message).startsWith(SECRET_WRITE_REFUSAL), refused.body.error?.message);
+    // In words about the server it would write over, never the secret-write words: the body sent no secret.
+    assert.ok(String(refused.body.error?.message).startsWith(tokenWriteOverWords(name, name === "sealed")), refused.body.error?.message);
+    assert.equal(String(refused.body.error?.message).includes(SECRET_WRITE_REFUSAL), false, refused.body.error?.message);
     assert.deepEqual(await rowOf(store, name), before, `${name}: the row is unchanged`);
   }
   assert.deepEqual(gw.fake.log.slice(from), [], "the address got nothing");
@@ -263,6 +299,55 @@ test("a run already going: before each call of a per_run server the token saved,
   await holdApiOnlyMcpOrigins(store, true, [origin]);
   await call();
   assert.deepEqual({ ...step.credentials.contextforge }, handed, "listed again: the run's own header is back");
+});
+
+/** A store with W1's own contextforge saved with a `kind` credential (headers or bearer, sealed at its row key), by the API
+ *  token when `byToken` (a workspace's own save, mcp-secret-writes.ts workspaceWriteRefused) else by the owner, its
+ *  origin listed, a W1 run claimed, and the claim's MCP step. */
+async function goingSealed(t, kind, byToken = true) {
+  const { store } = await storeOn(t);
+  const sealKey = Buffer.alloc(32, 7);
+  const url = "https://mcp.example.com/mcp";
+  const origin = new URL(url).origin;
+  const add = { name: "add", description: "Add two numbers.", inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] } };
+  const W1 = "org:w1";
+  const credential = { type: "headers", headers: { authorization: `Bearer ${OTHER}` } };
+  await inWorkspace(W1, () => saveMcpServer(mcpView(store, requestNames), sealKey, { name: "contextforge", url, auth: kind, tools: [add], credential }));
+  const key = mcpRowKey("contextforge", W1);
+  await store.settings.put(mcpSourceKey(key), storedSource({ source: "url", toolkit: null }, await store.mcp.server(key), false, byToken));
+  await holdApiOnlyMcpOrigins(store, true, [origin]);
+  await store.agents.create({ id: "agent-1", name: "a", workspace: W1 }, { id: "rev-1", kind: "agentic", body: {}, mcpPin: { contextforge: { url, tools: [add] } } });
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "go" }, title: "go", place: { mode: "runner" } } });
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 600_000 });
+  const step = await mcpClaim({ loopback: true, store, claim, grants: ["mcp:contextforge/add"], sealKey, signal: new AbortController().signal });
+  t.after(() => step.release());
+  const call = () => step.beforeCall("contextforge", new AbortController().signal);
+  return { store, step, call, url, origin, handed: { url, headers: { authorization: `Bearer ${OTHER}` } } };
+}
+
+for (const kind of ["headers", "bearer"]) {
+  test(`a run already going: before each call of a workspace's own ${kind} server the token saved (its credential sealed in the workspace's row), the origin list is read again; dropped since the claim, the call gets only the refusal's words and the saved credential is not sent; listed again, it is back`, async (t) => {
+    const { store, step, call, url, origin, handed } = await goingSealed(t, kind);
+    assert.deepEqual({ ...step.credentials.contextforge }, handed, "claimed with the origin listed: the saved credential");
+    await call();
+    assert.deepEqual({ ...step.credentials.contextforge }, handed, "still listed: a call keeps it");
+    // The server restarted with the origin dropped; this runner's claim goes on.
+    await holdApiOnlyMcpOrigins(store, true, ["https://other.example.com"]);
+    await call();
+    assert.deepEqual({ ...step.credentials.contextforge }, { url, unopened: OFF_LIST }, "dropped: the next call gets the words, no header");
+    await call();
+    assert.deepEqual({ ...step.credentials.contextforge }, { url, unopened: OFF_LIST }, "and every call after it");
+    await holdApiOnlyMcpOrigins(store, true, [origin]);
+    await call();
+    assert.deepEqual({ ...step.credentials.contextforge }, handed, "listed again: the saved credential is back");
+  });
+}
+
+test("a run already going: a workspace's server the owner saved with a sealed credential is not the list's; its origin dropped mid-run, its calls keep the credential", async (t) => {
+  const { store, step, call, handed } = await goingSealed(t, "headers", false);
+  await holdApiOnlyMcpOrigins(store, true, ["https://other.example.com"]);
+  await call();
+  assert.deepEqual({ ...step.credentials.contextforge }, handed, "the owner's: as before");
 });
 
 test("a run already going: when the origin list can't be read before a call (a store error), the call is refused unsent, never sent on the header the claim opened (the gateway refuses a check that throws)", async (t) => {

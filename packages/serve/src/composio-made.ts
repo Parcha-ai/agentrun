@@ -21,11 +21,15 @@ export type Made = { id: string; made: boolean };
  *  since the mode exists writes it, so a server saved before for a Composio user literally named "per_run" keeps that
  *  user until it is saved again. `key_env`: saved with `api_key_env`, its key is the value of this variable the server and
  *  each runner were started with, read at each use, and its row seals no credential (composioKeyFromEnv). */
-export type ComposioMade = { user: string; auth_config: (Made & { named?: true }) | null; accounts: Made[]; per_run?: true; key_env?: typeof COMPOSIO_KEY_ENV };
+export type ComposioMade = { user: string; auth_config: (Made & { named?: true }) | null; accounts: Made[]; per_run?: true; key_env?: ComposioKeyEnv };
 
-/** The one variable a Composio save may name for its key (`api_key_env`). Composio's host is fixed in code, so no other
- *  secret of the server's environment is ever sent there. */
+/** The default Composio project key. A saved server retains the exact variable its save names. */
 export const COMPOSIO_KEY_ENV = "COMPOSIO_API_KEY";
+/** The only project key variables the Composio API accepts; unrelated host secrets cannot be named. */
+export const COMPOSIO_KEY_ENVS = [COMPOSIO_KEY_ENV, "AGENTRUN_COMPOSIO_API_KEY"] as const;
+export type ComposioKeyEnv = typeof COMPOSIO_KEY_ENVS[number];
+export const isComposioKeyEnv = (value: unknown): value is ComposioKeyEnv =>
+  COMPOSIO_KEY_ENVS.some((name) => name === value);
 /** Composio's origin: its API's base (composio-preset.ts) and where its MCP servers are (a preset save's address). The one
  *  place a key read from the environment is ever sent. */
 export const COMPOSIO_ORIGIN = "https://backend.composio.dev";
@@ -50,7 +54,7 @@ export function recordedMade(value: unknown, createdAt: number | undefined): Com
   const config = value.auth_config === null ? null : thingOf(value.auth_config);
   const accounts = value.accounts.map(thingOf);
   if (config === undefined || accounts.some((account) => !account)) return undefined;
-  return { user: value.user, auth_config: config, accounts: accounts as Made[], ...(value.per_run === true ? { per_run: true as const } : {}), ...(value.key_env === COMPOSIO_KEY_ENV ? { key_env: COMPOSIO_KEY_ENV } : {}) };
+  return { user: value.user, auth_config: config, accounts: accounts as Made[], ...(value.per_run === true ? { per_run: true as const } : {}), ...(isComposioKeyEnv(value.key_env) ? { key_env: value.key_env } : {}) };
 }
 
 /** Whether the saved server `row` is a per-run Composio server: auth headers (the install's sealed key) and its own
@@ -78,7 +82,7 @@ export function madeToWrite(found: ComposioMade, was: ComposioMade | undefined, 
 /** The value of `name`, a server's key variable (ComposioMade.key_env), as this process (the server, or a runner) was
  *  handed it at its start: over the launcher's pipe, so its environment never holds it (secrets.ts secret; the launcher
  *  names it among its secrets). Trimmed; none when unset, blank or longer than any key. Read at each use, never kept. */
-export function composioKeyFromEnv(name: typeof COMPOSIO_KEY_ENV = COMPOSIO_KEY_ENV): string | undefined {
+export function composioKeyFromEnv(name: ComposioKeyEnv = COMPOSIO_KEY_ENV): string | undefined {
   const value = secret(name)?.trim();
   return value && value.length <= 8192 ? value : undefined;
 }
@@ -100,7 +104,7 @@ const originOf = (url: string): string => {
  *  through the server's and runner's seam). Otherwise why not, in words, and the caller sends nothing: `not_allowed`, an
  *  address no preset save writes (a row written by hand); `missing`, the variable unset. Every read of such a key for a
  *  request to the server's address goes through here: a save's and a refresh's listing, a run's start, a claim. */
-export function composioEnvKey(server: string, url: string, name: typeof COMPOSIO_KEY_ENV, origin: string = COMPOSIO_ORIGIN): { key: string } | { refused: string; reason: "not_allowed" | "missing" } {
+export function composioEnvKey(server: string, url: string, name: ComposioKeyEnv, origin: string = COMPOSIO_ORIGIN): { key: string } | { refused: string; reason: "not_allowed" | "missing" } {
   if (originOf(url) !== new URL(origin).origin) return { refused: composioKeyOffOrigin(server, url, name, origin), reason: "not_allowed" };
   const key = composioKeyFromEnv(name);
   return key ? { key } : { refused: composioKeyUnset(server, name), reason: "missing" };

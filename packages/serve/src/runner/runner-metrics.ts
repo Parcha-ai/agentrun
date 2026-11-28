@@ -1,6 +1,6 @@
 // A runner's metrics as log lines, in the server's one log format (print.ts logLine: `at=<ISO> event=<name> key=value`),
 // so a log-based metric counts them or reads a figure from them with no metrics server. Runner names, run ids, epochs,
-// causes and numbers only: never a prompt, a key, a path or a customer's word. Five lines:
+// causes and numbers only: never a prompt, a key, a path or a customer's word. Six lines:
 //
 // - `runner_claimed runner run epoch from`, one per claim; `took_over=1` when it took the run over from a runner whose
 //   lease ran out (`lost_runner`, that runner): the run's earlier runner died or lost its claim.
@@ -10,6 +10,9 @@
 //   with and how many it handed back at its end.
 // - `runner_gauge runner active slots rss_mib`, every RUNNER_GAUGE_EVERY_MS while the runner runs: the runs it holds, the
 //   most it holds at once, and its process's resident memory.
+// - `runner_census_failed runner run cause`, one per end that made no census (runner.ts census-failed: the error's code
+//   or name, or "timeout"): that end writes "unscanned" and the run's files are withheld after it. Any of these is worth
+//   an alert: a runner that can't count a run's files (its Archil key, its disk) fails every end the same way.
 import { logLine } from "../print.js";
 import type { RunnerEvent } from "./runner.js";
 
@@ -32,6 +35,8 @@ export function metricLine(runner: string, event: RunnerEvent): string | undefin
       return logLine("runner_hand_back", { runner, run: event.runId, epoch: event.epoch, cause: "claim_lost", why: event.why === "not-renewed" ? "not_renewed" : event.why });
     case "drained":
       return logLine("runner_drained", { runner, ms: event.ms, held: event.held, left: event.left });
+    case "census-failed":
+      return logLine("runner_census_failed", { runner, run: event.runId, cause: event.cause });
     default:
       return undefined;
   }

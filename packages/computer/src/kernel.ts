@@ -57,6 +57,7 @@ import {
 	type RestReply,
 	type UrlStore,
 	causedFail,
+	createdOf,
 	vendorFailure,
 	withoutCreateLabel,
 } from "./browser.js";
@@ -543,7 +544,7 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 		const found = await this.#browsers(labels, signal);
 		if (!found.ok) return found;
 		// Kernel's timeout is idle time, not a wall clock: no deadline to read.
-		return ok(found.value.map(({ id, tags }) => ({ ref: refOf(id), labels: tags, deadline: undefined, state: "running", network: "open" })));
+		return ok(found.value.map(({ id, tags, createdAt }) => ({ ref: refOf(id), labels: tags, deadline: undefined, state: "running", network: "open", ...createdOf(createdAt) })));
 	}
 
 	/** Always open: a Kernel browser reaches the open web, and a change is refused in words. */

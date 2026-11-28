@@ -166,7 +166,8 @@ for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFro
 test("checkoutWhereNoExec, a computer that mounts the run's folder but that the claim did not start: the server's GitHub App is never opened (no token minted), nothing runs in the computer, and the run and its timeline are told why; one the claim started gets its checkout", { timeout: 60_000 }, async (t) => {
   const asked = [];
   // The store the App is read from (github-app.ts appOf): none here, so a checkout that went on would fetch anonymously.
-  const deps = { store: { triggerSettings: { get: async (adapter) => (asked.push(adapter), []) } }, sealKey: Buffer.alloc(32, 1) };
+  // The claim's run is in no workspace.
+  const deps = { store: { triggerSettings: { get: async (adapter) => (asked.push(adapter), []) }, runs: { workspace: async () => null } }, sealKey: Buffer.alloc(32, 1) };
   const ran = [];
   const workspace = { exec: async (argv) => (ran.push(argv), { code: 0, signal: null, stdout: new Uint8Array(), stderr: "", timedOut: false, truncated: false }) };
   const named = pullRepo(join(await scratch(t), "gh"), "acme/widgets");
@@ -174,7 +175,7 @@ test("checkoutWhereNoExec, a computer that mounts the run's folder but that the 
     const { launch } = KINDS[kind](named);
     const said = [];
     const held = [];
-    const made = await checkoutWhereNoExec(deps, { workspace, fresh: false }, GCP, launch, { hold: () => {} }, undefined, (part) => held.push(part), kind, (words) => void said.push(words));
+    const made = await checkoutWhereNoExec(deps, "run-1", { workspace, fresh: false }, GCP, launch, { hold: () => {} }, undefined, (part) => held.push(part), kind, (words) => void said.push(words));
     assert.deepEqual(asked, [], `${kind}: the App was never opened, so no token was minted`);
     assert.deepEqual(ran, [], `${kind}: nothing ran in the computer`);
     assert.deepEqual(held, [], `${kind}: no removal to hold`);
@@ -186,7 +187,7 @@ test("checkoutWhereNoExec, a computer that mounts the run's folder but that the 
     assert.match(said[0], REUSED_WORDS);
     await made.end();
   }
-  const fresh = await checkoutWhereNoExec(deps, { workspace, fresh: true }, GCP, KINDS.pull_request(named).launch, { hold: () => {} }, undefined, () => {}, "pull_request");
+  const fresh = await checkoutWhereNoExec(deps, "run-1", { workspace, fresh: true }, GCP, KINDS.pull_request(named).launch, { hold: () => {} }, undefined, () => {}, "pull_request");
   assert.deepEqual(asked, ["github"], "one the claim started: the App is opened for its fetch");
   assert.equal(ran.length, 1, `its fetch ran in the computer: ${fresh.note}`);
 });

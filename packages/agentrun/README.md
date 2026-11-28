@@ -32,7 +32,7 @@ LaunchAgent on macOS or a systemd user unit on Linux, which starts again at logi
 to the same file. With no terminal to ask on, or its output captured (CI, a script, an agent's shell), it installs the
 service without asking; `--service` and `--no-service` choose without the question. Where there is no service manager (a
 container, say), it starts AgentRun in the background. In the background it runs until the machine or container stops, and `agentrun stop` stops it (a SIGTERM, then a SIGKILL to the launcher and its server
-after 45 seconds). Either way the installer returns once AgentRun answers, and prints its address. `sh -s -- --no-start`
+after 60 seconds). Either way the installer returns once AgentRun answers, and prints its address. `sh -s -- --no-start`
 installs only, `--version V` installs another version, `--node-version V` installs that Node.js (at least the floor),
 and `--service` fails where there is no service manager. Running it again upgrades, or installs an older version, and
 first stops the AgentRun it started in the background itself, whatever version that is. An older version does not start on
@@ -150,6 +150,9 @@ Where a new agent that names no place goes, by mode:
   is `null`. So is `agentrun deploy` of a package that names no `tools` and no `computer` list, at its preview: name its tools
   (`tools: []` keeps the runner) or its computer list.
 - In Mode 2, where the runner's shell is Archil's serverless exec, it is not refused: it runs on the runner, as before.
+- In Mode 2 on an Archil region with no serverless exec (`gcp-us-central1`), bash needs a box. A new agent with a shell
+  tool and no computer is refused at its create and at `agentrun deploy`: "bash needs a box (a sandbox computer): …".
+  Give it a sandbox computer, or leave `bash` out of its tools.
 
 A Docker box's image is built on its first run, which shows that on its timeline. `AGENTRUN_BOXES=none` turns boxes off.
 

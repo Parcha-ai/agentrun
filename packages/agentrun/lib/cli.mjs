@@ -8,7 +8,8 @@
 // service.mjs's, doctor (how this AgentRun is set up, read-only) is doctor.mjs's, export (an agent written as a template
 // package folder) is export.mjs's, share (a run's bundle published to a share host with --to, or shown with --dry-run)
 // and share delete are share.mjs's, and deploy (an agent's package sent to another AgentRun, with its lock, rollback and
-// delete) is deploy.mjs's. Any other word runs agentrun-WORD from PATH, as git runs git-WORD (externalOf, below).
+// delete) is deploy.mjs's, and race start and race show (one task on 2 to 4 harness and model lanes, as the console's
+// New race form starts one) are race.mjs's. Any other word runs agentrun-WORD from PATH, as git runs git-WORD (externalOf, below).
 import { spawn } from "node:child_process";
 import { accessSync, closeSync, constants, fstatSync, openSync, readFileSync, statSync } from "node:fs";
 import { homedir, constants as osConstants } from "node:os";

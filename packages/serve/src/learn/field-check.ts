@@ -1,5 +1,5 @@
 // Checking a learned workflow, field by field, against the best answer each field has: a grade's expected answer, else
-// the agent's own answer. Pure: rows and a bar in, a verdict out; no store, no settings, no secrets, no prose beyond
+// the agent's own answer (as its owner's correction changes it, when they corrected the run by message). Pure: rows and a bar in, a verdict out; no store, no settings, no secrets, no prose beyond
 // each field's numbers in words. The caller turns its replays (or native turns) into rows, and stores and words what
 // comes back (runner/promotion.ts decideCheck).
 //
@@ -17,7 +17,10 @@
 // workflow serves only when it answered at least `alone_min` of the inputs alone, at least `agree_min` of those were
 // right on every field at once (the joint floor: misses spread over several fields add up, and an unjudged field is not
 // right), and every field passes; a hold names each failing field and its misses, an unjudged input among them (known
-// "unknown": marked wrong, with no right answer to show). Field names are the caller's (agree_on paths, which never hold
+// "unknown": marked wrong, with no right answer to show). A field whose grader's verdict could not be read (`unread`)
+// counts neither way: not right, not wrong, not carried; an input with one is left out of the joint floor, and with any
+// unread a check that could compare fewer than READABLE_MIN of the inputs it answered alone does not decide (`undecided`,
+// a hold that says so). Field names are the caller's (agree_on paths, which never hold
 // `__proto__`, else the whole answer): they key Maps here, never a plain object's lookup, so a name Object.prototype
 // holds (`constructor`, `toString`) is a field like any other.
 
@@ -29,7 +32,7 @@ export type Known = (typeof KNOWN)[number];
  *  when one exists. `agrees`: whether the workflow's value is right against the field's best known answer
  *  when something other than equal values decides it (a whole answer: equal, else the grader's verdict on that pair);
  *  absent, equal JSON values are right. `agent_correct`: what a grade said of the agent's answer. False says the agent's
- *  answer was wrong, so a value equal to it is never right, whatever `agrees` says. Against the grade's value, it decides
+ *  answer was wrong, so a value equal to it is never right, whatever `agrees` says (save with a `correction`, below). Against the grade's value, it decides
  *  whether the agent was right. With no grade value, false leaves any other value with no known answer (unjudged); true
  *  changes nothing: the agent's answer is known as it is with no grade, at the same bar (a thumbs-up never makes the
  *  check stricter than none). */
@@ -42,6 +45,18 @@ export type FieldAnswers = {
   /** No known answer here, though a grade was given: it contradicts itself (marked the agent's answer wrong, yet its
    *  expected answer, as the caller reads it, is the agent's answer). Unjudged, whatever the workflow said. */
   readonly no_known?: true;
+  /** Its owner's correction of the agent's answer, in their words (a run corrected by message, with no grade's expected
+   *  answer): the known answer is the agent's as the correction changes it, which `agrees` was judged against. Known as
+   *  a grade's is: the agent's answer wrong, the workflow's right only as `agrees` says (the caller's: a verdict asked
+   *  with the correction, never equal answers alone). A workflow equal to the agent's answer can be right: an agent
+   *  that answered again after the correction recorded the corrected answer. */
+  readonly correction?: string;
+  /** With `correction`: no verdict was asked with it (no fast model, or its request failed), so nothing read the words,
+   *  which may be a question or thanks: unjudged, neither right nor wrong, its miss naming the correction. */
+  readonly unasked?: true;
+  /** The grader was asked and its verdict could not be read (learn/promote.ts Compared.unread): counted neither way, no
+   *  miss, and the input left out of the joint floor. */
+  readonly unread?: true;
 };
 
 /** One input: what the workflow did with it (`answered` alone, handed it back, failed, or skipped at a write: no evidence
@@ -61,12 +76,18 @@ export type FieldBar = {
 /** How far under the agent's own accuracy a field's graded inputs may be. */
 const MARGIN = 0.02;
 
+/** The fewest inputs answered alone a check must be able to compare to decide, when any comparison could not be read. */
+export const READABLE_MIN = 2;
+
+/** A count of unread comparisons in words. */
+export const unreadWords = (k: number): string => `${k} unread (the grader's reply could not be read, asked twice): counted neither way`;
+
 /** A count of inputs a field was judged on, and of those how many the workflow and the agent had right. */
 export type FieldCount = { readonly n: number; readonly workflow_right: number; readonly agent_right: number };
 
-/** One field's counts by where its known answer came from, and how many of the inputs that carried it had none
- *  (`unjudged`, when any). */
-export type FieldTally = Partial<Record<Known, FieldCount>> & { readonly unjudged?: number };
+/** One field's counts by where its known answer came from, how many of the inputs that carried it had none
+ *  (`unjudged`, when any), and how many had a grader's verdict that could not be read (`unread`, when any). */
+export type FieldTally = Partial<Record<Known, FieldCount>> & { readonly unjudged?: number; readonly unread?: number };
 
 /** What a check counted, before the bar: inputs it ran on (`n`: a skipped one is none), answered alone, answered alone
  *  with every field right (`agreed`), of those the agent's answers right on every field against the same known answers
@@ -78,6 +99,9 @@ export type CheckTally = {
   readonly agreed: number;
   readonly agent_agreed: number;
   readonly fields: Readonly<Record<string, FieldTally>>;
+  /** Of `alone`, the inputs with a field whose grader's verdict could not be read: out of `agreed`, `agent_agreed` and
+   *  the joint floor. Absent: none. */
+  readonly unread?: number;
 };
 
 /** One field's verdict: its counts over all its inputs, each against that input's best known answer (`agent_right` over
@@ -87,6 +111,8 @@ export type CheckTally = {
 export type FieldVerdict = FieldCount & {
   /** The inputs that carried it with no known answer (judged on `n` of n + unjudged), when any. */
   readonly unjudged?: number;
+  /** The inputs whose grader's verdict on it could not be read, counted neither way, when any. */
+  readonly unread?: number;
   readonly known: Known;
   readonly pass: boolean;
   readonly reason: string;
@@ -94,17 +120,23 @@ export type FieldVerdict = FieldCount & {
 };
 
 /** One field the workflow had wrong on one input it answered alone: its value, the known one, and where that came from;
+ *  "correction" (the owner's words its value) where the owner corrected the agent's answer (FieldAnswers.correction),
+ *  judged against it or not (FieldAnswers.unasked),
  *  "unknown" (no expected value) where a grade marked the agent's answer wrong without giving the right one, and
  *  "contradicts" (none) where its grade contradicts itself (FieldAnswers.no_known). */
-export type Miss = { readonly field: string; readonly input_id: string; readonly workflow: unknown; readonly expected: unknown; readonly known: Known | "unknown" | "contradicts" };
+export type Miss = { readonly field: string; readonly input_id: string; readonly workflow: unknown; readonly expected: unknown; readonly known: Known | "correction" | "unknown" | "contradicts" };
 
 export type CheckVerdict = {
   readonly verdict: "serve" | "hold";
   readonly tally: CheckTally;
   /** Whether enough inputs were answered alone. */
   readonly alone_pass: boolean;
-  /** The joint floor: of the inputs answered alone, those right on every field at once, at least agree_min of them. */
+  /** The joint floor: of the inputs answered alone that could be compared (`alone`: an unread one is left out), those
+   *  right on every field at once, at least agree_min of them. */
   readonly joint: { readonly agreed: number; readonly alone: number; readonly pass: boolean };
+  /** With any unread comparison, fewer than READABLE_MIN of the inputs answered alone could be compared: it holds, deciding
+   *  nothing of the draft. */
+  readonly undecided?: true;
   readonly fields: Readonly<Record<string, FieldVerdict>>;
   /** The fields that failed, in their order. */
   readonly failing: readonly string[];
@@ -133,9 +165,12 @@ function knownOf(one: FieldAnswers): { value: unknown; known: Known } {
  *  undefined when it has none (the agent's answer graded wrong with no expected one, and the workflow said another).
  *  `marked`: judged by a grade that gave no right answer (the workflow repeated the answer it marked wrong). A value equal
  *  to an answer a grade marked wrong is never right, whatever `agrees` says; where the agent gave no value, the agent is
- *  never right either. */
+ *  never right either. Against its owner's correction (FieldAnswers.correction), counted as a grade's known answer: the
+ *  agent never right, the workflow right only as `agrees` says (only a verdict asked with the correction counts), equal
+ *  to the agent's answer or not; undefined where no verdict was asked with it (FieldAnswers.unasked). */
 function judged(one: FieldAnswers): { known: Known; expected: unknown; workflow: boolean; agent: boolean; marked?: true } | undefined {
   if (one.no_known) return undefined;
+  if (one.correction !== undefined) return one.unasked ? undefined : { known: "grade", expected: one.correction, workflow: one.agrees === true, agent: false };
   const { value, known } = knownOf(one);
   const repeatsWrong = one.agent_correct === false && right(one.workflow, one.agent);
   if (known === "grade") {
@@ -149,11 +184,12 @@ function judged(one: FieldAnswers): { known: Known; expected: unknown; workflow:
 
 const NO_TALLY: CheckTally = { n: 0, alone: 0, agreed: 0, agent_agreed: 0, fields: {} };
 
-type Counting = { -readonly [K in Known]?: FieldCount } & { unjudged?: number };
+type Counting = { -readonly [K in Known]?: FieldCount } & { unjudged?: number; unread?: number };
 
 /** `rows` counted, added to `before` (a check's inputs counted so far). */
 export function tallyOf(rows: readonly CheckInput[], before: CheckTally = NO_TALLY): CheckTally {
   let { n, alone, agreed, agent_agreed: agentAgreed } = before;
+  let unread = before.unread ?? 0;
   const fields = new Map<string, Counting>(Object.entries(before.fields).map(([name, by]) => [name, countsOf(by)]));
   for (const row of rows) {
     if (row.outcome === "skipped") continue;
@@ -162,10 +198,17 @@ export function tallyOf(rows: readonly CheckInput[], before: CheckTally = NO_TAL
     alone += 1;
     let all = true;
     let agentAll = true;
+    let rowUnread = false;
     for (const [name, one] of Object.entries(row.fields ?? {})) {
-      const j = judged(one);
       const by = fields.get(name) ?? {};
       fields.set(name, by);
+      if (one.unread) {
+        // No verdict read: neither way, on either side.
+        by.unread = (by.unread ?? 0) + 1;
+        rowUnread = true;
+        continue;
+      }
+      const j = judged(one);
       if (!j) {
         // No known answer: not right, and the agent's answer was graded wrong.
         by.unjudged = (by.unjudged ?? 0) + 1;
@@ -178,25 +221,33 @@ export function tallyOf(rows: readonly CheckInput[], before: CheckTally = NO_TAL
       if (!j.workflow) all = false;
       if (!j.agent) agentAll = false;
     }
-    if (all) agreed += 1;
-    if (agentAll) agentAgreed += 1;
+    // An input with an unread field counts on neither side: not in `agreed`, nor in `agent_agreed`.
+    if (rowUnread) unread += 1;
+    else {
+      if (all) agreed += 1;
+      if (agentAll) agentAgreed += 1;
+    }
   }
-  return { n, alone, agreed, agent_agreed: agentAgreed, fields: Object.fromEntries(fields) };
+  return { n, alone, agreed, agent_agreed: agentAgreed, fields: Object.fromEntries(fields), ...(unread ? { unread } : {}) };
 }
 
-/** A field's counts, copied: only the sources KNOWN names and its unjudged count, whatever else the object holds. */
+/** A field's counts, copied: only the sources KNOWN names and its unjudged and unread counts, whatever else the object
+ *  holds. */
 const countsOf = (by: FieldTally): Counting => ({
   ...Object.fromEntries(KNOWN.flatMap((known) => (Object.hasOwn(by, known) && by[known] ? [[known, { ...by[known] }]] : []))),
   ...(Object.hasOwn(by, "unjudged") && typeof by.unjudged === "number" && by.unjudged > 0 ? { unjudged: by.unjudged } : {}),
+  ...(Object.hasOwn(by, "unread") && typeof by.unread === "number" && by.unread > 0 ? { unread: by.unread } : {}),
 });
 
 /** The misses in `rows`: each field the workflow had wrong on an input it answered alone, inputs in order, and each it
- *  had no known answer on (never right), no value: "contradicts" where its grade contradicts itself, else "unknown". */
+ *  had no known answer on (never right): the owner's correction where nothing judged against it (FieldAnswers.unasked),
+ *  else no value: "contradicts" where its grade contradicts itself, else "unknown". An unread field is none. */
 export function missesOf(rows: readonly CheckInput[]): Miss[] {
   return rows.flatMap((row) => row.outcome !== "answered" ? [] : Object.entries(row.fields ?? {}).flatMap(([field, one]): Miss[] => {
+    if (one.unread) return [];
     const j = judged(one);
     if (j?.workflow) return [];
-    return [{ field, input_id: row.input_id, workflow: one.workflow, expected: j?.expected, known: one.no_known ? "contradicts" : !j || j.marked ? "unknown" : j.known }];
+    return [{ field, input_id: row.input_id, workflow: one.workflow, expected: one.correction ?? j?.expected, known: one.no_known ? "contradicts" : one.correction !== undefined ? "correction" : !j || j.marked ? "unknown" : j.known }];
   }));
 }
 
@@ -231,6 +282,8 @@ export function verdictOf(tally: CheckTally, bar: FieldBar): Omit<CheckVerdict, 
     const sources = KNOWN.filter((known) => (by[known]?.n ?? 0) > 0);
     const sum = (key: keyof FieldCount) => sources.reduce((total, known) => total + by[known]![key], 0);
     const unjudged = by.unjudged ?? 0;
+    const unread = by.unread ?? 0;
+    // An unread input is not carried: it counts neither way.
     const carried = sum("n") + unjudged;
     // Judged on enough of the inputs that carried it: unknown answers never stand in for known ones.
     const enough = atLeast(sum("n"), bar.alone_min, carried);
@@ -241,18 +294,23 @@ export function verdictOf(tally: CheckTally, bar: FieldBar): Omit<CheckVerdict, 
       ...sources.map((known) => sourceWords(known, by[known]!, bar)),
       ...(sources.length > 1 ? [`in all: ${sum("workflow_right")} of ${sum("n")} right (${share(sum("workflow_right"), sum("n"))}, the bar ${pct(bar.agree_min)})`] : []),
       ...(unjudged ? [`judged on ${sum("n")} of ${carried} (${share(sum("n"), carried)}, the bar ${pct(bar.alone_min)}): ${unjudged} had no known answer (graded wrong with none given and the workflow said another, or a grade that contradicts itself)`] : []),
+      ...(unread ? [unreadWords(unread)] : []),
     ];
     fields.set(name, {
-      n: sum("n"), workflow_right: sum("workflow_right"), agent_right: graded?.agent_right ?? 0, ...(unjudged ? { unjudged } : {}), known: sources[0] ?? "agent", pass,
+      n: sum("n"), workflow_right: sum("workflow_right"), agent_right: graded?.agent_right ?? 0, ...(unjudged ? { unjudged } : {}), ...(unread ? { unread } : {}), known: sources[0] ?? "agent", pass,
       reason: words.length ? `${name}: ${words.join("; ")}` : `${name}: no input answered alone`,
       by: Object.fromEntries(sources.map((known) => [known, { ...by[known]! }])),
     });
   }
   const alone_pass = tally.alone > 0 && atLeast(tally.alone, bar.alone_min, tally.n);
-  const joint = { agreed: tally.agreed, alone: tally.alone, pass: tally.alone > 0 && atLeast(tally.agreed, bar.agree_min, tally.alone) };
+  // An unread input is out of the joint floor; with any, too few left to compare decides nothing.
+  const unread = tally.unread ?? 0;
+  const readable = tally.alone - unread;
+  const joint = { agreed: tally.agreed, alone: readable, pass: readable > 0 && atLeast(tally.agreed, bar.agree_min, readable) };
+  const undecided = unread > 0 && readable < READABLE_MIN;
   const failing = [...fields].filter(([, one]) => !one.pass).map(([name]) => name);
-  const serve = alone_pass && joint.pass && fields.size > 0 && failing.length === 0;
-  return { verdict: serve ? "serve" : "hold", tally, alone_pass, joint, fields: Object.fromEntries(fields), failing };
+  const serve = !undecided && alone_pass && joint.pass && fields.size > 0 && failing.length === 0;
+  return { verdict: serve ? "serve" : "hold", tally, alone_pass, joint, fields: Object.fromEntries(fields), failing, ...(undecided ? { undecided: true as const } : {}) };
 }
 
 /** Checks a workflow on `rows`, with the inputs a check counted before them (`before`), against `bar`. */

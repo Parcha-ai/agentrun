@@ -12,10 +12,10 @@ const GOING = Object.keys({ queued: true, running: true, parked: true } satisfie
 /** GET /v2/computers/running's answer: the runs still going whose agent has a computer, newest first, each read by
  *  `read` (the run as GET /v2/runs/{run_id} answers it; undefined for a run gone meanwhile). A run is listed once though
  *  it moves from one state's rows to the next while they are listed, and one whose computer ended or failed since is
- *  left out. */
-export async function runningComputers(store: Pick<Store, "runs" | "agents">, read: (runId: string) => Promise<Record<string, unknown> | undefined>): Promise<{ runs: Record<string, unknown>[] }> {
+ *  left out. `scope`: the request's workspace (server.ts scopeOf), whose runs alone are listed; none for an unscoped one. */
+export async function runningComputers(store: Pick<Store, "runs" | "agents">, read: (runId: string) => Promise<Record<string, unknown> | undefined>, scope: { workspace?: string }): Promise<{ runs: Record<string, unknown>[] }> {
   const going = new Map<string, string>();
-  for (const state of GOING) for (const row of await store.runs.list({ state })) going.set(row.id, row.revisionId);
+  for (const state of GOING) for (const row of await store.runs.list({ state, ...scope })) going.set(row.id, row.revisionId);
   const computerOf = new Map<string, Promise<boolean>>();
   const hasComputer = (revisionId: string): Promise<boolean> => {
     if (!computerOf.has(revisionId)) computerOf.set(revisionId, store.agents.revision(revisionId).then((revision) => (settingOfDefinition((revision?.body ?? {}) as Definition)?.computer.kind ?? "none") !== "none"));

@@ -129,7 +129,7 @@ export interface WorkflowSpecRun {
   /** The claim's signal and LoopDeps.handBack: a renewal of the plan refused because the runner is closing hands the
    *  run back to resume (claim-secrets.ts). */
   readonly signal?: AbortSignal;
-  readonly handBack?: () => void;
+  readonly handBack?: () => Promise<void>;
 }
 
 /** Loops for workflow runs: `spec(claim)` gives each claim's run what it runs (its workflow, input, models and host). */
@@ -335,10 +335,11 @@ function workflowLoop(specOf: (claim: Claim, run: WorkflowSpecRun) => WorkflowRu
     // pause stands, its budget entry unanswered, so it parks again on that entry with nothing written, before any step
     // runs. Run, the held step would meet the same cap and write a second budget entry at it. Whatever the row said at the
     // claim: a woken claim lost before its release leaves the row running with the pause unanswered. A person's stop goes
-    // on to end the run. A run whose root is not made yet (its first claim) has no pause to read.
+    // on to end the run. A run whose root is not made yet (its first claim) has no pause to read, and a run with no cap
+    // never wrote a budget entry: neither is read.
     const paused = async (journal: Journal): Promise<boolean> =>
       Boolean(await journal.conversation(ROOT_CONVERSATION_ID, BACKGROUND_CONTEXT)) && (await raiseStateOf(journal, BACKGROUND_CONTEXT)).pause !== undefined;
-    if ((claim.from === "parked" || spec?.cap !== undefined) && !raising.resumes && stopReason === undefined && (await paused(deps.journal(claim)))) {
+    if (spec?.cap !== undefined && !raising.resumes && stopReason === undefined && (await paused(deps.journal(claim)))) {
       return { state: "parked", again: true };
     }
 

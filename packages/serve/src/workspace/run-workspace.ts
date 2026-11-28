@@ -110,7 +110,7 @@ export async function openRunWorkspace(options: RunWorkspaceOptions): Promise<Ru
   // The run's folder on the disk (its run key), ensured at the claim as Mode 1's is: a fresh run has none yet. One already
   // there (a later claim's, its kept computer perhaps holding it) is left as it is.
   await workspace.ensureRoot().catch((error: WorkspaceError) => {
-    throw new WorkspaceError(error.code, `the run's folder on its Archil disk could not be made: ${error.message}`, { cause: error });
+    throw new WorkspaceError(error.code, `the run's folder on its Archil disk could not be made: ${error.message}`, { cause: error, words: error.words });
   });
   if (options.sweep === false) return { workspace, end: async () => {} };
   await sweep("start");

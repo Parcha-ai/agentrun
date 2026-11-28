@@ -47,7 +47,7 @@ const graderOf = (run, file) => run.graders.find((g) => g.grader === file);
 
 test("every shipped package's cases load, and each case's fake MCP servers serve their fixtures", { timeout: 120_000 }, async () => {
   const packages = readPackages(TEMPLATES_DIR);
-  assert.deepEqual(packages.map((p) => p.name), ["agent-scout", "code-review", "inbound-lead", "kyb", "market-monitor", "release-notes"]);
+  assert.deepEqual(packages.map((p) => p.name), ["agent-scout", "code-review", "code-review-composio", "inbound-lead", "kyb", "market-monitor", "release-notes"]);
   for (const p of packages) {
     const { cases } = readCases(join(TEMPLATES_DIR, p.name));
     assert.deepEqual(cases.map((c) => c.name), p.evals, `${p.name}: every case reads`);
@@ -1243,9 +1243,9 @@ test("an answer that is one JSON object and nothing else is its json block: for 
 });
 
 test("the output check agrees with ajv on the shipped packages' output schemas", () => {
-  const ajv = new Ajv2020({ strict: false, allErrors: true, validateFormats: false });
   for (const p of readPackages(TEMPLATES_DIR)) {
-    const check = ajv.compile(p.outputSchema);
+    // One ajv per package: two packages may answer in one schema (code-review and code-review-composio share its $id).
+    const check = new Ajv2020({ strict: false, allErrors: true, validateFormats: false }).compile(p.outputSchema);
     for (const value of [{}, [], null, "x", { findings: [] }]) {
       const ours = "value" in structuredAnswer(`\`\`\`json\n${JSON.stringify(value)}\n\`\`\``, p.outputSchema);
       assert.equal(ours, check(value), `${p.name}: ${JSON.stringify(value)}`);
@@ -1270,13 +1270,24 @@ test("no case carries a schema grader: a package's output schema is held by the 
   assert.throws(() => readCases(dir), (e) => e instanceof PackageError && /evals\/all-pass\/graders\/schema\.md: type is one of llm, regex, tool_used, file_exists, mailbox, handed$/m.test(e.message));
 });
 
-test("code-review's cases hold the answer's head_sha to the head the prompt names: an answer naming another sha fails", () => {
+test("code-review's cases hold the answer's head_sha to the head the prompt names, or to null when it names none: an answer naming another sha fails", () => {
   const { cases } = readCases(join(TEMPLATES_DIR, "code-review"));
+  assert.ok(cases.some((one) => !/\b[0-9a-f]{40}\b/.test(one.input)), "a case pastes a diff that names no head");
   for (const one of cases) {
     const head = /head is now ([0-9a-f]{40})/.exec(one.input)?.[1] ?? /\b[0-9a-f]{40}\b/.exec(one.input)?.[0];
     const grader = one.graders.find((g) => g.type === "regex" && g.target === "head_sha");
-    assert.ok(head && grader, `${one.name}: a head_sha grader`);
+    assert.ok(grader, `${one.name}: a head_sha grader`);
     const answer = (sha) => ({ answer: `\`\`\`json\n${JSON.stringify({ head_sha: sha, findings: [] })}\n\`\`\``, calls: [], mcpCalls: [], files: [] });
+    if (!head) {
+      // No head named: null passes, and a sha made up from the diff's index line (a blob hash, padded) fails.
+      const blob = /^index ([0-9a-f]{7,})\.\.([0-9a-f]{7,})/m.exec(one.input);
+      assert.ok(blob, `${one.name}: names no head, and its diff has an index line to make one up from`);
+      assert.equal(gradeDeterministic(grader, answer(null), []).pass, true, `${one.name}: null passes`);
+      for (const sha of ["0".repeat(40), blob[2].padEnd(40, "0"), blob[1].padEnd(40, "0")]) {
+        assert.equal(gradeDeterministic(grader, answer(sha), []).pass, false, `${one.name}: ${sha} fails`);
+      }
+      continue;
+    }
     assert.equal(gradeDeterministic(grader, answer(head), []).pass, true, `${one.name}: the prompt's head passes`);
     assert.equal(gradeDeterministic(grader, answer("0".repeat(40)), []).pass, false, `${one.name}: another sha fails`);
     const other = /last_reviewed_sha was ([0-9a-f]{40})/.exec(one.input)?.[1];

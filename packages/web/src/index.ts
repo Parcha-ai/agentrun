@@ -195,3 +195,4 @@ export { type InjectionVerdict, type WallVerdict, INJECTION_THRESHOLD, WALL_THRE
 export { PASSAGES_MAX, passagesOf } from "./decide/passages.js";
 export { DECIDE_MS, decisionPay, type DecisionRecord, type Scored, type Sift, type StepOptions, THRESHOLD } from "./decide/record.js";
 export { type DecidePolicy, LOW_RELEVANCE, siftSearch } from "./decide/search.js";
+export { DEFAULT_JEV_SETUP, type FetchSetup, JEV_SETUPS, type JevSetup, type SearchSetup } from "./decide/setup.js";

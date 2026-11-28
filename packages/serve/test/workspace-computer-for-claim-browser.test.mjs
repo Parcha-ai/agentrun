@@ -148,3 +148,33 @@ test("a browser computer's live view rides the session the browser tool opened: 
   await answer.release();
   assert.deepEqual(record.released, [["local-chrome-1", "delete"]], "and that one session is let go once");
 });
+
+test("a browser computer's claim releases the run's sessions of a lower epoch first and hands each one it released, with when its sweep answered, to the browser tool (sweptOlder), so an owed one is charged to then", async () => {
+  const dir = realpathSync(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-claim-browser-swept-")));
+  dirs.push(dir);
+  const root = join(dir, "work");
+  mkdirSync(root);
+  const store = {
+    agents: { revision: async () => undefined },
+    sealedKeys: { get: async () => undefined, put: async () => {}, remove: async () => {}, all: async () => [] },
+    computerLedger: { put: async () => {}, get: async () => undefined, list: async () => [], remove: async () => {} },
+  };
+  // An earlier claim's session (epoch 1) its runner never let go, and another run's, which is never touched.
+  const record = { created: [{ id: "left-1", labels: { "agentrun.run": "run-1", "agentrun.epoch": "1", "agentrun.session": "ar-run-1-1" } }, { id: "other-1", labels: { "agentrun.run": "run-2", "agentrun.epoch": "1" } }], released: [], connects: 0 };
+  const claim = (epoch) => computerForClaim({ runId: "run-1", epoch, computer: { kind: "browser", provider: "local-chrome" } }, store, {
+    mode: 1, kinds: KINDS, sealKey: randomBytes(32), providers: { "local-chrome": () => browserProvider("local-chrome", "ws://127.0.0.1:9222/devtools/browser/abc", record) },
+    spec: () => ({ image: "browser", lifetimeMs: 600_000, network: "open" }), workspace: localWorkspace(root), check: { readBackOf, epoch },
+  });
+  const before = Date.now();
+  const answer = await claim(2);
+  assert.deepEqual(record.released, [["left-1", "delete"]]);
+  const swept = answer.computer.browser.sweptOlder;
+  assert.deepEqual([...swept.keys()], ["left-1"]);
+  const at = Date.parse(swept.get("left-1"));
+  assert.ok(at >= before && at <= Date.now(), swept.get("left-1"));
+  await answer.release();
+  const next = await claim(3);
+  assert.equal(next.computer.browser.sweptOlder, undefined, "a sweep that released none hands nothing over");
+  await next.release();
+});
+

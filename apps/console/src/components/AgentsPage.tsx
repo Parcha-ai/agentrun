@@ -24,14 +24,34 @@ export function AgentsPage({ v2, archived, go, learning }: { v2: Client; archive
   const observations = useObservations(v2, { active: !archived });
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [unarchiving, setUnarchiving] = useState<ReadonlySet<string>>(new Set());
+  const [unarchiveProblem, setUnarchiveProblem] = useState<string | null>(null);
   const asked = useRef(0);
-  const load = () => {
-    // Only the newest request lands: a slower answer for the other view never replaces this one.
+  const load = ({ quiet = false } = {}) => {
+    // Only the newest request lands: a slower answer for the other view never replaces this one. A quiet read keeps the
+    // list on screen until it answers.
     const n = ++asked.current;
-    setAgents(null); setError(null);
+    if (!quiet) { setAgents(null); setError(null); setUnarchiveProblem(null); }
     allPages((cursor) => v2.listAgents({ archived, cursor }), (p) => p.agents)
-      .then((a) => { if (n === asked.current) setAgents(a); })
+      .then((a) => { if (n === asked.current) { setAgents(a); setError(null); } })
       .catch((e) => { if (n === asked.current) setError(problemOf(e).message); });
+  };
+  // The view shown now, for a write's answer that lands after the person moved between Active and Archived.
+  const shown = useRef({ archived, load });
+  shown.current = { archived, load };
+  // An archived card's Unarchive: the agent leaves the Archived list once the server says so, and the list shown then is
+  // read again, which no read started before the answer replaces. A refusal says why above.
+  const unarchive = (id: string) => {
+    if (unarchiving.has(id)) return;
+    setUnarchiving((s) => new Set(s).add(id)); setUnarchiveProblem(null);
+    v2.unarchiveAgent(id)
+      .then(() => {
+        const now = shown.current;
+        if (now.archived) setAgents((list) => list?.filter((a) => a.agent_id !== id) ?? list);
+        now.load({ quiet: true });
+      })
+      .catch((e) => setUnarchiveProblem(problemOf(e).message))
+      .finally(() => setUnarchiving((s) => { const next = new Set(s); next.delete(id); return next; }));
   };
   useEffect(() => {
     load();
@@ -49,6 +69,7 @@ export function AgentsPage({ v2, archived, go, learning }: { v2: Client; archive
         onNew: () => go("#/agents/new"),
         onRuns: (id) => go(agentHash(id, "runs")),
         onLearning: (id) => go(agentHash(id, "learning")),
+        ...(archived ? { onUnarchive: unarchive, unarchiving, unarchiveProblem } : {}),
       }} />
   );
 }

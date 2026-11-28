@@ -359,6 +359,7 @@ __all__ = [
     "FeaturesTriggersWebhook",
     "FeaturesUsage",
     "FeaturesWebhooks",
+    "FeaturesWorkspaces",
     "File",
     "FileCreate",
     "FilePathString",
@@ -486,6 +487,9 @@ __all__ = [
     "GetObservationsResponseUsageDailyItem",
     "GetObservationsResponseUsageModelsItem",
     "GetOpenapiResponse",
+    "GetPricesResponse",
+    "GetPricesResponseBrowserItem",
+    "GetPricesResponseComputeItem",
     "GetRevisionSkillsResponse",
     "GetRunExportResponse",
     "GetRunExportResponseAgent",
@@ -1185,6 +1189,11 @@ __all__ = [
     "SaveWebhookResponseObject22Disabled",
     "ScanForSuggestionsBody",
     "ScanForSuggestionsResponse",
+    "ScanForSuggestionsResponseObject11",
+    "ScanForSuggestionsResponseObject12",
+    "ScanForSuggestionsResponseObject12Input",
+    "ScanForSuggestionsResponseObject13",
+    "ScanForSuggestionsResponseObject2",
     "SdkRunEventsBody",
     "SdkRunEventsBodyEventsItem1",
     "SdkRunEventsBodyEventsItem2",
@@ -1637,7 +1646,7 @@ class DefinitionPlace1(TypedDict):
 
 class DefinitionPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox", "vercel", "sprites"]
 
 
 class _DefinitionComputerRequired(TypedDict):
@@ -1710,11 +1719,13 @@ class DefinitionToolSettingsAskPerson(TypedDict, total=False):
 class DefinitionToolSettingsWebFetch(TypedDict, total=False):
     provider: Literal["auto", "firecrawl-keyless", "kernel", "parallel"]
     permission: Literal["allow", "ask", "deny"]
+    jev: Literal["off"]
 
 
 class DefinitionToolSettingsWebSearch(TypedDict, total=False):
     provider: Literal["auto", "native", "firecrawl-keyless", "exa-keyless", "parallel", "off"]
     permission: Literal["allow", "ask", "deny"]
+    jev: Literal["off"]
 
 
 class DefinitionToolSettingsWebSave(TypedDict, total=False):
@@ -2144,7 +2155,7 @@ class DefinitionInputPlace1(TypedDict):
 
 class DefinitionInputPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox", "vercel", "sprites"]
 
 
 class _DefinitionInputComputerRequired(TypedDict):
@@ -2217,11 +2228,13 @@ class DefinitionInputToolSettingsAskPerson(TypedDict, total=False):
 class DefinitionInputToolSettingsWebFetch(TypedDict, total=False):
     provider: Literal["auto", "firecrawl-keyless", "kernel", "parallel"]
     permission: Literal["allow", "ask", "deny"]
+    jev: Literal["off"]
 
 
 class DefinitionInputToolSettingsWebSearch(TypedDict, total=False):
     provider: Literal["auto", "native", "firecrawl-keyless", "exa-keyless", "parallel", "off"]
     permission: Literal["allow", "ask", "deny"]
+    jev: Literal["off"]
 
 
 class DefinitionInputToolSettingsWebSave(TypedDict, total=False):
@@ -2835,6 +2848,8 @@ class ListLearningPromotionsResponsePromotionsItemCheck(_ListLearningPromotionsR
     unstarted: int
     skipped_tools: list[ListLearningPromotionsResponsePromotionsItemCheckSkippedToolsItem]
     disagreements: list[ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem]
+    unread: int
+    undecided: Literal[True]
     stopped: Literal[True]
     released: int
     fresh_reads: int
@@ -2842,7 +2857,7 @@ class ListLearningPromotionsResponsePromotionsItemCheck(_ListLearningPromotionsR
 
 
 _ListLearningPromotionsResponsePromotionsItemCheckFieldsValueRequired = TypedDict("_ListLearningPromotionsResponsePromotionsItemCheckFieldsValueRequired", {"n": "int", "workflow_right": "int", "agent_right": "int", "known": "Literal[\"grade\", \"agent\"]", "pass": "bool", "reason": "str", "by": "ListLearningPromotionsResponsePromotionsItemCheckFieldsValueBy"})
-_ListLearningPromotionsResponsePromotionsItemCheckFieldsValueOptional = TypedDict("_ListLearningPromotionsResponsePromotionsItemCheckFieldsValueOptional", {"unjudged": "int"}, total=False)
+_ListLearningPromotionsResponsePromotionsItemCheckFieldsValueOptional = TypedDict("_ListLearningPromotionsResponsePromotionsItemCheckFieldsValueOptional", {"unjudged": "int", "unread": "int"}, total=False)
 
 
 class ListLearningPromotionsResponsePromotionsItemCheckFieldsValue(_ListLearningPromotionsResponsePromotionsItemCheckFieldsValueRequired, _ListLearningPromotionsResponsePromotionsItemCheckFieldsValueOptional):
@@ -2896,7 +2911,7 @@ class ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem(_ListLe
 
 class _ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemExpectedItemRequired(TypedDict):
     field: str
-    known: Literal["grade", "unknown", "contradicts"]
+    known: Literal["grade", "correction", "unknown", "contradicts"]
 
 
 class ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemExpectedItem(_ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemExpectedItemRequired, total=False):
@@ -2916,12 +2931,14 @@ class _ListLearningPromotionsResponsePromotionsItemCheckTurnsRequired(TypedDict)
 class ListLearningPromotionsResponsePromotionsItemCheckTurns(_ListLearningPromotionsResponsePromotionsItemCheckTurnsRequired, total=False):
     disagreements: list[ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItem]
     fresh_reads: int
+    unread: int
 
 
 class ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValue(TypedDict, total=False):
     grade: ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueGrade
     agent: ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueAgent
     unjudged: int
+    unread: int
 
 
 class ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueGrade(TypedDict):
@@ -2960,7 +2977,7 @@ class ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItem(_L
 
 class _ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItemExpectedItemRequired(TypedDict):
     field: str
-    known: Literal["grade", "unknown", "contradicts"]
+    known: Literal["grade", "correction", "unknown", "contradicts"]
 
 
 class ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItemExpectedItem(_ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItemExpectedItemRequired, total=False):
@@ -3059,6 +3076,8 @@ class ListLearningPromotionsResponseServingItemChampionCheck(_ListLearningPromot
     unstarted: int
     skipped_tools: list[ListLearningPromotionsResponseServingItemChampionCheckSkippedToolsItem]
     disagreements: list[ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItem]
+    unread: int
+    undecided: Literal[True]
     stopped: Literal[True]
     released: int
     fresh_reads: int
@@ -3066,7 +3085,7 @@ class ListLearningPromotionsResponseServingItemChampionCheck(_ListLearningPromot
 
 
 _ListLearningPromotionsResponseServingItemChampionCheckFieldsValueRequired = TypedDict("_ListLearningPromotionsResponseServingItemChampionCheckFieldsValueRequired", {"n": "int", "workflow_right": "int", "agent_right": "int", "known": "Literal[\"grade\", \"agent\"]", "pass": "bool", "reason": "str", "by": "ListLearningPromotionsResponseServingItemChampionCheckFieldsValueBy"})
-_ListLearningPromotionsResponseServingItemChampionCheckFieldsValueOptional = TypedDict("_ListLearningPromotionsResponseServingItemChampionCheckFieldsValueOptional", {"unjudged": "int"}, total=False)
+_ListLearningPromotionsResponseServingItemChampionCheckFieldsValueOptional = TypedDict("_ListLearningPromotionsResponseServingItemChampionCheckFieldsValueOptional", {"unjudged": "int", "unread": "int"}, total=False)
 
 
 class ListLearningPromotionsResponseServingItemChampionCheckFieldsValue(_ListLearningPromotionsResponseServingItemChampionCheckFieldsValueRequired, _ListLearningPromotionsResponseServingItemChampionCheckFieldsValueOptional):
@@ -3120,7 +3139,7 @@ class ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItem(_L
 
 class _ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemExpectedItemRequired(TypedDict):
     field: str
-    known: Literal["grade", "unknown", "contradicts"]
+    known: Literal["grade", "correction", "unknown", "contradicts"]
 
 
 class ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemExpectedItem(_ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemExpectedItemRequired, total=False):
@@ -3140,12 +3159,14 @@ class _ListLearningPromotionsResponseServingItemChampionCheckTurnsRequired(Typed
 class ListLearningPromotionsResponseServingItemChampionCheckTurns(_ListLearningPromotionsResponseServingItemChampionCheckTurnsRequired, total=False):
     disagreements: list[ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItem]
     fresh_reads: int
+    unread: int
 
 
 class ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValue(TypedDict, total=False):
     grade: ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueGrade
     agent: ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueAgent
     unjudged: int
+    unread: int
 
 
 class ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueGrade(TypedDict):
@@ -3184,7 +3205,7 @@ class ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsIt
 
 class _ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItemExpectedItemRequired(TypedDict):
     field: str
-    known: Literal["grade", "unknown", "contradicts"]
+    known: Literal["grade", "correction", "unknown", "contradicts"]
 
 
 class ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItemExpectedItem(_ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItemExpectedItemRequired, total=False):
@@ -3535,6 +3556,7 @@ class Cost(_CostRequired, total=False):
     tokens: CostTokens
     learning_usd: float | None
     tools_usd: float | None
+    billable_usd: float | None
     all_in_usd: float | None
     compile_usd: float | None
     followup_usd: float | None
@@ -3785,10 +3807,14 @@ class RunSummaryReview(TypedDict):
     at: str
 
 
-class RunSummaryPending1(TypedDict):
+class _RunSummaryPending1Required(TypedDict):
     kind: Literal["question"]
     question: str
     asked_at: str
+
+
+class RunSummaryPending1(_RunSummaryPending1Required, total=False):
+    expires_at: str
 
 
 class _RunSummaryPending2Required(TypedDict):
@@ -3845,7 +3871,7 @@ class RunSummaryPending6(TypedDict):
 
 
 class RunSummaryImportedFrom(TypedDict):
-    source: Literal["claude-code", "codex", "pi", "opencode", "copilot"]
+    source: Literal["claude-code", "codex", "pi", "opencode", "copilot", "cursor"]
     session: str
 
 
@@ -4679,7 +4705,7 @@ class WriteHomeFileResponse(_WriteHomeFileResponseRequired, total=False):
 class GetLearningCorrectionsResponse(TypedDict):
     text: str
     etag: str
-    cap_bytes: Literal[2048]
+    cap_bytes: Literal[8192]
 
 
 class GetLearningCostResponse(TypedDict):
@@ -5021,7 +5047,7 @@ class PutLearningCorrectionsBody(TypedDict):
 class PutLearningCorrectionsResponse(TypedDict):
     text: str
     etag: str
-    cap_bytes: Literal[2048]
+    cap_bytes: Literal[8192]
 
 
 class ConnectGitHubBody(TypedDict, total=False):
@@ -5335,6 +5361,7 @@ class _GetClaudeLoginResponseRequired(TypedDict):
 
 
 class GetClaudeLoginResponse(_GetClaudeLoginResponseRequired, total=False):
+    start_off: str
     refused: str
     account: GetClaudeLoginResponseAccount
     sign_in: GetClaudeLoginResponseSignIn
@@ -5486,6 +5513,28 @@ class GetModelGatewayResponseSecret(TypedDict):
     changed_at: str | None
 
 
+class GetPricesResponse(TypedDict):
+    compute: list[GetPricesResponseComputeItem]
+    browser: list[GetPricesResponseBrowserItem]
+
+
+class GetPricesResponseComputeItem(TypedDict):
+    provider: str
+    resource: Literal["vcpu", "memory", "gpu", "disk"]
+    gpu_type: str | None
+    unit: Literal["vcpu_second", "gib_second", "gpu_second", "gb_month"]
+    usd: str | None
+    source: Literal["setting", "list", "unpriced"]
+
+
+class GetPricesResponseBrowserItem(TypedDict):
+    provider: str
+    unit: Literal["hour"]
+    usd: str | None
+    minimum_s: int
+    source: Literal["setting", "list", "unpriced"]
+
+
 class GetSuggestionResponse(TypedDict):
     id: str
     repo: str
@@ -5630,8 +5679,9 @@ class ListComposioEventsResponseEventsItem(_ListComposioEventsResponseEventsItem
     instructions: str
 
 
-class ListComposioToolkitsBody(TypedDict):
+class ListComposioToolkitsBody(TypedDict, total=False):
     api_key: str
+    api_key_env: Literal["COMPOSIO_API_KEY", "AGENTRUN_COMPOSIO_API_KEY"]
 
 
 class ListComposioToolkitsResponse(TypedDict):
@@ -5643,9 +5693,13 @@ class ListComposioToolkitsResponseToolkitsItem(TypedDict):
     name: str
 
 
-class ListComposioToolsBody(TypedDict):
-    api_key: str
+class _ListComposioToolsBodyRequired(TypedDict):
     toolkit: str
+
+
+class ListComposioToolsBody(_ListComposioToolsBodyRequired, total=False):
+    api_key: str
+    api_key_env: Literal["COMPOSIO_API_KEY", "AGENTRUN_COMPOSIO_API_KEY"]
 
 
 class ListComposioToolsResponse(TypedDict):
@@ -6107,7 +6161,7 @@ class RunPlace1(TypedDict):
 
 class RunPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox", "vercel", "sprites"]
 
 
 class _RunComputerRequired(TypedDict):
@@ -6158,10 +6212,14 @@ class RunReview(TypedDict):
     at: str
 
 
-class RunPending1(TypedDict):
+class _RunPending1Required(TypedDict):
     kind: Literal["question"]
     question: str
     asked_at: str
+
+
+class RunPending1(_RunPending1Required, total=False):
+    expires_at: str
 
 
 class _RunPending2Required(TypedDict):
@@ -6218,7 +6276,7 @@ class RunPending6(TypedDict):
 
 
 class RunImportedFrom(TypedDict):
-    source: Literal["claude-code", "codex", "pi", "opencode", "copilot"]
+    source: Literal["claude-code", "codex", "pi", "opencode", "copilot", "cursor"]
     session: str
 
 
@@ -6653,7 +6711,7 @@ class SaveComposioServerBody(_SaveComposioServerBodyRequired, total=False):
     auth_config_id: str
     price_usd: float
     api_key: str
-    api_key_env: Literal["COMPOSIO_API_KEY"]
+    api_key_env: Literal["COMPOSIO_API_KEY", "AGENTRUN_COMPOSIO_API_KEY"]
 
 
 class _SaveComposioServerResponseRequired(TypedDict):
@@ -6695,7 +6753,7 @@ class _SaveComposioServerResponseServerAuthRequired(TypedDict):
 
 class SaveComposioServerResponseServerAuth(_SaveComposioServerResponseServerAuthRequired, total=False):
     headers: list[str]
-    api_key_env: Literal["COMPOSIO_API_KEY"]
+    api_key_env: Literal["COMPOSIO_API_KEY", "AGENTRUN_COMPOSIO_API_KEY"]
 
 
 class _SaveComposioServerResponseServerOauthRequired(TypedDict):
@@ -6888,11 +6946,45 @@ class SaveModelGatewayResponseSecret(TypedDict):
     changed_at: str | None
 
 
-class ScanForSuggestionsBody(TypedDict):
+class _ScanForSuggestionsBodyRequired(TypedDict):
     repo: str
 
 
-class ScanForSuggestionsResponse(TypedDict):
+class ScanForSuggestionsBody(_ScanForSuggestionsBodyRequired, total=False):
+    start: Literal["host"]
+    run_id: str
+    scan: str
+
+
+ScanForSuggestionsResponse: TypeAlias = "ScanForSuggestionsResponseObject11 | ScanForSuggestionsResponseObject12 | ScanForSuggestionsResponseObject13 | ScanForSuggestionsResponseObject2"
+
+
+class ScanForSuggestionsResponseObject11(TypedDict):
+    repo: str
+    run_id: str
+    agent_id: str
+    status: Literal["running"]
+    already_running: bool
+
+
+class ScanForSuggestionsResponseObject12(TypedDict):
+    repo: str
+    agent_id: str
+    input: ScanForSuggestionsResponseObject12Input
+    scan: str
+    status: Literal["starting"]
+
+
+class ScanForSuggestionsResponseObject12Input(TypedDict):
+    content: str
+
+
+class ScanForSuggestionsResponseObject13(TypedDict):
+    repo: str
+    status: Literal["released"]
+
+
+class ScanForSuggestionsResponseObject2(TypedDict):
     repo: str
     run_id: str
     agent_id: str
@@ -6927,6 +7019,7 @@ class _SignOutClaudeLoginResponseLoginRequired(TypedDict):
 
 
 class SignOutClaudeLoginResponseLogin(_SignOutClaudeLoginResponseLoginRequired, total=False):
+    start_off: str
     refused: str
     account: SignOutClaudeLoginResponseLoginAccount
     sign_in: SignOutClaudeLoginResponseLoginSignIn
@@ -6976,6 +7069,7 @@ class _StartClaudeLoginResponseRequired(TypedDict):
 
 
 class StartClaudeLoginResponse(_StartClaudeLoginResponseRequired, total=False):
+    start_off: str
     refused: str
     account: StartClaudeLoginResponseAccount
     sign_in: StartClaudeLoginResponseSignIn
@@ -7123,6 +7217,7 @@ class _TurnOffClaudeLoginResponseRequired(TypedDict):
 
 
 class TurnOffClaudeLoginResponse(_TurnOffClaudeLoginResponseRequired, total=False):
+    start_off: str
     refused: str
     account: TurnOffClaudeLoginResponseAccount
     sign_in: TurnOffClaudeLoginResponseSignIn
@@ -7175,6 +7270,7 @@ class _TurnOnClaudeLoginResponseRequired(TypedDict):
 
 
 class TurnOnClaudeLoginResponse(_TurnOnClaudeLoginResponseRequired, total=False):
+    start_off: str
     refused: str
     account: TurnOnClaudeLoginResponseAccount
     sign_in: TurnOnClaudeLoginResponseSignIn
@@ -7248,7 +7344,7 @@ class _GetMcpServerResponseAuthRequired(TypedDict):
 
 class GetMcpServerResponseAuth(_GetMcpServerResponseAuthRequired, total=False):
     headers: list[str]
-    api_key_env: Literal["COMPOSIO_API_KEY"]
+    api_key_env: Literal["COMPOSIO_API_KEY", "AGENTRUN_COMPOSIO_API_KEY"]
 
 
 class _GetMcpServerResponseOauthRequired(TypedDict):
@@ -7325,7 +7421,7 @@ class _ListMcpServersResponseServersItemAuthRequired(TypedDict):
 
 class ListMcpServersResponseServersItemAuth(_ListMcpServersResponseServersItemAuthRequired, total=False):
     headers: list[str]
-    api_key_env: Literal["COMPOSIO_API_KEY"]
+    api_key_env: Literal["COMPOSIO_API_KEY", "AGENTRUN_COMPOSIO_API_KEY"]
 
 
 class _ListMcpServersResponseServersItemOauthRequired(TypedDict):
@@ -7469,7 +7565,7 @@ class _RefreshMcpServerResponseServerAuthRequired(TypedDict):
 
 class RefreshMcpServerResponseServerAuth(_RefreshMcpServerResponseServerAuthRequired, total=False):
     headers: list[str]
-    api_key_env: Literal["COMPOSIO_API_KEY"]
+    api_key_env: Literal["COMPOSIO_API_KEY", "AGENTRUN_COMPOSIO_API_KEY"]
 
 
 class _RefreshMcpServerResponseServerOauthRequired(TypedDict):
@@ -7562,7 +7658,7 @@ class _SaveMcpServerResponseAuthRequired(TypedDict):
 
 class SaveMcpServerResponseAuth(_SaveMcpServerResponseAuthRequired, total=False):
     headers: list[str]
-    api_key_env: Literal["COMPOSIO_API_KEY"]
+    api_key_env: Literal["COMPOSIO_API_KEY", "AGENTRUN_COMPOSIO_API_KEY"]
 
 
 class _SaveMcpServerResponseOauthRequired(TypedDict):
@@ -8124,9 +8220,13 @@ class _GetRunLearningResponseObjectRequired(TypedDict):
     detail: str | None
     at: str
     seed: str | None
+    seed_failed: Literal["unreadable", "not_copied", "other_disk"] | None
+    seed_waited: Literal["ended", "timed_out"] | None
+    learned_chars: int
     merged: str | None
     workflows: list[GetRunLearningResponseObjectWorkflowsItem]
     corrections: int
+    dropped_lines: int
     problems: list[GetRunLearningResponseObjectProblemsItem]
     compiled: GetRunLearningResponseObjectCompiled | None
     draft_errors: list[str]
@@ -8216,6 +8316,7 @@ class _MessageCreateRequired(TypedDict):
 
 
 class MessageCreate(_MessageCreateRequired, total=False):
+    said: str
     model_key: str
     mcp_auth: dict[str, MessageCreateMcpAuthValue | ComposioRunBinding]
     keys: dict[str, str]
@@ -8539,7 +8640,7 @@ class GetRunUsageResponse(TypedDict):
     browser_sessions: list[GetRunUsageResponseBrowserSessionsItem] | None
     computer_intervals: list[GetRunUsageResponseComputerIntervalsItem] | None
     infra_usd: float | None
-    reason: Literal["running", "not_booked", "reopened"] | None
+    reason: Literal["running", "not_booked"] | None
 
 
 class _GetRunUsageResponseTotalRequired(TypedDict):
@@ -8566,6 +8667,7 @@ class _GetRunUsageResponseLinesItemRequired(TypedDict):
 
 
 class GetRunUsageResponseLinesItem(_GetRunUsageResponseLinesItemRequired, total=False):
+    absorbed: Literal["create_race"]
     so_far_usd: float
     unpriced: int
     upper_bound: Literal[True]
@@ -8877,6 +8979,7 @@ class Features(_FeaturesRequired, total=False):
     mcp_client: FeaturesMcpClient
     tool_permissions: bool
     webhooks: FeaturesWebhooks
+    workspaces: FeaturesWorkspaces
     api_keys: FeaturesApiKeys
     slack: FeaturesSlack
     triggers: FeaturesTriggers
@@ -8902,11 +9005,15 @@ class FeaturesRuns(_FeaturesRunsRequired, _FeaturesRunsOptional):
     pass
 
 
-class FeaturesMessages(TypedDict):
+class _FeaturesMessagesRequired(TypedDict):
     steer: bool
     answer: bool
     follow_up: bool
     steer_workflow_runs: bool
+
+
+class FeaturesMessages(_FeaturesMessagesRequired, total=False):
+    said: bool
 
 
 class _FeaturesTimelineRequired(TypedDict):
@@ -8962,7 +9069,7 @@ class FeaturesHarnessKeys(TypedDict):
     harnesses: list[str]
 
 
-class FeaturesMcpClient(TypedDict):
+class _FeaturesMcpClientRequired(TypedDict):
     transports: list[Literal["streamable-http"]]
     auth: list[Literal["none", "bearer", "headers", "oauth", "github_app", "per_run"]]
     at_rest: Literal["sealed"]
@@ -8970,11 +9077,22 @@ class FeaturesMcpClient(TypedDict):
     composio_per_run: bool
 
 
+class FeaturesMcpClient(_FeaturesMcpClientRequired, total=False):
+    composio_key_envs: list[str]
+
+
 class FeaturesWebhooks(TypedDict):
     routes: bool
     events: list[Literal["run.needs_input", "run.ended", "trigger.failed"]]
     signing: Literal["standard-webhooks/v1"]
     at_rest: Literal["sealed"]
+
+
+class FeaturesWorkspaces(TypedDict):
+    header: Literal["AgentRun-Workspace"]
+    enforced: bool
+    required_for_tokens: bool
+    routes: list[str]
 
 
 class FeaturesApiKeys(TypedDict):
@@ -9086,7 +9204,7 @@ class CapabilitiesPlaces(_CapabilitiesPlacesRequired, total=False):
 
 
 class _CapabilitiesPlacesBoxesItemRequired(TypedDict):
-    id: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
+    id: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox", "vercel", "sprites"]
     available: bool
     state: Literal["ready", "unavailable"]
 
@@ -9104,7 +9222,7 @@ class CapabilitiesPlacesDefaultPlace1(TypedDict):
 
 class CapabilitiesPlacesDefaultPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox", "vercel", "sprites"]
 
 
 class _CapabilitiesHarnessesItemRequired(TypedDict):
@@ -9497,7 +9615,7 @@ class GetStatsResponseAnalyticsByDayItem(TypedDict):
 
 
 class GetStatsResponseAnalyticsBySourceItem(TypedDict):
-    source: Literal["live", "claude-code", "codex", "pi", "opencode", "copilot"]
+    source: Literal["live", "claude-code", "codex", "pi", "opencode", "copilot", "cursor"]
     runs: int
     completed: int
     needs_review: int
@@ -12375,6 +12493,7 @@ OPERATIONS: dict[str, Operation] = {
     "getGitHubConnection": Operation(method="GET", path="/integrations/github", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getLocalModel": Operation(method="GET", path="/settings/local-model", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getModelGateway": Operation(method="GET", path="/settings/model-gateway", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getPrices": Operation(method="GET", path="/settings/prices", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getSuggestion": Operation(method="GET", path="/suggestions/{suggestion_id}", path_params=("suggestion_id",), multi_segment=(), query=("name",), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getWorkspaceArchil": Operation(method="GET", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "gitHubCallback": Operation(method="GET", path="/integrations/github/callback", path_params=(), multi_segment=(), query=("code", "state"), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
@@ -12893,6 +13012,10 @@ class LocalResource(Group):
     def get_model_gateway(self, *, timeout: float | None = None) -> GetModelGatewayResponse:
         """The model gateway in force: the environment's, the one saved here, or none (GET /settings/model-gateway)."""
         return self._call("getModelGateway", (), None, None, timeout=timeout)
+
+    def get_prices(self, *, timeout: float | None = None) -> GetPricesResponse:
+        """The prices this server meters computer time and browser time at, with where each comes from (GET /settings/prices)."""
+        return self._call("getPrices", (), None, None, timeout=timeout)
 
     def get_suggestion(self, suggestion_id: str, *, name: str | None = None, timeout: float | None = None) -> GetSuggestionResponse:
         """One suggested agent whole: its instructions, the files a create adds, and whether GitHub lets it (GET /suggestions/{suggestion_id})."""

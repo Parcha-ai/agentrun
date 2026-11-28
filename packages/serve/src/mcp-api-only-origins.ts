@@ -18,6 +18,10 @@ export async function holdApiOnlyMcpOrigins(store: SettingsWriter, apiOnly: bool
   else await store.settings.remove(API_ONLY_MCP_ORIGINS_KEY);
 }
 
+/** The auth types a server the API token saves may have (api-only.ts apiOnlyMcpSave): per_run anywhere, headers or a
+ *  bearer token in a workspace, sealed in its own row. The ones a run's claim reads the list again for before each call. */
+export const TOKEN_SAVED_MCP_AUTHS: readonly string[] = ["per_run", "headers", "bearer"];
+
 /** The list the store holds, or undefined when it holds none (a full server's store). */
 export async function heldApiOnlyMcpOrigins(store: SettingsReader): Promise<readonly unknown[] | undefined> {
   const held = await store.settings.get(API_ONLY_MCP_ORIGINS_KEY);
@@ -25,11 +29,12 @@ export async function heldApiOnlyMcpOrigins(store: SettingsReader): Promise<read
 }
 
 /** Why the saved server `name` (`row`) can't be used, or undefined when it can. It can't be used when it is a per_run
- *  server the API token saved, the store holds an API-only list, and its address's origin is not on that list. `held`:
- *  the list a caller already read (heldApiOnlyMcpOrigins); without it, the list is read here, for a per_run row alone.
+ *  server the API token saved, or one that seals a credential the token saved (a workspace's own, mcp-secret-writes.ts
+ *  workspaceWriteRefused), the store holds an API-only list, and its address's origin is not on that list. `held`: the
+ *  list a caller already read (heldApiOnlyMcpOrigins); without it, the list is read here, for such a row alone.
  *  Undefined means "not read", never "none held": a caller passes the list only when the store holds one. */
-export async function offApiOnlyMcpOrigins(store: SettingsReader, name: string, row: { auth: string; url: string; createdAt?: number }, held?: readonly unknown[]): Promise<string | undefined> {
-  if (row.auth !== "per_run") return undefined;
+export async function offApiOnlyMcpOrigins(store: SettingsReader, name: string, row: { auth: string; url: string; sealed?: unknown; createdAt?: number }, held?: readonly unknown[]): Promise<string | undefined> {
+  if (row.auth !== "per_run" && (row.sealed === null || row.sealed === undefined)) return undefined;
   const origins = held ?? (await heldApiOnlyMcpOrigins(store));
   if (!origins) return undefined;
   if (!savedByToken(await store.settings.get(mcpSourceKey(name)), row.createdAt)) return undefined;

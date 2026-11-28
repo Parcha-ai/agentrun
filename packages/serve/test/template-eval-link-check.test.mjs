@@ -81,6 +81,33 @@ test("a fetch's asked url, its final url and its page's links all match; a page 
   assert.deepEqual(twice, ["https://elsewhere.example/x — no matching call (calls 1 and 3's links were cut)"]);
 });
 
+test("a link in the text of a fetched page's second part (whose links list is empty) matches when the answer cites it", async () => {
+  const { fakeFetch } = await import("../dist/web-fake.js");
+  const url = "https://docs.example/guide";
+  const text = `${"Intro words. ".repeat(400)}\nThe install steps are at [install](https://docs.example/guide/install) and https://cdn.example/setup.sh too.`;
+  const fixture = { search: { answers: [], default: { results: [] } }, fetch: { answers: [{ url, text }], default: { error: "fetch failed" } } };
+  const offset = 4_000;
+  const page = await fakeFetch(fixture, url, { offset });
+  assert.equal(page.ok, true, JSON.stringify(page).slice(0, 300));
+  assert.deepEqual(page.links, [], "a part past the first carries no links of its own");
+  assert.ok(page.text.includes("https://docs.example/guide/install"), "the part's text holds the link");
+  const fetched = { tool: "web_fetch", name: "web_fetch", arguments: { url, offset }, status: "success", result: JSON.stringify(page) };
+  assert.deepEqual(checked(graderInput(grader, "task", run("Install: https://docs.example/guide/install, then https://cdn.example/setup.sh.", fetched))), [
+    "https://docs.example/guide/install — matches call 1",
+    "https://cdn.example/setup.sh — matches call 1",
+  ]);
+});
+
+test("a link in a found chunk of an objective's answer, and one in a native search's text, match when the answer cites them", () => {
+  const found = { ok: true, url: "https://docs.example/guide", status: 200, title: "Guide", found: [{ offset: 0, text: "Overview." }, { offset: 9_000, relevance: 0.9, text: "Pricing is on [the plans page](https://docs.example/plans)." }], sift: "jev picked 2 chunks" };
+  const fetched = { tool: "web_fetch", name: "web_fetch", arguments: { url: "https://docs.example/guide", objective: "pricing" }, status: "success", result: JSON.stringify(found) };
+  const native = { tool: "web_search", name: "web_search", arguments: { objective: "q" }, status: "success", result: `${JSON.stringify({ provider: "native", objective: "q", queries: [], results: [], text: "The recall is listed at https://recalls.example/2026/stroller." })}\nCite the URL of each result you rely on.` };
+  assert.deepEqual(checked(graderInput(grader, "task", run("Plans: https://docs.example/plans. Recall: https://recalls.example/2026/stroller", fetched, native))), [
+    "https://docs.example/plans — matches call 1",
+    "https://recalls.example/2026/stroller — matches call 2",
+  ]);
+});
+
 test("a link a fetched JSON page holds (a Statuspage incident's shortlink) matches when the answer cites it, that fetch the only call", async () => {
   const { fakeFetch } = await import("../dist/web-fake.js");
   const url = "https://www.githubstatus.com/api/v2/incidents.json";

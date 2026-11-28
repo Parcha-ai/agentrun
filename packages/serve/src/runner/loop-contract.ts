@@ -2,6 +2,7 @@
 // claims, renews, delivers command rows and releases; the loop runs the harness on the run's journal. B2's loop.ts
 // implements `Loop` for pi and the CLI adapters; the runner knows nothing about harnesses.
 
+import { RECOVER_MS, recoveriesInFlight } from "@parcha/agentrun-computer";
 import { money } from "@parcha/agentrun-kernel/kernel/cap";
 import { refusedText } from "../refusal-words.js";
 import type { AlsoRow, Claim, Command, Journal } from "../store/store.js";
@@ -62,10 +63,12 @@ export type EndOfRunTurn = (input: {
    *  earlier claim (or this one) started, readable before `ask`, so a step that skips or is cut never asks, and still
    *  closes that look-back with its first ask's figures. Undefined when none asked it, or the loop keeps no record (pi's). */
   keptOf?(round: number): EndOfRunKept | undefined;
-  /** A replay run's or an audit shadow's grader (learn/promote.ts): its fast model's name (`grader`), and one request to
-   *  it (`grade`), sent through the run's own session on its one cap, booked as the run's spend; a refusal of that cap
-   *  never parks the run (`refused`). Absent when the run has no grader route (no fast model, or agree_on named). */
+  /** A replay run's or an audit shadow's grader (learn/promote.ts): its model's name (`grader`: the fast model, else the
+   *  run's own, `graderOwn`), and one request to it (`grade`), sent through the run's own session on its one cap, booked
+   *  as the run's spend; a refusal of that cap never parks the run (`refused`). Absent when the run has no grader route
+   *  (agree_on named, or no route could be made). */
   readonly grader?: string;
+  readonly graderOwn?: boolean;
   grade?(request: { readonly system: string; readonly user: string }): Promise<GraderReply>;
   readonly signal: AbortSignal;
 }) => Promise<{ readonly also: readonly AlsoRow[]; readonly compared?: Compared } | undefined>;
@@ -139,6 +142,31 @@ export interface Loop {
    *  computer-held.ts): the runner then goes on handing it rows (the owner's calls and release) until it ends. Absent:
    *  never. */
   keepsComputer?(reason: StopReason): boolean;
+  /** The runner's close set LoopDeps.releaseBy while this loop was already stopping (a person's stop, which stays its
+   *  stop and its end): a tool hosts' release under way is cut by it from now, as a shutdown's stop would cut it. Absent:
+   *  the loop reads releaseBy only when its release begins. */
+  closing?(): void;
+}
+
+/** What a claim's tool hosts get beyond a provider's own cleanup bound to let the run go (RELEASE_MARGIN_MS). */
+export const RELEASE_MARGIN_MS = 5_000;
+/** How long a loop waits for its claim's tool hosts to let the run go (their beforeRelease), at its end, park or shutdown:
+ *  a computer provider's cleanup bound (`cleanupMs`, the providers' default RECOVER_MS: a lost create's recovery may take
+ *  all of it) and RELEASE_MARGIN_MS. Past it the loop goes on without them and says so on the run (KINDS.releaseCut). */
+export const releaseBoundMs = (cleanupMs: number = RECOVER_MS): number => cleanupMs + RELEASE_MARGIN_MS;
+
+/** Waits for each lost create's recovery under way in this process (recoveriesInFlight) to end: until its own bound, or
+ *  the close's drain from `closedAt` when that is later, and RELEASE_MARGIN_MS for the release it books, never past
+ *  `stopBy`. One that has not ended by then is left to its own bound and the lease. */
+export async function recoveriesDone(closedAt: number, drainMs: number, stopBy: number): Promise<void> {
+  await Promise.all(
+    recoveriesInFlight().map(async (recovery) => {
+      const until = Math.min(Math.max(closedAt + drainMs, recovery.by) + RELEASE_MARGIN_MS, stopBy);
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([recovery.done, new Promise<void>((resolve) => (timer = setTimeout(resolve, Math.max(0, until - Date.now()))))]);
+      clearTimeout(timer);
+    }),
+  );
 }
 
 export interface LoopDeps {
@@ -161,6 +189,10 @@ export interface LoopDeps {
    *  command poll away), and resolves once each call returned: a turn that ends asks it before the run may end, so a
    *  message sent while the turn worked is answered, never refused by the run's end. Absent: nothing to hand on. */
   deliverNow?: () => Promise<void>;
+  /** Writes command row `commandId` refused in `reason`'s words, under this claim, as the runner writes a refusal its loop
+   *  answered: for a row the loop said it took for now and refused later (the dispatch's buffered rows, replayed once its
+   *  inner loop is chosen). Throws as the store does (a fenced claim). Absent: such a refusal is not written. */
+  refuse?: (commandId: number, reason: string) => Promise<void>;
   /** Where the loop reports what its run shows before it is stored (a running tool, a partial answer), as it changes: a
    *  reader of the newest held state (`undefined` once there is nothing held), called once per tick by the runner's live
    *  ticker (runner/live-ticker.ts), never on every change, so a change costs the same however long the answer has grown.
@@ -175,11 +207,16 @@ export interface LoopDeps {
    *  because the runner is closing (a ChatGPT renewal refused as PlanStopping, after RUNNER_RENEWALS_SERVED_MS). A closing
    *  runner stops the loop for a shutdown and aborts `signal`, as the drain's end does; else it does nothing. Absent:
    *  the request fails as it would. */
-  handBack?: () => void;
+  handBack?: () => Promise<void>;
   /** The incarnation of the runner's word in the store (runner/presence.ts), the claim's runner being the claim's own
    *  `runner`: a park that keeps a computer only this runner can reach again pins it to both (workspace/computer-kept.ts
    *  pinnedOf), so the claim rule gives the run back to this runner while it is there. Absent: nothing is pinned. */
   incarnation?: string;
+  /** How long the loop waits for its claim's tool hosts to let the run go (releaseBoundMs). Absent: releaseBoundMs(). */
+  releaseBoundMs?: number;
+  /** While its runner closes: when the loop's release must have ended (ms since the epoch), so the cut and its record land
+   *  inside the close's window (Runner.close). Undefined: not closing, and the release has its own bound alone. */
+  releaseBy?: () => number | undefined;
 }
 
 /** A run's held state: what pi shows before it stores it. The live view (live/stream.ts) streams it beside the stored

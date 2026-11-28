@@ -1,6 +1,6 @@
 # @parcha/agentrun-import
 
-Reads the coding-agent sessions under a home (Claude Code, Codex, pi, OpenCode, GitHub Copilot CLI) into one Session shape: normalized token
+Reads the coding-agent sessions under a home (Claude Code, Codex, pi, OpenCode, GitHub Copilot CLI, Cursor's CLI) into one Session shape: normalized token
 usage, subagents counted under their parent, and cursors so a second pass reads only what changed. AgentRun's server
 imports past sessions through it.
 
@@ -30,7 +30,7 @@ const sessions = await parseHome(homedir(), { sources: ["claude-code", "codex"] 
   that does not open, for each session it lists or as itself when it lists none) while the rest are totalled; without
   it, parseHome throws `ReadFailures`. An unreadable file is never taken for an empty one.
 - `env` names where a source keeps its own directory (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `COPILOT_HOME`, OpenCode's `XDG_DATA_HOME` and
-  `OPENCODE_DB`); without it the home's.
+  `OPENCODE_DB`, `CURSOR_CONFIG_DIR` or `XDG_CONFIG_HOME` for Cursor); without it the home's.
 - `threads` reads the files on that many worker threads (default: the cores the process may run on less one, two on
   two, at most 16, and no more than the workers whose heaps, 80 MiB each at the default `workerOldMb`, fit in the memory
   still free (the machine's, page cache counted as free, at most its container's limit) once `readAhead` is set aside;
@@ -45,6 +45,9 @@ const sessions = await parseHome(homedir(), { sources: ["claude-code", "codex"] 
 - `workerOldMb` caps each worker's old generation (default 64, at least 8, refused with a RangeError under it: at 1 or
   2 MB V8 ends the whole process as a worker starts, and at 3 to 7 the workers run out of memory). A line over an eighth of it, or a file that runs a worker
   out of memory, is read on the calling thread instead; past two such losses a thread, the calling thread reads the rest.
+  Each reading thread (each worker, and the calling thread) also holds up to 8 MiB of scanner memory outside its heap:
+  the scanner's stack and tables, and room for the longest line it read. A line that would take it past 8 MiB (one over
+  about 6.7 MiB) is parsed whole instead, with the same totals.
 - A request two sources wrote is counted once. OpenCode's claude-agent provider runs Claude Code, which writes each
   request into its own session file too; OpenCode names that session on the request (`mirrors`). When the same call
   reads that Claude Code session (serve's import: or its store holds it), the request counts there and not in the OpenCode session (tokens, calls and cost),
@@ -73,7 +76,7 @@ calls at once hold two pools' memory.
 ## Known answer
 
 ```sh
-node dist/cli.js <home> [--sources claude-code,codex,pi,opencode,copilot] [--threads N] [--read-ahead BYTES[k|m|g]] --known-answer
+node dist/cli.js <home> [--sources claude-code,codex,pi,opencode,copilot,cursor] [--threads N] [--read-ahead BYTES[k|m|g]] --known-answer
 ```
 
 One JSONL line per session, sorted by key: `{key, source, tokens: {input, output, cacheRead, cacheWrite, cacheWrite1h},
@@ -186,6 +189,19 @@ it: zeros, known, never unknown. So:
   `history-session-state` folder are not read. A rotated session's tokens still come whole from its last shutdown;
   the requests in its archives are not counted.
 
+Cursor's CLI (`cursor-agent`) keeps each chat in a SQLite store of its own, `~/.cursor/chats/<workspace hash>/<agent
+id>/store.db` (an ACP session's under `~/.cursor/acp-sessions/<id>/`), with a `meta.json` beside it. The store is read
+once, whole and read-only, and no cursor is kept: each read reads it all again. A chat's id is its folder's name
+(`cursorSessionId(file)`).
+
+Cursor's CLI keeps no token usage on the machine: no tokens, cost or error for a request, and each turn's model only
+encrypted. Its usage is on Cursor's server (tokscale reads it from Cursor's usage CSV export; that is out of scope here).
+So each answer counts as one request of unknown tokens on an unknown model, keyed by Cursor's `requestId` where the
+message names one (a later message of the same request adds to it), else by its message id. A chat's cost is `null`.
+No message has a time of its own, so every turn is at the chat's start (the agent's `createdAt`) and the chat ends at
+`meta.json`'s `updatedAtMs`. The messages are JSON; only their order needs the root blob, a protobuf of which the reader
+reads one field.
+
 ## Readers
 
 A source is a `Reader` in the registry (`READERS`), with the harness that runs what it ran and the name a person reads:
@@ -218,7 +234,7 @@ read looks up afresh.
 The cursor is the reader's own: hand it back to the same reader for the same locator. A JSONL source builds its reader
 with `lineReader` from a per-record function; its cursor is the file's device and inode, the byte after the last whole
 line read, and the read's state. A file replaced or truncated since is read from its start, as is a cursor whose state
-is of another shape than the reader's (its `stateVersion`: a Codex cursor saved by 0.1.0-beta.58 or before), and a last
+is of another shape than the reader's (its `stateVersion`: a Codex cursor saved by 0.1.0-beta.59 or before), and a last
 line with no newline yet is read but not consumed. A source that keeps many sessions in one file (a SQLite database) implements
 `discover`, `idOf` and `read` itself and returns one locator per session, with its `id`, and `stat`: the session's own size and
 last write, which a caller's size caps and "still being written" check go by (`locatorSize`; without `stat`, the file's).

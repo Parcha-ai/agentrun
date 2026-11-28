@@ -54,11 +54,15 @@ describe("the cards drawn now", () => {
     for (const id of ["laptop", "type", "launch"]) expect(drawnBody(card(id), YEAR, new Set<CardWait>(["race-card-renderer", "cache-analyzer", "secret-count", "opt-in", "benchmark", "derived"]))).toBeNull();
   });
 
-  it("draws no card for an empty year: no sessions, or no requests", () => {
+  it("draws no card for an empty year (no sessions, or no requests) but those the store keeps: cache and leak, from the imported runs, while it keeps them", () => {
+    // EMPTY is a year whose session files are gone: nothing read from disk, the store's cache and keys cut still there.
+    const kept = new Set(["cache", "leak"]);
     for (const c of WRAPPED_CARDS) {
-      expect(toBody(c, EMPTY), c.id).toBeNull();
-      expect(toBody(c, { ...YEAR, sessions: 0 }), c.id).toBeNull();
-      expect(toBody(c, { ...YEAR, requests: 0 }), c.id).toBeNull();
+      for (const year of [EMPTY, { ...YEAR, sessions: 0 }, { ...YEAR, requests: 0 }]) {
+        if (kept.has(c.id)) expect(toBody(c, year), c.id).not.toBeNull();
+        else expect(toBody(c, year), c.id).toBeNull();
+      }
+      expect(toBody(c, { ...EMPTY, cache: null, secrets: null }), `${c.id}: nothing kept`).toBeNull();
     }
   });
 
@@ -71,8 +75,8 @@ describe("the cards drawn now", () => {
     }
   });
 
-  it("draws every word and bar of each body: no row, bar or value is cut or left out", () => {
-    const big: Wrapped = { ...YEAR, sessions: 123_456, turns: 9_876_543, requests: 12_345_678, cost_usd: 1_234_567.89, unpriced_requests: 1_234_567, unread_files: 12_345, days: Array.from({ length: 366 }, (_, i) => ({ day: `2024-01-${String((i % 28) + 1).padStart(2, "0")}`, requests: 1, tokens: 1 })), active_ms: 9_876_543_210 };
+  it("draws every word and bar of each body: no row, bar, value or unit is cut or left out", () => {
+    const big: Wrapped = { ...YEAR, secrets: { runs: 123_456, runs_holding: 98_765, removed: 1_234_567 }, sessions: 123_456, turns: 9_876_543, requests: 12_345_678, cost_usd: 1_234_567.89, unpriced_requests: 1_234_567, unread_files: 12_345, days: Array.from({ length: 366 }, (_, i) => ({ day: `2024-01-${String((i % 28) + 1).padStart(2, "0")}`, requests: 1, tokens: 1 })), active_ms: 9_876_543_210 };
     const causes = { model: 7, idle: 123_456, compaction: 9_876, edited: 55, sidechain: 4, unknown: 3_210 };
     const allCauses: Wrapped = { ...big, cache: { runs: 98_765, hit_rate: 0.4321, breaks: causes, extra_cost_usd: { ...causes, idle: 123_456.78 }, unpriced_breaks: 98_765 } };
     for (const data of [YEAR, PRICED, UNPRICED, big, allCauses]) {
@@ -84,6 +88,7 @@ describe("the cards drawn now", () => {
         const texts = [...new DOMParser().parseFromString(renderCard(b).svg, "image/svg+xml").querySelectorAll("text")].map((t) => t.textContent);
         for (const row of b.rows ?? []) expect(texts, `${id}: ${row.value}`).toContain(row.value);
         if (b.figure) expect(texts, id).toContain(b.figure.value);
+        if (b.figure?.unit) expect(texts, `${id}: ${b.figure.unit}`).toContain(b.figure.unit);
         if (b.footnote) expect(texts, id).toContain(b.footnote);
       }
     }
@@ -297,14 +302,14 @@ describe("leak", () => {
         { label: "Sessions with a key", value: "2" },
         { label: "Sessions checked", value: "9" },
       ],
-      footnote: "Cut on import from the 9 runs imported here; counts only, no key shown.",
+      footnote: "From the 9 runs counted on import; counts only, no key shown.",
     });
   });
 
   it("draws no leak card when no run of the year was counted, and says one key, one run and none in their own words", () => {
     expect(body("leak", { ...YEAR, secrets: null })).toBeNull();
     const one = body("leak", { ...YEAR, secrets: { runs: 1, runs_holding: 1, removed: 1 } })!;
-    expect([one.figure, one.footnote]).toEqual([{ value: "1", unit: "key or token cut" }, "Cut on import from the 1 run imported here; counts only, no key shown."]);
+    expect([one.figure, one.footnote]).toEqual([{ value: "1", unit: "key or token cut" }, "From the 1 run counted on import; counts only, no key shown."]);
     const none = body("leak", { ...YEAR, secrets: { runs: 12_345, runs_holding: 0, removed: 0 } })!;
     expect([none.figure, none.rows]).toEqual([{ value: "0", unit: "keys and tokens cut" }, [{ label: "Sessions with a key", value: "0" }, { label: "Sessions checked", value: "12,345" }]]);
   });

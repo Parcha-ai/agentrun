@@ -107,9 +107,13 @@ export interface BrowserProvider {
   downloads?: { list(ref: LeaseRef): Promise<RemoteFile[]>; read(ref: LeaseRef, name: string, maxBytes: number): Promise<AsyncIterable<Uint8Array>> };
 }
 
-/** The host owns the file boundary for `browser_upload`: a path the model names is resolved here or refused. */
+/** The host owns the file boundary for `browser_upload` and a screenshot's `save_as`: a path the model names is resolved
+ *  or written here, or refused. */
 export interface WorkspaceFiles {
   resolve(rel: string): Promise<{ bytes: Uint8Array; name: string; mime: string } | { refused: string }>;
+  /** File `rel` made or replaced with `bytes`, its parent directories made, as the host's own file-write tool writes one;
+   *  `path` is where it went, relative to the workspace. Absent: the host saves no screenshot. */
+  write?(rel: string, bytes: Uint8Array): Promise<{ path: string } | { refused: string }>;
 }
 
 export type HandoffOutcome = "done" | "cancelled" | "expired";
@@ -186,7 +190,11 @@ export type SessionsState = {
   notice: string | null;
 };
 
-export type InventoryRow = { tag: string; conversationId: number; plane: string; provider: string; resourceId: string | null; state: SessionRecord["state"] };
+/** `owed`: sessions besides the row's own that a release by its tag sent a stop to (or is about to), and that no raced
+ *  call has told yet; each stays until a status read confirms its stop and it is told. `made`: when the provider made each
+ *  session its tag lookup found (LeaseRef.madeAt), by id, saved before any stop is sent to it, until it is told: a stopped
+ *  session is listed by no later lookup, and a raced call hands its host this time. */
+export type InventoryRow = { tag: string; conversationId: number; plane: string; provider: string; resourceId: string | null; state: SessionRecord["state"]; owed?: string[]; made?: Record<string, string> };
 
 export type SessionRow = { conversationId: number; label: string; session: SessionRecord; liveView: LiveView | null };
 export type SessionChange = "launched" | "updated" | "released";

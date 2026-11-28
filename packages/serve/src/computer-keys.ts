@@ -11,6 +11,7 @@
 // here answers that its test is not available. No key is ever in an answer: each value is scrubbed from the provider's
 // words, and the words this module adds name keys only by their names.
 import { type ComputerProvider, PROVIDERS, type ProviderEntry, providerFor, SDK_MISSING } from "@parcha/agentrun-computer";
+import { MIN_SECRET, valueMatcher } from "./learn/secrets.js";
 import { keyShaped } from "./secret-name.js";
 import { hostEnvOf } from "./workspace/computer-providers.js";
 
@@ -134,11 +135,14 @@ export async function providerFromEnv(providerId: string, env: NodeJS.ProcessEnv
   }
 }
 
-/** `text` with every key value in `values` replaced by "[the key]". */
+/** `text` with every key value in `values` replaced by "[the key]", or "[the key]" whole where it still holds one of
+ *  MIN_SECRET characters or more in a form no cut in place finds (split by a control character, a terminal sequence, a
+ *  character that shows as a box: the redaction matcher, valueMatcher). */
 function scrub(text: string, values: readonly string[]): string {
   let out = text;
   for (const value of values) if (value.length >= 4) out = out.split(value).join("[the key]");
-  return out;
+  const held = values.filter((value) => value.length >= MIN_SECRET);
+  return held.length > 0 && valueMatcher(held)(out) ? "[the key]" : out;
 }
 
 /** A coded error of a provider's test in plain words: what happened, what to do, and the vendor's own words after. */

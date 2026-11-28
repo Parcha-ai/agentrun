@@ -80,7 +80,7 @@ import { agentRunLogin, LOGIN_CHANGED_SINCE_CLAIM, loginRunnerInProcess, loginTo
 import { logLine } from "../print.js";
 import type { Held, HeldComputerAsk } from "./held.js";
 import { heardComputerHold } from "./computer-journal.js";
-import { type Claim, type Command, type CommandOutcome, type HeldState, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, type StopReason, ClaimRefused } from "./loop-contract.js";
+import { type Claim, type Command, type CommandOutcome, type HeldState, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, RELEASE_MARGIN_MS, releaseBoundMs, type StopReason, ClaimRefused } from "./loop-contract.js";
 import { Channel, ChannelClosed } from "./run-channel.js";
 import { registerRunErrors } from "./run-errors.js";
 import { exposeSaveSlots } from "./save-slots.js";
@@ -99,6 +99,7 @@ import type { ClaimComputer } from "../workspace/computer-for-claim.js";
 import { attachedIn, type RunComputer, runTools, type RunTools } from "../workspace/run-tools.js";
 import { ProjectHostGate } from "./project-host.js";
 import { runProjectCheckpoint } from "./project-checkpoint.js";
+import { reseededLaunchOf, roundWaitMsOf, runnerShown } from "./learning-reseed.js";
 
 /** The image's helper that starts a run's process as its slot's uid (packages/serve/runas). */
 export const RUNAS_HELPER = "/usr/local/bin/agentrun-runas";
@@ -109,9 +110,15 @@ export const RUN_SLOT_FIRST_ENV = "AGENTRUN_RUN_SLOT_FIRST";
 /** The helper's compiled range: slot s runs as uid and gid FIRST_RUN_ID + s. */
 export const FIRST_RUN_ID = 1001;
 export const RUN_SLOTS = 256;
-/** How long a run's process has to end once its loop was told to stop, before the runner ends it. */
+/** How long a run's process has to end once its loop was told to stop, before the runner ends it: its turn's stop and its
+ *  end. A person's stop also gives its tool hosts' release its whole bound and the cut's booking (commandGraceMs). */
 const STOP_GRACE_MS = 30_000;
-/** How long a run's process has to exit once its loop ended. */
+/** How long a person's stop gives the run's process before the runner ends it: the turn's stop and end (STOP_GRACE_MS),
+ *  and after it the tool hosts' release to its bound (`releaseBound`, LoopDeps.releaseBoundMs) and the cut's booking
+ *  (RELEASE_MARGIN_MS), so a release that never answers is cut, charged and written before the process is ended. */
+const commandGraceMs = (releaseBound: number): number => STOP_GRACE_MS + releaseBound + RELEASE_MARGIN_MS;
+/** How long a run's process has to exit once its loop ended, at the least: a lost create's recovery under way in it ends
+ *  first (run-child.ts), so its exit is given the release's bound when that is longer (LoopDeps.releaseBoundMs). */
 const EXIT_GRACE_MS = 5_000;
 
 /** How this runner's runs are kept apart: each a process of its own, and with the helper each a uid of its own. */
@@ -649,7 +656,7 @@ interface ClaimReads {
   /** The runner's presence incarnation (LoopDeps.incarnation): with the claim's runner, who keeps a computer a park pins. */
   readonly incarnation?: string;
   /** LoopDeps.handBack: told when the run's ChatGPT renewal is refused because the runner is closing (PlanStopping). */
-  readonly handBack?: () => void;
+  readonly handBack?: () => Promise<void>;
   /** The Claude login the claim read for this run (staysInRunner), handed down as it was read: none, and a turn-on after
    *  its claim never moves it onto a login its claim did not check; one, and the runner reads the setting again at the
    *  run's start (claudeLogin), handing it only when both reads name the same folder. */
@@ -720,7 +727,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
   const fromGitHub = launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github";
   // Each credential the claim opens, refreshes or mints here (its MCP's, its GitHub App tokens) joins the runner's redactor.
   const hold = (values: string[]) => cut.hold(values);
-  const github = () => githubAppAccess(store, sealKey, launch.input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub, hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) });
+  const github = () => githubAppAccess(store, sealKey, launch.input, { run: claim.runId, ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub, hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) });
   /** The run's folder as the computer this claim made mounts it (Mode 2), where the claim's MCP files once it is made. */
   let mountedFolder: Workspace | undefined;
   /** Mode 2's Archil claim, made once for the claim on the runner, its folder the run's. */
@@ -889,7 +896,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
         }
         return access.mint(bound, { contents: "read" });
       };
-      return { api: access.api, target: bound, mint, ...(access.revoke ? { revoke: access.revoke } : {}), ...(access.same ? { same: access.same } : {}) };
+      return { api: access.api, target: bound, mint, ...(access.revoke ? { revoke: access.revoke } : {}), ...(access.same ? { same: access.same } : {}), ...(access.withheld ? { withheld: access.withheld } : {}) };
     },
     subagentTierKeys: async () => {
       // A subagent's tiers alone: an agentic run granted the subagent tool routes each tier its revision's modelTiers or
@@ -1039,7 +1046,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
         const compare = compareEndOfRun(launch, { store, log, redact: cut });
         const grade = input.grade;
         const rows = compare && grade && typeof input.grader === "string"
-          ? await compare({ runId: claim.runId, agentId: run.agentId, claim, outcome: input.outcome === "failed" ? "failed" : "completed", ...(input.cut === undefined ? {} : { cut: "faulted" as const }), grader: input.grader, grade: (request) => grade(request), ask: input.ask, signal: input.signal })
+          ? await compare({ runId: claim.runId, agentId: run.agentId, claim, outcome: input.outcome === "failed" ? "failed" : "completed", ...(input.cut === undefined ? {} : { cut: "faulted" as const }), grader: input.grader, ...(input.graderOwn === true ? { graderOwn: true } : {}), grade: (request) => grade(request), ask: input.ask, signal: input.signal })
           : undefined;
         return rows?.compared ? { also: [], compared: dataOnly(rows.compared) as Compared } : undefined;
       }
@@ -1223,7 +1230,9 @@ export function childLoops(options: ChildLoopsOptions): LoopFactory {
   const slots = options.isolation.kind === "uid" ? new Slots(options.isolation.first, options.isolation.slots, slotLocks(options.deps.data)) : undefined;
   const here = resolveRunnerLoop(options.deps);
   return createDispatchLoop({
-    launchOf: (runId) => options.deps.store.runs.launch(runId),
+    // A run started while its agent's learning round was open reads its seed again first, here in its runner, before
+    // its process reads its launch (learning-reseed.ts).
+    launchOf: reseededLaunchOf({ store: options.deps.store, data: options.deps.data, shown: runnerShown(options.deps), log: options.log, waitMs: roundWaitMsOf(options.deps.env) }),
     resolve: async (harness, launch, runId) => {
       const place = await staysInRunner(options.deps, harness, launch, runId, options.isolation);
       if (place.stays) return here(harness, launch, runId);
@@ -1296,7 +1305,8 @@ export function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, 
    *  a slot, the slot reaped. */
   const end = async (slot: number | undefined, tops: readonly string[]): Promise<boolean> => {
     let timer: NodeJS.Timeout | undefined;
-    const gone = exited ? Promise.race([exited, new Promise((resolve) => (timer = setTimeout(resolve, EXIT_GRACE_MS)))]) : Promise.resolve();
+    const grace = Math.max(EXIT_GRACE_MS, loopDeps.releaseBoundMs ?? releaseBoundMs());
+    const gone = exited ? Promise.race([exited, new Promise((resolve) => (timer = setTimeout(resolve, grace)))]) : Promise.resolve();
     channel?.close();
     await gone;
     clearTimeout(timer);
@@ -1347,9 +1357,10 @@ export function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, 
         const capped = await underServerCeilings(claimDeps, launch, revisionRow as never);
         const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, redact: loopDeps.redact, handBack: loopDeps.handBack, signal: loopDeps.signal }, revisionRow as never, capped, claim.runId);
         // A run that holds a model key of its own (model_key, its launch's) spends that key alone: its process is handed
-        // none of the server's model keys, as its spec drops them from its tools' (claim-secrets.ts withoutModelKeys).
+        // none of the server's model keys, as its spec drops them from its tools' (claim-secrets.ts withoutModelKeys). Read
+        // over the claim's environment, so a run on a --faux runner, or held, never has that key read for it.
         // Copies: the runner's own reads (heldFor's `claimed`: what the run's learning must never keep) stay whole.
-        const keyed = (await openRunModelKey({ store: deps.store, sealKey: deps.sealKey }, claim.runId)) !== undefined;
+        const keyed = (await openRunModelKey({ store: deps.store, sealKey: deps.sealKey, env: claimEnv }, claim.runId)) !== undefined;
         const toProcess = keyed ? withoutModelKeys({ ...claimed }) : claimed;
         // The saved gateway's key, kept off the claim's tool keys (claimSecrets), is handed for the run's model routes alone,
         // read as the server's model keys are (savedModelKeys, over the claim's environment the gateway was laid over), as a
@@ -1447,6 +1458,8 @@ export function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, 
                 return loopDeps.delivered;
               case "deliverNow":
                 return loopDeps.deliverNow?.();
+              case "refuse":
+                return loopDeps.refuse?.(Number(args[0]), String(args[1]));
               case "live":
                 latest = (args[0] ?? undefined) as HeldState | undefined;
                 keeps = args[1] === true;
@@ -1473,6 +1486,7 @@ export function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, 
             ...(deps.githubWeb ? { githubWeb: deps.githubWeb } : {}),
             ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}),
             ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}),
+            ...(loopDeps.releaseBoundMs === undefined ? {} : { releaseBoundMs: loopDeps.releaseBoundMs }),
           };
           const ended = channel.call("loop", "start", [init]) as Promise<LoopEnd>;
           // From here a command or a stop goes to the run's process, after its start on the channel.
@@ -1521,8 +1535,11 @@ export function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, 
       if (!started) return;
       await up;
       if (!channel || channel.closed) return;
-      const told = channel.call("loop", "stop", [reason]).catch(() => undefined);
-      const grace = reason.kind === "command" ? STOP_GRACE_MS : STOP_GRACE_MS / 3;
+      // A stop says when the runner's close cuts the release (LoopDeps.releaseBy), once it is closing; a shutdown's grace
+      // runs to that cut and the margin its booking takes, when that is later than its own.
+      const releaseBy = loopDeps.releaseBy?.();
+      const told = channel.call("loop", "stop", releaseBy === undefined ? [reason] : [reason, releaseBy]).catch(() => undefined);
+      const grace = reason.kind === "command" ? commandGraceMs(loopDeps.releaseBoundMs ?? releaseBoundMs()) : Math.max(STOP_GRACE_MS / 3, releaseBy === undefined ? 0 : releaseBy - Date.now() + RELEASE_MARGIN_MS);
       let timer: NodeJS.Timeout | undefined;
       const late = await Promise.race([told.then(() => false), new Promise<boolean>((resolve) => (timer = setTimeout(() => resolve(true), grace)))]);
       clearTimeout(timer);
@@ -1532,6 +1549,12 @@ export function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, 
     },
     keepsComputer(reason: StopReason): boolean {
       return reason.kind === "command" && reason.cancel !== true && keeps;
+    },
+    closing(): void {
+      // The close's cut of the release, to the run's process: a loop a person's stop already stops gets no shutdown stop.
+      const releaseBy = loopDeps.releaseBy?.();
+      if (releaseBy === undefined || !started) return;
+      void up.then(() => (channel && !channel.closed ? channel.call("loop", "closing", [releaseBy]) : undefined)).catch(() => undefined);
     },
   };
 }

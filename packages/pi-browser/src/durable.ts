@@ -67,6 +67,15 @@ export type BrowserExtensionOptions<D extends PageDriver = PageDriver> = VaultOp
    *  to the provider's minimum. Never for a session already billed in full. It must not throw: a throw fails that commit,
    *  and a call's charge is then carried by the session's next one. */
   onCharge?: (charge: SessionCharge, tx: Tx, call?: { callId: string }) => void | Promise<void>;
+  /** A release by a session's tag ended sessions besides that session's own: a create retried behind the provider's API,
+   *  or a create race of the session's tag, left them running, and no record bills their time. Their ids, so a host books
+   *  what they ran, once a status read confirms each stopped, one whose release stopped it and then failed included. Each
+   *  is saved on the session's inventory row (`owed`) before its stop is sent, until it is told: the session's own release
+   *  confirms them, or a run open's reconcile for a row that ended lost or still owes one. Called again for an id only
+   *  when a process ends between this call and the commit that takes it off the row. A throw here never fails the
+   *  release. `madeAt`: when the provider made each of them (an ISO time, by id), where its tag lookup said
+   *  (LeaseRef.madeAt), kept on the row with the id, so a later process hands it on too; absent when it said for none. */
+  onRaceReleased?: (released: { conversationId: number; tag: string; ids: string[]; madeAt?: Record<string, string> }) => void | Promise<void>;
   /** Exact strings to scrub from every output besides the built-in shapes, read at each use. */
   redact?: { values: () => readonly string[] };
   section?: { addendum?: string };
@@ -782,7 +791,9 @@ async function releasePlane<D extends PageDriver>(c: Custody<D>, conversation: P
 }
 
 /** The open sessions' time through now, not final, in one commit (BrowserExtensionHandle.charge): no lock is taken, so a
- *  release under way (its record `releasing`) never holds it back. */
+ *  release under way (its record `releasing`) never holds it back. A record with no session id (its create under way, or
+ *  its answer lost and the session not yet found by its tag) has nothing at the provider to bill yet: its release's charge
+ *  bills the whole session once it is found. One already charged through now has no time to charge, and gets no $0 one. */
 async function chargeOpen<D extends PageDriver>(c: Custody<D>, conversation: Pick<Conversation, "id" | "commit">, context: Context): Promise<number> {
   return conversation.commit(async (tx) => {
     const state = await tx.doc(c.Sessions, conversation.id);
@@ -790,6 +801,7 @@ async function chargeOpen<D extends PageDriver>(c: Custody<D>, conversation: Pic
     let charged = 0;
     for (const record of state.sessions) {
       if ((record.state !== "live" && record.state !== "held" && record.state !== "releasing") || record.resourceId === null || record.spent.final) continue;
+      if (Date.parse(record.spent.chargedThrough) >= Date.parse(at)) continue;
       if (await c.bill(tx, conversation.id, record, at, false)) charged += 1;
     }
     return charged;
@@ -913,6 +925,10 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
     handoff: options.handoff,
     handedBack: (tag, fence) => c.fences.set(tag, { fence, failure: HANDED_BACK }),
     stopped: (tag) => { c.stops.get(tag)?.stop(); c.stops.delete(tag); },
+    raced: async (row, ids, made) => {
+      const madeAt = Object.fromEntries(ids.flatMap((id) => (made[id] ? [[id, made[id]]] : [])));
+      try { await options.onRaceReleased?.({ conversationId: row.conversationId, tag: row.tag, ids, ...(Object.keys(madeAt).length ? { madeAt } : {}) }); } catch { /* the host's booking never fails the release */ }
+    },
   });
 
   const c: Custody<D> = {

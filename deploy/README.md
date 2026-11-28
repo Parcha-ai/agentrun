@@ -95,10 +95,10 @@ Railway's API makes a template only by copying a project, and the copy drops pla
 deploy settings. So `template.json` holds only what survives: `PORT` and `RAILWAY_RUN_UID` are written as one-character
 secrets over a one-character alphabet (always `7340` and `0`), and model keys are added in the console, not as variables.
 The draining time the template's `drainingSeconds` would set is dropped too, and Railway's default is 0 s. So the
-template sets `RAILWAY_DEPLOYMENT_DRAINING_SECONDS` to `35` the same way (`3` and a one-character secret). That lets a
-redeploy wait out the runner's 31 s stop and a ChatGPT renewal saving its new pair. If a project of the template shows
-that variable empty, set it to `35` in the service's Variables. Without it, a redeploy that cuts a renewal short loses the
-ChatGPT sign-in, and you sign in again.
+template sets `RAILWAY_DEPLOYMENT_DRAINING_SECONDS` to `45` the same way (`4` and a one-character secret). That lets a
+redeploy wait out the runner's 40 s stop (a browser's release included) and a ChatGPT renewal saving its new pair. If a
+project of the template shows that variable empty, set it to `45` in the service's Variables. Without it, a redeploy that
+cuts a renewal short loses the ChatGPT sign-in, and you sign in again.
 
 ## Fly.io
 
@@ -268,6 +268,44 @@ Dokploy makes the domain (`${domain}`, an `sslip.io` address), the token (`${has
 code at the first visit. Dokploy's generated domain is http. If you give the service your own domain with HTTPS, set
 `AGENTRUN_PUBLIC_URL` to it in the Environment and redeploy.
 
+## On Northflank
+
+One deployment service in a project of its own, from [`northflank/template.json`](northflank/template.json), a
+Northflank template (spec v1.2). It runs the release's image as one instance, the server with its runner beside it, on
+the 1 vCPU / 2 GB plan (`nf-compute-100-2`) with a 10 GB volume at `/data`. Its health check is `GET /v2/health` on
+port 7340, which Northflank serves at the service's own Northflank domain over HTTPS. Northflank gives the service no
+Docker, so its agents get file tools and `web_fetch` but no shell, as on Render. No model key is needed.
+
+Not walked on a real account yet. The template follows Northflank's template docs (spec v1.2) and passes this
+repository's tests (`packages/serve/test/northflank-template.test.mjs`), but no run on Northflank has confirmed it.
+If a run fails, open an issue with the step and the error Northflank shows.
+
+It costs about $25.17 a month: $24.00 for the plan and $1.17 for the volume ($0.11657 per GiB-month), at Northflank's
+prices on 2026-11-23 (its pricing page). That is more than the $20 a month of resources the
+free Sandbox tier covers, so the team needs Pay as you go, with a card.
+
+1. In your team's dashboard, open **Templates** and create a new template.
+2. Switch the editor to code, replace its contents with `template.json`, and save. To run it somewhere other than
+   `europe-west`, change the Project node's `region` first.
+3. Run the template.
+
+Or keep the template in a repository: create a template with GitOps on, pointing at your fork and the path
+`/deploy/northflank/template.json`. GitOps syncs both ways, so Northflank can commit its edits back to that branch.
+
+The run makes the project, then a secret group `agentrun-keys` with `AGENTRUN_TOKEN` (64 hex characters) and
+`AGENTRUN_SEAL_KEY` (32 random bytes in base64), both made by Northflank's `randomSecret` and kept on later runs, then
+the service and its volume. Once the service has its domain, a second group, `agentrun-address`, sets
+`AGENTRUN_PUBLIC_URL` to it, and the run restarts the service. When the run is done, open the domain on the service's
+page and paste `AGENTRUN_TOKEN` from the project's **Secrets** (the `agentrun-keys` group) as the setup code. Keep the
+seal key: without it the saved keys can't be opened.
+
+A volume that one container reads and writes keeps the service at one instance, and Northflank stops the running
+container before it starts the new one, as the store needs. Northflank gives the volume to the image's group, the
+server's, so the server starts as its own user. The service sets `AGENTRUN_RUN_USER=same`, as `render.yaml` and the
+Railway template do: Northflank hasn't been shown to keep the image helper's file capabilities, so each run runs as the
+server's own user, still a process of its own. Keep `AGENTRUN_RUN_USER=same`; without it the runner refuses to claim
+and every run answers `runner_refused` (packages/serve/README.md).
+
 ## The first visit's setup code
 
 A server at a public address (`AGENTRUN_PUBLIC_URL`, or Render's own) asks for a setup code before it takes the first
@@ -277,6 +315,7 @@ password. The console says where to look and never shows the code. It is in one 
 | --- | --- |
 | Render | The service's **Environment** tab: paste the value of `AGENTRUN_TOKEN` as the code. Or its **Logs** tab: the line below. |
 | Railway | The service's **Variables** tab: paste the value of `AGENTRUN_TOKEN` as the code. Or the deployment's **Deploy Logs**: the line below. |
+| Northflank | The project's **Secrets**, the `agentrun-keys` group: paste the value of `AGENTRUN_TOKEN` as the code. Or the service's logs: the line below. |
 | Fly.io | `launch.sh` prints it. Later: `fly logs -a <app name> --no-tail \| grep 'Set up this server' \| tail -n 1`. Fly never shows `AGENTRUN_TOKEN` again. |
 | A server you rent (`--vps`) | The installer prints it (on a Droplet with the user data, in `/var/log/cloud-init-output.log`). Later: `cd /opt/agentrun && docker compose logs agentrun \| grep 'Set up this server' \| tail -n 1`. Or `AGENTRUN_TOKEN` in `/opt/agentrun/.env`. |
 | Docker | `docker logs agentrun` (compose: `docker compose logs`, which needs no service name: it is `server` in `deploy/compose.yaml` and `agentrun` in the root `compose.yaml`): the newest line `Set up this server: <address>/setup#code=<code>`. Open its link, or paste the code. |
@@ -339,7 +378,7 @@ What each takes, from its environment alone:
 | `AGENTRUN_TOKEN` | optional | | The API token. Unset, the server makes one in `/data/.token` and prints it once. |
 | `AGENTRUN_TOKENS` | optional | | More API tokens, as `id:secret` entries separated by commas ([Rotating the API token](#rotating-the-api-token)). Any of them opens what the token opens; the log names the id used. A secret, like the token. |
 | Model keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AGENT_MODEL`, ...) | optional | optional | The runner makes a run's model requests; the server checks a run's model can run before it starts it. Give the same ones to both. With none, Continue with ChatGPT in the console, or save a key there. |
-| `COMPOSIO_API_KEY` | optional | optional | The Composio account key a Composio MCP server saved with `api_key_env` reads (server: the save's calls to Composio, a refresh and the delete's; runner: each run's MCP connection to Composio). A secret: the launcher hands it to each process over a pipe, so neither process's environment holds it, and no run is handed it: the runner sends it only as the MCP header of a Composio server the run is granted a tool of. Give the same to both; a new value takes effect when they start again. |
+| `COMPOSIO_API_KEY`, `AGENTRUN_COMPOSIO_API_KEY` | optional | optional | The Composio account key a Composio MCP server saved with `api_key_env` reads (server: the save's calls to Composio, a refresh and the delete's; runner: each run's MCP connection to Composio). A secret: the launcher hands it to each process over a pipe, so neither process's environment holds it, and no run is handed it: the runner sends it only as the MCP header of a Composio server the run is granted a tool of. Give the same to both; a new value takes effect when they start again. |
 | `AGENTRUN_LAUNCH_HOOK_URL` | optional | | The host's https address (plain http only to this machine): each trigger firing that would start a run is POSTed there, signed, and the host starts the run through the API ([Launch hook](../packages/serve/README.md#launch-hook)). Set with the secret below, or neither. |
 | `AGENTRUN_LAUNCH_HOOK_SECRET` | optional | | The `whsec_` secret the launch hook signs with. A secret: the server's alone, never a runner's or a run's. |
 | `AGENTRUN_API_ONLY` | optional | | `1` serves the run routes, a deploy's routes (a template's apply, an agent's read, revisions, rollback, archive and delete), a trigger's reads and its turn on or off (`PATCH /triggers/{id}` with `enabled` alone), the MCP servers' names, a Composio server's save (its key named by `api_key_env`, never in the request; a new name, or over a server the token saved) and the delete of a server the token saved alone, for a server behind its caller's backend: the console, sign-in, setup, other settings, the MCP endpoint, the other trigger routes and hooks are `404`, and there are no accounts ([API only](../packages/serve/README.md#api-only)). Unset or `0`, the whole server. |
@@ -400,7 +439,7 @@ opens the store with one connection and closes it.
 | `AGENTRUN_STORE_URL` | The store opens, at a schema this runner knows. Unset, a SQLite store in `--data` (the server's) counts. |
 | `AGENTRUN_SEAL_KEY` | It is the key the store's secrets are sealed under. Unset, the key file in `--data` counts. |
 | `AGENTRUN_STORE_POOL_SIZE` | Only when set: a whole number from 1 to the store's most, as the runner's start takes it. The check itself opens one connection. |
-| Every run-facing name the server holds | The server says the names (never the values) of its run-facing environment in the store at each start: model, tool and box keys, the Composio account key (`COMPOSIO_API_KEY`, which a claim sends as a granted Composio server's MCP header), each box provider's settings (`DAYTONA_TARGET`, `DAYTONA_ARCHIL_EGRESS`, ...), the Archil settings, the tiers' models (`AGENT_MODEL`, `AGENT_MODEL_FAST`, `AGENT_MODEL_STRONG`), `AGENTRUN_BOX_ALLOW`, a Docker computer's image and size (`AGENTRUN_DOCKER_IMAGE`, `AGENTRUN_BOX_CPUS`, `AGENTRUN_BOX_MEMORY`, `AGENTRUN_BOX_PIDS`), the operator's bound on owners' private hosts (`AGENTRUN_PRIVATE_HOSTS`), how a gateway is sent a model id (`AGENT_MODEL_GATEWAY_IDS`), whether runs may reach an MCP server on loopback (`AGENTRUN_MCP_ALLOW_LOOPBACK`), the harness modules it loads (`AGENTRUN_SERVE_HARNESS_MODULES`, which a runner may hold as `--harness-module`, given to its check too; a server given them as `--harness-module` says nothing of them), and every upstream address (`*_BASE_URL`, `*_API_URL`). The runner must hold each one: a run's claim reads it from the runner's environment. A server older than this release says none, and this part is `skipped`. |
+| Every run-facing name the server holds | The server says the names (never the values) of its run-facing environment in the store at each start: model, tool and box keys, the Composio account key (`COMPOSIO_API_KEY` and `AGENTRUN_COMPOSIO_API_KEY`, which a claim sends as a granted Composio server's MCP header), each box provider's settings (`DAYTONA_TARGET`, `DAYTONA_ARCHIL_EGRESS`, ...), the Archil settings, the tiers' models (`AGENT_MODEL`, `AGENT_MODEL_FAST`, `AGENT_MODEL_STRONG`), `AGENTRUN_BOX_ALLOW`, a Docker computer's image and size (`AGENTRUN_DOCKER_IMAGE`, `AGENTRUN_BOX_CPUS`, `AGENTRUN_BOX_MEMORY`, `AGENTRUN_BOX_PIDS`), the operator's bound on owners' private hosts (`AGENTRUN_PRIVATE_HOSTS`), how a gateway is sent a model id (`AGENT_MODEL_GATEWAY_IDS`), whether runs may reach an MCP server on loopback (`AGENTRUN_MCP_ALLOW_LOOPBACK`), the harness modules it loads (`AGENTRUN_SERVE_HARNESS_MODULES`, which a runner may hold as `--harness-module`, given to its check too; a server given them as `--harness-module` says nothing of them), and every upstream address (`*_BASE_URL`, `*_API_URL`). The runner must hold each one: a run's claim reads it from the runner's environment. A server older than this release says none, and this part is `skipped`. |
 | Each `*_BASE_URL` / `*_API_URL` on loopback | Something answers a TCP connect there within 2 s: the forwarder beside the runner that the upstream names. |
 | `AGENTRUN_TOKEN`, `AGENTRUN_TOKENS`, `AGENTRUN_API_KEY` | `warn` when set: the server's own secrets, which a runner never needs. Fails nothing. |
 | `start` | What the runner's start refuses before it claims, checked the same way: its run slots (`AGENTRUN_MAX_RUNS`), drain (`AGENTRUN_DRAIN_TIMEOUT`), free-model requests, its Archil settings (a region, and an https S3 URL for a region serve doesn't know), and its runs' isolation (`AGENTRUN_RUN_USER`, and whether the image's helper can switch users here). |
@@ -445,8 +484,11 @@ build is older than the store: it refuses the store.
 
 On SIGTERM a runner claims nothing more and lets each busy run finish its turn for up to `--drain-timeout` (default 6 s),
 so a model request in flight is not cut and sent again; then it stops the loops left where they can resume and hands
-their runs back. A loop that does not stop is given up 25 s after that, so with the default drain a runner is done
-within 31 s: give it 35 s before a SIGKILL, more with a longer drain. `--drain-timeout 0s` hands every run back at once.
+their runs back. A loop that does not stop is given up 25 s after that. A browser's release, or a lost create's recovery
+under way, is waited for up to a computer provider's cleanup bound (30 s) and 10 s of margins from the SIGTERM, so with
+the default drain a runner is done within 40 s: give it 45 s before a SIGKILL, more with a drain over 15 s. An embedder
+that raises a provider's `cleanupMs` (and the runner's) above the default gives the runner a grace of at least
+`cleanupMs` + 15 s. `--drain-timeout 0s` hands every run back at once.
 
 ## With Docker Compose: a server and two runners
 
@@ -467,8 +509,8 @@ docker compose logs runner-1     # Runner runner-1 ready: ...
 
 The server's port is published on this machine's loopback (`127.0.0.1:7340`); put a reverse proxy with TLS in front of
 it before you publish it anywhere else. Each runner starts once the server is healthy (only the server sets the store
-up), is started again if it exits with an error, and is given 35 s to stop: its drain (6 s by default) and 25 s for a
-stuck loop after it, 31 s in all.
+up), is started again if it exits with an error, and is given 45 s to stop: its drain (6 s by default) and 25 s for a
+stuck loop after it, or a browser's release up to 40 s from the SIGTERM.
 
 **Memory.** Each runner container is limited to 2 GB (`mem_limit`), and a runner budgets its runs from that limit:
 1920 MiB, six claude-agent runs or fifteen pi runs at once, the rest queued. Without a limit, each runner would read

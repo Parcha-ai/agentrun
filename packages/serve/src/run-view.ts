@@ -283,9 +283,9 @@ type BudgetEntry = { pending: { kind: "budget"; cap_usd: number; spent_usd?: num
 /** The run's active cap park, from its journal: the last agentrun.budget entry the cap wrote when it parked the run for
  *  room, unless an agentrun.raise after it cleared the pause (the run goes on at the raised cap then). A re-park writes a
  *  fresh budget entry, which a raise before it does not clear, so the last of the two in log order decides. A raise entry
- *  clears the park it names (its `pause`, as the runner reads it: raiseStateOf), or any when it names none (one written
- *  before raises named their pause): a retry of an earlier raise names that raise's pause, and the park the run stands at
- *  since stays. */
+ *  clears the park it names (its `pause`), and only that one, as the runner reads it (raiseStateOf): a retry of an earlier
+ *  raise names that raise's pause, and a raise checked against the run while it worked names none, so the park the run
+ *  stands at since stays. */
 function activeBudget(entries: readonly JournalEntry[]): BudgetEntry | undefined {
   return activePark(entries)?.mark;
 }
@@ -297,7 +297,7 @@ function activePark(entries: readonly JournalEntry[]): { mark: BudgetEntry; id: 
     if (entry.kind === KINDS.budget) park = { mark: dataOf<BudgetEntry>(entry), id: String(entry.id) };
     else if (entry.kind === KINDS.raise && park) {
       const named = (entry.data as { pause?: unknown } | undefined)?.pause;
-      if (named === undefined || String(named) === park.id) park = undefined;
+      if (named !== undefined && String(named) === park.id) park = undefined;
     }
   }
   return park;
@@ -454,8 +454,50 @@ export const waitingApproval = (run: Pick<RunView, "approvals" | "meta">): Appro
 /** One answered (allow or deny) whose answer the run's process has not acted on yet. */
 export const actingOn = (run: Pick<RunView, "approvals" | "meta">) => [...(run.approvals?.values() ?? [])].some((a) => !a.resolved && run.meta.approvals?.[a.id] && !withdrawn(run.meta.approvals[a.id]));
 /** What is shown of a call's arguments: the whole of them redacted with the run's redactor, then cut (previewOf), so
- *  no cut leaves the head of a held key. */
-export const shownArgs = (approval: Pick<Approval, "args_json">, redact: (text: string) => string): string => previewOf(redact(approval.args_json));
+ *  no cut leaves the head of a held key. An ACP agent's call shows the agent's own arguments (acpOwnArgs), never the
+ *  gate's wrapper around them, through the same redactor. */
+export const shownArgs = (approval: Pick<Approval, "tool" | "args_json">, redact: (text: string) => string): string => previewOf(redact(acpOwnArgs(approval.tool, approval.args_json) ?? approval.args_json));
+/** An ACP agent's own arguments, as JSON: the call the ACP adapter's gate asks about is `acp_<kind>` with
+ *  `{ title, kind, input, toolCallId? }`, and `input` is the agent's own ("{}" when it gave none, as Cursor's calls do).
+ *  Undefined for any other call, or one whose arguments are not that object. */
+const acpOwnArgs = (tool: string, argsJson: string): string | undefined => {
+  if (!tool.startsWith("acp_")) return undefined;
+  let args: unknown;
+  try {
+    args = JSON.parse(argsJson);
+  } catch {
+    return undefined;
+  }
+  if (!args || typeof args !== "object" || Array.isArray(args)) return undefined;
+  const { input } = args as { input?: unknown };
+  return input === undefined || input === null ? "{}" : JSON.stringify(input);
+};
+/** What an ACP agent's own call does, in its words: the call the ACP adapter's gate asks about is `acp_<kind>` with
+ *  `{ title, kind, input, toolCallId? }`, where `input` is the agent's own. Its command where the input names one
+ *  (Antigravity's CommandLine, a `command` or `cmd`), its newlines kept; else its title (Cursor's names what it runs).
+ *  A call the adapter recorded as another MCP server's (`server`) is named by that server first:
+ *  `Calls MCP server "<name>": <words>`, or the server alone. Undefined for any other call, or one whose arguments say
+ *  none of these: its row shows its arguments. */
+export const acpCallWords = (tool: string, argsJson: string): string | undefined => {
+  if (!tool.startsWith("acp_")) return undefined;
+  let args: unknown;
+  try {
+    args = JSON.parse(argsJson);
+  } catch {
+    return undefined;
+  }
+  if (!args || typeof args !== "object") return undefined;
+  const { title, input, server } = args as { title?: unknown; input?: unknown; server?: unknown };
+  const given = (value: unknown) => (typeof value === "string" && value.trim() ? value : undefined);
+  const own = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+  const words = given(own.CommandLine) ?? given(own.command) ?? given(own.cmd) ?? given(title);
+  // The other MCP server the adapter recorded for the call (permissionGateCall's `server`), never the agent's own words:
+  // first, so no cut hides whose call a person approves.
+  const other = given(server);
+  if (!other) return words;
+  const named = `Calls MCP server ${JSON.stringify(other)}`;
+  return words === undefined ? named : `${named}: ${words}`;
+};
 
 /** A dollar figure to a millionth, as the timeline's cost.usd is. */
 export { micro } from "./micro.js";
@@ -518,8 +560,12 @@ export const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
   return last?.kind === "waiting" ? { kind: "question", question: last.text ?? last.summary ?? "", asked_at: last.timestamp } : null;
 };
 /** The run's pending approval (`pending`, kind approval): the call that waits; else undefined. */
-/** A call's approval summary, where its tool has one (tools.ts ToolEntry.approvalSummary), redacted as its arguments are. */
+/** A call's approval summary, where its tool has one (tools.ts ToolEntry.approvalSummary) or it is an ACP agent's own call
+ *  (its command or title), redacted as its arguments are. */
 function summaryOf(approval: Pick<Approval, "tool" | "args_json">, redact: (text: string) => string): { summary?: string } {
+  // An ACP agent's own call says what it does in its command or title (acpCallWords), as its timeline row does.
+  const acp = acpCallWords(approval.tool, approval.args_json);
+  if (acp !== undefined) return { summary: redact(acp) };
   const summarize = toolOf(approval.tool)?.approvalSummary;
   if (!summarize) return {};
   let args: unknown;
@@ -891,6 +937,9 @@ export function withApprovalRows(rows: readonly TimelineEvent[], asks: ReadonlyM
     const last = lastOf.get(approval.call_id) === row.id;
     if (!askHere && !last) return [own];
     const args = shownArgs(approval, redact);
+    // An ACP agent's call reads as what it does (its command or title), not as the gate's JSON around the agent's input.
+    const acp = acpCallWords(approval.tool, approval.args_json);
+    const words = acp === undefined ? args : previewOf(redact(acp));
     // A served row keeps the place it was first served at (rows.ts). The approval row is served while the call waits, below
     // its call's row, where it stays once the result is in, so it keeps its id. The call's result comes in after the
     // answer (the park writes none), so the outcome rows take a new id once it is there: served anew below the result, as
@@ -899,7 +948,7 @@ export function withApprovalRows(rows: readonly TimelineEvent[], asks: ReadonlyM
     const head = !answer ? "Waiting for your approval" : answer.decision === "canceled" ? "Withdrawn when the run was cancelled" : answer.decision === "withdrawn" ? (answer.ended ? "Withdrawn when the run ended" : "Withdrawn when the run was stopped") : answer.by === "message" ? "Declined by your message" : answer.by === "setting" ? (answer.decision === "deny" ? "Denied by the tool's setting on this server" : "Allowed by the tool's setting") : "Asked your approval";
     // Its time is the ask's (the gate's requestedAt), never the row it was made from.
     const when = approval.requested_at ? { timestamp: approval.requested_at, created_at: approval.requested_at } : {};
-    const asked: TimelineEvent = { ...madeFrom(row), ...when, id: approvalRowId(approval.call_id), kind: APPROVAL_ROW as TimelineEvent["kind"], summary: `${head}: ${approval.tool} ${clip(args, 400)}`, text: args, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null };
+    const asked: TimelineEvent = { ...madeFrom(row), ...when, id: approvalRowId(approval.call_id), kind: APPROVAL_ROW as TimelineEvent["kind"], summary: `${head}: ${approval.tool} ${clip(words, 400)}`, text: words, tool_name: approval.tool, tool_status: null, tool_input_preview: clip(args, 500), tool_result_preview: null, tool_result_size_bytes: null };
     const placed = !askHere ? [own] : row.id === call ? [own, asked] : [asked, own];
     if (!last || !outcome) return placed;
     const failed = answer!.decision === "allow" && result?.tool_status === "failed";

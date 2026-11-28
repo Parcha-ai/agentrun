@@ -167,15 +167,19 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
    * (not one nested in a tool's), to its claim on the turn. A cut is recorded by its lengths (`boundKey`), once; a call
    * whose cut is recorded is cut again by that record, so a replay hands the harness what the first run did.
    */
-  const deliver = async (callId: string, whole: string, nested?: true): Promise<{ text: string; truncated?: true }> => {
+  const deliver = async (callId: string, whole: string, nested?: true, error?: true): Promise<{ text: string; truncated?: true }> => {
     const key = boundKey(callId);
     const recorded = ctx.state().effects.get(key);
     const known = recorded?.status === 'completed' && isBound(recorded.output) ? recorded.output : undefined;
-    const claims = known || nested || options.outsideTurn?.(callId) ? undefined : turn;
+    // A call a script made (nested in a tool's, or one the harness says is outside the model's turn): what it is handed is
+    // the script's to compute on, not the model's to read.
+    const script = Boolean(nested || options.outsideTurn?.(callId));
+    const claims = known || script ? undefined : turn;
     if (claims) await claims.ready();
     const max = known ? known.max : Math.min(resultMaxChars(options.budget), claims ? claims.claim(callId, options.budget?.contextWindow) : HOST_RESULT_MAX_CHARS);
-    const { text, truncated, bound } = boundTo(whole, max);
+    const { text, truncated, bound } = boundTo(whole, max, { script, error: Boolean(error) });
     claims?.settle(callId, text.length);
+    await claims?.kept();
     if (bound && !known) await ctx.effect(key, { name: 'bound', replay: 'safe', input: null }, async () => bound);
     return truncated ? { text, truncated } : { text };
   };
@@ -238,7 +242,7 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
         if (err instanceof EffectFailure) {
           let bounded: { text: string; truncated?: true };
           try {
-            bounded = await deliver(callId, failureText(err.error, options.partialChars), nested);
+            bounded = await deliver(callId, failureText(err.error, options.partialChars), nested, true);
           } catch (error) {
             ctx.halt?.(error);
             throw error;
@@ -265,6 +269,16 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
         if (refused) return { text: refused.deny, isError: true, refused: true };
       }
       if (live) ctx.live({ type: 'tool_start', name: tool.name, args, callId });
+      // Its result as the harness gets it (deliver): one that cannot be handed (its length not kept) halts the drive, as an
+      // effect's failure does, so the harness is never handed it.
+      const handed = async (whole: string, error?: true): Promise<{ text: string; truncated?: true }> => {
+        try {
+          return await deliver(callId, whole, nested, error);
+        } catch (err) {
+          ctx.halt?.(err);
+          throw err;
+        }
+      };
       let output: string | ToolOutput;
       try {
         output = await tool.execute(args, { signal: aborted, progress: () => {}, ctx, stepId: `${toolKey(callId)}#0`, nested: nestedIn(callId, aborted) });
@@ -273,12 +287,12 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
           ctx.halt?.(err);
           throw err;
         }
-        const { text, truncated } = await deliver(callId, err instanceof Error ? err.message : String(err), nested);
+        const { text, truncated } = await handed(err instanceof Error ? err.message : String(err), true);
         if (live) ctx.live({ type: 'tool_end', name: tool.name, callId, isError: true, result: text, ...(truncated ? { truncated } : {}) });
         return { text, isError: true, ...(truncated ? { truncated } : {}) };
       }
       const { text: whole, images, structured } = typeof output === 'object' && output !== null ? output : { text: String(output), images: undefined, structured: undefined };
-      const { text, truncated } = await deliver(callId, String(whole), nested);
+      const { text, truncated } = await handed(String(whole));
       if (live) ctx.live({ type: 'tool_end', name: tool.name, callId, result: text, ...(truncated ? { truncated } : {}) });
       return { text, isError: false, ...(images?.length ? { images } : {}), ...(structured !== undefined ? { structured } : {}), ...(truncated ? { truncated } : {}) };
     };
@@ -398,14 +412,49 @@ export function boundResult(text: string, budget?: ResultBudget): { text: string
   return truncated ? { text: bounded, truncated } : { text: bounded };
 }
 
+/** What a failed call's error too large for a window too small to cut it in reads as: its first line (what went wrong),
+ *  as much of it as fits beside the note in RESULT_ALWAYS_WHOLE_CHARS, then that the rest is not shown. Within that
+ *  length, so bounding it again (pi bounds a result twice) leaves it as it is. */
+function errorRefusedNote(text: string, max: number): string {
+  const rest = `\n[the rest of this error (${text.length} characters in all) is not shown: this model's context window leaves room for at most ${max} characters of a tool result.]`;
+  const line = text.split('\n', 1)[0] ?? '';
+  const room = RESULT_ALWAYS_WHOLE_CHARS - rest.length;
+  if (line.length <= room) return `${line}${rest}`;
+  // Cut before a character written as a surrogate pair rather than between its halves, and mark the cut.
+  let kept = room - 1;
+  if ((line.charCodeAt(kept - 1) & 0xfc00) === 0xd800 && (line.charCodeAt(kept) & 0xfc00) === 0xdc00) kept -= 1;
+  return `${line.slice(0, kept)}…${rest}`;
+}
+
+/** What a script's JSON read too large for its bound reads as: none of it, since part of a JSON document does not parse,
+ *  and a note a script's parse fails on by name (`Unexpected token 'r', "[read cut:"...`), which a script that prints it
+ *  shows the model. */
+function scriptCutNote(total: number, max: number, windowed: boolean): string {
+  return `[read cut: this result is ${total} characters of JSON, past the ${max} characters ${windowed ? "this model's context window leaves a tool result" : 'a tool result may have'}. Part of a JSON document does not parse, so none of it was handed. Ask for less: a narrower query, or a small range where the tool takes an offset.]`;
+}
+
+/** Whether `text` is a whole JSON object or array (what a script parses). */
+function isJsonDocument(text: string): boolean {
+  if (!/^\s*[[{]/.test(text)) return false;
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** `text` held to `max` characters as `boundResult` holds it to its budget's bound, with how it was cut (`ResultBound`)
- *  when it was. The window's note wherever `max` is under HOST_RESULT_MAX_CHARS. */
-export function boundTo(text: string, max: number): { text: string; truncated?: true; bound?: ResultBound } {
+ *  when it was. The window's note wherever `max` is under HOST_RESULT_MAX_CHARS. `script`: a code-mode script's read,
+ *  which computes on what it is handed: a JSON document past the bound is handed as a note alone (scriptCutNote).
+ *  `error`: a failed call's error, which a refusal never hides whole: its first line stays (errorRefusedNote). */
+export function boundTo(text: string, max: number, how: { script?: boolean; error?: boolean } = {}): { text: string; truncated?: true; bound?: ResultBound } {
   if (text.length <= max || text.length <= RESULT_ALWAYS_WHOLE_CHARS) return { text };
+  if (how.script && !how.error && isJsonDocument(text)) return { text: scriptCutNote(text.length, max, max < HOST_RESULT_MAX_CHARS), truncated: true, bound: { kept: 0, whole: text.length, max } };
   const windowed = max < HOST_RESULT_MAX_CHARS;
   // The note's own length counted at the bound: what is kept is never longer than that, so neither is its note.
   let kept = max - cutNote(max, text.length, windowed).length;
-  if (kept < RESULT_LEAST_KEPT_CHARS) return { text: refusedNote(text.length, max), truncated: true, bound: { kept: 0, whole: text.length, max } };
+  if (kept < RESULT_LEAST_KEPT_CHARS) return { text: how.error ? errorRefusedNote(text, max) : refusedNote(text.length, max), truncated: true, bound: { kept: 0, whole: text.length, max } };
   if ((text.charCodeAt(kept - 1) & 0xfc00) === 0xd800 && (text.charCodeAt(kept) & 0xfc00) === 0xdc00) kept -= 1;
   return { text: `${text.slice(0, kept)}${cutNote(kept, text.length, windowed)}`, truncated: true, bound: { kept, whole: text.length, max } };
 }

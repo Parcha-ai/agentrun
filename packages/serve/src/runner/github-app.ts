@@ -5,12 +5,17 @@
 // No App (never connected, disconnected, or rows that do not open under this key): no access, and such a server's calls
 // are refused in words (GITHUB_UNUSABLE.noAccess). An App disconnected or replaced while a run holds a token: its next
 // mint is refused as disconnected, and the claim step drops and revokes the token it holds.
+// The App is the server's operator's: a run in a workspace (workspace-scope.ts) is withheld it, mints nothing and reads
+// GitHub anonymously, and each refusal says so (GITHUB_UNUSABLE.inWorkspace), never that the server has no App.
 import { unseal } from "../sealing.js";
 import { GITHUB_API, GITHUB_FIELDS, GITHUB_SCOPE, githubCall, githubTargetOf, mintInstallationToken } from "../github.js";
-import type { TriggerSettings } from "../store/index.js";
+import type { Runs, TriggerSettings } from "../store/index.js";
 import { isObject } from "../validate.js";
-import type { GithubAppAccess } from "./mcp-github.js";
+import { type GithubAppAccess, GITHUB_UNUSABLE } from "./mcp-github.js";
 import { held } from "./held.js";
+
+/** What githubAppAccess reads of the store: the App's sealed rows, and the run's workspace. */
+export type GithubAppStore = { readonly triggerSettings: Pick<TriggerSettings, "get">; readonly runs: Pick<Runs, "workspace"> };
 
 /** The access, with the API base its mint goes to: GitHub's own, or a test runner's fake. */
 export type GithubAppAccessAt = GithubAppAccess & { readonly api: string };
@@ -42,15 +47,19 @@ async function appOf(store: { readonly triggerSettings: Pick<TriggerSettings, "g
  *  runner's own options (AdapterSpecDeps.githubApi); nothing kept, no environment variable and no flag reaches it.
  *  `fromGitHub`: the run's first input is a github trigger's firing (its launch's inputOrigin), whose payload tag names
  *  the repository and installation; any other run's tag is never read, only its owner's words. `hold`: each token minted
- *  joins the run's redactor (its `cut`), the first and every one after. */
+ *  joins the run's redactor (its `cut`), the first and every one after. `run`: the claim's run. One in a workspace gets
+ *  an access withheld in words, whose mint refuses without opening the App; one the store does not hold, none. */
 export async function githubAppAccess(
-  store: { readonly triggerSettings: Pick<TriggerSettings, "get"> },
+  store: GithubAppStore,
   sealKey: Buffer | undefined,
   firstInput: unknown,
-  { api = GITHUB_API, now = Date.now, fromGitHub = false, hold, repo }: { api?: string; now?: () => number; fromGitHub?: boolean; hold?: (values: string[]) => void; repo?: string } = {},
+  { run, api = GITHUB_API, now = Date.now, fromGitHub = false, hold, repo }: { run: string; api?: string; now?: () => number; fromGitHub?: boolean; hold?: (values: string[]) => void; repo?: string },
 ): Promise<GithubAppAccessAt | undefined> {
   // A run's own process holds no seal key: its runner's access for the claim's own launch, which mints there (held.ts).
   if (!sealKey) return held()?.githubAppAccess();
+  const workspace = await store.runs.workspace(run);
+  if (workspace === undefined) return undefined;
+  if (workspace !== null) return withheld(api);
   const app = await appOf(store, sealKey);
   if (!app) return undefined;
   // `repo`: the launch's (run-launch.ts repo), which the server checked against the agent's binding at the start: a run a
@@ -76,4 +85,11 @@ export async function githubAppAccess(
     // An installation token revokes itself (DELETE /installation/token, the token its own credential): no App needed.
     revoke: async (token) => void (await githubCall(api, "/installation/token", { method: "DELETE", jwt: token }).catch(() => undefined)),
   };
+}
+
+/** A run in a workspace's access: no repository and a mint that refuses in GITHUB_UNUSABLE.inWorkspace's words, so its
+ *  checkout and its github_app calls say why no token was made. */
+function withheld(api: string): GithubAppAccessAt {
+  const words = GITHUB_UNUSABLE.inWorkspace;
+  return { api, target: undefined, withheld: words, mint: async () => ({ ok: false, reason: "withheld", message: words }) };
 }

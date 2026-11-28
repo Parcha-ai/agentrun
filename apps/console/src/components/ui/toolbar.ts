@@ -1,11 +1,14 @@
-/** A page with a top bar: exactly as tall as the shell's main, so main never scrolls it and the bar stays in view. Put the
+/** A page with a top bar. Beside the sidebar (`roomy:`) it is exactly as tall as the shell's main, so main never scrolls
+ *  it and the bar stays in view, its bottom edge on the edge under the navigation's logo row. In a smaller window (a
+ *  phone, upright or on its side) there is no logo row to meet, and a bar whose actions wrap is tall (Triggers' is
+ *  197px at 390px wide): there the page is at least main's height and scrolls in main as a whole, bar and all. Put the
  *  bar first, then the body in `pageBodyClass`. */
-export const pageClass = "flex h-full min-h-0 flex-col";
+export const pageClass = "flex min-h-full flex-col roomy:h-full roomy:min-h-0";
 
-/** The body under a page's top bar: the one box that scrolls. Positioned, so what is placed absolutely inside it (an
- *  `sr-only` label) scrolls with it instead of reaching past main and scrolling the page. A centred column goes inside
- *  it, so the scrollbar sits at the page's edge, not the column's. */
-export const pageBodyClass = "relative min-h-0 flex-1 overflow-auto";
+/** The body under a page's top bar: beside the sidebar, the one box that scrolls. Positioned, so what is placed
+ *  absolutely inside it (an `sr-only` label) scrolls with it instead of reaching past main and scrolling the page. A
+ *  centred column goes inside it, so the scrollbar sits at the page's edge, not the column's. */
+export const pageBodyClass = "relative roomy:min-h-0 roomy:flex-1 roomy:overflow-auto";
 
 /** The bar across the top of a page: 48px with `control-sm` controls in it, so its bottom edge meets the edge under the
  *  navigation's logo row (Shell, h-12). Its padding leaves room for a 32px control and no more; where the bar is too

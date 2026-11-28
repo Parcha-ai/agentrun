@@ -19,6 +19,7 @@ import { durationMs } from "../dist/print.js";
 import { DEADLINE_MARGIN_MS } from "../dist/stop-signals.js";
 import { RUNNER_DRAIN_TIMEOUT, runnerArgs, runnerHolds } from "../dist/runner/main.js";
 import { RUNNER_LEASE_MS, RUNNER_RENEWALS_SERVED_MS, RUNNER_STOP_MARGIN_MS, runnerCloseBoundMs, startRunner } from "../dist/runner/runner.js";
+import { releaseBoundMs } from "../dist/runner/loop-contract.js";
 import { observed, queue, recorder, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 
 const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 20 };
@@ -111,17 +112,21 @@ test("a runner process of its own (`agentrun-serve runner`, beside a --no-runner
   assert.doesNotThrow(() => runnerHolds({}, { AGENTRUN_FREE_MODEL_REQUESTS: "200" }));
 });
 
-test("the CLI's stop deadline covers the runner's whole close: its drain, then the stop of the loops left, from the runner's own lease and margin", () => {
+test("the CLI's stop deadline covers the runner's whole close: its drain, then the stop of the loops left, or a release's cleanup bound from the close's start", () => {
   const stopWindow = RUNNER_LEASE_MS - RUNNER_STOP_MARGIN_MS;
   assert.equal(stopWindow, 25_000, "a loop that does not stop is given up 25 s after the drain");
-  assert.equal(runnerCloseBoundMs(6_000), 6_000 + stopWindow);
-  assert.deepEqual(besideStopping({ runs: 0, boundMs: 0 }, 1, 6_000), { runs: 1, boundMs: 31_000 }, "the image's 6 s drain: 31 s, then the stop's margin");
+  const releaseWindow = releaseBoundMs() + RUNNER_STOP_MARGIN_MS;
+  assert.equal(releaseWindow, 40_000, "a provider's 30 s cleanup bound, the release's 5 s margin and the stop's 5 s, from the close's start");
+  assert.equal(runnerCloseBoundMs(6_000), releaseWindow, "the image's 6 s drain and the loops' stop (31 s) end inside the release's window");
+  assert.equal(runnerCloseBoundMs(20_000), 20_000 + stopWindow, "a drain over 15 s and the loops' stop outlast it");
+  assert.deepEqual(besideStopping({ runs: 0, boundMs: 0 }, 1, 6_000), { runs: 1, boundMs: 40_000 }, "the image's 6 s drain: 40 s, then the stop's margin");
   assert.deepEqual(besideStopping({ runs: 2, boundMs: 90_000 }, 3, 30_000), { runs: 5, boundMs: 90_000 }, "a longer server bound stands");
-  assert.equal(besideStopping({ runs: 0, boundMs: 0 }, 0, 0).boundMs, RUNNER_RENEWALS_SERVED_MS + stopWindow, "with no drain, a ChatGPT renewal told RUNNER_RENEWALS_SERVED_MS in and its whole window, past the loops' stop");
+  assert.ok(releaseWindow > RUNNER_RENEWALS_SERVED_MS + stopWindow, "the release's window outlasts a ChatGPT renewal told RUNNER_RENEWALS_SERVED_MS in and its whole window");
+  assert.equal(besideStopping({ runs: 0, boundMs: 0 }, 0, 0).boundMs, releaseWindow, "with no drain, still the release's window");
   assert.ok(DEADLINE_MARGIN_MS > 0);
 });
 
-test("a runner of its own stops inside the stop grace of compose, the Helm chart and the Coolify and Dokploy templates: its default drain and the loops' stop after it", async () => {
+test("a runner of its own stops inside the stop grace of compose, the Helm chart, Fly and the Coolify and Dokploy templates: its default drain and the loops' stop after it, or a release's window", async () => {
   const compose = await readFile(new URL("../../../deploy/compose.yaml", import.meta.url), "utf8");
   const runner = /x-runner: &runner\n(?:  .*\n)*?  stop_grace_period: (\d+)s/.exec(compose);
   assert.ok(runner, "compose's runners name their stop_grace_period");
@@ -129,13 +134,15 @@ test("a runner of its own stops inside the stop grace of compose, the Helm chart
   const pod = /^terminationGracePeriodSeconds: (\d+)$/m.exec(values);
   assert.ok(pod, "the chart names its pod's terminationGracePeriodSeconds");
   const bound = runnerCloseBoundMs(durationMs(RUNNER_DRAIN_TIMEOUT));
-  assert.equal(bound, 31_000, "6 + 25 = 31 s");
+  assert.equal(bound, 40_000, "max(6 + 25, 30 + 5 + 5) = 40 s");
   assert.ok(bound < Number(runner[1]) * 1_000, `the runner's close (${bound} ms) is inside compose's ${runner[1]} s`);
   assert.ok(bound < Number(pod[1]) * 1_000, `the runner's close (${bound} ms) is inside the chart's ${pod[1]} s`);
   for (const path of ["deploy/coolify/agentrun.yaml", "deploy/dokploy/agentrun/docker-compose.yml"]) {
     const grace = /^(\d+)s$/.exec(parseYaml(await readFile(new URL(`../../../${path}`, import.meta.url), "utf8")).services.agentrun.stop_grace_period);
     assert.ok(grace && bound < Number(grace[1]) * 1_000, `the runner's close (${bound} ms) is inside ${path}'s stop_grace_period`);
   }
+  const fly = /^kill_timeout = (\d+)$/m.exec(await readFile(new URL("../../../deploy/fly/fly.toml", import.meta.url), "utf8"));
+  assert.ok(fly && bound < Number(fly[1]) * 1_000, `the runner's close (${bound} ms) is inside Fly's kill_timeout`);
 });
 
 /** A tracked file of the repo, by its path from the root. */
@@ -150,6 +157,38 @@ const installerCompose = async () => {
 /** What Render waits after SIGTERM (render.com/docs/deploys#zero-downtime-deploys): 30 s, fixed for a service with a
  *  persistent disk, which takes no maxShutdownDelaySeconds. */
 const RENDER_GRACE_S = 30;
+
+test("every target that runs a runner beside the server gives that runner's whole close before the kill: the image's targets more than its 40 s, the CLI's targets more than its 55 s; Render's fixed 30 s is the one under it, and render.yaml says so", async () => {
+  const { renderValue } = await import(new URL("../../../deploy/railway/template.mjs", import.meta.url));
+  // The image runs the server and its runner with --drain-timeout 6s; the CLI (`agentrun start`, its service, the
+  // installer's background start) with the server's default drain.
+  const imageBound = runnerCloseBoundMs(durationMs(RUNNER_DRAIN_TIMEOUT));
+  const cliBound = runnerCloseBoundMs(durationMs(DRAIN_TIMEOUT));
+  assert.equal(imageBound, 40_000, "max(6 + 25, 30 + 5 + 5)");
+  assert.equal(cliBound, 55_000, "30 s drain + 25 s for the loops' stop");
+  const image = [];
+  for (const [path, text] of [["compose.yaml", await repoFile("compose.yaml")], ["install.sh --vps (/opt/agentrun/compose.yaml)", await installerCompose()], ["deploy/coolify/agentrun.yaml", await repoFile("deploy/coolify/agentrun.yaml")], ["deploy/dokploy/agentrun/docker-compose.yml", await repoFile("deploy/dokploy/agentrun/docker-compose.yml")]]) {
+    const service = parseYaml(text, { merge: true }).services.agentrun;
+    assert.equal(service.command, undefined, `${path}'s agentrun runs the image's command: the server and its runner`);
+    image.push([path, Number(/^(\d+)s$/.exec(String(service.stop_grace_period ?? ""))?.[1])]);
+  }
+  image.push(["deploy/helm/agentrun/values.yaml", Number(/^terminationGracePeriodSeconds: (\d+)$/m.exec(await repoFile("deploy/helm/agentrun/values.yaml"))?.[1])]);
+  image.push(["deploy/fly/fly.toml", Number(/^kill_timeout = (\d+)$/m.exec(await repoFile("deploy/fly/fly.toml"))?.[1])]);
+  const railway = JSON.parse(await repoFile("deploy/railway/template.json"));
+  const draining = JSON.stringify(railway).match(/"RAILWAY_DEPLOYMENT_DRAINING_SECONDS":\{"defaultValue":("(?:[^"\\]|\\.)*")/);
+  image.push(["deploy/railway/template.json", Number(renderValue(JSON.parse(draining[1]), { domain: "x" }))]);
+  for (const [path, seconds] of image) assert.ok(seconds * 1_000 > imageBound, `${path}: ${seconds} s is not above the ${imageBound / 1_000} s the runner beside the server takes to close`);
+  const { STOP_WAIT_MS, plistText } = await import(new URL("../../agentrun/lib/service.mjs", import.meta.url));
+  const exitTimeOut = Number(/<key>ExitTimeOut<\/key>\s*<integer>(\d+)<\/integer>/.exec(plistText({ program: "/a", args: [], path: "/b", log: "/c" }))?.[1]);
+  const installerWait = Number(/ours "\$server"; \} && \[ "\$waited" -lt (\d+) \]/.exec(await repoFile("packages/agentrun/install.sh"))?.[1]);
+  for (const [what, ms] of [["launchd's ExitTimeOut", exitTimeOut * 1_000], ["agentrun stop's STOP_WAIT_MS", STOP_WAIT_MS], ["the installer's stop of a background AgentRun", installerWait * 1_000]]) {
+    assert.ok(ms > cliBound, `${what}: ${ms / 1_000} s is not above the ${cliBound / 1_000} s the CLI's runner takes to close`);
+  }
+  // Render: a fixed 30 s for a service with a disk. A stop whose browser release hangs is killed there, and render.yaml
+  // says so.
+  assert.ok(RENDER_GRACE_S * 1_000 < imageBound);
+  assert.match(await repoFile("render.yaml"), /under the 40 s the runner's close takes when a browser's release hangs/);
+});
 
 test("every shipped deploy gives each AgentRun process at least a signed-in server's stop bound (the ChatGPT sign-in's close and a renewal's drain) before it kills: the quickstart, the --no-runner server, its runners, the --vps installer's compose, the chart and the templates", async () => {
   const { PLAN_STOP_BOUND_MS } = await import("../dist/server.js");

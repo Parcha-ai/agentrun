@@ -406,6 +406,32 @@ test("with no App, a public repository is fetched anonymously; a private one is 
   await refused.end();
 });
 
+test("a run in a workspace on a server whose GitHub App is connected: a private repository's checkout, of its pull request or the repository it names, says the run doesn't use the server's App, never that the server has none", { timeout: 120_000 }, async (t) => {
+  const IN_WORKSPACE = "a workspace doesn't use this server's GitHub App, so only public repositories are read";
+  const { storeOn } = await import("./store-helpers.mjs");
+  const { seal } = await import("../dist/sealing.js");
+  const { store } = await storeOn(t);
+  const key = Buffer.alloc(32, 7);
+  for (const [field, value] of [["app_id", "4242"], ["private_key", "not-a-key"]]) await store.triggerSettings.put({ adapter: "github", scope: "server", field, sealed: seal(key, Buffer.from(value, "utf8"), `trigger_settings|github|server|${field}`).toString("base64") });
+  await store.agents.create({ id: "scoped", name: "scoped", workspace: "org:acme" }, { id: "rev-scoped", kind: "agentic", body: { instructions: "Answer." } });
+  await store.runs.create({ id: "run-scoped", agentId: "scoped", revisionId: "rev-scoped" });
+  const dir = await scratch(t);
+  const gh = join(dir, "gh");
+  const priv = pullRepo(gh, "acme/secret");
+  const locked = await gitHttp(t, gh, { authorization: "Basic never" });
+  const { folder, workspace } = await runFolder(dir);
+  const { prCheckoutForClaim } = await import("../dist/runner/pr-checkout.js");
+  const deps = { store, sealKey: key, githubApi: "http://127.0.0.1:1", githubWeb: locked.url };
+  const pull = await prCheckoutForClaim(deps, "run-scoped", workspace, { input: firing("acme/secret", priv), inputOrigin: { kind: "trigger", source: "github" } }, { hold: () => {} });
+  assert.match(pull.note, /^The pull request acme\/secret#7 could not be checked out \(/);
+  assert.ok(pull.note.includes(`fetched with no token: ${IN_WORKSPACE}: `), pull.note);
+  const repo = await prCheckoutForClaim(deps, "run-scoped", workspace, { input: { content: "Scan https://github.com/acme/secret." } }, { hold: () => {} }, undefined, undefined, "repository");
+  assert.ok(repo.note.includes(`fetched with no token: ${IN_WORKSPACE}: `), repo.note);
+  for (const note of [pull.note, repo.note]) assert.doesNotMatch(note, /has no GitHub App/);
+  assert.ok(locked.seen.length > 0 && locked.seen.every((request) => request.authorization === null), "every fetch was anonymous");
+  assert.deepEqual(await readdir(folder), []);
+});
+
 test("a head the repository does not have, a run no pull request started, and a payload tag in a run no github trigger started each get a note and no checkout", { timeout: 60_000 }, async (t) => {
   const dir = await scratch(t);
   const gh = join(dir, "gh");

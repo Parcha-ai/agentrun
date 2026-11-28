@@ -150,7 +150,7 @@ export const TOOLS: Tool[] = [
   },
   {
     name: "runs_start", title: "Start a run", annotations: { ...WRITE, openWorldHint: true },
-    description: "Starts a run of the agent's current revision, or of `revision` (POST /v2/agents/{agent_id}/runs), and answers at once with the run, queued. Then call runs_get until its status is completed, failed or cancelled, or input_required (answer with runs_respond). An agentic run's input is {content: \"the first message\"}, or, when its definition has an input_schema (agents_list shows it), an object that schema takes: its fields by name, content among them when the schema says so; one it refuses is input_invalid, a path per field. A workflow run's is what its workflow's input schema takes.",
+    description: "Starts a run of the agent's current revision, or of `revision` (POST /v2/agents/{agent_id}/runs), and answers at once with the run, queued. Then call runs_get until its status is completed, failed or cancelled, or input_required (answer with runs_respond). An agentic run's input is {content: \"the first message\"}, or, when its definition has an input_schema (agents_list shows it), an object that schema takes: its fields by name, content among them when the schema says so; one it refuses is input_invalid, a path per field. A workflow run's is what its workflow's input schema takes. max_cost_usd caps what this run may spend.",
     inputSchema: {
       type: "object", required: ["agent_id", "input"],
       properties: {
@@ -158,6 +158,7 @@ export const TOOLS: Tool[] = [
         input: { type: "object", description: "{content: string} for an agentic agent, or what its definition's input_schema takes; the workflow's input for a workflow agent." },
         effort: { type: "string", enum: ["low", "medium", "high"], description: "Optional: how hard the model works on this run. Absent, the revision's own." },
         revision: { type: "string", description: "Optional: a revision id of this agent to run in place of the current one." },
+        max_cost_usd: { type: "number", exclusiveMinimum: 0, description: "Optional: this run's spend cap in dollars, above 0. Absent, the agent's default (its definition's max_cost_usd), or none. A run that reaches it pauses at input_required, pending kind budget, until a person raises it." },
       },
     },
     run: routed((args) => ({ method: "POST", path: `/agents/${id(text(args, "agent_id"))}/runs`, body: without(args, ["agent_id"]) })),
