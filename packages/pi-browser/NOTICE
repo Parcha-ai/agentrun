@@ -3,7 +3,7 @@ Copyright 2026 Parcha Labs, Inc.
 
 The boxd computer provider (packages/computer/src/boxd.ts) was contributed by Michiel Voortman.
 
-This package contains two pieces of Stagehand (https://github.com/browserbase/stagehand), both under its MIT license,
+This package contains three pieces of Stagehand (https://github.com/browserbase/stagehand), all under its MIT license,
 whose text follows:
 
 - The Chrome launch flags in src/providers/chrome-args.ts, copied from Stagehand 4.1.0's
@@ -11,6 +11,9 @@ whose text follows:
 - The files in src/vendor/stagehand-facade (compiled to dist/vendor/stagehand-facade), copied from Stagehand 4.1.0's
   packages/integrations/core/src/facade at commit cd7b230778cf92269e4cb90e80d97f5113781c51. UPSTREAM.json, shipped
   beside them as src/vendor/stagehand-facade/UPSTREAM.json, records each file's upstream blob and SHA-256.
+- The lines of Stagehand 4.4.0's dist/extension/service-worker.js that src/providers/worker-extension.ts quotes, and
+  rewrites in the copy of Stagehand's extension it gives a local Chrome. That copy carries Stagehand's LICENSE and a
+  NOTICE naming what changed in it.
 
 MIT License
 

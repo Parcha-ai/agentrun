@@ -14,7 +14,9 @@ import { cdpProvider } from "../../dist/providers/cdp.js";
 const env = process.env;
 const script = JSON.parse(env.SCRIPT || "[]").map((step) => (Array.isArray(step) ? step : [step, {}]));
 const filed = [];
-const local = cdpProvider({ chrome: { executablePath: env.CHROME, profileRoot: env.PROFILE_ROOT, args: ["--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost"], confineExtension: false } });
+// CONFINE=1: Chrome is given the lease's own copy of the extension, as a production launch is (the cdp provider's default),
+// for a case that depends on what that copy carries. Every other case tests the layer beneath, on Stagehand's own directory.
+const local = cdpProvider({ chrome: { executablePath: env.CHROME, profileRoot: env.PROFILE_ROOT, args: ["--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost"], confineExtension: env.CONFINE === "1" } });
 const live = new Set();
 let proxy = null;
 const cut = env.CUT_BEFORE === undefined ? null : Number(env.CUT_BEFORE);

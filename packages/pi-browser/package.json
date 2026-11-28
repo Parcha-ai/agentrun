@@ -70,7 +70,7 @@
     "verify:tarball": "node scripts/verify-tarball.mjs"
   },
   "dependencies": {
-    "@browserbasehq/stagehand": "~4.4.0",
+    "@browserbasehq/stagehand": "4.4.0",
     "node-html-markdown": "^2.0.0",
     "node-html-parser": "^6.1.13",
     "typebox": "1.3.27",
