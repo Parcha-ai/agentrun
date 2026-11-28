@@ -37,7 +37,7 @@ async function send(server, method, path, { workspace, token = SCOPED, body } = 
   try {
     json = JSON.parse(text);
   } catch {}
-  return { status: res.status, text, body: json };
+  return { status: res.status, text, body: json, location: res.headers.get("location") };
 }
 const inW1 = (server, method, path, options = {}) => send(server, method, path, { workspace: W1, ...options });
 const inW2 = (server, method, path, options = {}) => send(server, method, path, { workspace: W2, ...options });
@@ -233,6 +233,7 @@ test("there, a workspace's scan is reserved with start: host, the run its host s
   const reserved = await inW1(server, "POST", "/suggestions/scans", { body: { repo: REPO, start: "host" } });
   assert.equal(reserved.status, 200, reserved.text);
   assert.equal(reserved.body.status, "starting");
+  assert.equal(reserved.location, null, "a reservation names no run");
   assert.deepEqual((await inW1(server, "GET", "/runs")).body.runs, [], "the reserve starts nothing");
   // The host starts the scout's run with the input it was answered.
   const run = await inW1(server, "POST", `/agents/${reserved.body.agent_id}/runs`, { body: { input: reserved.body.input } });
@@ -253,6 +254,7 @@ test("there, a workspace's scan is reserved with start: host, the run its host s
   const bound = await inW1(server, "POST", "/suggestions/scans", { body: { repo: REPO, run_id: runId, scan: reserved.body.scan } });
   assert.equal(bound.status, 202, bound.text);
   assert.deepEqual(bound.body, { repo: REPO, run_id: runId, agent_id: reserved.body.agent_id, status: "running", already_running: false });
+  assert.equal(bound.location, `/v2/runs/${runId}`);
   const again = await inW1(server, "POST", "/suggestions/scans", { body: { repo: REPO, run_id: runId, scan: reserved.body.scan } });
   assert.deepEqual([again.status, again.body], [202, bound.body], "the same bind answers the same");
   // The bound scan is read as any other: its suggestions are W1's.
@@ -274,6 +276,7 @@ test("there, a reservation released with its token frees the repository at once,
   assert.equal((await inW1(server, "POST", "/suggestions/scans", { body: { repo: REPO, start: "host" } })).status, 409);
   const released = await inW1(server, "POST", "/suggestions/scans", { body: { repo: REPO, scan: reserved.body.scan } });
   assert.deepEqual([released.status, released.body], [200, { repo: REPO, status: "released" }], released.text);
+  assert.equal(released.location, null, "a release names no run");
   const again = await inW1(server, "POST", "/suggestions/scans", { body: { repo: REPO, start: "host" } });
   assert.equal(again.status, 200, again.text);
   assert.notEqual(again.body.scan, reserved.body.scan);
