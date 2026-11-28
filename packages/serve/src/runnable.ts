@@ -52,8 +52,8 @@ export type Blocker = InputIssue & { host: boolean; tool?: string; notGrantable?
 /**
  * The model `harness` runs an agentic revision on here: `ref`, its own `provider/model-id`, or with none this host's
  * default for that harness. `why`: the model itself is the problem (`host`, a setting of this host could fix it);
- * `refused`: the harness runs here but refuses that model. Undefined when claude-agent does not run here: its model is
- * its own, and the harness says why. A save, a run and capabilities' `harnesses[].default_model` all ask this, so they
+ * `refused`: the harness runs here but refuses that model. Undefined when the harness does not run here and its model is
+ * its own (claude-agent's) or the revision names none: the harness says why, in its own words. A save, a run and capabilities' `harnesses[].default_model` all ask this, so they
  * cannot drift.
  */
 export async function harnessModel(env: NodeJS.ProcessEnv, harness: string, ref: string | undefined, available: boolean): Promise<{ model: ModelRef } | { why: string; host: boolean; needs?: ModelNeeds } | { refused: string } | undefined> {

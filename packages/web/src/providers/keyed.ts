@@ -16,10 +16,14 @@ export type KeyedFailed = Failed;
  *  request to `path` below its base. */
 export type Keyed = { who: string; live(): boolean; post(path: string, body: unknown, signal?: AbortSignal): Promise<Response> };
 /** A provider's API: its name in our words, its base URL, its auth headers, its prices, its bound, the statuses that
- *  refuse the key for the client's life. `chargeOf`, for a provider that reports what a request cost: what a 2xx
- *  answer held at `fee` is charged and the receipt's words for it, from its body (`json`, undefined when not JSON);
- *  without it, a 2xx is charged its fee. */
-export type KeyedSpec = { who: string; base: string; headers: Record<string, string>; feeOf: (path: string, body: unknown) => Fee | undefined; timeoutMs: number; refuseOn: readonly number[]; chargeOf?: (fee: Fee, path: string, json: unknown) => { usd: number; basis: string } };
+ *  refuse the key for the client's life. `chargeOf`, for a provider that reports what a request cost: what an answer
+ *  a cap books at its price (billedStatus: a 2xx, a 408 or a 5xx) held at `fee` is charged and the receipt's words for
+ *  it, from its body (`json`, undefined when not JSON) and its `status`; without it, such an answer is charged its fee. */
+export type KeyedSpec = { who: string; base: string; headers: Record<string, string>; feeOf: (path: string, body: unknown) => Fee | undefined; timeoutMs: number; refuseOn: readonly number[]; chargeOf?: (fee: Fee, path: string, json: unknown, status: number) => { usd: number; basis: string } };
+
+/** Whether a cap books an answer of `status` at its price, as serve's paidRequest does: a 2xx, a 408 or a 5xx. Another
+ *  4xx is booked at nothing, so its body is not read for a charge. */
+export const billedStatus = (status: number): boolean => (status >= 200 && status < 300) || status === 408 || status >= 500;
 
 export function keyedClient({ who, base, headers, feeOf, timeoutMs, refuseOn, chargeOf }: KeyedSpec, send: typeof fetch = fetch, pay: Pay = unmetered): Keyed {
   let refused = false;
@@ -30,7 +34,8 @@ export function keyedClient({ who, base, headers, feeOf, timeoutMs, refuseOn, ch
     async post(path, body, signal) {
       const fee = feeOf(path, body);
       if (!fee) throw new PaidRefused(`${who}'s ${path} was not sent: it has no price here`);
-      // What a 2xx answer reports it cost, read from its body before the cap settles; never above the hold.
+      // What an answer the cap books at its price reports it cost, read from its body before the cap settles; never
+      // above the hold.
       let charge: { usd: number; basis: string } | undefined;
       const charged = chargeOf ? chargedSaying(() => Math.min(charge?.usd ?? fee.usd, fee.usd), () => charge?.basis) : undefined;
       return paidSend(pay, fee, signal, async () => {
@@ -43,12 +48,14 @@ export function keyedClient({ who, base, headers, feeOf, timeoutMs, refuseOn, ch
           signal: AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(signal ? [signal] : [])]),
         });
         if (refuseOn.includes(response.status)) refused = true;
-        if (!chargeOf || !response.ok) return response;
+        if (!chargeOf || !billedStatus(response.status)) return response;
         // The answer read once, to KEYED_MAX_BYTES at most (bytesOf), and handed on as read: keyedCall takes its parse
-        // (readAhead), and one past the bound goes on with no body, unreadable as before; its charge is the hold.
-        const bytes = await bytesOf(response);
+        // (readAhead), and one past the bound goes on with no body, unreadable as before; its charge is the hold. A 2xx
+        // whose body breaks throws, charged its hold; a 408 or a 5xx whose body breaks goes on with none, its charge
+        // read as for one that reported no count.
+        const bytes = response.ok ? await bytesOf(response).catch((error: unknown) => { throw brokeOff(error); }) : await bytesOf(response).catch(() => undefined);
         const json = bytes === undefined ? undefined : parsed(bytes);
-        charge = chargeOf(fee, path, json);
+        charge = chargeOf(fee, path, json, response.status);
         const read = new Response(bytes === undefined ? null : new Uint8Array(bytes), { status: response.status, statusText: response.statusText, headers: response.headers });
         readAhead.set(read, json);
         return read;
@@ -119,6 +126,15 @@ export function statusLimit(response: Response): Limit | undefined {
 
 /** A provider's machine code (Exa's `tag`, Firecrawl's `code`): upper-case words joined by underscores, else none. */
 export const codeOf = (said: unknown): string | undefined => (typeof said === "string" && /^[A-Z][A-Z0-9_]{2,63}$/.test(said) ? said : undefined);
+
+/** The errors of a body that broke while post read it for its credits (chargeOf): an answer came, so keyedCall words
+ *  one as an answer that broke off, never as a failure to connect. */
+const brokenOff = new WeakSet<object>();
+/** `error`, marked as a body that broke after its answer came (brokenOff) where it can be. */
+const brokeOff = (error: unknown): unknown => {
+  if (error !== null && typeof error === "object") brokenOff.add(error);
+  return error;
+};
 
 /** An answer's body, read to at most KEYED_MAX_BYTES; undefined when it has none or runs past them (the rest is not
  *  read). */
@@ -191,7 +207,7 @@ export async function keyedCall(client: Keyed | null, who: string, keyEnv: strin
     response = await client.post(path, body, signal);
   } catch (error) {
     if (error instanceof PaidRefused) return failed("refused", "CAP_REFUSED", error.message);
-    return unanswered(error, false);
+    return unanswered(error, error !== null && typeof error === "object" && brokenOff.has(error));
   }
   if (!response.ok) {
     // The status says what it is; a body that broke only loses the provider's code.

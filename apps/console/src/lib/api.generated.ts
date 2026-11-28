@@ -4486,6 +4486,7 @@ export interface operations {
       };
       cost_usd: number;
       unpriced_requests: number;
+      tokens_unknown_requests: number;
       days: {
         day: string;
         requests: number;
@@ -4499,6 +4500,7 @@ export interface operations {
         sessions: number;
         requests: number;
         tokens: number;
+        tokens_unknown_requests: number;
         sources: string[];
       }[];
       models: {
@@ -4507,6 +4509,7 @@ export interface operations {
         tokens: number;
         cost_usd: number;
         unpriced_requests: number;
+        tokens_unknown_requests: number;
       }[];
       sources: {
         source: string;

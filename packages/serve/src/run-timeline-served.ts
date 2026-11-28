@@ -36,6 +36,8 @@ export type ServedTimelineDeps = {
   /** Each learned item's status on an agent's newest learning save (learning-routes.ts statusesOf): what a run held for
    *  its owner's OK reads as it stands there. None: as the merge wrote it. */
   readonly statuses?: (agentId: string) => Promise<ReadonlyMap<string, ItemStatus> | undefined>;
+  /** False: no row's words say a cost; its usage alone carries it (TimelineOptions.costWords). */
+  readonly costWords?: boolean;
 };
 
 /** Run `runId`'s Timeline rows as served: cut by its one cut set, its decision rows among them, its error rows in the
@@ -75,12 +77,13 @@ export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store,
         : stopAsked(view, run, await snapshot.commands(runId, 0)) ? "stopped" as const : undefined;
       // A call's arguments, or a web call's output, split across two strings are withheld whole in every read, with calls
       // or without (TimelineOptions.holds).
-      const options = { redact, holds, settled: ended, ended: view ? view.state !== "running" : false, ...(calls ? { calls: { result: CALL_RESULT_CHARS, redact: (text: string) => redactedCall(text, values, CALL_RESULT_CHARS, scrubUrls), input: (text: string, shown: number) => redactedCall(text, values, shown), held: (value: number | bigint) => heldNumber(value, values) } } : {}) };
+      const costWords = deps.costWords !== false;
+      const options = { redact, holds, settled: ended, ended: view ? view.state !== "running" : false, ...(costWords ? {} : { costWords }), ...(calls ? { calls: { result: CALL_RESULT_CHARS, redact: (text: string) => redactedCall(text, values, CALL_RESULT_CHARS, scrubUrls), input: (text: string, shown: number) => redactedCall(text, values, shown), held: (value: number | bigint) => heldNumber(value, values) } } : {}) };
       const timeline = await wholeAnswers(snapshot, runId, context, await runTimeline(snapshot, runId, context, options), options, wholeAnswerFor(values), since);
       // A run whose booked spend passed its cap says so, by how much, after its usage row (run-view.ts withOverCap, as main's
       // served Timeline did): at the cap as it stands (a raise taken counts, capNowOf).
       const capNow = capNowOf((await launchOf(snapshot, runId))?.maxCostUsd, records.entries);
-      const overCap = capNow === undefined ? timeline : withOverCap(timeline, capNow);
+      const overCap = capNow === undefined ? timeline : withOverCap(timeline, capNow, { costWords });
       // Each pause at its cap shown as the server's row, and the one it stands at now as its waiting row (withBudgetRows).
       const capped = withBudgetRows(overCap, records.entries as never, { ended });
       const rows = withApprovalRows(withAsks(capped), asksOf(records.entries), answersOf(records.entries, { final }), redact);
@@ -88,7 +91,7 @@ export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store,
       // characters held back from a text stored cut as a held value takes in its widest form (main's decisionShown).
       const receipts = await decisionsOverStore(snapshot, runId, context).catch(() => null);
       const decisionShown = { redact, hold: 6 * values.reduce((most, value) => Math.max(most, value.length), 0) + 16 };
-      const own = receipts === null || receipts.length ? withDecisions(rows, receipts, decisionShown, { ended }) : rows;
+      const own = receipts === null || receipts.length ? withDecisions(rows, receipts, decisionShown, { ended, costWords }) : rows;
       // The run's learning end, once its learning merged or dropped (runLearningEnd), and each piece of its learning work
       // that dropped before it started (learning-work.ts: its cap left too little for it).
       const end = await runLearningEnd(snapshot, runId);

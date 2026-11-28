@@ -416,6 +416,9 @@ export type ServeOptions = {
   /** The run-keys setting (AGENTRUN_RUN_KEYS=1, run-keys.ts): a template's apply makes its agent though a tool key it
    *  declares is not set here, and a run of it that does not carry that key in `keys` is refused. */
   runKeys?: boolean;
+  /** The no-cost-words setting (AGENTRUN_NO_COST_WORDS=1): a served Timeline row's words say no cost, for a host that
+   *  prices runs its own way; each row's `usage` still carries it (TimelineOptions.costWords). */
+  noCostWords?: boolean;
   /** Another Archil control plane than the key's region's, and its fetch, and another maker of a disk's file API: a
    *  test's fakes, for the server's own Archil calls (a launch's disk read, the settings' test, an agent's disk removed,
    *  a deleted agent's run folder removed from a disk its launch named). */
@@ -2730,7 +2733,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // The run timeline reader over the store (run-reads-over-store runTimelines): one change-numbered RowLog per run, synced
   // from its journal (store-reads) on each read, its view (viewOverStore) for status/state/cost and whether it is final.
   // The route frames the SSE around its `page`, which long-polls the journal, byte-identical to the old live run's page.
-  const servedTimelineDeps: ServedTimelineDeps = { serverSecrets, signIns, sealKey, keyEnv: () => withSavedGateway(own(withSecrets(process.env, "all", storedKeys)), savedGateway), statuses };
+  const servedTimelineDeps: ServedTimelineDeps = { serverSecrets, signIns, sealKey, keyEnv: () => withSavedGateway(own(withSecrets(process.env, "all", storedKeys)), savedGateway), statuses, ...(options.noCostWords ? { costWords: false } : {}) };
   const timelines = runTimelines({
     context: ctx,
     ...(options.timelinePollMs !== undefined ? { pollMs: options.timelinePollMs } : {}),

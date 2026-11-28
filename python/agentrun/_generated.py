@@ -12352,6 +12352,7 @@ class GetWrappedResponse(TypedDict):
     tokens: GetWrappedResponseTokens
     cost_usd: float
     unpriced_requests: int
+    tokens_unknown_requests: int
     days: list[GetWrappedResponseDaysItem]
     hours: list[int]
     weekdays: list[int]
@@ -12383,6 +12384,7 @@ class GetWrappedResponseHarnessesItem(TypedDict):
     sessions: int
     requests: int
     tokens: int
+    tokens_unknown_requests: int
     sources: list[str]
 
 
@@ -12392,6 +12394,7 @@ class GetWrappedResponseModelsItem(TypedDict):
     tokens: int
     cost_usd: float
     unpriced_requests: int
+    tokens_unknown_requests: int
 
 
 class GetWrappedResponseSourcesItem(TypedDict):
