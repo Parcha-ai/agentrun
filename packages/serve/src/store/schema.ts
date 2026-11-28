@@ -23,7 +23,9 @@
 // version and slots (runners.version, .slots: RUNNERS_ADDED), each hand-back (hand_backs, HAND_BACKS) and each claim of a
 // run with the turn it works and its attempt at it (run_attempts, RUN_ATTEMPTS) are added the same way, and so is the
 // learning ledger (learning_ledger, learning_spend: LEARNING_LEDGER, LEARNING_SPEND), and each agent's, run's and imported
-// package's workspace (WORKSPACE_ADDED).
+// package's workspace (WORKSPACE_ADDED). Each imported package is keyed by its workspace and id (IMPORTED_TEMPLATES_KEYS),
+// so each workspace's package name is its own: the server makes the table again without the key on its id alone, at its
+// open to a store an earlier build of this version made (uploadKeysUpgrade). No runner reads or writes the table.
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
 // in the clear. Foreign keys are on (the connection's pragma).
@@ -49,13 +51,11 @@
 // split wrote (store_meta.ledger_rerecorded, run-patch.ts backfillLedger): a runner of 17 still writes a reopened run's
 // row with its job at the first round's figure, after the pass that records it again, so it must not open the store;
 // and each runner's row says the version its build knows (runners.knows), so the server marks that pass done only once
-// none of 17 is there. Version 19 keys each imported template package by its workspace and id (IMPORTED_TEMPLATES_KEYS), so
-// each workspace's package name is its own: the table is made again without its key on the id alone, each row in the
-// workspace it had (uploadKeysUpgrade), as Postgres migration 0035 does, which raises the runner floor.
+// none of 17 is there.
 // The server upgrades these in place at its open (listingUpgrade from 11, relayUpgrade from 12, purgeUpgrade from 13,
-// diskUpgrade from 14, ledgerUpgrade from 15, learningRowsUpgrade from 16, splitUpgrade from 17, then uploadKeysUpgrade
-// from 18); a runner of this build waits for it.
-export const SCHEMA_VERSION = 19;
+// diskUpgrade from 14, ledgerUpgrade from 15, learningRowsUpgrade from 16, then splitUpgrade from 17); a runner of this
+// build waits for it.
+export const SCHEMA_VERSION = 18;
 
 /** One answer per approval of a run: a second approve or deny command naming the same approval is refused
  *  (StoreConstraint), so the first answer a person gives wins from the moment it is written, before the runner takes it
@@ -154,9 +154,9 @@ export const IMPORTED_TEMPLATES_KEYS: readonly string[] = [
   "CREATE UNIQUE INDEX IF NOT EXISTS imported_templates_in_workspace ON imported_templates (workspace, id) WHERE workspace IS NOT NULL",
   "CREATE UNIQUE INDEX IF NOT EXISTS imported_templates_of_none ON imported_templates (id) WHERE workspace IS NULL",
 ];
-/** Version 18 → 19 on SQLite (the server's open, sqlite/store.ts, last): imported_templates made again without its key on
- *  the id alone, each row copied in the workspace it had (the column is there by then: WORKSPACE_ADDED), keyed by
- *  IMPORTED_TEMPLATES_KEYS, and the version. */
+/** An imported_templates an earlier build of this version made, keyed by its id alone (`id TEXT PRIMARY KEY`), made again
+ *  at a server's open (sqlite/store.ts addWorkspaceColumns): each row copied in the workspace it had (the column is there
+ *  by then: WORKSPACE_ADDED), keyed by IMPORTED_TEMPLATES_KEYS. The version stays, as no runner reads the table. */
 export function uploadKeysUpgrade(): readonly string[] {
   return [
     "DROP TABLE IF EXISTS imported_templates_keyed",
@@ -165,7 +165,6 @@ export function uploadKeysUpgrade(): readonly string[] {
     "DROP TABLE imported_templates",
     "ALTER TABLE imported_templates_keyed RENAME TO imported_templates",
     ...IMPORTED_TEMPLATES_KEYS,
-    "UPDATE store_meta SET schema_version = 19 WHERE singleton = 1",
   ];
 }
 

@@ -14,7 +14,7 @@ const { migrate, migrationsIn, openPostgresStore, openSqliteStore, SCHEMA_VERSIO
 const T = Date.parse("2026-11-19T09:00:00.000Z");
 
 test("SQLite: a version 13 store comes to this version at its server's open, never at a runner's: its runs and agents read as not purged", sqliteOnly("the SQLite upgrade"), async (t) => {
-  assert.equal(SCHEMA_VERSION, 19);
+  assert.equal(SCHEMA_VERSION, 18);
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-purge-upgrade-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const file = join(dir, "store.sqlite");

@@ -2,7 +2,8 @@
 // workspaces upload a package of one name and each gets its own, `upload:<name>` in both. Each workspace's read, apply,
 // reimport and delete reaches its own package alone, and an agent's purge takes its own workspace's upload alone. A
 // request with no workspace keeps the packages of none, as a server with no workspaces always did. Postgres migration
-// 0035 and SQLite version 19 key the rows each in the workspace it already had.
+// 0035 and a SQLite server's open (in place, at version 18) key the rows each in the workspace it already had; neither
+// stops a runner of the build before, which never reads or writes the table.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";

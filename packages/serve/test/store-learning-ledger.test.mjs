@@ -20,7 +20,7 @@
 //     before is recorded under this one, with no restart; a runner of this build (keepPresence says what it knows) holds
 //     no mark, and a rolling restart's runner of this build takes its name at once while the earlier one's claims hold
 //     the mark;
-//   - a store the ledger's first release left (version 15, which a runner refuses until the server brings it to 19) has
+//   - a store the ledger's first release left (version 15, which a runner refuses until the server brings it to 18) has
 //     its wrong rows recorded again at the open that drops their epoch (a shadow with no path or audit spend, a stale
 //     row, an unknown cost its run now has, a run by hand with no path), by the ledger step alone (no earlier step runs
 //     again), its mark set back so even a ledger marked whole is recorded again; Postgres 0030 runs again unharmed;
@@ -365,18 +365,18 @@ test("a store the ledger's first release left: its wrong rows are recorded again
   await db.run("UPDATE learning_ledger SET cost = 'unknown', job_usd = NULL WHERE run_id = 'h2'");
   await db.run("UPDATE learning_ledger SET job_usd = 9, epoch = epoch - 1 WHERE run_id = 's2'");
   await db.run("UPDATE learning_ledger SET path = 'agent' WHERE run_id = 'audit.s2'");
-  // At that release's version, 15: a runner of this build refuses it until the server brings it to 19 (the ledger step
-  // writes 16, the learning rows step 17, the split's step 18, the upload keys' step 19), and a runner of 15 (whose end
-  // writes the epoch) refuses a version it does not know.
+  // At that release's version, 15: a runner of this build refuses it until the server brings it to 18 (the ledger step
+  // writes 16, the learning rows step 17, the split's step 18), and a runner of 15 (whose end writes the epoch) refuses a
+  // version it does not know.
   await db.run("ALTER TABLE store_meta DROP COLUMN ledger_rerecorded");
   await db.run("UPDATE store_meta SET schema_version = 15 WHERE singleton = 1");
   await db.close();
-  assert.equal(SCHEMA_VERSION, 19);
-  await assert.rejects(storeOn(t, { file, clock, role: "runner" }), (error) => error instanceof StoreAwaitsServer && /bring this store from version 15 to 19/.test(error.message));
+  assert.equal(SCHEMA_VERSION, 18);
+  await assert.rejects(storeOn(t, { file, clock, role: "runner" }), (error) => error instanceof StoreAwaitsServer && /bring this store from version 15 to 18/.test(error.message));
   const { store: reopened } = await storeOn(t, { file, clock });
   assert.deepEqual(await figures(reopened), now, "every wrong row recorded again from its run, as its end writes it");
   const after = await raw(file);
-  assert.deepEqual([(await after.get("SELECT schema_version AS v FROM store_meta")).v, (await after.all("SELECT name FROM pragma_table_info('learning_ledger') WHERE name = 'epoch'")).length], [19, 0], "19, the epoch gone (the ledger step), the learning rows, the split's mark and the upload keys after it");
+  assert.deepEqual([(await after.get("SELECT schema_version AS v FROM store_meta")).v, (await after.all("SELECT name FROM pragma_table_info('learning_ledger') WHERE name = 'epoch'")).length], [18, 0], "18, the epoch gone (the ledger step), the learning rows and the split's mark after it");
   await after.close();
 });
 
@@ -419,7 +419,7 @@ test("a store at 15 comes to this version by the ledger step and then the learni
   }
   assert.equal(await version(), 15, "still 15: neither the purge step nor the disk step ran");
   const { store: reopened } = await storeOn(t, { file, clock });
-  assert.equal(await version(), 19, "the ledger step's 16, then the learning rows step's 17, the split's 18, then the upload keys' 19");
+  assert.equal(await version(), 18, "the ledger step's 16, then the learning rows step's 17, then the split's 18");
   assert.equal((await reopened.runs.get("p1")).disk, "disk-p", "the tombstone keeps its disk: the disk step did not run again");
   assert.deepEqual((await reopened.learning.ledger("agent-1")).rows, rows, "h1's row recorded again at its run's figures: the mark set back to 0 with the epoch, so the open's backfill ran");
   db = await raw(file);

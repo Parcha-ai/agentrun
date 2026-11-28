@@ -496,9 +496,8 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     // and drops it (the ledger's step below, then ledgerUpgrade). Version 16 keeps no learning as rows: the server adds
     // them (schema.ts learningRowsUpgrade). Version 17 has its reopened runs' ledger rows under the split before: the
     // server adds the mark (STORE_META_LEDGER_RERECORDED, unset) and each runner's known version (runners.knows) and
-    // writes 18 (schema.ts splitUpgrade), and the open's backfill records those rows again (marked once no runner of
-    // 17 is there). Version 18 keys an imported package by its id alone: the server keys each by its workspace and id and
-    // writes 19 (schema.ts uploadKeysUpgrade), last. A runner refuses each version of SQLITE_UPGRADES until that server has,
+    // writes 18 (schema.ts splitUpgrade), last, and the open's backfill records those rows again (marked once no runner of
+    // 17 is there). A runner refuses each version of SQLITE_UPGRADES until that server has,
     // and a runner of 15, whose end writes the epoch, refuses 16 and later (SchemaVersionUnknown), or stops at its next
     // floor read; a runner of 17, whose end writes the split before, refuses 18 the same way. A later version is refused too, a runner in words that name its floor (a SQLite runner opens only its
     // own version, so the floor is the version): RunnerBelowFloor.
@@ -655,6 +654,11 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
       const ledgerMissing = Object.entries(LEARNING_LEDGER_ADDED).filter(([column]) => !ledgerNow.has(column)).map(([, sql]) => ({ sql }));
       if (ledgerMissing.length > 0) await connection.write(ledgerMissing, { full: true });
       await addWorkspaceColumns(connection);
+      // An imported_templates an earlier build of this version made is keyed by its id alone: made again, each row in the
+      // workspace it had, keyed by workspace and id (schema.ts uploadKeysUpgrade). No runner reads it, so none waits.
+      if ((await connection.all<{ pk: number }>("SELECT pk FROM pragma_table_info('imported_templates') WHERE name = 'id'")).some((column) => column.pk > 0)) {
+        await connection.write(uploadKeysUpgrade().map((sql) => ({ sql })), { full: true });
+      }
       await backfillNativeCommandOwners(connection);
       // Here `found` is SCHEMA_VERSION or a version in the window (any other was refused above): each step runs for the
       // versions before the one that first kept what it adds.
@@ -671,10 +675,9 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
         if (found <= 13) await connection.write(purgeUpgrade(await named("runs"), await named("agents")).map((sql) => ({ sql })), { full: true });
         if (found <= 14) await connection.write(diskUpgrade(await named("runs")).map((sql) => ({ sql })), { full: true });
         if (found <= 15) await connection.write(ledgerUpgrade(await named("learning_ledger")).map((sql) => ({ sql })), { full: true });
-        // ledgerUpgrade writes 16, the rows step 17 after it, the split's step 18, and the upload keys' step 19, last.
+        // ledgerUpgrade writes 16, the rows step 17 after it, and the split's step 18, last.
         if (found <= 16) await connection.write(learningRowsUpgrade().map((sql) => ({ sql })), { full: true });
-        if (found <= 17) await connection.write(splitUpgrade(await named("runners")).map((sql) => ({ sql })), { full: true });
-        await connection.write(uploadKeysUpgrade().map((sql) => ({ sql })), { full: true });
+        await connection.write(splitUpgrade(await named("runners")).map((sql) => ({ sql })), { full: true });
       }
       // Every run an earlier build ended gets its ledger row once, here, on the schema this build reads, and every run a
       // follow-up opened again has its row recorded again under this build's split: marked done only when no runner of 17
@@ -703,8 +706,8 @@ const SQLITE_FLOOR = async (): Promise<number> => SCHEMA_VERSION;
 
 /** An agents, runs or imported_templates table an earlier build of this version made keeps no workspace (schema.ts
  *  WORKSPACE_ADDED): each added where missing, every row unscoped, then their indexes and the imported packages' keys
- *  (IMPORTED_TEMPLATES_KEYS, made with the table where it was missing). The server's open runs it, and so does
- *  prepareWorkspaceColumns. */
+ *  (IMPORTED_TEMPLATES_KEYS; the server's open drops the key on the id alone after it, uploadKeysUpgrade). The server's
+ *  open runs it, and so does prepareWorkspaceColumns. */
 async function addWorkspaceColumns(connection: Connection): Promise<void> {
   const missing: { sql: string }[] = [];
   for (const [table, sql] of Object.entries(WORKSPACE_ADDED)) {
