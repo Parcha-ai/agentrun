@@ -2,11 +2,11 @@
 // template, reads the agent and its revisions, moves its current revision back, and archives then deletes the agent, all
 // with the server's token. Without the launch hook the apply makes no trigger of any kind: each is skipped and said (a
 // schedule too, which would start runs on the server's own clock and model key, outside the backend's), and its dry run
-// plans each as skipped, in the same words. With the hook it makes the schedule, feed and webhook triggers, since each
-// firing goes to the backend, which starts the run through the API on its own keys and budget; their unarchive turns them
-// on again. A webhook's signed request to its own hook is then served, with no token; GitHub's and Composio's hooks are
-// not. An apply in a workspace makes no webhook: there it is made with POST /triggers alone, whose first answer shows its
-// signing secret once (api-only-workspace-triggers.test.mjs). A GitHub, Composio or
+// plans each as skipped, in the same words. With the hook it makes the schedule and feed triggers, since each firing goes
+// to the backend, which starts the run through the API on its own keys and budget; their unarchive turns them on again.
+// An apply makes no webhook, in a workspace or not, since its answer shows no signing secret: a webhook is made with POST
+// /triggers in a workspace alone, whose first answer shows it once (api-only-workspace-triggers.test.mjs), and its signed
+// request to its own hook is then served, with no token; GitHub's and Composio's hooks are not. A GitHub, Composio or
 // email trigger is never made here. The token reads the triggers and turns one on or off (PATCH with `enabled` alone, on
 // only with the hook), so one auto-paused is turned on again; making, deleting or firing a trigger, its secret and the
 // settings stay refused. Off by default: the whole server's apply makes every trigger, as before.
@@ -23,9 +23,7 @@ import { fakeClock, hookServer, until } from "./trigger-support.mjs";
 const { apiOnlyTriggerEdit, apiOnlyTriggerSkipped } = await import("../dist/api-only.js");
 const { NOT_SET_UP } = await import("../dist/runnable.js");
 const { openapiDocument } = await import("../dist/openapi.js");
-const { sealedSettingsOverStore } = await import("../dist/sealed-settings-store.js");
 const { mintSecret, signatureOf, verify } = await import("../dist/standard-webhooks.js");
-const { webhook: webhookAdapter } = await import("../dist/trigger-webhook.js");
 const { SOURCE_KINDS } = await import("../dist/triggers.js");
 
 const MANIFEST = `---
@@ -64,11 +62,12 @@ async function deployServer(t, options, manifest = MANIFEST) {
   return serve(t, { templates: root, runner: false, ...options });
 }
 
-/** One request to `server` (its path from the root, the token unless `token` is false): its status and body. */
-async function send(server, method, path, { token = true, body } = {}) {
+/** One request to `server` (its path from the root, the token unless `token` is false, in `workspace` when given): its
+ *  status and body. */
+async function send(server, method, path, { token = true, body, workspace } = {}) {
   const res = await fetch(`${server.url}${path}`, {
     method,
-    headers: { ...(token ? { authorization: `Bearer ${typeof token === "string" ? token : server.token}` } : {}), ...(body === undefined ? {} : { "content-type": "application/json" }) },
+    headers: { ...(token ? { authorization: `Bearer ${typeof token === "string" ? token : server.token}` } : {}), ...(workspace ? { "agentrun-workspace": workspace } : {}), ...(body === undefined ? {} : { "content-type": "application/json" }) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   const text = await res.text();
@@ -84,15 +83,15 @@ const refusedHere = (answer, path, what) => assert.deepEqual([answer.status, ans
 
 /** The apply's warnings for the triggers it skipped: field, reason and words. */
 const skippedOf = (body) => body.warnings.filter((one) => /^triggers\.\d+$/.test(one.field)).map((one) => [one.field, one.reason, one.message]);
-/** A schedule's, a feed's or a webhook's skip on a server with no launch hook, which would make it. */
+/** A schedule's or a feed's skip on a server with no launch hook, which would make it. */
 const needsHook = (name, kind, pkg = "deployed") => `The ${pkg} template's trigger ${name} (${kind}) was not made: this server serves the run API only (AGENTRUN_API_ONLY=1) and has no launch hook, so its firings have nowhere to go. Start its runs through the API, or set the launch hook (AGENTRUN_LAUNCH_HOOK_URL and AGENTRUN_LAUNCH_HOOK_SECRET) and apply again: each firing then goes to your backend, which starts its run.`;
 /** Any other source's skip, hook or not. */
 const notHere = (name, kind, pkg = "deployed") => `The ${pkg} template's trigger ${name} (${kind}) was not made: this server serves the run API only (AGENTRUN_API_ONLY=1), which serves no route or setting a ${kind} trigger needs. Start its runs through the API instead.`;
-/** A webhook's skip on a request in a workspace, hook or not. */
-const inWorkspace = (name, pkg = "deployed") => `The ${pkg} template's trigger ${name} (webhook) was not made: this request is in a workspace (AgentRun-Workspace), where a webhook trigger is made with POST /v2/triggers alone, whose first answer shows its signing secret once. Make it there, or start its runs through the API.`;
+/** A webhook's skip, in a workspace or not, hook or not: an apply's answer shows no signing secret. */
+const webhookSkip = (name, pkg = "deployed") => `The ${pkg} template's trigger ${name} (webhook) was not made: on this server (AGENTRUN_API_ONLY=1) a webhook trigger is made with POST /v2/triggers in a workspace (AgentRun-Workspace) alone, whose first answer shows its signing secret once; an apply's answer shows none. Make it there, or start its runs through the API.`;
 const SKIPPED = [
   ["triggers.0", "not_set_up_here", needsHook("morning", "schedule")],
-  ["triggers.1", "not_set_up_here", needsHook("lead-form", "webhook")],
+  ["triggers.1", "not_an_option", webhookSkip("lead-form")],
   ["triggers.2", "not_an_option", notHere("new-mail", "email")],
 ];
 
@@ -118,8 +117,8 @@ const cliRun = (server, config, args) => new Promise((resolve) => {
 });
 
 /** The runs of `agent` on `server`, through its API. */
-const runsOf = async (server, agent) => {
-  const listed = await send(server, "GET", `/v2/runs?agent=${agent}`);
+const runsOf = async (server, agent, workspace) => {
+  const listed = await send(server, "GET", `/v2/runs?agent=${agent}`, { workspace });
   assert.equal(listed.status, 200, JSON.stringify(listed.body));
   return listed.body.runs;
 };
@@ -220,7 +219,7 @@ test("on an API-only server a template's schedule is never armed on the triggers
   const hosted = await send(apiOnly, "POST", "/v2/templates/deployed/apply", { body: { parameters: { topic: "tides" } } });
   assert.equal(hosted.status, 201, JSON.stringify(hosted.body));
   assert.deepEqual(hosted.body.triggers, [], JSON.stringify(hosted.body.triggers));
-  assert.deepEqual(skippedOf(hosted.body).map(([field, reason]) => [field, reason]), [["triggers.0", NOT_SET_UP], ["triggers.1", NOT_SET_UP]], "the schedule and the webhook both said");
+  assert.deepEqual(skippedOf(hosted.body).map(([field, reason]) => [field, reason]), [["triggers.0", NOT_SET_UP], ["triggers.1", "not_an_option"]], "the schedule and the webhook both said");
   const own = await send(whole, "POST", "/v2/templates/deployed/apply", { body: { parameters: { topic: "tides" } } });
   assert.equal(own.status, 201, JSON.stringify(own.body));
 
@@ -239,7 +238,7 @@ test("an API-only dry run plans each trigger as skipped, in the words its apply 
   assert.equal(planned.status, 200, JSON.stringify(planned.body));
   assert.deepEqual(planned.body.plan.triggers.map((one) => [one.name, one.kind, one.action, one.reason]), [
     ["morning", "schedule", "skip", needsHook("morning", "schedule")],
-    ["lead-form", "webhook", "skip", needsHook("lead-form", "webhook")],
+    ["lead-form", "webhook", "skip", webhookSkip("lead-form")],
     ["new-mail", "email", "skip", notHere("new-mail", "email")],
   ]);
   const applied = await send(server, "POST", "/v2/templates/deployed/apply", { body: { parameters: { topic: "tides" } } });
@@ -347,31 +346,28 @@ test("off by default: the whole server's apply makes the webhook trigger too, an
   assert.deepEqual([refused.status, refused.body.error?.fields?.map((one) => one.field)], [422, ["triggers.2.source.account"]], JSON.stringify(refused.body));
 });
 
-test("the profile's apply makes a schedule, a feed and a webhook with the launch hook alone, a webhook outside a workspace alone, and no other source, hook or not, one added later included", () => {
-  // Each kind's reason, without the hook and with it (undefined: made), unscoped and in a workspace. The words are
-  // SKIPPED's and inWorkspace's, through an apply.
-  const reasons = (kind, scoped) => [false, true].map((hooked) => apiOnlyTriggerSkipped("pkg", { name: "one", source: { kind } }, hooked, scoped)?.reason);
+test("the profile's apply makes a schedule and a feed with the launch hook alone, and no other source, hook or not, a webhook and one added later included", () => {
+  // Each kind's reason, without the hook and with it (undefined: made). The words are SKIPPED's, through an apply.
+  const reasons = (kind) => [false, true].map((hooked) => apiOnlyTriggerSkipped("pkg", { name: "one", source: { kind } }, hooked)?.reason);
   for (const kind of [...SOURCE_KINDS, "a-source-added-later"]) {
-    const made = kind === "schedule" || kind === "feed" || kind === "webhook";
-    assert.deepEqual(reasons(kind, false), made ? [NOT_SET_UP, undefined] : ["not_an_option", "not_an_option"], kind);
-    assert.deepEqual(reasons(kind, true), made && kind !== "webhook" ? [NOT_SET_UP, undefined] : ["not_an_option", "not_an_option"], `${kind} in a workspace`);
+    assert.deepEqual(reasons(kind), kind === "schedule" || kind === "feed" ? [NOT_SET_UP, undefined] : ["not_an_option", "not_an_option"], kind);
   }
-  assert.equal(apiOnlyTriggerSkipped("deployed", { name: "lead-form", source: { kind: "webhook" } }, true, true).message, inWorkspace("lead-form"));
+  assert.equal(apiOnlyTriggerSkipped("deployed", { name: "lead-form", source: { kind: "webhook" } }, true).message, webhookSkip("lead-form"));
 });
 
-test("the apply's API description names the reason each API-only skip gives: a schedule's or a webhook's without the hook, a webhook's in a workspace, and a GitHub trigger's", () => {
+test("the apply's API description names the reason each API-only skip gives: a schedule's without the hook, a webhook's, and a GitHub trigger's", () => {
   const { description } = openapiDocument(() => undefined).paths["/templates/{template}/apply"].post;
-  const unhooked = apiOnlyTriggerSkipped("pkg", { name: "one", source: { kind: "webhook" } }, false, false);
-  const scoped = apiOnlyTriggerSkipped("pkg", { name: "one", source: { kind: "webhook" } }, true, true);
-  const never = apiOnlyTriggerSkipped("pkg", { name: "one", source: { kind: "github" } }, true, false);
+  const unhooked = apiOnlyTriggerSkipped("pkg", { name: "one", source: { kind: "schedule" } }, false);
+  const webhook = apiOnlyTriggerSkipped("pkg", { name: "one", source: { kind: "webhook" } }, true);
+  const never = apiOnlyTriggerSkipped("pkg", { name: "one", source: { kind: "github" } }, true);
   const said = (reason) => `(reason \`${reason}\`)`;
-  assert.ok(description.includes(`a schedule, feed or webhook trigger is made only with the launch hook set`), "the webhook is one the hook makes");
-  assert.ok(description.includes(`else a warning under \`triggers.<i>\` ${said(unhooked.reason)}`), `a webhook skipped for want of the hook: ${unhooked.reason}`);
-  assert.ok(description.includes(`a webhook trigger is made with POST /triggers alone, which shows its signing secret once ${said(scoped.reason)}`), `a webhook in a workspace: ${scoped.reason}`);
+  assert.ok(description.includes(`a schedule or feed trigger is made only with the launch hook set`), "the kinds the hook makes");
+  assert.ok(description.includes(`else a warning under \`triggers.<i>\` ${said(unhooked.reason)}`), `a schedule skipped for want of the hook: ${unhooked.reason}`);
+  assert.ok(description.includes(`a webhook trigger is made with POST /triggers in a workspace (\`AgentRun-Workspace\`) alone, whose first answer shows its signing secret once, as an apply's never does ${said(webhook.reason)}`), `a webhook, never made by an apply: ${webhook.reason}`);
   assert.ok(description.includes(`a GitHub, Composio or email trigger is never made there ${said(never.reason)}`), `a GitHub trigger, never made here: ${never.reason}`);
 });
 
-test("an API-only server with the launch hook makes the template's schedule and webhook, and the schedule's firing goes to the backend, which starts the run through the API; the email stays skipped", { timeout: 120_000 }, async (t) => {
+test("an API-only server with the launch hook makes the template's schedule, and its firing goes to the backend, which starts the run through the API; the webhook and email stay skipped", { timeout: 120_000 }, async (t) => {
   const clock = fakeClock("2026-06-01T08:00:00Z");
   const secret = mintSecret();
   const hook = await hookServer(t);
@@ -381,15 +377,16 @@ test("an API-only server with the launch hook makes the template's schedule and 
   assert.equal(planned.status, 200, JSON.stringify(planned.body));
   assert.deepEqual(planned.body.plan.triggers.map((one) => [one.name, one.action, one.reason ?? null]), [
     ["morning", "create", null],
-    ["lead-form", "create", null],
+    ["lead-form", "skip", webhookSkip("lead-form")],
     ["new-mail", "skip", notHere("new-mail", "email")],
   ]);
   const applied = await send(server, "POST", "/v2/templates/deployed/apply", { body: { parameters: { topic: "tides" } } });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
   const agent = applied.body.agent_id;
-  assert.deepEqual(applied.body.triggers.map((one) => [one.name, one.kind]), [["morning", "schedule"], ["lead-form", "webhook"]], "the schedule and the webhook are made");
-  assert.deepEqual(skippedOf(applied.body), SKIPPED.slice(2), "the email is skipped, and said");
-  const made = (await server.store.triggers.list(agent)).find((row) => row.name === "morning");
+  assert.deepEqual(applied.body.triggers.map((one) => [one.name, one.kind]), [["morning", "schedule"]], "the schedule is made");
+  assert.deepEqual(skippedOf(applied.body), SKIPPED.slice(1), "the webhook and email are skipped, and said");
+  assert.equal(applied.body.webhook_secrets, undefined, "no secret minted");
+  const [made] = await server.store.triggers.list(agent);
   assert.deepEqual([made.name, made.enabled], ["morning", true]);
 
   clock.to("2026-06-01T09:00:00Z");
@@ -409,12 +406,18 @@ test("an API-only server with the launch hook makes the template's schedule and 
   assert.deepEqual([firing.status, firing.runId], ["started", started.body.run_id]);
 });
 
-/** The signing secret webhook trigger `id` was minted, opened from its sealed row with the seal key deployServer set: no
- *  route of an API-only server shows it. */
-async function mintedSecret(server, id) {
-  const settings = sealedSettingsOverStore(server.store, webhookAdapter.id, webhookAdapter.settings, Buffer.from(process.env.AGENTRUN_SEAL_KEY, "base64"), () => {});
-  await settings.load();
-  return settings.get(id, "secret");
+const WORKSPACE = "org:one";
+
+/** The template applied in a workspace, then its webhook trigger made the one way this server makes one, POST /v2/triggers
+ *  in that workspace: the apply's answer, the agent, the trigger and the signing secret the make's answer shows. */
+async function workspaceWebhook(server) {
+  const applied = await send(server, "POST", "/v2/templates/deployed/apply", { workspace: WORKSPACE, body: { parameters: { topic: "tides" } } });
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  const agent = applied.body.agent_id;
+  const made = await send(server, "POST", "/v2/triggers", { workspace: WORKSPACE, body: { name: "lead-form", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: agent, input: { content: "A lead arrived." }, max_cost_usd: 1 } } });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  assert.match(made.body.signing_secret, /^whsec_/, JSON.stringify(made.body));
+  return { applied: applied.body, agent, lead: made.body.id, secret: made.body.signing_secret };
 }
 
 /** A Standard Webhooks request to `path` on `server` with no token, its id `event`, signed with `secret` (none: unsigned). */
@@ -428,13 +431,7 @@ test("an API-only server with the launch hook serves a webhook trigger's signed 
   const hook = await hookServer(t);
   const lines = [];
   const server = await deployServer(t, { apiOnly: true, triggerClock: fakeClock("2026-06-01T08:00:00Z"), launchHook: { url: hook.url, secret: mintSecret() }, log: (line) => lines.push(line) }, NO_MAIL);
-  const applied = await send(server, "POST", "/v2/templates/deployed/apply", { body: { parameters: { topic: "tides" } } });
-  assert.equal(applied.status, 201, JSON.stringify(applied.body));
-  const agent = applied.body.agent_id;
-  const lead = applied.body.triggers.find((one) => one.name === "lead-form").trigger_id;
-  assert.deepEqual(applied.body.webhook_secrets.map((one) => [one.trigger_id, one.secret_set, one.signing_secret]), [[lead, true, undefined]], "the token is shown no secret");
-  const secret = await mintedSecret(server, lead);
-  assert.match(secret, /^whsec_/);
+  const { agent, lead, secret } = await workspaceWebhook(server);
 
   for (const [what, key] of [["unsigned", undefined], ["signed with another secret", mintSecret()]]) {
     const refused = await hookPost(server, `/v2/hooks/${lead}`, key, "evt-0");
@@ -447,7 +444,7 @@ test("an API-only server with the launch hook serves a webhook trigger's signed 
   assert.deepEqual([sent.agent_id, sent.trigger_id], [agent, lead]);
   assert.match(sent.input.content, /^A lead arrived\./);
   await until(async () => (await server.store.triggers.firing(lead, sent.firing_id))?.status === "sent", 20_000, "the firing was never recorded sent");
-  assert.deepEqual(await runsOf(server, agent), [], "no run started here on the server's own model key");
+  assert.deepEqual(await runsOf(server, agent, WORKSPACE), [], "no run started here on the server's own model key");
   const again = await hookPost(server, `/v2/hooks/${lead}`, secret, "evt-1");
   assert.deepEqual([again.status, again.headers.get("idempotent-replayed")], [200, "true"], "the same request again is the same firing");
   assert.equal(hook.got.length, 1, "handed on once");
@@ -462,25 +459,18 @@ test("an API-only server with the launch hook serves a webhook trigger's signed 
   assert.equal(hook.got.length, 1, "nothing else handed on");
 });
 
-test("an API-only server with the launch hook refuses a signed request to a webhook trigger whose firings would message a run; an apply in a workspace makes no webhook", { timeout: 120_000 }, async (t) => {
+test("an API-only server with the launch hook refuses a signed request to a webhook trigger whose firings would message a run; an apply in a workspace makes no webhook either", { timeout: 120_000 }, async (t) => {
   const hook = await hookServer(t);
   const server = await deployServer(t, { apiOnly: true, triggerClock: fakeClock("2026-06-01T08:00:00Z"), launchHook: { url: hook.url, secret: mintSecret() } }, NO_MAIL);
-  const applied = await send(server, "POST", "/v2/templates/deployed/apply", { body: { parameters: { topic: "tides" } } });
-  assert.equal(applied.status, 201, JSON.stringify(applied.body));
-  const lead = applied.body.triggers.find((one) => one.name === "lead-form").trigger_id;
-  const secret = await mintedSecret(server, lead);
+  const { applied, lead, secret } = await workspaceWebhook(server);
+  assert.deepEqual(applied.triggers.map((one) => one.name), ["morning"], "the schedule alone is made");
+  assert.deepEqual(skippedOf(applied), [["triggers.1", "not_an_option", webhookSkip("lead-form")]]);
+  assert.equal(applied.webhook_secrets, undefined, "no secret minted");
   // Its firings would open the run on this server's keys, never through the backend: its hook answers as for no trigger.
   await server.store.triggers.update(lead, { target: { kind: "message_run", run_id: "run_earlier", input: { content: "Again." } } });
   const refused = await hookPost(server, `/v2/hooks/${lead}`, secret, "evt-1");
   assert.equal(refused.status, 401, await refused.text());
   assert.deepEqual([hook.got, await server.store.triggers.firings(lead)], [[], []], "nothing fired or handed on");
-
-  const scoped = await fetch(`${server.url}/v2/templates/deployed/apply`, { method: "POST", headers: { authorization: `Bearer ${server.token}`, "agentrun-workspace": "org:one", "content-type": "application/json" }, body: JSON.stringify({ parameters: { topic: "tides" } }) });
-  const body = await scoped.json();
-  assert.equal(scoped.status, 201, JSON.stringify(body));
-  assert.deepEqual(body.triggers.map((one) => one.name), ["morning"], "the schedule alone is made");
-  assert.deepEqual(skippedOf(body), [["triggers.1", "not_an_option", inWorkspace("lead-form")]]);
-  assert.equal(body.webhook_secrets, undefined, "no secret minted");
 });
 
 test("an API-only server with the launch hook takes the backend's release of a firing it answered 2xx and will start no run for: failed, host_released, with the token", { timeout: 120_000 }, async (t) => {
@@ -530,13 +520,11 @@ test("an API-only server with the launch hook unarchives an agent: the schedule 
   const clock = fakeClock("2026-06-01T08:00:00Z");
   const hook = await hookServer(t);
   const server = await deployServer(t, { apiOnly: true, triggerClock: clock, launchHook: { url: hook.url, secret: mintSecret() } }, NO_MAIL);
-  const applied = await send(server, "POST", "/v2/templates/deployed/apply", { body: { parameters: { topic: "tides" } } });
-  assert.equal(applied.status, 201, JSON.stringify(applied.body));
-  const agent = applied.body.agent_id;
-  const archived = await send(server, "POST", `/v2/agents/${agent}/archive`);
+  const { agent } = await workspaceWebhook(server);
+  const archived = await send(server, "POST", `/v2/agents/${agent}/archive`, { workspace: WORKSPACE });
   assert.equal(archived.status, 200, JSON.stringify(archived.body));
   assert.deepEqual((await server.store.triggers.list(agent)).map((row) => row.enabled), [false, false], "its schedule and webhook are off");
-  const back = await send(server, "POST", `/v2/agents/${agent}/unarchive`);
+  const back = await send(server, "POST", `/v2/agents/${agent}/unarchive`, { workspace: WORKSPACE });
   assert.equal(back.status, 200, JSON.stringify(back.body));
   assert.deepEqual(back.body.triggers_off, [], JSON.stringify(back.body));
   const rows = await server.store.triggers.list(agent);
@@ -731,5 +719,5 @@ test("an API-only server with the launch hook unarchives an agent: a schedule wh
   assert.equal(back.status, 200, JSON.stringify(back.body));
   assert.deepEqual(back.body.triggers_off, [{ id: "trg_nudge", name: "nudge" }], JSON.stringify(back.body));
   const rows = await server.store.triggers.list(agent);
-  assert.deepEqual(rows.map((row) => [row.name, row.enabled]).sort(), [["lead-form", true], ["morning", true], ["nudge", false]], "the apply's schedule and webhook are on again; the one messaging a run is not");
+  assert.deepEqual(rows.map((row) => [row.name, row.enabled]).sort(), [["morning", true], ["nudge", false]], "the apply's schedule is on again; the one messaging a run is not");
 });
