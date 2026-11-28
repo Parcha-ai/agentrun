@@ -124,6 +124,20 @@ test("the URLs a hostile text writes out are read in one pass: runs of schemes, 
   }
 });
 
+test("every pattern the URL reading scans a text with runs on V8's linear engine: none backtracks", async () => {
+  // V8's linear engine refuses a pattern that needs backtracking (a lookaround, a backreference) as "Cannot be executed in
+  // linear time"; the engine is behind a flag, so a child node reads the patterns. It takes no "i" flag, which adds no
+  // backtracking, so each source is compiled with "l" alone. A nested quantifier the engine runs in linear time is not
+  // refused; the step count above bounds the module's own passes.
+  const { execFileSync } = await import("node:child_process");
+  const module = new URL("../dist/text-urls.js", import.meta.url).href;
+  const script = `const { scanPatterns } = await import(${JSON.stringify(module)});
+console.log(JSON.stringify(scanPatterns.map((pattern) => { try { new RegExp(pattern.source, "l"); return null; } catch (error) { return pattern.source + ": " + error.message; } })));`;
+  const refused = JSON.parse(execFileSync(process.execPath, ["--enable-experimental-regexp-engine", "--input-type=module", "-e", script], { encoding: "utf8" }));
+  assert.ok(refused.length >= 5, `${refused.length} patterns`);
+  assert.deepEqual(refused.filter(Boolean), [], "a pattern that backtracks");
+});
+
 /** A GitHub releases.atom, as github.com serves it: each entry's link in an attribute, its content escaped HTML. */
 const RELEASES_ATOM = `<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom" xml:lang="en-US">
