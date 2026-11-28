@@ -205,6 +205,31 @@ test("boat's auto-stop on the fake's clock: a sandbox posted with no ttlSeconds 
 	assert.equal(vendor.calls.at(-1).body.ttlSeconds, 2_592_000, "a lifetime past boat's 30 days asks for its most");
 });
 
+test("every create sends ttlSeconds, whatever its image, size or lifetime, so no create falls to boat's default", async () => {
+	const vendor = fakeBoat({ snapshots: ["my-box"] });
+	const host = new BoatProvider({ apiKey: KEY, apiUrl: API_URL, fetch: vendor.fetch, ssh2 }).host;
+	const shapes = [{}, { cpus: 4 }, { memoryMb: 16_384 }, { image: "my-box" }, { image: "bsh_fakeshare01" }, { lifetimeMs: 1 }, { lifetimeMs: 899_999 }, { lifetimeMs: 2 * 3_600_000 }, { lifetimeMs: 60 * DAY_MS }];
+	for (const [at, shape] of shapes.entries()) await host.create(request({ name: `computer-${String(at).padStart(12, "0")}`, ...shape }), CTX);
+	const sent = vendor.calls.filter((call) => call.method === "POST" && call.path === "/sandboxes").map((call) => call.body.ttlSeconds);
+	assert.deepEqual(sent, [600, 600, 600, 600, 600, 1, 900, 7_200, 2_592_000]);
+});
+
+test("a held computer made for 600 s outlives 900 s of the fake's clock through the host's extend; its twin, not extended, is stopped", async () => {
+	const clock = movedClock();
+	const { vendor, host } = boatOf(undefined, { readyAfter: 0, clock });
+	const most = new Date(Date.now() + 3 * 3_600_000).toISOString();
+	const made = async (name) => (await host.create(request({ name, lifetimeMs: 600_000, labels: { ...LABELS, "agentrun.computer.name": name, [MAX_LABEL]: most } }), CTX)).id;
+	const held = await made("computer-0000000000a1");
+	const twin = await made("computer-0000000000a2");
+	await host.extend(held, new Date(Date.now() + 2 * 3_600_000), CTX);
+	const patch = vendor.calls.findLast((call) => call.method === "PATCH");
+	assert.deepEqual([patch.path, patch.body.ttlSeconds >= 7_199 && patch.body.ttlSeconds <= 7_200], [`/sandboxes/${held}`, true], String(patch.body.ttlSeconds));
+	await clock.sleep(901_000);
+	assert.deepEqual([(await host.get(held, CTX))?.state, (await host.get(twin, CTX))?.state], ["running", "stopped"], "901 s on");
+	await clock.sleep(6_300_000);
+	assert.equal((await host.get(held, CTX))?.state, "stopped", "past the extended 2 h, boat has stopped it");
+});
+
 test("a held computer outlives boat's 900 s and its 3600 s default on the fake's clock: the provider makes it for 2 h, its daemon answers after 901 s and 3601 s quiet, an extend PATCHes ttlSeconds past the 2 h, and lifetime.idle passes on the same clock", async (t) => {
 	const { conformanceCases, runConformance } = await import("../dist/conformance/index.js");
 	const moved = movedClock();
