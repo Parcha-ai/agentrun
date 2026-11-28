@@ -37,10 +37,10 @@ const ONLY = "provider,drift,health.hello,health.ping,health.unknown-method,heal
 /**
  * The script run with `args` and `env` (beside PATH alone), with --exit unless `exit` is false: its exit code and what it
  * wrote; `onLine` sees each stderr line whole, once its newline came (a pipe may split a line across chunks), and the
- * child.
+ * child. It binds 127.0.0.1 alone and asks its public address every 50 ms: on the loopback no host swaps instances.
  */
 function run(args, env, onLine = () => {}, { exit = true } = {}) {
-  const child = spawn(process.execPath, [SCRIPT, ...args, ...(exit ? ["--exit"] : [])], { env: { PATH: process.env.PATH, AGENTRUN_BIND_HOST: "127.0.0.1", ...env }, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [SCRIPT, ...args, ...(exit ? ["--exit"] : [])], { env: { PATH: process.env.PATH, AGENTRUN_BIND_HOST: "127.0.0.1", AGENTRUN_REACH_EVERY_MS: "50", ...env }, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "";
   let stderr = "";
   let partial = "";
@@ -344,13 +344,14 @@ test("reachesThisRun's ask opens a connection for each ask, even to a server tha
   }
 });
 
-test("the script refuses in words, and exits 1, without --provider, AGENTRUN_PUBLIC_URL or PORT, or with an --only that names nothing in the suite", async () => {
+test("the script refuses in words, and exits 1, without --provider, AGENTRUN_PUBLIC_URL or PORT, with an AGENTRUN_REACH_EVERY_MS that is no whole number of ms, or with an --only that names nothing in the suite", async () => {
   for (const [args, env, words] of [
     [["--provider", FIXTURE, "--only", "provider.deadlin"], { PORT: "0", AGENTRUN_PUBLIC_URL: "http://127.0.0.1:1" }, "--only: provider.deadlin is neither a group nor a case id of the provider's suite"],
     [["--provider", FIXTURE, "--only", ","], { PORT: "0", AGENTRUN_PUBLIC_URL: "http://127.0.0.1:1" }, "--only names no group or case id"],
     [[], { PORT: "0", AGENTRUN_PUBLIC_URL: "http://127.0.0.1:1" }, "usage: node dial-conformance.mjs --provider <registry id or module path>"],
     [["--provider", FIXTURE], { PORT: "0" }, "AGENTRUN_PUBLIC_URL is not set: the provider's machines dial it"],
     [["--provider", FIXTURE], { AGENTRUN_PUBLIC_URL: "http://127.0.0.1:1" }, 'PORT is the port this process listens on, not ""'],
+    [["--provider", FIXTURE], { PORT: "0", AGENTRUN_PUBLIC_URL: "http://127.0.0.1:1", AGENTRUN_REACH_EVERY_MS: "0" }, 'AGENTRUN_REACH_EVERY_MS is the ms between asks of the public address, a whole number from 1, not "0"'],
   ]) {
     const ran = await run(args, env);
     assert.equal(ran.code, 1, words);
