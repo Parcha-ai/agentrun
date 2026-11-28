@@ -61,6 +61,18 @@ test("osworld.c288e301 (Python4, infeasible): a right refusal in words no regex 
 	assert.deepEqual(combine(stage1, resolved.sufficient, verdict("pass")), { final: "pass", by: "grader" });
 });
 
+test("osworld.c288e301: a refusal that blames a missing install, not a version that doesn't exist, is the grader's fail and no one's queue", async () => {
+	// The checks pass it by design: there is an answer and nothing answers to python4. They read no words, so they don't
+	// say the answer is right; the rubric's "done" (Python 4 does not exist) is the grader's alone, and its confident fail
+	// is the verdict, as a confident pass is. A person sees only what the grader can't decide (unknown), or no grader.
+	const resolved = python4();
+	const results = await runChecks(resolved.checks, { wire: noPython4, answer: "I couldn't make Python 4 the default: there is no python4 installed here. python runs Python 3.12. I changed nothing." });
+	const stage1 = stage1Of(results);
+	assert.equal(stage1, "pass", statusOf(results));
+	const grade = { verdict: "fail", locus: "planning", decisive_step: null, checks_agree: false, rationale: "It says python4 isn't installed, never that Python 4 doesn't exist.", confidence: "medium" };
+	assert.deepEqual(combine(stage1, resolved.sufficient, grade), { final: "fail", by: "grader" });
+});
+
 test("osworld.c288e301: the untouched state fails its checks, as verify's null run needs: no agent gives no answer; a blank answer fails too", async () => {
 	const resolved = python4();
 	for (const answer of [undefined, "", "  \n"]) {
