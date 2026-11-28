@@ -250,18 +250,20 @@ class BoxdHost implements MachineHost {
 	 * machine as not found for a moment (live creates read "VM not found" about a second in, and a delete by id right
 	 * after read not found too while the machine was there), so a not found is waited past, NOT_YET_MS apart. One still
 	 * not found when ms run out is a timeout: the adapter's sweep by name settles it, where a delete by id would read not
-	 * found and leave it. The first wait takes ms whole, each one after it what is left.
+	 * found and leave it. The first wait takes ms whole, each one after it what is left. A cancel is read before each wait
+	 * (pause ends early on one, it doesn't throw), so none starts after it: an aborted build's wait would otherwise run on
+	 * while its machine is deleted.
 	 */
 	async #ready(id: string, ms: number, signal?: AbortSignal): Promise<void> {
 		const end = Date.now() + ms;
 		let timeout = ms;
 		for (;;) {
+			if (signal?.aborted) throw new HostError("aborted", `the wait for the machine ${id} was aborted`);
 			try {
 				await this.machines.waitUntilReady(id, { timeout });
 				return;
 			} catch (error) {
 				if (codeOf(error) !== "not_found") throw error;
-				if (signal?.aborted) throw new HostError("aborted", `the wait for the machine ${id} was aborted`);
 				if (Date.now() + NOT_YET_MS >= end) {
 					throw new HostError("timeout", `boxd made the machine ${id}, then read it not found until the wait for it ended (${error instanceof Error ? error.message : String(error)})`);
 				}

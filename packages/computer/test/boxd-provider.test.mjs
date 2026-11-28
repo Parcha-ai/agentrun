@@ -270,19 +270,25 @@ test("a machine boxd reads not found for the whole of its create's bound is a ti
 	assert.deepEqual(rec.calls.filter(([name]) => name === "delete"), [], "no delete by its id");
 });
 
+// The first wait reads not found; any after it stays in flight, as boxd's own wait does, so a wait started after a
+// cancel shows in the count and is never answered.
+const notYetThenWaiting = () => {
+	let reads = 0;
+	return () => (++reads === 1 ? Promise.reject(NOT_YET()) : new Promise(() => {}));
+};
+const after = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 test("a cancel during the pause after a not found ends the create's wait as aborted, and no wait starts after it", async () => {
-	const { rec, host } = setup({}, { create: machine(), waitUntilReady: () => Promise.reject(NOT_YET()) });
+	const { rec, host } = setup({}, { create: machine(), waitUntilReady: notYetThenWaiting() });
 	const cancel = new AbortController();
 	const waits = () => rec.calls.filter(([name]) => name === "waitUntilReady").length;
 	const answer = host.create(request(), { timeoutMs: 5_000, signal: cancel.signal });
-	await new Promise((resolve) => setTimeout(resolve, 100));
+	await after(100);
 	assert.equal(waits(), 1, "the first wait read not found, and the pause before the next began");
 	cancel.abort();
-	await assert.rejects(answer, (error) => {
-		assert.equal(error.code, "aborted", `${error.name}: ${error.message}`);
-		return true;
-	});
-	await new Promise((resolve) => setTimeout(resolve, 700));
+	const settled = await Promise.race([answer.then(() => "made", (error) => error), after(1_000).then(() => "no answer 1 s after the cancel")]);
+	assert.equal(settled?.code, "aborted", settled instanceof Error ? `${settled.name}: ${settled.message}` : String(settled));
+	await after(700);
 	assert.equal(waits(), 1, "no wait after the cancel, now or once the pause would have ended");
 });
 
@@ -541,18 +547,18 @@ test("prepareImage: a cancelled request makes no build machine, and a cancel whi
 });
 
 test("prepareImage: a cancel during the pause after a build machine read not found starts no wait after it, while or after the machine is deleted", async () => {
-	const { rec, provider } = setup({ kind: "desktop" }, building({ waitUntilReady: () => Promise.reject(NOT_YET()) }));
+	const { rec, provider } = setup({ kind: "desktop" }, building({ waitUntilReady: notYetThenWaiting() }));
 	const cancel = new AbortController();
 	const waits = () => rec.calls.filter(([call]) => call === "waitUntilReady").length;
 	const answer = provider.prepareImage({ signal: cancel.signal });
-	await new Promise((resolve) => setTimeout(resolve, 100));
+	await after(100);
 	assert.equal(waits(), 1, "the first wait read not found, and the pause before the next began");
 	cancel.abort();
 	const failed = await answer;
 	assert.equal(failed.ok, false);
 	assert.equal(failed.error.code, "aborted");
 	assert.deepEqual(rec.calls.filter(([call]) => call === "delete"), [["delete", "b-1"]]);
-	await new Promise((resolve) => setTimeout(resolve, 700));
+	await after(700);
 	assert.equal(waits(), 1, "no wait after the cancel, now or once the pause would have ended");
 	assert.equal(rec.calls.some(([call]) => call === "streamExec" || call === "snapshots.create"), false);
 });
