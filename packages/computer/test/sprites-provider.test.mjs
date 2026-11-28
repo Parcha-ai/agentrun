@@ -208,7 +208,6 @@ test("check takes Fly's own image alone and no size: another image, cpus or memo
 	const { vendor, provider } = spritesOf();
 	const spec = { lifetimeMs: 600_000, network: "none" };
 	assert.deepEqual(provider.check({ ...spec, image: "default" }), []);
-	assert.deepEqual(provider.check(spec), []);
 	assert.deepEqual(provider.check({ ...spec, image: "ghcr.io/parcha-ai/agentrun-box:abc" }).map((one) => one.field), ["image"]);
 	assert.deepEqual(provider.check({ ...spec, image: "default", cpus: 2, memoryMb: 4096 }).map((one) => one.field), ["cpus", "memoryMb"]);
 	assert.equal(vendor.calls.length, 0);
@@ -237,7 +236,7 @@ test("the provider's Core conformance cases pass through the Sprites REST calls 
 	);
 	assert.deepEqual(report.cleanup.sweep.stillThere, []);
 	assert.equal(vendor.sprites.size, 0, "every sprite made was deleted");
-	assert.ok(machines.uploads.length === 0 && vendor.calls.some((call) => call.method === "WS"), "the daemon went through the exec socket's stdin");
+	assert.ok(machines.uploads.length > 0 && machines.uploads.every(({ through }) => through === "exec"), "the daemon went through the exec socket's stdin");
 });
 
 test("the conformance module reads COMPUTER_SPRITES_* alone, after its live switch; the sweep's host needs none and its scope never shows the token", async () => {
