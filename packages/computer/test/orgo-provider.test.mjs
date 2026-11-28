@@ -554,7 +554,11 @@ test("Orgo create: a PRIMARY autocutsel that outlives its signal refuses the cre
 	assert.equal(fakes.channel.calls.some((call) => call.kind === "init"), false, "init never started");
 });
 
-test("Orgo primary sync: the script ends a process whose whole command line is Orgo's PRIMARY autocutsel and no other", () => {
+/** A PID namespace with a /proc of its own, in a user namespace: the primary sync case runs in one. */
+const pidns = spawnSync("unshare", ["-Urpf", "--mount-proc", "true"]).status === 0;
+const pidnsSkip = pidns ? false : "needs a PID namespace with its own /proc in a user namespace (unshare -Urpf --mount-proc), which this host refuses";
+
+test("Orgo primary sync: the script ends a process whose whole command line is Orgo's PRIMARY autocutsel and no other", { skip: pidnsSkip }, () => {
 	// Real processes with the command lines Orgo's ps showed (perl sets its own), and a lookalike of each kind, with the
 	// script, all in a PID namespace of their own (and its own /proc): the script sees and signals these alone, never a
 	// PRIMARY autocutsel of the host's or of another run of this test. The namespace's first process is the shell below;
