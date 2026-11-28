@@ -5,7 +5,8 @@
 // plans each as skipped, in the same words. With the hook it makes the schedule, feed and webhook triggers, since each
 // firing goes to the backend, which starts the run through the API on its own keys and budget; their unarchive turns them
 // on again. A webhook's signed request to its own hook is then served, with no token; GitHub's and Composio's hooks are
-// not. An apply in a workspace makes no webhook yet: no token here is shown its signing secret. A GitHub, Composio or
+// not. An apply in a workspace makes no webhook: there it is made with POST /triggers alone, whose first answer shows its
+// signing secret once (api-only-workspace-triggers.test.mjs). A GitHub, Composio or
 // email trigger is never made here. The token reads the triggers and turns one on or off (PATCH with `enabled` alone, on
 // only with the hook), so one auto-paused is turned on again; making, deleting or firing a trigger, its secret and the
 // settings stay refused. Off by default: the whole server's apply makes every trigger, as before.
@@ -88,7 +89,7 @@ const needsHook = (name, kind, pkg = "deployed") => `The ${pkg} template's trigg
 /** Any other source's skip, hook or not. */
 const notHere = (name, kind, pkg = "deployed") => `The ${pkg} template's trigger ${name} (${kind}) was not made: this server serves the run API only (AGENTRUN_API_ONLY=1), which serves no route or setting a ${kind} trigger needs. Start its runs through the API instead.`;
 /** A webhook's skip on a request in a workspace, hook or not. */
-const inWorkspace = (name, pkg = "deployed") => `The ${pkg} template's trigger ${name} (webhook) was not made: this request is in a workspace (AgentRun-Workspace), where no webhook trigger is made yet, since no token is shown its signing secret. Start its runs through the API instead.`;
+const inWorkspace = (name, pkg = "deployed") => `The ${pkg} template's trigger ${name} (webhook) was not made: this request is in a workspace (AgentRun-Workspace), where a webhook trigger is made with POST /v2/triggers alone, whose first answer shows its signing secret once. Make it there, or start its runs through the API.`;
 const SKIPPED = [
   ["triggers.0", "not_set_up_here", needsHook("morning", "schedule")],
   ["triggers.1", "not_set_up_here", needsHook("lead-form", "webhook")],
@@ -366,7 +367,7 @@ test("the apply's API description names the reason each API-only skip gives: a s
   const said = (reason) => `(reason \`${reason}\`)`;
   assert.ok(description.includes(`a schedule, feed or webhook trigger is made only with the launch hook set`), "the webhook is one the hook makes");
   assert.ok(description.includes(`else a warning under \`triggers.<i>\` ${said(unhooked.reason)}`), `a webhook skipped for want of the hook: ${unhooked.reason}`);
-  assert.ok(description.includes(`no webhook trigger is made yet ${said(scoped.reason)}`), `a webhook in a workspace: ${scoped.reason}`);
+  assert.ok(description.includes(`a webhook trigger is made with POST /triggers alone, which shows its signing secret once ${said(scoped.reason)}`), `a webhook in a workspace: ${scoped.reason}`);
   assert.ok(description.includes(`a GitHub, Composio or email trigger is never made there ${said(never.reason)}`), `a GitHub trigger, never made here: ${never.reason}`);
 });
 
