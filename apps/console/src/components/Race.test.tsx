@@ -46,6 +46,22 @@ async function render(v2: unknown, label = "bench", rereadMs?: number) {
 }
 
 describe("Race: the runs one race:<label> label groups, side by side", () => {
+  it("a lane waiting on an approval offers the compact approval card and says it waits, with no Working spinner; Allow once answers it", async () => {
+    const pending = { kind: "approval", id: "ap1", tool: "acp_execute", call_id: "c1", args_preview: JSON.stringify({ title: "python3 fib.py", kind: "execute", input: null }), requested_at: "2026-11-23T10:00:02Z" };
+    const waiting = { ...run("r1", { race: "bench", lane: "1", harness: "cursor" }), status: "input_required", state: "waiting", ended_at: null, pending } as Run;
+    const rows = [row({ id: "u1", seq: 1, kind: "tool_approval_requested", tool_name: "acp_execute", tool_use_id: "c1", summary: "Waiting for your approval: acp_execute python3 fib.py" })];
+    const { v2 } = server([waiting], () => rows);
+    const answered: unknown[] = [];
+    Object.assign(v2, { answerApproval: async (...args: unknown[]) => { answered.push(args); } });
+    const host = await render(v2);
+    const lane = host.querySelector("[data-race-lane='r1']")!;
+    expect(lane.querySelector("section[aria-label='Approval required']")).toBeTruthy();
+    expect(lane.textContent).toContain("Waiting for your approval");
+    expect(lane.textContent).not.toContain("Steps appear as the agent takes them");
+    const allow = [...lane.querySelectorAll("button")].find((b) => b.textContent === "Allow once")!;
+    await act(async () => { allow.click(); await new Promise((r) => setTimeout(r, 5)); });
+    expect(answered).toEqual([["r1", "ap1", "allow", undefined, undefined]]);
+  });
   it("keeps the Race bar in view, with lanes or none yet: the lanes scroll in the one box under it", async () => {
     const { v2 } = server([run("r1", { race: "bench", lane: "1", harness: "pi", model: "anthropic/claude-sonnet-5-5" })]);
     expect(expectPinnedBar(await render(v2)).querySelector("[data-race-lane='r1']")).toBeTruthy();
