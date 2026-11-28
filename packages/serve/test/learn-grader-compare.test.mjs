@@ -6,7 +6,8 @@
 // its cap: a replay's is its check's cost, a shadow's the served run's learning cost.
 //   (1) a check with no agree_on on differently worded answers promotes through the grader (with no fast model: held, 0 agreed);
 //   (2) an agree_on revision's check sends no grader request;
-//   (3) a grader reply that is not the verdict disagrees, and the record says why;
+//   (3) a grader reply that is not the verdict is asked once more; still not the verdict, it is unread: counted neither
+//       way, and a check with fewer than READABLE_MIN readable comparisons does not decide, its hold saying so;
 //   (4) the run's cap refusing the grader's request disagrees and books nothing;
 //   (5) the audit compares through the grader, and its request is the served run's learning cost;
 //   (6) the grader's cost is its check's replay runs' cost, the revision's check_usd;
@@ -46,9 +47,9 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { readLaunchBody } = await import("../dist/run-launch.js");
 const { promotionsOf, putGrade, GRADER_PROMPT, graderVerdictOf, gradeAnswers, compareAnswers, answersPair, COMPARE_UNREAD, COMPARE_CAP_HELD, COMPARE_STALE } = await import("../dist/learn/promote.js");
-const { answerJudged, answerOf, decideCheck, differentDecisionWords, NEVER_WORD_FOR_WORD } = await import("../dist/runner/promotion.js");
+const { answerJudged, answerOf, decideCheck, differentDecisionWords, notDecidedWords, unreadWords, NEVER_WORD_FOR_WORD } = await import("../dist/runner/promotion.js");
 const { graderAsk } = await import("../dist/runner/compare-end.js");
-const { check: checkFields } = await import("../dist/learn/field-check.js");
+const { check: checkFields, READABLE_MIN } = await import("../dist/learn/field-check.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
 const { learningOf } = await import("../dist/learn/rows.js");
 const { workflowDigest } = await import("../dist/runner/workflow-first.js");
@@ -253,15 +254,17 @@ test("(2) an agree_on revision's check compares on its fields and sends no grade
   assert.equal(w.graderRequests().length, 0);
 });
 
-test("(3) a grader reply that is not the verdict disagrees: held, each disagreement saying the comparison could not be read", { timeout: 300_000 }, async (t) => {
+test("(3) a grader reply that is not the verdict is asked once more, then unread: counted neither way, and with fewer than 2 readable comparisons the check does not decide, its hold saying so", { timeout: 300_000 }, async (t) => {
   const w = await world(t, { learning: { compile_after: 3 }, prior: 3, grader: () => "They look the same to me." });
   const { record } = await checked(w, undrawn("unread"));
   assert.equal(record.decided, "hold", record.reason);
-  assert.deepEqual([record.check.agreed, record.check.grader], [0, MODEL]);
-  assert.equal(record.check.disagreements.length, 3);
-  for (const one of record.check.disagreements) assert.ok(one.differs_on.startsWith(COMPARE_UNREAD), one.differs_on);
-  assert.match(record.reason, /its answers reached a different decision from the agent's on 3 of 3 \(for example: the comparison could not be read/);
-  assert.equal(w.graderRequests().length, 3, "a reply that is no verdict is asked once: no retry");
+  assert.deepEqual([record.check.agreed, record.check.grader, record.check.unread, record.check.undecided], [0, MODEL, 3, true]);
+  // An unread comparison is no disagreement: none is listed, and the hold never says the workflow decided otherwise.
+  assert.equal(record.check.disagreements, undefined, JSON.stringify(record.check.disagreements));
+  assert.doesNotMatch(record.reason, /reached a different decision/);
+  assert.ok(record.reason.includes(notDecidedWords(0, 3, 3)), record.reason);
+  assert.ok(record.reason.includes(unreadWords(3)), record.reason);
+  assert.equal(w.graderRequests().length, 6, "a reply that is no verdict is asked once more: two requests per replay");
 });
 
 test("(4) the run's cap refusing the grader's request disagrees and books nothing: the request never leaves", { timeout: 300_000 }, async (t) => {
@@ -518,7 +521,7 @@ test("the grader's verdict: one JSON object, bare or the whole of one fence; any
   for (const text of ["same", '{"same": "yes"}', '{"same": true, "differs_on": 3}', 'Sure: {"same": true}', "[true]"]) assert.equal(graderVerdictOf(text), undefined, text);
 });
 
-test("gradeAnswers asks once more on a transport failure alone; a refusal, two failures, a cut request and a non-verdict differ, in words", async () => {
+test("gradeAnswers asks once more on a transport failure or a reply that is not the verdict; a refusal differs; two failures, a cut request and two non-verdicts are unread, in words", async () => {
   const graderOf = (replies) => {
     const asked = [];
     return { asked, grader: { model: "fast-1", ask: async (request) => (asked.push(request), replies.shift()) } };
@@ -533,15 +536,24 @@ test("gradeAnswers asks once more on a transport failure alone; a refusal, two f
   assert.match(GRADER_PROMPT, /^You compare two answers to the same job input: the known answer and a learned workflow's answer\./);
   assert.match(once.asked[0].user, /The job input:\n<<<\nin\n>>>\n\nThe known answer:\n<<<\na\n>>>\n\nThe workflow's answer:\n<<<\nb\n>>>/);
   const twice = graderOf([{ failed: "socket hang up" }, { failed: "socket hang up" }]);
-  assert.deepEqual(await gradeAnswers("in", "a", "b", twice.grader), { same: false, grader: "fast-1", pair, differs_on: `${COMPARE_UNREAD}: its request failed twice` });
+  assert.deepEqual(await gradeAnswers("in", "a", "b", twice.grader), { same: false, unread: true, grader: "fast-1", pair, differs_on: `${COMPARE_UNREAD}: its request failed twice` });
   const refused = graderOf([{ refused: "spend_cap_reached" }]);
   assert.deepEqual(await gradeAnswers("in", "a", "b", refused.grader), { same: false, grader: "fast-1", pair, differs_on: COMPARE_CAP_HELD });
   assert.equal(refused.asked.length, 1, "a refusal is not asked again");
   const cut = graderOf([{ cut: "its request was stopped with the run" }]);
-  assert.deepEqual(await gradeAnswers("in", "a", "b", cut.grader), { same: false, grader: "fast-1", pair, differs_on: `${COMPARE_UNREAD}: its request was stopped with the run` });
+  assert.deepEqual(await gradeAnswers("in", "a", "b", cut.grader), { same: false, unread: true, grader: "fast-1", pair, differs_on: `${COMPARE_UNREAD}: its request was stopped with the run` });
   assert.equal(cut.asked.length, 1, "a stopped or timed-out request is not asked again");
-  const prose = graderOf([{ text: "same" }]);
-  assert.deepEqual(await gradeAnswers("in", "a", "b", prose.grader), { same: false, grader: "fast-1", pair, differs_on: `${COMPARE_UNREAD}: its reply was not the verdict asked for` });
+  // A reply that is not the verdict is asked once more: a verdict then is the verdict; two such replies are unread
+  // (counted neither way by the check), never a disagreement.
+  const proseOnce = graderOf([{ text: "same" }, { text: '{"same": true, "differs_on": null}' }]);
+  assert.deepEqual(await gradeAnswers("in", "a", "b", proseOnce.grader), { same: true, grader: "fast-1", pair });
+  assert.equal(proseOnce.asked.length, 2, "a reply that is not the verdict is asked once more");
+  const prose = graderOf([{ text: "same" }, { text: "They look the same to me." }]);
+  assert.deepEqual(await gradeAnswers("in", "a", "b", prose.grader), { same: false, unread: true, grader: "fast-1", pair, differs_on: `${COMPARE_UNREAD}: its reply was not the verdict asked for, twice` });
+  assert.equal(prose.asked.length, 2, "asked twice at most");
+  const failedThenProse = graderOf([{ failed: "socket hang up" }, { text: "same" }]);
+  assert.equal((await gradeAnswers("in", "a", "b", failedThenProse.grader)).unread, true);
+  assert.equal(failedThenProse.asked.length, 2, "one more request in all, whatever the first one's end");
   const differ = graderOf([{ text: '{"same": false, "differs_on": "mcc"}' }]);
   assert.deepEqual(await gradeAnswers("in", "a", "b", differ.grader), { same: false, grader: "fast-1", pair, differs_on: "mcc" });
   const unnamed = graderOf([{ text: '{"same": false, "differs_on": null}' }]);
@@ -649,6 +661,33 @@ test("with no agree_on the grader's verdicts judge the whole answer's field: pro
   assert.ok(whole.reason.includes(NEVER_WORD_FOR_WORD), whole.reason);
   const on = await decide({ agree_on: ["answer"] }, [differ, differ, differ]);
   assert.deepEqual([on.decided, on.check.grader, numbers(on)], ["promote", undefined, [["answer", 3, 3, "agent", true]]], "agree_on decides alone");
+});
+
+test("an unread comparison counts neither way: promoted on 2 of 2 readable, held on 1 of 2 naming the unread one, and under READABLE_MIN readable the check does not decide", async () => {
+  const same = { same: true, grader: "fast-1" };
+  const differ = { same: false, grader: "fast-1", differs_on: "the answer's number" };
+  const unread = { same: false, unread: true, grader: "fast-1", differs_on: `${COMPARE_UNREAD}: its reply was not the verdict asked for, twice` };
+  const numbers = (record) => Object.entries(record.check.fields).map(([name, one]) => [name, one.workflow_right, one.n, one.unread ?? 0, one.pass]);
+  assert.equal(READABLE_MIN, 2);
+  const promoted = await decide({}, [same, same, unread]);
+  assert.deepEqual([promoted.decided, numbers(promoted), promoted.check.unread, promoted.check.undecided], ["promote", [["answer", 2, 2, 1, true]], 1, undefined], promoted.reason);
+  assert.ok(promoted.reason.includes(unreadWords(1)), promoted.reason);
+  assert.equal(promoted.check.disagreements, undefined, "an unread comparison is no disagreement");
+  const held = await decide({}, [differ, same, unread]);
+  assert.deepEqual([held.decided, numbers(held), held.check.undecided], ["hold", [["answer", 1, 2, 1, false]], undefined], held.reason);
+  assert.ok(held.reason.includes(differentDecisionWords(1, 2, "the answer's number")), held.reason);
+  assert.ok(held.reason.includes(unreadWords(1)), held.reason);
+  assert.ok(!held.reason.includes("not decided"), held.reason);
+  assert.deepEqual(held.check.disagreements.map((one) => one.differs_on), ["the answer's number"]);
+  const undecided = await decide({}, [same, unread, unread]);
+  assert.deepEqual([undecided.decided, numbers(undecided), undecided.check.unread, undecided.check.undecided], ["hold", [["answer", 1, 1, 2, true]], 2, true], undecided.reason);
+  assert.ok(undecided.reason.includes(notDecidedWords(1, 3, 2)), undecided.reason);
+  assert.match(undecided.reason, /; the agent's next run recompiles it once with the inputs it did not agree on$/);
+  // A recompile's check that cannot decide still stops: an always-unreadable grader never compiles on every run.
+  const stopped = await decide({ attempt: 2 }, [unread, unread, unread]);
+  assert.deepEqual([stopped.decided, stopped.check.stopped, stopped.check.undecided], ["hold", true, true], stopped.reason);
+  assert.ok(stopped.reason.includes(notDecidedWords(0, 3, 3)), stopped.reason);
+  assert.match(stopped.reason, /, and this was the recompile's check, so it stops: /);
 });
 
 test("graderAsk: a reply's text, a cap refusal as refused (nothing sent), any other failure as failed, with pi-ai's retries off", async () => {
