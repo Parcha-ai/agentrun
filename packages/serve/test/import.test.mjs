@@ -1,4 +1,5 @@
-// `agentrun-serve import`: synthetic Claude Code, Codex and pi sessions under a scratch home, into a data directory.
+// `agentrun-serve import`: synthetic Claude Code, Codex, pi and Cursor CLI sessions under a scratch home, into a data
+// directory.
 // Each project is one agent with a revision per harness, its CLAUDE.md or AGENTS.md and its skill folders; each session a
 // run ended as it ended, its transcript its timeline, its cost the source's or unknown. What is written holds no value of
 // a key-shaped variable and is the owner's only; a link, a binary file, an oversized file and a folder with no SKILL.md
@@ -21,7 +22,7 @@ import { openSqliteStore } from "../dist/store/index.js";
 import { costOfRun, listRuns } from "../dist/store-reads/runs.js";
 import { runEntries } from "../dist/store-reads/journal.js";
 import { toolKeysOverStore } from "../dist/tool-keys-store.js";
-import { at as minute, claudeSession, claudeSubagent, codexSession, copilotSession, openCodeDb, openCodeV1Db, piSession, sessionId, writeSession } from "./fixtures/import-sessions.mjs";
+import { at as minute, claudeSession, claudeSubagent, codexSession, copilotSession, cursorChat, openCodeDb, openCodeV1Db, piSession, sessionId, writeSession } from "./fixtures/import-sessions.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, client, FAUX, scratch, startServe, triggerStore } from "./support.mjs";
 
@@ -1239,6 +1240,37 @@ test("a pi import keeps each request's usage as pi wrote it, its model, its thin
   assert.ok(Math.abs(runs[0].costUsd - 0.005) < 1e-12, "its cost as before");
 });
 
+test("a Cursor CLI chat imports as a run of Cursor's harness under its agent id: each answer a request of unknown tokens, never 0, on a model Cursor does not say, a failed tool call an error, and its cost unknown", async (t) => {
+  const { store, runs } = await importedOne(t, (home, project) => cursorChat(home, project, 38, { readFails: true }));
+  assert.deepEqual(
+    runs.map((r) => [r.importedFrom.source, r.importedFrom.session]),
+    [["cursor", sessionId(38)]],
+  );
+  const { metrics, answers, kinds } = await metricsOf(store, runs[0].id);
+  assert.deepEqual(metrics, {
+    input: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    output: 0,
+    requests: 2,
+    unmetered: 2,
+    // Cursor encrypts each turn's model; the one it names last (lastUsedModel) is no request's.
+    models: { "imported/unknown": 2 },
+    model: "imported/unknown",
+    tools: { read_file: { calls: 1, errors: 1 } },
+    activeMs: 3 * 60_000,
+  });
+  assert.deepEqual(kinds, ["pi.user", "pi.assistant", "pi.tool-result", "pi.assistant"]);
+  assert.ok(answers.every((a) => a.usage.input + a.usage.cacheRead + a.usage.cacheWrite + a.usage.output === 0), "zeros written, read as unknown");
+  assert.equal(runs[0].costUsd ?? null, null, "Cursor keeps no cost here, and no catalog prices unknown tokens");
+  const [agent] = await store.agents.list();
+  const revisions = await store.agents.revisions(agent.id);
+  assert.deepEqual(
+    revisions.map((r) => [r.note, r.body.harness]),
+    [["imported from cursor", "cursor"]],
+  );
+});
+
 test("a Copilot CLI session imports as a run from copilot: its shutdown's tokens on its model's last request, the request before it folded into it (known, priced with it); with no shutdown, each request unmetered", async (t) => {
   const { store, runs } = await importedOne(t, (home, project) => {
     copilotSession(home, project, 40);
@@ -2358,6 +2390,83 @@ test("an import of the projects chosen says what it left out of those projects, 
   assert.deepEqual([report.agents.map((a) => [a.name, a.runs]), report.skipped], [[["test-runner", 1]], []], "as the console counts them: one run, none left out");
 });
 
+test("a Cursor project's own skills, in .cursor/skills where Cursor's CLI reads them, are imported with its revision", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(join(project, ".cursor", "skills", "tidy"), { recursive: true });
+  writeFileSync(join(project, ".cursor", "skills", "tidy", "SKILL.md"), "---\nname: tidy\n---\nTidy the notes.\n");
+  writeFileSync(join(project, "AGENTS.md"), "Keep the notes short.\n");
+  cursorChat(h.at, project, 44);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, await planImport(options(h)), options(h));
+  const { revisions } = await agentOf(store, agentIdOf(project));
+  const cursor = revisions.find((r) => r.note === "imported from cursor");
+  assert.deepEqual(Object.keys(cursor.body.skills).sort(), ["tidy/SKILL.md"]);
+  assert.equal(cursor.body.instructions, "Keep the notes short.\n");
+});
+
+test("an import of the projects chosen says a Cursor chat still being written is left out of its own project, by the folder its meta.json names, and of no other", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const [mine, other] = [join(at, "code", "mine"), join(at, "code", "other")];
+  for (const dir of [mine, other]) mkdirSync(dir, { recursive: true });
+  cursorChat(at, mine, 41);
+  const live = cursorChat(at, mine, 42, { fresh: true });
+  cursorChat(at, other, 43, { fresh: true });
+  const h = { at, temp: join(root, "tmp") };
+  const plan = await planImport(options(h, { only: [agentIdOf(mine)] }));
+  assert.deepEqual(
+    plan.skipped.map((s) => [s.kind, s.what]),
+    [["live", live]],
+  );
+  assert.deepEqual(
+    plan.projects.map((p) => [p.cwd, p.sessions.map((s) => s.id)]),
+    [[mine, [sessionId(41)]]],
+  );
+});
+
+test("a Cursor chat whose store.db looks old but whose write-ahead log was just written is still being written: left out as live, never imported as done; one imported already whose log has grown since is read again", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const mine = join(at, "code", "mine");
+  mkdirSync(mine, { recursive: true });
+  const done = cursorChat(at, mine, 45);
+  const open = cursorChat(at, mine, 46, { wal: true });
+  const h = { at, temp: join(root, "tmp") };
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  const plan = await planImport(options(h), store);
+  assert.deepEqual(plan.skipped.map((s) => [s.kind, s.what]), [["live", open]]);
+  assert.deepEqual(plan.projects.map((p) => [p.cwd, p.sessions.map((s) => s.id)]), [[mine, [sessionId(45)]]]);
+  await runImport(store, plan, options(h));
+  // The chat imported grows its log, dated as old as its store: what the import saved for it no longer matches.
+  const old = statSync(done).mtime;
+  writeFileSync(`${done}-wal`, Buffer.alloc(8192));
+  utimesSync(`${done}-wal`, old, old);
+  const again = await planImport(options(h), store);
+  assert.deepEqual([again.already, again.projects.map((p) => [p.cwd, p.sessions.map((s) => s.id)])], [0, [[mine, [sessionId(45)]]]], "read again, not held as unchanged");
+});
+
+test("a Cursor chat is neither live nor changed for having been read: a dry run's plan leaves it to the next plan, an import to the plan after it, and nothing is written beside its store", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const mine = join(at, "code", "mine");
+  mkdirSync(mine, { recursive: true });
+  const file = cursorChat(at, mine, 47);
+  const h = { at, temp: join(root, "tmp") };
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  const planned = (plan) => [plan.already, plan.skipped.map((s) => [s.kind, s.what]), plan.projects.map((p) => p.sessions.map((s) => s.id))];
+  // A dry run reads the chat and imports nothing: the next plan still finds it to import, not live.
+  assert.deepEqual(planned(await planImport(options(h), store)), [0, [], [[sessionId(47)]]]);
+  assert.deepEqual(planned(await planImport(options(h), store)), [0, [], [[sessionId(47)]]], "not live for the dry run's read");
+  await runImport(store, await planImport(options(h), store), options(h));
+  assert.deepEqual(planned(await planImport(options(h), store)), [1, [], []], "held as imported, unchanged");
+  assert.deepEqual(readdirSync(dirname(file)).sort(), ["meta.json", "store.db"], "no -wal or -shm made by a read");
+});
+
 test("a session with one subagent file over the cap is left out whole and said, never imported without that subagent", async (t) => {
   const root = await scratch(t);
   const at = join(root, "home");
@@ -2667,6 +2776,27 @@ test("a Codex thread whose child thread is over the cap is left out as large, sa
   t.after(async () => await store.close());
   await runImport(store, plan, options(h));
   assert.deepEqual((await rowsOf(store)).map((r) => r.importedFrom.session), [sessionId(3)], "no run of it without its child's usage");
+});
+
+test("a Cursor chat whose subagent's chat is over the cap is left out as large, said, the subagent tied to it by its store's metadata alone", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  const run = cursorChat(h.at, project, 1);
+  // Its metadata names the agent it ran under; then a hole to past the cap, which no read of its messages may touch.
+  const sub = cursorChat(h.at, project, 2, { parent: sessionId(1) });
+  truncateSync(sub, MAX_SESSION_BYTES + 1);
+  const hourAgo = new Date(Date.now() - 60 * 60_000);
+  utimesSync(sub, hourAgo, hourAgo);
+  cursorChat(h.at, project, 3, { prompt: "Run the linter." });
+  const plan = await planImport(options(h));
+  assert.deepEqual(plan.skipped.map((s) => [s.kind, s.what, s.session ?? null]), [["large", sub, null], ["large", run, `cursor:${sessionId(1)}`]]);
+  assert.match(plan.skipped[1].why, /subagent/);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, plan, options(h));
+  assert.deepEqual((await rowsOf(store)).map((r) => r.importedFrom.session), [sessionId(3)], "no run of it without its subagent's work");
 });
 
 test("an OpenCode request run through Claude Code keeps its usage and cost when that Claude Code session, planned, is not saved: it could not be read", { skip: process.getuid?.() === 0 && "root reads any file" }, async (t) => {

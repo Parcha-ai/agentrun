@@ -1,7 +1,8 @@
 // Synthetic Claude Code, Codex, pi, OpenCode and Copilot CLI sessions, written as each tool writes its JSONL (OpenCode: its SQLite
-// database), for the importer's tests. Every
+// database), and Cursor CLI chats, written as cursor-agent writes its store, for the importer's tests. Every
 // value is invented: the projects are under the test's own scratch home, the ids are made up, and no line comes from a
 // real transcript.
+import { createHash } from "node:crypto";
 import { mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -490,6 +491,53 @@ export function claudeSubagent(home, cwd, n, k, { model = "claude-haiku-5", slug
     { ...base, type: "assistant", uuid: `s${k}-a2-${n}`, timestamp: at(2), message: { id: `msg_sub${k}_2_${n}`, role: "assistant", model, content: [{ type: "text", text: answer }], usage: usage(17, 19) } },
   ];
   return writeSession(join(home, ".claude", "projects", slug, sessionId(n), "subagents", `agent-a${k}.jsonl`), records);
+}
+
+/** A Cursor CLI chat in `cwd`, as cursor-agent writes it: ~/.cursor/chats/<md5 of cwd>/<agent id>/store.db, its blobs
+ *  (each id the sha256 of its bytes: the messages, as AI SDK JSON, and the root, a protobuf naming them in order (field
+ *  1) and the chat's start (field 26)), its meta "0" (the agent's metadata, hex JSON), and a meta.json beside it. A
+ *  prompt, an answer reading a file, the read's result (failed with `readFails`) and a last answer: two requests, of
+ *  tokens and a model Cursor does not keep (its lastUsedModel is the chat's, not a request's). Dated an hour ago unless
+ *  `fresh`. With `parent`, a subagent's chat: its metadata names the agent it ran under (subagentInfo). */
+export function cursorChat(home, cwd, n, { prompt = "Tidy the notes.", model = "fixture-model", readFails = false, fresh = false, wal = false, parent } = {}) {
+  const id = sessionId(n);
+  const dir = join(home, ".cursor", "chats", createHash("md5").update(cwd).digest("hex"), id);
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, "store.db");
+  const varint = (value) => {
+    const out = [];
+    for (let x = BigInt(value); ; x >>= 7n) {
+      if (x < 0x80n) return Buffer.from([...out, Number(x)]);
+      out.push(Number(x & 0x7fn) | 0x80);
+    }
+  };
+  const field = (no, value) => (typeof value === "number" ? Buffer.concat([varint(no * 8), varint(value)]) : Buffer.concat([varint(no * 8 + 2), varint(value.length), value]));
+  const messages = [
+    { role: "system", content: "Fixture system prompt." },
+    { role: "user", content: [{ type: "text", text: prompt }] },
+    { role: "assistant", id: `msg_cursor_1_${n}`, content: [{ type: "text", text: "Reading the notes." }, { type: "tool-call", toolCallId: `call_cursor_${n}`, toolName: "read_file", args: { path: join(cwd, "notes.md") } }] },
+    { role: "tool", content: [{ type: "tool-result", toolCallId: `call_cursor_${n}`, toolName: "read_file", result: readFails ? "No such file." : "three notes" }], providerOptions: { cursor: { highLevelToolCallResult: { isError: readFails } } } },
+    { role: "assistant", id: `msg_cursor_2_${n}`, content: [{ type: "text", text: "Tidied." }] },
+  ].map((message) => Buffer.from(JSON.stringify(message)));
+  const idOf = (bytes) => createHash("sha256").update(bytes).digest("hex");
+  const root = Buffer.concat([...messages.map((bytes) => field(1, Buffer.from(idOf(bytes), "hex"))), field(26, T0)]);
+  const db = new DatabaseSync(file);
+  // In WAL mode, as cursor-agent keeps its stores; closed, the store leaves no -wal or -shm behind.
+  db.exec("PRAGMA journal_mode = WAL");
+  db.exec("CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB); CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);");
+  for (const bytes of [...messages, root]) db.prepare("INSERT OR IGNORE INTO blobs VALUES (?, ?)").run(idOf(bytes), bytes);
+  const agent = { agentId: id, latestRootBlobId: idOf(root), name: "New Agent", createdAt: T0, mode: "default", isRunEverything: false, ...(model ? { lastUsedModel: model } : {}), ...(parent ? { subagentInfo: { parentAgentId: parent, rootParentAgentId: parent, toolCallId: `call_sub_${n}`, typeName: "fixture" } } : {}) };
+  db.prepare("INSERT INTO meta VALUES ('0', ?)").run(Buffer.from(JSON.stringify(agent)).toString("hex"));
+  db.close();
+  writeFileSync(join(dir, "meta.json"), JSON.stringify({ schemaVersion: 1, createdAtMs: T0, hasConversation: true, updatedAtMs: T0 + 3 * 60_000, cwd }));
+  if (!fresh) {
+    const old = new Date(Date.now() - 60 * 60_000);
+    utimesSync(file, old, old);
+    utimesSync(join(dir, "meta.json"), old, old);
+  }
+  // With `wal`, the chat is open: it has just written its write-ahead log, store.db's own mtime unchanged.
+  if (wal) writeFileSync(`${file}-wal`, Buffer.alloc(4096));
+  return file;
 }
 
 // The tables of OpenCode 2.x's opencode.db the reader reads, the columns it reads (anomalyco/opencode

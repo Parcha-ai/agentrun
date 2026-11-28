@@ -11,7 +11,8 @@
     "boxd",
     "smolcloud",
     "groundbox",
-    "vercel"
+    "vercel",
+    "sprites"
   ],
   "type": "module",
   "license": "Apache-2.0",
@@ -85,6 +86,10 @@
     "./vercel": {
       "types": "./dist/vercel.d.ts",
       "default": "./dist/vercel.js"
+    },
+    "./sprites": {
+      "types": "./dist/sprites.d.ts",
+      "default": "./dist/sprites.js"
     },
     "./orgo": {
       "types": "./dist/orgo.d.ts",

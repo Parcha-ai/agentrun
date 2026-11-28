@@ -37,8 +37,15 @@ export async function runZone(
   return serverZone();
 }
 
-/** The environment line on `now`'s day in `zone` (default: this server's zone, UTC when that is not valid). */
-export function environmentLine(now: Date = new Date(), zone: string = serverZone()): string {
+/**
+ * The environment line on `now`'s day in `zone` (default: this server's zone, UTC when that is not valid). `folder`, the
+ * run's folder by its absolute name, is told when the shell's home is elsewhere (a computer's own home, such as /work), so
+ * a file the run keeps is written in the folder rather than in the home directory, where no one reads it.
+ */
+export function environmentLine(now: Date = new Date(), zone: string = serverZone(), folder?: string): string {
   const named = known(zone);
-  return `Today is ${dayIn(now, named)} (${named}). You are running on AgentRun; your workspace is your working directory, and file paths are relative to it.`;
+  const where = folder === undefined
+    ? "your workspace is your working directory, and file paths are relative to it."
+    : `your workspace is your working directory, ${folder}, and file paths are relative to it. Only files under ${folder} are the run's files: save what the run keeps there, not in your home directory.`;
+  return `Today is ${dayIn(now, named)} (${named}). You are running on AgentRun; ${where}`;
 }

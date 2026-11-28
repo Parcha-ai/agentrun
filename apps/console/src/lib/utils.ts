@@ -12,7 +12,7 @@ const merge = extendTailwindMerge({
       "max-w": [{ "max-w": ["page", "page-wide"] }],
       "font-size": [{ text: ["micro", "label", "small", "body", "lead", "prose", "figure", "display"] }],
       z: [{ z: ["raised", "sticky", "overlay", "dialog", "popover", "toast"] }],
-      shadow: [{ shadow: ["float"] }],
+      shadow: [{ shadow: ["float", "drawer"] }],
       duration: [{ duration: ["fast", "base", "slow"] }],
       ease: [{ ease: ["standard"] }],
       "outline-w": [{ outline: ["focus"] }],

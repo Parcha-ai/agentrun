@@ -39,11 +39,15 @@ export class WorkspaceError extends Error {
   readonly code: WorkspaceErrorCode;
   /** The relative path the call was about, when there is one. */
   readonly path: string | undefined;
-  constructor(code: WorkspaceErrorCode, message: string, options?: { path?: string; cause?: unknown }) {
+  /** What happened, naming no path, when the code's line (WORKSPACE_ERRORS) would say less or say wrong: what
+   *  workspaceErrorWords gives after the code. */
+  readonly words: string | undefined;
+  constructor(code: WorkspaceErrorCode, message: string, options?: { path?: string; cause?: unknown; words?: string }) {
     super(message, options?.cause === undefined ? undefined : { cause: options.cause });
     this.name = "WorkspaceError";
     this.code = code;
     this.path = options?.path;
+    this.words = options?.words;
   }
 }
 
@@ -66,10 +70,10 @@ export const WORKSPACE_ERRORS: Readonly<Record<WorkspaceErrorCode, string>> = {
   EXISTS: "something is in the way: a file where a directory has to be made",
 };
 
-/** A failed call as words that name no path: a WorkspaceError's code and its line ("ESCAPE: the path would leave the
- *  root: …"), else undefined. */
+/** A failed call as words that name no path: a WorkspaceError's code and its own words, else its code's line ("ESCAPE:
+ *  the path would leave the root: …"); undefined for any other error. */
 export const workspaceErrorWords = (error: unknown): string | undefined =>
-  isWorkspaceError(error) ? `${error.code}: ${WORKSPACE_ERRORS[error.code]}` : undefined;
+  isWorkspaceError(error) ? `${error.code}: ${error.words ?? WORKSPACE_ERRORS[error.code]}` : undefined;
 
 /** One entry of a directory. Only files and directories are listed: a pipe or a socket is left out. A symbolic link is
  *  left out by a backend that can tell (Local); a backend that can't tell a link from a file (Archil's file API) lists

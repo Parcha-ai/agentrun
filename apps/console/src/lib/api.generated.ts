@@ -168,7 +168,7 @@ export interface components {
     places: {
       modes: ("runner" | "sandbox")[];
       boxes: {
-        id: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel";
+        id: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel" | "sprites";
         available: boolean;
         state: "ready" | "unavailable";
         reason?: string;
@@ -180,7 +180,7 @@ export interface components {
         mode: "runner";
       } | {
         mode: "sandbox";
-        box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel";
+        box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel" | "sprites";
       } | null;
       default_reason?: string;
       allow: string[];
@@ -394,7 +394,7 @@ export interface components {
       mode: "runner";
     } | {
       mode: "sandbox";
-      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel";
+      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel" | "sprites";
     };
     computer?: {
       kind: "none" | "sandbox" | "desktop" | "phone" | "browser";
@@ -1025,7 +1025,7 @@ export interface components {
       mode: "runner";
     } | {
       mode: "sandbox";
-      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel";
+      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel" | "sprites";
     };
     computer?: {
       kind: "sandbox" | "desktop" | "phone" | "browser";
@@ -1100,7 +1100,7 @@ export interface components {
       kind: "stopped";
     } | null;
     imported_from?: {
-      source: "claude-code" | "codex" | "pi" | "opencode" | "copilot";
+      source: "claude-code" | "codex" | "pi" | "opencode" | "copilot" | "cursor";
       session: string;
     } | null;
     trigger?: {
@@ -1412,7 +1412,7 @@ export interface components {
       kind: "stopped";
     } | null;
     imported_from?: {
-      source: "claude-code" | "codex" | "pi" | "opencode" | "copilot";
+      source: "claude-code" | "codex" | "pi" | "opencode" | "copilot" | "cursor";
       session: string;
     } | null;
     trigger?: {
@@ -3982,7 +3982,7 @@ export interface operations {
           unknown_cost_runs: number;
         }[];
         by_source: {
-          source: "live" | "claude-code" | "codex" | "pi" | "opencode" | "copilot";
+          source: "live" | "claude-code" | "codex" | "pi" | "opencode" | "copilot" | "cursor";
           runs: number;
           completed: number;
           needs_review: number;
@@ -7272,8 +7272,28 @@ export interface operations {
   scanForSuggestions: {
     body: {
       repo: string;
+      start?: "host";
+      run_id?: string;
+      scan?: string;
     };
     answer: {
+      repo: string;
+      run_id: string;
+      agent_id: string;
+      status: "running";
+      already_running: boolean;
+    } | {
+      repo: string;
+      agent_id: string;
+      input: {
+        content: string;
+      };
+      scan: string;
+      status: "starting";
+    } | {
+      repo: string;
+      status: "released";
+    } | {
       repo: string;
       run_id: string;
       agent_id: string;
