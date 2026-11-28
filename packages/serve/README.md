@@ -4127,8 +4127,10 @@ templates' list, read, import, apply and delete (a bundled package stays `403`);
 upload, list, read and delete (`/files`); the triggers' list, read, firings, create, edit, delete and run now
 (`/triggers`); the MCP servers' list, names, read, preview, save, Composio save, refresh and delete
 (`/settings/mcp-servers`); and `/capabilities`, `/health` and `/openapi.json`. Every other route is `403 forbidden` with
-`details.reason: "not_scoped"`, a sign-in's removal among them (removing a secret takes the owner's session). In it, an
-agent, run, imported template package or file of another workspace (or of none)
+`details.reason: "not_scoped"`, a sign-in's removal among them (removing a secret takes the owner's session). An agent's
+package in a workspace reads the workspace's own MCP servers alone: a shared one is not the workspace's to read, so a
+granted tool of one is blocked as a server saved nowhere. In it, an agent, run, imported template package or file of
+another workspace (or of none)
 answers the same `404` as an id no row has, and every list holds the workspace's rows alone, paged within them; bundled
 template packages are every workspace's. What it makes is the workspace's: an agent (made or applied), an imported
 package (its name is the workspace's own: another workspace imports the same name as its own package), a file. A run is its agent's workspace's,

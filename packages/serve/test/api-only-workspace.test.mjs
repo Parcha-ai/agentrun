@@ -331,7 +331,7 @@ test("a scoped request acts on its own run with the run extras, and a run it pur
   }
 });
 
-test("a scoped request reads its own agent's package, a revision's skills and its home, and removes a home file; the install's saved MCP servers read to it as unsaved ones, and a sign-in's removal stays the owner's", { timeout: 120_000 }, async (t) => {
+test("a scoped request reads its own agent's package, a revision's skills and its home, and removes a home file; the install's saved MCP servers read to it as unsaved ones and its own as saved, and a sign-in's removal stays the owner's", { timeout: 120_000 }, async (t) => {
   const mcp = await startFakeMcp({ token: () => true });
   t.after(() => mcp.close());
   const server = await scopedServer(t, { apiOnlyMcpOrigins: [new URL(mcp.url).origin] });
@@ -339,14 +339,19 @@ test("a scoped request reads its own agent's package, a revision's skills and it
   const saved = await unscoped(server, "PUT", "/v2/settings/mcp-servers/opsonly", { body: { url: mcp.url, auth: { type: "per_run", headers: { authorization: "Bearer not-a-secret-list-token" } } } });
   assert.ok(saved.status < 300, saved.text);
   assert.deepEqual((await unscoped(server, "GET", "/v2/settings/mcp-server-names")).body.names, ["opsonly"], "the operator's server is saved");
-  const made = await inW1(server, "POST", "/v2/agents", { body: { definition: { version: 1, name: "W1 agent", instructions: "Answer.", skills: [], tools: ["mcp:opsonly/add"] } } });
+  // W1's own server (mcp-workspace.ts): a package in W1 carries it, and none of the operator's.
+  const own = await inW1(server, "PUT", "/v2/settings/mcp-servers/w1own", { body: { url: mcp.url, auth: { type: "per_run", headers: { authorization: "Bearer not-a-secret-list-token" } } } });
+  assert.ok(own.status < 300, own.text);
+  const made = await inW1(server, "POST", "/v2/agents", { body: { definition: { version: 1, name: "W1 agent", instructions: "Answer.", skills: [], tools: ["mcp:opsonly/add", "mcp:w1own/add"] } } });
   assert.equal(made.status, 201, made.text);
   const agent = made.body.agent_id;
 
-  const blockedOf = (answer) => answer.body.report.blocked.find((one) => one.kind === "mcp_server" && one.name === "opsonly");
+  const blockedOf = (answer, name) => answer.body.report.blocked.find((one) => one.kind === "mcp_server" && one.name === name);
   const mine = await inW1(server, "GET", `/v2/agents/${agent}/package`);
   assert.equal(mine.status, 200, mine.text);
-  assert.match(blockedOf(mine)?.reason ?? "", /not a saved MCP server here/, "in a workspace, the operator's server is one saved nowhere");
+  assert.match(blockedOf(mine, "opsonly")?.reason ?? "", /not a saved MCP server here/, "in a workspace, the operator's server is one saved nowhere");
+  assert.equal(blockedOf(mine, "w1own"), undefined, mine.text);
+  assert.ok(mine.body.report.remade.some((one) => one.kind === "mcp_server" && one.name === "w1own"), `its own per_run server is remade on the target: ${mine.text}`);
   assert.ok(!mine.text.includes(new URL(mcp.url).host), "and nothing of its address reaches the workspace");
 
   const [revision] = (await inW1(server, "GET", `/v2/agents/${agent}/revisions`)).body.revisions;
