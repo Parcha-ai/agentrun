@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { decisionRows, withDecisions } from "../dist/decision-rows.js";
 import { switchFrom, NO_COST_WORDS_ENV } from "../dist/env-switch.js";
+import { withOverCap } from "../dist/run-view.js";
 import { REQUEST_STARTED, timelineOf, TOOL_COST } from "../dist/timeline/index.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { agent, follow, serve } from "./support.mjs";
@@ -24,7 +25,7 @@ async function billingRows(t, options) {
   fake.tools.run_model = { description: "Run a fal model.", input: { type: "object", properties: {} }, run: (args) => ({ content: [{ type: "text", text: JSON.stringify({ status: "completed", submission_replayed: false, endpoint_id: args.endpoint_id, request_id: "r1", result: { images: [{ url: "https://v3.fal.media/1.png" }, { url: "https://v3.fal.media/2.png" }] }, has_result: true }) }] }) };
   assert.equal((await api("PUT", "/settings/mcp-servers/fal", { url: fake.url, auth: { type: "none" }, toolkit: "fal" })).status, 200);
   assert.equal((await api("POST", "/agents", agent("card", { tools: [RUN_MODEL], tool_settings: { [RUN_MODEL]: { permission: "allow" } } }))).status, 201);
-  const run = await api("POST", "/agents/card/runs", { input: { content: 'Call mcp__fal__run_model with {"endpoint_id":"fal-ai/ideogram/v3","input":{"prompt":"a card","num_images":2},"submission_key":"card-1"}' }, max_cost_usd: 1 });
+  const run = await api("POST", "/agents/card/runs", { input: { content: 'Call mcp__fal__run_model with {"endpoint_id":"fal-ai/ideogram/v3","input":{"rendering_speed":"TURBO","prompt":"a card","num_images":2},"submission_key":"card-1"}' }, max_cost_usd: 1 });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   const { rows } = await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
   const billing = rows.filter((row) => row.kind === "usage" || (row.kind === "phase" && row.usage));
@@ -67,6 +68,18 @@ test("a workflow's usage row with costWords false counts its model requests and 
   assert.deepEqual(on.usage, off.usage);
   assert.equal(withDecisions([usageRow], null, undefined, { costWords: false }).at(-1).summary, "1 model request; its decisions could not be read");
   assert.doesNotMatch(decisionRows([receipt])[0].summary, COST_WORDS, "a decision row's own words name no cost");
+});
+
+test("the over-cap row with costWords false says the run went over, or may have, with no figure; off, as before", () => {
+  const usage = (fields) => ({ id: "1:usage", kind: "usage", summary: "x", seq: 9, text: null, usage: { requests: 2, ...fields } });
+  const final = { id: "1:3", kind: "final_answer", summary: "Done.", seq: 8, text: "Done." };
+  const spent = [final, usage({ usd: 1.25 })];
+  const atMost = [final, usage({ usd: 0.26, upper_bound: true })];
+  assert.equal(withOverCap(spent, 1)[2].summary, "Spent $1.25, $0.25 over the run's cap of $1");
+  assert.equal(withOverCap(atMost, 0.2)[2].summary, "At most $0.26 spent, at most $0.06 over the run's cap of $0.20");
+  assert.equal(withOverCap(spent, 1, { costWords: false })[2].summary, "Over the run's cap");
+  assert.equal(withOverCap(atMost, 0.2, { costWords: false })[2].summary, "Possibly over the run's cap");
+  assert.equal(withOverCap(spent, 1, { costWords: false }).length, 3);
 });
 
 test("AGENTRUN_NO_COST_WORDS is an on/off setting: 1 or true on, unset or 0 off, anything else refused in its words", () => {

@@ -16,7 +16,7 @@ import { banner } from "./print.js";
 import { type ApiToken, parseTokens } from "./api-token.js";
 import type { LearningMode } from "./learning.js";
 import type { Serve, ServeOptions } from "./server.js";
-import { API_ONLY_ENV, API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV, SHARE_HOST_ENV, switchFrom, WEB_JEV_OFF_ENV } from "./env-switch.js";
+import { API_ONLY_ENV, API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, NO_COST_WORDS_ENV, RUN_KEYS_ENV, SHARE_HOST_ENV, switchFrom, WEB_JEV_OFF_ENV } from "./env-switch.js";
 import { WORKSPACE_TOKENS_ENV, workspaceTokenIds } from "./workspace-scope.js";
 import { harnessModulesOf, harnessRecipesOf } from "./harness-table.js";
 import { hookOrigin, LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV, type LaunchHook, launchHookFrom } from "./trigger-launch-hook.js";
@@ -594,11 +594,13 @@ if (process.argv[2] === "eval-template") {
   process.on("SIGTERM", signalled);
   // AGENTRUN_API_ONLY=1: the run routes alone (api-only.ts), and no owner; a value that is neither on nor off stops here.
   // AGENTRUN_RUN_KEYS=1: each run brings the tool keys this server does not hold (run-keys.ts), read the same way.
+  // AGENTRUN_NO_COST_WORDS=1: a served Timeline row's words say no cost; its usage alone carries it (timeline.ts costWords).
   // AGENTRUN_WEB_JEV_OFF=1: the web tools run without Jev (web-run.ts jevWebOf); read where each run's Web is made, and
   // only checked here.
   // AGENTRUN_API_ONLY_MCP_ORIGINS: the MCP origins its token may save a per_run server at (api-only.ts), read with it alone.
   let apiOnly: boolean;
   let runKeys: boolean;
+  let noCostWords: boolean;
   // --share-host, or AGENTRUN_SHARE_HOST=1: shares under /r/ alone (share-host.ts), with no runner beside the server.
   let shareHost: boolean;
   let apiOnlyMcpOrigins: string[];
@@ -607,6 +609,7 @@ if (process.argv[2] === "eval-template") {
   try {
     apiOnly = switchFrom(API_ONLY_ENV);
     runKeys = switchFrom(RUN_KEYS_ENV);
+    noCostWords = switchFrom(NO_COST_WORDS_ENV);
     shareHost = values["share-host"] === true || switchFrom(SHARE_HOST_ENV);
     switchFrom(WEB_JEV_OFF_ENV);
     apiOnlyMcpOrigins = apiOnly ? apiOnlyMcpOriginsFrom(process.env[API_ONLY_MCP_ORIGINS_ENV]) : [];
@@ -688,7 +691,7 @@ if (process.argv[2] === "eval-template") {
       ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), log: (line) => void process.stdout.write(`${line}\n`),
       // The public address is the server's with accounts on or off: the Host names it serves, the webhook URLs it gives.
       ...(publicUrl && publicName ? { publicUrl, publicUrlFrom: publicName } : {}),
-      ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true } : {}), ...(apiOnly ? { apiOnly } : {}), ...(shareHost ? { shareHost } : {}), ...(launchHook ? { launchHook } : {}), ...(runKeys ? { runKeys } : {}),
+      ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true } : {}), ...(apiOnly ? { apiOnly } : {}), ...(shareHost ? { shareHost } : {}), ...(launchHook ? { launchHook } : {}), ...(runKeys ? { runKeys } : {}), ...(noCostWords ? { noCostWords } : {}),
       ...(apiOnlyMcpOrigins.length ? { apiOnlyMcpOrigins } : {}),
       // The proxies whose X-Forwarded-For the sign-in limit reads (comma-separated); none unless set.
       ...(trustedProxies.length ? { trustedProxies } : {}),

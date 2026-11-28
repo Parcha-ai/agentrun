@@ -301,6 +301,9 @@ export type TimelineOptions = {
   /** The run has ended (completed, failed, cancelled): its usage row says its cost ("Cost: …"), never what it has cost
    *  "so far". A run settled and not ended (paused, its process let go) keeps "Cost so far". */
   ended?: boolean;
+  /** false: a billing row's words say no cost (usageWords, toolCostWords), for a host in front that prices the run
+   *  itself (AGENTRUN_NO_COST_WORDS); its `usage` is the same. Default true. */
+  costWords?: boolean;
   /** The clock for retry and poll waits; live only. */
   now?: () => number;
   /** How a row names a file path a call gave (`path`, `file_path`) or saved: a host's name for it, such as one relative
@@ -1053,7 +1056,7 @@ function createProjector(options: TimelineOptions) {
       const charge = typeof usd === "number" && Number.isFinite(usd) ? usd : null;
       const call = tool === BROWSER_CHARGE ? browserCallOf(data) : undefined;
       if (call) touch(foldCharge(call.use, charge));
-      else add(make("phase", conv, base, { summary: `Tool cost: ${by} charged ${amount} for ${tool}`, tool_name: tool, tool_use_id: str(data?.call) ?? null, usage: { usd: charge, requests: 0 } }));
+      else add(make("phase", conv, base, { summary: toolCostWords(options, by, amount, tool), tool_name: tool, tool_use_id: str(data?.call) ?? null, usage: { usd: charge, requests: 0 } }));
     } else if (metered === "unmetered") {
       // A call with no price: shown, never counted in the cost.
       const data = obj(entry.data);
@@ -1301,7 +1304,7 @@ function createProjector(options: TimelineOptions) {
     const spent = usd !== null ? `${upper_bound ? "at most " : ""}${dollars(usd)}` : so_far_usd !== undefined && unpriced !== undefined ? `${dollars(so_far_usd)} known, ${unpriced} not priced,` : "unknown";
     return make("usage", root, `${root}:usage`, {
       // A run whose only request its cap refused sent none, and says so; otherwise what is known so far (costsofar/1).
-      summary: requests === 0 && !charges ? "no model request sent" : `${costLabel(options.ended === true)}: ${spent} over ${requests} model request${requests === 1 ? "" : "s"}${paid}`,
+      summary: requests === 0 && !charges ? "no model request sent" : usageWords(options, spent, `${requests} model request${requests === 1 ? "" : "s"}${paid}`),
       // The contract's TimelineUsage and its costsofar/1 fields, while the cost is unknown: no other of the meter's reaches it.
       usage: { usd, requests, ...(so_far_usd !== undefined && unpriced !== undefined ? { so_far_usd, unpriced } : {}), ...(not_metered ? { not_metered } : {}), ...(upper_bound ? { upper_bound } : {}) },
     });
@@ -1324,6 +1327,13 @@ function createProjector(options: TimelineOptions) {
 export const COST_SO_FAR = "Cost so far";
 export const COST_ENDED = "Cost";
 export const costLabel = (ended: boolean): string => (ended ? COST_ENDED : COST_SO_FAR);
+/** A usage row's words: its cost after its label, then `joint` and what it counted ("Cost: $0.0040 over 2 model
+ *  requests"); with `costWords` false, what it counted alone ("2 model requests"). */
+export const usageWords = (options: Pick<TimelineOptions, "ended" | "costWords">, spent: string, counted: string, joint = " over "): string =>
+  options.costWords === false ? counted : `${costLabel(options.ended === true)}: ${spent}${joint}${counted}`;
+/** A paid tool's charge row's words: who charged what for which tool; with `costWords` false, the tool and who charged. */
+export const toolCostWords = (options: Pick<TimelineOptions, "costWords">, by: string, amount: string, tool: string): string =>
+  options.costWords === false ? `${tool} via ${by}` : `Tool cost: ${by} charged ${amount} for ${tool}`;
 /** What a failed model request's row adds when no price came back for it. */
 const UNPRICED_FAILURE = " (its cost is unknown: the provider sent no price and may still bill it)";
 /** The usage row's words after its model requests: its paid tool calls (`charges`) and its tool calls with no price
