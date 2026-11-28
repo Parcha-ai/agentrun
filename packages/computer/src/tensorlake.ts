@@ -44,7 +44,7 @@ import { HOST_KEY_PIN, pemOf, type Ssh2Module, SshExec, SshTunnelError, type Ssh
 import { ed25519PublicOf, newEd25519 } from "./hosted/ssh-key.js";
 import { DOMAIN, dateOf, isWhole } from "./hosted/values.js";
 import { tunnelOf, type WebSocketClass } from "./hosted/ws-tunnel.js";
-import { EPOCH_LABEL, RUN_LABEL, runHash } from "./labels.js";
+import { EPOCH_LABEL, RUN_HASH_LABEL, RUN_LABEL, runHash } from "./labels.js";
 import type { ComputerResources, ComputerSpec, Refusal } from "./provider.js";
 import { type ComputerErrorCode, ok } from "./result.js";
 import { vendorSdk } from "./vendor-sdk.js";
@@ -503,7 +503,8 @@ class TensorlakeHost implements MachineHost {
 	/**
 	 * A sandbox's labels: the ones this process knows, else its name's (nameLabels), else its labels file's, read once and
 	 * kept. `need`: a listing's labels; when the name's hold every one asked, no file is read. A sandbox not named as a
-	 * computer carries none; one not running, one deleted from this process, or one with no file yet, its name's. A file
+	 * computer carries none; one not running, one deleted from this process, or one with no file yet, its name's (its run
+	 * as RUN_HASH_LABEL, the name's hash, unless `need` names the run, so the janitor can still tell whose it is). A file
 	 * whose run, epoch or deadline is not the name's (misnamed) is not read: the guest's root rewrote it. The read is held
 	 * to `end` (epoch ms, the call's own bound): one that fails, disagrees with the name, or has no answer by then gives
 	 * the name's, kept for nothing, so the next read tries again, with `unread`, why: get answers the name's (release and
@@ -514,7 +515,9 @@ class TensorlakeHost implements MachineHost {
 		if (parts === undefined) return { labels: {} };
 		const known = this.#labels.get(found.id);
 		if (known !== undefined) return { labels: known };
-		const own = nameLabels(parts, need);
+		// The name's run is a hash: with no `need` that names the run, the hash is all there is to tell whose run it is.
+		const named = nameLabels(parts, need);
+		const own = named[RUN_LABEL] === undefined && parts.run !== undefined ? { ...named, [RUN_HASH_LABEL]: parts.run } : named;
 		if ((need !== undefined && Object.keys(need).every((key) => key in own)) || found.status !== "running" || this.#ending.has(found.id)) return { labels: own };
 		const late = { labels: own, unread: `no answer within ${seconds(ctx.timeoutMs)}` };
 		const left = end - Date.now();
