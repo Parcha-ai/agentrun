@@ -742,7 +742,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // The computer's tools are the run's own host tools, as on every harness: the host's codemode (meta-tools.ts) calls them
   // as `tools.<name>`, each a nested call, gated and recorded as the model's own call is. A computer that replaced an
   // earlier claim's holds its acts to what it showed.
-  const tools = await runTools(ws.workspace, computer.computer, { mode, noExec, context, ...(computer.hold ? { hold: computer.hold } : {}), ...(bashPolicy === undefined ? {} : { bashPolicy }), ...(computer.replaced ? { replaced: true } : {}) });
+  const tools = await runTools(ws.workspace, computer.computer, { mode, noExec, context, ...(run.signal ? { signal: run.signal } : {}), ...(computer.hold ? { hold: computer.hold } : {}), ...(bashPolicy === undefined ? {} : { bashPolicy }), ...(computer.replaced ? { replaced: true } : {}) });
   filedIn = tools.workspace;
   // The ToolHost's tools (web_save, uploads) and monid write in the run's files where the MCP files, for the same reason.
   const written = mode === 2 ? tools.workspace : ws.workspace;
