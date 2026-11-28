@@ -58,7 +58,7 @@ export function releaseLayers(directories, root = join(here, '..')) {
  * reviewed line here, never a copy into every package.
  */
 export const noticeAppendices = {
-  'pi-browser': "Stagehand's Chrome flags and facade and code adapted from Browser Use Pi (MIT, each text in full)",
+  'pi-browser': "Stagehand's Chrome flags, facade and extension-worker rewrite, and code adapted from Browser Use Pi (MIT, each text in full)",
   computer: 'code from E2B envd, Kubernetes sandboxd and scrcpy (Apache-2.0)',
   'run-adapters': 'code from vercel-labs/durable-harness (Apache-2.0) and the o200k vocabulary (MIT)',
   'run-adapters-claude-agent': 'code from vercel-labs/durable-harness (Apache-2.0)',
