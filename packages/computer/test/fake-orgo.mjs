@@ -232,7 +232,8 @@ export function selectionsOf(box) {
  *  - lockdown: { exitCode, output } the lockdown script answers instead (a socket it could not lock);
  *  - processes: root's processes in each computer, { pid, args } (default Orgo's two autocutsels); the primary-sync
  *    script ends each whose whole command line is `autocutsel -fork -selection PRIMARY`, as pgrep -x -f matches it;
- *  - primarySync: { exitCode, output } that script answers instead, ending nothing (one that outlived its signal).
+ *  - primarySync: { exitCode, output } that script answers instead, ending nothing (one that outlived its signal), or
+ *    { error } the channel's run of it fails with instead.
  * box.processes is a computer's process list, and selectionsOf(box) its selections.
  * The status script answers what the computer holds: init running or not, its socket, its log's tail. The stop-init
  * script ends init (box.stopped counts them). A test sets box.init.version for a daemon of another version. The daemon holds
@@ -280,6 +281,7 @@ export function fakeOrgoChannel({ install = 0, sha = "ok", x11 = true, box: boxP
 			if (mark?.kind === "orgo-ports") return done(0, rootPorts.map((port) => `${port}\n`).join(""));
 			if (mark?.kind === "orgo-lockdown") return lockdown ? done(lockdown.exitCode, lockdown.output) : done(0, sockets.map((path) => `locked ${path}\n`).join(""));
 			if (mark?.kind === "orgo-primary-sync") {
+				if (primarySync?.error) return { ok: false, error: primarySync.error };
 				if (primarySync) return done(primarySync.exitCode, primarySync.output);
 				const ended = box.processes.filter((process) => process.args === "autocutsel -fork -selection PRIMARY").map((process) => process.pid);
 				box.processes = box.processes.filter((process) => !ended.includes(process.pid));

@@ -543,16 +543,23 @@ test("Orgo create: a cut survives a selection in a text field: Orgo's PRIMARY au
 	assert.ok(made.value.notes.some((note) => /no PRIMARY autocutsel ran/.test(note)), JSON.stringify(made.value.notes));
 });
 
-test("Orgo create: a PRIMARY autocutsel that outlives its signal refuses the create in words, and the computer is deleted", async () => {
-	const fakes = setup({}, { channel: { primarySync: { exitCode: 1, output: "autocutsel 514 outlived SIGTERM\n" } } });
-	const made = await fakes.provider.create(SPEC, newRequest());
-	assert.equal(made.ok, false, JSON.stringify(made));
-	assert.equal(made.error.code, "refused");
-	assert.match(made.error.message, /ending Orgo's PRIMARY autocutsel .* failed \(exit 1\): autocutsel 514 outlived SIGTERM/);
-	assert.match(made.error.message, /was deleted/);
-	assert.equal(only(fakes.api).deleted, true, "the computer is deleted");
-	assert.equal(fakes.channel.calls.some((call) => call.kind === "init"), false, "init never started");
-});
+// A PRIMARY autocutsel left running costs a cut its paste, not the desktop: the create goes on and its notes say so.
+const STILL_RUNNING = (pid) => `Orgo's PRIMARY autocutsel is still running (${pid}): selecting text after a cut replaces the clipboard, so linux.files.move may paste text`;
+for (const [how, primarySync, pid] of [
+	["one that outlives its signal", { exitCode: 1, output: "autocutsel 514 outlived SIGTERM\n" }, "pid 514"],
+	["two that outlive it", { exitCode: 1, output: "autocutsel 514 515 outlived SIGTERM\n" }, "pid 514, 515"],
+	["a pgrep that fails", { exitCode: 1, output: "pgrep failed\n" }, "pid could not be read: pgrep failed"],
+	["a channel that can't run the script", { error: { code: "vendor", vendor: "orgo", message: "Orgo's bash answered 502" } }, "pid could not be read: Orgo's bash answered 502"],
+]) {
+	test(`Orgo create: a PRIMARY autocutsel left running (${how}) is a warning in the create's notes, and the create goes on`, async () => {
+		const fakes = setup({}, { channel: { primarySync } });
+		const made = await fakes.provider.create(SPEC, newRequest());
+		assert.equal(made.ok, true, JSON.stringify(made));
+		assert.ok(made.value.notes.includes(STILL_RUNNING(pid)), JSON.stringify(made.value.notes));
+		assert.notEqual(only(fakes.api).deleted, true, "the computer is kept");
+		assert.equal(fakes.channel.calls.some((call) => call.kind === "init"), true, "init started");
+	});
+}
 
 /** A PID namespace with a /proc of its own, in a user namespace: the primary sync case runs in one. */
 const pidns = spawnSync("unshare", ["-Urpf", "--mount-proc", "true"]).status === 0;
