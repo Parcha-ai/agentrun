@@ -5,10 +5,12 @@
 //
 // A process that is killed, or is blocked in a synchronous docker call when the signal comes, cannot clean up after itself,
 // so a watchdog does: a detached process that holds the names this one logs, waits for this process to be gone, and then
-// removes each, a pass a second, until each is confirmed absent and nothing can still make it: a `docker run` the process
+// removes them, a pass a second, until each is confirmed absent and nothing can still make it: a `docker run` the process
 // started before it went can live on and create its container late, so the watchdog also waits for the docker children this
 // process logged by pid (async calls) and for any running docker command that names the item (read from `ps`, which covers
-// the sync calls, whose pid is unknown until they return). At least three passes, and 2 minutes at most.
+// the sync calls, whose pid is unknown until they return). At least three passes, and 2 minutes at most. A pass removes
+// every container with one `docker rm`, which removes them at once, then every volume with one `docker volume rm`: on a
+// loaded host each removal takes seconds, and a file that made five computers outlasted the wait one by one.
 //
 // What it removes: the name after `--name` in each `docker run` and `docker create`, and the name `docker volume create`
 // ends with, in the commands this process runs itself (execFile, execFileSync, spawn, spawnSync), logged before the
@@ -75,12 +77,14 @@ const timer = setInterval(() => {
 	// An item is forgotten only once it is confirmed absent and nothing can still make it: no docker child the process
 	// logged is alive, and no running docker command names it. Bounded, so the watchdog always ends.
 	const sweep = () => {
-		const lines = entries().reverse();
-		const items = lines.filter((line) => line.startsWith("c ") || line.startsWith("v "));
-		for (const line of items) {
-			if (line.startsWith("c ")) docker(["rm", "--force", "--volumes", line.slice(2)]);
-			else docker(["volume", "rm", "--force", line.slice(2)]);
-		}
+		const lines = entries();
+		const items = [...new Set(lines.filter((line) => line.startsWith("c ") || line.startsWith("v ")))];
+		const containers = items.filter((line) => line.startsWith("c ")).map((line) => line.slice(2));
+		const volumes = items.filter((line) => line.startsWith("v ")).map((line) => line.slice(2));
+		// One command each, not one per item: docker rm removes the containers it names at once, so a pass takes about as
+		// long as the slowest removal, not their sum. The look after it, by name, says what is left.
+		if (containers.length > 0) docker(["rm", "--force", "--volumes", ...containers]);
+		if (volumes.length > 0) docker(["volume", "rm", "--force", ...volumes]);
 		const absent = items.every((line) => !docker(line.startsWith("c ") ? ["inspect", "--type", "container", line.slice(2)] : ["volume", "inspect", line.slice(2)]));
 		const children = lines.filter((line) => line.startsWith("p ")).some((line) => alive(line.slice(2)));
 		const running = processes();

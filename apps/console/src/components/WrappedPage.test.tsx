@@ -161,6 +161,27 @@ describe("WrappedPage", () => {
     expect(titles()).not.toContain("Your leak receipt");
   });
 
+  it("shows the cards the store keeps for a year whose session files are gone: the cache card, and the leak receipt offered", async () => {
+    const gone: Wrapped = {
+      ...YEAR, sessions: 0, turns: 0, requests: 0, tokens: { input: 0, output: 0, cache_read: 0, cache_write: 0 }, cost_usd: 0, unpriced_requests: 0,
+      days: [], hours: new Array(24).fill(0), weekdays: new Array(7).fill(0), active_ms: 0, harnesses: [], models: [], sources: [],
+      cache: { runs: 6, hit_rate: 0.88, breaks: { model: 2, idle: 30, compaction: 5, edited: 0, sidechain: 0, unknown: 3 }, extra_cost_usd: { model: 0.5, idle: 12.25, compaction: 1.5, edited: 0, sidechain: 0, unknown: 0.75 }, unpriced_breaks: 0 },
+      secrets: { runs: 9, runs_holding: 2, removed: 3 },
+    };
+    await mount(async () => gone, vi.fn(), 2025);
+    expect(document.querySelector("[role=status]")?.textContent).toContain("No coding agent sessions under this machine's home in 2025.");
+    const titles = () => [...document.querySelectorAll("[data-cards] img")].map((img) => (img.getAttribute("alt") ?? "").split(". ")[1]);
+    expect(titles()).toEqual(["How your cache held"]);
+    const box = document.querySelector<HTMLInputElement>("[data-leak-opt-in] input[type=checkbox]")!;
+    expect(box.checked).toBe(false);
+    await act(async () => { box.click(); });
+    expect(titles()).toEqual(["How your cache held", "Your leak receipt"]);
+    act(() => root?.unmount());
+    document.body.innerHTML = "";
+    await mount(async () => ({ ...gone, cache: null, secrets: null }), vi.fn(), 2025);
+    expect(document.querySelector("[data-cards]"), "nothing kept: no cards").toBeNull();
+  });
+
   it("asks again for the leak receipt in each year: turned on for one year, it is off when the page moves to another", async () => {
     const counted = (year: number) => ({ ...YEAR, year, secrets: { runs: 9, runs_holding: 2, removed: 3 } });
     const { v2, go } = await mount(async () => counted(2025), vi.fn(), 2025);

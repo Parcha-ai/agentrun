@@ -247,7 +247,7 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   const listed = await api("GET", "/templates");
   assert.equal(listed.status, 200);
   meets("/templates", "get", "200", listed.body);
-  assert.deepEqual(listed.body.templates.map((x) => x.name), ["agent-scout", "code-review", "inbound-lead", "kyb", "market-monitor", "release-notes", "stream-router"]);
+  assert.deepEqual(listed.body.templates.map((x) => x.name), ["agent-scout", "code-review", "code-review-composio", "inbound-lead", "kyb", "market-monitor", "release-notes", "stream-router"]);
   for (const view of listed.body.templates) {
     assert.deepEqual(view.author, { name: "Parcha Labs" }, `${view.name} names its author`);
     // A workflow package's answer is its workflow's output (the read answers the workflow whole): it names that file.
@@ -258,7 +258,7 @@ test("code-review through the API: listed, applied with a repo it makes the agen
     assert.equal(typeof view.output?.schema, "string", `${view.name} names its answer's schema file`);
     assert.equal(view.output.json_schema.type, "object", `${view.name} shows the schema itself, for the console`);
   }
-  assert.deepEqual(Object.fromEntries(listed.body.templates.map((x) => [x.name, x.approvals_default])), { "agent-scout": "never", "code-review": "never", "inbound-lead": "never", kyb: "ask", "market-monitor": "never", "release-notes": "never", "stream-router": "never" }, "a template whose job runs on triggers runs unattended by default, and so does agent-scout, which the server starts for a scan and which writes nothing");
+  assert.deepEqual(Object.fromEntries(listed.body.templates.map((x) => [x.name, x.approvals_default])), { "agent-scout": "never", "code-review": "never", "code-review-composio": "never", "inbound-lead": "never", kyb: "ask", "market-monitor": "never", "release-notes": "never", "stream-router": "never" }, "a template whose job runs on triggers runs unattended by default, and so does agent-scout, which the server starts for a scan and which writes nothing");
   const review = listed.body.templates.find((x) => x.name === "code-review");
   assert.deepEqual([review.version, review.secrets, review.skills, review.evals, review.parameters.required],["0.4.0", [], ["review"], ["clean-refactor", "diff-no-head", "injection", "mentions-defused", "never-flag", "null-name", "off-by-one", "other-repo", "pasted-by-reference", "re-review", "re-review-open", "repo-rule", "two-defects"], ["owner", "repo"]]);
 
@@ -670,6 +670,7 @@ test("every package this server ships applies on a server with nothing saved: no
   const parameters = {
     "agent-scout": {},
     "code-review": AGENTRUN,
+    "code-review-composio": AGENTRUN,
     "inbound-lead": { icp: "B2B fintech, 50-2000 people, US or EU; never gambling operators", post_to: "none" },
     kyb: { risk_appetite: "medium" },
     "market-monitor": { competitors: "Acme (acme.example)" },
@@ -728,9 +729,9 @@ test("a package's writes are bounded: each MCP tool it lists is a known read or 
   // whose job runs on triggers runs unattended (approvals: never: the lead, 11-09), so no write asks there: each one is
   // then held by its pin, which the gate checks before allow or ask, or by a rule stated here. A tool new to a package is
   // classified here before it ships.
-  const WRITES = new Set(["github/pull_request_review_write", "github/add_comment_to_pending_review", "github/issue_write", "hubspot/HUBSPOT_CREATE_NOTE", "slack/SLACK_SEND_MESSAGE", "gmail/GMAIL_SEND_EMAIL"]);
+  const WRITES = new Set(["github/pull_request_review_write", "github/add_comment_to_pending_review", "github/issue_write", "github/GITHUB_CREATE_A_REVIEW_FOR_A_PULL_REQUEST", "hubspot/HUBSPOT_CREATE_NOTE", "slack/SLACK_SEND_MESSAGE", "gmail/GMAIL_SEND_EMAIL"]);
   // No free-text search: one reaches everything its credential does, and no pin can hold it to one repository or record.
-  const READS = new Set(["pull_request_read", "get_file_contents", "list_releases", "get_latest_release", "get_release_by_tag", "list_tags", "get_tag", "list_commits", "get_commit", "list_pull_requests", "list_issues", "get_label"].map((tool) => `github/${tool}`));
+  const READS = new Set(["pull_request_read", "get_file_contents", "list_releases", "get_latest_release", "get_release_by_tag", "list_tags", "get_tag", "list_commits", "get_commit", "list_pull_requests", "list_issues", "get_label", "GITHUB_GET_A_PULL_REQUEST", "GITHUB_LIST_PULL_REQUESTS_FILES", "GITHUB_GET_REPOSITORY_CONTENT", "GITHUB_LIST_REVIEW_COMMENTS_ON_A_PULL_REQUEST", "GITHUB_LIST_REVIEWS_FOR_A_PULL_REQUEST"].map((tool) => `github/${tool}`));
   // A write no pin can bound, and why it is bounded anyway. Each needs a reason a reviewer can check.
   const BOUNDED = {
     "hubspot/HUBSPOT_CREATE_NOTE": "it only adds a note, never changes or reads a record; the skill writes it only onto the contact a HubSpot CRM event's own payload names, and the HubSpot connection's scopes bound what it can touch",
@@ -744,7 +745,7 @@ test("a package's writes are bounded: each MCP tool it lists is a known read or 
   // URL it fetches. A package that fetches reads nothing through MCP.
   const fetches = new Set(packages.filter((p) => p.tools?.includes("web_fetch")).map((p) => p.name));
   assert.deepEqual(listed.filter((x) => fetches.has(x.p) && !WRITES.has(x.id)).map((x) => `${x.p}: ${x.id}`), [], "a package that holds web_fetch and reads through MCP");
-  assert.deepEqual(packages.filter((p) => p.approvals === "never").map((p) => p.name), ["agent-scout", "code-review", "inbound-lead", "market-monitor", "release-notes", "stream-router"], "the packages whose job runs on triggers run unattended, and agent-scout, which the server starts for a scan and which writes nothing");
+  assert.deepEqual(packages.filter((p) => p.approvals === "never").map((p) => p.name), ["agent-scout", "code-review", "code-review-composio", "inbound-lead", "market-monitor", "release-notes", "stream-router"], "the packages whose job runs on triggers run unattended, and agent-scout, which the server starts for a scan and which writes nothing");
   assert.ok(listed.some((x) => WRITES.has(x.id) && x.pinned) && listed.some((x) => x.allowed), "the check sees pinned writes and allowed tools");
 });
 

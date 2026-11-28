@@ -304,8 +304,9 @@ export function createWeb(config: WebConfig): Web {
       const said = [asked.objective, asked.query].find((one): one is string => typeof one === "string") ?? "";
       // A copy: a sift this call stopped waiting for may still pay, and its fee is not on this receipt.
       const spent = [...lines];
-      // An empty search's receipt keeps the words it was given.
-      const receipt: Receipt = { op: "search", asked: ask.objective || said, queries: ask.queries, provider: "error" in answer ? null : answer.provider, tries, classifier, ...unjudged, out: outOf(searchText(answer)), cost: { usd: usd(spent), lines: spent }, ...unsifted(() => searchText(fitSearch(found))) };
+      // An empty search's receipt keeps the words it was given. One whose provider found nothing while another was held
+      // answers an error (searchInTurn), and its receipt still names the provider asked.
+      const receipt: Receipt = { op: "search", asked: ask.objective || said, queries: ask.queries, provider: "error" in answer ? ((tries.find(({ outcome }) => outcome === "empty")?.provider as Receipt["provider"] | undefined) ?? null) : answer.provider, tries, classifier, ...unjudged, out: outOf(searchText(answer)), cost: { usd: usd(spent), lines: spent }, ...unsifted(() => searchText(fitSearch(found))) };
       return { answer, receipt };
     },
     // Only the call's part, resolver, transport, signal, task, objective and session are read: the guard, its bound, the order

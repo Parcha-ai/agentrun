@@ -156,7 +156,7 @@ test("keyless Exa past its daily count, a 429 naming a wait of 65,796 s (Exa's a
   const f = await fakes(t);
   process.env.AGENTRUN_TEST_FAUX_EXA = "429:65796,ok";
   const w = web.createWeb({ ...f.config, order: { search: ["exa-keyless"], fetch: [] } });
-  const unavailable = (answer) => assert.deepEqual(answer, { error: SEARCH_UNAVAILABLE });
+  const unavailable = (answer) => assert.deepEqual(answer, { error: "search is unavailable: exa-keyless is rate-limited until 2026-11-25T06:16:36Z; answer from what you have" });
   await run(f, w, [
     { query: "widgets", at: 0, asks: ["exa-keyless"], tries: [["exa-keyless", "error"]], by: null, check: unavailable },
     { query: "gadgets", at: 16 * 60_000, asks: [], tries: [["exa-keyless", "held"]], by: null, check: unavailable },

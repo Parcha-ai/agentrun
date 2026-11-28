@@ -19,6 +19,7 @@ const TEMPLATES = new URL("../templates/", import.meta.url).pathname;
 /** Each bundled template's parameters for its apply here: what an owner would give, so every pin fills. */
 const PARAMETERS = {
   "code-review": { owner: "Parcha-ai", repo: "agentrun" },
+  "code-review-composio": { owner: "Parcha-ai", repo: "agentrun" },
   "inbound-lead": { icp: "Seed-stage fintech companies in the US.", slack_channel: "C0SALES123" },
   kyb: {},
   "market-monitor": { competitors: "Acme (acme.example)", channel: "C0MKTINTEL" },
@@ -53,25 +54,31 @@ async function documented(baseUrl) {
   return (path, method, code, value) => assert.deepEqual(schemaProblems(doc, doc.paths[path][method].responses[code].content["application/json"].schema, value), [], `${method} ${path} ${code}: ${JSON.stringify(value)}`);
 }
 
-/** Fakes standing in for each MCP server the bundled templates need (GitHub's, and Composio's HubSpot, Slack and Gmail),
- *  each tool a template lists served, started once for a test. */
+/** Fakes standing in for each MCP server the bundled templates need (GitHub's, and Composio's GitHub, HubSpot, Slack and
+ *  Gmail), one per source and toolkit, each tool a template lists served, started once for a test. Each is saved under
+ *  its toolkit's name, or `<toolkit>-<source>` for a second source of a toolkit (code-review-composio's Composio GitHub
+ *  beside code-review's): an apply maps a need to a server by its source and toolkit, never by its name. */
 async function standIns(t) {
   const needs = readPackages().flatMap((pkg) => pkg.mcp);
   const fakes = {};
   for (const need of needs) {
-    fakes[need.toolkit] ??= { source: need.source, fake: await startFakeMcp({ name: need.toolkit }) };
-    for (const name of need.tools) fakes[need.toolkit].fake.tools[name] = { description: `${need.toolkit}'s ${name}.`, input: { type: "object", properties: {}, additionalProperties: true }, run: () => ({ content: [{ type: "text", text: "{}" }] }) };
+    const key = `${need.source}:${need.toolkit}`;
+    const name = Object.values(fakes).some((f) => f.toolkit === need.toolkit && f.source !== need.source) ? `${need.toolkit}-${need.source}` : need.toolkit;
+    fakes[key] ??= { name, source: need.source, toolkit: need.toolkit, fake: await startFakeMcp({ name }) };
+    for (const tool of need.tools) fakes[key].fake.tools[tool] = { description: `${need.toolkit}'s ${tool}.`, input: { type: "object", properties: {}, additionalProperties: true }, run: () => ({ content: [{ type: "text", text: "{}" }] }) };
   }
   t.after(() => Promise.all(Object.values(fakes).map(({ fake }) => fake.close())));
   return fakes;
 }
-/** Each stand-in saved on a server, under its toolkit's name, as the source and toolkit it fakes. */
+/** Each stand-in saved on a server, under its name, as the source and toolkit it fakes. */
 async function saveStandIns(api, fakes) {
-  for (const [toolkit, { source, fake }] of Object.entries(fakes)) {
-    const saved = await api("PUT", `/settings/mcp-servers/${toolkit}`, { url: fake.url, auth: { type: "none" }, source, toolkit });
+  for (const { name, source, toolkit, fake } of Object.values(fakes)) {
+    const saved = await api("PUT", `/settings/mcp-servers/${name}`, { url: fake.url, auth: { type: "none" }, source, toolkit });
     assert.equal(saved.status, 200, JSON.stringify(saved.body));
   }
 }
+/** The saved stand-in an apply maps `need` to: the one of its source and toolkit, by its name. */
+const serverOf = (fakes, need) => fakes[`${need.source}:${need.toolkit}`].name;
 /** A package's every MCP tool, as an apply's grants name them. */
 const everyTool = (pkg) => pkg.mcp.flatMap((need) => need.tools.map((tool) => `mcp:${need.toolkit}/${tool}`));
 
@@ -161,12 +168,13 @@ test("every bundled template, applied and exported, is the template's own packag
     assert.deepEqual(pkg.tools, agent.tools.filter((tool) => !tool.startsWith("mcp:")), `${template.name}: the agent's own tools`);
     // Its MCP needs: the template's, by source and toolkit, each tool the agent was granted, its pins as the apply filled them.
     assert.deepEqual(pkg.mcp.map((need) => [need.source, need.toolkit, need.tools]), template.mcp.map((need) => [need.source, need.toolkit, need.tools]), template.name);
-    for (const need of pkg.mcp) for (const [tool, pin] of Object.entries(need.pin)) assert.deepEqual(pin, agent.tool_settings[`mcp:${need.toolkit}/${tool}`].pin, `${template.name}: ${tool}'s pin`);
+    for (const need of pkg.mcp) for (const [tool, pin] of Object.entries(need.pin)) assert.deepEqual(pin, agent.tool_settings[`mcp:${serverOf(fakes, need)}/${tool}`].pin, `${template.name}: ${tool}'s pin`);
     // Its triggers, with no agent_id: the ones the apply made here. A github trigger is skipped at apply on a server GitHub
-    // is not connected to (this one), so the agent has none to export.
+    // is not connected to (this one), and a composio one on a server that can't set it up on Composio (this one: no
+    // public address, a stand-in server), so the agent has neither to export.
     const had = (await api("GET", "/triggers")).body.triggers.filter((trigger) => trigger.target.agent_id === id).map((trigger) => trigger.name);
     const kept = template.triggers.filter((trigger) => had.includes(trigger.name));
-    assert.deepEqual(kept.map((trigger) => trigger.name), template.triggers.filter((trigger) => trigger.source.kind !== "github").map((trigger) => trigger.name), `${template.name}: every trigger but a github one made here`);
+    assert.deepEqual(kept.map((trigger) => trigger.name), template.triggers.filter((trigger) => trigger.source.kind !== "github" && trigger.source.kind !== "composio").map((trigger) => trigger.name), `${template.name}: every trigger but a github or composio one made here`);
     assert.deepEqual(pkg.triggers.map((trigger) => [trigger.name, trigger.source.kind, trigger.target.agent_id]), kept.map((trigger) => [trigger.name, trigger.source.kind, undefined]), `${template.name}: its triggers, with no agent_id`);
     // A trigger the target makes anew (its own secret, its GitHub App) is named as remade.
     for (const trigger of kept.filter((one) => ["webhook", "github", "composio", "email"].includes(one.source.kind))) assert.ok(answer.report.remade.some((entry) => entry.kind === "trigger" && entry.name === trigger.name), `${template.name}: ${trigger.name} remade`);
