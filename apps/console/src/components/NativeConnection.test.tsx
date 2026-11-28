@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it } from "vitest";
 import { createClient } from "@/lib/client";
 import { NativeConnections } from "./NativeConnections";
+import { pageTitleClass } from "@/components/ui/toolbar";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root;
@@ -20,7 +21,7 @@ it("discovers on the server host without running, connects the selected native t
     throw new Error(path);
   }) as typeof fetch });
   const host = document.body.appendChild(document.createElement("div")); root = createRoot(host);
-  await act(async () => root.render(createElement(NativeConnections, { v2, go: () => {} })));
+  await act(async () => root.render(createElement(NativeConnections, { v2 })));
   expect(calls).toEqual([]);
   expect(host.textContent).toContain("cannot scan your laptop");
   expect(host.textContent).toContain("import selected history");
@@ -48,7 +49,7 @@ it("offers remote connection without scanning the server's project files or clai
     throw new Error(path);
   }) as typeof fetch });
   const host = document.body.appendChild(document.createElement("div")); root = createRoot(host);
-  await act(async () => root.render(createElement(NativeConnections, { v2, go: () => {} })));
+  await act(async () => root.render(createElement(NativeConnections, { v2 })));
   const source = host.querySelector<HTMLInputElement>('input[type="radio"][value="remote"]');
   expect(source).not.toBeNull();
   await act(async () => source!.click());
@@ -67,7 +68,7 @@ it("leaves the connection method's tabs alone on their line, with this server's 
     throw new Error(String(url));
   }) as typeof fetch });
   const host = document.body.appendChild(document.createElement("div")); root = createRoot(host);
-  await act(async () => root.render(createElement(NativeConnections, { v2, go: () => {} })));
+  await act(async () => root.render(createElement(NativeConnections, { v2 })));
   // On this server the hand-off heads the section it belongs to, in its title's row, which wraps: as Another machine's does.
   const title = [...host.querySelectorAll('section[aria-label="Discover native setups"] h2')].find((h) => h.textContent === "Discover on this server")!;
   const row = title.parentElement!;
@@ -83,4 +84,27 @@ it("leaves the connection method's tabs alone on their line, with this server's 
     expect(inline(tabs.previousElementSibling), `${source}: an inline control before the tabs`).toBe(false);
     expect(inline(tabs.nextElementSibling), `${source}: an inline control after the tabs`).toBe(false);
   }
+});
+
+it("heads the page with the shared top bar, a back arrow and its name, and scrolls its body under it", async () => {
+  location.hash = "#/agents/connect";
+  const v2 = createClient({ fetch: (async (url) => { throw new Error(String(url)); }) as typeof fetch });
+  const host = document.body.appendChild(document.createElement("div")); root = createRoot(host);
+  await act(async () => root.render(createElement(NativeConnections, { v2 })));
+  const page = host.querySelector('section[aria-label="Connect agent"]')!;
+  // The bar comes first, as on every page under Agents, and holds the page's one h1 in the section-name type.
+  const bar = page.firstElementChild!;
+  expect(bar.tagName).toBe("HEADER");
+  const title = bar.querySelector("h1")!;
+  expect(title.textContent).toBe("Connect agent");
+  expect(title.className.split(" ")).toEqual(expect.arrayContaining(pageTitleClass.split(" ")));
+  expect(host.querySelectorAll("h1")).toHaveLength(1);
+  // The body is the one box that scrolls, and the connection methods are in it, not in the bar.
+  const body = bar.nextElementSibling!;
+  expect(body.hasAttribute("data-page-body")).toBe(true);
+  expect(body.querySelector('[role="radiogroup"][aria-label="Connection method"]')).not.toBeNull();
+  expect([...host.querySelectorAll("button")].some((b) => b.textContent === "Back to agents")).toBe(false);
+  // Back is the arrow every page's bar has: opened from elsewhere, it goes to Agents.
+  await act(async () => bar.querySelector<HTMLButtonElement>('button[aria-label="Back"]')!.click());
+  expect(location.hash).toBe("#/agents");
 });

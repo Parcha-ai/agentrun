@@ -24,7 +24,7 @@ const render = async (element: React.ReactElement) => { const host = document.bo
 
 describe("existing agent observation", () => {
   it("offers learning for existing CLI sessions without launching a replacement agent", async () => {
-    const host = await render(createElement(NativeConnections, { v2: {} as never, go: vi.fn(), initialSource: "observe" }));
+    const host = await render(createElement(NativeConnections, { v2: {} as never, initialSource: "observe" }));
     const section = host.querySelector('section[aria-label="Learn from existing CLI sessions"]');
     expect(section).not.toBeNull();
     expect(section!.textContent).toContain("Keep starting Codex CLI and Claude Code normally");
@@ -278,7 +278,7 @@ describe("existing agent observation", () => {
     }
   });
   it("heads This server's section with its hand-off, under the tabs, as Another machine's is headed", async () => {
-    const host = await render(createElement(NativeConnections, { v2: { discoverNative: vi.fn() } as never, go: vi.fn() }));
+    const host = await render(createElement(NativeConnections, { v2: { discoverNative: vi.fn() } as never }));
     const handoff = host.querySelector('[role="group"][aria-label="Connect your agents options"]')!;
     const section = host.querySelector('section[aria-label="Discover native setups"]')!;
     expect(section.contains(handoff)).toBe(true);
@@ -288,7 +288,7 @@ describe("existing agent observation", () => {
   });
   it("offers existing-application observation through the same coding-agent dropdown", async () => {
     const discoverNative = vi.fn();
-    const host = await render(createElement(NativeConnections, { v2: { discoverNative } as never, go: vi.fn(), initialSource: "observe" }));
+    const host = await render(createElement(NativeConnections, { v2: { discoverNative } as never, initialSource: "observe" }));
     expect(host.querySelector('section[aria-label="Observe an existing application"]')).toBeTruthy();
     expect(host.textContent).toContain("Connect Claude Code or Codex running locally, in Docker, or on another server");
     expect(host.textContent).toContain("Connect your agents");

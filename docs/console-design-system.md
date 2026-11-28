@@ -254,7 +254,7 @@ Never write `outline-none` without a `focus-visible:` replacement drawn with the
   whole, bar and all: there is no logo row for the bar to meet, and a bar whose actions wrap would hold much of the
   screen (Triggers' is 197px at 390px wide). A page made of panes (Mission Control, a run, an agent, the
   Playground) scrolls each pane in its own box under the bar. A Settings page scrolls in its own `h-full overflow-auto`
-  box under the Settings tabs. A page with no top bar (Build an agent, a trigger's page) scrolls in `main`. A run's page
+  box under the Settings tabs. A page with no top bar (a trigger's page) scrolls in `main`. A run's page
   on a `short:` window scrolls as a whole, so its panels are not squeezed to nothing. `e2e/flows/page-frames.mjs`
   measures every page with a bar.
 - **Breakpoints** are Tailwind's: write mobile first and add `md:` for the desktop layout. `max-sm:` tightens a
