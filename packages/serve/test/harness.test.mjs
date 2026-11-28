@@ -104,6 +104,20 @@ test("a workflow on a harness other than pi saves with a warning and its runs ar
   assert.equal((await api("GET", "/runs")).body.runs.length, 0);
 });
 
+test("a codex run refused for want of an OpenAI key says what codex needs, and never a key codex cannot run on", async (t) => {
+  // A person's first codex agent on a server that holds an Anthropic key alone: codex's own words name its remedy; the
+  // generic \"No model yet\" (ANTHROPIC_API_KEY, PARTICLE_API_KEY) would send them to set a key it never runs on.
+  withEnv(t, { ANTHROPIC_API_KEY: "fake-test-key" }, ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "PARTICLE_API_KEY", "AGENTRUN_HARNESS_TABLE"]);
+  const { api } = await serve(t, { faux: undefined });
+  const made = await api("POST", "/agents", agent("coder", { harness: "codex" }));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  assert.deepEqual(made.body.warnings.map((w) => w.field), ["definition.harness"], "warned of its harness alone");
+  const run = await api("POST", "/agents/coder/runs", { input: { content: "hi" } });
+  assert.deepEqual([run.status, run.body.error?.code], [409, "agent_not_runnable"], JSON.stringify(run.body));
+  assert.match(run.body.error.message, /codex needs OPENAI_API_KEY, OPENROUTER_API_KEY/);
+  assert.doesNotMatch(run.body.error.message, /ANTHROPIC_API_KEY|PARTICLE_API_KEY|No model yet/, run.body.error.message);
+});
+
 test("a harness is checked on the revision's own model, never refused for the server's default: claude-agent runs an Anthropic model on a server whose default is OpenAI", { timeout: 60_000 }, async (t) => {
   // Both providers configured (no real keys), the server's default model OpenAI's.
   withEnv(t, { AGENT_MODEL: "openai/gpt-6-luna", OPENAI_API_KEY: `not-a-secret-${"openai"}`, ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}` }, ["AGENT_MODEL_BASE_URL", "ANTHROPIC_BASE_URL", "AGENTRUN_HARNESS_TABLE"]);
