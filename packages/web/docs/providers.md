@@ -187,8 +187,13 @@ A PDF costs a credit a page, and the library cannot know a URL's page count befo
 the most Firecrawl parses of one PDF: 10,000 credits, **$9.90**, or `pdfMaxPages` credits when that setting caps it (4
 more for JSON). It is charged the `data.metadata.creditsUsed` Firecrawl's answer reports: 1 credit for an HTML page, a
 PDF's parsed pages for a PDF. Reported credits above the hold are charged at the hold, and the receipt line says
-Firecrawl reported more. An answer with no whole, non-negative `creditsUsed` (missing, fractional, negative, not a
+Firecrawl reported more. A 2xx answer with no whole, non-negative `creditsUsed` (missing, fractional, negative, not a
 number, or not JSON) is charged the hold, never $0. The receipt line names the reported credits and the hold.
+
+A search or scrape answered 408 or 5xx is charged the `creditsUsed` it reports, never above the hold. With none, it
+is charged 0 credits: Firecrawl's billing page says "A scrape that fails outright, for example because the site never
+responded, is not charged." A request that fails after it may have left and gets no answer (a reset socket, a timeout)
+is charged the hold, since what Firecrawl billed is not known. Any other 4xx is charged nothing.
 
 **A run whose cap has less than $9.90 left cannot `web_fetch` through keyed Firecrawl** unless `pdfMaxPages` lowers
 the hold: the cap refuses the hold before the request is sent. Parallel, the default, is unaffected. With
