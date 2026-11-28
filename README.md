@@ -87,7 +87,7 @@ create an account or sign in. For help setting up your team's workflows,
 [talk to us](https://calendly.com/d/dtwn-dsp-nx5/agentrun).
 
 Prefer your own machine or infrastructure? Have your coding agent set it up below, or
-[self-host on Railway, Render, a VPS, Kubernetes, Coolify, Dokploy or Docker](#deploy-it) yourself. The
+[self-host on Railway, Render, Northflank, a VPS, Kubernetes, Coolify, Dokploy or Docker](#deploy-it) yourself. The
 [getting-started guide](docs/getting-started.md) explains the three options. Wherever it runs, AgentRun counts itself
 anonymously; `AGENTRUN_TELEMETRY=0` or `DO_NOT_TRACK=1` turns that off ([anonymous usage counts](docs/telemetry.md)).
 
@@ -598,6 +598,12 @@ One pod on a 10 GiB volume, from the release's image; agents get file tools and 
 **Self-host on Coolify or Dokploy.** One service from the release's image on a volume, with the token, the seal key and
 the domain made by the platform; agents get file tools and `web_fetch`, no shell. The templates and their steps:
 [deploy/README.md](deploy/README.md#on-coolify-or-dokploy).
+
+**Self-host on Northflank.** A template you paste into Northflank and run: one 1 vCPU / 2 GB service from the release's
+image on a 10 GB volume, with the token and seal key made by Northflank and its own HTTPS domain; agents get file tools
+and `web_fetch`, no shell. About $25 a month, on Pay as you go. Not walked on a real account yet: it is built from
+Northflank's docs and checked by tests. The template and its steps:
+[deploy/README.md](deploy/README.md#on-northflank).
 
 <details>
 <summary>Docker Compose: a server and two runners</summary>

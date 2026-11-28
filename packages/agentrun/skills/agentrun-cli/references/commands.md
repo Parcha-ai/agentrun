@@ -986,6 +986,10 @@ A race's lanes: each lane's harness, model, run, status, cost and seconds, in la
 
 Route: `GET /runs?label=race:LABEL`.
 
+- `--wait` (boolean, this CLI's own): then follow every lane's run to its end and print the lanes side by side: exit 0 when every lane completed, 1 when one failed, was cancelled, did not start or still runs past --timeout, 8 when one waits on a person
+- `--timeout SECONDS` (number, this CLI's own): with --wait: stop waiting after this long (default 1800), exit 1; the runs go on
+- `--json` (boolean, this CLI's own): with --wait: the lanes as JSON, in place of the table
+
 ### `agentrun race start`
 
 Run one task on 2 to 4 harness and model lanes side by side, as the console's New race form does.
@@ -997,6 +1001,9 @@ Route: `POST /agents, then POST /agents/{agent_id}/runs, a lane each`.
 - `--max-cost-usd USD` (string, this CLI's own): each lane's cap (default 1)
 - `--label LABEL` (string, this CLI's own): the race's label (default: the start time and random letters, as the console's)
 - `--file FILE_ID` (string, this CLI's own): a file uploaded with POST /files, given to every lane's run (repeatable)
+- `--wait` (boolean, this CLI's own): then follow every lane's run to its end and print the lanes side by side: exit 0 when every lane completed, 1 when one failed, was cancelled, did not start or still runs past --timeout, 8 when one waits on a person
+- `--timeout SECONDS` (number, this CLI's own): with --wait: stop waiting after this long (default 1800), exit 1; the runs go on
+- `--json` (boolean, this CLI's own): with --wait: the lanes as JSON, in place of the table
 
 ## revisions
 

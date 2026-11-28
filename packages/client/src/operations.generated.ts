@@ -557,7 +557,7 @@ export type RunSummary = {
     kind: "stopped";
   } | null;
   imported_from?: {
-    source: "claude-code" | "codex" | "pi" | "opencode" | "copilot";
+    source: "claude-code" | "codex" | "pi" | "opencode" | "copilot" | "cursor";
     session: string;
   } | null;
   trigger?: {
@@ -900,7 +900,7 @@ export type Run = {
     kind: "stopped";
   } | null;
   imported_from?: {
-    source: "claude-code" | "codex" | "pi" | "opencode" | "copilot";
+    source: "claude-code" | "codex" | "pi" | "opencode" | "copilot" | "cursor";
     session: string;
   } | null;
   trigger?: {
@@ -6003,7 +6003,7 @@ export type GetStatsResponse = {
       unknown_cost_runs: number;
     }>;
     by_source: Array<{
-      source: "live" | "claude-code" | "codex" | "pi" | "opencode" | "copilot";
+      source: "live" | "claude-code" | "codex" | "pi" | "opencode" | "copilot" | "cursor";
       runs: number;
       completed: number;
       needs_review: number;

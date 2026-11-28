@@ -3,7 +3,8 @@
 // copied to another row, column or table does not open. The store holds only the sealed bytes; the key stays in the
 // server's (and a runner's) environment, and the server's writer and the runner's unseal both seal and open through here.
 //
-// An MCP server's credential is the one sealed column of its row, AAD mcp_servers|<name>|sealed, whose plaintext is the
+// An MCP server's credential is the one sealed column of its row, AAD mcp_servers|<row key>|sealed (its name, or a
+// workspace's "<workspace>/<name>", mcp-workspace.ts), whose plaintext is the
 // credential as JSON with the server's origin inside it. Opened for a row whose url has another origin (an edit of the url
 // column by someone who can write the store but has no key), it is refused as damaged, so a credential is never sent to a
 // host it was not saved for.
@@ -56,7 +57,8 @@ export function unsealColumn(key: Buffer, at: SealedAt, sealed: Uint8Array): Buf
 /** An MCP server's credential: headers to send, or an OAuth token set (and its client), opaque here. */
 export type McpCredential = ({ readonly type: "headers"; readonly headers: Readonly<Record<string, string>> } | { readonly type: "oauth"; readonly set: unknown }) & { readonly [key: string]: unknown };
 
-/** Seals `credential` for server `name`, with the origin of `url` inside it. */
+/** Seals `credential` for the server whose row key is `name` (a workspace's server's is "<workspace>/<name>",
+ *  mcp-workspace.ts), with the origin of `url` inside it. */
 export function sealMcpCredential(key: Buffer, name: string, credential: McpCredential, url: string): Uint8Array {
   return sealColumn(key, sealedAt.mcpServer(name), JSON.stringify({ ...credential, origin: new URL(url).origin }));
 }
@@ -65,11 +67,12 @@ export function sealMcpCredential(key: Buffer, name: string, credential: McpCred
  *  key, or not the store's format); damaged (sealed for another origin than its row's url). Never the credential then. */
 export type OpenedMcpCredential = { readonly credential: McpCredential & { readonly origin: string } } | { readonly unusable: "none" | "unopened" | "damaged"; readonly why: string };
 
-export function openMcpCredential(key: Buffer, row: { readonly name: string; readonly url: string; readonly sealed: Uint8Array | null }): OpenedMcpCredential {
+/** `row`'s credential opened at its row key (`sealedAs`, else its name), its words naming it by `name`. */
+export function openMcpCredential(key: Buffer, row: { readonly name: string; readonly sealedAs?: string; readonly url: string; readonly sealed: Uint8Array | null }): OpenedMcpCredential {
   if (row.sealed === null) return { unusable: "none", why: `the MCP server ${row.name} has no credential saved` };
   let credential: McpCredential & { origin?: unknown };
   try {
-    credential = JSON.parse(unsealColumn(key, sealedAt.mcpServer(row.name), row.sealed).toString("utf8"));
+    credential = JSON.parse(unsealColumn(key, sealedAt.mcpServer(row.sealedAs ?? row.name), row.sealed).toString("utf8"));
   } catch {
     return { unusable: "unopened", why: `the MCP server ${row.name}'s credential does not open with this server's key` };
   }

@@ -50,6 +50,7 @@ import { type AlsoRow, type Command, FINAL_STATES, type LearningProposal, type M
 import { shadowRunId } from "../learn/audit.js";
 import { keyedBesideOf, noteLearningDeadline } from "../learning-work.js";
 import { getMcpServer } from "../mcp-store.js";
+import { resolvedMcpKey } from "../mcp-workspace.js";
 import { readApprovers } from "../server-approvers.js";
 import { isCliRecord, runEntries, runTimeline, withoutFeedbackRounds } from "../store-reads/journal.js";
 import { capNowOf, KINDS } from "./journal-kinds.js";
@@ -371,7 +372,12 @@ export function runPathOf(rows: readonly TimelineEvent[]): RunPath {
 /** Whether a draft's workflow.json (`json`) waits for its owner's OK whatever its checks say: a step of it calls an MCP
  *  tool with no declared price (workflow-draft.ts unpricedCalls), from the prices each server's row keeps (mcp-probe.ts
  *  McpPrices), or an SDK run's manifest gives. A server the store can't read gives no price: held. */
-async function heldOf(store: Pick<Store, "mcp">, json: string, manifest?: readonly SdkWorkflowTool[]): Promise<boolean> {
+/** The saved server `server` is to the run `runId`'s agent: its workspace's own, else the shared one (mcp-workspace.ts). */
+async function serverOfRun(store: Pick<Store, "mcp" | "runs">, runId: string, server: string): Promise<McpServerRow | undefined> {
+  return getMcpServer(store, await resolvedMcpKey(store.mcp, server, await store.runs.workspace(runId)));
+}
+
+async function heldOf(store: Pick<Store, "mcp" | "runs">, runId: string, json: string, manifest?: readonly SdkWorkflowTool[]): Promise<boolean> {
   let doc: unknown;
   try {
     doc = JSON.parse(json);
@@ -385,7 +391,7 @@ async function heldOf(store: Pick<Store, "mcp">, json: string, manifest?: readon
   for (const name of draftMcpTools(doc)) {
     if (manifest) { priced.set(name, manifest.find((tool) => tool.name === name)?.price_usd); continue; }
     const { server, tool } = mcpNameOf(name)!;
-    if (!rows.has(server)) rows.set(server, getMcpServer(store, server).catch(() => undefined));
+    if (!rows.has(server)) rows.set(server, serverOfRun(store, runId, server).catch(() => undefined));
     const price = ((await rows.get(server))?.prices as Record<string, unknown> | undefined)?.[tool];
     priced.set(name, typeof price === "number" && Number.isFinite(price) ? price : undefined);
   }
@@ -461,7 +467,7 @@ export async function checkDraftOf(deps: LearningEndDeps, input: { runId: string
   const files = [{ path: jsonPath, text }, { path: readmePath, text: readme }];
   return {
     errors: [],
-    kept: { name, files, ...((await heldOf(deps.store, text, manifest)) ? { held: [readmePath] } : {}), ...(revised ? { bases: { [jsonPath]: revised.base, [readmePath]: revised.base } } : {}) },
+    kept: { name, files, ...((await heldOf(deps.store, input.runId, text, manifest)) ? { held: [readmePath] } : {}), ...(revised ? { bases: { [jsonPath]: revised.base, [readmePath]: revised.base } } : {}) },
     digest: workflowDigest({ workflow: text }),
   };
 }
@@ -475,7 +481,7 @@ function sdkDescribed(manifest: readonly SdkWorkflowTool[]): { name: string; doe
  *  summary): the compile ask's `described`. An MCP tool (`mcp:<server>/<tool>`, LS-07) is described by its server's
  *  listing as the store keeps it: what it does, the schema it takes and, when it lists one, the one it gives. A server or
  *  a tool the store does not list is described by none. */
-async function describedOf(tools: readonly string[], store: Pick<Store, "mcp">): Promise<{ name: string; does: string }[]> {
+async function describedOf(tools: readonly string[], store: Pick<Store, "mcp" | "runs">, runId: string): Promise<{ name: string; does: string }[]> {
   const { toolOf } = await import("../tools.js");
   const listed = new Map<string, Promise<McpServerRow | undefined>>();
   const out: { name: string; does: string }[] = [];
@@ -487,7 +493,7 @@ async function describedOf(tools: readonly string[], store: Pick<Store, "mcp">):
       continue;
     }
     const { server, tool } = mcp;
-    if (!listed.has(server)) listed.set(server, getMcpServer(store, server).catch(() => undefined));
+    if (!listed.has(server)) listed.set(server, serverOfRun(store, runId, server).catch(() => undefined));
     const row = await listed.get(server)!;
     const entry = ((row?.tools ?? []) as { name?: unknown; title?: unknown; description?: unknown; input_schema?: unknown; output_schema?: unknown }[]).find((one) => one?.name === tool);
     if (!entry) continue;
@@ -753,7 +759,7 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   const { tools, decisions, outputSchema, workflowAdapters, described: sdkCatalog } = await draftTools(deps, input.runId);
   const allowed = draftDecisionProviders(decisions);
   const judges = workflowAdapters !== undefined ? workflowAdapters.includes("runJudge") : allowed.length > 0;
-  const described = sdkCatalog ?? await describedOf(tools, deps.store);
+  const described = sdkCatalog ?? await describedOf(tools, deps.store, input.runId);
   const object = input.input !== null && typeof input.input === "object" && !Array.isArray(input.input);
   leftOut.input = object && holds(input.input);
   const fields = object && !leftOut.input ? { input: input.input as Record<string, unknown> } : {};
