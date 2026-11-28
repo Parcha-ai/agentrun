@@ -437,14 +437,18 @@ jobs:
       # again (about 54 s on the containerd store). The step prints the store and fails unless the switch took.
       - name: Docker on its classic image store
         run: sh scripts/ci-docker-classic-store.sh
-      - name: The image built, and the stack's smoke
-        run: sh deploy/walk/smoke.sh
-      # The same image as the Railway template's service (deploy/railway/template.json) runs: as root on a fresh volume
-      # that is root's, its start command giving /data to the server's user before it starts the server as that user.
-      - name: The Railway template's service, run as Railway runs it
-        run: node deploy/railway/local-walk.mjs
+      # The image both walks take, built from this checkout as deploy/compose.yaml's server builds it.
+      - name: The image built
+        run: docker build -f packages/serve/docker/Dockerfile -t agentrun-walk:ci .
+      # Both walks at once on that image (scripts/ci-at-once.sh), each with a project, containers and a volume of its own
+      # and nothing published but the Railway walk's loopback port: `smoke`, the stack's smoke (deploy/walk/smoke.sh);
+      # `railway`, the Railway template's service (deploy/railway/template.json) run as Railway runs it, as root on a fresh
+      # volume that is root's, its start command giving /data to the server's user before it starts the server as that
+      # user. Every line is prefixed with its walk, and each walk that fails is named.
+      - name: The stack's smoke and the Railway template's service, at once
+        run: sh scripts/ci-at-once.sh 'smoke=sh deploy/walk/smoke.sh' 'railway=node deploy/railway/local-walk.mjs'
         env:
-          AGENTRUN_IMAGE: agentrun-walk:local
+          AGENTRUN_IMAGE: agentrun-walk:ci
 
   runas:
     # The run helper's own Go tests (packages/serve/runas), the unprivileged ones and, as root, the privileged ones, on
