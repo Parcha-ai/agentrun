@@ -1517,11 +1517,15 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
       });
       if (!subagents) return;
       for (const child of subagents) settled(child, mirrored);
+      // Every file of the run, its own and its subagents', once all of it is read: one written since the plan, or while
+      // it was read, leaves the run out as live, never saved as done.
       const childSizes = await Promise.all(subagents.map((child) => sizeOf(child)));
-      // A subagent written since the plan: the run is still being written, left out as live with it.
-      const liveChild = subagents.findIndex((_, i) => childSizes[i] && now - childSizes[i]!.mtimeMs < LIVE_MS);
-      if (liveChild >= 0) {
-        report.skipped.push(stillLive(locatorKey(locatorOf(subagents[liveChild]!))));
+      const ownSizes = await Promise.all(files.map((entry) => sizeOf(entry)));
+      const all = [...files, ...subagents];
+      const sizes = [...ownSizes, ...childSizes];
+      const liveAt = all.findIndex((_, i) => sizes[i] && now - sizes[i]!.mtimeMs < LIVE_MS);
+      if (liveAt >= 0) {
+        report.skipped.push(stillLive(locatorKey(locatorOf(all[liveAt]!))));
         return;
       }
       const moved = subagents.map((child, i) => scannedAs.get(locatorKey(locatorOf(child))) !== stampOf(childSizes[i] ?? { bytes: -1, mtimeMs: -1 }));
