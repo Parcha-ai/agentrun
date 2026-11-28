@@ -5,6 +5,9 @@
 // script as the JavaScript path's failures do. The model is a scripted origin and every tool local: nothing leaves
 // this process.
 import assert from "node:assert/strict";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
@@ -102,6 +105,48 @@ test("a Python script run again after a park answers its recorded calls from the
     `2. send_email completed: "mailed". Its effect is done; it was not run again.`,
   ], answer.text);
   assert.doesNotMatch(answer.text, /all done/);
+});
+
+test("a Python script reaches the host's files, network, processes and environment only through its tools: each attempt raises in the script, touches nothing and makes no call", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codemode-python-host-"));
+  const secret = join(dir, "secret.txt");
+  writeFileSync(secret, "host-file-contents");
+  const canary = "CODEMODE_PY_CANARY";
+  process.env[canary] = "canary-not-a-secret";
+  try {
+    const codemode = codemodeOf();
+    const attempts = [
+      `return open(${JSON.stringify(secret)}).read()`,
+      `open(${JSON.stringify(join(dir, "written.txt"))}, "w").write("x")`,
+      `from pathlib import Path\nreturn Path(${JSON.stringify(secret)}).read_text()`,
+      `from pathlib import Path\nPath(${JSON.stringify(join(dir, "path-written.txt"))}).write_text("x")`,
+      `import json\nreturn json.load(open(${JSON.stringify(secret)}))`,
+      `import os\nreturn os.listdir(${JSON.stringify(dir)})`,
+      `import os\nreturn dict(os.environ)`,
+      `import os\nreturn os.getenv(${JSON.stringify(canary)})`,
+      `import os\nos.system("touch ${join(dir, "system-ran")}")`,
+      `__import__("os")`,
+      "import socket",
+      "import subprocess",
+      "import urllib.request",
+      "import http.client",
+      "import io",
+      "import ctypes",
+      "import importlib",
+    ];
+    for (const script of attempts) {
+      const { calls, nested } = nestedCalls();
+      const answer = await python(codemode, script, nested);
+      assert.equal(answer.isError, true, `${script}: ${answer.text}`);
+      assert.match(answer.text, /^The script failed: [\s\S]*(PermissionError|RuntimeError|ModuleNotFoundError|NameError|AttributeError)/, `${script}: ${answer.text}`);
+      assert.doesNotMatch(answer.text, /host-file-contents|canary-not-a-secret/, `${script}: ${answer.text}`);
+      assert.deepEqual(calls, [], `${script}: no tool call`);
+    }
+    assert.deepEqual(readdirSync(dir), ["secret.txt"], "nothing was written on the host");
+  } finally {
+    delete process.env[canary];
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("codemode's language is javascript or python: any other is refused before anything runs", async () => {
