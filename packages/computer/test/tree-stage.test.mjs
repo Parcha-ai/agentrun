@@ -25,10 +25,13 @@ const SKIP = (() => {
 
 /** argv run as root: directly where the tests are root, else through sudo -n. */
 const asRoot = (argv, options = {}) => execFileSync(root ? argv[0] : "sudo", root ? argv.slice(1) : ["-n", ...argv], options);
-const uid = String(process.getuid?.());
-const gid = String(process.getgid?.());
+// The user the stage runs as: the tests' own, or nobody where they run as root (root reads any directory, so a tree
+// it can't read needs a user who isn't root). The work directory is open to it.
+const uid = root ? "65534" : String(process.getuid?.());
+const gid = root ? "65534" : String(process.getgid?.());
 
 const work = SKIP ? "" : mkdtempSync(join(tmpdir(), "tree-stage-"));
+if (work) chmodSync(work, 0o755);
 after(() => {
 	if (work) asRoot(["rm", "-rf", "--", work]);
 });
