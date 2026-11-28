@@ -640,7 +640,8 @@ export class OrgoProvider implements ComputerProvider {
 		// Every path socket of Orgo's desktop root's alone but the display's own, before any tool runs.
 		const locked = await this.#lockDown(ref, socket, signal);
 		if (!locked.ok) return locked;
-		// Orgo's PRIMARY autocutsel ended, before any tool runs, so a text selection never replaces a cut.
+		// Orgo's PRIMARY autocutsel ended, before any tool runs, so a text selection never replaces a cut; one left running
+		// is a warning in the notes, and the create goes on.
 		const primary = await this.#endPrimarySync(ref, signal);
 		if (!primary.ok) return primary;
 		const started = await this.#channel.start(ref.id, ["sh", "-c", commands.init], { how: this.#start, timeoutMs: execMs, ...(signal ? { signal } : {}) });
@@ -657,9 +658,7 @@ export class OrgoProvider implements ComputerProvider {
 				...inside.value,
 				`Orgo's own network listens on ${ports.value.join(", ") || "no TCP port"} (TCP, as root reads it); the tools' probe was refused at each and at ${ORGO_AGENT_PORTS.join(", ")}, on both loopbacks`,
 				`Orgo's desktop sockets made root's alone: ${locked.value.join(", ") || "none"} (the display's own, ${socket}, left to the tools)`,
-				primary.value.length > 0
-					? `Orgo's PRIMARY autocutsel ended (pid ${primary.value.join(", ")}), so a text selection no longer replaces the clipboard; its CLIPBOARD one runs on for the VNC viewer`
-					: "no PRIMARY autocutsel ran in Orgo's desktop",
+				primary.value,
 			]);
 		} finally {
 			await opened.value.close();
@@ -674,12 +673,26 @@ export class OrgoProvider implements ComputerProvider {
 		return ok(ran.value.output.split("\n").flatMap((line) => (line.startsWith("locked ") ? [line.slice("locked ".length).trim()] : [])));
 	}
 
-	/** Orgo's PRIMARY autocutsel ended (PRIMARY_SYNC_SCRIPT): the PIDs it ended, none when none ran. */
-	async #endPrimarySync(ref: ComputerRef, signal?: AbortSignal): Promise<Result<string[]>> {
+	/**
+	 * Orgo's PRIMARY autocutsel ended (PRIMARY_SYNC_SCRIPT), and the create's note on it. One left running costs a cut its
+	 * paste, not the desktop: one that outlives its SIGTERM, a pgrep that fails, or a channel that can't run the script is a
+	 * warning in the note, and the create goes on. An abort alone fails it.
+	 */
+	async #endPrimarySync(ref: ComputerRef, signal?: AbortSignal): Promise<Result<string>> {
+		const stillRunning = (pid: string) => `Orgo's PRIMARY autocutsel is still running (${pid}): selecting text after a cut replaces the clipboard, so linux.files.move may paste text`;
 		const ran = await this.#channel.run(ref.id, ["sh", "-c", PRIMARY_SYNC_SCRIPT], { timeoutMs: this.#timeouts.execMs, ...(signal ? { signal } : {}) });
-		if (!ran.ok) return ran;
-		if (ran.value.exitCode !== 0) return fail("refused", `ending Orgo's PRIMARY autocutsel in ${ref.name}, which hands a text selection to the clipboard, failed (exit ${ran.value.exitCode}): ${ran.value.output.trim().slice(0, 200)}`);
-		return ok(/^ended (.+)$/m.exec(ran.value.output)?.[1].trim().split(/\s+/) ?? []);
+		if (!ran.ok) return ran.error.code === "aborted" ? ran : ok(stillRunning(`pid could not be read: ${ran.error.message}`));
+		const { exitCode, output } = ran.value;
+		if (exitCode !== 0) {
+			const left = /^autocutsel (.+) outlived SIGTERM$/m.exec(output)?.[1].trim().split(/\s+/);
+			return ok(stillRunning(left ? `pid ${left.join(", ")}` : `pid could not be read: ${output.trim().slice(0, 200) || `exit ${exitCode}`}`));
+		}
+		const ended = /^ended (.+)$/m.exec(output)?.[1].trim().split(/\s+/) ?? [];
+		return ok(
+			ended.length > 0
+				? `Orgo's PRIMARY autocutsel ended (pid ${ended.join(", ")}), so a text selection no longer replaces the clipboard; its CLIPBOARD one runs on for the VNC viewer`
+				: "no PRIMARY autocutsel ran in Orgo's desktop",
+		);
 	}
 
 	/** The TCP ports root listens on in Orgo's own network, sorted, read through the channel. */
