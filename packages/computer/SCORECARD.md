@@ -508,8 +508,8 @@ provider spec.
   passwordless sudo ([images](https://docs.tensorlake.ai/sandboxes/tensorlake-images.md)): the proxy's
   `POST /api/v1/ssh/enable` takes this process's public key, and its TCP tunnel (`/api/v1/tunnels/tcp?port=22`, a
   WebSocket, [tunnels](https://docs.tensorlake.ai/sandboxes/tunnels.md)) carries the stream. The sshd's host key is
-  pinned to the enable's `host_key_fingerprint`, which is required: an enable that names none is refused before any
-  tunnel opens, so no command runs through an sshd it can't verify. The processes API answers
+  pinned to the enable's `host_key_fingerprint`, which is required: an enable that names none (null, or the field
+  left out) is refused before any tunnel opens, so no command runs through an sshd it can't verify. The processes API answers
   output as lines with their line ends dropped, so it is used for the labels file alone. Dial is out: a sandbox boots
   only a registered image, never the box image by its OCI name.
 - **Labels and lifetime:** no labels, a name unique in the project, so the name carries the run's hash, the epoch and
@@ -517,7 +517,9 @@ provider spec.
   API with [`sse`](PROVIDERS.md#output-as-server-sent-events). `timeout_secs` is an idle threshold
   ([lifecycle](https://docs.tensorlake.ai/sandboxes/lifecycle.md)), set at create to the backstop's span, with
   `auto_resume` off so a suspended sandbox stays so; the janitor ends a computer at its deadline, within a day (the
-  usage-credits plan's longest session).
+  usage-credits plan's longest session). The name holds the run's hash alone, so the run is read from the file: a
+  running sandbox whose file can't be read is not matched at its run's end, and the janitor ends it at the deadline in
+  its name, within a day.
 - **Image:** Tensorlake's images or a project's, by name. A create names no image of ours, so no desktop and no Archil
   mount.
 - **Built:** `src/tensorlake.ts`, key `TENSORLAKE_API_KEY`; its tests run on a fake of the API, the proxy, the tunnel
