@@ -526,7 +526,7 @@ the store between writes.
 ```sh
 # SQLite: the whole data directory, modes kept
 cp -a DIR /backups/agentrun-data
-# Postgres: the store's schema, then the data directory
+# Postgres: the store's schema (agentrun, or the one AGENTRUN_STORE_SCHEMA names), then the data directory
 pg_dump --format=custom --schema=agentrun --file=/backups/agentrun-store.dump "$AGENTRUN_STORE_URL"
 cp -a DIR /backups/agentrun-data
 ```
@@ -545,8 +545,8 @@ agentrun-serve does not start: this store's secrets were sealed with another key
 ```
 
 and with another key it ends `The AGENTRUN_SEAL_KEY handed now is not it.` Put the original key back and start again.
-Without it, the store cannot be started: start on a new data directory (and, on Postgres, a new schema), and enter the
-keys and secrets again.
+Without it, that store does not start: start over on a new data directory (and, on Postgres, a new schema), which
+holds no agents, runs or secrets, and enter the keys and secrets again.
 
 ## Upgrading from 0.1.0-beta.26
 
