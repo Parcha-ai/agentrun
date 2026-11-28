@@ -11,6 +11,7 @@
 // test/template-code-review-composio.test.mjs runs the check.
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { isMain } from "../../../scripts/is-main.mjs";
 
 export const SOURCE = fileURLToPath(new URL("../templates/code-review/", import.meta.url));
 export const SIBLING = fileURLToPath(new URL("../templates/code-review-composio/", import.meta.url));
@@ -105,7 +106,7 @@ export function differences(sibling = SIBLING, source = SOURCE) {
   return problems;
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+if (isMain(import.meta)) {
   if (process.argv.includes("--write")) {
     for (const [file, bytes] of Object.entries(expectedFiles())) writeFileSync(SIBLING + file, bytes);
     console.log(`wrote ${Object.keys(expectedFiles()).length} files of code-review-composio`);
