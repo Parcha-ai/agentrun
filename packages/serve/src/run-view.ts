@@ -454,12 +454,30 @@ export const waitingApproval = (run: Pick<RunView, "approvals" | "meta">): Appro
 /** One answered (allow or deny) whose answer the run's process has not acted on yet. */
 export const actingOn = (run: Pick<RunView, "approvals" | "meta">) => [...(run.approvals?.values() ?? [])].some((a) => !a.resolved && run.meta.approvals?.[a.id] && !withdrawn(run.meta.approvals[a.id]));
 /** What is shown of a call's arguments: the whole of them redacted with the run's redactor, then cut (previewOf), so
- *  no cut leaves the head of a held key. */
-export const shownArgs = (approval: Pick<Approval, "args_json">, redact: (text: string) => string): string => previewOf(redact(approval.args_json));
+ *  no cut leaves the head of a held key. An ACP agent's call shows the agent's own arguments (acpOwnArgs), never the
+ *  gate's wrapper around them, through the same redactor. */
+export const shownArgs = (approval: Pick<Approval, "tool" | "args_json">, redact: (text: string) => string): string => previewOf(redact(acpOwnArgs(approval.tool, approval.args_json) ?? approval.args_json));
+/** An ACP agent's own arguments, as JSON: the call the ACP adapter's gate asks about is `acp_<kind>` with
+ *  `{ title, kind, input, toolCallId? }`, and `input` is the agent's own ("{}" when it gave none, as Cursor's calls do).
+ *  Undefined for any other call, or one whose arguments are not that object. */
+const acpOwnArgs = (tool: string, argsJson: string): string | undefined => {
+  if (!tool.startsWith("acp_")) return undefined;
+  let args: unknown;
+  try {
+    args = JSON.parse(argsJson);
+  } catch {
+    return undefined;
+  }
+  if (!args || typeof args !== "object" || Array.isArray(args)) return undefined;
+  const { input } = args as { input?: unknown };
+  return input === undefined || input === null ? "{}" : JSON.stringify(input);
+};
 /** What an ACP agent's own call does, in its words: the call the ACP adapter's gate asks about is `acp_<kind>` with
  *  `{ title, kind, input, toolCallId? }`, where `input` is the agent's own. Its command where the input names one
  *  (Antigravity's CommandLine, a `command` or `cmd`), its newlines kept; else its title (Cursor's names what it runs).
- *  Undefined for any other call, or one whose arguments say neither: its row shows its arguments. */
+ *  A call the adapter recorded as another MCP server's (`server`) is named by that server first:
+ *  `Calls MCP server "<name>": <words>`, or the server alone. Undefined for any other call, or one whose arguments say
+ *  none of these: its row shows its arguments. */
 export const acpCallWords = (tool: string, argsJson: string): string | undefined => {
   if (!tool.startsWith("acp_")) return undefined;
   let args: unknown;
@@ -469,10 +487,16 @@ export const acpCallWords = (tool: string, argsJson: string): string | undefined
     return undefined;
   }
   if (!args || typeof args !== "object") return undefined;
-  const { title, input } = args as { title?: unknown; input?: unknown };
+  const { title, input, server } = args as { title?: unknown; input?: unknown; server?: unknown };
   const given = (value: unknown) => (typeof value === "string" && value.trim() ? value : undefined);
   const own = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
-  return given(own.CommandLine) ?? given(own.command) ?? given(own.cmd) ?? given(title);
+  const words = given(own.CommandLine) ?? given(own.command) ?? given(own.cmd) ?? given(title);
+  // The other MCP server the adapter recorded for the call (permissionGateCall's `server`), never the agent's own words:
+  // first, so no cut hides whose call a person approves.
+  const other = given(server);
+  if (!other) return words;
+  const named = `Calls MCP server ${JSON.stringify(other)}`;
+  return words === undefined ? named : `${named}: ${words}`;
 };
 
 /** A dollar figure to a millionth, as the timeline's cost.usd is. */
@@ -536,8 +560,12 @@ export const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
   return last?.kind === "waiting" ? { kind: "question", question: last.text ?? last.summary ?? "", asked_at: last.timestamp } : null;
 };
 /** The run's pending approval (`pending`, kind approval): the call that waits; else undefined. */
-/** A call's approval summary, where its tool has one (tools.ts ToolEntry.approvalSummary), redacted as its arguments are. */
+/** A call's approval summary, where its tool has one (tools.ts ToolEntry.approvalSummary) or it is an ACP agent's own call
+ *  (its command or title), redacted as its arguments are. */
 function summaryOf(approval: Pick<Approval, "tool" | "args_json">, redact: (text: string) => string): { summary?: string } {
+  // An ACP agent's own call says what it does in its command or title (acpCallWords), as its timeline row does.
+  const acp = acpCallWords(approval.tool, approval.args_json);
+  if (acp !== undefined) return { summary: redact(acp) };
   const summarize = toolOf(approval.tool)?.approvalSummary;
   if (!summarize) return {};
   let args: unknown;
