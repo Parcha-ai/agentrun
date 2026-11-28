@@ -378,7 +378,7 @@ export type RunTools = {
  * their executors to the run. A browser computer brings none of the registry's: the run's browser tool (tools.ts,
  * pi-browser's durable extension) drives it.
  */
-export async function runTools(workspace: Workspace, computer: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly noExec: string | undefined; readonly context: Context; readonly aliases?: readonly string[]; readonly hold?: RunHold; readonly bashPolicy?: string; /** The computer replaced an earlier claim's (runHands). */ readonly replaced?: boolean; /** The claim's signal: the computer's calls are cut by it (runHands, claimCut). */ readonly signal?: AbortSignal; /** The end's cut, made as the end begins: its computer calls are cut by its `signal` (RunHands.ending; AdapterRun.endCut), and its `done` is called once the end has finished, whether or not it threw. */ readonly endCut?: () => { readonly signal: AbortSignal; done(): void } }): Promise<RunTools> {
+export async function runTools(workspace: Workspace, computer: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly noExec: string | undefined; readonly context: Context; readonly aliases?: readonly string[]; readonly hold?: RunHold; readonly bashPolicy?: string; /** The computer replaced an earlier claim's (runHands). */ readonly replaced?: boolean; /** The claim's signal: the computer's calls are cut by it (runHands, claimCut). */ readonly signal?: AbortSignal; /** The end's cut, made as the end begins: its computer calls are cut by it (RunHands.ending; AdapterRun.endCut). */ readonly endCut?: () => AbortSignal }): Promise<RunTools> {
   const run = await runHands(workspace, computer, options);
   const registry = createRegistry({ maxExecS: run.maxExecS, shell: run.shell, kinds: run.kinds, groups: run.groups, executors: run.executors });
   const brought: ReadonlySet<string> = new Set(COMPUTER_TOOLS);
@@ -402,14 +402,9 @@ export async function runTools(workspace: Workspace, computer: RunComputer | und
       return before.filter(process => process.argv[3] === "agentrun-background" && /^[1-9][0-9]*$/.test(process.argv[4] ?? "")).map(process => `background/${process.argv[4]}/output.log`);
     },
     async end() {
-      const cut = options.endCut?.();
-      run.ending(cut?.signal);
-      try {
-        await endBackground(run.hands);
-        await run.sweep();
-      } finally {
-        cut?.done();
-      }
+      run.ending(options.endCut?.());
+      await endBackground(run.hands);
+      await run.sweep();
     },
   };
 }
