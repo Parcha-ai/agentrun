@@ -11,8 +11,10 @@ npx @parcha/agentrun
 It starts [AgentRun Server](https://github.com/Parcha-ai/agentrun/tree/main/packages/serve) on the first free port from
 7340 on this machine's loopback, keeps its data in `~/.agentrun`, prints the address the server says to open and opens
 it in your browser (`--no-open`, a CI run or a machine with no display skips that). The server,
-`@parcha/agentrun-serve`, is this package's one dependency, at its exact version, so `npx` installs the two together and
-each version of this command runs the server it was released with. Node.js 24.22.3 or newer, on macOS or Linux; an older
+`@parcha/agentrun-serve`, is this package's dependency at its exact version, so `npx` installs the two together and
+each version of this command runs the server it was released with. Beside it, this package pins `@earendil-works/pi-ai`,
+which the server takes as a peer, at the version the server is tested with, so `npx` installs one pi-ai and not the
+newest one beside a copy of the tested one under each pi package. Node.js 24.22.3 or newer, on macOS or Linux; an older
 Node gets one line naming that floor and the installer's command.
 
 No Node.js on the machine, or an older one? The installer brings its own and keeps AgentRun running after the terminal
