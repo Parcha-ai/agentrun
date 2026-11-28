@@ -16,7 +16,7 @@ import { checkMount, readBackOf, WORKSPACE, type MountSpec } from "@parcha/agent
 
 The package root holds the protocol, the registry and the descriptors, and loads no provider: a provider loads by its
 id (`providerFor(id, options)`, which imports that one provider's file), or from its subpath (`/docker`, `/daytona`,
-`/modal`, `/e2b`, `/orgo`, `/orgo-desktop`, `/phone-harness`, `/browserbase`, `/kernel`, `/local-chrome`, `/boxd`, `/smolcloud`, `/groundbox`). A provider's
+`/modal`, `/e2b`, `/orgo`, `/orgo-desktop`, `/phone-harness`, `/browserbase`, `/kernel`, `/local-chrome`, `/boxd`, `/smolcloud`, `/groundbox`, `/vercel`). A provider's
 option types (`DockerProviderOptions`, `ModalProviderOptions` and the like) come from its subpath too, not the root.
 
 The package carries the daemon for Linux amd64 and arm64 in `dist/`, so a provider runs it with no Go on the host. A
@@ -446,6 +446,7 @@ in the kernel's tool registry, keyed by these groups.
   | modal | none: `prepareImage()` answers the box image (`boxImageRef()`) |
   | e2b | none: `prepareImage()` answers the box template (`boxE2bTemplate()`), for a sandbox and a desktop alike |
   | smolcloud | none: `prepareImage()` answers the box image (`boxImageRef()`) |
+  | vercel | none: `prepareImage()` answers the box image's tag in the project's registry (`boxVercelImage()`) |
   | orgo | desktop: `ORGO_BASE_IMAGE` ("linux") |
   | phone-harness | phone: `PHONE_IMAGE` ("android") |
   | browserbase, kernel, local | browser: `BROWSER_IMAGE` ("chromium") |
@@ -685,6 +686,7 @@ live under:
   | `BOXD_API_KEY`, `BOXD_ORG`, `BOXD_REGION` | boxd's `apiKey`, `org` and `region` (unset: the key's own org, the API's home region) |
   | `SMOLCLOUD_API_KEY` | smol cloud's `apiKey` |
   | `GROUNDBOX_API_KEY` | Groundbox's `apiKey` |
+  | `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` | Vercel Sandbox's `token`, `teamId` and `projectId`, all required |
 
 - **the conformance CLI and the live harness** (`src/conformance/`: the CLI, each provider's conformance module and the
   sweeps) read their own `COMPUTER_<ID>_*` names, the ones the live scripts set, through each module's
@@ -3282,6 +3284,70 @@ times on folders under `/opt` deeper than the probe's 8 levels (above). On the s
 minutes, past the hour any one connection may last: Groundbox closed its socket four times meanwhile (code 1013), the
 host attached again each time, the command's 1950 lines came back once each and in order, and a write made after the
 hour reached it. A command read across sockets dropped mid-output (close code 4000) also came back whole.
+
+## Vercel Sandbox
+
+```ts
+import { providerFor } from "@parcha/agentrun-computer";
+
+// The token is the caller's to pass (serve's VERCEL_TOKEN); the team and project ids are not secrets.
+const vercel = await providerFor("vercel", { token, teamId: "team_abc123", projectId: "prj_abc123" });
+const made = await vercel.create({ lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
+```
+
+A Vercel Sandbox computer is kind `linux`, a [Vercel Sandbox](https://vercel.com/docs/sandbox): a Firecracker microVM
+with its own kernel, root through `sudo`. With no image named, it starts from the box image as the project's Vercel
+Container Registry holds it, `agentrun-box:<recipe hash>`, the tag `prepareImage()` answers (`boxVercelImage()`). The
+operator pushes it once, from `box/`: `vercel vcr build docker . agentrun-box:<hash> --push`. A project without it
+refuses the create in words that give that command. Vercel runs on the shared machine-host adapter
+([PROVIDERS.md](PROVIDERS.md)): `src/vercel.ts` is its `MachineHost`, over Vercel's REST API (`https://api.vercel.com`,
+`Authorization: Bearer <token>`, `?teamId=` on every call) with `fetch` and the shared REST client (no SDK).
+
+| MachineHost | Vercel Sandbox |
+| --- | --- |
+| `create` | `POST /v3/sandboxes` named with the computer's name, the image, `persistent: false`, the lifetime as the session's `timeout`, `resources.vcpus` (2 unless the spec names a size), the packed labels as `tags`, and `networkPolicy: deny-all` where the computer needs no egress; a 409 is `exists` (unverified until the live run) |
+| `get` | `GET /v2/sandboxes/{name}?resume=false`, which never wakes one: `pending` is starting, `running` running, `stopping`, `stopped`, `snapshotting`, `failed` and `aborted` gone (with the session's `stopReason` as why); a 404 is none |
+| `list` | `GET /v2/sandboxes?project=&namePrefix=computer-`, with `tags=k:v` when one label is asked, every page |
+| `delete` | `DELETE /v2/sandboxes/{name}`; a 404 is done |
+| `exec` | a detached command (`POST /v2/sandboxes/sessions/{session}/cmd`, `sudo`, argv as its words, stdin attached), through `framedExec`: output from its NDJSON log stream (`GET .../cmd/{id}/logs`), stdin as base64 writes of 512 KiB by offset (`POST .../stdin`, safe to resend), `close` to end it, `POST .../kill` with signal 9 to kill it |
+| `extend` | `POST /v2/sandboxes/sessions/{session}/extend-timeout` by the difference from the end it reads; never earlier |
+
+What Vercel refuses or this host works around:
+
+- Tags are 5 at most, a value 256 characters at most, so the labels are packed into them (`facts.labels.packed`).
+- The log stream answers from the command's start each time it is read, so a stream that drops while the command runs
+  is read again with the characters already given each stream skipped. A stream can also end before the command's
+  last write, so once the command read finds it exited, the stream is read once more. An `error` line is the
+  command's end in Vercel's words; ten failed reads in a row end it too.
+- Images come from Vercel Container Registry alone (`check()` refuses another registry's path), as `linux/amd64`
+  builds, and Sandbox never runs an image's `ENTRYPOINT`. A create before the image is ready answers
+  `image_not_ready`, read as `timeout`.
+- Sizes are 1 or an even 2 to 8 vCPUs, each with 2048 MiB; `check()` refuses any other, and any `memoryMb` but that.
+- A session lives 24 hours at most on Pro (45 minutes on Hobby); `extend` past the plan's cap is `limit`.
+- No Archil mount yet and no desktop.
+
+Unverified until the live run: root makes a network namespace in the microVM (the fence for network none, open and a
+list); the log stream keeps a character written in two pieces whole and stays open through 75 s of silence; a create
+whose name the project holds answers 409; a sandbox's end is its session's start plus its timeout; no vendor agent
+listens on TCP in the VM.
+
+### Conformance on Vercel Sandbox
+
+```sh
+export COMPUTER_VERCEL_TOKEN=... COMPUTER_VERCEL_TEAM_ID=team_... COMPUTER_VERCEL_PROJECT_ID=prj_...
+before="$(mktemp -d)/before.json"   # each run its own: --before refuses a file that is already there
+node packages/computer/dist/conformance/sweep.js --provider vercel --before "$before"
+AGENTRUN_COMPUTER_LIVE_VERCEL=1 npm run conformance -w @parcha/agentrun-computer -- --provider vercel --long \
+  --run "$(node -p 'require(process.argv[1]).run' "$before")"
+node packages/computer/dist/conformance/sweep.js --provider vercel --after "$before"
+```
+
+The conformance module, `dist/conformance/vercel.js`, checks `AGENTRUN_COMPUTER_LIVE_VERCEL=1` first, then reads
+`COMPUTER_VERCEL_TOKEN` (`token`), `COMPUTER_VERCEL_TEAM_ID` (`teamId`) and `COMPUTER_VERCEL_PROJECT_ID`
+(`projectId`), all required, and `COMPUTER_VERCEL_IMAGE` (the run's image, default the box image), never
+`VERCEL_TOKEN`. Every computer of a run lives at most 30 minutes. The live sweep is the shared one; its scope is the
+project of the team. `test/vercel-provider.test.mjs` runs the host on a REST fake of the API, the exec pre-check
+included; no live run has been made yet.
 
 ## Conformance
 

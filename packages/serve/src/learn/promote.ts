@@ -194,6 +194,12 @@ export type CheckRecord = CheckBar & {
   readonly unstarted?: number;
   readonly skipped_tools?: readonly SkippedTool[];
   readonly disagreements?: readonly CheckDisagreement[];
+  /** How many inputs it answered alone had a grader's verdict that could not be read (Compared.unread): counted neither
+   *  right nor wrong, nor as a disagreement. Absent: none. */
+  readonly unread?: number;
+  /** It held because fewer than READABLE_MIN of the inputs it answered alone could be compared (learn/field-check.ts
+   *  CheckVerdict.undecided): no verdict on the draft either way, its reason saying so. Absent: it decided. */
+  readonly undecided?: true;
   readonly stopped?: true;
   /** A connected agent's check: how many of its reserved native turns in a row gave no answer to check the draft against
    *  and were given back to wait for the next one (see runner/promotion.ts SDK_CHECK_RELEASES for the causes, and the
@@ -226,6 +232,8 @@ export interface CheckTurns {
   readonly outcomes: ReplayOutcomes;
   readonly disagreements?: readonly CheckDisagreement[];
   readonly fresh_reads?: number;
+  /** The turns whose grader's verdict could not be read (CheckTally.unread). Absent: none. */
+  readonly unread?: number;
 }
 
 /** The most characters of an input or an answer a check's disagreement keeps. */
@@ -588,12 +596,14 @@ export const graderUserText = (input: string, known: string, draft: string, corr
 
 /** How a pair of answers compared: `same`, the grader's model when it was asked (`grader`; none when they were equal,
  *  compared on agree_on, or compared whole; `own` when it was the agent's own model, there being no fast model), what they differ on when they do (`differs_on`: the grader's words, or
- *  why its verdict could not be had), and the two answers the grader read (`pair`, answersPair): its verdict is of that
+ *  why its verdict could not be had), whether its verdict could not be read (`unread`: a reply that was not the verdict,
+ *  a request that failed, each asked twice, or one the run's stop or its deadline cut; never `same`, and a check counts
+ *  it neither way, learn/field-check.ts FieldAnswers.unread), and the two answers the grader read (`pair`, answersPair): its verdict is of that
  *  pair alone. A replay's verdict keeps the grade of its source run it was asked against (`graded`: whether the agent
  *  was right, and its expected answer when it gave one; null: none), and the owner's correction of that run's answer it
  *  was shown beside it (`corrected`, the words; absent: none), so the check judges that input on what its grader was
  *  asked (runner/promotion.ts checkRows), never on a grade or a correction given after, whose verdict it is not. */
-export type Compared = { readonly same: boolean; readonly grader?: string; readonly own?: true; readonly differs_on?: string; readonly pair?: string; readonly graded?: ComparedGrade | null; readonly corrected?: string };
+export type Compared = { readonly same: boolean; readonly unread?: true; readonly grader?: string; readonly own?: true; readonly differs_on?: string; readonly pair?: string; readonly graded?: ComparedGrade | null; readonly corrected?: string };
 /** The grade a replay's verdict was asked against (Compared.graded). */
 export type ComparedGrade = { readonly correct: boolean; readonly expected?: Readonly<Record<string, unknown>> };
 
@@ -604,8 +614,9 @@ export const answersPair = (a: string, b: string): string => {
   return createHash("sha256").update([one(a), one(b)].sort().join(":")).digest("hex");
 };
 
-/** Why a pair counts as differing when no verdict could be read: the reply was not the verdict asked for, the request
- *  failed, or it was stopped or timed out. Never "same" by default. */
+/** Why a pair has no verdict when none could be read (Compared.unread): the reply was not the verdict asked for, the
+ *  request failed, each asked twice, or it was stopped or timed out. Never "same" by default, nor a disagreement: a check
+ *  counts it neither way. */
 export const COMPARE_UNREAD = "the comparison could not be read";
 /** Why a pair counts as differing when the run's cap refused the grader's request: nothing was sent or booked. */
 export const COMPARE_CAP_HELD = "the cap held the comparison";
@@ -635,19 +646,22 @@ export function graderVerdictOf(text: string): { same: boolean; differs_on: stri
 }
 
 /** Asks `grader` whether `agent` and `draft`, two answers to `input`, reach the same decision, `agent` as its owner's
- *  `correction` changes it when one is given: one request, asked once more on a transport error alone. A refusal of the
- *  run's cap, a failed request, one the run's stop or its deadline cut, or a reply that is not the verdict differs, in
- *  words saying so; never "same" by default. The verdict names its pair. */
+ *  `correction` changes it when one is given: one request, asked once more on a transport error or a reply that is not
+ *  the verdict. A refusal of the run's cap differs, in words saying so. A request that failed twice, one the run's stop or
+ *  its deadline cut, or a reply that is still not the verdict is unread (`unread`, in words saying why): never "same" by
+ *  default, and counted neither way by a check. The verdict names its pair. */
 export async function gradeAnswers(input: string, agent: string, draft: string, grader: Grader, correction?: string): Promise<Compared> {
   const request = { system: GRADER_PROMPT, user: graderUserText(input, agent, draft, correction) };
   const first = await grader.ask(request);
-  const reply = "failed" in first ? await grader.ask(request) : first;
+  const prose = "text" in first && !graderVerdictOf(first.text);
+  const reply = "failed" in first || prose ? await grader.ask(request) : first;
   const by = { grader: grader.model, ...(grader.own ? { own: true as const } : {}), pair: answersPair(agent, draft) };
+  const unread = (why: string): Compared => ({ same: false, unread: true, ...by, differs_on: `${COMPARE_UNREAD}: ${why}` });
   if ("refused" in reply) return { same: false, ...by, differs_on: COMPARE_CAP_HELD };
-  if ("cut" in reply) return { same: false, ...by, differs_on: `${COMPARE_UNREAD}: ${reply.cut}` };
-  if ("failed" in reply) return { same: false, ...by, differs_on: `${COMPARE_UNREAD}: its request failed twice` };
+  if ("cut" in reply) return unread(reply.cut);
+  if ("failed" in reply) return unread(prose ? "its reply was not the verdict asked for, then its request failed" : "its request failed twice");
   const verdict = graderVerdictOf(reply.text);
-  if (!verdict) return { same: false, ...by, differs_on: `${COMPARE_UNREAD}: its reply was not the verdict asked for` };
+  if (!verdict) return unread(prose ? "its reply was not the verdict asked for, twice" : "its request failed, then its reply was not the verdict asked for");
   return verdict.same ? { same: true, ...by } : { same: false, ...by, differs_on: verdict.differs_on ?? "a decision it did not name" };
 }
 
@@ -672,7 +686,7 @@ export function comparedOf(value: unknown): Compared | undefined {
   const graded = value.graded === null ? null : isObject(value.graded) && typeof value.graded.correct === "boolean"
     ? { correct: value.graded.correct, ...(isObject(value.graded.expected) && Object.keys(value.graded.expected).length ? { expected: value.graded.expected } : {}) }
     : undefined;
-  return { same: value.same, ...(typeof value.grader === "string" ? { grader: value.grader } : {}), ...(value.own === true ? { own: true as const } : {}), ...(typeof value.differs_on === "string" ? { differs_on: value.differs_on } : {}), ...(typeof value.pair === "string" ? { pair: value.pair } : {}), ...(graded !== undefined ? { graded } : {}), ...(typeof value.corrected === "string" && value.corrected.trim() ? { corrected: value.corrected } : {}) };
+  return { same: value.same, ...(value.unread === true && value.same === false ? { unread: true as const } : {}), ...(typeof value.grader === "string" ? { grader: value.grader } : {}), ...(value.own === true ? { own: true as const } : {}), ...(typeof value.differs_on === "string" ? { differs_on: value.differs_on } : {}), ...(typeof value.pair === "string" ? { pair: value.pair } : {}), ...(graded !== undefined ? { graded } : {}), ...(typeof value.corrected === "string" && value.corrected.trim() ? { corrected: value.corrected } : {}) };
 }
 
 /** A run's newest grade as a check judges it (an empty expected answer is none), null for none. */

@@ -168,7 +168,7 @@ export interface components {
     places: {
       modes: ("runner" | "sandbox")[];
       boxes: {
-        id: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
+        id: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel";
         available: boolean;
         state: "ready" | "unavailable";
         reason?: string;
@@ -180,7 +180,7 @@ export interface components {
         mode: "runner";
       } | {
         mode: "sandbox";
-        box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
+        box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel";
       } | null;
       default_reason?: string;
       allow: string[];
@@ -394,7 +394,7 @@ export interface components {
       mode: "runner";
     } | {
       mode: "sandbox";
-      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
+      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel";
     };
     computer?: {
       kind: "none" | "sandbox" | "desktop" | "phone" | "browser";
@@ -1025,7 +1025,7 @@ export interface components {
       mode: "runner";
     } | {
       mode: "sandbox";
-      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
+      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel";
     };
     computer?: {
       kind: "sandbox" | "desktop" | "phone" | "browser";
@@ -5155,6 +5155,7 @@ export interface operations {
               };
             };
             unjudged?: number;
+            unread?: number;
           }>;
           of?: string[];
           cost_usd?: number | null;
@@ -5185,6 +5186,8 @@ export interface operations {
               value?: string;
             }[];
           }[];
+          unread?: number;
+          undecided?: true;
           stopped?: true;
           released?: number;
           fresh_reads?: number;
@@ -5205,6 +5208,7 @@ export interface operations {
                 agent_right: number;
               };
               unjudged?: number;
+              unread?: number;
             }>;
             of: string[];
             outcomes: {
@@ -5229,6 +5233,7 @@ export interface operations {
               }[];
             }[];
             fresh_reads?: number;
+            unread?: number;
           };
         };
         runs?: string[];
@@ -5316,6 +5321,7 @@ export interface operations {
                 };
               };
               unjudged?: number;
+              unread?: number;
             }>;
             of?: string[];
             cost_usd?: number | null;
@@ -5346,6 +5352,8 @@ export interface operations {
                 value?: string;
               }[];
             }[];
+            unread?: number;
+            undecided?: true;
             stopped?: true;
             released?: number;
             fresh_reads?: number;
@@ -5366,6 +5374,7 @@ export interface operations {
                   agent_right: number;
                 };
                 unjudged?: number;
+                unread?: number;
               }>;
               of: string[];
               outcomes: {
@@ -5390,6 +5399,7 @@ export interface operations {
                 }[];
               }[];
               fresh_reads?: number;
+              unread?: number;
             };
           } | null;
         } | null;

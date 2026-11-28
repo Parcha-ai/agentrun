@@ -143,9 +143,10 @@ export function apiOnlyTriggerMade(body: unknown, hooked: boolean): InputIssue[]
   return issues;
 }
 
-/** Whether an API-only server saves `body` through the generic save (saveMcpServer) over the name its path gives: a
- *  per_run server (no credential kept) whose url's origin is one of `origins`, under a name that is not a Composio
- *  preset's (`preset`; Composio's own route saves those). Checked before anything reaches the address. A body that
+/** Whether an API-only server saves `body` through the generic save (saveMcpServer) over the name its path gives, or
+ *  previews it (previewMcpServer, `preset` false): a per_run server (no credential kept) whose url's origin is one of
+ *  `origins`, under a name that is not a Composio preset's (`preset`; Composio's own route saves those). A preview of a
+ *  saved server by its name alone has no url, so it is not one. Checked before anything reaches the address. A body that
  *  carries a credential never gets here: the secret-write gate refuses it first (403), as it refuses the token's save
  *  over a server it did not save or one that seals a credential (mcp-secret-writes.ts tokenWriteOverRefused). */
 export function apiOnlyMcpSave(body: unknown, preset: boolean, origins: readonly string[]): boolean {
@@ -162,15 +163,19 @@ export function apiOnlyMcpSave(body: unknown, preset: boolean, origins: readonly
 /** A run's computer live view: its page, files and socket, which take the viewer credential alone here (server.ts). */
 const COMPUTER_LIVE = /^\/v2\/runs\/[^/]+\/computer\/live\//;
 
+/** The MCP settings routes an API-only server serves when the operator names MCP origins, each body checked at its route
+ *  by apiOnlyMcpSave: the generic save, and the preview that lists such a server's tools before it is saved. */
+const API_ONLY_MCP_ORIGIN_ROUTES: ReadonlySet<string> = new Set(["saveMcpServer", "previewMcpServer"]);
+
 /** Whether an API-only server serves `method` on `raw` (the path as sent, its query cut): a /v2 path one of
- *  API_ONLY_ROUTES matches for that method (HEAD as GET), the generic MCP save when the operator names MCP origins
- *  (`mcpSave`, its body checked at the route: apiOnlyMcpSave), or a GET of a run's computer live view. */
+ *  API_ONLY_ROUTES matches for that method (HEAD as GET), the generic MCP save and the preview when the operator names
+ *  MCP origins (`mcpSave`, their bodies checked at the route: apiOnlyMcpSave), or a GET of a run's computer live view. */
 export function servedApiOnly(routes: readonly Route[], method: string | undefined, raw: string, mcpSave = false): boolean {
   if (!raw.startsWith("/v2/")) return false;
   const path = raw.slice(3);
   const asked = method === "HEAD" ? "GET" : method;
   if (asked === "GET" && COMPUTER_LIVE.test(raw)) return true;
-  const served = (name: string) => API_ONLY_ROUTES.has(name) || (name === "saveMcpServer" && mcpSave);
+  const served = (name: string) => API_ONLY_ROUTES.has(name) || (mcpSave && API_ONLY_MCP_ORIGIN_ROUTES.has(name));
   return routes.some((route) => served(route.name) && route.method === asked && route.pattern.test(path));
 }
 

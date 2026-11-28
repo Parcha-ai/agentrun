@@ -182,7 +182,7 @@ export type DefinitionInput = {
     mode: "runner";
   } | {
     mode: "sandbox";
-    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
+    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel";
   };
   computer?: {
     kind: "none" | "sandbox" | "desktop" | "phone" | "browser";
@@ -824,7 +824,7 @@ export type Run = {
     mode: "runner";
   } | {
     mode: "sandbox";
-    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
+    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel";
   };
   computer?: {
     kind: "sandbox" | "desktop" | "phone" | "browser";
@@ -1193,7 +1193,7 @@ export type Capabilities = {
   places: {
     modes: Array<"runner" | "sandbox">;
     boxes: Array<{
-      id: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
+      id: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel";
       available: boolean;
       state: "ready" | "unavailable";
       reason?: string;
@@ -1205,7 +1205,7 @@ export type Capabilities = {
       mode: "runner";
     } | {
       mode: "sandbox";
-      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
+      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel";
     } | null;
     default_reason?: string;
     allow: Array<string>;
@@ -1898,6 +1898,7 @@ export type ListLearningPromotionsResponse = {
           };
         };
         unjudged?: number;
+        unread?: number;
       }>;
       of?: Array<string>;
       cost_usd?: number | null;
@@ -1928,6 +1929,8 @@ export type ListLearningPromotionsResponse = {
           value?: string;
         }>;
       }>;
+      unread?: number;
+      undecided?: true;
       stopped?: true;
       released?: number;
       fresh_reads?: number;
@@ -1948,6 +1951,7 @@ export type ListLearningPromotionsResponse = {
             agent_right: number;
           };
           unjudged?: number;
+          unread?: number;
         }>;
         of: Array<string>;
         outcomes: {
@@ -1972,6 +1976,7 @@ export type ListLearningPromotionsResponse = {
           }>;
         }>;
         fresh_reads?: number;
+        unread?: number;
       };
     };
     runs?: Array<string>;
@@ -2059,6 +2064,7 @@ export type ListLearningPromotionsResponse = {
             };
           };
           unjudged?: number;
+          unread?: number;
         }>;
         of?: Array<string>;
         cost_usd?: number | null;
@@ -2089,6 +2095,8 @@ export type ListLearningPromotionsResponse = {
             value?: string;
           }>;
         }>;
+        unread?: number;
+        undecided?: true;
         stopped?: true;
         released?: number;
         fresh_reads?: number;
@@ -2109,6 +2117,7 @@ export type ListLearningPromotionsResponse = {
               agent_right: number;
             };
             unjudged?: number;
+            unread?: number;
           }>;
           of: Array<string>;
           outcomes: {
@@ -2133,6 +2142,7 @@ export type ListLearningPromotionsResponse = {
             }>;
           }>;
           fresh_reads?: number;
+          unread?: number;
         };
       } | null;
     } | null;
