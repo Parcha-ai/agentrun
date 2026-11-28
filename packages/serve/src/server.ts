@@ -37,7 +37,7 @@ import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
 import { API_ONLY_ROUTES, WORKSPACE_ROUTES, apiOnlyMcpPreview, apiOnlyMcpSave, apiOnlyRefusal, apiOnlyTriggerEdit, apiOnlyTriggerMade, apiOnlyTriggerSkipped, apiOnlyTurnsOn, servedApiOnly, servedScoped } from "./api-only.js";
 import { triggersInWorkspace } from "./trigger-scope.js";
-import { inWorkspace, outOfScope, outsideWorkspace, scopedSlot, slotPath, WORKSPACE, WORKSPACE_HEADER, WORKSPACE_NAME, WORKSPACE_TOKENS_ENV, workspaceNow, workspaceTokensFrom } from "./workspace-scope.js";
+import { inWorkspace, outOfScope, outsideWorkspace, scopedSettings, scopedSlot, slotPath, WORKSPACE, WORKSPACE_HEADER, WORKSPACE_NAME, WORKSPACE_NO_GITHUB, WORKSPACE_TOKENS_ENV, workspaceNow, workspaceTokensFrom } from "./workspace-scope.js";
 import { mcpRowKey, mcpRowWorkspace, mcpView, requestNames } from "./mcp-workspace.js";
 import { API_ONLY_ENV, API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV } from "./env-switch.js";
 import { pricesInForce } from "./prices.js";
@@ -223,7 +223,7 @@ import { mcpNameOf as mcpToolOf, mcpToolName } from "./tool-names.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, RELEASE_WORDS_MAX, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import type { LaunchHook } from "./trigger-launch-hook.js";
 import { PAYLOAD_KEPT_BYTES } from "./trigger-adapter.js";
-import { applyBodyOf, choiceUnrunnable, COMPOSIO_TRIGGER_FIX, composioTriggerSkipped, COMPUTER_FIX, compiled, feedLeftEmpty, feedTriggerEmpty, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, mcpSetUp, type McpServed, onServerName, onServers, type Package, packageDetail, packageModel, packageTiers, packageView, pickComputer, readPackages, notSetUpYet, serversFor, type ShellHere, TemplateRegistry, type TemplatesDeps } from "./templates.js";
+import { applyBodyOf, choiceUnrunnable, COMPOSIO_TRIGGER_FIX, composioTriggerSkipped, COMPUTER_FIX, compiled, feedLeftEmpty, feedTriggerEmpty, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, mcpNeedName, mcpSetUp, type McpServed, onServerName, onServers, type Package, packageDetail, packageModel, packageTiers, packageView, pickComputer, readPackages, notSetUpYet, serversFor, type ShellHere, TemplateRegistry, type TemplatesDeps } from "./templates.js";
 import { applyImported, deleteTemplate, dropRemovedUploads, importTemplate, loadImported, type TemplateImportDeps, UPLOAD_PREFIX } from "./template-import.js";
 import { hereOf, Marketplace, marketplaceUrlOf } from "./marketplace.js";
 import { templateInstallLink, templateLink, templatesLink } from "./console-links.js";
@@ -2930,17 +2930,33 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // Suggested agents (suggestions.ts): scans run the bundled agent-scout, applied once and reused (one apply at a time
   // on this server); a create pushes through the App's token for the one repository, then applies the package it pushed
   // as an imported template, so the agent here is made from the very files the pull request adds.
-  let scouting: Promise<string> | undefined;
+  // A scoped request's suggestions are its workspace's (scopedSettings), scanned by its own scout, and it never reaches
+  // the server's App, which is the operator's: GitHub reads as not connected to it.
+  const scouting = new Map<string, Promise<string>>();
   const suggestions = new Suggestions({
-    settings: store.settings,
-    github: { view: () => github.view(), settingsUrl: () => github.settingsUrl(), get api() { return githubConnect.api; }, repoInstallation: (repo, signal) => githubConnect.repoInstallation(repo, signal), tokenWith: (installation, repo, permissions, signal) => githubConnect.tokenWith(installation, repo, permissions, signal), revokeToken: (token) => githubConnect.revokeToken(token) },
-    scoutAgent: () => (scouting ??= (async () => {
-      const mine = (await agents.list()).find((one) => one.template?.id === SCOUT_TEMPLATE && !one.agent.archivedAt);
-      if (mine) return mine.agent.id;
-      const pkg = registry.get(SCOUT_TEMPLATE);
-      if (!pkg) throw new ApiError("unavailable", `This server does not ship the ${SCOUT_TEMPLATE} template, which scans a repository.`);
-      return (await applyTemplate(pkg, { parameters: {} })).applied.agent_id;
-    })().finally(() => { scouting = undefined; })),
+    settings: scopedSettings(store.settings, "suggestions"),
+    github: {
+      view: () => (workspaceNow() === undefined ? github.view() : undefined),
+      settingsUrl: () => (workspaceNow() === undefined ? github.settingsUrl() : undefined),
+      get api() { return githubConnect.api; },
+      repoInstallation: async (repo, signal) => (workspaceNow() === undefined ? githubConnect.repoInstallation(repo, signal) : { unusable: WORKSPACE_NO_GITHUB, reason: "not_connected" as const }),
+      tokenWith: async (installation, repo, permissions, signal) => (workspaceNow() === undefined ? githubConnect.tokenWith(installation, repo, permissions, signal) : { unusable: WORKSPACE_NO_GITHUB }),
+      revokeToken: (token) => githubConnect.revokeToken(token),
+    },
+    scoutAgent: () => {
+      const at = workspaceNow() ?? "";
+      let going = scouting.get(at);
+      if (going) return going;
+      going = (async () => {
+        const mine = (await agents.list()).find((one) => one.template?.id === SCOUT_TEMPLATE && !one.agent.archivedAt);
+        if (mine) return mine.agent.id;
+        const pkg = registry.get(SCOUT_TEMPLATE);
+        if (!pkg) throw new ApiError("unavailable", `This server does not ship the ${SCOUT_TEMPLATE} template, which scans a repository.`);
+        return (await applyTemplate(pkg, { parameters: {} })).applied.agent_id;
+      })().finally(() => { scouting.delete(at); });
+      scouting.set(at, going);
+      return going;
+    },
     startScan: async (agentId, content) => (await startRunOf(await needRunnableAgent(agentId), { input: { content } })).id,
     readRun: async (runId) => {
       const view = await viewOverStore(store, runId, viewDepsFor(ownOriginOf()));
@@ -2952,6 +2968,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // Kept, then applied (template-import.ts applyImported): a thrown error means no agent was made. The package has no
     // trigger, so the apply makes the agent as its last write.
     cancelScan: async (runId) => { await cancel(store, await needRun(runId)); },
+    // An API-only server with a launch hook takes a workspace's runs from its host, which starts and bills each; a
+    // workspace's scan is reserved here and its run, started there, bound to it.
+    hostStarts: () => options.apiOnly === true && options.launchHook !== undefined && workspaceNow() !== undefined,
+    scoutRun: async (runId, agentId) => {
+      const run = await needRun(runId).catch((error: unknown) => {
+        if (error instanceof ApiError && error.code === "not_found") return undefined;
+        throw error;
+      });
+      return run?.agentId === agentId;
+    },
     agentFrom: async (id, sha) => (await agents.list()).find((one) => one.template?.id === id && one.template.sha === sha && !one.agent.archivedAt)?.agent.id,
     makeAgent: async (id, origin, files) => {
       const made = await applyImported({ registry, store, apply: (pkg) => applyTemplate(pkg, { parameters: {} }) }, id, origin, files);
@@ -4210,7 +4236,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const needed = unsaved.filter((need) => need.required);
     if (!plan && (missing.length || needed.length)) {
       const fix = "Add it in Settings → API Keys, or set it where AgentRun starts, then apply the template again.";
-      throw new ApiError("agent_not_runnable", `The ${pkg.name} template needs ${[...missing, ...needed.map((need) => `a ${need.source} MCP server of the toolkit ${need.toolkit}`)].join(" and ")}, which this server does not have. Nothing was created.`, { fields: [...missing.map((name) => ({ field: `secrets.${name}`, reason: NOT_SET_UP, message: options.runKeys && name === MONID_KEY_ENV ? `${name} is not set on this server, and a run can't bring it (${RUN_KEYS_ENV}=1): the agent's monid tools are checked with this server's key when it is saved.` : `${name} is not set on this server.`, fix })), ...needed.map((need) => ({ field: `mcp.${need.toolkit}`, reason: NOT_SET_UP, message: `No saved MCP server is ${need.source} ${need.toolkit}.`, fix: mcpSetUp(need) }))] });
+      throw new ApiError("agent_not_runnable", `The ${pkg.name} template needs ${[...missing, ...needed.map((need) => `a ${need.source} MCP server${need.source === need.toolkit ? "" : ` of the toolkit ${need.toolkit}`}`)].join(" and ")}, which this server does not have. Nothing was created.`, { fields: [...missing.map((name) => ({ field: `secrets.${name}`, reason: NOT_SET_UP, message: options.runKeys && name === MONID_KEY_ENV ? `${name} is not set on this server, and a run can't bring it (${RUN_KEYS_ENV}=1): the agent's monid tools are checked with this server's key when it is saved.` : `${name} is not set on this server.`, fix })), ...needed.map((need) => ({ field: `mcp.${need.toolkit}`, reason: NOT_SET_UP, message: `No saved MCP server is ${mcpNeedName(need)}.`, fix: mcpSetUp(need) }))] });
     }
     // The package's computer list: the first entry this server meets now (templates.ts pickComputer), written as the
     // agent's computer; a fallback, or a shell tool that computer does not run, said under `computer`. A list none of
@@ -4219,7 +4245,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (pick && "refused" in pick) throw new ApiError("agent_not_runnable", pick.refused, { fields: [{ field: "computer", reason: NOT_SET_UP, message: pick.refused, fix: pick.fix ?? COMPUTER_FIX }] });
     const computerWarnings: InputIssue[] = pick?.note ? [{ field: "computer", reason: pick.entry === "none" ? NOT_SET_UP : "not_an_option", message: pick.note }] : [];
     // An MCP server the package can do without is skipped, and said: its tools are not granted.
-    const skipped: InputIssue[] = unsaved.map((need) => ({ field: `mcp.${need.toolkit}`, reason: NOT_SET_UP, message: `No saved MCP server is ${need.source} ${need.toolkit}, so the agent was made without its tools (${need.tools.join(", ")}).`, fix: mcpSetUp(need) }));
+    const skipped: InputIssue[] = unsaved.map((need) => ({ field: `mcp.${need.toolkit}`, reason: NOT_SET_UP, message: `No saved MCP server is ${mcpNeedName(need)}, so the agent was made without its tools (${need.tools.join(", ")}).`, fix: mcpSetUp(need) }));
     // A model choice the owner picked is its model on its harness, or a refusal naming the model: never the tier's model
     // in its place. So is a package's `prefer` (packageModel's `refused`), outside a gateway. A plan whose keys are
     // missing lists them and goes on: a model refused for want of one of them is the same lack, and once they are added
@@ -6761,6 +6787,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, started, { "set-cookie": stateCookie(req.socket.localPort, started.state, overHttps(req)) });
       }
       case "getGitHubConnection": {
+        // A workspace has no GitHub here: the server's App is the operator's.
+        if (workspaceNow() !== undefined) return send(res, 200, { connected: false });
         // Repaired from GitHub's own first, at most once a minute: a missed installation event is put right here.
         await githubConnect.reconcile((detail) => triggers.turnOff("github", detail));
         // Always a 200: not connected is an answer, never an error a browser logs as one.
@@ -6770,6 +6798,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "listGitHubRepositories": {
         // The installations repaired from GitHub's own first, as getGitHubConnection does (at most once a minute): an
         // installation whose event was missed is listed, not hidden until a restart.
+        if (workspaceNow() !== undefined) throw new ApiError("github_not_connected", WORKSPACE_NO_GITHUB);
         await githubConnect.reconcile((detail) => triggers.turnOff("github", detail));
         const listed = await githubConnect.repositories(stopping.signal);
         if ("unusable" in listed) throw new ApiError("github_not_connected", listed.unusable);
@@ -6777,11 +6806,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "listSuggestions":
         // The same repair first: the page's Refresh and Check again read installations as GitHub has them.
-        await githubConnect.reconcile((detail) => triggers.turnOff("github", detail));
+        if (workspaceNow() === undefined) await githubConnect.reconcile((detail) => triggers.turnOff("github", detail));
         return send(res, 200, await suggestions.list({ ...(url.searchParams.has("repo") ? { repo: url.searchParams.get("repo")! } : {}), ...(url.searchParams.has("status") ? { status: url.searchParams.get("status")! } : {}) }), { "cache-control": "no-store" });
       case "scanForSuggestions": {
         const scanned = await suggestions.scan(await bodyOf(req));
-        return send(res, scanned.status, scanned.body, { location: `/v2/runs/${String(scanned.body.run_id)}` });
+        // A host's reservation and its release name no run, so they carry no Location.
+        const runId = scanned.body.run_id;
+        return send(res, scanned.status, scanned.body, typeof runId === "string" ? { location: `/v2/runs/${runId}` } : {});
       }
       case "getSuggestion":
         return send(res, 200, await suggestions.get(id, stopping.signal, url.searchParams.get("name") ?? undefined), { "cache-control": "no-store" });

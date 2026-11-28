@@ -624,7 +624,7 @@ one off.
 A sandbox agent's `bash` runs in a box, a machine apart from this server. Docker is the default box and the only one offered
 with no setup: a Docker container made for each run, which binds the run's `work/` and nothing else. Every other provider
 whose sandbox can hold the run's folder is a box too: `daytona`, `modal`, `e2b`, `agent37`, `morph`, `cloudflare`, `fly`,
-`boxd`, `groundbox` and `vercel`. Such a box runs on a sandbox computer from that provider, offered once `AGENTRUN_BOXES` lists it
+`boxd`, `groundbox`, `vercel` and `sprites`. Such a box runs on a sandbox computer from that provider, offered once `AGENTRUN_BOXES` lists it
 and the keys its computer provider needs are set (the environment, or Settings → Computers): `AGENTRUN_BOXES=docker,e2b`
 with `E2B_API_KEY` set offers both. A box is a provider that serves a sandbox, takes the run's folder (a bind, an Archil
 mount or a synced folder), starts with no image named and keeps to the allow-list or has no network; Orgo (desktops), the
@@ -1036,7 +1036,7 @@ Settings → Computers. The kind says what the agent is given, and the provider 
 | Kind | What the agent gets | Providers |
 |---|---|---|
 | `none` | The run's folder alone: no computer, and no provider (`{"kind": "none"}`) | |
-| `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b`, `boxd`, `smolcloud`, `groundbox`, `vercel`, `cloudflare` (through a relay Worker you deploy) |
+| `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b`, `boxd`, `smolcloud`, `groundbox`, `vercel`, `sprites`, `cloudflare` (through a relay Worker you deploy) |
 | `desktop` | The computer's tools (`computer_observe`, `computer_act`, `computer_screenshot`), the computer as `codemode`'s `computer`, and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo`, `boxd`, `groundbox`, or [a paired computer](#a-persons-own-computer) by its id |
 | `phone` | A rented Android, through the same computer tools | `phone-harness` |
 | `browser` | A hosted browser (the browser tools) | `browserbase`, `kernel` |
@@ -1112,8 +1112,8 @@ seals it in its store as every saved key under `AGENTRUN_SEAL_KEY`, and register
 key each restart, the old one left on the workspace), `MORPH_API_KEY`, `ORGO_API_KEY`, `PHONE_HARNESS_API_KEY`,
 `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, `KERNEL_API_KEY`, `BOXD_API_KEY` (with `BOXD_ORG` and
 `BOXD_REGION` optional), `SMOLCLOUD_API_KEY`, `GROUNDBOX_API_KEY`, `CLOUDFLARE_RELAY_URL` and `CLOUDFLARE_RELAY_TOKEN` (the relay Worker's,
-`packages/computer/relays/cloudflare`), `FLY_API_TOKEN` and `FLY_APP`, `RENDER_API_KEY` and `RENDER_WORKSPACE_ID`, and `VERCEL_TOKEN` with `VERCEL_TEAM_ID`
-and `VERCEL_PROJECT_ID`; Docker takes none.
+`packages/computer/relays/cloudflare`), `FLY_API_TOKEN` and `FLY_APP`, `RENDER_API_KEY` and `RENDER_WORKSPACE_ID`, `VERCEL_TOKEN` with `VERCEL_TEAM_ID`
+and `VERCEL_PROJECT_ID`, and `SPRITES_TOKEN`; Docker takes none.
 `GET /v2/computers/running` lists every run still going (queued, working, paused or waiting on its person) whose agent
 has a computer, newest first, each as `GET /v2/runs/{run_id}` answers it: its `computer` says the kind and provider,
 `starting`, `ready` or `taken_over` while its owner drives it, and a held run's hold. The runs list carries no
@@ -4791,9 +4791,16 @@ server's own origin, under a CSP that allows that origin only, but for the provi
   the coding-agent selector; the page refreshes when you return from your coding agent.
 - **Agent Factory** (`#/factory`): a kanban of sessions reported to this server, including parallel runs of one agent,
   reported active child conversations, an audit's shadow run while it runs, and sessions without a repository. Waiting, Working, Needs you and Unknown
-  describe execution; a completed run does not prove that its GitHub change passed checks or merged. Cards open the
-  existing run viewer for activity and supported controls. GitHub links come from launch or trusted trigger provenance.
-  Native connector health and missing SDK freshness are explicit; observed sessions do not acquire controls here.
+  describe execution; a completed run does not prove that its GitHub change passed checks or merged. A card's name opens
+  its session in a panel over the board (`#/factory?session=<run id>`): the run's own live view, where its question is
+  answered, a tool call allowed or denied, a working run steered, a follow-up asked and the run stopped or cancelled,
+  with the board still in place under it. A session that waits on a person names the step on its card (**Answer**,
+  **Review**); a card's run label and the panel's **Open run** lead to the run's own page. The board reads again as
+  soon as something done in the panel is read back. The address also keeps the filters (`repo`, `control`), so a
+  reload, a link and the way back from a run open the same board. GitHub links come from launch or trusted trigger
+  provenance. Native connector health and missing SDK freshness are explicit; observed sessions do not acquire controls
+  here: the panel offers what the run's own page offers, and an SDK's or a connected CLI's session has no message box
+  and no stop.
   Archived active runs remain visible, imported history is excluded, and ended attention is separate from active counts.
   The board refreshes every ten seconds after a read settles. It reads bounded pages and offers **Load more** with
   partial-coverage counts; failures preserve the last-known cards with a stale notice.

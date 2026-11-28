@@ -318,7 +318,7 @@ test("with no App, a public repository is fetched anonymously; a private one is 
 });
 
 test("a run in a workspace on a server whose GitHub App is connected: a private repository's checkout, of its pull request or the repository it names, says the run doesn't use the server's App, never that the server has none", { timeout: 120_000 }, async (t) => {
-  const IN_WORKSPACE = "a run in a workspace doesn't use this server's GitHub App, so only public repositories are read";
+  const IN_WORKSPACE = "a workspace doesn't use this server's GitHub App, so only public repositories are read";
   const { storeOn } = await import("./store-helpers.mjs");
   const { seal } = await import("../dist/sealing.js");
   const { store } = await storeOn(t);

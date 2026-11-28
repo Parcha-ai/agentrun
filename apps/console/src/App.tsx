@@ -51,6 +51,7 @@ import { MissionControl } from "@/components/MissionControl";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { queryObservedSessionPrompt, queryRunsPrompt } from "@/lib/codingAgentPrompts";
 import { AgentFactoryPage } from "@/components/AgentFactoryPage";
+import { factoryPlace, type FactoryPlace } from "@/lib/factory";
 import { NeedsYouStrip } from "@/components/NeedsYouStrip";
 import { ConnectExistingAgents, NativeConnections } from "@/components/NativeConnections";
 import { StartHere } from "@/components/StartHere";
@@ -96,7 +97,7 @@ const MODEL_CHECK_MS = 10_000;
  *  `archived` (for runs): the runs list's filters. `race`: a race's label (lib/race.ts); `newRace`: the form that starts
  *  one. `compare`: the runs a comparison names (lib/traceCompare.ts). `settings`: a settings page. `templateModel`: the
  *  model a template's Apply screen sets (`?model=`, the Free shelf's Use free), apart from the runs list's `model`. */
-type Where = { year?: number; repo?: string; observation?: string; nativeConnect?: boolean; connectionSource?: "server" | "remote" | "observe"; section: Section; template?: string; templateModel?: string; install?: string; playgroundAgent?: string; operation?: AgentOperation | "list-runs" | "apply-template"; draft?: string; run?: string; race?: string; newRace?: boolean; compare?: string[]; trigger?: string | null; kind?: "schedule" | "webhook" | "github" | "composio" | "feed" | "email"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; runsOf?: string; archived?: boolean; status?: RunStatus; source?: string; from?: string; to?: string; model?: string; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; add?: ReturnType<typeof addOf>; github?: ReturnType<typeof githubReturnOf> };
+type Where = { factory?: FactoryPlace; year?: number; repo?: string; observation?: string; nativeConnect?: boolean; connectionSource?: "server" | "remote" | "observe"; section: Section; template?: string; templateModel?: string; install?: string; playgroundAgent?: string; operation?: AgentOperation | "list-runs" | "apply-template"; draft?: string; run?: string; race?: string; newRace?: boolean; compare?: string[]; trigger?: string | null; kind?: "schedule" | "webhook" | "github" | "composio" | "feed" | "email"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; runsOf?: string; archived?: boolean; status?: RunStatus; source?: string; from?: string; to?: string; model?: string; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; add?: ReturnType<typeof addOf>; github?: ReturnType<typeof githubReturnOf> };
 /** The page an address opens. Exported for its test. */
 export function route(h: string = location.hash): Where & AgentEditorLocation {
   if (h === "#/dojo") return { section: "dojo" };
@@ -105,7 +106,8 @@ export function route(h: string = location.hash): Where & AgentEditorLocation {
   if (wrapped) { const year = new URLSearchParams(wrapped[1] ?? "").get("year"); return { section: "wrapped", ...(year && /^\d{4}$/.test(year) ? { year: Number(year) } : {}) }; }
   const observed = h.match(/^#\/observations\/([^/?]+)$/);
   if (observed) return { section: "agents", observation: decodeURIComponent(observed[1]) };
-  if (h === "#/factory" || h === "#/factory/") return { section: "factory" };
+  // Agent Factory: its query names the session open beside the board and the board's filters.
+  if (h === "#/factory" || h === "#/factory/" || h.startsWith("#/factory?")) return { section: "factory", factory: factoryPlace(h.split("?")[1] ?? "") };
   let m = h.match(/^#\/runs\/([^/?]+)$/);
   if (m) return { section: "runs", run: decodeURIComponent(m[1]) };
   // A race: the runs its race:<label> label groups, watched side by side, under Runs. #/races/new is the form that starts
@@ -979,7 +981,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
         : where.section === "suggestions"
         ? <SuggestionsPage v2={v2} repo={where.repo} go={go} />
         : where.section === "factory"
-        ? <AgentFactoryPage v2={v2} agentName={agentName} />
+        ? <AgentFactoryPage v2={v2} agentName={agentName} caps={caps} place={where.factory} go={go} />
         : where.section === "templates"
         ? <TemplatesPage key={where.install !== undefined ? `install:${where.install}` : `${where.template ?? ""}:${where.templateModel ?? ""}`} v2={v2} name={where.template} install={where.install} model={where.templateModel} freeIds={c ? freeModels(c.harnesses).map((m) => m.id) : undefined} go={go} />
         : where.section === "free"

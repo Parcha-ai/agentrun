@@ -115,7 +115,8 @@ async function bytes(server, workspace, { path, id, body = "hello" }) {
  *  `row`: the operation names W1's row by id (agent, run or template), and W2 gets the 404 a missing id gets. `list`: W2's
  *  list holds none of W1's rows. `made`: a write W2 makes lands in W2 alone. `served`: answered to any workspace. `mcp`:
  *  a workspace's MCP server, named by its name, each kept apart in api-only-mcp-workspace.test.mjs. `catalog`: Composio's
- *  catalog, tested on its own. */
+ *  catalog, tested on its own. `apart`: the file that tests its tenancy, which needs a scan's run
+ *  (suggestions-workspace.test.mjs). */
 const TABLE = {
   getRun: { method: "GET", path: "/v2/runs/{run}", row: "run" },
   getTimeline: { method: "GET", path: "/v2/runs/{run}/timeline", row: "run" },
@@ -176,6 +177,9 @@ const TABLE = {
   // Composio's catalog, no workspace's row: api-only-composio-listing.test.mjs.
   listComposioToolkits: { catalog: true },
   listComposioTools: { catalog: true },
+  ...Object.fromEntries(
+    ["listSuggestions", "scanForSuggestions", "getSuggestion", "discardSuggestion", "restoreSuggestion", "createSuggestedAgent", "getGitHubConnection", "listGitHubRepositories"].map((name) => [name, { apart: "suggestions-workspace.test.mjs" }]),
+  ),
 };
 
 test("every operation of WORKSPACE_ROUTES is a route of the server, and the table below covers each", () => {

@@ -24,8 +24,9 @@ documented calls, not from written code. The size column is an estimate, and siz
 ## The table
 
 Of 30 rows (26 vendors; Google, Fly.io, Beam and boxes.dev have two rows each): 0 clean, 5 fit if unverified facts hold,
-15 need a workaround, 10 are blocked. Render's row is built since (`src/render.ts`, a dial sandbox), and so is
-Vercel's (`src/vercel.ts`, a hosted sandbox whose unverified facts wait on its live run).
+15 need a workaround, 10 are blocked. Render's row is built since (`src/render.ts`, a dial sandbox), and so are
+Vercel's (`src/vercel.ts`) and Fly.io Sprites' (`src/sprites.ts`), hosted sandboxes whose unverified facts wait on their
+live runs.
 
 | Vendor | Rents | Fit | Size (estimate) | Shared pieces it would use |
 | --- | --- | --- | --- | --- |
@@ -42,7 +43,7 @@ Vercel's (`src/vercel.ts`, a hosted sandbox whose unverified facts wait on its l
 | [Cube Sandbox](https://github.com/TencentCloud/CubeSandbox) | self-hosted KVM microVMs behind an E2B-compatible API | needs a workaround (a copy of E2B's host, which takes no API URL; one arch per deployment) | about 320 | [prepareImage][pi] |
 | [DigitalOcean MicroVMs](https://docs.digitalocean.com/products/microvms) | a microVM running one OCI image | blocked (the idle pause can't be switched off; exec would also need a shim of ours over the pty console) | about 300 if the pause could be switched off | [packed labels][pl], [prepareImage][pi] |
 | [Fly Machines](https://docs.fly.io/machines/api/machines-resource) | KVM microVMs from an OCI image | blocked (`exec`: answers once the command ends) | n/a | none |
-| [Fly.io Sprites](https://docs.fly.io/sprites) | persistent Linux VMs that sleep when idle | needs a workaround (no image or snapshot a create can name, so no desktop or Archil; `extend` rewrites the label list, or is left out) | 220-290, sandbox only | [framedExec][fe], [packed labels][pl] |
+| [Fly.io Sprites](https://docs.fly.io/sprites) | persistent Linux VMs that sleep when idle | built (`src/sprites.ts`, a sandbox alone: no image or snapshot a create can name, so no desktop or Archil; `extend` left out; unverified until the live run: amd64, a label string's 64 bytes, a taken name's 409, root and its network namespace, 75 s of exec silence, an exec keeping a sprite awake) | 304, built | [framedExec][fe], [packed labels][pl] |
 | [Freestyle VMs](https://www.freestyle.sh/docs/vms.md) | Linux VMs | needs a workaround (a per-VM SSH identity made and deleted outside create, delete and the sweep) | about 280 | [ssh-exec][se], [packed labels][pl], [prepareImage][pi] |
 | [Google Agent Platform sandboxes](https://docs.cloud.google.com/gemini-enterprise-agent-platform/scale/sandbox?hl=en) | Google-managed gVisor containers | blocked (`exec`: one-shot, not root) | n/a | none |
 | [Google GKE Agent Sandbox](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/agent-sandbox) | gVisor pods on the user's cluster | needs a workaround (a Kubernetes client and GKE auth in the host; unverified: root makes a network namespace under GKE's gVisor, the exec stream has no idle cut) | 300-380 | [framedExec][fe], [packed labels][pl], [prepareImage][pi] |
@@ -256,6 +257,8 @@ provider spec.
 - **Sprites, what's open:** with no image or snapshot to name, [prepareImage](PROVIDERS.md#wire-it-up) can't give a
   desktop or an Archil mount; ours, a post-boot step that runs `box/install.sh` on a running machine. For the sandbox
   kind, unverified: root's network namespace, whether a silent exec keeps a Sprite awake, whether a read wakes one.
+- **Sprites, built:** `src/sprites.ts`, key `SPRITES_TOKEN`; its tests run on a fake of the REST API and the exec
+  socket's binary frames, the exec pre-check and the provider's Core cases included.
 - **Machines:** `exec` returns stdout, stderr and the exit code in one response
   ([execute command](https://docs.fly.io/api/machines/machines/execute-command.md)): blocked until dial-out.
 

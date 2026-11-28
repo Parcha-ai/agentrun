@@ -854,6 +854,8 @@ Scan a repository for places its app needs an agent.
 Route: `POST /suggestions/scans`.
 
 - `--repo STRING` (string, required): owner/name, or its https://github.com URL.
+- `--run-id STRING` (string): The run the host started for a reserved scan, sent with that reservation's `scan`.
+- `--scan STRING` (string): The reservation a host-started run is bound to (the reserve's `scan`); sent alone, the reservation released.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
