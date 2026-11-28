@@ -9,6 +9,7 @@
 // a missing one, with the same 404; lists hold the workspace's rows alone; what it makes is stamped with the workspace.
 import { AsyncLocalStorage } from "node:async_hooks";
 import { API_ONLY_ENV } from "./env-switch.js";
+import type { Settings } from "./store/index.js";
 
 /** The header a scoped request carries, as its words name it, and lower case, as Node keeps request headers. */
 export const WORKSPACE_NAME = "AgentRun-Workspace";
@@ -17,6 +18,8 @@ export const WORKSPACE_HEADER = "agentrun-workspace";
 export const WORKSPACE_TOKENS_ENV = "AGENTRUN_WORKSPACE_TOKENS";
 /** A workspace's name: 1 to 128 letters, digits, `:`, `.`, `_` or `-`. */
 export const WORKSPACE = /^[A-Za-z0-9:._-]{1,128}$/;
+/** Why a scoped request has no GitHub: the server's App is its operator's, and a workspace's request never uses it. */
+export const WORKSPACE_NO_GITHUB = "No GitHub App is connected for this workspace: this server's App is its operator's, and a workspace's requests read GitHub anonymously.";
 
 const scope = new AsyncLocalStorage<string>();
 
@@ -61,4 +64,28 @@ export function workspaceTokensFrom(text: string | undefined, known: readonly st
   const unknown = ids.filter((id) => !known.includes(id));
   if (unknown.length) throw new Error(`${WORKSPACE_TOKENS_ENV} names ${unknown.join(", ")}, which no token in AGENTRUN_TOKENS is`);
   return ids;
+}
+
+type ScopedSettings = Pick<Settings, "get" | "put" | "putIfAbsent" | "replaceIf" | "removeIf" | "all">;
+
+/** `settings` as the request being served keeps them: an unscoped request's keys as they are, a scoped one's under
+ *  `<namespace>|<workspace>|`, which no unscoped key starts with and no other workspace's either (a workspace's name
+ *  has no `|`). `namespace` is the keys' own first segment (suggestions, say), so the rows of one feature stay together. */
+export function scopedSettings(settings: ScopedSettings, namespace: string): ScopedSettings {
+  const lead = () => {
+    const workspace = workspaceNow();
+    return workspace === undefined ? "" : `${namespace}|${workspace}|`;
+  };
+  return {
+    get: (key) => settings.get(lead() + key),
+    put: (key, value) => settings.put(lead() + key, value),
+    putIfAbsent: (key, value, capacity, claim) => settings.putIfAbsent(lead() + key, value, capacity && { ...capacity, prefix: lead() + capacity.prefix }, claim),
+    replaceIf: (key, was, value, claim, guards) => settings.replaceIf(lead() + key, was, value, claim, guards?.map((guard) => ({ ...guard, key: lead() + guard.key }))),
+    removeIf: (key, was) => settings.removeIf(lead() + key, was),
+    all: async (filter) => {
+      const at = lead();
+      const rows = await settings.all(filter ? { ...filter, prefix: at + filter.prefix } : at ? { prefix: at } : undefined);
+      return rows.map((row) => ({ ...row, key: row.key.slice(at.length) }));
+    },
+  };
 }

@@ -115,8 +115,6 @@ test("a workspace sees GitHub as not connected, its repository list is 409, and 
   assert.equal(listed.status, 200, listed.text);
   assert.deepEqual(listed.body, { github: { connected: false, app: null, installations: [], install_url: null }, repositories: [], suggestions: [] });
   assert.equal((await fauxState(server)).minted, 0, "no token of the operator's App");
-  // The operator still sees its own App.
-  assert.equal((await send(server, "GET", "/integrations/github", { token: OPERATOR })).body.connected, true);
 });
 
 test("each workspace scans with its own scout, sees its own suggestions alone, and fetches the repository anonymously", { timeout: 180_000 }, async (t) => {

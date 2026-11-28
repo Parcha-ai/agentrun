@@ -198,9 +198,14 @@ test("a file the repository already has stops the create before anything is writ
   const row = await store.get(`suggestions.item.${id}`);
   row.suggestion.integration.path = "src/support/inbox.ts";
   await store.put(`suggestions.item.${id}`, row);
-  const before = await state();
+  // The token the create read the repository with is no write: what is compared is what the repository holds.
+  const written = async () => {
+    const { minted: _minted, ...repository } = await state();
+    return repository;
+  };
+  const before = await written();
   await assert.rejects(s.create(id, {}), (error) => error.code === "github_file_exists" && error.extra.details.path === "src/support/inbox.ts" && /only adds files, so nothing was written/.test(error.message));
-  assert.deepEqual(await state(), before, "nothing was written");
+  assert.deepEqual(await written(), before, "nothing was written");
   assert.equal((await s.list({})).suggestions.find((x) => x.id === id).status, "open");
 });
 

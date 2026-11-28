@@ -155,9 +155,11 @@ export function servedApiOnly(routes: readonly Route[], method: string | undefin
 export const apiOnlyRefusal = (raw: string): string => `this server serves the run API only (${API_ONLY_ENV}=1): ${raw} is not served here`;
 
 /** The operations a scoped request (the AgentRun-Workspace header, workspace-scope.ts) is served: its own agents, runs,
- *  imported template packages and uploaded files, and the server's description. Every other is refused with 403 not_scoped, whatever
+ *  imported template packages and uploaded files, its own suggested agents (with GitHub read as not connected: the
+ *  server's App is the operator's), and the server's description. Every other is refused with 403 not_scoped, whatever
  *  API_ONLY_ROUTES serves an unscoped request. listAgents, createAgent, updateDefinition, getTemplate, listTemplates,
- *  deleteTemplate and getOpenapi are not in API_ONLY_ROUTES: an API-only server serves them to a scoped request alone. */
+ *  deleteTemplate, getOpenapi and the suggestion and GitHub reads are not in API_ONLY_ROUTES: an API-only server serves
+ *  them to a scoped request alone. */
 export const WORKSPACE_ROUTES: ReadonlySet<string> = new Set([
   "listAllRuns", "listRuns", "getRun", "getTimeline", "listRunFiles", "readRunFile", "getRunExport",
   "listAgents", "getAgent", "listRevisions", "createAgent", "updateDefinition", "setCurrent",
@@ -165,6 +167,8 @@ export const WORKSPACE_ROUTES: ReadonlySet<string> = new Set([
   "importTemplate", "applyTemplate", "getTemplate", "listTemplates", "deleteTemplate",
   "createRun", "sendMessage", "stopRun", "cancelRun",
   "createFile", "listFiles", "getFile", "uploadFile", "deleteFile",
+  "listSuggestions", "scanForSuggestions", "getSuggestion", "discardSuggestion", "restoreSuggestion", "createSuggestedAgent",
+  "getGitHubConnection", "listGitHubRepositories",
   "getCapabilities", "getHealth", "getOpenapi",
   // Composio's catalog, read with the server's own key (api_key_env alone: mcp-secret-writes.ts composioListingOwners): no
   // workspace's row in it.

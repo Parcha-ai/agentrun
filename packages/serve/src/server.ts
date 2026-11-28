@@ -36,7 +36,7 @@ import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
 import { API_ONLY_ROUTES, WORKSPACE_ROUTES, apiOnlyMcpSave, apiOnlyRefusal, apiOnlyTriggerEdit, apiOnlyTriggerSkipped, apiOnlyTurnsOn, servedApiOnly, servedScoped } from "./api-only.js";
-import { inWorkspace, outOfScope, scopedSlot, slotPath, WORKSPACE, WORKSPACE_HEADER, WORKSPACE_NAME, WORKSPACE_TOKENS_ENV, workspaceNow, workspaceTokensFrom } from "./workspace-scope.js";
+import { inWorkspace, outOfScope, scopedSettings, scopedSlot, slotPath, WORKSPACE, WORKSPACE_HEADER, WORKSPACE_NAME, WORKSPACE_NO_GITHUB, WORKSPACE_TOKENS_ENV, workspaceNow, workspaceTokensFrom } from "./workspace-scope.js";
 import { API_ONLY_ENV, API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV } from "./env-switch.js";
 import { pricesInForce } from "./prices.js";
 import { composioOutsideNamespaceServers, holdApiOnlyMcpOrigins, offApiOnlyMcpServers } from "./mcp-api-only-origins.js";
@@ -2891,17 +2891,33 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // Suggested agents (suggestions.ts): scans run the bundled agent-scout, applied once and reused (one apply at a time
   // on this server); a create pushes through the App's token for the one repository, then applies the package it pushed
   // as an imported template, so the agent here is made from the very files the pull request adds.
-  let scouting: Promise<string> | undefined;
+  // A scoped request's suggestions are its workspace's (scopedSettings), scanned by its own scout, and it never reaches
+  // the server's App, which is the operator's: GitHub reads as not connected to it.
+  const scouting = new Map<string, Promise<string>>();
   const suggestions = new Suggestions({
-    settings: store.settings,
-    github: { view: () => github.view(), settingsUrl: () => github.settingsUrl(), get api() { return githubConnect.api; }, repoInstallation: (repo, signal) => githubConnect.repoInstallation(repo, signal), tokenWith: (installation, repo, permissions, signal) => githubConnect.tokenWith(installation, repo, permissions, signal), revokeToken: (token) => githubConnect.revokeToken(token) },
-    scoutAgent: () => (scouting ??= (async () => {
-      const mine = (await agents.list()).find((one) => one.template?.id === SCOUT_TEMPLATE && !one.agent.archivedAt);
-      if (mine) return mine.agent.id;
-      const pkg = registry.get(SCOUT_TEMPLATE);
-      if (!pkg) throw new ApiError("unavailable", `This server does not ship the ${SCOUT_TEMPLATE} template, which scans a repository.`);
-      return (await applyTemplate(pkg, { parameters: {} })).applied.agent_id;
-    })().finally(() => { scouting = undefined; })),
+    settings: scopedSettings(store.settings, "suggestions"),
+    github: {
+      view: () => (workspaceNow() === undefined ? github.view() : undefined),
+      settingsUrl: () => (workspaceNow() === undefined ? github.settingsUrl() : undefined),
+      get api() { return githubConnect.api; },
+      repoInstallation: async (repo, signal) => (workspaceNow() === undefined ? githubConnect.repoInstallation(repo, signal) : { unusable: WORKSPACE_NO_GITHUB, reason: "not_connected" as const }),
+      tokenWith: async (installation, repo, permissions, signal) => (workspaceNow() === undefined ? githubConnect.tokenWith(installation, repo, permissions, signal) : { unusable: WORKSPACE_NO_GITHUB }),
+      revokeToken: (token) => githubConnect.revokeToken(token),
+    },
+    scoutAgent: () => {
+      const at = workspaceNow() ?? "";
+      let going = scouting.get(at);
+      if (going) return going;
+      going = (async () => {
+        const mine = (await agents.list()).find((one) => one.template?.id === SCOUT_TEMPLATE && !one.agent.archivedAt);
+        if (mine) return mine.agent.id;
+        const pkg = registry.get(SCOUT_TEMPLATE);
+        if (!pkg) throw new ApiError("unavailable", `This server does not ship the ${SCOUT_TEMPLATE} template, which scans a repository.`);
+        return (await applyTemplate(pkg, { parameters: {} })).applied.agent_id;
+      })().finally(() => { scouting.delete(at); });
+      scouting.set(at, going);
+      return going;
+    },
     startScan: async (agentId, content) => (await startRunOf(await needRunnableAgent(agentId), { input: { content } })).id,
     readRun: async (runId) => {
       const view = await viewOverStore(store, runId, viewDepsFor(ownOriginOf()));
@@ -6662,6 +6678,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, started, { "set-cookie": stateCookie(req.socket.localPort, started.state, overHttps(req)) });
       }
       case "getGitHubConnection": {
+        // A workspace has no GitHub here: the server's App is the operator's.
+        if (workspaceNow() !== undefined) return send(res, 200, { connected: false });
         // Repaired from GitHub's own first, at most once a minute: a missed installation event is put right here.
         await githubConnect.reconcile((detail) => triggers.turnOff("github", detail));
         // Always a 200: not connected is an answer, never an error a browser logs as one.
@@ -6671,6 +6689,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "listGitHubRepositories": {
         // The installations repaired from GitHub's own first, as getGitHubConnection does (at most once a minute): an
         // installation whose event was missed is listed, not hidden until a restart.
+        if (workspaceNow() !== undefined) throw new ApiError("github_not_connected", WORKSPACE_NO_GITHUB);
         await githubConnect.reconcile((detail) => triggers.turnOff("github", detail));
         const listed = await githubConnect.repositories(stopping.signal);
         if ("unusable" in listed) throw new ApiError("github_not_connected", listed.unusable);
@@ -6678,7 +6697,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "listSuggestions":
         // The same repair first: the page's Refresh and Check again read installations as GitHub has them.
-        await githubConnect.reconcile((detail) => triggers.turnOff("github", detail));
+        if (workspaceNow() === undefined) await githubConnect.reconcile((detail) => triggers.turnOff("github", detail));
         return send(res, 200, await suggestions.list({ ...(url.searchParams.has("repo") ? { repo: url.searchParams.get("repo")! } : {}), ...(url.searchParams.has("status") ? { status: url.searchParams.get("status")! } : {}) }), { "cache-control": "no-store" });
       case "scanForSuggestions": {
         const scanned = await suggestions.scan(await bodyOf(req));
