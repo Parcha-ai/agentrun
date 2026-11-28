@@ -186,7 +186,7 @@ function requestsOf<T>(items: readonly T[], request: (items: readonly T[], first
 /** Two requests' verdicts as one ask's: the first's model and temperature, the rest in order and summed. */
 const together = (a: Verdicts, b: Verdicts): Verdicts => ({ ...a, verdicts: [...a.verdicts, ...b.verdicts], tokens: tokensTogether(a.tokens, b.tokens), cost: costTogether(a.cost, b.cost), questions_sha256: [...a.questions_sha256, ...b.questions_sha256] });
 
-function tokensTogether(a: Tokens | null, b: Tokens | null): Tokens | null {
+export function tokensTogether(a: Tokens | null, b: Tokens | null): Tokens | null {
   if (!a || !b) return null;
   return { in: a.in + b.in, out: a.out === null || b.out === null ? null : a.out + b.out, basis: a.basis === "reported" && b.basis === "reported" ? "reported" : "counted" };
 }

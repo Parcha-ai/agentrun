@@ -41,31 +41,37 @@ export function cutSnippet(s: string, n: number): string {
 
 /** The most passages one snippet is cut into for a "best" pick. */
 export const SNIPPET_PASSAGES_MAX = 24;
-/** `snippet` as passages of at most `size` characters, in order: its excerpts (Parallel and Exa join theirs with " … ")
- *  and lines, packed by sentence; a sentence longer than `size` cut on a word. At most SNIPPET_PASSAGES_MAX (the rest
- *  dropped). */
+/** `snippet` as passages of at most `size` characters, in order: its sentences and lines packed together, a sentence
+ *  longer than `size` cut on a word. Its excerpts (Parallel and Exa join theirs with " … ") stay apart: two packed into
+ *  one passage are joined with " … " again, never run together. At most SNIPPET_PASSAGES_MAX (the rest dropped). */
 export function passagesOfSnippet(snippet: string, size: number): string[] {
-  const sentences = snippet
-    .split(/\s…\s|\n+/)
-    .flatMap((part) => part.split(/(?<=[.!?])\s+/))
-    .map((one) => one.trim())
-    .filter(Boolean)
-    .flatMap((one) => {
-      const out: string[] = [];
-      let rest = one;
-      while (rest.length > size) {
-        const head = cutSnippet(rest, size).replace(/…$/, "");
-        out.push(head);
-        rest = rest.slice(head.length).trimStart();
-      }
-      if (rest) out.push(rest);
-      return out;
-    });
+  const pieces = snippet.split(/\s…\s/).flatMap((excerpt, e) =>
+    excerpt
+      .split(/\n+/)
+      .flatMap((part) => part.split(/(?<=[.!?])\s+/))
+      .map((one) => one.trim())
+      .filter(Boolean)
+      .flatMap((one) => {
+        const out: string[] = [];
+        let rest = one;
+        while (rest.length > size) {
+          const head = cutSnippet(rest, size).replace(/…$/, "");
+          out.push(head);
+          rest = rest.slice(head.length).trimStart();
+        }
+        if (rest) out.push(rest);
+        return out;
+      })
+      .map((text) => ({ text, e })),
+  );
   const passages: string[] = [];
-  for (const one of sentences) {
+  let lastExcerpt = -1;
+  for (const { text, e } of pieces) {
     const last = passages.at(-1);
-    if (last !== undefined && last.length + 1 + one.length <= size) passages[passages.length - 1] = `${last} ${one}`;
-    else passages.push(one);
+    const gap = e === lastExcerpt ? " " : " … ";
+    if (last !== undefined && last.length + gap.length + text.length <= size) passages[passages.length - 1] = `${last}${gap}${text}`;
+    else passages.push(text);
+    lastExcerpt = e;
   }
   return passages.slice(0, SNIPPET_PASSAGES_MAX);
 }

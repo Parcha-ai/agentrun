@@ -2,9 +2,10 @@
 import { clip } from "../page.js";
 import { kindOf } from "../providers/keyed.js";
 import { QUERY_MAX, type Search } from "../search.js";
-import type { Verdict, WebDecider } from "./decider.js";
+import { type Cost, REQUESTS_AT_ONCE, tokensTogether, type Verdict, type Verdicts, type WebDecider } from "./decider.js";
+import { costOf, costTogether } from "./failure.js";
 import { cutSnippet, passagesOfSnippet, type SearchSetup } from "./setup.js";
-import { bounded, byScore, droppedOf, drops, failed, ran, relevanceOf, type Scored, type Sifted, since, skipped, type StepOptions } from "./record.js";
+import { bounded, byScore, DECIDE_MS, droppedOf, drops, failed, ran, relevanceOf, type Scored, type Sifted, since, skipped, type StepOptions } from "./record.js";
 
 /** Under label or rerank+label, the score at least one result must reach for the search not to be called a miss. */
 export const LOW_RELEVANCE = 0.3;
@@ -32,33 +33,56 @@ export async function siftSearch(decider: WebDecider, answer: Search, options: S
   const scored: Scored[] = answer.results.map((hit, i) => ({ id: hit.url, score: got.verdicts[i] as Verdict }));
   if (policy !== "drop") {
     const rerank = policy === "rerank+label";
-    const picked = rerank ? await bestPassages(decider, answer, scored, options) : { best: new Map(), requests: 0 };
-    return { answer: labelled(decider.id, answer, scored, options.task, rerank, rerank ? decider.setup?.search : undefined, picked.best), classifier: ran(decider, "search", got, since(start), requests + picked.requests, scored, []) };
+    const picked = rerank ? await bestPassages(decider, answer, scored, options, start) : { best: new Map(), requests: 0, asked: { answered: [], failed: [] } };
+    return { answer: labelled(decider.id, answer, scored, options.task, rerank, rerank ? decider.setup?.search : undefined, picked.best), classifier: ran(decider, "search", withAsked(got, picked.asked), since(start), requests + picked.requests, scored, []) };
   }
   const results = answer.results.filter((_, i) => !drops(scored[i]!.score));
   return { answer: { ...answer, results, sift: `${decider.id} kept ${results.length} of ${n} results` }, classifier: ran(decider, "search", got, since(start), requests, scored, droppedOf(scored)) };
 }
 
-/** Under a setup's "best" pick, for each result its cut will shorten (by URL): its passage Jev scores most likely to
- *  hold what the search needs (ties: the earlier), and whether that is the snippet's first and its last. Asked in one
- *  bounded step, one judge request per such result. Empty where the setup picks no passage, none is shortened, or the
- *  ask fails (each such result then keeps its snippet's start). */
+/** Under a setup's "best" pick, for each result its cut will shorten (by URL; a snippet longer than `cut` that is more
+ *  than one passage): its passage Jev scores most likely to hold what the search needs (ties: the earlier), and whether
+ *  that is the snippet's first and its last. One judge request per such result, REQUESTS_AT_ONCE at a time, within what
+ *  the search step's deadline has left after its sift (`started`). After a failure no more are sent, and the pick waits
+ *  for those in flight; then nothing is picked (each such result keeps its snippet's start). `asked`: what every
+ *  request answered and what a failed one or the step itself cost, for the step's record. */
 type Best = Map<string, { text: string; first: boolean; last: boolean }>;
-async function bestPassages(decider: WebDecider, answer: Extract<Search, { results: unknown }>, scored: Scored[], options: StepOptions): Promise<{ best: Best; requests: number }> {
+type Asked = { answered: Verdicts[]; failed: Cost[] };
+async function bestPassages(decider: WebDecider, answer: Extract<Search, { results: unknown }>, scored: Scored[], options: StepOptions, started: number): Promise<{ best: Best; requests: number; asked: Asked }> {
   const best: Best = new Map();
+  const none = { best, requests: 0, asked: { answered: [], failed: [] } };
   const setup = decider.setup?.search;
-  if (setup?.pick !== "best" || setup.full === undefined || !setup.cut) return { best, requests: 0 };
+  if (setup?.pick !== "best" || setup.full === undefined || !setup.cut) return none;
   const cut = setup.cut;
   const order = answer.results.map((hit, i) => ({ hit, score: scored[i]!.score })).sort((a, b) => byScore(a.score, b.score));
-  const asked = order
+  const asking = order
     .slice(setup.full)
+    .filter(({ hit }) => hit.snippet.length > cut)
     .map(({ hit }) => ({ url: hit.url, passages: passagesOfSnippet(hit.snippet, cut) }))
     .filter((one) => one.passages.length > 1);
-  if (!asked.length) return { best, requests: 0 };
+  const left = Math.floor((options.ms ?? DECIDE_MS) - (performance.now() - started));
+  if (!asking.length || left <= 0) return none;
   const need = options.task ?? answer.objective;
-  const { got, requests } = await bounded((ctx) => Promise.all(asked.map((one) => decider.judge(one.url, need, one.passages, ctx))), options);
-  if ("code" in got) return { best, requests };
-  asked.forEach((one, k) => {
+  const got: Verdicts[] = [];
+  const failed: Cost[] = [];
+  const { got: step, requests } = await bounded(async (ctx) => {
+    let next = 0;
+    const work = async () => {
+      while (next < asking.length && !failed.length && !ctx.signal.aborted) {
+        const k = next++;
+        try {
+          got[k] = await decider.judge(asking[k]!.url, need, asking[k]!.passages, ctx);
+        } catch (thrown) {
+          failed.push(costOf(thrown));
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(REQUESTS_AT_ONCE, asking.length) }, work));
+    ctx.signal.throwIfAborted();
+  }, { ...options, ms: left });
+  const asked = { answered: got.filter(Boolean), failed: step && "code" in step ? [...failed, step.cost] : failed };
+  if (asked.failed.length) return { best, requests, asked };
+  asking.forEach((one, k) => {
     const verdicts = got[k]!.verdicts;
     let at = 0;
     verdicts.forEach((v, i) => {
@@ -66,7 +90,19 @@ async function bestPassages(decider: WebDecider, answer: Extract<Search, { resul
     });
     best.set(one.url, { text: one.passages[at]!, first: at === 0, last: at === one.passages.length - 1 });
   });
-  return { best, requests };
+  return { best, requests, asked };
+}
+
+/** The sift's verdicts with what the passage requests answered and cost: their tokens (unknown where one failed), cost
+ *  and question hashes added after the sift's. */
+function withAsked(got: Verdicts, asked: Asked): Verdicts {
+  if (!asked.answered.length && !asked.failed.length) return got;
+  return {
+    ...got,
+    tokens: [...asked.answered.map((one) => one.tokens), ...asked.failed.map(() => null)].reduce(tokensTogether, got.tokens),
+    cost: [...asked.answered.map((one) => one.cost), ...asked.failed].reduce(costTogether, got.cost),
+    questions_sha256: [...got.questions_sha256, ...asked.answered.flatMap((one) => one.questions_sha256)],
+  };
 }
 
 /** `answer`'s results, every one, each scored one with `relevance`, its score to two places; when `rerank`, the most
