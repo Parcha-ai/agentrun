@@ -624,7 +624,7 @@ one off.
 A sandbox agent's `bash` runs in a box, a machine apart from this server. Docker is the default box and the only one offered
 with no setup: a Docker container made for each run, which binds the run's `work/` and nothing else. Every other provider
 whose sandbox can hold the run's folder is a box too: `daytona`, `modal`, `e2b`, `agent37`, `morph`, `cloudflare`, `fly`,
-`boxd`, `groundbox` and `sprites`. Such a box runs on a sandbox computer from that provider, offered once `AGENTRUN_BOXES` lists it
+`boxd`, `groundbox`, `vercel` and `sprites`. Such a box runs on a sandbox computer from that provider, offered once `AGENTRUN_BOXES` lists it
 and the keys its computer provider needs are set (the environment, or Settings → Computers): `AGENTRUN_BOXES=docker,e2b`
 with `E2B_API_KEY` set offers both. A box is a provider that serves a sandbox, takes the run's folder (a bind, an Archil
 mount or a synced folder), starts with no image named and keeps to the allow-list or has no network; Orgo (desktops), the
@@ -1036,7 +1036,7 @@ Settings → Computers. The kind says what the agent is given, and the provider 
 | Kind | What the agent gets | Providers |
 |---|---|---|
 | `none` | The run's folder alone: no computer, and no provider (`{"kind": "none"}`) | |
-| `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b`, `boxd`, `smolcloud`, `groundbox`, `sprites`, `cloudflare` (through a relay Worker you deploy) |
+| `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b`, `boxd`, `smolcloud`, `groundbox`, `vercel`, `sprites`, `cloudflare` (through a relay Worker you deploy) |
 | `desktop` | The computer's tools (`computer_observe`, `computer_act`, `computer_screenshot`), the computer as `codemode`'s `computer`, and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo`, `boxd`, `groundbox`, or [a paired computer](#a-persons-own-computer) by its id |
 | `phone` | A rented Android, through the same computer tools | `phone-harness` |
 | `browser` | A hosted browser (the browser tools) | `browserbase`, `kernel` |
@@ -1112,7 +1112,8 @@ seals it in its store as every saved key under `AGENTRUN_SEAL_KEY`, and register
 key each restart, the old one left on the workspace), `MORPH_API_KEY`, `ORGO_API_KEY`, `PHONE_HARNESS_API_KEY`,
 `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, `KERNEL_API_KEY`, `BOXD_API_KEY` (with `BOXD_ORG` and
 `BOXD_REGION` optional), `SMOLCLOUD_API_KEY`, `GROUNDBOX_API_KEY`, `CLOUDFLARE_RELAY_URL` and `CLOUDFLARE_RELAY_TOKEN` (the relay Worker's,
-`packages/computer/relays/cloudflare`), `FLY_API_TOKEN` and `FLY_APP`, `RENDER_API_KEY` and `RENDER_WORKSPACE_ID`, and `SPRITES_TOKEN`; Docker takes none.
+`packages/computer/relays/cloudflare`), `FLY_API_TOKEN` and `FLY_APP`, `RENDER_API_KEY` and `RENDER_WORKSPACE_ID`, `VERCEL_TOKEN` with `VERCEL_TEAM_ID`
+and `VERCEL_PROJECT_ID`, and `SPRITES_TOKEN`; Docker takes none.
 `GET /v2/computers/running` lists every run still going (queued, working, paused or waiting on its person) whose agent
 has a computer, newest first, each as `GET /v2/runs/{run_id}` answers it: its `computer` says the kind and provider,
 `starting`, `ready` or `taken_over` while its owner drives it, and a held run's hold. The runs list carries no
@@ -4072,14 +4073,16 @@ serves these routes alone:
 
   The names route above is the listing: there is no list or read of a server's address, auth or tools here. The
   generic save (`PUT /settings/mcp-servers/{name}`) is a `404` unless the operator names the MCP origins it may save at,
-  so by default the token saves no server at an address or with headers of its own. The preview, refresh, sign-in,
-  Composio tool listing and every other MCP settings route stay refused. On the full server the token's `api_key_env`
+  so by default the token saves no server at an address or with headers of its own. The preview is a `404` on the same
+  terms. The refresh, sign-in, Composio tool listing and every other MCP settings route stay refused. On the full server the token's `api_key_env`
   is `403`, as `api_key` is: the owner's session saves a Composio server there either way;
 - a per_run MCP server's save at an origin the operator names: `AGENTRUN_API_ONLY_MCP_ORIGINS`, comma-separated
   http(s) origins (`https://mcp.example.com`), a plain setting. With it, the token's `PUT /settings/mcp-servers/{name}`
-  saves `"auth": {"type": "per_run"}` at a listed origin, and each run hands its own credential in `mcp_auth`. A body
-  that carries a credential, or a save over a server the token did not save or one that seals a credential, is `403`;
-  any other origin or auth type, or a Composio server's name, is `404`. A wildcard, an entry that is not an http(s)
+  saves `"auth": {"type": "per_run"}` at a listed origin, and each run hands its own credential in `mcp_auth`. Its
+  `POST /settings/mcp-servers/preview` lists the tools of the same body before the save; any other preview body, a
+  saved server's name alone included, is `404`. A body that carries a credential is `403`; so is a save over a server
+  the token did not save or one that seals a credential, in words that name the server and say which. Any other origin
+  or auth type, or a Composio server's name, is `404`. A wildcard, an entry that is not an http(s)
   origin alone, or plain http to a host other than a loopback one (127.0.0.0/8, ::1, localhost) stops the start, and a
   loopback origin also needs `AGENTRUN_MCP_ALLOW_LOOPBACK=1`. The list holds past
   the save: a per_run server the token saved at an origin not listed is refused, and nothing is sent to it. Unset, the
@@ -4121,7 +4124,7 @@ other route is `403 forbidden` with
 `details.reason: "not_scoped"`. In it, an agent, run, imported template package or file of another workspace (or of none)
 answers the same `404` as an id no row has, and every list holds the workspace's rows alone, paged within them; bundled
 template packages are every workspace's. What it makes is the workspace's: an agent (made or applied), an imported
-package (an import whose name another workspace holds is `409 name_taken`), a file. A run is its agent's workspace's,
+package (its name is the workspace's own: another workspace imports the same name as its own package), a file. A run is its agent's workspace's,
 whoever started it, so a run a request with no header starts on that agent is the workspace's too. A run's `file_ids`
 take the workspace's files alone: one out of it reads as no file. An `Idempotency-Key` is the workspace's own: the same
 key in another workspace starts afresh. A trigger is its agent's workspace's: another's answers the same `404` as an id
@@ -4129,8 +4132,8 @@ no trigger has, and a new one naming another workspace's agent or run is refused
 request in a workspace makes what an apply here makes, a schedule or a feed that starts runs, with the launch hook set;
 any other source or target, or no hook, is `422` and nothing is made. Its edit is `enabled` alone, as above, and its run
 now (`POST /triggers/{id}/fire`) is served only for a trigger that may be on here, so the firing goes to the backend
-through the launch hook. An import with no header of a name a workspace holds is `409 name_taken` too,
-never replacing that workspace's package: the operator deletes it first.
+through the launch hook. A request with no header reads, imports, applies and deletes the packages of no workspace
+alone: its import of a name a workspace holds is a package of its own, never replacing that workspace's.
 
 Launch disks (`archil_disk` on a run's start) are the backend's to map to its tenants: the server keeps no record of which
 tenant a disk it did not make is for, and a run in a workspace may name any of them. It names no agent's own disk
@@ -4153,7 +4156,7 @@ the header and serves every row. The backend names the workspace itself: it over
 `agentrun-serve workspace-backfill FILE [--apply]` puts agents made before the backend sent the header in a workspace:
 FILE is `{"<agent id>": "<workspace>"}`. It sets an agent with none, refuses one in another workspace and keeps it, and
 without `--apply` writes nothing and prints what it would do. On SQLite it adds the workspace columns first when a server
-of this build has not yet opened the store. A store behind this build (on Postgres, below migration 0034) is refused with
+of this build has not yet opened the store. A store behind this build (on Postgres, below migration 0036) is refused with
 exit 2 and never migrated: start a server of this build once, then run it again.
 
 Known limits:
@@ -4164,13 +4167,16 @@ Known limits:
 - Publisher trust is the server's. Once any workspace imports from a GitHub publisher with `trust_publisher`, every
   workspace imports from it without, and a dry run's `trusted: true` tells a workspace that some workspace trusted it.
 - `workspace-backfill` maps agents alone. A template package imported before the backend sent the header stays in no
-  workspace: no workspace sees it, an import of its name is `409 name_taken`, and an agent made from it is not applied
-  again in a workspace (its package reads as missing). Delete the package and import it again with the header.
+  workspace: no workspace sees it, and an agent made from it is not applied again in a workspace (its package reads as
+  missing). Import it again with the header; a request with no header deletes the old one.
 - Launch disks are not a workspace's. A disk no agent owns, one another workspace's run named at launch included, is
   served to a run in any workspace that names it. A backend that lets its tenants pick a launch disk keeps their disks
   apart itself; one that maps each tenant's disk at launch, and takes no disk from the caller, needs nothing more.
 - On Postgres, migration 0033 builds its two indexes (`agents_by_workspace`, `runs_by_workspace`) inside the migrate
   transaction, which holds writes to `runs` and `agents` for the build: on a large `runs` table runners wait that long.
+- On Postgres, migration 0036 (each imported package keyed by its workspace) is breaking for runners and raises the
+  floor to 36: drain and stop the runners of earlier builds before this build's server starts, then start this build's
+  runners. On SQLite the server's open re-keys the table in place at version 18, and runners are unaffected.
 
 ### Share host
 
@@ -4234,9 +4240,11 @@ host, and this server starts no run for it:
 ```
 
 `max_cost_usd` is the trigger's cap, the most the firing's run may cost, so a host that pays for runs can check the
-payer's balance against it before it starts one. The firing keeps the cap it was handed with: a retry of the hand sends
-the same one, and the run the host starts for the firing runs under it even if the trigger's target changed since. A
-`null` means the agent's default when the host starts the run: the target set no cap when the firing was handed.
+payer's balance against it before it starts one. The firing keeps the lowest cap any hand of it sent: a retry of the
+hand sends the lower of that and the target's cap by then, and the run the host starts for the firing never runs past
+it. A target lowered after the hand lowers the firing's cap; one raised after, even back to where it was, never raises
+it. A `null` means the agent's default when the host starts the run: the target set no cap when the firing was
+handed. A cap the target gains after that is sent on a retry, and the run takes it under the agent's default.
 
 The POST carries `webhook-id` (the firing's id, the same if it is handed again), `webhook-timestamp` and
 `webhook-signature` as [webhooks](#webhooks) do: check them with any Standard Webhooks library before reading the
@@ -4251,11 +4259,12 @@ trigger's title and input origin, and the firing reads `started` with it, so the
 The run starts on the trigger's target as it stands when the host starts it, as the run this server would start for
 the firing, except for its cap:
 
-- Its cap is the `max_cost_usd` the hook sent for the firing, which the host's `max_cost_usd` may lower and never
-  raise: the lower of the two is taken. A firing handed at 0.5 runs at 0.5 when the host sends 10, and at 0.2 when the
-  host sends 0.2, even if the target's cap was raised after the hand. A firing handed with `null` takes the agent's
-  default when the host starts it, which the host's may lower the same way: on an agent with a $5 default, the host's
-  500 runs at 5 and its 1 at 1.
+- Its cap is the lowest `max_cost_usd` the hook sent for the firing or the target's cap when the host starts it,
+  whichever is lower, which the host's `max_cost_usd` may lower and never raise. A firing handed at 0.5 runs at 0.5 when
+  the host sends 10, and at 0.2 when the host sends 0.2 or the target was lowered to 0.2 after the hand; a target raised
+  after the hand still runs at 0.5, and a firing retried at 0.2 still runs at 0.2 after its target is set back to 0.5. A firing handed with `null` takes the agent's default when the host starts it, or the cap
+  the target has gained since when that is lower, which the host's may lower the same way: on an agent with a $5
+  default, the host's 500 runs at 5 and its 1 at 1, and a target capped at 2 after the hand runs at 2.
 - Its effort is the target's when the target sets one, else the host's `effort`, else the agent's.
 - It runs on the agent's current revision and holds no computer: `revision`, `hold` or `hold_minutes` in the host's
   body is refused with 422 `not_allowed`, naming the field.

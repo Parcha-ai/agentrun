@@ -11,6 +11,7 @@
     "boxd",
     "smolcloud",
     "groundbox",
+    "vercel",
     "sprites"
   ],
   "type": "module",
@@ -81,6 +82,10 @@
     "./groundbox": {
       "types": "./dist/groundbox.d.ts",
       "default": "./dist/groundbox.js"
+    },
+    "./vercel": {
+      "types": "./dist/vercel.d.ts",
+      "default": "./dist/vercel.js"
     },
     "./sprites": {
       "types": "./dist/sprites.d.ts",

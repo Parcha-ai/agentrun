@@ -628,7 +628,8 @@ Two more shapes take `box/Dockerfile` as it is, with no other base, layer or ent
 
 - **Your vendor takes an image from its own registry** (Vercel Sandbox, from Vercel Container Registry): build the box
   image and push it there under the tag `agentrun-box:<hash>` (`vercel vcr build docker . agentrun-box:<hash> --push`,
-  run in `box/`).
+  run in `box/`). [`src/vercel.ts`](src/vercel.ts) answers that tag with no call, since the push needs Docker, which a
+  provider doesn't run; a project without it refuses the create in words that give that command.
 - **Your vendor builds from a Dockerfile on its side** (Hyperbrowser, `hx vm image build --remote`, which uploads the
   build context): send `box/Dockerfile` with the rest of `RECIPE` (`install.sh` and `agentrun-archil`) as the context,
   and name the result `agentrun-box-<hash>`. A Hyperbrowser team image is a name, not an OCI tag.

@@ -8,9 +8,10 @@ import { ApiError, type InputIssue, unsupported } from "./errors.js";
 import { message, type RunMoment, type RunsStore, startRun, type StartDeps, type StartOptions, WAITS_ON_A_PERSON } from "./runs-over-store.js";
 import { runOfOrigin } from "./store-reads/runs.js";
 import { WITHHELD_MESSAGE } from "./handed-values.js";
-import type { Store } from "./store/index.js";
+import type { FiringHooked, Store } from "./store/index.js";
 import type { AgentEntry } from "./agents-store.js";
 import { NATIVE_CAP_UNSUPPORTED, NATIVE_RUN_OVERRIDES_UNSUPPORTED, nativeOf, nativeRunOverrides } from "./native/binding.js";
+import { toldCap } from "./trigger-launch-hook.js";
 import { firingsOwe, keysOwedRefusal } from "./run-keys.js";
 import type { MessageOrigin } from "./timeline/index.js";
 import { isObject, type Json } from "./validate.js";
@@ -172,9 +173,10 @@ function carriedEntryBytes(entry: unknown): number {
 
 /** What a launch hook's host lays over the run it starts for a firing it was handed (RunCreate `trigger_firing`): its
  *  create body (its input, which the trigger's previous result follows, the run's other fields, and its own
- *  max_cost_usd: handedCap), and the launch secrets it carries (`sealed`: its model_key, keys and mcp_auth, sealed for
- *  the run; `keys`: the keys' names). Its effort is taken only when the target sets none. */
-export type HostStart = { readonly body: Json; readonly sealed?: StartOptions["sealed"]; readonly keys?: StartOptions["keys"] };
+ *  max_cost_usd: handedCap), the cap the hook told it for the firing (`told`: HandedStart's), and the launch secrets it
+ *  carries (`sealed`: its model_key, keys and mcp_auth, sealed for the run; `keys`: the keys' names). Its effort is
+ *  taken only when the target sets none. */
+export type HostStart = { readonly body: Json; readonly told?: FiringHooked; readonly sealed?: StartOptions["sealed"]; readonly keys?: StartOptions["keys"] };
 
 /** A handed run's cap: its bound (the target's cap, else the agent's default on the revision the run starts on), which a
  *  host's own may lower and never raise; with no bound, the host's. A host's value that is no number is passed on, for
@@ -247,15 +249,20 @@ export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps
       const content = isObject(given) ? given.content : undefined;
       const handed = previous && entry.revision?.kind === "agentic" && typeof content === "string" ? await previousResultOf(store, deps, trigger) : "";
       const input = handed ? { ...(given as Json), content: `${content}${handed}` } : given;
-      // The target's cap, else the agent's default as it stands now on the revision the run starts on, either of which a
-      // host's may lower and never raise: a run a trigger starts is never uncapped (capped), but a connected agent's,
-      // which its own CLI's limits keep and AgentRun can't cap (NATIVE_CAP_UNSUPPORTED). The effort is the target's when
-      // it sets one, else the host's, else the agent's.
+      // The target's cap (for a handed firing, the lower of it and the cap the hook told: toldCap), else the agent's default
+      // as it stands now on the revision the run starts on, either of which a host's may lower and never raise: a run a
+      // trigger starts is never uncapped (capped), but a connected agent's, which its own CLI's limits keep and AgentRun
+      // can't cap (NATIVE_CAP_UNSUPPORTED). A told null was the agent's default, so a cap told or set since runs under
+      // that default too (`under_default`). The effort is the target's when it sets one, else the host's, else the agent's.
       const native = Boolean(nativeOf(entry.revision?.body));
       const { max_cost_usd: hostCap, ...overlay } = host?.body ?? {};
       const body = { ...overlay, ...(input !== undefined ? { input } : {}) };
-      const agentCap = target.max_cost_usd === undefined && typeof hostCap === "number" ? ((await deps.start.pinnedOf(entry, body))?.revision.body as { maxCostUsd?: number } | undefined)?.maxCostUsd : undefined;
-      const cap = handedCap(target.max_cost_usd ?? agentCap, hostCap);
+      const told = host?.told;
+      const capped = told === undefined ? target.max_cost_usd : (toldCap(told.max_cost_usd, target.max_cost_usd) ?? undefined);
+      const ofAgent = capped === undefined ? typeof hostCap === "number" : told !== undefined && (told.max_cost_usd === null || told.under_default === true);
+      const agentCap = ofAgent ? ((await deps.start.pinnedOf(entry, body))?.revision.body as { maxCostUsd?: number } | undefined)?.maxCostUsd : undefined;
+      const bound = capped === undefined ? agentCap : agentCap === undefined ? capped : Math.min(capped, agentCap);
+      const cap = handedCap(bound, hostCap);
       const run = await startRun(
         store,
         deps.start,
