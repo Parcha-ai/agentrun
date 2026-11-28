@@ -2,7 +2,7 @@
 // off the server's event loop, under one deadline for the read: past it, or when the worker fails, the read is 503
 // `unavailable`, never the text uncut. A cut running at its deadline is stopped with its worker, a cut still waiting
 // behind it is dropped, and the next cut makes a new worker. A reply answers only the cut it names, a worker that can't be
-// made refuses each cut at once, and the deadline runs on the monotonic clock. The worker's cut is redactSecrets' own, census spans
+// made refuses each cut at once (a cut a deadline's timer starts too), and the deadline runs on the monotonic clock. The worker's cut is redactSecrets' own, census spans
 // included, and the worker never holds a process open. That the read cuts what it should is run-file-cut's,
 // run-file-cut-handed's and planted-run-reads' to say: each reads through this worker.
 import assert from "node:assert/strict";
@@ -229,6 +229,29 @@ test("a worker that can't be made refuses each cut at once, naming why, and the 
   for (const cut of [first, second]) {
     assert.deepEqual([cut.how, cut.value], ["refused", "its worker could not take the cut (TypeError)"]);
     assert.ok(cut.ms < 1_000, `refused at once, not at its deadline (${Math.round(cut.ms)} ms)`);
+  }
+});
+
+test("a cut waiting behind one stopped at its deadline is refused at once when no new worker can be made, never thrown out of the deadline's timer", { timeout: 30_000 }, async () => {
+  // The pool reads the one URL it was given each time it makes a worker: the fixture's file for the first, then a URL new
+  // Worker refuses, as it may when the process can start no more threads.
+  const url = new URL(FAULTS.href);
+  const pool = new CutPool(url);
+  const uncaught = [];
+  const onUncaught = (error) => uncaught.push(error);
+  process.on("uncaughtException", onUncaught);
+  try {
+    const hung = settled(pool.cut("hang", [], 64, [], 300));
+    const waiting = settled(pool.cut("waiting", [], 64, [], 10_000));
+    url.href = "http://worker.test/cut-worker.js";
+    // The hung cut's deadline stops its worker and, from its timer, starts the waiting cut, whose worker can't be made.
+    const [h, w] = await Promise.all([hung, waiting]);
+    assert.deepEqual([h.how, h.value], ["refused", "the cut did not finish within 300 ms"]);
+    assert.deepEqual([w.how, w.value], ["refused", "its worker could not take the cut (TypeError)"]);
+    assert.ok(w.ms < 2_000, `refused when its turn came, not at its own deadline (${Math.round(w.ms)} ms)`);
+    assert.deepEqual(uncaught.map((error) => error.code ?? error.name), [], "nothing thrown out of the timer");
+  } finally {
+    process.off("uncaughtException", onUncaught);
   }
 });
 
