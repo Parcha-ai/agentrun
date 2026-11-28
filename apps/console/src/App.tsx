@@ -1005,16 +1005,17 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
         : where.section === "playground"
         ? <section className="flex h-full min-h-0 flex-col">
             <header className={cn(pageToolbarClass, "gap-2 px-5")}><h1 className={pageTitleClass}><Code className="size-4" aria-hidden />API playground</h1></header>
-            {/* Start a run draws this row itself, with its agent beside the operation: one row, not two. */}
-            {(where.operation || !agents) && <div className="flex flex-wrap items-center gap-3 border-b px-5 py-3 md:px-6">
+            {/* Start a run's row is the Playground's, with its agent beside the operation: one row, not two. The Playground
+                draws it while the agents are read too, so the operation field is one element across the read. */}
+            {where.operation && <div className="flex flex-wrap items-center gap-3 border-b px-5 py-3 md:px-6">
               {operationPicker}
               <span className="min-w-0 break-all font-mono text-small text-muted-foreground">{where.operation === "apply-template" ? `/v2/templates/${where.template ? encodeURIComponent(where.template) : "{template}"}/apply` : where.operation === "list-runs" ? (where.playgroundAgent ? `/v2/agents/${where.playgroundAgent}/runs` : "/v2/runs") : where.operation === "create-agent" ? "/v2/agents" : where.operation === "edit-agent" ? `/v2/agents/${where.playgroundAgent ?? "{agent_id}"}/definition` : "/v2/agents/{agent_id}/runs"}</span>
             </div>}
             {where.operation === "apply-template" ? <div className="min-h-0 flex-1 overflow-auto"><TemplatesPage key={where.template ?? ""} v2={v2} name={where.template} go={go} playground draft={where.draft} freeIds={c ? freeModels(c.harnesses).map((m) => m.id) : undefined} /></div> : where.operation === "list-runs" ? <RunsRequest key={`list:${where.playgroundAgent ?? ""}:${where.status ?? ""}:${where.archived ?? false}:${where.source ?? ""}:${where.from ?? ""}:${where.to ?? ""}:${where.model ?? ""}`} v2={v2} origin={location.origin} agentId={where.playgroundAgent} filter={{ status: where.status, archived: where.archived, source: where.source, from: where.from, to: where.to, model: where.model }} /> : where.operation ? <AgentRequest key={`${where.operation}:${where.playgroundAgent ?? ""}:${where.draft ?? ""}`} v2={v2} operation={where.operation} origin={location.origin} agentId={where.playgroundAgent} draft={where.draft} harnesses={editorCaps.harnesses} routePrefix={c?.models?.route_prefix} /> : <>
-              {!agents && noModel}
+              {/* Another requested agent is another request: a fresh Playground, its draft not carried over. */}
+              <Playground key={where.playgroundAgent ?? ""} lead={operationPicker} notice={noModel} agents={agents?.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onRevision={(revision, definition) => setPlaygroundRevision({ revision, definition })} onSend={send} limits={caps?.limits} {...(demo ? { upload: demoUpload } : {})} removeUpload={v2.deleteUpload} onMoveToRunner={moveToRunner} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
+                live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />
               {startError && <div className="m-8 border p-4" role="alert"><p className="text-lead text-destructive-text">The agents could not be read: {startError}</p><Button size="sm" className="mt-3" type="button" onClick={() => setRetry((n) => n + 1)}>Try again</Button></div>}
-              {agents && <Playground lead={operationPicker} notice={noModel} agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onRevision={(revision, definition) => setPlaygroundRevision({ revision, definition })} onSend={send} limits={caps?.limits} {...(demo ? { upload: demoUpload } : {})} removeUpload={v2.deleteUpload} onMoveToRunner={moveToRunner} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
-                live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />}
             </>}
           </section>
         : where.section === "agents"
