@@ -8,7 +8,7 @@ import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@ear
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { createBrowserExtension } from "@parcha/pi-browser/durable";
-import { stagehandDriver } from "../../dist/driver/stagehand.js";
+import { DEFAULT_BATCH_TIMEOUT_MS, stagehandDriver } from "../../dist/driver/stagehand.js";
 import { cdpProvider } from "../../dist/providers/cdp.js";
 
 const env = process.env;
@@ -59,7 +59,7 @@ const registry = createRegistry();
 registry.install(browser.extension);
 
 const harness = await Harness.open(await openNodeSqliteStorage(env.DB), { models, registry, onReport: () => {} }, ctx);
-const config = { label: "node-a", run: "run-real-chrome", policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 0, batchTimeoutMs: Number(env.BATCH_TIMEOUT_MS ?? 60_000) } };
+const config = { label: "node-a", run: "run-real-chrome", policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 0, batchTimeoutMs: Number(env.BATCH_TIMEOUT_MS ?? DEFAULT_BATCH_TIMEOUT_MS) } };
 const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } }, init: async (tx, id) => { Object.assign(await tx.doc(browser.docs.Config, id), config); } });
 const result = { mode: env.MODE, reconcile: await browser.reconcile(harness, () => true, ctx) };
 harness.resume();
