@@ -84,7 +84,7 @@ test("a metered provider whose computers say no size is unpriced for every compu
 test("every metered computer provider says whether its create answers the size it runs at: the ones that do are priced, the rest unpriced (a new provider is decided here)", async () => {
   const { PROVIDERS } = await import("@parcha/agentrun-computer");
   const computers = PROVIDERS.filter((entry) => entry.metered && entry.kinds.some((kind) => kind === "sandbox" || kind === "desktop"));
-  assert.deepEqual(computers.filter((entry) => entry.sized === true).map((entry) => entry.id).sort(), ["agent37", "daytona", "e2b", "fly", "groundbox", "modal", "orgo", "render"]);
+  assert.deepEqual(computers.filter((entry) => entry.sized === true).map((entry) => entry.id).sort(), ["agent37", "daytona", "e2b", "fly", "groundbox", "instabox", "modal", "orgo", "render"]);
   assert.deepEqual(computers.filter((entry) => entry.sized !== true).map((entry) => entry.id).sort(), ["boxd", "cloudflare", "morph", "smolcloud", "sprites", "vercel"]);
 });
 
