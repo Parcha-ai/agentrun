@@ -126,7 +126,8 @@ export interface PiAdapterOptions {
   /** The proxy's upstream fetch (a test's scripted origin). */
   readonly fetch?: typeof fetch;
   /** How long the provider may send nothing on a request before the session's proxy stops it (ModelProxyOptions.stallMs).
-   *  Default the kernel's MODEL_STALL_MS. */
+   *  Default the kernel's MODEL_STALL_MS. Given, pi's client waits on the proxy that long too (port-models.ts
+   *  sessionProvider's `wait`), past the transport's own 5 minutes. */
   readonly stallMs?: number;
   /** The runner's one redactor, which a provider's error passes through in the session's proxy before pi has it
    *  (ModelProxyOptions.redact; the proxy's own cut of the credential comes first). */
@@ -380,11 +381,12 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   const models = createModels();
   // pi-ai's client of the session's wire at its proxy (port-models.ts sessionProvider). pi prices nothing itself (the
   // proxy's booking does), so the model's cost stays $0. Image input on either wire (sessionModel): a host tool's images
-  // (a screenshot) reach the model in its tool result.
-  models.setProvider(sessionProvider(api, proxy, model, { provider: PROVIDER, keyName: "AGENTRUN_SESSION_KEY", ...(like ? { like } : {}), reasoning: false }));
+  // (a screenshot) reach the model in its tool result. A proxy given its own stall bound (a local model's) is waited on
+  // that long: the transport's 5 minutes would cut first.
+  models.setProvider(sessionProvider(api, proxy, model, { provider: PROVIDER, keyName: "AGENTRUN_SESSION_KEY", ...(like ? { like } : {}), reasoning: false, ...(options.stallMs === undefined ? {} : { wait: options.stallMs }) }));
   // Each tier's model at its own proxy, under its own provider id (tierProvider): a conversation whose agent names it
   // (a subagent's) is sent there, and booked as the session's own requests are.
-  for (const [tier, route, at] of tiers.each) models.setProvider(sessionProvider(route.provider.api, at, route.model, { provider: tierProvider(tier), keyName: "AGENTRUN_SESSION_KEY", ...(route.like ? { like: route.like } : {}), reasoning: false }));
+  for (const [tier, route, at] of tiers.each) models.setProvider(sessionProvider(route.provider.api, at, route.model, { provider: tierProvider(tier), keyName: "AGENTRUN_SESSION_KEY", ...(route.like ? { like: route.like } : {}), reasoning: false, ...(route.stallMs === undefined ? {} : { wait: route.stallMs }) }));
   // A child made on an earlier claim keeps the tier's model it was made on; when the tier's model has changed since (the
   // server's AGENT_MODEL_STRONG, say), that one is not here, and the child resumes on the tier's model now, as a new call
   // on the tier would run.

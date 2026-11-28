@@ -18,11 +18,11 @@ import { calculateCost } from "@earendil-works/pi-ai";
 import type { ThinkingLevelMap } from "../port-models.js";
 import type { Wire } from "@parcha/agentrun-kernel";
 import { LOCAL_MODEL_STALL_MS, onOpenRouter, openRouterAttribution, ROUTE_ORIGIN, streamErrorOf } from "@parcha/agentrun-kernel/host";
-import { EnvHttpProxyAgent, fetch as undiciFetch } from "undici";
 import type { ToolsAs } from "../local-models.js";
 import { chooseModel, FAUX_PROVIDER, MODEL_PROVIDER, type PinnedModel, runModels, type Tier } from "../model.js";
 import { OLLAMA_PROVIDER, type OllamaAsks } from "../ollama-provider.js";
 import { gatewayHeadersAt, providerFor } from "../provider.js";
+import { HEADERS_GRACE_MS, uncutFetch } from "../uncut-fetch.js";
 import { keepText, type Redact, runnerSecrets, secretRedactor } from "./redact.js";
 import { type EdgeAsks, responsesFetch } from "./responses-fetch.js";
 import { callsOfText, type PiContext, toolsAsText } from "./text-tools.js";
@@ -186,14 +186,12 @@ function tapped(upstream: typeof fetch | undefined): { fetch: typeof fetch; kept
 }
 
 /** The network for a model on the host's own machine, which says nothing while it loads or reads a long prompt: without
- *  the transport's own bounds (Node's fetch gives up after 5 minutes with no headers or no piece, as "terminated", which
- *  every client asks again on), so the session's model proxy's stall bound (LOCAL_MODEL_STALL_MS) ends a silent one, in
- *  words. The environment's proxy settings hold, as for Node's own fetch. One connection pool for every such route. */
-let localPool: EnvHttpProxyAgent | undefined;
-const localNetwork = ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
-  undiciFetch(input as never, { ...(init as object), dispatcher: (localPool ??= new EnvHttpProxyAgent({ headersTimeout: 0, bodyTimeout: 0 })) } as never)) as unknown as typeof fetch;
+ *  the transport's own bounds (uncut-fetch.ts), so the session's model proxy's stall bound (LOCAL_MODEL_STALL_MS) ends a
+ *  silent one, in words. The environment's proxy settings hold, as for Node's own fetch. One connection pool for every
+ *  such route. */
+const localNetwork = uncutFetch(true);
 /** How long pi-ai's client waits for a local model's headers: past the proxy's stall bound, so the bound ends it. */
-const LOCAL_HEADERS_MS = LOCAL_MODEL_STALL_MS + 60_000;
+const LOCAL_HEADERS_MS = LOCAL_MODEL_STALL_MS + HEADERS_GRACE_MS;
 
 /** A fetch that answers Anthropic Messages requests on `target`, through pi-ai's `models`. A provider's error text, which
  *  pi records, goes through `redact` (the runner's one redactor): a provider that echoes its key leaves none there.

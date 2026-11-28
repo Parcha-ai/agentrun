@@ -16,6 +16,7 @@ import { createProvider } from "@earendil-works/pi-ai/models";
 import type { SessionPort } from "@parcha/agentrun-kernel";
 import { CONVERSATION_HEADER, conversationLabel } from "@parcha/agentrun-kernel/host";
 import { attachingImages } from "./attach-images.js";
+import { HEADERS_GRACE_MS, uncutFetch } from "./uncut-fetch.js";
 
 /** The provider id the port's one model is listed under. */
 export const PORT_PROVIDER = "agentrun-session";
@@ -75,14 +76,16 @@ export function sessionModel(api: SessionPort["api"], url: string, model: string
  *  on the model, since pi-ai's Anthropic client sends its key as x-api-key, which the proxy does not forward; on Responses
  *  pi-ai sends the key as that bearer token itself. The one client every runner caller of a session proxy builds: pi's
  *  sessions and a workflow's model nodes. Each request's images are checked as they are attached
- *  (attach-images.ts): one a provider would refuse goes as a text saying why. */
-export function sessionProvider(api: SessionPort["api"], proxy: { readonly url: string; readonly key: string }, model: string, options: { provider: string; keyName: string; like?: SessionLike; reasoning: boolean }): ReturnType<typeof createProvider> {
+ *  (attach-images.ts): one a provider would refuse goes as a text saying why. `wait`: the proxy's own stall bound, when
+ *  it was given one (ModelProxyOptions.stallMs; a local model's 30 minutes): the client then waits on the proxy that
+ *  long and no less (sessionApi). */
+export function sessionProvider(api: SessionPort["api"], proxy: { readonly url: string; readonly key: string }, model: string, options: { provider: string; keyName: string; like?: SessionLike; reasoning: boolean; wait?: number }): ReturnType<typeof createProvider> {
   return createProvider({
     id: options.provider,
     baseUrl: sessionBaseUrl(api, proxy.url),
     auth: { apiKey: { name: options.keyName, resolve: async () => ({ auth: { apiKey: proxy.key }, source: "session" }) } },
     models: [sessionModel(api, proxy.url, model, { provider: options.provider, ...(api === "anthropic-messages" ? { headers: { authorization: `Bearer ${proxy.key}` } } : {}), ...(options.like ? { like: options.like } : {}), reasoning: options.reasoning })],
-    api: sessionApi(api, options.like),
+    api: sessionApi(api, options.like, options.wait),
   } as never);
 }
 
@@ -90,14 +93,20 @@ export function sessionProvider(api: SessionPort["api"], proxy: { readonly url: 
  *  it, the request's `sessionId`, one per conversation), so the host knows which of several conversations asking at once
  *  a booking is; the proxy sends that header no further. A translated Chat Completions session also carries its cache
  *  identity in Messages' existing metadata field: the proxy preserves it without forwarding extra headers. The
- *  translation uses it only for provider cache affinity. */
-function sessionApi(api: SessionPort["api"], like?: SessionLike): ProviderStreams {
+ *  translation uses it only for provider cache affinity. With `wait` (the proxy's own bound), the client goes through a
+ *  fetch with no transport bounds and waits that long and a minute for the proxy's headers: Node's fetch would cut a
+ *  request the proxy is still waiting on after 5 minutes, as "terminated", which pi asks again on, so a local model's
+ *  30 minutes never ended in the proxy's words. */
+function sessionApi(api: SessionPort["api"], like?: SessionLike, wait?: number): ProviderStreams {
   const own = attachingImages(api === "anthropic-messages" ? anthropicMessagesApi() : openAIResponsesApi());
   const translated = api === "anthropic-messages" && like?.translatedChatCompletions === true;
-  const withSession = <O extends { sessionId?: string; cacheRetention?: "none" | "short" | "long"; metadata?: Record<string, unknown>; headers?: Record<string, string | null> }>(options?: O) => {
+  const waiting = wait === undefined ? undefined : { fetch: proxyNetwork(), timeoutMs: wait + HEADERS_GRACE_MS };
+  const withSession = <O extends { sessionId?: string; cacheRetention?: "none" | "short" | "long"; metadata?: Record<string, unknown>; headers?: Record<string, string | null>; fetch?: typeof fetch; timeoutMs?: number }>(options?: O) => {
     const conversation = conversationLabel(options?.sessionId);
     return {
       ...options,
+      // The caller's own fetch or wait, when it gives one, holds.
+      ...(waiting ? { fetch: options?.fetch ?? waiting.fetch, timeoutMs: options?.timeoutMs ?? waiting.timeoutMs } : {}),
       ...(conversation === undefined ? {} : { headers: { ...options?.headers, [CONVERSATION_HEADER]: conversation } }),
       // The upstream can have accepted a paid request before this hop fails. Never replay it implicitly.
       ...(translated ? { maxRetries: 0 } : {}),
@@ -110,6 +119,11 @@ function sessionApi(api: SessionPort["api"], like?: SessionLike): ProviderStream
     streamSimple: (model, context, options) => own.streamSimple(model, context, withSession(options)),
   };
 }
+
+/** The direct network to a session's proxy on this host with no transport bounds (uncut-fetch.ts): one pool for every
+ *  session client that waits on its proxy's own bound. */
+let proxyPool: typeof fetch | undefined;
+const proxyNetwork = (): typeof fetch => (proxyPool ??= uncutFetch(false));
 
 /** The run's models over a session's port, as learned-workflow.ts, llm.ts and hosted-search.ts take them. */
 export type PortModels = {
