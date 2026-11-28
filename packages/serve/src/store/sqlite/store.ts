@@ -4,8 +4,8 @@
 // with more than one statement is one transaction (connection.transaction, BEGIN IMMEDIATE): all of it or none of it.
 // The domain code below (the SqliteStore class, storeOver) is written once for SQLite and Postgres (a Postgres store opens
 // it on its own connection): what differs, and the locks Postgres's many writers take, is the connection's Dialect (store/dialect.ts).
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, rmSync, statSync, writeSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, rmSync, statSync, watch, writeSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { backfillNativeCommandOwners, nativeCommandOwner, validConnectorId } from '../native-command-owner.js';
 import { watchCommandsAt, wakeCommands } from "../command-wake.js";
@@ -724,8 +724,29 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     const version = await versionOf(connection);
     return { version, runnerFloor: version, known: SCHEMA_VERSION };
   };
-  if (role !== "server") return Object.assign(store, { schemaState });
-  return Object.assign(store, { schemaState, rerecordReopened: rerecord! });
+  // Another process's commit to the file (a later server's upgrade among them) is said at once (Store.watchSchema).
+  const watchSchema = inMemory(file) ? undefined : (hint: () => void) => watchFile(file, hint);
+  if (role !== "server") return Object.assign(store, { schemaState, ...(watchSchema ? { watchSchema } : {}) });
+  return Object.assign(store, { schemaState, ...(watchSchema ? { watchSchema } : {}), rerecordReopened: rerecord! });
+}
+
+/** Calls `hint` when the store's file at `file` or its write-ahead log (or rollback journal) changes: a write by any
+ *  process, this one's included, so a hint says only to read again. The watch never holds the process open; where the
+ *  file system cannot watch, or the watch fails later, it says nothing more and the reader's own timer goes on. Answers
+ *  the unsubscribe. */
+function watchFile(file: string, hint: () => void): () => void {
+  const name = basename(file);
+  const ours = new Set([name, `${name}-wal`, `${name}-journal`]);
+  let watcher: ReturnType<typeof watch> | undefined;
+  try {
+    watcher = watch(dirname(file), { persistent: false }, (_event, changed) => {
+      if (changed === null || ours.has(String(changed))) hint();
+    });
+    watcher.on("error", () => watcher?.close());
+  } catch {
+    return () => {};
+  }
+  return () => watcher?.close();
 }
 
 /** The runner floor of a SQLite store a server of this build opened: the version itself (a runner opens only its own). */

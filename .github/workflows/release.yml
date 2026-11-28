@@ -64,8 +64,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/release-ci-gate.mjs
       # The tag's tree is the tree of the commit the release gate passed on, the last "Gated cut: <sha>" line of the pull
-      # request merged as the tag's commit, or differs from it only in the release's own files; no changes/ fragment is
-      # left at the tag. A refusal names the commits under the tag the gate never saw.
+      # request merged as the tag's commit, or differs from it only in the release's own files. A refusal names the
+      # commits under the tag the gate never saw. Late changes/ fragments at the tag are named, not refused: the publish
+      # job's fold writes them into the release.
       - name: The tag is the code the release gate ran on
         env:
           GH_TOKEN: ${{ github.token }}

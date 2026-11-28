@@ -37,7 +37,7 @@ import { laidOf, layLearningSeed } from "./learning-seed.js";
 import { learningEndOfRun, spentBesideOf } from "./learning-end.js";
 import { type ModelRef, ollamaTagsOf, type PinnedModel, providerModels, runModels, type Tier } from "../model.js";
 import { OLLAMA_PROVIDER } from "../ollama-provider.js";
-import { firstMessage, inputMessage, messageText } from "../run-manifest.js";
+import { firstMessage, inputMessage, messageText, opensFiles } from "../run-manifest.js";
 import { learningStartOf, personStarted, seedFailed, type RunLaunch } from "../run-launch.js";
 import { readsFiles, systemOf } from "../skills.js";
 import { DATA_ENV } from "../server-fs.js";
@@ -502,7 +502,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // Under the agent's bash policy, its shell's environment is the policy's too (bash-read-only.ts policyEnv), as the pi spec does.
   const bashPolicy = bashPolicyOf(body.toolSettings);
   // A computer that replaced an earlier claim's holds its acts to what it showed, as the pi spec's does.
-  const tools = await runTools(ws.workspace, computer.computer, { mode, noExec, context, aliases: [scratch], ...(computer.hold ? { hold: computer.hold } : {}), ...(bashPolicy === undefined ? {} : { bashPolicy }), ...(computer.replaced ? { replaced: true } : {}) });
+  const tools = await runTools(ws.workspace, computer.computer, { mode, noExec, context, ...(run.signal ? { signal: run.signal } : {}), aliases: [scratch], ...(computer.hold ? { hold: computer.hold } : {}), ...(bashPolicy === undefined ? {} : { bashPolicy }), ...(computer.replaced ? { replaced: true } : {}) });
   filedIn = tools.workspace;
   // The ToolHost's tools (web_save, uploads) and monid write in the run's files where the MCP files, for the same reason.
   const written = mode === 2 ? tools.workspace : ws.workspace;
@@ -831,7 +831,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   };
 
   // A typed input's other fields follow its content as one json block (inputMessage).
-  const input = await firstMessage(inputMessage(launch.input), ws.workspace);
+  // An agent with no tool that reads files is told its files are out of its reach (opensFiles).
+  const input = await firstMessage(inputMessage(launch.input), ws.workspace, undefined, opensFiles(revision.kind, granted, entry.promises?.tool_gate, (tool) => gate.permissions.policy(tool) === "deny"));
 
   // The run's end-of-run step, when it learns, the same as the pi spec's: the compile turn and the owner's correction over
   // the run's store, its draft checked against the seed in the agent's learning rows.

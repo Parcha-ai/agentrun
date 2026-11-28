@@ -169,8 +169,9 @@ const HOSTED = { "content-security-policy": SHARE_HOST_CSP, "x-robots-tag": "noi
 /** The page's asset URLs as Vite writes them with base "./" (`./assets/x`), moved under the share host's /r/_assets/: the
  *  page answers at /r/<id> and /r/<id>/, where a relative URL would land elsewhere. */
 const hostedAssets = (text: string) => text.replace(/(\s(?:src|href)=["'])\.\/assets\//g, "$1/r/_assets/");
-/** A share host's page for a share (the console's share.html), its asset URLs under /r/_assets/, under SHARE_HOST_CSP. */
-export const sendHostedSharePage = (req: IncomingMessage, res: ServerResponse, dir: string | undefined) => file(req, res, "/r/<id>", dir ?? CONSOLE_DIR, "share.html", 200, { headers: HOSTED, rewrite: hostedAssets });
+/** A share host's page for a share (the console's share.html), its asset URLs under /r/_assets/, under SHARE_HOST_CSP.
+ *  `status`: 410 for a deleted share and 404 for none, where the page's own read of the bundle says why. */
+export const sendHostedSharePage = (req: IncomingMessage, res: ServerResponse, dir: string | undefined, status = 200) => file(req, res, "/r/<id>", dir ?? CONSOLE_DIR, "share.html", status, { headers: HOSTED, rewrite: hostedAssets });
 /** A share host's asset at /r/_assets/`rel`: the console's assets/`rel`, the same rules as /assets/. */
 export const sendHostedAsset = (req: IncomingMessage, res: ServerResponse, raw: string, dir: string | undefined, rel: string) =>
   rel.endsWith(".html") ? refuse(req, res, new ApiError("not_found", `no file ${raw} in the console`)) : file(req, res, raw, dir ?? CONSOLE_DIR, `assets/${rel}`, 200, { headers: HOSTED });

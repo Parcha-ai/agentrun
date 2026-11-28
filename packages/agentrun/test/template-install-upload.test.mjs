@@ -5,7 +5,7 @@
 // --dry-run passed on. An upload keeps no publisher, so that path needs --trust unless it is a dry run, and it reads
 // nothing before. Any other answer is as before: one request, GitHub never read.
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { createServer, request } from "node:http";
 import { join } from "node:path";
@@ -88,12 +88,17 @@ function tarball({ sha = SHA, extra = EXTRA, folder = "kyb" } = {}) {
 }
 
 /** A faux GitHub: `resolve(ref)` the commit a ref is at now (main and HEAD at SHA by default), a tarball by commit (or by
- *  a ref, at the commit it is at then) through the redirect GitHub sends, and the requests sent. */
+ *  a ref, at the commit it is at then) through the redirect GitHub sends, and the requests sent. It answers under a
+ *  random path of its own, the one `url` names, so only a request made from `url` is kept: any other process on the
+ *  host that reaches its port (a scan probing each loopback port) gets a 404 and is never counted as GitHub read. */
 async function fauxGitHub(t, { resolve = (ref) => (ref === "main" || ref === "HEAD" ? SHA : undefined), tarballs = { [SHA]: tarball() } } = {}) {
   const seen = [];
+  const own = `/${randomBytes(8).toString("hex")}`;
   const server = createServer((req, res) => {
-    seen.push(`${req.method} ${req.url}${req.headers.authorization ? " (token)" : ""}`);
-    const path = new URL(req.url, "http://faux").pathname;
+    if (!req.url.startsWith(`${own}/`)) return res.writeHead(404).end("{}");
+    const url = req.url.slice(own.length);
+    seen.push(`${req.method} ${url}${req.headers.authorization ? " (token)" : ""}`);
+    const path = new URL(url, "http://faux").pathname;
     let match;
     if ((match = /^\/repos\/acme\/agents\/commits\/([^/]+)$/.exec(path))) {
       const sha = resolve(decodeURIComponent(match[1]));
@@ -101,14 +106,14 @@ async function fauxGitHub(t, { resolve = (ref) => (ref === "main" || ref === "HE
     }
     if ((match = /^\/repos\/acme\/agents\/tarball\/([^/]+)$/.exec(path))) {
       const sha = tarballs[match[1]] ? match[1] : resolve(decodeURIComponent(match[1]));
-      return sha ? res.writeHead(302, { location: `/codeload/acme/agents/legacy.tar.gz/${sha}` }).end() : res.writeHead(404).end("{}");
+      return sha ? res.writeHead(302, { location: `${own}/codeload/acme/agents/legacy.tar.gz/${sha}` }).end() : res.writeHead(404).end("{}");
     }
     if ((match = /^\/codeload\/acme\/agents\/legacy\.tar\.gz\/([0-9a-f]{40})$/.exec(path)) && tarballs[match[1]]) return res.writeHead(200, { "content-type": "application/x-gzip" }).end(tarballs[match[1]]);
     res.writeHead(404).end("{}");
   });
   await new Promise((done) => server.listen(0, "127.0.0.1", done));
   t.after(() => new Promise((done) => (server.closeAllConnections(), server.close(done))));
-  return { url: `http://127.0.0.1:${server.address().port}`, seen };
+  return { url: `http://127.0.0.1:${server.address().port}${own}`, seen };
 }
 
 /** A loopback proxy in front of `to` that keeps each API request's body as JSON: what the command sent. */
@@ -267,6 +272,8 @@ test("a server that takes the source, or refuses it any other way, gets the one 
 // is printed as the server sent it, with the exit it always had.
 test("only a 422 files_only, or a 422 input_invalid naming source not_allowed, starts the fallback: every other refusal is printed as sent, with its usual exit, one request, GitHub never read", { timeout: 120_000 }, async (t) => {
   const github = await fauxGitHub(t);
+  // Another process on this host probing the faux GitHub's port, as a port scan does, is not the command reading GitHub.
+  await fetch(new URL("/", github.url)).then((res) => res.body?.cancel());
   let answer;
   const target = await fakeServer(t, () => answer);
   const install = installer(target.base, github);

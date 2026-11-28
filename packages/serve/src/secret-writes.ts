@@ -15,6 +15,11 @@ import { byConsoleSession, byOwnerSession } from "./page.js";
 /** The one refusal a secret write from anything but the owner's session gets (403 forbidden). */
 export const SECRET_WRITE_REFUSAL = "Saving, replacing or removing a secret takes the owner's signed-in session in the console; the API token can't write secrets.";
 
+/** The one refusal on an API-only server (api-only.ts), which has no owner's session and serves no console: what reaches
+ *  it there is an MCP credential's value from the token at a listed origin, or a Composio key's, so it names what the
+ *  token sends instead. */
+export const SECRET_WRITE_REFUSAL_API_ONLY = "On an API-only server the API token can't send a secret's value here. Save an MCP server as per_run, each run handing its credential in mcp_auth, or name a Composio key by api_key_env.";
+
 /** The refusal's words with where to finish it: the one sentence, then "Finish it in the console: <link>" when the
  *  operation has a console page (registerSecretPage). The same link is the error's `details.console_url`. */
 export const secretWriteRefusal = (link?: string, words: string = SECRET_WRITE_REFUSAL): string => (link ? `${words} Finish it in the console: ${link}` : words);
@@ -164,8 +169,10 @@ export function registerSecretRefusal(operationIds: string | readonly string[], 
 }
 
 /** The words `operationId`'s refused request gets: those its stored predicate gave (SecretRequest.words), else the
- *  operation's own (registerSecretRefusal), else SECRET_WRITE_REFUSAL. */
-export const secretRefusalWords = (operationId: string, request: SecretRequest): string => request.words ?? refusals.get(operationId)?.(request) ?? SECRET_WRITE_REFUSAL;
+ *  operation's own (registerSecretRefusal), else the one refusal: SECRET_WRITE_REFUSAL_API_ONLY on an API-only server,
+ *  SECRET_WRITE_REFUSAL anywhere else. */
+export const secretRefusalWords = (operationId: string, request: SecretRequest): string =>
+  request.words ?? refusals.get(operationId)?.(request) ?? (request.apiOnly === true ? SECRET_WRITE_REFUSAL_API_ONLY : SECRET_WRITE_REFUSAL);
 
 // ---- where a refused secret write is finished ------------------------------------------------------------------------
 //

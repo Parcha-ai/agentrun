@@ -10,7 +10,7 @@ import { decisionRows } from "../dist/decision-rows.js";
 import { agentHomeFolder } from "../dist/workspace/index.js";
 import { ROUTES } from "../dist/server.js";
 import { DEFINITION_FIELDS } from "../dist/validate.js";
-import { AGENT_FIELDS_SENT, CAPABILITIES_SENT, DEFINITION_INPUT_OPTIONAL, DEFINITION_OPTIONAL, MCP_PREVIEW_SCOPE, REQUEST_EXAMPLES, RUN_FIELDS_SENT, SIGN_IN_FIELDS_SENT } from "../dist/openapi.js";
+import { AGENT_FIELDS_SENT, CAPABILITIES_SENT, DEFINITION_INPUT_OPTIONAL, DEFINITION_OPTIONAL, MCP_PREVIEW_SCOPE, NOT_SERVED, REQUEST_EXAMPLES, RUN_FIELDS_SENT, SIGN_IN_FIELDS_SENT, UNSUPPORTED } from "../dist/openapi.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { capabilities } from "../dist/index.js";
 import { ended, fedBack, LEARN, learner, made, started, unreadable } from "./learn-support.mjs";
@@ -79,10 +79,14 @@ test("the served document names the owner's cookie as the console sets it for th
   assert.equal(nameOf(await openapiWith(baseUrl, { "x-forwarded-proto": "https" })), "__Host-agentrun-session", "behind an https proxy");
 });
 
-test("every route the server serves is in the document, and every operation in it is a route here: served, or marked unsupported with why; the contract's operations this server does not serve are left out", async (t) => {
+test("every route the server serves is in the document, and every operation in it is a route here: served, or marked unsupported with why; the contract's operations this server does not serve are left out, each a route that answers 501 with its reason", async (t) => {
   const { doc } = await served(t);
   const ops = operations(doc);
-  for (const route of ROUTES) {
+  for (const name of NOT_SERVED) {
+    const route = ROUTES.find((r) => r.name === name);
+    assert.ok(route?.capability && UNSUPPORTED[route.capability], `${name} is a route answered 501 with its reason`);
+  }
+  for (const route of ROUTES.filter((r) => !NOT_SERVED.includes(r.name))) {
     const found = ops.filter(({ op, method }) => op.operationId === route.name && method === route.method.toLowerCase());
     assert.equal(found.length, 1, `${route.method} ${route.name} is one operation of the document`);
     assert.match(sample(found[0].path), route.pattern, `${route.name}: the document's path ${found[0].path} is the route's`);
@@ -99,6 +103,10 @@ test("every route the server serves is in the document, and every operation in i
   assert.equal(ops.filter(({ op }) => op["x-agentrun-serve-unsupported"]).length, 1, "the one this server answers 501: quotes");
   assert.deepEqual(doc.info["x-agentrun-serve"].unsupported, ["POST /quotes"]);
   assert.deepEqual(doc.info["x-agentrun-serve"].not_served, ["GET /agents/{agent_id}/home", "PUT /agents/{agent_id}/home", "POST /runs/{run_id}/kill"]);
+  // The info's description says how they answer: 501 unsupported_here naming the capability, as the routes do.
+  const said = doc.info["x-agentrun-serve"].description;
+  assert.match(said, /not_served are left out of this document, and answer 501 unsupported_here naming their capability/);
+  assert.doesNotMatch(said, /404/, "no operation of this document is said to answer 404 for being unserved");
   for (const id of ["exportHome", "importHome", "killRun"]) assert.ok(!ops.some(({ op }) => op.operationId === id), `${id} is not in the document`);
 });
 

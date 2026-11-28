@@ -586,7 +586,7 @@ export function claimBrowser(provider: ComputerProvider, spec: ComputerSpec): { 
 
 /** A run's computer of `provider` the claim holds, connected: its groups from its hello, its read-back the provider's
  *  own, its connection's `close` (a park keeps the machine), and its release, which deletes it. */
-type ProviderComputer = LaunchedComputer & { readonly client: ComputerClient; readBack(): Promise<Result<MountReadBack>>; machine: string; hello: ComputerSaid["hello"]; watch?: WatchOf; ref: { readonly id: string; readonly name: string }; close(): Promise<void> };
+type ProviderComputer = LaunchedComputer & { readonly client: ComputerClient; readBack(options?: { readonly signal?: AbortSignal }): Promise<Result<MountReadBack>>; machine: string; hello: ComputerSaid["hello"]; watch?: WatchOf; ref: { readonly id: string; readonly name: string }; close(): Promise<void> };
 
 /** The run's computer `ref` of `provider`, connected (`connection`), as the claim holds it (ProviderComputer). `ended`:
  *  told once its delete answered ok (its interval's end, computer-intervals.ts). */
@@ -604,8 +604,8 @@ function providerComputer(provider: ComputerProvider, ref: { readonly id: string
     machine: hello.kind,
     hello,
     client,
-    async readBack(): Promise<Result<MountReadBack>> {
-      const attached = await provider.attach({ id: ref.id });
+    async readBack(options: { readonly signal?: AbortSignal } = {}): Promise<Result<MountReadBack>> {
+      const attached = await provider.attach({ id: ref.id }, options.signal ? { signal: options.signal } : {});
       if (!attached.ok) return attached;
       return attached.value.spec.mount ? { ok: true, value: attached.value.spec.mount } : { ok: false, error: { code: "not_found", message: "nothing is mounted in this computer" } };
     },
@@ -814,7 +814,7 @@ function lostAware(first: ProviderComputer, renewal: Renewal): ProviderComputer 
     get own() {
       return ownOf(current);
     },
-    readBack: () => current.readBack(),
+    readBack: (options) => current.readBack(options),
     close: () => current.close(),
     async release() {
       released = true;
@@ -1171,7 +1171,8 @@ export async function computerForClaim(
       if (mount) {
         try {
           if (store && stored) folderHeld.folder = await holdSynced(store, own(again), stored, deps.signal);
-          await deps.workspace.attach({ id: ref.id, client: again.client, readBack: () => again.readBack() }, { ...deps.check, epoch: deps.check.epoch ?? launch.epoch, ...(store ? { sync: true as const } : {}) });
+          // Its read-back cut by the claim's signal, as the create and the synced folder above are.
+          await deps.workspace.attach({ id: ref.id, client: again.client, readBack: () => again.readBack(deps.signal ? { signal: deps.signal } : {}) }, { ...deps.check, epoch: deps.check.epoch ?? launch.epoch, ...(store ? { sync: true as const } : {}) });
         } catch (error) {
           await again.release().catch(() => undefined);
           throw error;

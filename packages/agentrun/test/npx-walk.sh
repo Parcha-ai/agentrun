@@ -6,7 +6,8 @@
 # the setup prompt's release-notes agent (docs/SKILL.md) is made and run with the README's CLI, the same command in a
 # second terminal, on its Local model (walk-model.mjs, a fake Ollama: no key, no network, no download); the receipt
 # is checked, and the server stopped as a person stops it there, with Ctrl-C (`agentrun stop` stops only a server started
-# in the background). REPORT=<file> puts the report in that file too; WALK_MODEL_PORT moves the
+# in the background). Last, the tree npx installed: each pi package the launcher pins, once and at that version
+# (npx-tree.mjs; a launcher published before the pin is not checked). REPORT=<file> puts the report in that file too; WALK_MODEL_PORT moves the
 # fake off 11434, Ollama's own port, where a machine has Ollama on it. Needs node, npm, curl and setsid.
 set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -88,3 +89,12 @@ while kill -0 -"$group" 2>/dev/null || curl -fsS --max-time 2 "$base/health" >/d
 done
 group=''
 pass "stopped" "Ctrl-C: $cmd and everything it started exited, and $base no longer answers"
+
+# What npm made of the launcher's dependencies: one copy of each pi package it pins, at that version.
+pi_rc=0
+pi=$(node "$here/test/npx-tree.mjs" "$npm_config_cache") || pi_rc=$?
+case $pi_rc in
+  0) pass "one pi" "$pi" ;;
+  3) row "one pi" "not checked" "$pi" ;;
+  *) fail "one pi" "$pi" ;;
+esac

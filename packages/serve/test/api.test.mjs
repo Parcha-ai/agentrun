@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { capabilities, ERROR_STATUS } from "../dist/index.js";
 import { thinkingLevel } from "../dist/model.js";
-import { agent, answerFlow, client, flowAgent, scratch, serve, startServe, withEnv } from "./support.mjs";
+import { agent, answerFlow, client, flowAgent, follow, scratch, serve, startRun, startServe, withEnv } from "./support.mjs";
 
 test("capabilities answer without a credential and say what this server offers: local, no quotes, no home moves, uploads up to their limits", async (t) => {
   withEnv(t, {}, ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "PARALLEL_API_KEY"]);
@@ -264,24 +264,61 @@ test("the error envelope: each code with its one status, 405 with Allow, 404 out
   check(await api("GET", "/agents?limit=0"), "bad_request");
 });
 
-test("quotes, declared off, answer 501 unsupported_here naming it, before any lookup; the contract's routes this server does not serve are 404 and declared off", async (t) => {
+test("quotes, declared off, answer 501 unsupported_here naming it, before any lookup", async (t) => {
   const { api, baseUrl } = await serve(t);
   const caps = (await client(baseUrl)("GET", "/capabilities")).body;
   assert.equal(caps.features.quotes, false, "quotes are declared off");
   const quote = await api("POST", "/quotes", { agent_id: "x" });
   assert.equal(quote.status, 501);
   assert.deepEqual([quote.body.error.code, quote.body.error.capability], ["unsupported_here", "quotes"]);
-  const gone = [
-    ["runs.kill", "POST", "/runs/x/kill", {}],
-    ["home.export", "GET", "/agents/x/home", undefined, { accept: "application/json" }],
-    ["home.import", "PUT", "/agents/x/home", {}],
+});
+
+// The contract's packed home (exportHome, importHome) and a run's kill (killRun): declared off, and each answered as the
+// contract answers a feature a backend does not offer, 501 unsupported_here naming its capability. Before any lookup: an
+// agent or run that is here, one that is not, and a purged one get the same answer, so the route tells nothing of which ids
+// exist. The token is checked first, as on every route.
+const NOT_OFFERED = {
+  "home.export": "This server packs no home: an agent's home is read file by file, with GET /agents/{id}/home/files.",
+  "home.import": "This server takes no packed home: an agent's home is written file by file, with PUT /agents/{id}/home/files/{path}.",
+  "runs.kill": "This server does not kill and restart a run: POST /runs/{id}/stop ends its turn, and POST /runs/{id}/cancel ends the run.",
+};
+
+test("the contract's packed home and a run's kill, declared off, answer 501 unsupported_here naming the capability in its words, for an agent or run here, a missing one and a purged one alike; 401 without the token", async (t) => {
+  const { api, baseUrl } = await serve(t);
+  const { run_id: here } = await startRun(api, "keeper", "hi");
+  const { run_id: purged } = await startRun(api, "gone", "hi");
+  await follow(api, purged, ["completed", "failed", "cancelled"]);
+  const purge = await api("DELETE", `/runs/${purged}`);
+  assert.ok(purge.status < 300, JSON.stringify(purge.body));
+  assert.equal((await api("POST", "/agents/gone/archive")).status, 200);
+  const drop = await api("DELETE", "/agents/gone");
+  assert.ok(drop.status < 300, JSON.stringify(drop.body));
+  assert.deepEqual([(await api("GET", `/runs/${purged}`)).status >= 400, (await api("GET", "/agents/gone")).status >= 400], [true, true], "the purged run and the deleted agent are no longer served");
+  const asked = [
+    ["home.export", "GET", (agent) => `/agents/${agent}/home`, undefined, { accept: "application/json" }],
+    ["home.export", "GET", (agent) => `/agents/${agent}/home`, undefined, { accept: "application/vnd.agentrun.home+tar" }],
+    ["home.import", "PUT", (agent) => `/agents/${agent}/home`, {}],
+    ["home.import", "PUT", (agent) => `/agents/${agent}/home?check=1`, {}],
+    ["runs.kill", "POST", (run) => `/runs/${run}/kill`, {}],
   ];
-  for (const [capability, method, path, body, headers] of gone) {
-    const [group, name] = capability.split(".");
-    assert.equal(caps.features[group][name], false, `${capability} is declared off`);
-    const res = await api(method, path, body, headers);
-    assert.deepEqual([res.status, res.body.error.code], [404, "not_found"], `${method} ${path}`);
+  for (const [capability, method, path, body, headers] of asked) {
+    const ids = capability === "runs.kill" ? [here, "run_nobody", purged, "not an id"] : ["keeper", "nobody", "gone", "not an id"];
+    const answers = [];
+    for (const id of ids) {
+      const res = await api(method, path(encodeURIComponent(id)), body, headers);
+      assert.equal(res.status, 501, `${method} ${path(id)}: ${JSON.stringify(res.body)}`);
+      const { request_id: _, ...error } = res.body.error;
+      assert.deepEqual(error, { code: "unsupported_here", message: NOT_OFFERED[capability], retryable: false, capability }, `${method} ${path(id)}`);
+      answers.push(JSON.stringify(error));
+    }
+    assert.equal(new Set(answers).size, 1, `${method}: the same answer whatever the id`);
+    const anon = await client(baseUrl)(method, path(capability === "runs.kill" ? here : "keeper"), body);
+    assert.deepEqual([anon.status, anon.body.error.code], [401, "unauthenticated"], `${method} without the token`);
   }
+  const caps = (await client(baseUrl)("GET", "/capabilities")).body;
+  assert.deepEqual([caps.features.home.export, caps.features.home.import, caps.features.runs.kill], [false, false, false], "still declared off");
+  assert.equal((await api("GET", "/agents/keeper")).status, 200, "the agent is still here");
+  assert.equal((await api("GET", `/runs/${here}`)).status, 200, "and its run");
 });
 
 test("a run's input is checked against the default schema {content: string} before anything starts, and an agent's tools against what is bound when it is saved", async (t) => {

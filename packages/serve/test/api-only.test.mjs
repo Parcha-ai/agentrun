@@ -112,6 +112,7 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     ["GET", "/v2/settings/mcp-servers"], ["GET", "/v2/settings/mcp-servers/x"], ["HEAD", "/v2/settings/mcp-servers/x"], ["PUT", "/v2/settings/mcp-servers/x"],
     ["POST", "/v2/mcp"], ["POST", "/v2/triggers"], ["POST", "/v2/hooks/trg_1"],
     ["GET", "/v2/agents"], ["POST", "/v2/agents"], ["POST", "/v2/runs/run_1/approvals/a"], ["GET", "/v2/runs/run_1/browser"], ["POST", "/v2/runs/run_1/kill"],
+    ["GET", "/v2/agents/a1/home"], ["PUT", "/v2/agents/a1/home"],
     ["GET", "/v2/runs/run_1/browser/live/v/x"], ["POST", "/v2/runs/run_1/computer/live/v/x"], ["POST", "/v2/runs/run_1/computer/call"], ["POST", "/v2/runs/run_1/computer/release"],
     ["GET", "/v2/openapi.json"], ["GET", "/v2/v2/runs"],
     ["GET", "/v2/templates"], ["DELETE", "/v2/templates/x"], ["PUT", "/v2/agents/a1/definition"],

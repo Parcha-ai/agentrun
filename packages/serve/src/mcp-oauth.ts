@@ -287,6 +287,25 @@ export async function mcpServerAt(url: URL, signal: AbortSignal, network: OAuthN
   return checked(`the MCP server at ${url.host}`, url.href, signal, network, reach);
 }
 
+/** The cloud metadata services' names (GCP's, AWS's, and the bare names their resolvers answer inside a VPC): never an
+ *  MCP server the workspace public-https mode reaches, whatever they resolve to from here. Compared lower-cased, a
+ *  trailing dot cut. */
+export const METADATA_HOSTS: readonly string[] = ["metadata.google.internal", "metadata.goog", "metadata", "instance-data", "instance-data.ec2.internal"];
+
+/** Where a request to a workspace's MCP server that stands on the public-https mode alone may go (mcp-api-only-origins.ts
+ *  onPublicHttpsAlone), at its save, preview and refresh and at each request of a run's calls: https alone, never a cloud
+ *  metadata name (METADATA_HOSTS), and `checked`'s rule with no private host the owner allows and no loopback, even on
+ *  a local install: every address its name resolves to (or the literal one it names) public, and the one dialled is one
+ *  checked (dialAt pins it), so a name that answers somewhere inward at the connection is refused there. */
+export async function publicMcpServerAt(url: URL, signal: AbortSignal, network: OAuthNetwork, own: readonly string[] = []): Promise<{ refused: string; unresolved?: true } | { address: string }> {
+  if (url.protocol !== "https:") return { refused: `the MCP server at ${url.host} is not https; refused` };
+  if (METADATA_HOSTS.includes(url.hostname.toLowerCase().replace(/[.]$/, ""))) return { refused: `the MCP server at ${url.host} is a cloud metadata service; refused` };
+  const subject = `the MCP server at ${url.host}`;
+  // No owner's list stands for it: a private address is refused in words that offer none.
+  const at = await checked(subject, url.href, signal, network, { own });
+  return "refused" in at && !at.unresolved ? { refused: `${subject} is a private address; refused` } : at;
+}
+
 /** Where a read of a calendar's file at `url` may go (calendar/fetch.ts, each redirect hop): `mcpServerAt`'s rule, the
  *  server's one, in the calendar's words. Dialled with dialAt. */
 export async function calendarAt(url: URL, signal: AbortSignal, network: OAuthNetwork, reach: Reach = {}): Promise<{ refused: string; unresolved?: true } | { address: string | undefined }> {
@@ -404,9 +423,11 @@ export class McpSignIns {
    *  publishes no metadata or the metadata offers neither; `callback`, the callback URL a hand-made app names. undefined
    *  when the discovery could not be made (refused, unreachable, not OAuth): the start's own words say why. `stop`: the
    *  preview's, so a server that stops cuts the discovery's requests and lookups with the preview's own. */
-  async registration(url: URL, stop?: AbortSignal): Promise<{ registration: boolean; callback: string } | undefined> {
-    // The start's reach, loopback included: a local install's sign-in is told as its start will find it.
-    const found = await this.discovered(url, { own: this.own, allowed: await this.allowed(), loopback: this.loopback }, stop);
+  async registration(url: URL, stop?: AbortSignal, strict = false): Promise<{ registration: boolean; callback: string } | undefined> {
+    // The start's reach, loopback included: a local install's sign-in is told as its start will find it. `strict`: the
+    // server is held to publicMcpServerAt's rule (a workspace's on the public-https mode alone), and so is every request
+    // of its discovery: no host the owner allows, no loopback.
+    const found = await this.discovered(url, strict ? { own: this.own } : { own: this.own, allowed: await this.allowed(), loopback: this.loopback }, stop);
     return found && { registration: found.registration, callback: this.callback };
   }
 

@@ -8,7 +8,7 @@
 // and does NO token refresh: it is the owner's create/preview/save/refresh(tools)/remove and the OAuth sign-in, and nothing
 // a run's launch calls.
 import { outsideWorkspace, workspaceNow } from "./workspace-scope.js";
-import { heldApiOnlyMcpOrigins, offApiOnlyMcpOrigins } from "./mcp-api-only-origins.js";
+import { heldApiOnlyMcpOrigins, offApiOnlyMcpOrigins, onPublicHttpsAlone, workspaceMcpRow } from "./mcp-api-only-origins.js";
 import { ApiError, invalid, type InputIssue } from "./errors.js";
 import {
   type Auth, authOf, canonical, credentialInQuery, credentialInQueryWords, credentialMissing, type HeaderMap, savedOrGiven, shownUrl, type Listed, listServer, marked, MAX_OAUTH_VALUE_BYTES, type McpPrices,
@@ -21,7 +21,7 @@ import { credentialMark, ownersAuthConfig, tokensAccount } from "./mcp-secret-wr
 import { ownersComposioUsers, ownersUser } from "./composio-owners.js";
 import type { ComposioCredentialOf } from "./composio-triggers.js";
 import { type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
-import { type ClientKind, dialAt, issuerOf, LOOPBACK, MAX_PENDING, MCP_SETTINGS_PAGE, mcpServerAt, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
+import { type ClientKind, dialAt, issuerOf, LOOPBACK, MAX_PENDING, MCP_SETTINGS_PAGE, mcpServerAt, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, publicMcpServerAt, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
 import { type Cleanup, cleanupOf, type ComposioKeyEnv, COMPOSIO_ORIGIN, composioAccountKey, composioEnvKey, composioKeyFromEnv, composioMadeKey, type ComposioMade, composioPerRun, droppedOf, madeToWrite, recordedMade, releasedOf, storedMade } from "./composio-made.js";
 import { asking, COMPOSIO_PER_RUN, COMPOSIO_OWNERS_USER_WORDS, COMPOSIO_USER, COMPOSIO_USER_ID, composioAccount, composioAccountBoundWords, type ComposioAccount, type ComposioControl, composioListingAddress, composioListsAccount, composioServerId } from "./composio-preset.js";
 import { mcpSourceKey, type RecordedRow, recordedForAnother, savedByToken, sourceOf, type SourceRecord, sourceToWrite, standInGiven, storedSource, toolkitGiven } from "./mcp-sources.js";
@@ -246,8 +246,9 @@ export class McpServersOverStore {
       const name = String(body.name);
       const kept = await this.need(name);
       const url = new URL(kept.url);
-      const send = await this.reached(kept.auth, url, stop);
-      return marked(kept.url, await this.signInNoted(url, this.listServer(url, await this.withAppToken(kept.auth, url, (await this.opened(name, kept, "name")).headers, stop), send, stop, await this.perRunComposio(name, kept)), stop));
+      const strict = await this.strictAt(url);
+      const send = await this.reached(kept.auth, url, stop, undefined, strict);
+      return marked(kept.url, await this.signInNoted(url, this.listServer(url, await this.withAppToken(kept.auth, url, (await this.opened(name, kept, "name")).headers, stop), send, stop, await this.perRunComposio(name, kept)), stop, strict));
     }
     // `name` with a url: the saved server the form is editing. Its address as every read shows it (shownUrl), sent back
     // unchanged, is the saved one here too (as save and sign-in map it): the browser never gets the real address back.
@@ -258,10 +259,11 @@ export class McpServersOverStore {
     // A github_app server's credential is a token of the App, minted here, as for a saved one: its static headers are optional.
     // A per_run server's are optional too: they only list its tools, for a server that lists them only to a caller it knows.
     if (auth.type !== "none" && auth.type !== "github_app" && auth.type !== "per_run" && !auth.headers) throw invalid([credentialMissing(auth.type, "A preview needs the credential it is to connect with.")]);
-    const send = await this.reached(auth.type, url, stop);
+    const strict = await this.strictAt(url);
+    const send = await this.reached(auth.type, url, stop, undefined, strict);
     // The edit form of a per-run Composio server at its saved address lists it as a preview by name does.
     const perRun = !!saved && auth.type === "headers" && saved.url === url.href && (await this.perRunComposio(String(editing), saved));
-    return marked(url.href, await this.signInNoted(url, this.listServer(url, await this.withAppToken(auth.type, url, auth.headers ?? {}, stop), send, stop, perRun), stop));
+    return marked(url.href, await this.signInNoted(url, this.listServer(url, await this.withAppToken(auth.type, url, auth.headers ?? {}, stop), send, stop, perRun), stop, strict));
   }
 
   /** What an agent's save pins of the saved server `name` (mcp-gateway.ts mcpPinOf): its URL, its tools as it lists them
@@ -282,7 +284,7 @@ export class McpServersOverStore {
       const listed = marked(row.url, { tools });
       return { url: row.url, tools: listed.tools, prices: pricesListed((row.prices ?? undefined) as McpPrices | undefined, listed.tools), toolkit };
     };
-    const send = await this.reached(row.auth, url, stop);
+    const send = await this.reached(row.auth, url, stop, { name, row });
     try {
       return pinned((await this.listServer(url, await this.withAppToken(row.auth, url, (await this.opened(name, row, "name")).headers, stop), send, stop, await this.perRunComposio(name, row))).tools);
     } catch (error) {
@@ -293,14 +295,15 @@ export class McpServersOverStore {
 
   /** `listing`, and when it is refused as a server that signs in with OAuth (auth_required, `auth: oauth`), whether that
    *  sign-in can start with no Client ID entered (`details.oauth.registration`, McpSignIns.registration), so the console
-   *  asks for one up front. `stop`: the preview's, which cuts that discovery too. */
-  private async signInNoted(url: URL, listing: Promise<Listed>, stop?: AbortSignal): Promise<Listed> {
+   *  asks for one up front. `stop`: the preview's, which cuts that discovery too. `strict`: the preview's own rule
+   *  (strictAt), which every request of that discovery is held to as well. */
+  private async signInNoted(url: URL, listing: Promise<Listed>, stop?: AbortSignal, strict = false): Promise<Listed> {
     try {
       return await listing;
     } catch (error) {
       const details = error instanceof ApiError && error.code === "auth_required" ? (error.extra.details as { auth?: string; oauth?: unknown } | undefined) : undefined;
       if (details?.auth === "oauth") {
-        const registration = await this.signIns.registration(url, stop);
+        const registration = await this.signIns.registration(url, stop, strict);
         if (registration) details.oauth = registration;
       }
       throw error;
@@ -773,8 +776,11 @@ export class McpServersOverStore {
    *  is, since that one origin is this server's to name, never the owner's; any other server held to the address rule
    *  (mcp-oauth.ts mcpServerAt, the one an authorization server's endpoint is held to), with the private-network hosts the
    *  owner allows read now, loopback only for a local install. The fetch it answers dials the address checked. A name
-   *  that does not resolve is the unreachable server it always was (424). */
-  private async reached(type: string, url: URL, stop?: AbortSignal): Promise<typeof fetch> {
+   *  that does not resolve is the unreachable server it always was (424). A workspace's server (a request in a workspace,
+   *  or the saved row `of` that is one, as a runner's listing reads it) that stands on the workspace public-https mode
+   *  alone (mcp-api-only-origins.ts onPublicHttpsAlone) is held to publicMcpServerAt instead: no private host the owner
+   *  allows, no loopback even on a local install, no cloud metadata name. */
+  private async reached(type: string, url: URL, stop?: AbortSignal, of?: { name: string; row: { sealedAs?: string } }, decided?: boolean): Promise<typeof fetch> {
     // A saved row's URL is held to the save's rule too: one with a credential in its query is refused, nothing sent.
     const inQuery = credentialInQuery(url);
     if (inQuery) throw invalid([{ field: "url", reason: "invalid", message: credentialInQueryWords(inQuery) }]);
@@ -782,12 +788,13 @@ export class McpServersOverStore {
       if (!githubMcpUrl(url, this.appOrigin)) throw invalid([{ field: "url", reason: "not_allowed", message: GITHUB_MCP_ONLY }]);
       return fetch;
     }
+    const strict = decided ?? (await this.strictAt(url, of));
     // A URL on loopback as written, on a server its operator never said is a local install: refused, saying how to say so.
-    if (!this.loopback && LOOPBACK.test(url.hostname)) throw invalid([{ field: "url", reason: "not_allowed", message: loopbackWords(url.hostname) }]);
+    if (!strict && !this.loopback && LOOPBACK.test(url.hostname)) throw invalid([{ field: "url", reason: "not_allowed", message: loopbackWords(url.hostname) }]);
     const signal = AbortSignal.any([AbortSignal.timeout(ADDRESS_CHECK_MS), this.stopped.signal, ...(stop ? [stop] : [])]);
     let at: Awaited<ReturnType<typeof mcpServerAt>>;
     try {
-      at = await mcpServerAt(url, signal, this.network, { own: this.signIns.own, allowed: await privateOAuthHosts(this.store), loopback: this.loopback });
+      at = strict ? await publicMcpServerAt(url, signal, this.network, this.signIns.own) : await mcpServerAt(url, signal, this.network, { own: this.signIns.own, allowed: await privateOAuthHosts(this.store), loopback: this.loopback });
     } catch (error) {
       if (stop?.aborted || this.stopped.signal.aborted) throw error;
       // Its address check outlived its time: a name lookup that never answered.
@@ -798,6 +805,12 @@ export class McpServersOverStore {
       throw invalid([{ field: "url", reason: "not_allowed", message: `${at.refused.charAt(0).toUpperCase()}${at.refused.slice(1)}.` }]);
     }
     return dialAt(this.network, at.address) as typeof fetch;
+  }
+
+  /** Whether a request to `url` is held to publicMcpServerAt's rule: a workspace's server (a request in a workspace, or the
+   *  saved row `of` that is one) that stands on the workspace public-https mode alone. */
+  private async strictAt(url: URL, of?: { name: string; row: { sealedAs?: string } }): Promise<boolean> {
+    return (workspaceNow() !== undefined || (of !== undefined && workspaceMcpRow(of.name, of.row))) && (await onPublicHttpsAlone(this.store, url));
   }
 
   private async need(name: string): Promise<McpServerRow> {

@@ -302,11 +302,13 @@ test("codex and opencode on an Ollama model: each adapter is handed the route's 
   assert.equal(seen.provider.origin, ROUTE_ORIGIN);
   assert.equal(typeof seen.fetch, "function", "codex's proxies forward with the route's fetch");
   assert.equal(seen.webSearch, undefined, "no live web search on the route");
+  assert.equal(seen.streamIdleMs, 30 * 60_000, "a model on this machine: Codex waits out a silent stream (30 minutes)");
   // The same settings on OpenAI's own model do offer it: the check above is the route's, not the settings'.
   const keyed = { ...env, ...plane, ...standIn, OPENAI_API_KEY: "fake-test-key", AGENTRUN_SERVE_DATA: await harnessData(t) };
   await adapters.codexOf(keyed, { model: { provider: "openai", modelId: "gpt-6.1-sol" }, models: NO_CATALOG }, loadCodex);
   assert.equal(seen.webSearch, "live");
   assert.equal(seen.fetch, undefined);
+  assert.equal(seen.streamIdleMs, undefined, "a provider's own model: Codex's own limit");
 
   const opencode = await import("../dist/harness-opencode/index.js");
   let opened;

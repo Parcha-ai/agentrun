@@ -1,0 +1,7 @@
+---
+packages: @parcha/agentrun-computer-bench
+kind: feature
+---
+`scripts/port-osworld.mjs` ports OSWorld-Verified tasks to computer-bench folders. `port --osworld <checkout> --tree <hf tree json> --sums <sums json> --out <dir>` reads an OSWorld checkout and the Hugging Face file-cache tree at a pinned dataset revision and writes `<domain>-<uuid8>/` with `task.json` and `osworld.json` (OSWorld's JSON, every file-cache URL pinned to the revision, a sha256 on each download and each `cloud_file` gold). `sums` fetches the sha256 of the cache files the tree lists only by git blob id. A task ports when every getter and metric reads what the desktop holds; it is refused when it needs an accessibility tree, GNOME settings, a live web host, sudo or a check the image can't run, with each refusal's reason in `PORT.md`. An infeasible task checks the agent's answer and says the task can't be done, scored with a shared `rubric.md`. The generated check is an exec check running `osw eval` as the computer's own user, with no sudo: it runs osw only when its sha256 is the bench's `osw.py`, which each task pins, and refuses as infra otherwise.
+`osw eval` removes its cache (`OSW_CACHE`) and makes it again before it fetches the golds, and OSWorld's server runs under `python3 -I`. osw no longer switches user when run as root: `--user` and `OSW_USER` are gone.
+An exec check's new `infra` field lists exit codes that mean the check could not run: a listed exit makes the check an error, so the run is infra (run again, never scored), not a fail. The OSWorld checks list 75.

@@ -1,7 +1,7 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { App } from "./App";
+import { App, IMPORT_POLL_MS } from "./App";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
@@ -272,6 +272,58 @@ describe("App, setup's import of this machine's sessions", () => {
     await submit(host);
     await until(host, () => sent.length);
     expect(sent).toEqual([{ password: PASSWORD }]);
+  }, 15_000);
+
+  it("reads no offer while the password is being set: the server would take the read after its owner is set, and refuse it", async () => {
+    // The count goes on (202) while the setup is held longer than a poll: no read of the offer goes out until it answers.
+    let release = () => {};
+    let posting = false, set = false;
+    const during: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      const path = new URL(url, "http://serve.test").pathname;
+      if (path === "/v2/auth/session") return json(200, { password_set: set, signed_in: set });
+      if (path === "/v2/setup") { posting = true; await new Promise<void>((done) => { release = done; }); set = true; posting = false; return json(201, { signed_in: true }); }
+      if (path === "/v2/setup/import") { if (posting) during.push(path); return set ? json(404, missing(path)) : json(202, { counting: true }); }
+      if (path === "/v2/agents") return json(200, { agents: [], next_cursor: null });
+      return json(404, missing(path));
+    });
+    const host = await render();
+    await setPassword(host);
+    await submit(host);
+    await until(host, () => posting);
+    await act(async () => { await new Promise((r) => setTimeout(r, IMPORT_POLL_MS * 2.5)); });
+    expect(during).toEqual([]);
+    await act(async () => { release(); });
+  }, 15_000);
+
+  it("lets an offer read already out when the password is sent finish before the setup is sent", async () => {
+    // The read is held across the submit: the setup goes out only once it has answered, so it can never reach the server
+    // after the owner is set.
+    let answer = () => {};
+    let held = false, set = false;
+    const order: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      const path = new URL(url, "http://serve.test").pathname;
+      if (path === "/v2/auth/session") return json(200, { password_set: set, signed_in: set });
+      if (path === "/v2/setup") { order.push("setup"); set = true; return json(201, { signed_in: true }); }
+      if (path === "/v2/setup/import") {
+        if (set) { order.push("import after setup"); return json(404, missing(path)); }
+        if (!held) { held = true; order.push("import held"); await new Promise<void>((done) => { answer = done; }); order.push("import answered"); }
+        return json(202, { counting: true });
+      }
+      if (path === "/v2/agents") return json(200, { agents: [], next_cursor: null });
+      return json(404, missing(path));
+    });
+    const host = await render();
+    await until(host, () => held);
+    await setPassword(host);
+    await submit(host);
+    await act(async () => { await new Promise((r) => setTimeout(r, IMPORT_POLL_MS)); });
+    expect(order).toEqual(["import held"]);
+    await act(async () => { answer(); });
+    await until(host, () => order.includes("setup"));
+    // Up to the setup's answer: the signed-in page's own read of the import's progress comes after, with its cookie.
+    expect(order.slice(0, order.indexOf("setup") + 1)).toEqual(["import held", "import answered", "setup"]);
   }, 15_000);
 
   it("shows no list when the count finds no session", async () => {

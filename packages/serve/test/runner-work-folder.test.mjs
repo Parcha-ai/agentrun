@@ -37,7 +37,7 @@ test("a run with no text message gets no inputs/message.md", async (t) => {
 });
 
 test("inputs/message.md is the message's alone: an upload by that name takes the next free one, with a message or without", async (t) => {
-  const withMessage = await specFor(t, { launch: { input: { content: "Read the notes." } }, uploads: [{ path: "message.md", text: "an upload" }] });
+  const withMessage = await specFor(t, { body: { tools: ["read"] }, launch: { input: { content: "Read the notes." } }, uploads: [{ path: "message.md", text: "an upload" }] });
   assert.equal(readFileSync(join(withMessage.workFolder, "inputs", "message.md"), "utf8"), "Read the notes.");
   assert.equal(readFileSync(join(withMessage.workFolder, "inputs", "message-2.md"), "utf8"), "an upload");
   assert.equal(withMessage.spec.input, 'Read the notes.\n\nFiles for this run: "inputs/message-2.md" (9 B).');

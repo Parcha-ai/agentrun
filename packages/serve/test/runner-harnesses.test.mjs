@@ -77,6 +77,32 @@ test("runner harnesses: OpenCode's facts say it never reruns a call it started, 
   assert.equal(facts.recoversCutAnswers, 0, "an answer cut at the output limit ends OpenCode's turn, as pi's does");
 });
 
+test("runner harnesses: codex on a local model (the route's `local`) has Codex wait out a silent stream; on any other route, Codex keeps its own limit", { timeout: 180_000 }, async (t) => {
+  const { verifyCodexBinary } = await import("../../run-adapters-codex/dist/verify.js");
+  const { findCodex } = await import("../../run-adapters-codex/dist/binary.js");
+  const pinned = verifyCodexBinary(findCodex());
+  if (pinned instanceof Error && process.env.AGENTRUN_CODEX_REQUIRE_BINARY !== "1") return t.skip(pinned.message);
+  const { createHarnessRunner } = await import("@parcha/agentrun-kernel");
+  const { memorySessionStore } = await import("@parcha/agentrun-kernel/testing");
+  const { readdirSync, readFileSync } = await import("node:fs");
+  const files = (at) => readdirSync(at, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? files(join(at, e.name)) : [join(at, e.name)]));
+  const usage = { input_tokens: 10, input_tokens_details: null, output_tokens: 2, output_tokens_details: null, total_tokens: 12 };
+  const submit = { type: "function_call", name: "submit", arguments: JSON.stringify({ value: { answer: "ok" } }), call_id: "call_submit" };
+  const sse = [{ type: "response.created", response: { id: "resp_1" } }, { type: "response.output_item.done", item: submit }, { type: "response.completed", response: { id: "resp_1", usage } }].map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join("");
+  const Out = { type: "object", required: ["answer"], properties: { answer: { type: "string" } }, additionalProperties: false };
+  const idleOf = async (fields) => {
+    const sessionsDir = mkdtempSync(join(dir, "codex-idle-"));
+    const fetch = async () => new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
+    const adapter = await resolveHarness("codex").adapter(launch({ model: "gpt-6-luna", sessionsDir, fetch, ...fields }));
+    const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), tools: [], timeoutMs: 120_000 });
+    assert.deepEqual(await runNode({ kind: "agent", label: "q", system: ["Be brief."], user: "Go.", schema: Out, tools: [] }), { answer: "ok" });
+    const config = readFileSync(files(sessionsDir).find((f) => f.endsWith(join("codex-home", "config.toml"))), "utf8");
+    return /^stream_idle_timeout_ms = (\d+)$/m.exec(config)?.[1];
+  };
+  assert.equal(await idleOf({ local: true }), "1800000", "a local model: 30 minutes");
+  assert.equal(await idleOf({}), undefined, "a translated route not local: Codex's own");
+});
+
 test("runner harnesses: claude-agent on a local model (the route's `local`) has its CLI wait out a silent stream; on any other route, a translated paid one too, the CLI keeps its own limit", { timeout: 60_000 }, async (t) => {
   const { createHarnessRunner } = await import("@parcha/agentrun-kernel");
   const { memorySessionStore } = await import("@parcha/agentrun-kernel/testing");
