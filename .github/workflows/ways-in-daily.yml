@@ -5,11 +5,18 @@ name: Ways in daily
 # launcher, its image built once for every row, its chart and templates), and the README's npx command as published.
 # One table (scripts/ways-in-report.mjs) in the run's summary: each way in, what it walks, its result, and each walk's
 # own rows. A red run on main opens the issue "ways in: <rows> broke", or updates the open one; the next green closes it.
+# After each publish (Publish verified beta) it walks again at the release's tag, so each beta gets every row. The event's
+# own sha is main's tip, so each checkout, and each walk it calls, names the tag's commit. A red row there is a released
+# way in broken: it opens or updates the same issue.
 # A pull request that changes the daily walk itself walks it too, and leaves the issue alone.
 on:
   schedule:
     - cron: '17 6 * * *'
   workflow_dispatch:
+  # After each publish, at the release's tag (each checkout names its commit): every beta walks every row, not only main.
+  workflow_run:
+    workflows: ['Publish verified beta']
+    types: [completed]
   pull_request:
     paths:
       - '.github/workflows/ways-in-daily.yml'
@@ -23,18 +30,20 @@ permissions:
   contents: read
 
 concurrency:
-  group: ways-in-daily-${{ github.event.pull_request.number || github.ref }}
+  group: ways-in-daily-${{ github.event.pull_request.number || github.event.workflow_run.head_sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   image:
     name: main's image, once for every row
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - name: Build and save it
         run: |
           docker build -q -f packages/serve/docker/Dockerfile -t agentrun-walk:daily .
@@ -47,12 +56,14 @@ jobs:
 
   npx:
     name: npx, the README's command as published
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24.22.3'
@@ -67,6 +78,7 @@ jobs:
           if-no-files-found: ignore
 
   launcher:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     uses: ./.github/workflows/install-walk.yml
 
   docker:
@@ -78,6 +90,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24.22.3'
@@ -103,6 +116,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24.22.3'
@@ -123,12 +137,14 @@ jobs:
     needs: image
     uses: ./.github/workflows/helm-walk.yml
     with:
+      ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       image: ways-in-image
 
   coolify:
     needs: image
     uses: ./.github/workflows/selfhost-walk.yml
     with:
+      ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       image: ways-in-image
       platforms: '["coolify"]'
 
@@ -136,6 +152,7 @@ jobs:
     needs: image
     uses: ./.github/workflows/selfhost-walk.yml
     with:
+      ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       image: ways-in-image
       platforms: '["dokploy"]'
 
@@ -143,6 +160,7 @@ jobs:
   # row skips with a notice and stays green.
   railway-hosted:
     name: Railway's published template, on Railway
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     concurrency:
@@ -174,6 +192,7 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - if: steps.secrets.outputs.skip == ''
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -197,6 +216,7 @@ jobs:
 
   render-hosted:
     name: render.yaml's service, on Render
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     concurrency:
@@ -225,6 +245,7 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - if: steps.secrets.outputs.skip == ''
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -250,7 +271,7 @@ jobs:
   report:
     name: one table, and the issue
     needs: [image, npx, launcher, docker, railway, helm, coolify, dokploy, railway-hosted, render-hosted]
-    if: always()
+    if: always() && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -263,6 +284,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24.22.3'
