@@ -105,7 +105,7 @@ test("a printed field over 4 KiB is redacted whole and never scanned", () => {
   assert.deepEqual(printable({ rule: "outside", path: "a".repeat(PRINT_MAX), detail: "d" }, []).path, "a".repeat(PRINT_MAX), "at the cap, printed");
   // A crafted path of a megabyte: its name is checked once for a shape and a held value, and its problem is printed at
   // once, the path never read for it. Counted, not timed (redact/match.ts `scanned`): the check visits at most WORK
-  // characters per character of the path, the whole pipeline's bound with a held value (redact-contract.test.mjs), and
+  // characters per character of the path, the whole pipeline's bound with a held value (fixtures/redact-work.mjs), and
   // printing the problem visits fewer characters than the path holds, so none of the path.
   const WORK = 1024;
   const path = "ab".repeat(1 << 19);

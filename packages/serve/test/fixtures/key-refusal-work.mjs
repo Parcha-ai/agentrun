@@ -19,7 +19,7 @@ export const wrapped = (kind, body) => (kind === "python" ? `{'a': '${body}'}` :
 // at most a piece, which visits at most READING per character of it. So one read visits at most its budget and one
 // reading more, READ_MOST, and as a run is read only where it is longer than a piece, at most twice, the reads of a text
 // visit at most READS_PER_CHARACTER per character of it: 2 x (356 + 175) x 8,192 / 8,193, about 1,061.9. That is over
-// the matcher's bound (WORK, redact-contract.test.mjs) by construction, so the bound on a text's whole cost, the reads
+// the matcher's bound (WORK, redact-work.mjs) by construction, so the bound on a text's whole cost, the reads
 // and the matcher's own work together, is measured below, on the texts the reads cost most on. READING is measured, not
 // built in: key-refusal.test.mjs holds it.
 export const PIECE = 8192;
@@ -49,7 +49,7 @@ export const VALUE = `${PY_HEAD}${PY_REST}`;
 // main's join of each stretch too (its quotes paired otherwise), and runs of empty literals joined by "+" read the
 // values' pass with the operators left out. Each is withheld whole; each visits at most WORK per character in all,
 // each of its reads at most READ_MOST, and its reads at most READS_PER_CHARACTER per character.
-// The matcher's own worst texts read no run and stop no read: DENSE (redact-contract.test.mjs) is in for its total, and
+// The matcher's own worst texts read no run and stop no read: DENSE (redact-work.mjs) is in for its total, and
 // k100 for its reads alone. k100 (prose's apostrophe, then JSON strings each holding 100 single-quoted strings joined by
 // "+") visits 1,453.7, 1,465.6 and 1,465.2 per character of an answer here, with no read, over WORK by the matcher's own
 // work: main (120f072308) visits the same. DENSE past a call's stop (after 200 characters of prose, so a call's stop
