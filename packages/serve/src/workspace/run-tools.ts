@@ -372,8 +372,10 @@ export type RunTools = {
    *  that the claim still holds the run's folder (a lost claim's may be a later claim's by now). Not given, an answer
    *  other than true or a throw: nothing is swept. Its computer calls are cut by the end's cut (endCut). */
   end(options?: { readonly sweep?: () => boolean | Promise<boolean> }): Promise<void>;
-  /** Strict checkpoint stop: cleanup errors or any still-running tracked process refuse publication. */
-  settleProject(): Promise<readonly string[]>;
+  /** Strict checkpoint stop: cleanup errors or any still-running tracked process refuse publication. Its scratch is swept
+   *  as at the end (`sweep` asked once the processes are ended, only true sweeps): a claim lost during their end may
+   *  share the run's folder with a later claim. */
+  settleProject(options?: { readonly sweep?: () => boolean | Promise<boolean> }): Promise<readonly string[]>;
 };
 
 /**
@@ -385,6 +387,12 @@ export type RunTools = {
  * their executors to the run. A browser computer brings none of the registry's: the run's browser tool (tools.ts,
  * pi-browser's durable extension) drives it.
  */
+/** Whether a sweep's `sweep` answers true, asked now: not given, another answer or a throw is false. */
+async function stillSaid(sweep: (() => boolean | Promise<boolean>) | undefined): Promise<boolean> {
+  if (sweep === undefined) return false;
+  return (await Promise.resolve().then(sweep).catch(() => false)) === true;
+}
+
 export async function runTools(workspace: Workspace, computer: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly noExec: string | undefined; readonly context: Context; readonly aliases?: readonly string[]; readonly hold?: RunHold; readonly bashPolicy?: string; /** The computer replaced an earlier claim's (runHands). */ readonly replaced?: boolean; /** The claim's signal: the computer's calls are cut by it (runHands, claimCut). */ readonly signal?: AbortSignal; /** The end's cut, made as the end begins: its computer calls are cut by it (RunHands.ending; AdapterRun.endCut). */ readonly endCut?: () => AbortSignal }): Promise<RunTools> {
   const run = await runHands(workspace, computer, options);
   const registry = createRegistry({ maxExecS: run.maxExecS, shell: run.shell, kinds: run.kinds, groups: run.groups, executors: run.executors });
@@ -401,19 +409,18 @@ export async function runTools(workspace: Workspace, computer: RunComputer | und
     ...(run.computer ? { computer: run.computer } : {}),
     ...(run.apart ? { apart: { kind: run.apart, screenshot: kindTools.includes("computer_screenshot") } } : {}),
     hostTools: (names, options) => bindTools(run, registry, names, options),
-    async settleProject() {
+    async settleProject(settleOptions) {
       const before = await run.hands.processes?.list() ?? [];
       await endBackground(run.hands);
       if ((await run.hands.processes?.list() ?? []).some(process => process.running)) throw new Error("Project processes have not settled.");
-      await run.sweep();
+      if (await stillSaid(settleOptions?.sweep)) await run.sweep();
       return before.filter(process => process.argv[3] === "agentrun-background" && /^[1-9][0-9]*$/.test(process.argv[4] ?? "")).map(process => `background/${process.argv[4]}/output.log`);
     },
     async end(endOptions) {
       run.ending(options.endCut?.());
       await endBackground(run.hands);
       // Asked only now: a claim lost while its background processes were ending is seen.
-      const holds = endOptions?.sweep;
-      if (holds !== undefined && (await Promise.resolve().then(holds).catch(() => false)) === true) await run.sweep();
+      if (await stillSaid(endOptions?.sweep)) await run.sweep();
     },
   };
 }

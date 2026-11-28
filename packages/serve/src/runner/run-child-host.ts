@@ -787,7 +787,11 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
           if (!projectComputer || !projectWorkspace) throw new ClaimRefused("The project's held execution resources are unavailable.");
           checkpoint = runProjectCheckpoint({ store, agentId: run.agentId, claim, launch, computer: projectComputer, ioHeld: true,
             tools: { get workspace() { if (!tools) throw new ClaimRefused("Project settlement has not opened its workspace."); return tools.workspace; },
-              settleProject: async () => { tools = await runTools(projectWorkspace!, projectComputer!.computer, { mode: projectMode, noExec: projectNoExec, context: BACKGROUND_CONTEXT }); return tools.settleProject(); } },
+              settleProject: async () => {
+                tools = await runTools(projectWorkspace!, projectComputer!.computer, { mode: projectMode, noExec: projectNoExec, context: BACKGROUND_CONTEXT });
+                // Its sweep asks projectOwns once the project's processes are ended, as the end's does (below).
+                return tools.settleProject({ sweep: () => projectOwns(true).then(() => true, () => false) });
+              } },
             workspace: { data: deps.data, sealKey, env: deps.env, control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } },
             secrets: async () => runnerSecrets(deps.env, [...runnerSecrets(claimed), ...await storeSecrets(store, sealKey, deps.data)]),
           });
