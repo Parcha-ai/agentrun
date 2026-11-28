@@ -79,6 +79,20 @@ test("a retry keeps attempts, the next try and the last error on the firing, and
   assert.equal(await store.triggers.settle("trg-1", "fir-none", { status: "skipped" }), undefined, "a firing that is gone");
 });
 
+test("what the launch hook told a firing's host is kept from its first hand: a later hand's cap never replaces it, it outlives a failed try and the move to sent, and a firing that is gone has none", async (t) => {
+  const { store } = await withTrigger(t);
+  await store.triggers.record("trg-1", [due("fir-1"), due("fir-2")]);
+  assert.equal((await store.triggers.firing("trg-1", "fir-1")).hooked, null, "a firing never handed was told nothing");
+  assert.deepEqual(await store.triggers.hooked("trg-1", "fir-1", { max_cost_usd: 0.5 }), { max_cost_usd: 0.5 });
+  assert.deepEqual(await store.triggers.hooked("trg-1", "fir-1", { max_cost_usd: 5 }), { max_cost_usd: 0.5 }, "the first hand's cap holds");
+  assert.deepEqual(await store.triggers.hooked("trg-1", "fir-2", { max_cost_usd: null }), { max_cost_usd: null }, "a told null is kept as told");
+  assert.deepEqual(await store.triggers.hooked("trg-1", "fir-2", { max_cost_usd: 50 }), { max_cost_usd: null }, "and holds, as a number would");
+  await store.triggers.settle("trg-1", "fir-1", { attempts: 1, retryAt: T0 + 5_000, error: { code: "hook_failed", message: "500" } });
+  const sent = await store.triggers.settle("trg-1", "fir-1", { status: "sent", reason: "handed", keepAttrs: true, startBy: T0 + 600_000, from: "due" });
+  assert.deepEqual([sent.firing.status, sent.firing.hooked], ["sent", { max_cost_usd: 0.5 }]);
+  assert.equal(await store.triggers.hooked("trg-1", "fir-none", { max_cost_usd: 0.5 }), undefined, "no such firing");
+});
+
 test("a due firing waits on its run's turn end with no try counted; pending lists the due and the failures not yet told", async (t) => {
   const { store } = await withTrigger(t);
   await store.triggers.record("trg-1", [due("fir-1"), due("fir-2")]);

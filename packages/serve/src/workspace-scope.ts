@@ -1,6 +1,6 @@
 // A request's workspace: an opaque name a backend in front of an API-only server (AGENTRUN_API_ONLY=1) sends in the
 // AgentRun-Workspace header, so each of its tenants sees and makes only its own agents, runs, imported template
-// packages and uploaded files. The server keeps nothing about who the tenant is: the backend authenticates its callers, and this server
+// packages, uploaded files and the triggers on its agents. The server keeps nothing about who the tenant is: the backend authenticates its callers, and this server
 // trusts the name because a server token (AGENTRUN_TOKENS) opened the request. A token named in AGENTRUN_WORKSPACE_TOKENS
 // must send it on every request, so a backend that forgot it is refused, never handed every tenant's rows. A request
 // with no header is served as before, every row in reach.

@@ -4115,16 +4115,22 @@ as before.
 A request in a workspace is served only: the runs' reads and lists (`GET /runs`, `/runs/{id}`, its timeline, files and
 export), a run's message, stop and cancel; the agents' list, read, create, revisions, definition and current revision,
 archive, unarchive and delete, and a run started on one; the templates' list, read, import, apply and delete (a bundled
-package stays `403`); the uploaded files' create, upload, list, read and delete (`/files`); the MCP servers' list, names,
-read, preview, save, Composio save, refresh and delete (`/settings/mcp-servers`); and `/capabilities`, `/health` and
-`/openapi.json`. Every other route is `403 forbidden` with
+package stays `403`); the uploaded files' create, upload, list, read and delete (`/files`); the triggers' list, read,
+firings, create, edit, delete and run now (`/triggers`); the MCP servers' list, names, read, preview, save, Composio save,
+refresh and delete (`/settings/mcp-servers`); and `/capabilities`, `/health` and `/openapi.json`. Every other route is
+`403 forbidden` with
 `details.reason: "not_scoped"`. In it, an agent, run, imported template package or file of another workspace (or of none)
 answers the same `404` as an id no row has, and every list holds the workspace's rows alone, paged within them; bundled
 template packages are every workspace's. What it makes is the workspace's: an agent (made or applied), an imported
 package (an import whose name another workspace holds is `409 name_taken`), a file. A run is its agent's workspace's,
 whoever started it, so a run a request with no header starts on that agent is the workspace's too. A run's `file_ids`
 take the workspace's files alone: one out of it reads as no file. An `Idempotency-Key` is the workspace's own: the same
-key in another workspace starts afresh. An import with no header of a name a workspace holds is `409 name_taken` too,
+key in another workspace starts afresh. A trigger is its agent's workspace's: another's answers the same `404` as an id
+no trigger has, and a new one naming another workspace's agent or run is refused in the words an unknown one gets. A
+request in a workspace makes what an apply here makes, a schedule or a feed that starts runs, with the launch hook set;
+any other source or target, or no hook, is `422` and nothing is made. Its edit is `enabled` alone, as above, and its run
+now (`POST /triggers/{id}/fire`) is served only for a trigger that may be on here, so the firing goes to the backend
+through the launch hook. An import with no header of a name a workspace holds is `409 name_taken` too,
 never replacing that workspace's package: the operator deletes it first.
 
 A workspace's MCP servers are its own, beside the install's shared ones (saved with no header). In it, the list and the
@@ -4152,6 +4158,12 @@ Launch disks (`archil_disk` on a run's start) are the backend's to map to its te
 tenant a disk it did not make is for, and a run in a workspace may name any of them. It names no agent's own disk
 (`GET /agents/{id}/archil`) outside its workspace: that reads as a disk Archil does not have (`422` at
 `archil_disk.disk_id`, in the same words).
+
+A computer paired with the server is the operator's own machine, never a workspace's. An agent create or definition edit
+in a workspace that names one as its computer's provider (or its place's box) is `422` at `definition.computer` (or
+`definition.place`), nothing written; a run of an agent in a workspace whose revision names one fails its claim with
+`computer_unavailable`, in the same words. `features.computers` in a workspace's `GET /capabilities` counts no kind a
+paired computer alone offers.
 
 `GET /capabilities` says what this server does in `features.workspaces`: the header's name, `enforced` (true on an
 API-only server alone), `required_for_tokens` (true when `AGENTRUN_WORKSPACE_TOKENS` names a token, so a request of that
@@ -4240,8 +4252,13 @@ host, and this server starts no run for it:
 ```json
 { "firing_id": "fir_...", "trigger_id": "trg_...", "agent_id": "digest", "revision_id": "rev_...",
   "input": { "content": "Summarize yesterday's issues.\n\n(Started by the schedule ...)" },
-  "fired_at": "2026-06-01T00:10:00Z" }
+  "fired_at": "2026-06-01T00:10:00Z", "max_cost_usd": 0.5 }
 ```
+
+`max_cost_usd` is the trigger's cap, the most the firing's run may cost, so a host that pays for runs can check the
+payer's balance against it before it starts one. The firing keeps the cap it was handed with: a retry of the hand sends
+the same one, and the run the host starts for the firing runs under it even if the trigger's target changed since. A
+`null` means the agent's default when the host starts the run: the target set no cap when the firing was handed.
 
 The POST carries `webhook-id` (the firing's id, the same if it is handed again), `webhook-timestamp` and
 `webhook-signature` as [webhooks](#webhooks) do: check them with any Standard Webhooks library before reading the
@@ -4253,12 +4270,14 @@ The host starts the run with `POST /v2/agents/{agent_id}/runs`, giving the input
 trigger's title and input origin, and the firing reads `started` with it, so the trigger's overlap check and
 `max_active_runs` count it.
 
-The run starts on the trigger's target, as the run this server would start for the firing:
+The run starts on the trigger's target as it stands when the host starts it, as the run this server would start for
+the firing, except for its cap:
 
-- Its cap is the target's `max_cost_usd`, which the host's `max_cost_usd` may lower and never raise. A target capped at
-  0.5 runs at 0.5 when the host sends 10, and at 0.2 when the host sends 0.2. A target with no cap takes the agent's
-  default in its place, which the host's may lower the same way: on an agent with a $5 default, the host's 500 runs at
-  5 and its 1 at 1.
+- Its cap is the `max_cost_usd` the hook sent for the firing, which the host's `max_cost_usd` may lower and never
+  raise: the lower of the two is taken. A firing handed at 0.5 runs at 0.5 when the host sends 10, and at 0.2 when the
+  host sends 0.2, even if the target's cap was raised after the hand. A firing handed with `null` takes the agent's
+  default when the host starts it, which the host's may lower the same way: on an agent with a $5 default, the host's
+  500 runs at 5 and its 1 at 1.
 - Its effort is the target's when the target sets one, else the host's `effort`, else the agent's.
 - It runs on the agent's current revision and holds no computer: `revision`, `hold` or `hold_minutes` in the host's
   body is refused with 422 `not_allowed`, naming the field.

@@ -21,7 +21,7 @@ import { fakeClock, until } from "./trigger-support.mjs";
 
 const { WORKSPACE_ROUTES, servedScoped } = await import("../dist/api-only.js");
 const { ROUTES } = await import("../dist/server.js");
-const { migrate, openPostgresStore, openSqliteStore, migrationsIn, runnerOn } = await import("../dist/store/index.js");
+const { migrate, openPostgresStore, openSqliteStore, migrationsIn, runnerOn, StoreAwaitsServer } = await import("../dist/store/index.js");
 const { SCHEMA_VERSION } = await import("../dist/store/schema.js");
 const { workspaceTokensFrom } = await import("../dist/workspace-scope.js");
 const { backfillMapOf, backfillWorkspaces, workspaceBackfillMain } = await import("../dist/workspace-backfill.js");
@@ -30,6 +30,8 @@ const { TemplateRegistry } = await import("../dist/templates.js");
 const { inWorkspace, outsideWorkspace, workspaceNow } = await import("../dist/workspace-scope.js");
 const { Triggers } = await import("../dist/triggers.js");
 const { saveArchilSettings, storeAgentDisk } = await import("../dist/archil-settings.js");
+const { scopedPairedWords } = await import("../dist/workspace/attached-computers.js");
+const { PROTOCOL_VERSION } = await import("@parcha/agentrun-computer");
 
 const SCOPED = randomBytes(24).toString("hex");
 const OPERATOR = randomBytes(24).toString("hex");
@@ -152,6 +154,14 @@ const TABLE = {
   saveComposioServer: { mcp: true },
   refreshMcpServer: { mcp: true },
   deleteMcpServer: { mcp: true },
+  // A trigger is its agent's: api-only-workspace-triggers.test.mjs (it needs the launch hook to make one).
+  listTriggers: { triggers: true },
+  getTrigger: { triggers: true },
+  listTriggerFirings: { triggers: true },
+  createTrigger: { triggers: true },
+  updateTrigger: { triggers: true },
+  deleteTrigger: { triggers: true },
+  fireTrigger: { triggers: true },
   getCapabilities: { method: "GET", path: "/v2/capabilities", served: true },
   getHealth: { method: "GET", path: "/v2/health", served: true },
   getOpenapi: { method: "GET", path: "/v2/openapi.json", served: true },
@@ -428,7 +438,7 @@ test("a listed token without the header is 403; the header off an API-only serve
     assert.deepEqual([answer.status, answer.body.error?.code], [400, "bad_request"], `${JSON.stringify(workspace)}: ${answer.text}`);
   }
   assert.equal((await send(server, "GET", "/v2/runs", { workspace: "x".repeat(128) })).status, 200, "128 characters is a name");
-  for (const [method, path] of [["DELETE", "/v2/agents/a1/learning"], ["GET", "/v2/usage"], ["DELETE", "/v2/runs/r1"], ["GET", "/v2/triggers"], ["POST", "/v2/runs"]]) {
+  for (const [method, path] of [["DELETE", "/v2/agents/a1/learning"], ["GET", "/v2/usage"], ["DELETE", "/v2/runs/r1"], ["POST", "/v2/triggers/t1/secret"], ["POST", "/v2/runs"]]) {
     const answer = await inW1(server, method, path, method === "GET" || method === "DELETE" ? {} : { body: {} });
     assert.deepEqual([answer.status, answer.body.error?.code, answer.body.error?.details?.reason], [403, "forbidden", "not_scoped"], `${method} ${path}: ${answer.text}`);
   }
@@ -489,7 +499,7 @@ test("the workspace migration (0033) is additive: a runner of the build before i
   assert.equal(runnerOn({ version: 33, runnerFloor: floor }, 32), "opens");
 });
 
-test("on SQLite the server adds the workspace columns to a store an earlier build of its version made, every row unscoped, with no wait for its runner", async (t) => {
+test("on SQLite the server adds the workspace columns to a store an earlier build of its version made, every row unscoped; its runner waits for it", async (t) => {
   const dir = await scratch(t);
   const file = join(dir, "store.sqlite");
   const first = await openSqliteStore({ file });
@@ -500,11 +510,12 @@ test("on SQLite the server adds the workspace columns to a store an earlier buil
   const raw = new DatabaseSync(file);
   raw.exec("DROP INDEX agents_by_workspace; DROP INDEX runs_by_workspace; ALTER TABLE agents DROP COLUMN workspace; ALTER TABLE runs DROP COLUMN workspace; ALTER TABLE imported_templates DROP COLUMN workspace");
   raw.close();
-  const runner = await openSqliteStore({ file, role: "runner" });
-  await runner.close();
+  // A claim reads its run's workspace (runner/github-app.ts): a runner waits for the server that adds the columns.
+  await assert.rejects(openSqliteStore({ file, role: "runner" }), (error) => error instanceof StoreAwaitsServer && /agents\.workspace, runs\.workspace/.test(error.message));
   const server = await openSqliteStore({ file });
   t.after(() => server.close());
   assert.equal((await server.schemaState()).version, SCHEMA_VERSION, "no version step");
+  await (await openSqliteStore({ file, role: "runner" })).close();
   await workspaceRows(server);
 });
 
@@ -941,4 +952,77 @@ test("a scoped run is its agent's workspace's through its agent alone: its row k
   assert.equal(await server.store.runs.workspace(run), W1, "it reads as its agent's");
   assert.equal((await inW1(server, "GET", `/v2/runs/${run}`)).status, 200);
   assert.equal(await server.store.agents.workspace(agent), W1);
+});
+
+/** A phone paired with `server` (not attached): the operator's own machine, one more provider of the phone kind. */
+async function pairPhone(server, id) {
+  const hello = { protocol: PROTOCOL_VERSION, version: "0", os: "android", kind: "android", arch: "arm64", groups: ["screen", "input.touch", "apps"] };
+  await server.store.pairedComputers.addCode(`pairing-${id}`, `code-${id}`, Date.now() + 60_000);
+  assert.equal(await server.store.pairedComputers.pair(`code-${id}`, { id, name: "Pixel", hello, labels: {}, tokenSha256: `token-${id}` }), true);
+}
+
+test("an agent in a workspace never names a paired computer: a scoped create or edit naming one is 422 at definition.computer, nothing written; on a server with no workspaces the owner's agent names it", { timeout: 120_000 }, async (t) => {
+  const server = await scopedServer(t);
+  await pairPhone(server, "cmp-pixel");
+  const definition = (name, computer) => ({ definition: { version: 1, name, instructions: "Answer.", skills: [], tools: [], ...(computer ? { computer } : {}) } });
+  const phone = { kind: "phone", provider: "cmp-pixel" };
+  const refused = await inW1(server, "POST", "/v2/agents", { body: definition("W1 phone", phone) });
+  assert.equal(refused.status, 422, refused.text);
+  assert.deepEqual(refused.body.error.fields.map(({ field, reason }) => ({ field, reason })), [{ field: "definition.computer", reason: "not_an_option" }]);
+  assert.ok(refused.body.error.fields[0].message.startsWith(scopedPairedWords("cmp-pixel")), refused.text);
+  assert.deepEqual(TABLE.listAgents.list((await inW1(server, "GET", "/v2/agents")).body), [], "nothing written");
+  const made = await inW1(server, "POST", "/v2/agents", { body: definition("W1 agent") });
+  assert.equal(made.status, 201, made.text);
+  const edit = await inW1(server, "PUT", `/v2/agents/${made.body.agent_id}/definition`, { body: definition("W1 agent", phone) });
+  assert.equal(edit.status, 422, edit.text);
+  assert.equal(edit.body.error.fields[0].field, "definition.computer");
+  assert.ok(edit.body.error.fields[0].message.startsWith(scopedPairedWords("cmp-pixel")), edit.text);
+  assert.equal((await inW1(server, "GET", `/v2/agents/${made.body.agent_id}`)).body.version, made.body.version, "no revision written");
+  // A server that is not API-only keeps no workspaces: its owner's agent names the phone paired with it.
+  const whole = await serve(t, { runner: false });
+  await pairPhone(whole, "cmp-pixel");
+  const owner = await whole.api("POST", "/agents", definition("Owner phone", phone));
+  assert.equal(owner.status, 201, JSON.stringify(owner.body));
+});
+
+test("a scoped request's capabilities count no paired computer's kind; the operator's count it", { timeout: 120_000 }, async (t) => {
+  const server = await scopedServer(t);
+  const kinds = async (request) => (await request(server, "GET", "/v2/capabilities")).body.features.computers.kinds;
+  const before = await kinds(unscoped);
+  assert.ok(!before.includes("phone"), `no provider here serves a phone: ${before}`);
+  await pairPhone(server, "cmp-pixel");
+  assert.deepEqual(await kinds(unscoped), [...before, "phone"], "the operator's paired phone");
+  assert.deepEqual(await kinds(inW1), before, "a workspace's");
+});
+
+test("a workspace never sees a paired computer in Settings → Computers: its list holds no paired one (refused, or served without them), its tests, choices and keys are 403 not_scoped, and the operator's list names it", { timeout: 120_000 }, async (t) => {
+  const server = await scopedServer(t);
+  await pairPhone(server, "cmp-pixel");
+  const list = await inW1(server, "GET", "/v2/computers");
+  if (list.status === 403) assert.equal(list.body.error.details.reason, "not_scoped", list.text);
+  else {
+    assert.equal(list.status, 200, list.text);
+    const ids = [...list.body.kinds.flatMap((kind) => (kind.providers ?? []).map((provider) => provider.id)), ...list.body.paired.map((one) => one.id)];
+    assert.deepEqual(ids.filter((id) => id.startsWith("cmp-")), [], "a workspace's list");
+  }
+  assert.ok(!list.text.includes("cmp-pixel") && !list.text.includes("Pixel"), `a workspace's answer names no paired computer: ${list.text}`);
+  for (const [method, path, options] of [["POST", "/v2/computers/cmp-pixel/test"], ["GET", "/v2/computers/cmp-pixel/choices"], ["PUT", "/v2/computers/cmp-pixel/keys", { body: {} }]]) {
+    const refused = await inW1(server, method, path, options);
+    assert.deepEqual([refused.status, refused.body.error.details.reason], [403, "not_scoped"], `${method} ${path}: ${refused.text}`);
+  }
+  const listed = await unscoped(server, "GET", "/v2/computers");
+  assert.equal(listed.status, 200, listed.text);
+  assert.deepEqual(listed.body.paired.map((one) => one.id), ["cmp-pixel"], "the operator's view");
+});
+
+test("a workspace's refusal of a paired computer points at what the workspace is served: the kinds its capabilities offer, and any provider of the kind but a paired one", { timeout: 120_000 }, async (t) => {
+  const server = await scopedServer(t);
+  await pairPhone(server, "cmp-pixel");
+  const refused = await inW1(server, "POST", "/v2/agents", { body: { definition: { version: 1, name: "W1 phone", instructions: "Answer.", skills: [], tools: [], computer: { kind: "phone", provider: "cmp-pixel" } } } });
+  assert.equal(refused.status, 422, refused.text);
+  const { message } = refused.body.error.fields[0];
+  assert.ok(message.startsWith(scopedPairedWords("cmp-pixel")), message);
+  assert.doesNotMatch(message, /pick one GET \/v2\/computers lists/, "never a list that holds the paired computer itself");
+  assert.match(message, /GET \/v2\/capabilities offers it \(features\.computers\.kinds\)/, "the kinds a workspace's capabilities count, which leave the paired computer out");
+  assert.match(message, /never one whose id begins with cmp-/, "and a paired computer is not a provider to name");
 });

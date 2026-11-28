@@ -17,7 +17,7 @@ export const SECRET_WRITE_REFUSAL = "Saving, replacing or removing a secret take
 
 /** The refusal's words with where to finish it: the one sentence, then "Finish it in the console: <link>" when the
  *  operation has a console page (registerSecretPage). The same link is the error's `details.console_url`. */
-export const secretWriteRefusal = (link?: string): string => (link ? `${SECRET_WRITE_REFUSAL} Finish it in the console: ${link}` : SECRET_WRITE_REFUSAL);
+export const secretWriteRefusal = (link?: string, words: string = SECRET_WRITE_REFUSAL): string => (link ? `${words} Finish it in the console: ${link}` : words);
 
 // ---- who may write a secret ------------------------------------------------------------------------------------------
 
@@ -147,6 +147,22 @@ export async function writesSecretFor(operationId: string, body: unknown, reques
   const stored = storedPredicates.get(operationId);
   return stored ? (await stored(body, request)) === true : false;
 }
+
+// ---- an operation's own refusal ------------------------------------------------------------------------------------
+//
+// An operation the gate reads that saves nothing (a listing that sends a key) is refused in its own words, which say what
+// the token may do instead: SECRET_WRITE_REFUSAL speaks of saving, replacing or removing, which it does not do.
+
+const refusals = new Map<string, (request: SecretRequest) => string>();
+
+/** `operationIds`' own refusal words, given the request (an API-only server's may differ): in place of
+ *  SECRET_WRITE_REFUSAL, for an operation that writes nothing it keeps. */
+export function registerSecretRefusal(operationIds: string | readonly string[], words: (request: SecretRequest) => string): void {
+  for (const operationId of typeof operationIds === "string" ? [operationIds] : operationIds) refusals.set(operationId, words);
+}
+
+/** The words `operationId`'s refused request gets: its own (registerSecretRefusal), else SECRET_WRITE_REFUSAL. */
+export const secretRefusalWords = (operationId: string, request: SecretRequest): string => refusals.get(operationId)?.(request) ?? SECRET_WRITE_REFUSAL;
 
 // ---- where a refused secret write is finished ------------------------------------------------------------------------
 //

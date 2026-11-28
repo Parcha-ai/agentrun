@@ -20,6 +20,12 @@ const LISTED = { toolkits: [{ slug: "github", name: "GitHub" }, { slug: "hackern
 const TOOLS = { toolkit: "github", no_auth: false, tools: [ADD] };
 const SCOPED = randomBytes(24).toString("hex");
 const OPERATOR = randomBytes(24).toString("hex");
+/** The refusal a real secret write gets (secret-writes.ts SECRET_WRITE_REFUSAL), and the listings' own, which save nothing. */
+const SECRET_REFUSAL = "Saving, replacing or removing a secret takes the owner's signed-in session in the console; the API token can't write secrets.";
+const LISTING_API_ONLY = "A listing that sends a key's value takes the owner's signed-in session; on this server name the key by api_key_env instead.";
+const LISTING_ELSEWHERE = "Listing Composio's toolkits or tools takes the owner's signed-in session in the console; the API token lists them only on an API-only server, with the key named by api_key_env.";
+/** A 403's words before the console link the refusal may add (secret-writes.ts secretWriteRefusal). */
+const words = (refused) => String(refused.body.error.message).split(" Finish it in the console: ")[0];
 const TOOLKITS_PATH = "/v2/settings/mcp-servers/composio/toolkits";
 const TOOLS_PATH = "/v2/settings/mcp-servers/composio/tools";
 
@@ -72,6 +78,7 @@ test("on an API-only server a key the caller sends is still 403 to the token, sc
       const refused = await post(s.server, path, body, options);
       assert.equal(refused.status, 403, `${path} ${JSON.stringify(body)}: ${JSON.stringify(refused.body)}`);
       assert.equal(refused.body.error.code, "forbidden");
+      assert.equal(words(refused), LISTING_API_ONLY, "a listing saves nothing: its own words, never the secret write's");
       assert.ok(!JSON.stringify(refused.body).includes(KEY), "the refusal never echoes the key");
     }
   }
@@ -101,6 +108,12 @@ test("on a server that is not API-only the token's listing stays 403 whatever na
   for (const [path, body] of [[TOOLKITS_PATH.slice(3), { api_key_env: KEY_ENV }], [TOOLS_PATH.slice(3), { api_key_env: KEY_ENV, toolkit: "github" }]]) {
     const refused = await s.server.api("POST", path, body, token);
     assert.equal(refused.status, 403, `${path}: ${JSON.stringify(refused.body)}`);
+    assert.equal(words(refused), LISTING_ELSEWHERE);
+  }
+  for (const [method, path, body] of [["PUT", "/settings/mcp-servers/gh/composio", { api_key: KEY, toolkit: "github", tools: ["add"] }], ["POST", "/settings/mcp-servers/gh/composio/rotate-secret", {}]]) {
+    const refused = await s.server.api(method, path, body, token);
+    assert.equal(refused.status, 403, `${path}: ${JSON.stringify(refused.body)}`);
+    assert.equal(words(refused), SECRET_REFUSAL, `${path}: a real secret write keeps its words`);
   }
   assert.equal(s.composio.calls.length, 0, "Composio was never called for the token");
   const owners = await s.server.api("POST", TOOLKITS_PATH.slice(3), { api_key_env: KEY_ENV });
