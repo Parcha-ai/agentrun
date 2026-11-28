@@ -231,7 +231,7 @@ test("the channel: a run that holds nothing takes the owner's calls while its ag
   assert.equal(await world.field(), undefined, "a run that holds nothing has no held field");
 });
 
-test("a cancel cuts an owner's call still running on the computer: the run's end, its project checkpoint among it, never waits out the call's time", async (t) => {
+test("a cancel cuts an owner's call still running on the computer: the run's end never waits out the call's time, and its project checkpoint is uncertain", async (t) => {
   const world = await setup(t, { hold: false });
   let letGo;
   const working = new Promise((resolve) => (letGo = resolve));
@@ -264,10 +264,33 @@ test("a cancel cuts an owner's call still running on the computer: the run's end
   const ended = await until(async () => { const row = await world.row(); return row.state === "stopped" && row; }, "the cancelled run ends without waiting out the call");
   assert.equal(ended.outcome, "cancelled");
   assert.match(String(cut?.message ?? cut), /the run ended/, "the call was cut by the run's end");
-  assert.equal(captured.length, 1, "the project checkpoint was captured once the call was cut");
+  assert.equal(captured.length, 0, "no snapshot is taken while a cut command may still be stopping");
+  const end = (await entriesOf(world.server, "run-1", FAST)).find((one) => one.kind === "agentrun.end");
+  assert.deepEqual(end?.data.projectCheckpoint, { ...project, status: "uncertain", reason: "project_not_settled" }, "the end keeps an uncertain receipt: the cut call's outcome on the computer is unknown");
   const late = await world.route("callRunComputer", { method: "exec.run", params: { argv: ["true"], timeoutMs: 1_000 } });
   assert.equal(late.status, 409, "a call after the end is refused");
   assert.deepEqual(await asked, { answer: { ok: false, error: { code: "aborted", message: "the run ended before the call did" } } }, "the owner reads that the run's end cut the call, not that it ran out of time");
+});
+
+test("an owner's call that answered before the run's end leaves its project checkpoint to the snapshot", async (t) => {
+  const world = await setup(t, { hold: false });
+  let letGo;
+  const working = new Promise((resolve) => (letGo = resolve));
+  const tool = { name: "work", replaySafe: true, run: async () => (await working, "done working") };
+  const project = { version: 1, sourceId: "src-1", runId: "run-1", epoch: 1 };
+  const captured = [];
+  const projectCheckpoint = {
+    capture: async () => (captured.push(Date.now()), { ...project, status: "discarded", reason: "auxiliary_project_changes_not_applied" }),
+    uncertain: () => ({ ...project, status: "uncertain", reason: "project_not_settled" }),
+  };
+  await world.start({ tool, projectCheckpoint });
+  await until(async () => (await world.row()).state === "running", "the run is claimed");
+  assert.deepEqual(await world.route("callRunComputer", { method: "ping" }), { answer: { ok: true, value: { method: "ping", params: {} } } });
+  letGo();
+  await until(async () => (await world.row()).state === "ended", "the run ends with its agent");
+  assert.equal(captured.length, 1, "the snapshot was taken");
+  const end = (await entriesOf(world.server, "run-1", FAST)).find((one) => one.kind === "agentrun.end");
+  assert.equal(end?.data.projectCheckpoint?.status, "discarded");
 });
 
 test("the agent's computer calls are kept on its tool call's result row: methods, routes and outcomes, never a typed value", async (t) => {
