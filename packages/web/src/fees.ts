@@ -132,19 +132,23 @@ export function firecrawlFeeOf(path: string, body: unknown): Fee | undefined {
   return undefined;
 }
 
-/** The credits Firecrawl reports a 2xx answer to `path` cost (`json`, its parsed body; undefined when it was not JSON):
+/** The credits Firecrawl reports an answer to `path` cost (`json`, its parsed body; undefined when it was not JSON):
  *  a search's top-level creditsUsed, a scrape's data.metadata.creditsUsed; undefined unless a whole number, 0 or more. */
 export function firecrawlCreditsOf(path: string, json: unknown): number | undefined {
   const said = path === "/v2/search" ? (json as { creditsUsed?: unknown } | undefined)?.creditsUsed : (json as { data?: { metadata?: { creditsUsed?: unknown } } } | undefined)?.data?.metadata?.creditsUsed;
   return typeof said === "number" && Number.isInteger(said) && said >= 0 ? said : undefined;
 }
 
-/** What a 2xx answer to `path` held at `fee` is charged, and the receipt's line for it: the credits Firecrawl reports at
- *  the plan price; the hold when it reports more (saying how many), or none it can be read by (saying so). */
-export function firecrawlChargeOf(fee: Fee, path: string, json: unknown): { usd: number; basis: string } {
+/** What an answer of `status` to `path` held at `fee` is charged, and the receipt's line for it: the credits Firecrawl
+ *  reports at the plan price; the hold when it reports more (saying how many). Reporting none it can be read by, a 2xx
+ *  is charged the hold, and a 408 or a 5xx 0 credits (saying so). */
+export function firecrawlChargeOf(fee: Fee, path: string, json: unknown, status = 200): { usd: number; basis: string } {
   const hold = Math.round(fee.usd / FIRECRAWL_CREDIT_USD);
   const plural = (n: number) => `${n} credit${n === 1 ? "" : "s"}`;
   const reported = firecrawlCreditsOf(path, json);
+  // Firecrawl's billing page (https://docs.firecrawl.dev/billing): "A scrape that fails outright, for example because
+  // the site never responded, is not charged." A 408 or a 5xx with no count of its own is that failure: 0 credits.
+  if (reported === undefined && (status === 408 || status >= 500)) return { usd: 0, basis: `Firecrawl answered ${status} and reported no credit count: 0 credits; a request that fails outright is not charged` };
   if (reported === undefined) return { usd: fee.usd, basis: `the hold, ${plural(hold)}; Firecrawl reported no credit count` };
   const charged = usd(FIRECRAWL_CREDIT_USD * reported);
   if (charged > fee.usd) return { usd: fee.usd, basis: `the hold, ${plural(hold)}; Firecrawl reported ${plural(reported)}` };
