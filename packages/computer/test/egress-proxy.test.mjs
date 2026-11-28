@@ -4,6 +4,7 @@
 // fake origin. The dialer only ever gets an address the table passed, so it never widens what the proxy reaches.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { connect, createServer as createNetServer } from 'node:net';
@@ -30,20 +31,36 @@ const METADATA = '169.254.169.254'; // key-gate: denylist a refused test target
 const LOOPBACK = '127.0.0.1';
 const NAMES = { 'origin.test': [PUBLIC], 'other.test': [PUBLIC_B], 'evil.test': [LOOPBACK], 'split.test': [PUBLIC, PRIVATE], 'meta.test': [METADATA] };
 
-/** A fake origin on loopback: what every dial reaches. `/302-meta` and `/302-loop` answer redirects to local addresses. */
+/** A fake origin on loopback: what every dial reaches. `/302-meta` and `/302-loop` answer redirects to local addresses.
+ *  `dial()` opens the proxy's connection to it, and only a request over one of those is kept in `seen` and `heads`: another
+ *  process on the host that reaches its port (a scan probing each loopback port) is answered and never counted. */
 async function origin() {
 	const seen = [];
 	const heads = [];
+	const dialled = new Set();
 	const server = createServer((req, res) => {
-		seen.push(`${req.method} ${req.url} host=${req.headers.host}`);
-		heads.push(req.headers);
+		if (dialled.has(req.socket.remotePort)) {
+			seen.push(`${req.method} ${req.url} host=${req.headers.host}`);
+			heads.push(req.headers);
+		}
 		if (req.url === '/hop') return res.writeHead(200, { connection: 'close, x-back', 'x-back': 'hop only', 'x-kept': 'yes' }).end('hop');
 		if (req.url === '/302-meta') return res.writeHead(302, { location: `http://${METADATA}/latest/meta-data/` }).end();
 		if (req.url === '/302-loop') return res.writeHead(302, { location: `http://${LOOPBACK}/` }).end();
 		res.writeHead(200, { 'content-type': 'text/plain' }).end(`origin ${req.url}`);
 	});
 	await new Promise((ok) => server.listen(0, '127.0.0.1', ok));
-	return { seen, heads, port: server.address().port, close: () => new Promise((ok) => { server.closeAllConnections(); server.close(ok); }) };
+	const port = server.address().port;
+	const dial = () => {
+		const socket = connect(port, '127.0.0.1');
+		socket.once('connect', () => dialled.add(socket.localPort));
+		return socket;
+	};
+	return { seen, heads, port, dial, close: () => new Promise((ok) => { server.closeAllConnections(); server.close(ok); }) };
+}
+
+/** What a port scan on this host sends a new loopback listener: `GET /` at its address and again at localhost's. */
+async function probe(port) {
+	for (const host of ['127.0.0.1', 'localhost']) await fetch(`http://${host}:${port}/`).then((res) => res.body?.cancel());
 }
 
 /** A proxy with the injected seams; `lookups` and `dials` record what it asked for. */
@@ -68,7 +85,7 @@ async function proxy(extra = {}) {
 		},
 		dial: (address, port) => {
 			dials.push(`${address}:${port}`);
-			return connect(fake.port, '127.0.0.1');
+			return fake.dial();
 		},
 		...extra.options,
 	});
@@ -309,6 +326,8 @@ test('a public CONNECT tunnels to the checked address, and the bytes pass both w
 test("plain HTTP goes to the URI's host; a Host header naming another host is refused (400) before any dial", async () => {
 	const t = await proxy();
 	try {
+		// Another process on this host probing the origin's port, as a port scan does, is not a request the proxy sent.
+		await probe(t.fake.port);
 		const ok = head((await talk(t.path, 'GET http://origin.test/page HTTP/1.1\r\nHost: origin.test\r\nConnection: close\r\n\r\n')).got);
 		assert.equal(ok.status, 200);
 		assert.match(ok.text, /origin \/page/);
@@ -329,6 +348,8 @@ test("plain HTTP goes to the URI's host; a Host header naming another host is re
 test('a redirect is never followed: the 302 reaches the client as sent, and the next hop to a local address is refused', async () => {
 	const t = await proxy();
 	try {
+		// Another process on this host probing the origin's port, as a port scan does, is not a request the proxy sent.
+		await probe(t.fake.port);
 		for (const [path, target, kind] of [['/302-meta', `http://${METADATA}/latest/meta-data/`, 'link-local'], ['/302-loop', `http://${LOOPBACK}/`, 'loopback']]) {
 			const first = head((await talk(t.path, `GET http://origin.test${path} HTTP/1.1\r\nHost: origin.test\r\nConnection: close\r\n\r\n`)).got);
 			assert.equal(first.status, 302, first.line);
@@ -419,15 +440,19 @@ test("plain HTTP is sent only to the checked address: a name the check passes is
 	// The URI names localhost on a port where a canary listens. The injected resolver gives the check a public address, so
 	// the proxy's one dial goes there (the fake origin). A forward that dialled the URI's host itself would resolve localhost
 	// for real and reach the canary.
+	// The request's path is the test's own, so a probe of the canary's port from another process on the host is not counted.
+	const own = `/probe-${randomBytes(8).toString('hex')}`;
 	const canary = [];
-	const trap = createServer((req, res) => { canary.push(req.url); res.end('canary'); });
+	const trap = createServer((req, res) => { if (req.url === own) canary.push(req.url); res.end('canary'); });
 	await new Promise((ok) => trap.listen(0, LOOPBACK, ok));
 	const port = trap.address().port;
 	const t = await proxy({ names: { ...NAMES, localhost: [PUBLIC] } });
 	try {
-		const answer = head((await talk(t.path, `GET http://localhost:${port}/probe HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`)).got);
+		// Another process on this host probing the canary's port, as a port scan does, is not the proxy reaching it.
+		await probe(port);
+		const answer = head((await talk(t.path, `GET http://localhost:${port}${own} HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`)).got);
 		assert.equal(answer.status, 200, answer.line);
-		assert.match(answer.text, /origin \/probe/);
+		assert.ok(answer.text.includes(`origin ${own}`), answer.text);
 		assert.deepEqual(t.dials, [`${PUBLIC}:${port}`]);
 		assert.deepEqual(canary, [], 'nothing reached the canary on loopback');
 	} finally {
@@ -599,6 +624,8 @@ test('headers for this hop only never travel on: the fixed hop-by-hop names, and
 	try {
 		const answer = head((await talk(t.path, 'GET http://origin.test/hop HTTP/1.1\r\nHost: origin.test\r\nConnection: close, x-private\r\nX-Private: hop only\r\nProxy-Authorization: Basic aG9wOm9ubHk=\r\nKeep-Alive: timeout=5\r\nX-Kept: yes\r\n\r\n')).got);
 		assert.equal(answer.status, 200, answer.line);
+		// Another process on this host probing the origin's port, as a port scan does, is not a request the proxy sent.
+		await probe(t.fake.port);
 		const sent = t.fake.heads.at(-1);
 		assert.equal(sent['x-private'], undefined, 'a header the Connection header named stays on the client hop');
 		assert.equal(sent['proxy-authorization'], undefined);
