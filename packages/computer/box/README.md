@@ -10,6 +10,14 @@ Every step of the build is `install.sh`, POSIX shell run as root on the Dockerfi
 account from a running machine (a snapshot, a blueprint, a template) boots that base, copies both files into one folder,
 runs `sh install.sh` as root and snapshots the result. A second run on the same machine ends the same.
 
+A vendor whose base is Ubuntu 24.04 runs the same `install.sh`. Ubuntu has no `firefox-esr` (its `firefox` is a snap),
+so where `apt-cache policy firefox-esr` reads no candidate, the desktop step adds Mozilla's APT repository first: its
+signing key fetched over https and refused unless the file holds that one key, fingerprint
+`35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3`; a pin in `/etc/apt/preferences.d/mozilla` that lets
+`packages.mozilla.org` supply `firefox-esr` and its `firefox-esr-*` packages and puts everything else from it at -1,
+so it never replaces a package of the base's; and the source, signed by that key alone. A base whose apt has
+`firefox-esr` (Debian's) keeps its own package and never reaches Mozilla.
+
 The image also serves a vendor that boots it with env but has no exec stream into it: the machine dials the server
 (`spec/computer/attach.md`). `install.sh` writes `agentrun-dial` to `/usr/local/bin`, root's, 0755, and the
 Dockerfile's `CMD` runs it when the provider's create set `AGENTRUN_ATTACH_URL`, and `sleep infinity` otherwise, so
