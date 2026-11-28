@@ -223,9 +223,8 @@ test("on an API-only server with a launch hook, a workspace's scan without start
   assert.deepEqual((await inW1(server, "GET", "/runs")).body.runs, [], "no run was started");
   assert.deepEqual((await inW1(server, "GET", "/agents")).body.agents, [], "no scout was applied");
   assert.equal(hook.got.length, 0, "nothing was handed to the hook");
-  // The operator's own scan, unscoped, starts its run here as before.
-  const operators = await send(server, "POST", "/suggestions/scans", { token: OPERATOR, body: { repo: REPO } });
-  assert.equal(operators.status, 202, operators.text);
+  // Nothing was reserved either: the host's own reserve goes through at once.
+  assert.equal((await inW1(server, "POST", "/suggestions/scans", { body: { repo: REPO, start: "host" } })).status, 200);
 });
 
 test("there, a workspace's scan is reserved with start: host, the run its host starts is bound once, and another workspace's bind is the unknown run's 404", { timeout: 180_000 }, async (t) => {
@@ -243,6 +242,13 @@ test("there, a workspace's scan is reserved with start: host, the run its host s
   const unknown = await inW2(server, "POST", "/suggestions/scans", { body: { repo: REPO, run_id: missingLike(runId), scan: reserved.body.scan } });
   assert.equal(foreign.status, 404, foreign.text);
   assert.equal(shape(foreign, runId), shape(unknown, missingLike(runId)));
+  // So is binding it under another workspace's own reservation.
+  const theirs = await inW2(server, "POST", "/suggestions/scans", { body: { repo: REPO, start: "host" } });
+  assert.equal(theirs.status, 200, theirs.text);
+  const crossed = await inW2(server, "POST", "/suggestions/scans", { body: { repo: REPO, run_id: runId, scan: theirs.body.scan } });
+  const none = await inW2(server, "POST", "/suggestions/scans", { body: { repo: REPO, run_id: missingLike(runId), scan: theirs.body.scan } });
+  assert.equal(crossed.status, 404, crossed.text);
+  assert.equal(shape(crossed, runId), shape(none, missingLike(runId)));
   const bound = await inW1(server, "POST", "/suggestions/scans", { body: { repo: REPO, run_id: runId, scan: reserved.body.scan } });
   assert.equal(bound.status, 202, bound.text);
   assert.deepEqual(bound.body, { repo: REPO, run_id: runId, agent_id: reserved.body.agent_id, status: "running", already_running: false });

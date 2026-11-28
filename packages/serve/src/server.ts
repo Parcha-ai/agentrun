@@ -2929,7 +2929,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // Kept, then applied (template-import.ts applyImported): a thrown error means no agent was made. The package has no
     // trigger, so the apply makes the agent as its last write.
     cancelScan: async (runId) => { await cancel(store, await needRun(runId)); },
-    agentFrom: async (id, sha) => (await agents.list()).find((one) => one.template?.id === id && one.template.sha === sha && !one.agent.archivedAt)?.agent.id,
+    // An API-only server with a launch hook takes a workspace's runs from its host, which starts and bills each; a
+    // workspace's scan is reserved here and its run, started there, bound to it.
+    hostStarts: () => options.apiOnly === true && options.launchHook !== undefined && workspaceNow() !== undefined,
+    scoutRun: async (runId, agentId) => {
+      const run = await needRun(runId).catch((error: unknown) => {
+        if (error instanceof ApiError && error.code === "not_found") return undefined;
+        throw error;
+      });
+      return run?.agentId === agentId;
+    },
+    agentFrom:async (id, sha) => (await agents.list()).find((one) => one.template?.id === id && one.template.sha === sha && !one.agent.archivedAt)?.agent.id,
     makeAgent: async (id, origin, files) => {
       const made = await applyImported({ registry, store, apply: (pkg) => applyTemplate(pkg, { parameters: {} }) }, id, origin, files);
       return { agentId: made.applied.agent_id, warnings: made.applied.warnings };

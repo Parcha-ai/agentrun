@@ -7254,8 +7254,25 @@ export interface operations {
   scanForSuggestions: {
     body: {
       repo: string;
+      start?: "host";
+      run_id?: string;
+      scan?: string;
     };
     answer: {
+      repo: string;
+      run_id: string;
+      agent_id: string;
+      status: "running";
+      already_running: boolean;
+    } | {
+      repo: string;
+      agent_id: string;
+      input: {
+        content: string;
+      };
+      scan: string;
+      status: "starting";
+    } | {
       repo: string;
       run_id: string;
       agent_id: string;
