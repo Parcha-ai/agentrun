@@ -91,4 +91,5 @@ test("the package: no computer and no checkout, one required Composio GitHub nee
   assert.deepEqual(trigger.source.accept, [{ event: "GITHUB_PULL_REQUEST_CREATED" }]);
   assert.equal(trigger.target.kind, "start_run");
   assert.ok(pkg.evals.includes("inline-at-line"));
+  assert.ok(pkg.evals.includes("re-review-force-push"));
 });
