@@ -347,6 +347,9 @@ test("a need whose toolkit is its source's name (github/github) is named once wh
   const planned = await api("POST", "/templates/notes-digest/apply", { parameters: { to: "me" }, dry_run: true });
   assert.equal(planned.status, 200, JSON.stringify(planned.body));
   assert.doesNotMatch(JSON.stringify(planned.body), /github github/);
+  const picked = await api("POST", "/templates/notes-digest/apply", { parameters: { to: "me" }, servers: { github: "nowhere" } });
+  assert.equal(picked.status, 422, JSON.stringify(picked.body));
+  assert.equal(picked.body.error.fields.find((f) => f.field === "servers.github")?.message, "nowhere is not a saved MCP server that is github: none is saved here.");
 
   const required = await notesPackage(t, (files) => github(files, true));
   const strict = await serve(t, { templates: required.root });
