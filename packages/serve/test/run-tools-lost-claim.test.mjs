@@ -112,6 +112,23 @@ test("Mode 1, a claim lost while its background processes are ending (the TERM's
   assert.deepEqual(kept(), []);
 });
 
+test("Mode 1, a claim lost during the sweep (its computer's remove fails once the lease is gone): the sweep asks the fence again and does not fall back to the run's own folder", async () => {
+  const root = scratch();
+  // The lost claim's sandbox answers until its sweep: its first remove waits out the lease (the end's cut, not the
+  // claim's signal, bounds it), the runner's renew is answered Fenced meanwhile, and the remove then fails. A fallback to
+  // the run's own folder here would delete the later claim's scratch, which its new sandbox binds.
+  const live = fakeComputer(root);
+  let held = true;
+  live.overrides["files.remove"] = () => { held = false; throw new Error("the computer stopped answering"); };
+  const sandbox = (computer) => ({ mode: 1, computer: { kind: "sandbox", computer, check: { readBackOf } } });
+  const { lost, later, kept } = await twoClaims(root, sandbox(live), sandbox(fakeComputer(root)));
+  await released(lost, () => held);
+  assert.ok(live.calls.some(([method]) => method === "files.remove"), "the sweep began while the claim held");
+  assert.deepEqual(kept(), SCRATCH, "the sweep fell back to the run's own folder after the claim was lost, and deleted the later claim's scratch");
+  await released(later, () => true);
+  assert.deepEqual(kept(), []);
+});
+
 test("a claim lost after a shutdown's abort: the signal still says the shutdown, the fence says lost, and nothing is swept", async () => {
   const root = scratch();
   const { signal, lost, kept } = await twoClaims(root, { mode: 2 });
