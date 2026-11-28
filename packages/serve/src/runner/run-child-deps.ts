@@ -2,6 +2,7 @@
 // channel, and the options the runner handed in its start (ChildInit), the plane it capped among them. Apart from
 // run-child.ts, whose module opens the process's pipes, so a test reads what a start's init becomes.
 import { readBackOf } from "@parcha/agentrun-computer";
+import { recordedClient } from "../computer-calls.js";
 import { heldInstall, type HeldComputerAsk, type Held } from "./held.js";
 import type { Claim, Journal } from "./loop-contract.js";
 import { routeOf } from "./model-route.js";
@@ -104,13 +105,17 @@ export async function mirroredHold(remote: ComputerHold): Promise<ComputerHold> 
   };
 }
 
-/** The claim's computer as the runner made it (Held.computer), with what must run here put back: the mount check attach
+/** The claim's computer as the runner made it (Held.computer), with what must run here put back: the record of each
+ *  computer call a tool call makes (computer-calls.ts recordedClient: the tool call's recordingCalls scope is this
+ *  process's, and the runner's client sees each call arrive across the channel outside any), the mount check attach
  *  runs at once (the computer package's read-back, by its epoch, of a synced folder where it is one) and the person's hold over the computer's port (the
  *  runner's hold, mirrored: mirroredHold). */
 export async function computerHere(got: ClaimComputer): Promise<ClaimComputer> {
   const made = got as ClaimComputer & { computer?: { check?: { epoch?: number; sync?: true } } };
+  const given = made.computer;
+  const recorded = given && "computer" in given ? { ...given, computer: { ...given.computer, client: recordedClient(given.computer.client) } } : given;
   const check = made.computer?.check;
-  const computer = made.computer && check ? { ...made.computer, check: { readBackOf, ...(check.epoch !== undefined ? { epoch: check.epoch } : {}), ...(check.sync ? { sync: true as const } : {}) } } : made.computer;
+  const computer = recorded && check ? { ...recorded, check: { readBackOf, ...(check.epoch !== undefined ? { epoch: check.epoch } : {}), ...(check.sync ? { sync: true as const } : {}) } } : recorded;
   const hold = got.held ? await mirroredHold(got.held.hold) : undefined;
   return {
     ...got,
