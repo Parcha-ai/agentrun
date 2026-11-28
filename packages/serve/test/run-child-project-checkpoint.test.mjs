@@ -18,7 +18,9 @@ import { beginSourceIO, requireSourceIOIdle, sourceIOPrefix } from '../dist/sour
 import { purgingKey } from '../dist/agent-delete.js';
 import { localWorkspace } from '../dist/workspace/local.js';
 import { runFolder, sourceSnapshotsKey, sourceRunControlKey } from '../dist/workspace/paths.js';
+import { readBackOf } from '@parcha/agentrun-computer';
 import { storeOn } from './store-helpers.mjs';
+import { fakeComputer } from './workspace-fake-computer.mjs';
 
 async function fixture(t, { sync = async () => {}, release = async () => {}, missingPlacement = false, rawComputer, auxiliary = false } = {}) {
   let side, workspace;
@@ -49,7 +51,7 @@ async function fixture(t, { sync = async () => {}, release = async () => {}, mis
   const secret = 'not-a-secret-' + 'held-project-fixture-key';
   side = heldFor({ ...options, store, env: { OPENAI_API_KEY: secret }, computerForClaim: async (_target, _store, options) => {
     workspace = options.workspace;
-    return { syncProject: sync, release, ...(rawComputer ? { computer: rawComputer } : {}) };
+    return { syncProject: sync, release, ...(rawComputer ? { computer: typeof rawComputer === 'function' ? rawComputer(data) : rawComputer } : {}) };
   } },
     { claim, run: { agentId: 'agent', revisionId: 'base', signInHanded: null }, launch: missingPlacement ? { ...placed.launch, sourceProject: undefined } : placed.launch,
       revision, claimed: { OPENAI_API_KEY: secret }, signal: new AbortController().signal },
@@ -313,6 +315,34 @@ for (const superseded of [false, true]) {
     } else {
       assert.equal(answer.value?.status, 'candidate');
       await assert.rejects(readFile(join(scratch, 'later-claim.txt')), { code: 'ENOENT' }, 'the claim still holds: the end sweeps its scratch');
+    }
+  });
+}
+
+// settleProject ends the project's background processes (TERM, KILL 3 s later) before it sweeps: a claim superseded
+// during that wait shares the run folder with its re-claimer, so the settle's sweep asks projectOwns only then.
+for (const superseded of [false, true]) {
+  test(`a capture whose claim ${superseded ? 'is superseded while settleProject ends its background processes leaves' : 'holds through settleProject sweeps'} the run folder's scratch`, { timeout: 30_000 }, async t => {
+    let f, running = true, signalled = false;
+    f = await fixture(t, { rawComputer: data => {
+      const computer = fakeComputer(runFolder(data, 'agent', 'own-run'));
+      computer.overrides['process.list'] = () => ({ processes: [{ id: 'p9', pid: 9, argv: ['bash', '-c', 'sleep 99', 'agentrun-background', '1', 'sleep 99'], argvClipped: false, pty: false, running, exitCode: running ? null : 143, signal: running ? null : 'TERM', startedAt: 1, endedAt: running ? null : 2 }], truncated: false, next: 1 });
+      computer.overrides['process.signal'] = async () => {
+        signalled = true; running = false;
+        if (superseded) { f.clock.now += 60_001; assert.ok((await f.store.claim('own-run', 'replacement', { leaseMs: 60_000 })).epoch > f.claim.epoch); }
+        return {};
+      };
+      return { kind: 'sandbox', computer, check: { readBackOf } };
+    } });
+    const scratch = join(runFolder(f.data, 'agent', 'own-run'), '.agentrun', 'tmp');
+    await mkdir(scratch, { recursive: true }); await writeFile(join(scratch, 'later-claim.txt'), 'the re-claimer\'s scratch');
+    const answer = await f.side.held.projectCheckpoint().then(value => ({ value }), error => ({ error }));
+    assert.ok(signalled, 'settleProject ended the background process');
+    if (superseded) {
+      assert.notEqual(answer.value?.status, 'candidate', 'a superseded claim never publishes a project');
+      assert.equal(await readFile(join(scratch, 'later-claim.txt'), 'utf8'), 'the re-claimer\'s scratch', 'the settle swept a re-claimer\'s scratch');
+    } else {
+      await assert.rejects(readFile(join(scratch, 'later-claim.txt')), { code: 'ENOENT' }, 'the claim holds: its scratch is swept');
     }
   });
 }
