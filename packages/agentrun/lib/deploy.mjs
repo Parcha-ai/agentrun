@@ -44,7 +44,7 @@ export function packageSha256(files) {
   return hash.digest("hex");
 }
 
-/** The server's manifest reader (its `manifest` export; the server is this package's one dependency), so agent.md is
+/** The server's manifest reader (its `manifest` export; the server is this package's dependency), so agent.md is
  *  read here as the target reads it. Loaded for a folder's deploy alone. */
 async function serverManifest(fail) {
   // Loaded here: start.mjs loads cli.mjs, which loads this module.

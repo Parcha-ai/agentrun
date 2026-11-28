@@ -6219,7 +6219,8 @@ carries no cost at all, as from a provider that does not price the model. The te
   package guidance asks). The drift test fails, naming the provider and the key, on a pi-ai that reads a key neither
   names. A pi-ai installed past that test that reads a key neither
   names would leave it in the server's environment and out of every run's, and a run on that provider would fail at
-  its start for want of the key.
+  its start for want of the key. `npx @parcha/agentrun` pins the pi-ai this package is tested with, so this is for a
+  host that installs the server beside another pi-ai.
 - The cut is by name alone. A variable named like no key whose value is one reaches a run's environment and is not cut
   from what an import or a harness's log keeps: a URL with a user and password in it (`DATABASE_URL`, `HTTPS_PROXY`),
   headers that carry a token (`OTEL_EXPORTER_OTLP_HEADERS`), or a held key's
