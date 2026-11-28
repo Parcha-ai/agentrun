@@ -29,7 +29,7 @@ import { boxImageRef, boxRecipeHash } from "./box-image.js";
 import { RENDER } from "./descriptors/render.js";
 import { COMPUTER_LABEL, DEFAULT_CPUS, DEFAULT_MEMORY_MB, show } from "./drift.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineRequest } from "./host.js";
-import { codeOfError, orThrow, pause, seconds, until, untilAborted } from "./hosted/process.js";
+import { codeOfError, eachAtMost, orThrow, pause, seconds, until, untilAborted } from "./hosted/process.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts, mayHaveMade, NAME_LABEL, timeoutsOf } from "./hosted/provider.js";
 import { allPages, jsonOf, type Rest, type RestInit, rest } from "./hosted/rest.js";
 import { dialLaunch } from "./hosted/scripts.js";
@@ -306,20 +306,6 @@ const segmentable = (id: unknown): id is string => typeof id === "string" && id 
 function sandboxPath(id: string): string {
 	if (!segmentable(id)) throw new HostError("not_found", `${JSON.stringify(id)} is not a Render sandbox id`);
 	return encodeURIComponent(id);
-}
-
-/** Each of items through `each`, at most `most` at once, the answers in the items' order. */
-async function eachAtMost<T, R>(items: readonly T[], most: number, each: (item: T) => Promise<R>): Promise<R[]> {
-	const answers: R[] = new Array(items.length);
-	let next = 0;
-	const worker = async () => {
-		while (next < items.length) {
-			const at = next++;
-			answers[at] = await each(items[at] as T);
-		}
-	};
-	await Promise.all(Array.from({ length: Math.min(most, items.length) }, worker));
-	return answers;
 }
 
 /** Render's error body (S, error): { id?, message?, code? }. */

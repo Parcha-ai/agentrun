@@ -38,6 +38,20 @@ export const redact = (text: string, secrets: readonly (string | undefined)[]) =
 		.sort((a, b) => b.length - a.length)
 		.reduce((said, secret) => said.replaceAll(secret, "[redacted]"), text);
 
+/** Each of items through `each`, at most `most` at once, the answers in the items' order. */
+export async function eachAtMost<T, R>(items: readonly T[], most: number, each: (item: T) => Promise<R>): Promise<R[]> {
+	const answers: R[] = new Array(items.length);
+	let next = 0;
+	const worker = async () => {
+		while (next < items.length) {
+			const at = next++;
+			answers[at] = await each(items[at] as T);
+		}
+	};
+	await Promise.all(Array.from({ length: Math.min(most, items.length) }, worker));
+	return answers;
+}
+
 /** A pause that ends early when signal aborts; never rejects. */
 export const pause = (ms: number, signal?: AbortSignal) =>
 	new Promise<void>((done) => {

@@ -154,13 +154,14 @@ export function fakeRest({ key = KEY, settleMs = 0 } = {}) {
  * connection takes MAX_SESSIONS sessions at once and refuses the next, as OpenSSH's sshd does by default (MaxSessions).
  * refuseSessions(n) refuses the next n session channels besides, dropAll() cuts every connection from the server's
  * side, and close() ends them all, then the server. accept(ctx), when given, decides each login in place of the one
- * key as root (Morph's gateway: its own username, any key); run(command, stream, { username }), when given, may answer
- * a command itself (true), in place of bash, told the user the connection logged in as. authorized(id), when given, is
- * the public lines instance id's sshd takes as root now (fakeRest's authorizedFor: the workspace's registered keys), the
- * instance named by the client's port in routes, which fakeWebSocket fills; state.denied counts the logins refused.
+ * key as root (Morph's gateway: its own username, any key); run(command, stream, { username, instance }), when given,
+ * may answer a command itself (true), in place of bash, told the user the connection logged in as and the instance its
+ * tunnel reached (routes). authorized(id), when given, is the public lines instance id's sshd takes as user (root unless
+ * named) now (fakeRest's authorizedFor: the workspace's registered keys), the instance named by the client's port in
+ * routes, which fakeWebSocket fills; state.denied counts the logins refused.
  * hostKey is the server's host key, its OpenSSH public line, which a client pins by its sha256 (fingerprintOf).
  */
-export async function fakeSshd({ publicKey, accept, run, authorized, routes }) {
+export async function fakeSshd({ publicKey, accept, run, authorized, routes, user = "root" }) {
 	const host = keyPair();
 	const allowed = publicKey === undefined ? undefined : utils.parseKey(publicKey);
 	const commands = [];
@@ -182,7 +183,7 @@ export async function fakeSshd({ publicKey, accept, run, authorized, routes }) {
 			if (accept !== undefined) return accept(ctx) ? ctx.accept() : ctx.reject(["publickey"]);
 			const key = ctx.method === "publickey" ? ctx.key : undefined;
 			const takes = authorized === undefined ? [allowed] : authorized(routes?.get(info.port)).map((line) => utils.parseKey(line));
-			const match = key && ctx.username === "root" ? takes.find((one) => key.algo === one.type && key.data.length === one.getPublicSSH().length && timingSafeEqual(key.data, one.getPublicSSH())) : undefined;
+			const match = key && ctx.username === user ? takes.find((one) => key.algo === one.type && key.data.length === one.getPublicSSH().length && timingSafeEqual(key.data, one.getPublicSSH())) : undefined;
 			if (!match || (ctx.signature && match.verify(ctx.blob, ctx.signature, ctx.hashAlgo) !== true)) {
 				if (ctx.method === "publickey") state.denied++;
 				return ctx.reject(["publickey"]);
@@ -207,7 +208,7 @@ export async function fakeSshd({ publicKey, accept, run, authorized, routes }) {
 				session.on("exec", (acceptExec, _reject, { command }) => {
 					commands.push(command);
 					const stream = acceptExec();
-					if (run?.(command, stream, { username })) return;
+					if (run?.(command, stream, { username, instance: routes?.get(info.port) })) return;
 					const child = spawn("bash", ["-c", command], { detached: true, stdio: ["pipe", "pipe", "pipe"] });
 					children.add(child);
 					child.stdout.pipe(stream, { end: false });
@@ -268,9 +269,10 @@ export async function fakeSshd({ publicKey, accept, run, authorized, routes }) {
 /**
  * A WebSocket class as Node's global one is used here: the edge refuses a key that is not the workspace's (closed with
  * 1008 before it opens, as Agent37's edge closes it), then every binary frame rides a TCP connection to port. opened lists
- * each URL and its headers.
+ * each URL and its headers. reach(url, headers), when given, decides in place of the key: the instance the tunnel
+ * reaches, or undefined to refuse it (Tensorlake's proxy: a Bearer key and the sandbox id in a header).
  */
-export function fakeWebSocket({ port, key = KEY, routes }) {
+export function fakeWebSocket({ port, key = KEY, routes, reach = (url, headers) => (headers["X-Agent37-Key"] === key ? new URL(url).hostname.split("-")[0] : undefined) }) {
 	const opened = [];
 	/** How many of the next tunnels fail to open (an error, then 1006), as a fresh instance's edge did once live. */
 	const state = { failing: 0, hanging: 0 };
@@ -285,7 +287,8 @@ export function fakeWebSocket({ port, key = KEY, routes }) {
 		constructor(url, init) {
 			opened.push({ url, headers: { ...(init?.headers ?? {}) } });
 			setImmediate(() => {
-				if (init?.headers?.["X-Agent37-Key"] !== key) return this.#close(1008, "invalid key");
+				const instance = reach(url, { ...(init?.headers ?? {}) });
+				if (instance === undefined) return this.#close(1008, "invalid key");
 				if (state.failing > 0) {
 					state.failing--;
 					this.#emit("error", { message: "Received network error or non-101 status code." });
@@ -298,7 +301,7 @@ export function fakeWebSocket({ port, key = KEY, routes }) {
 				}
 				this.#socket = connect(port, "127.0.0.1", () => {
 					// The instance this tunnel reaches, by the sshd's view of the connection: its client port.
-					routes?.set(this.#socket.localPort, new URL(url).hostname.split("-")[0]);
+					routes?.set(this.#socket.localPort, instance);
 					this.readyState = 1;
 					this.#emit("open", {});
 				});

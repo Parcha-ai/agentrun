@@ -164,7 +164,7 @@ export function fakeRest({ key = KEY, pageSize = 2, ignoreFilter = false, busyDe
 }
 
 /** The ssh2 stream of a command run on backend's exec under withSh: stdin in, stdout and stderr out, then its exit. */
-function onBackend(exec, id, command, stream) {
+export function onBackend(exec, id, command, stream) {
 	void (async () => {
 		let proc;
 		try {
