@@ -69,10 +69,13 @@ test("install.sh is POSIX shell that stops at the first failure, runs its steps 
   assert.match(step("packages"), /if \[ "\$\(dpkg-query -W -f '\$\{Version\}' archil 2>\/dev\/null\)" != "\$ARCHIL_VERSION" \]; then/, "the archil client is fetched only when another version, or none, is installed");
   assert.match(step("checked"), /if dpkg -s sudo >\/dev\/null 2>&1; then /, "sudo is purged only where it is installed");
   assert.match(step("packages"), /if \[ "\$\(\/usr\/local\/bin\/node --version 2>\/dev\/null\)" != "v\$NODE_VERSION" \]; then/, "Node is fetched only when another version, or none, is installed");
-  // It reads no network beyond Debian's mirrors through apt, Archil's package and Node's release.
+  // It reads no network beyond the base's mirrors through apt, Archil's package and Node's release, and, where the
+  // base's apt has no firefox-esr, Mozilla's APT repository and its signing key (test/box-firefox-esr.test.mjs).
   assert.deepEqual([...INSTALL.matchAll(/https?:\/\/[^\s"']+/g)].map((match) => match[0]), [
     "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz",
     "https://s3.amazonaws.com/archil-client/pkg/archil_${ARCHIL_VERSION}_${arch}.deb",
+    "https://packages.mozilla.org/apt/repo-signing-key.gpg",
+    "https://packages.mozilla.org/apt",
   ]);
 });
 
@@ -356,7 +359,9 @@ test("box/ holds no file named like a key or a credential and no key material, a
   // agentrun-dial, which the build only writes, reads the machine's token at boot (test/agentrun-dial.test.mjs).
   const build = INSTALL.replace(/<<'EOF'\n[^]*?\nEOF\n/, "");
   assert.ok(build.length < INSTALL.length && build.includes("dial() {"), "the build without agentrun-dial's text");
-  assert.doesNotMatch(build, /\$\{?[A-Z_]*(KEY|TOKEN|SECRET|PASS|CRED|AUTH|PRIVATE)/, "install.sh reads no variable named like a secret");
+  // MOZILLA_KEY is the path install.sh itself gives Mozilla's public APT signing key (test/box-firefox-esr.test.mjs).
+  assert.ok(INSTALL.includes("\nMOZILLA_KEY=/etc/apt/keyrings/packages.mozilla.org.asc\n"));
+  assert.doesNotMatch(build.replace(/\$\{?MOZILLA_KEY\b/g, ""), /\$\{?[A-Z_]*(KEY|TOKEN|SECRET|PASS|CRED|AUTH|PRIVATE)/, "install.sh reads no variable named like a secret");
   // The patterns catch what they are for.
   assert.match("id_ed25519", CREDENTIAL_NAME);
   assert.match("deploy.pem", CREDENTIAL_NAME);
@@ -453,10 +458,10 @@ test("the desktop step installs and checks every app the linux-desktop suite ope
   }
 });
 
-test("the default box recipe's hash is 243c3c1a9d57: a recipe change is a box bump, a new image and snapshot of that name", async () => {
+test("the default box recipe's hash is 91bc4d1eed97: a recipe change is a box bump, a new image and snapshot of that name", async () => {
   // Another image (media/, documents/) is a recipe of its own; nothing it adds moves this one. A change here names a new
   // ghcr.io/parcha-ai/agentrun-box:<hash> (the release's box job publishes it), a new Daytona snapshot
   // agentrun-box-<hash> (box/build-daytona.py) for AGENTRUN_DAYTONA_SNAPSHOT, and relays/cloudflare/wrangler.json's image.
   const { recipeHash } = await import("../box/recipe.mjs");
-  assert.equal(recipeHash(), "243c3c1a9d57");
+  assert.equal(recipeHash(), "91bc4d1eed97");
 });
