@@ -360,6 +360,21 @@ test("a token the gateway refuses (revoked) is let go and another minted, and th
 	assert.notEqual([...rest.tokens.keys()][0], old);
 });
 
+test("two execs refused on the same revoked token both run, on one token minted in its place: neither lets go of the other's", async (t) => {
+	const { fake, rest, host } = await setup(t);
+	const id = await running(host);
+	assert.equal((await run(host, id, ["true"])).code, 0);
+	rest.tokens.clear();
+	fake.sshd.dropAll();
+	const [a, b] = await Promise.allSettled([run(host, id, ["echo", "a"]), run(host, id, ["echo", "b"])]);
+	assert.deepEqual([a, b], [
+		{ status: "fulfilled", value: { code: 0, stdout: "a\n", stderr: "" } },
+		{ status: "fulfilled", value: { code: 0, stdout: "b\n", stderr: "" } },
+	]);
+	assert.equal(rest.calls.filter((call) => call.path.endsWith("/ssh-tokens")).length, 2, "the first token, then one in its place for both");
+	assert.equal(rest.tokens.size, 1);
+});
+
 test("an exec on a machine InstaBox no longer has is not_found: its token mint answers 404", async (t) => {
 	const { host } = await setup(t);
 	await assert.rejects(host.exec("m_ffffffffffffffffffffffffff", ["true"], CTX), (error) => error.code === "not_found");
