@@ -35,6 +35,7 @@ import { GroundboxProvider } from "../dist/groundbox.js";
 import { VercelProvider } from "../dist/vercel.js";
 import { SpritesProvider } from "../dist/sprites.js";
 import { InstaboxProvider } from "../dist/instabox.js";
+import { BoatProvider } from "../dist/boat.js";
 import { keyPair } from "./fake-agent37.mjs";
 import { BrowserbaseProvider } from "../dist/browserbase.js";
 import { E2BProvider } from "../dist/e2b.js";
@@ -161,7 +162,7 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	assert.deepEqual(PROVIDERS.find((entry) => entry.id === "docker").kinds, ["sandbox", "desktop"]);
 	const mounts = Object.fromEntries(PROVIDERS.map((entry) => [entry.id, entry.mounts]));
 	assert.deepEqual(mounts.docker, ["bind"]);
-	for (const id of ["morph", "boxd", "groundbox", "vercel", "sprites", "instabox"]) assert.deepEqual(mounts[id], ["sync"], id);
+	for (const id of ["morph", "boxd", "groundbox", "vercel", "sprites", "instabox", "boat"]) assert.deepEqual(mounts[id], ["sync"], id);
 	for (const id of ["orgo", "phone-harness", "browserbase", "kernel", "local-chrome", "smolcloud"]) assert.deepEqual(mounts[id], [], id);
 });
 
@@ -197,6 +198,7 @@ test("PROVIDERS' default images: each kind is one of the entry's own, and each v
 		vercel: undefined,
 		sprites: { sandbox: all.SPRITES_IMAGE },
 		instabox: { sandbox: all.INSTABOX_IMAGE },
+		boat: { sandbox: all.BOAT_IMAGE },
 	};
 	for (const [id, images] of Object.entries(expected)) {
 		assert.deepEqual(PROVIDERS.find((entry) => entry.id === id)?.defaultImage, images, `${id}: its default images are its modules' constants`);
@@ -210,6 +212,7 @@ test("PROVIDERS' default images: each kind is one of the entry's own, and each v
 	assert.equal(all.GROUNDBOX_OWN_IMAGE, "default");
 	assert.equal(all.SPRITES_IMAGE, "default");
 	assert.equal(all.INSTABOX_IMAGE, "minimal");
+	assert.equal(all.BOAT_IMAGE, "ubuntu-24.04");
 	assert.equal("MODAL_DEFAULT_IMAGE" in all, false, "no Modal default image: its prepareImage() answers the box image");
 	for (const name of ["E2B_BASE_TEMPLATE", "E2B_DESKTOP_TEMPLATE"]) assert.equal(name in all, false, `no ${name}: E2B's prepareImage() answers the box template`);
 });
@@ -353,6 +356,7 @@ const BUILT = {
 	vercel: [() => new VercelProvider({ token: "fake-test-key", teamId: "team_test", projectId: "prj_test", fetch: async () => new Response(null, { status: 500 }) })],
 	sprites: [() => new SpritesProvider({ token: "fake-test-key", fetch: async () => new Response(null, { status: 500 }), webSocket: () => assert.fail("an exec socket was opened") })],
 	instabox: [() => new InstaboxProvider({ apiKey: "fake-test-key", ssh2: AGENT37_SSH2, fetch: async () => new Response(null, { status: 500 }) })],
+	boat: [() => new BoatProvider({ apiKey: "fake-test-key", ssh2: AGENT37_SSH2, fetch: async () => new Response(null, { status: 500 }) })],
 	orgo: PROVIDERS.find((one) => one.id === "orgo").capabilities.map(({ options }) => () => createOrgo({ ...options, apiKey: "fake-test-key", workspaceId: "ws-test", fetch: async () => new Response(null, { status: 500 }) })),
 };
 

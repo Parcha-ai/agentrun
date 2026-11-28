@@ -13,7 +13,8 @@
     "groundbox",
     "vercel",
     "sprites",
-    "instabox"
+    "instabox",
+    "boat"
   ],
   "type": "module",
   "license": "Apache-2.0",
@@ -91,6 +92,10 @@
     "./sprites": {
       "types": "./dist/sprites.d.ts",
       "default": "./dist/sprites.js"
+    },
+    "./boat": {
+      "types": "./dist/boat.d.ts",
+      "default": "./dist/boat.js"
     },
     "./instabox": {
       "types": "./dist/instabox.d.ts",

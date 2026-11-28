@@ -1,10 +1,13 @@
 // MachineHost.exec over SSH, for a vendor whose machines run an sshd: one connection per machine shared by its execs,
 // each process under the wrapper that names its pid (./scripts.ts, PID_WRAPPER), through the stream the host gives to
-// the machine's sshd (Agent37's WebSocket tunnel) and as the login the host gives (Agent37's root and key). Every error it throws or
+// the machine's sshd (Agent37's WebSocket tunnel, or a TCP connection: tcpTunnel) and as the login the host gives
+// (Agent37's root and key; boat's sudo user, its host key pinned). Every error it throws or
 // rejects with is redacted of the login's secrets. The host's own ssh2 package does the protocol; this package names
 // only the slice it uses (Ssh2Module) and imports nothing at load.
 import { createHash, createPrivateKey, type KeyObject, randomBytes } from "node:crypto";
+import { isIP, connect as tcp } from "node:net";
 import { Duplex, PassThrough } from "node:stream";
+import { proxyFor, tunnelThrough } from "../env-proxy.js";
 import { type HostCall, HostError, type MachineProcess } from "../host.js";
 import { boundOf, redact } from "./process.js";
 import { PID_WRAPPER, pidKill, pidStderr, shellLine } from "./scripts.js";
@@ -43,6 +46,8 @@ export interface Ssh2ConnectConfig {
 	keepaliveCountMax: number;
 	/** Given the server's host key (its SSH wire blob), whether to go on: false ends the handshake before any login. */
 	hostVerifier?: (key: Buffer) => boolean;
+	/** The host key signature names the handshake offers, in order (ssh2's default list when absent). */
+	algorithms?: { serverHostKey: string[] };
 }
 
 /** The slice of an ssh2 Client this provider uses. */
@@ -108,6 +113,29 @@ export interface SshTunnel {
 /** How a vendor opens the stream to machine id's sshd: a fresh one per call, nothing started before it is used. */
 export type SshTunnelOf = (id: string) => SshTunnel;
 
+/**
+ * A TCP connection to host:port's sshd, through the proxy's CONNECT tunnel when the proxy the process installed into
+ * Node applies to it (env-proxy.ts).
+ */
+export function tcpTunnel(hostName: string, port: number): SshTunnel {
+	const name = isIP(hostName) === 6 ? `[${hostName}]` : hostName;
+	const host = `${name}:${port}`;
+	const proxy = proxyFor(new URL(`https://${host}`));
+	const through = proxy && tunnelThrough(proxy, name, port);
+	const socket = through ? through.socket : tcp(port, hostName);
+	// ssh2 reads the socket's errors once it has it; this keeps one before then from being thrown.
+	socket.on("error", () => {});
+	const failed = (error: Error) => new SshTunnelError(`the SSH connection to ${host}${proxy ? ` through the proxy ${proxy.host}` : ""} failed to open: ${error.message}`);
+	const opened = through
+		? through.opened.catch((error: Error) => Promise.reject(failed(error)))
+		: new Promise<void>((resolve, reject) => {
+				socket.once("connect", resolve);
+				socket.once("error", (error) => reject(failed(error)));
+			});
+	opened.catch(() => {});
+	return { duplex: socket, opened, host };
+}
+
 /** How many times a tunnel that fails before its SSH handshake is opened, and the first pause between (it doubles). */
 const TUNNEL_TRIES = 4;
 const TUNNEL_RETRY_MS = 500;
@@ -151,13 +179,25 @@ export interface SshLogin {
 	 * token as the username), which a host posing as the gateway would otherwise read.
 	 */
 	hostKey?: string;
+	/**
+	 * The host key type the pin names, when the vendor says it (boat's sshkey answer is a whole OpenSSH line): the
+	 * handshake offers that type's signature names alone (hostKeyAlgorithms), so an sshd holding several host keys shows
+	 * the pinned one, not the one ssh2 would pick first. Absent: ssh2's own list.
+	 */
+	hostKeyType?: string;
 }
 
 /** OpenSSH's sha256 fingerprint of a host key's wire blob. */
-const fingerprintOf = (key: Buffer): string => `SHA256:${createHash("sha256").update(key).digest("base64").replace(/=+$/, "")}`;
+export const fingerprintOf = (key: Buffer): string => `SHA256:${createHash("sha256").update(key).digest("base64").replace(/=+$/, "")}`;
 
 /** A host key pin's form, OpenSSH's sha256 fingerprint: SHA256: and 43 characters of unpadded base64. */
 export const HOST_KEY_PIN = /^SHA256:[A-Za-z0-9+/]{43}$/;
+
+/** The signature names a host key of this type signs under: an RSA key under three (RFC 8332), any other under its own. */
+const hostKeyAlgorithms = (type: string): string[] => (type === "ssh-rsa" ? ["rsa-sha2-512", "rsa-sha2-256", "ssh-rsa"] : [type]);
+
+/** What a command starts with when the login is a user with passwordless sudo, not root (SshExecOptions.sudo). */
+const SUDO = ["sudo", "-n", "--"];
 
 export interface SshExecOptions {
 	/** The host's own ssh2 package, or anything with the same slice. */
@@ -171,6 +211,12 @@ export interface SshExecOptions {
 	 * or past: a refused login fails at once.
 	 */
 	deniedUntil?: (id: string) => number;
+	/**
+	 * The login is a user with passwordless sudo, not root (boat's `user`): every command, the kill's too, runs under
+	 * `sudo -n --`, so it is root's, as MachineHost.exec's are. With no terminal, sudo hands the command the channel's
+	 * pipes as they are.
+	 */
+	sudo?: boolean;
 	/**
 	 * Every login must carry hostKey of HOST_KEY_PIN's form: one without is refused (vendor) before its tunnel opens, so
 	 * its credential never leaves. For a host whose login is itself a credential (InstaBox's token as the username).
@@ -187,6 +233,7 @@ export class SshExec {
 	readonly #loginOf: (id: string) => SshLogin;
 	readonly #tunnelOf: SshTunnelOf;
 	readonly #deniedUntil: ((id: string) => number) | undefined;
+	readonly #root: readonly string[];
 	readonly #pinned: boolean;
 	/**
 	 * The SSH connections to each machine, opening, open, or done and still held, until each ends: one, and a second
@@ -194,11 +241,12 @@ export class SshExec {
 	 */
 	readonly #links = new Map<string, Link[]>();
 
-	constructor({ ssh2, loginOf, tunnelOf, deniedUntil, pinned = false }: SshExecOptions) {
+	constructor({ ssh2, loginOf, tunnelOf, deniedUntil, sudo = false, pinned = false }: SshExecOptions) {
 		this.#ssh2 = ssh2;
 		this.#loginOf = loginOf;
 		this.#tunnelOf = tunnelOf;
 		this.#deniedUntil = deniedUntil;
+		this.#root = sudo ? SUDO : [];
 		this.#pinned = pinned;
 	}
 
@@ -247,7 +295,7 @@ export class SshExec {
 	 * client are dropped.
 	 */
 	async #handshake(id: string, timeoutMs: number, stop: AbortSignal): Promise<Ssh2Client> {
-		const { username, privateKey, password, hostKey } = this.#loginOf(id);
+		const { username, privateKey, password, hostKey, hostKeyType } = this.#loginOf(id);
 		if (this.#pinned && !(typeof hostKey === "string" && HOST_KEY_PIN.test(hostKey))) {
 			throw new HostError("vendor", `the SSH login to ${id} names no host key (SHA256:...) to pin its sshd by, and this host pins every login: no connection was made`);
 		}
@@ -265,13 +313,17 @@ export class SshExec {
 			quit(givenUp());
 		};
 		stop.addEventListener("abort", drop, { once: true });
+		const pin = {
+			...(hostKey === undefined ? {} : { hostVerifier: (key: Buffer) => fingerprintOf(key) === hostKey }),
+			...(hostKeyType === undefined ? {} : { algorithms: { serverHostKey: hostKeyAlgorithms(hostKeyType) } }),
+		};
 		try {
 			await Promise.race([opened, quitted]);
 			await Promise.race([
 				new Promise<void>((resolve, reject) => {
 					client.once("ready", resolve);
 					client.once("error", reject);
-					client.connect({ sock: duplex, username, privateKey, password, readyTimeout: timeoutMs, keepaliveInterval: KEEPALIVE_MS, keepaliveCountMax: KEEPALIVE_COUNT_MAX, ...(hostKey === undefined ? {} : { hostVerifier: (key: Buffer) => fingerprintOf(key) === hostKey }) });
+					client.connect({ sock: duplex, username, privateKey, password, readyTimeout: timeoutMs, keepaliveInterval: KEEPALIVE_MS, keepaliveCountMax: KEEPALIVE_COUNT_MAX, ...pin });
 				}),
 				quitted,
 			]);
@@ -476,7 +528,7 @@ export class SshExec {
 	 * connection takes no new channel.
 	 */
 	async exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {
-		const opened = await this.#start(id, shellLine([...PID_WRAPPER, ...argv]), ctx, `the exec in ${id}`).catch((error: unknown) => {
+		const opened = await this.#start(id, shellLine([...this.#root, ...PID_WRAPPER, ...argv]), ctx, `the exec in ${id}`).catch((error: unknown) => {
 			throw this.#redacted(id, error);
 		});
 		const { link: held, channel } = opened;
@@ -518,7 +570,7 @@ export class SshExec {
 				// pid line within the grace (or the process ended meanwhile): closing the channel below is what is left.
 				const target = await pid(KILL_GRACE_MS);
 				if (target !== undefined && !closed) try {
-					const killer = await this.#start(id, shellLine(pidKill(target)), { timeoutMs: KILL_GRACE_MS }, `the kill in ${id}`);
+					const killer = await this.#start(id, shellLine([...this.#root, ...pidKill(target)]), { timeoutMs: KILL_GRACE_MS }, `the kill in ${id}`);
 					killer.channel.resume();
 					killer.channel.stderr.resume();
 					killer.channel.eof();

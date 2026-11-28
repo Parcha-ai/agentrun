@@ -16,7 +16,7 @@ import { checkMount, readBackOf, WORKSPACE, type MountSpec } from "@parcha/agent
 
 The package root holds the protocol, the registry and the descriptors, and loads no provider: a provider loads by its
 id (`providerFor(id, options)`, which imports that one provider's file), or from its subpath (`/docker`, `/daytona`,
-`/modal`, `/e2b`, `/orgo`, `/orgo-desktop`, `/phone-harness`, `/browserbase`, `/kernel`, `/local-chrome`, `/boxd`, `/smolcloud`, `/groundbox`, `/vercel`, `/sprites`, `/instabox`). A provider's
+`/modal`, `/e2b`, `/orgo`, `/orgo-desktop`, `/phone-harness`, `/browserbase`, `/kernel`, `/local-chrome`, `/boxd`, `/smolcloud`, `/groundbox`, `/vercel`, `/sprites`, `/instabox`, `/boat`). A provider's
 option types (`DockerProviderOptions`, `ModalProviderOptions` and the like) come from its subpath too, not the root.
 
 The package carries the daemon for Linux amd64 and arm64 in `dist/`, so a provider runs it with no Go on the host. A
@@ -691,6 +691,7 @@ live under:
   | `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` | Vercel Sandbox's `token`, `teamId` and `projectId`, all required |
   | `SPRITES_TOKEN` | Fly Sprites' `token`: the name Fly's own CLI reads |
   | `INSTABOX_API_KEY` | InstaBox's `apiKey`: the name InstaBox's own CLI and SDK read |
+  | `BOAT_API_KEY` | boat's `apiKey`: the name boat's own SDK reads |
 
 - **the conformance CLI and the live harness** (`src/conformance/`: the CLI, each provider's conformance module and the
   sweeps) read their own `COMPUTER_<ID>_*` names, the ones the live scripts set, through each module's
@@ -3420,6 +3421,46 @@ a concurrency cap (`concurrent_sprite_limit_exceeded`) is a `limit`.
 Unverified until the live run: the arch (amd64); a label string's room (64 bytes); a taken name answering 409; the exec
 user being root or having passwordless sudo, and root making a network namespace; no vendor agent on TCP; the exec
 socket holding 75 s of silence with no ping; and a sprite with an exec running never going to sleep.
+
+## boat
+
+```ts
+import { providerFor } from "@parcha/agentrun-computer";
+
+// The key is the caller's to pass (serve's BOAT_API_KEY).
+const boat = await providerFor("boat", { apiKey });
+const made = await boat.create({ image: "ubuntu-24.04", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
+```
+
+A boat computer is a [boat](https://boat.dev/docs) sandbox: a Firecracker microVM with its own kernel, in boat's EU
+regions only (Germany, Finland or France; boat's docs: "You cannot pick a region", so the provider has no region). It
+starts from boat's Ubuntu 24.04 base (`"ubuntu-24.04"`), a snapshot the account saved, by name, or another account's
+share code (`bsh_...`). It is a sandbox alone: with no image of ours there is no desktop and no Archil mount. boat's
+CI-as-compute runner is the same sandbox; this provider drives the sandbox API, not the GitHub App. boat runs on the
+shared machine-host adapter ([PROVIDERS.md](PROVIDERS.md)): `src/boat.ts` is its `MachineHost`, over boat's REST API
+(`https://boat.dev/api/v1`, `Authorization: Bearer <key>`) with `fetch` and the shared REST client, and over SSH with
+the host's `ssh2` package (no SDK).
+
+| MachineHost | boat |
+| --- | --- |
+| `create` | `POST /sandboxes` with the request's name, the labels as boat's map, the whole lifetime as `ttlSeconds` (at most boat's 30 days; boat stops a sandbox that long after create or the last PATCH, activity or not, and 3600 s when none is sent), `noEnv: true`, `snapshots: false`, a size (`type`) when the spec names one or the base is asked (`small`), `from` for a snapshot or share code, and the request's name as the `Idempotency-Key`: a create sent again is the same sandbox, another body under the name a 409, `exists` |
+| `get` | `GET /sandboxes/{id}`: `init`, `provisioning`, `provisioned` and `cloning` are starting, `ready`, `idle` and `running` running, `archiving` and `archived` stopped, `error` and `cancelled` gone in boat's words, any other state stopped; a 404 is none |
+| `list` | `GET /sandboxes?namePrefix=computer-&limit=200` with one `label=name=value` per asked label, every page, then the prefix and labels held again here |
+| `delete` | `DELETE /sandboxes/{id}` with `X-Ascii-Confirm-Delete: <id>`; a 404 is done |
+| `exec` | SSH ([`src/hosted/ssh-exec.ts`](src/hosted/ssh-exec.ts)) to the sandbox's sshd: the provider's own ed25519 public key handed to boat once per sandbox (`POST /sandboxes/{id}/sshkey`), the login boat answers (`user`, also when the answer names none, passwordless sudo), each command and kill under `sudo -n --`, and the sshd pinned by the sha256 of the host key boat answers, the pin required: an answer with no host key this provider reads is a `vendor` error before any connection, and an sshd showing another key is `denied` in the handshake, before a username is sent; the next exec asks boat again |
+| `extend` | `PATCH /sandboxes/{id}` with `ttlSeconds` to the new end, never past the max-deadline label, and the whole label map with the deadline label moved (boat's PATCH labels replace them all) |
+
+No `upload` (the adapter sends the daemon through exec's stdin). `check()` takes boat's four sizes (`small` 2 vCPUs /
+4 GiB, `default` 4 / 8, `large` 8 / 16, `xlarge` 16 / 32) by `cpus`, `memoryMb` or both, label names of boat's form
+and values of at most 256 bytes, the network list's label among them. boat's rate, plan and billing refusals
+(`rate_limited`, `no_ready_machine`, `billing_required`, `trial_machine_class_not_allowed` and the like) are a `limit`.
+The free tier is a 7-day trial with a card: 2 sandboxes at once, `small` and `default` alone, 2 hours each at most, 5
+creates a minute, so a conformance run on it takes `--concurrency 2`.
+
+Unverified until the live run: root making a network namespace under sudo; the host key's form (an OpenSSH line); the
+sshkey call taking a key as soon as the sandbox reads ready; which of `machineIp` and `sshEndpoint` to dial when boat
+answers both (`sshEndpoint` is used); what a read answers between a delete's 202 and its end; label values coming back
+byte for byte; sudo handing the command the channel's pipes with no terminal; the trial's 2-hour cap; and `/dev/fuse`.
 
 ## InstaBox
 

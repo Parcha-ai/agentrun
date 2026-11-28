@@ -602,7 +602,7 @@ test("a stopped run's end whose read of the run fails, or finds no run, lets not
     assert.equal(reached.ok, true, `${words}: the follow-up's turn still reaches it`);
     assert.equal((await reached.value.client.call("files.write", { path: "/workspace/still.txt", data: Buffer.from("here").toString("base64") })).ok, true, `${words}: and works on it`);
     assert.equal(await readKept(run.server.settings, RUN), undefined, `${words}: no row of the end's is left where the follow-up took its machine`);
-    assert.deepEqual(logged, [`run ${RUN}'s end at claim ${stop.epoch} lets no computer go: the run could not be read (${why}) to tell whether a later claim holds one of them, so they are left for that claim, the run's next end or the computer janitor (on E2B, Daytona, Modal, Morph, Render, Vercel Sandbox, Browserbase, Kernel or the phone harness it ends only a machine a park kept: any other there runs until the vendor's own lifetime ends it)`], `${words}: said once`);
+    assert.deepEqual(logged, [`run ${RUN}'s end at claim ${stop.epoch} lets no computer go: the run could not be read (${why}) to tell whether a later claim holds one of them, so they are left for that claim, the run's next end or the computer janitor (on E2B, Daytona, Modal, Morph, Render, Vercel Sandbox, Browserbase, Kernel, boat or the phone harness it ends only a machine a park kept: any other there runs until the vendor's own lifetime ends it)`], `${words}: said once`);
   }
 });
 

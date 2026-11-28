@@ -23,10 +23,10 @@ documented calls, not from written code. The size column is an estimate, and siz
 
 ## The table
 
-Of 31 rows (27 vendors; Google, Fly.io, Beam and boxes.dev have two rows each): 0 clean, 5 fit if unverified facts hold,
-16 need a workaround, 10 are blocked. Render's row is built since (`src/render.ts`, a dial sandbox), and so are
-Vercel's (`src/vercel.ts`), Fly.io Sprites' (`src/sprites.ts`) and InstaBox's (`src/instabox.ts`), hosted sandboxes
-whose unverified facts wait on their live runs.
+Of 32 rows (28 vendors; Google, Fly.io, Beam and boxes.dev have two rows each): 0 clean, 5 fit if unverified facts hold,
+17 need a workaround, 10 are blocked. Render's row is built since (`src/render.ts`, a dial sandbox), and so are
+Vercel's (`src/vercel.ts`), Fly.io Sprites' (`src/sprites.ts`), InstaBox's (`src/instabox.ts`) and boat's
+(`src/boat.ts`), hosted sandboxes whose unverified facts wait on their live runs.
 
 | Vendor | Rents | Fit | Size (estimate) | Shared pieces it would use |
 | --- | --- | --- | --- | --- |
@@ -37,6 +37,7 @@ whose unverified facts wait on their live runs.
 | [Beam Sandbox](https://docs.beam.cloud/v2/sandbox/overview) | disposable containers with a TTL | blocked (`exec`: no live stdin) | n/a | none |
 | [Beam VM](https://docs.beam.cloud/v2/vm/overview) | persistent microVMs | needs a workaround (`extend` rewrites the whole metadata map, or is left out) | 300-350 | [ssh-exec][se], [prepareImage][pi] |
 | [Blaxel Sandboxes](https://docs.blaxel.ai/Sandboxes/Overview.md) | microVMs with standby | needs a workaround (the box image needs Blaxel's sandbox-api added by hand; a size rule held by hand) | 250-280 | [framedExec][fe], [packed labels][pl], [prepareImage][pi] |
+| [boat](https://boat.dev/docs) | Firecracker microVMs with their own kernel, EU regions only (Germany, Finland or France; boat's docs: "You cannot pick a region"); its CI-as-compute is the same sandbox | needs a workaround (built, `src/boat.ts`, a sandbox alone: its REST commands take no stdin, so the exec is our SSH as boat's sudo user, every line under `sudo -n --`, the host key boat answers pinned by its sha256, the pin required; no image of ours, so no desktop or Archil; unverified until the live run: root's network namespace under sudo, the host key's form, a delete's read-back, label values byte for byte) | 467, built | [ssh-exec][se] |
 | [boxes.dev](https://boxes.dev/help) as a provider | devboxes, Firecracker VMs on E2B | blocked (no public create, exec or delete API; the CLI is tied to a signed-in user; exec is one-shot; a box sleeps after 5 minutes idle and stays awake 4 hours at most; the VMs are E2B's, which AgentRun already drives) | none | none |
 | [boxes.dev](https://boxes.dev/help) as a bring-your-own machine | the user's own devbox, with computerd dialing in | needs a workaround (Linux pairing, which is planned and not built; unverified: an open outbound connection keeps the box awake) | no provider file | [attach binding](../../spec/computer/attach.md) |
 | [Cloudflare Sandbox](https://developers.cloudflare.com/sandbox/) | containers in Firecracker microVMs, driven from a Worker | needs a workaround (on the dial path, a relay Worker of ours in the user's account carries create, get, list and delete, and no exec; an alarm keeps the container alive, since an open outbound socket is not activity; the image is fixed at deploy) | 250-330, plus a relay Worker | none |
@@ -168,6 +169,27 @@ provider spec.
   ([templates](https://docs.blaxel.ai/Sandboxes/Templates.md)), so the box image gets it by hand. The size rule
   (memory as a multiple of cpus) is held in the host's `check`.
 - **Open:** ours, a "vendor agent as entrypoint" image case and a size rule in `facts`. Unverified: root's network namespace, arch, listeners, the label charset.
+
+### boat
+
+- **Rents:** one x86_64 VM per sandbox, its own kernel, disk and IP, from boat's Ubuntu 24.04 base or a snapshot the
+  account saved ([security](https://boat.dev/docs/security.md), [machines](https://boat.dev/docs/machines/tools.md)). EU
+  regions only: "Sandboxes run in the EU: Germany, Finland and France. You cannot pick a region", and the API has no
+  region field, so the provider has no region setting. The CI-as-compute runner is the same sandbox under a GitHub App,
+  which this provider does not drive. The free tier is a 7-day trial with a card: 2 sandboxes at once, small and default
+  sizes, at most 2 h each.
+- **Exec:** boat's REST commands take no stdin and end within 600 s, so the provider hands boat its own ed25519 public
+  key (`POST /sandboxes/{id}/sshkey`) and runs each command over SSH ([ssh-exec][se]) as boat's `user`, under
+  `sudo -n --`, with the sshd pinned by the sha256 of the host key boat answers. The pin is required: an answer with
+  no host key opens no connection, and another key fails the handshake before a username is sent.
+- **Labels and lifetime:** 20 labels, filtered server side (`label=k=v`) and again in the host; `ttlSeconds` at create
+  and moved by `PATCH`, so `lifetime: "vendor"`, up to 30 days. A create carries the request's name as its
+  `Idempotency-Key`, so a create sent again is the same sandbox and another body under that name is `exists`.
+- **Built:** `src/boat.ts`, key `BOAT_API_KEY`; its tests run on a fake of the REST API and a real sshd that takes the
+  sudo user alone, the exec pre-check and the provider's Core cases included.
+- **Open:** no image of ours, so no desktop or Archil mount yet (a saved snapshot of the box image would give both).
+  Unverified until the live run: root's network namespace under sudo, the host key's form, whether the sshkey call takes
+  a key as soon as the sandbox reads ready, what a read answers mid-delete, label values byte for byte, `/dev/fuse`.
 
 ### boxes.dev
 

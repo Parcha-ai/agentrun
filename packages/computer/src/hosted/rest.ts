@@ -41,6 +41,8 @@ export interface RestInit {
 	 * has that name, exists, which the adapter reads as the machine its listing by the name finds.
 	 */
 	named?: boolean;
+	/** Headers of this call alone, over the client's: an idempotency key, a delete's confirmation. */
+	headers?: Record<string, string>;
 }
 
 export interface RestOptions {
@@ -192,7 +194,7 @@ export function rest(options: RestOptions): Rest {
 			// The wait a refused answer's Retry-After asks of a retry.
 			let asked: number | undefined;
 			try {
-				const headers = init.json === undefined ? options.headers() : { ...options.headers(), "Content-Type": "application/json" };
+				const headers = { ...options.headers(), ...init.headers, ...(init.json === undefined ? {} : { "Content-Type": "application/json" }) };
 				const either = signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal;
 				// Never a redirect: a followed one keeps the key, and could carry a call to another host.
 				const response = await fetcher(url, {
