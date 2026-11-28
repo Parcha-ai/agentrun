@@ -148,7 +148,7 @@ test("a service whose deployment FAILED stays in the provider's list, so the jan
 	const listed = await provider.list({ "agentrun.run": "run-1" });
 	assert.equal(listed.ok, true, JSON.stringify(listed.error));
 	assert.deepEqual(listed.value.map((info) => [info.ref.id, info.state]), [[NAME, "stopped"]], "the failed service is listed, past its deadline");
-	assert.equal((await provider.delete(listed.value[0].ref)).ok, true);
+	assert.equal((await provider.release(listed.value[0].ref, "delete")).ok, true);
 	assert.deepEqual([...vendor.services.keys()], [], "the janitor's delete leaves nothing");
 	// A create whose deployment fails after the scale: the create stops in Northflank's words, and the service is deleted.
 	const failing = fakeNorthflank();
