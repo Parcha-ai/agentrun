@@ -321,6 +321,32 @@ test("a listing by a label beyond the name's fails closed on a file it can't rea
 	assert.deepEqual((await host.list({ team: "a" }, CTX)).map(({ id }) => id), [a], "a read that failed is kept for nothing: the next one reads it");
 });
 
+test("a listing by a label beyond the name's fails closed on a sandbox whose file it can't read as it stands (not running, or no file yet), naming each and why, never a short list; a listing the names answer, or by a run whose hash none of them has, still lists (review)", async () => {
+	const { rest, host } = restOnly({ pageSize: 2 });
+	const team = (computer, run) => labelsOf({ "agentrun.computer.name": computer, ...(run === undefined ? {} : { "agentrun.run": run }), team: "a" });
+	const a = await madeElsewhere(rest, nameOf({ computer: "computer-00000000000a", run: "run-1" }), { file: team("computer-00000000000a", "run-1") });
+	const suspended = await madeElsewhere(rest, nameOf({ computer: "computer-00000000000b", run: "run-1" }), { file: team("computer-00000000000b", "run-1"), status: "suspended" });
+	const pending = await madeElsewhere(rest, nameOf({ computer: "computer-00000000000c", run: "run-1" }), { status: "pending" });
+	const unwritten = await madeElsewhere(rest, nameOf({ computer: "computer-00000000000d", run: "run-1" }), {});
+	await assert.rejects(host.list({ team: "a" }, CTX), (error) => {
+		assert.equal(error.code, "vendor");
+		assert.match(error.message, new RegExp(`could not read the labels of ${suspended}: it is suspended, .*; ${pending}: it is pending, .*; ${unwritten}: it has no labels file yet.*; the listing can't tell whether they carry team=a`));
+		assert.ok(!error.message.includes(`${a}:`), "the one it read is not named");
+		return true;
+	}, "a suspended sandbox, a pending one and one with no file yet are each named: the listing can't tell whether they carry team=a");
+	assert.equal(runs(rest).length, 2, "only the running sandboxes' files are read: no read wakes the suspended one");
+	await assert.rejects(host.list({ "agentrun.run": "run-1", team: "a" }, CTX), /could not read the labels of/, "the same within the run");
+	assert.deepEqual((await host.list({ "agentrun.run": "run-2", team: "a" }, CTX)).map(({ id }) => id), [], "a run whose hash none of them has reads none of them, and lists");
+	assert.deepEqual((await host.list({ "agentrun.run": "run-1" }, CTX)).map(({ id }) => id), [a, suspended, pending, unwritten], "a listing every name answers reads no file, and lists every one");
+	assert.deepEqual((await host.list({}, CTX)).map(({ id }) => id), [a, suspended, pending, unwritten], "so does the janitor's, by no label");
+	// Once each can be read as it stands, the listing answers the ones that carry the label.
+	rest.sandboxes.get(suspended).sandbox.status = "running";
+	rest.sandboxes.get(pending).sandbox.status = "running";
+	rest.sandboxes.get(pending).file = JSON.stringify(team("computer-00000000000c", "run-1"));
+	rest.sandboxes.get(unwritten).file = JSON.stringify(labelsOf({ "agentrun.computer.name": "computer-00000000000d", "agentrun.run": "run-1", team: "b" }));
+	assert.deepEqual((await host.list({ team: "a" }, CTX)).map(({ id }) => id), [a, suspended, pending]);
+});
+
 test("timeouts: a labels read with no answer is held to the call's own bound; get answers the name's within it, and a listing fails closed with no answer within it", async () => {
 	const { rest, host } = restOnly();
 	const id = await madeElsewhere(rest, nameOf(), { file: labelsOf({ team: "a" }) });
