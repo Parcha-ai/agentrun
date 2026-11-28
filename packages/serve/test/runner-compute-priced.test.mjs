@@ -323,3 +323,17 @@ for (const where of ["runner", "process"]) {
     assert.deepEqual([...new Set(booked.map((entry) => entry.data.tag))].sort(), ["memory", "vcpu"], "its time booked by resource");
   });
 }
+
+test("the same run books the same seconds and the same money on the runner's own loop and in a process of its own", { timeout: 240_000 }, async (t) => {
+  const read = async (where) => {
+    const { server, row, interval } = await stretchRun(t, { where });
+    assert.equal(row.state, "ended", `${where}: the run ran: ${JSON.stringify(row)}`);
+    const usage = await runUsageOverStore(server, RUN);
+    const lines = usage.lines.filter((line) => line.meter === "compute_time").map((line) => [line.resource, line.basis, line.quantity, line.usd]);
+    return { bookedMs: interval?.bookedMs, lines };
+  };
+  const own = await read("runner");
+  const apart = await read("process");
+  assert.ok(own.bookedMs >= STRETCH_MS, `the runner's own loop booked its stretch: ${own.bookedMs} ms`);
+  assert.deepEqual(apart, own, "a run in a process of its own books what the runner's own loop books");
+});
