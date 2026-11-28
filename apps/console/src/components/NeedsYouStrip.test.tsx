@@ -1,7 +1,7 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { NeedsYouStrip, type NeedsYouProps } from "./NeedsYouStrip";
 import type { Run } from "@/lib/v2";
 import type { BackendSdkBinding } from "@/lib/backendSdk";
@@ -67,11 +67,14 @@ describe("NeedsYouStrip, the runs waiting on a person", () => {
     // An open question has no row of choices, only the box and Send.
     expect(host.querySelector('[data-run="q2"] [data-choices]')).toBeNull();
   });
-  it("keeps each waiting card its own height in the grid, not stretched to the tallest card in its row", () => {
-    const grid = mount().querySelector("[data-asking]")!;
-    expect(grid.classList.contains("grid")).toBe(true);
-    expect(grid.classList.contains("items-start")).toBe(true);
-    expect([...grid.children].map((c) => c.getAttribute("data-run"))).toEqual(["q1", "q2"]);
+  it("packs the waiting cards into columns: each its own height, and the next one right under it", () => {
+    vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+    try {
+      const grid = mount().querySelector<HTMLElement>("[data-asking]")!;
+      expect(grid.classList.contains("items-start")).toBe(true);
+      expect(grid.style.gridAutoRows).toBe("1px");
+      expect([...grid.children].map((c) => [c.getAttribute("data-run"), (c as HTMLElement).style.gridRowEnd.startsWith("span ")])).toEqual([["q1", true], ["q2", true]]);
+    } finally { vi.unstubAllGlobals(); }
   });
   it("answers in place: a choice fills the box, Send sends it to that run, and the card says it went", async () => {
     const sent: string[] = [];
