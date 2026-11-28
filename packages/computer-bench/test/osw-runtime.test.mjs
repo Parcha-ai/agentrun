@@ -53,12 +53,12 @@ async function box(t) {
 	return { dir, home, port, env, requests, cache: (id) => join(dir, "cache", id) };
 }
 
-/** Runs `python3 osw <command> <task.json>`; `onSpawn` gets the child (to signal it). */
-function osw(b, command, task, onSpawn) {
-	const file = join(b.dir, `${task.id}.${command}.json`);
+/** Runs `python3 osw <command> <task.json> <args>` from `cwd` with `env` (the box's); `onSpawn` gets the child (to signal it). */
+function osw(b, command, task, { onSpawn, cwd, args = [], env = b.env } = {}) {
+	const file = join(b.dir, `${task.id ?? "task"}.${command}.json`);
 	writeFileSync(file, JSON.stringify(task));
 	return new Promise((resolve, reject) => {
-		const child = spawn("python3", [OSW, command, file], { env: b.env, stdio: ["ignore", "pipe", "pipe"] });
+		const child = spawn("python3", [OSW, command, file, ...args], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
 		let stdout = "";
 		let stderr = "";
 		child.stdout.on("data", (chunk) => (stdout += chunk));
@@ -216,12 +216,45 @@ test("a score below 1 exits 1; a missing result file scores 0, as OSWorld has it
 	assert.equal(unknown.code, 2, unknown.stderr);
 });
 
+test("a malformed task or evaluator exits 2 from setup and eval alike, before any server starts", async (t) => {
+	const b = await box(t);
+	const two = [rule({ score: 1 }), rule({ score: 1 })];
+	const malformed = {
+		"a top-level array": [{ id: "array", evaluator: { func: "score", result: rule({ score: 1 }) } }],
+		"an empty func list": { id: "empty-func", evaluator: { func: [] } },
+		"an evaluator that is not an object": { id: "evaluator-list", evaluator: [{ func: "score", result: rule({ score: 1 }) }] },
+		"a func list with one result object": { id: "result-object", evaluator: { func: ["score", "score"], result: rule({ score: 1 }) } },
+		"a func list with fewer options": { id: "options-short", evaluator: { func: ["score", "score"], result: two, options: [{}] } },
+		"a func list with a name that is not a string": { id: "func-number", evaluator: { func: ["score", 7], result: two } },
+		"one func with a list of results": { id: "single-results", evaluator: { func: "score", result: two } },
+	};
+	for (const [what, task] of Object.entries(malformed)) {
+		for (const command of ["setup", "eval"]) {
+			const ran = await osw(b, command, task);
+			assert.equal(ran.code, 2, `${what}, osw ${command}: ${ran.stderr}`);
+			assert.match(ran.stderr, /bad task/, `${what}, osw ${command}`);
+		}
+	}
+	assert.deepEqual(b.requests(), [], "no server started");
+});
+
+test("a relative --osworld is OSWorld's checkout from osw's own working directory, not from the server's --home", async (t) => {
+	const b = await box(t);
+	const relative = { cwd: b.dir, args: ["--osworld", "osworld"] };
+	const evaluator = { func: "score", result: rule({ score: 1 }) };
+	const setup = await osw(b, "setup", { id: "relative", config: [{ type: "execute", parameters: { command: ["echo", "ready"] } }], evaluator }, relative);
+	assert.equal(setup.code, 0, setup.stderr);
+	const checked = await osw(b, "eval", { id: "relative", evaluator }, relative);
+	assert.equal(checked.code, 0, checked.stderr);
+	assert.equal(b.requests()[0], `listening 127.0.0.1 ${b.port} home=${b.home} cwd=${b.home}`);
+});
+
 /** Starts `osw eval` on a getter that sleeps, and resolves once the getter runs (past postconfig's /terminal probe). */
 async function slowEval(b, id) {
 	const probes = () => b.requests().filter((line) => line === "GET /terminal").length;
 	const before = probes();
 	let child;
-	const running = osw(b, "eval", { id, evaluator: { func: "score", result: { type: "slow" } } }, (spawned) => (child = spawned));
+	const running = osw(b, "eval", { id, evaluator: { func: "score", result: { type: "slow" } } }, { onSpawn: (spawned) => (child = spawned) });
 	const deadline = Date.now() + 30_000;
 	while (probes() === before) {
 		assert.ok(Date.now() < deadline, "the server came up and postconfig ran");
