@@ -3991,7 +3991,8 @@ serves these routes alone:
   the hook it makes none of them (`not_set_up_here`: set the hook, or start those runs through the API), and a trigger
   the agent already had stays as it was: an enabled one still fires here, on this server's keys, until it is turned off
   (below) or the agent is archived, and the skip's warning says so. An apply in a workspace (`AgentRun-Workspace`)
-  makes no webhook trigger yet (`not_an_option`), since no token is shown its signing secret. A GitHub, Composio or email
+  makes no webhook trigger (`not_an_option`): there one is made with `POST /triggers` alone, whose first answer shows
+  its signing secret once ([Workspaces](#workspaces)). A GitHub, Composio or email
   trigger is never made here, hook or not, since this profile refuses the hook or setting each needs (`not_an_option`).
   Each skipped trigger is a warning under `warnings` (`triggers.<i>`), and the dry run (`dry_run: true`) plans it as
   `skip` in the same words;
@@ -4115,7 +4116,8 @@ A request in a workspace is served only: the runs' reads and lists (`GET /runs`,
 export), a run's message, stop and cancel; the agents' list, read, create, revisions, definition and current revision,
 archive, unarchive and delete, and a run started on one; the templates' list, read, import, apply and delete (a bundled
 package stays `403`); the uploaded files' create, upload, list, read and delete (`/files`); the triggers' list, read,
-firings, create, edit, delete and run now (`/triggers`); and `/capabilities`, `/health` and `/openapi.json`. Every
+firings, create, edit, delete, run now and a webhook's new secret (`/triggers`); and `/capabilities`, `/health` and
+`/openapi.json`. Every
 other route is `403 forbidden` with
 `details.reason: "not_scoped"`. In it, an agent, run, imported template package or file of another workspace (or of none)
 answers the same `404` as an id no row has, and every list holds the workspace's rows alone, paged within them; bundled
@@ -4125,10 +4127,13 @@ whoever started it, so a run a request with no header starts on that agent is th
 take the workspace's files alone: one out of it reads as no file. An `Idempotency-Key` is the workspace's own: the same
 key in another workspace starts afresh. A trigger is its agent's workspace's: another's answers the same `404` as an id
 no trigger has, and a new one naming another workspace's agent or run is refused in the words an unknown one gets. A
-request in a workspace makes what an apply here makes, a schedule or a feed that starts runs, with the launch hook set;
-any other source or target, or no hook, is `422` and nothing is made. Its edit is `enabled` alone, as above, and its run
-now (`POST /triggers/{id}/fire`) is served only for a trigger that may be on here, so the firing goes to the backend
-through the launch hook. An import with no header of a name a workspace holds is `409 name_taken` too,
+request in a workspace makes a schedule, a feed or a webhook that starts runs, with the launch hook set; any other
+source or target, or no hook, is `422` and nothing is made. A webhook's signing secret is in its make's `201` alone, as
+`signing_secret`: a replay under the same `Idempotency-Key`, a read and a list show none, and the key's record keeps
+none. `POST /triggers/{id}/secret` in the workspace makes a new one and shows it once, and the old one signs nothing
+from then on. The backend in front of the server decides who among its tenant's people is shown it, and keeps none. Its
+edit is `enabled` alone, as above, and its run now (`POST /triggers/{id}/fire`) is served only for a trigger that may be
+on here, so the firing goes to the backend through the launch hook. An import with no header of a name a workspace holds is `409 name_taken` too,
 never replacing that workspace's package: the operator deletes it first.
 
 Launch disks (`archil_disk` on a run's start) are the backend's to map to its tenants: the server keeps no record of which
