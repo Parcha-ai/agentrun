@@ -57,7 +57,7 @@ const REFRESH_LEASE_MS = REFRESH_CALL_MS + STORE_WRITE_DEADLINE_MS + 35_000;
 /** What a read back that faults keeps spare before its lease ends (readBackRead): 5 s. A read back tried again (busy, past
  *  its deadline or unanswered) starts only while that read, the store calls that may follow it (a write again and a read
  *  once more after the first read back, none after the read once more), each up to STORE_WRITE_DEADLINE_MS, and this
- *  margin fit before the lease ends. The worst case: a retry of the first read back starts 25 s after the lease was taken
+ *  margin fit before the lease ends, and it is cut at its own end bound (readSealedBy). The worst case: a retry of the first read back starts 25 s after the lease was taken
  *  (60 - 5 - 3 x 10), and it, the write again and the read once more end by 55 s; a retry of the read once more starts by
  *  45 s and ends by 55 s. Either way the last store call ends 5 s before another holder may take the lease, so no read
  *  answering late lands under another holder's lease, and no write again does. */
@@ -969,20 +969,40 @@ export class ChatGPTPlan implements PlanReader {
   }
 
   /** The row read back under this holder's lease, taken at `from` (this process's clock). A read that faults for a while
-   *  (transientRead) is read again, a read only, while its store's stop has not begun and the next read, the `after` store
-   *  calls that may follow it and READ_BACK_MARGIN_MS fit before the lease ends: each call up to STORE_WRITE_DEADLINE_MS.
-   *  Any other fault, or one past that bound, is thrown. */
+   *  (transientRead) is read again, a read only, while its store's stop has not begun and the next read (up to
+   *  STORE_WRITE_DEADLINE_MS), the `after` store calls that may follow it (each as long) and READ_BACK_MARGIN_MS fit before
+   *  the lease ends. Both are checked again on waking from the wait, so a stop that began in it, or a pause that ran the
+   *  clock past the bound, ends the retries. A retried read is cut at its own end bound by this plan's clock (a store's
+   *  call can outlast its deadline: Postgres waits for a pooled connection before its statement's deadline starts), and a
+   *  read answering after its cut is dropped unread. Any other fault, or one past that bound, is thrown. */
   private async readBackRead(from: number, after: number): Promise<{ row: Row; bytes: Uint8Array } | undefined> {
+    const endBy = from + REFRESH_LEASE_MS - READ_BACK_MARGIN_MS - after * STORE_WRITE_DEADLINE_MS;
+    const fits = (wait: number): boolean => !this.stopping() && this.now() + wait + STORE_WRITE_DEADLINE_MS <= endBy;
     for (let tried = 1; ; tried += 1) {
       try {
-        return await this.readSealed();
+        return tried === 1 ? await this.readSealed() : await this.readSealedBy(endBy);
       } catch (error) {
-        const starts = this.now() + READ_BACK_WAIT_MS;
-        const fits = starts + (1 + after) * STORE_WRITE_DEADLINE_MS + READ_BACK_MARGIN_MS <= from + REFRESH_LEASE_MS;
-        if (!transientRead(error) || this.stopping() || !fits) throw error;
-        this.#deps.log?.({ chatgpt: "read_back_retry", fault: faultClass(error), try: String(tried + 1) });
+        if (!transientRead(error) || !fits(READ_BACK_WAIT_MS)) throw error;
         await sleep(READ_BACK_WAIT_MS);
+        if (!fits(0)) throw error;
+        this.#deps.log?.({ chatgpt: "read_back_retry", fault: faultClass(error), try: String(tried + 1) });
       }
+    }
+  }
+
+  /** readSealed, cut at `endBy` (this process's clock): past it, a StoreDeadline, and the read's answer is dropped. */
+  private async readSealedBy(endBy: number): Promise<{ row: Row; bytes: Uint8Array } | undefined> {
+    const read = this.readSealed();
+    read.catch(() => undefined);
+    let timer: NodeJS.Timeout | undefined;
+    const cut = new Promise<never>((_, refuse) => {
+      timer = setTimeout(() => refuse(new StoreDeadline(STORE_WRITE_DEADLINE_MS)), Math.max(0, endBy - this.now()));
+      timer.unref();
+    });
+    try {
+      return await Promise.race([read, cut]);
+    } finally {
+      clearTimeout(timer);
     }
   }
 

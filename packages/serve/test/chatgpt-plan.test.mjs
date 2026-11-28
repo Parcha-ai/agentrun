@@ -2119,9 +2119,9 @@ test("a renewal's write-back that faults: refused unsent by a closed store, its 
 
 /** A renewal's write back that faults with `fault` (landed when `lands`), then reads back through `read` (none: the
  *  store's own answer; a function: throw what it returns for the nth read), on a plan whose own clock is moved by `step`
- *  at each read that faults; each read's start is told on that clock, from the lease's write. `stopAt: "write"`: its store's stop begins at the write back. What happened: the store's writes (the lease, the write back, any after), the reads after
+ *  at each read that faults; each read's start is told on that clock, from the lease's write. `stopAt: "write"`: its store's stop begins at the write back. `again`: how the write again goes. `during`: what happens in the wait after the first read faults. What happened: the store's writes (the lease, the write back, any after), the reads after
  *  the write back with each one's clock offset from the lease's, OpenAI's refreshes, the plan's answer and log. */
-async function readBackRun(t, { fault, lands = false, read, step = 4_000, stopAt } = {}) {
+async function readBackRun(t, { fault, lands = false, read, step = 4_000, stopAt, again, during } = {}) {
   const openai = fakeOpenAI(t);
   const { ChatGPTPlan, stopRenewals } = await import("../dist/chatgpt-plan.js");
   const store = mapStore();
@@ -2133,10 +2133,18 @@ async function readBackRun(t, { fault, lands = false, read, step = 4_000, stopAt
   let leaseAt;
   const writes = [];
   const reads = [];
+  let back;
   store.sealedKeys.replaceIf = async (...args) => {
     writes.push(offset);
     if (writes.length === 1) leaseAt = clock();
+    // The write again: lost, to the write back landing late first ("late") or to nothing ("loses").
+    if (writes.length === 3 && again === "late") {
+      await replaceIf(...back);
+      return false;
+    }
+    if (writes.length === 3 && again === "loses") return false;
     if (writes.length !== 2) return replaceIf(...args);
+    back = args;
     if (lands) await replaceIf(...args);
     if (stopAt === "write") void stopRenewals(store);
     throw fault();
@@ -2145,8 +2153,12 @@ async function readBackRun(t, { fault, lands = false, read, step = 4_000, stopAt
     if (writes.length < 2) return get(...args);
     reads.push(clock() - leaseAt);
     const error = read?.(reads.length);
+    // A read that never answers: the plan's own cut ends it.
+    if (error === "hang") return new Promise(() => {});
     if (error) {
       offset += step;
+      // In the wait after this fault, the store's stop begins ("stop") or the process is paused 30 s ("pause").
+      if (during && reads.length === 1) setTimeout(() => (during === "stop" ? void stopRenewals(store) : (offset += 30_000)), 100);
       throw error;
     }
     return get(...args);
@@ -2207,6 +2219,76 @@ test("a renewal's read back that faults with no transient class (not busy, a dea
   const run = await readBackRun(t, { fault: () => new StoreDeadline(10_000), read: () => new Error("disk I/O error") });
   assert.equal(run.reads.length, 1, JSON.stringify(run.reads));
   assert.ok(run.logged.some((f) => f.chatgpt === "renewed_pair_unsaved" && f.write === "unknown" && f.reason === "StoreDeadline"), JSON.stringify(run.logged));
+});
+
+test("a renewal's read back that faults unanswered once and then answers saves the new pair, the try said as Unanswered", { timeout: 30_000 }, async (t) => {
+  const { StoreDeadline } = await import("../dist/store/index.js");
+  const { Unanswered } = await import("../dist/store/postgres/connection.js");
+  const run = await readBackRun(t, { fault: () => new StoreDeadline(10_000), lands: true, read: (n) => (n === 1 ? new Unanswered("its read", 10_000) : undefined) });
+  assert.equal(run.answer, run.issued.access);
+  assert.equal(run.refreshes, 1);
+  assert.equal(run.writes.length, 2, JSON.stringify(run.writes));
+  assert.ok(run.logged.some((f) => f.chatgpt === "read_back_retry" && f.fault === "Unanswered"), JSON.stringify(run.logged));
+});
+
+test("a renewal's read once more (its write again lost) that faults busy once and then answers saves the pair the write back landed late: refreshed once, no write past the write again", { timeout: 30_000 }, async (t) => {
+  const { StoreBusy } = await import("../dist/store/index.js");
+  const { Unanswered } = await import("../dist/store/postgres/connection.js");
+  const run = await readBackRun(t, { fault: () => new Unanswered("its commit", 10_000), again: "late", read: (n) => (n === 2 ? new StoreBusy("database is locked") : undefined) });
+  assert.equal(run.answer, run.issued.access, "the renewed token is handed out");
+  assert.equal(run.refreshes, 1);
+  assert.equal(run.writes.length, 3, `the lease, the write back, the write again: ${JSON.stringify(run.writes)}`);
+  assert.equal(run.reads.length, 3, JSON.stringify(run.reads));
+  assert.equal(run.openai.revocationsOf(run.issued.refresh), 0);
+  const row = await openRow(run.store, run.sealKey);
+  assert.equal(row.credential.refresh, run.issued.refresh);
+});
+
+test("a renewal's read once more that faults on every try is tried again only while it and the 5 s margin fit in the lease: its last try starts by 45 s, then unknown, the lease held", { timeout: 30_000 }, async (t) => {
+  const { StoreBusy } = await import("../dist/store/index.js");
+  const { Unanswered } = await import("../dist/store/postgres/connection.js");
+  const run = await readBackRun(t, { fault: () => new Unanswered("its commit", 10_000), again: "loses", read: (n) => (n >= 2 ? new StoreBusy("database is locked") : undefined) });
+  assert.match(String(run.answer?.message), /try again in a moment/);
+  assert.equal(run.refreshes, 1);
+  assert.equal(run.writes.length, 3, JSON.stringify(run.writes));
+  const again = run.reads.slice(1);
+  assert.ok(again.length >= 2, JSON.stringify(run.reads));
+  // 60 s lease - 5 s margin - the read's own 10 s: a read once more starts by 45 s; the next would start a step and a wait on.
+  assert.ok(again.at(-1) <= 45_000, `the last read once more starts by lease - margin - its deadline: ${JSON.stringify(run.reads)}`);
+  assert.ok(again.at(-1) > 45_000 - 4_000 - 500 - 1_000, JSON.stringify(run.reads));
+  assert.equal(run.openai.revocationsOf(run.issued.refresh), 0);
+  const row = await openRow(run.store, run.sealKey);
+  assert.ok(row.lease?.holder, "the lease stays held to its end");
+  assert.ok(run.logged.some((f) => f.chatgpt === "renewed_pair_unsaved" && f.write === "unknown" && f.reason === "StoreBusy"), JSON.stringify(run.logged));
+});
+
+test("a renewal's read back is not tried again when its store's stop begins, or the process is paused past the bound, in the wait after a fault: checked on waking, its outcome unknown", { timeout: 30_000 }, async (t) => {
+  const { StoreBusy, StoreDeadline } = await import("../dist/store/index.js");
+  for (const during of ["stop", "pause"]) {
+    const run = await readBackRun(t, { fault: () => new StoreDeadline(10_000), read: () => new StoreBusy("database is locked"), during });
+    assert.equal(run.reads.length, 1, `${during}: no read after the wait: ${JSON.stringify(run.reads)}`);
+    assert.equal(run.writes.length, 2, during);
+    assert.equal(run.openai.revocationsOf(run.issued.refresh), 0, during);
+    assert.ok(run.logged.some((f) => f.chatgpt === "renewed_pair_unsaved" && f.write === "unknown"), `${during}: ${JSON.stringify(run.logged)}`);
+    assert.ok(!run.logged.some((f) => f.chatgpt === "read_back_retry"), `${during}: ${JSON.stringify(run.logged)}`);
+  }
+});
+
+test("a renewal's read back tried again that does not answer is cut at its bound by the plan's own clock, its answer never waited past it: its outcome unknown, the lease held", { timeout: 30_000 }, async (t) => {
+  const { StoreBusy, StoreDeadline } = await import("../dist/store/index.js");
+  const started = Date.now();
+  // The first read faults 24 s in on the plan's clock; its retry starts by 25 s and never answers. Its bound is 35 s
+  // (60 - 5 - the write again and the read once more), so the cut comes about 10.5 s later on the wall clock.
+  const run = await readBackRun(t, { fault: () => new StoreDeadline(10_000), step: 24_000, read: (n) => (n === 1 ? new StoreBusy("database is locked") : "hang") });
+  const took = Date.now() - started;
+  assert.equal(run.reads.length, 2, JSON.stringify(run.reads));
+  assert.ok(took < 20_000, `cut at its bound: ${took} ms`);
+  assert.match(String(run.answer?.message), /try again in a moment/);
+  assert.equal(run.writes.length, 2);
+  assert.equal(run.openai.revocationsOf(run.issued.refresh), 0);
+  const row = await openRow(run.store, run.sealKey);
+  assert.ok(row.lease?.holder);
+  assert.ok(run.logged.some((f) => f.chatgpt === "renewed_pair_unsaved" && f.write === "unknown"), JSON.stringify(run.logged));
 });
 
 test("a renewal whose write-back finds another sign-in in the row revokes its pair and takes that sign-in; at a stop, one OpenAI didn't confirm revoked is not carried past another holder's lease, and the log says why", { timeout: 30_000 }, async (t) => {
