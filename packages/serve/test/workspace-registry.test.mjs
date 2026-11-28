@@ -42,7 +42,7 @@ test("no computer in Mode 1: the file tools alone (no bash family), no processes
   assert.equal(refused.error, NEEDS_A_COMPUTER, "the registry's own words for it");
   await run.end();
   assert.ok(existsSync(join(root, ".agentrun", "tmp")), "an end not told the claim holds sweeps nothing");
-  await run.end({ sweep: true });
+  await run.end({ sweep: () => true });
   assert.ok(!existsSync(join(root, ".agentrun", "tmp")), "the end swept TMPDIR where the claim holds");
 });
 

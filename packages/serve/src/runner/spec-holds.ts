@@ -6,15 +6,16 @@
 // for it let go, never left to the credential's 24 h ttl or the computer's lifetime. Each is let go at most once.
 //
 // The tools' end sweeps the run's scratch only while the claim still holds (`stillHolds`, the runner's fence on the claim:
-// LoopDeps.stillHolds): a lost claim's run folder may be a later claim's by then, its scratch at the same paths. A fence
-// not given, or one that throws, sweeps nothing: unknown is never taken for held. Background processes are ended either
-// way.
+// LoopDeps.stillHolds), asked by the end at its sweep, after its background processes are ended: a lost claim's run
+// folder may be a later claim's by then, its scratch at the same paths. A fence not given, or one that throws, sweeps
+// nothing: unknown is never taken for held. Background processes are ended either way.
 import type { ParkCause } from "../workspace/computer-kept.js";
 
 /** One part a spec holds, by how it is let go. */
 type Held = {
-  /** `sweep`: whether the end sweeps the run's scratch (RunTools.end): only where the claim still holds. */
-  readonly tools?: { end(options: { readonly sweep: boolean }): Promise<void> };
+  /** `sweep`: asked by the end at its sweep, whether it sweeps the run's scratch (RunTools.end): only where the claim
+   *  still holds. */
+  readonly tools?: { end(options: { readonly sweep: () => Promise<boolean> }): Promise<void> };
   /** The runner's fence on the claim (LoopDeps.stillHolds): whether this runner still holds it, read at the tools' end. */
   readonly stillHolds?: () => boolean | Promise<boolean>;
   /** The run's checkout of its pull request (pr-checkout.ts), removed from its folder while the Workspace still answers. */
@@ -74,7 +75,7 @@ export class SpecHolds {
   #endTools(): Promise<void> {
     return (this.#toolsEnded ??= (async () => {
       const tools = this.#held.tools;
-      if (tools) await tools.end({ sweep: await this.#stillHolds() });
+      if (tools) await tools.end({ sweep: () => this.#stillHolds() });
     })().catch((error: unknown) => this.#log(`the run's tools' end failed: ${words(error)}`)));
   }
 

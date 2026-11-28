@@ -42,9 +42,10 @@
 // the computer's own calls sync to the disk before they answer. It runs before the run's end commit, never after: a
 // follow-up the commit reopens may be claimed at once, and its scratch is the same folder's. For the same reason the end
 // sweeps only when its caller says the claim still holds (`sweep`, the runner's fence read through the spec's holds:
-// spec-holds.ts): a later claim of a lost one may already hold the folder (Mode 1's, bound into its new sandbox; Mode 2's
+// spec-holds.ts), asked at the sweep, after the background processes' end (up to its 3 s KILL wait, during which a claim
+// can be lost): a later claim of a lost one may already hold the folder (Mode 1's, bound into its new sandbox; Mode 2's
 // key on the disk) and write its TMPDIR and bash's outputs at the same paths, and that claim's own end sweeps what both
-// left. Not said is not swept.
+// left. Not said, said wrong or a throw is not swept.
 import type { Context } from "@earendil-works/chord/context";
 import type { HostTool } from "@parcha/agentrun-kernel";
 import { type CapabilityKind, COMPUTER_OP_TOOL, COMPUTER_TOOLS, createRegistry, endBackground, HANDOFF_TOOL, type Registry, unsavedScreenshot, withoutOps } from "@parcha/agentrun-kernel/kernel";
@@ -367,10 +368,10 @@ export type RunTools = {
    *  computer_screenshot offers save_as; `opsRefused`, the ops computer_op leaves out (bindTools). */
   hostTools(names: readonly string[], options?: { readonly results?: ToolResults; readonly writes?: boolean; readonly opsRefused?: readonly string[] }): HostTool[];
   /** The run's end, before the computer is let go: its background processes ended (TERM, then KILL 3 s later; none with
-   *  no computer), then bash's full outputs and TMPDIR swept, only where `sweep` says the claim still holds the run's
-   *  folder (a lost claim's may be a later claim's by now); not said, nothing is swept. Its computer calls are cut by the
-   *  end's cut (endCut). */
-  end(options?: { readonly sweep?: boolean }): Promise<void>;
+   *  no computer), then bash's full outputs and TMPDIR swept, only where `sweep`, asked once they are ended, answers true
+   *  that the claim still holds the run's folder (a lost claim's may be a later claim's by now). Not given, an answer
+   *  other than true or a throw: nothing is swept. Its computer calls are cut by the end's cut (endCut). */
+  end(options?: { readonly sweep?: () => boolean | Promise<boolean> }): Promise<void>;
   /** Strict checkpoint stop: cleanup errors or any still-running tracked process refuse publication. */
   settleProject(): Promise<readonly string[]>;
 };
@@ -410,7 +411,9 @@ export async function runTools(workspace: Workspace, computer: RunComputer | und
     async end(endOptions) {
       run.ending(options.endCut?.());
       await endBackground(run.hands);
-      if (endOptions?.sweep === true) await run.sweep();
+      // Asked only now: a claim lost while its background processes were ending is seen.
+      const holds = endOptions?.sweep;
+      if (holds !== undefined && (await Promise.resolve().then(holds).catch(() => false)) === true) await run.sweep();
     },
   };
 }

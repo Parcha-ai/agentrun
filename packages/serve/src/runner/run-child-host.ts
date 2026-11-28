@@ -798,9 +798,9 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
           projectFailed = true;
           result = checkpoint?.uncertain() ?? uncertain();
         } finally {
-          // Its scratch swept only while the claim is still this run's, by the run's row (projectOwns): a read that fails
-          // or refuses leaves it (RunTools.end).
-          try { if (tools) await tools.end({ sweep: await projectOwns(true).then(() => true, () => false) }); }
+          // Its scratch swept only while the claim is still this run's, by the run's row (projectOwns), read at the sweep:
+          // a read that fails or refuses leaves it (RunTools.end).
+          try { if (tools) await tools.end({ sweep: () => projectOwns(true).then(() => true, () => false) }); }
           catch { projectFailed = true; result = { ...uncertain(), reason: "project_capture_failed", stage: "cleanup" }; }
         }
         return result;
