@@ -7,7 +7,7 @@ import { guardPage, type InjectionVerdict, type PageGuard, type WallVerdict } fr
 import { decisionPay, type DecisionRecord, heldOnRefusal, type Sift, type StepOptions } from "./decide/record.js";
 import { type DecidePolicy, policyOf, siftSearch } from "./decide/search.js";
 import { missesOf, pageKey, type Pages, type Readers, sharedRead, type WebLog, type WebRead, webFetchText, webPart, webRead } from "./fetch.js";
-import { type Fee, type Pay, unmetered, unsentOf } from "./fees.js";
+import { chargedSaid, type Fee, type Pay, unmetered, unsentOf } from "./fees.js";
 import type { Guard, GuardOptions } from "./guard.js";
 import { askedUrl, type Page, type Part, partProblem } from "./page.js";
 import { holdingWords, type NativeSearch, type ProviderRun, readerOf, type WebClient } from "./provider.js";
@@ -240,6 +240,10 @@ export function createWeb(config: WebConfig): Web {
       settled?.(landed);
     });
     if (lines && at >= 0 && unsent !== undefined) lines[at] = booked ? { ...fee, usd: 0, basis: `not billed (not sent: ${unsent})` } : { ...fee, basis: `${fee.basis}; its settle failed, so the hold stands, not $0 (not sent: ${unsent})` };
+    // A provider that reports what an answer cost (keyed.ts chargeOf): the line is that charge, in its words, once the
+    // cap's settle is written; a settle that failed leaves it at the hold.
+    const said = unsent === undefined ? chargedSaid(charged) : undefined;
+    if (lines && at >= 0 && said !== undefined && charged) lines[at] = booked ? { ...fee, usd: Math.min(charged(), fee.usd), basis: said } : { ...fee, basis: `${fee.basis}; its settle failed, so the hold stands (${said})` };
     return answer;
   };
 

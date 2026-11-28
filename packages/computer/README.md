@@ -456,7 +456,7 @@ in the kernel's tool registry, keyed by these groups.
   | docker | Docker | sandbox, desktop | none | bind | no |
   | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET`, `DAYTONA_ARCHIL_EGRESS`, `DAYTONA_ATTACH_EGRESS`, `DAYTONA_LISTED_MS` (optional) | none (`unmounted`: archil); archil with `DAYTONA_ARCHIL_EGRESS` (`mountsWith`) | yes |
   | modal | Modal | sandbox | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | archil | yes |
-  | e2b | E2B | sandbox, desktop | `E2B_API_KEY` | archil | yes |
+  | e2b | E2B | sandbox, desktop | `E2B_API_KEY`; `AGENTRUN_E2B_DOMAIN`, `AGENTRUN_E2B_API_URL`, `AGENTRUN_E2B_TEMPLATE` (optional) | archil | yes |
   | orgo | Orgo | desktop (Linux; Windows and macOS with `os`) | `ORGO_API_KEY` | none | yes |
   | phone-harness | Phone harness | phone | `PHONE_HARNESS_API_KEY` | none | yes |
   | browserbase | Browserbase | browser | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | none | yes |
@@ -681,6 +681,8 @@ live under:
   | `AGENTRUN_BOX_APP` | Modal's `app` (serve's default, `agentrun`, when unset) |
   | `AGENTRUN_DOCKER_IMAGE` | Docker's `image` option, `{ image: <name> }` (unset: the provider's own recipe); `docker.image()` makes it ready and gives the tag a computer's spec names |
   | `E2B_API_KEY` | E2B's `apiKey`: serve's new name for the E2B box |
+  | `AGENTRUN_E2B_DOMAIN`, `AGENTRUN_E2B_API_URL` | E2B's `domain` and `apiUrl` (unset: `e2b.app`, and `https://api.<domain>`) |
+  | `AGENTRUN_E2B_TEMPLATE` | E2B's `template`, which its `prepareImage()` answers (unset: the box template); E2B's `imageEnv` too |
   | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | Browserbase's `apiKey`, `projectId`: the names pi-browser reads today |
   | `KERNEL_API_KEY` | Kernel's `apiKey`: the name pi-browser reads today |
   | `BOXD_API_KEY`, `BOXD_ORG`, `BOXD_REGION` | boxd's `apiKey`, `org` and `region` (unset: the key's own org, the API's home region) |
@@ -856,7 +858,7 @@ key.
   package's own build, bound read-only with its `package.json`. It is on the provider's egress bridge alone (below),
   publishes no port, and runs as the computer's uid:gid with a read-only root, `--cap-drop ALL`, `no-new-privileges`, 256 MiB, 64
   pids, half a CPU (a fixed quota, not the computer's own cpus), 1024 open files and a bounded log. Its argv holds the list (or `--open public`), the computer's deadline (it ends itself then), this machine's own
-  public addresses (refused as `this-host`), and `egress.hint`, the words a refusal adds (printable ASCII).
+  public addresses (refused as `this-host`), `egress.hint`, the words a refusal adds (printable ASCII), and `--max-tunnels` when `egress.maxTunnels` is set.
   `EGRESS_IMAGE` is the one place its digest is written. `create` pulls it at the first allow computer when the host
   lacks it (see Lifetime), so a host with no registry access pulls it ahead, reading the name from this package:
   `docker pull "$(node --input-type=module -e 'import { EGRESS_IMAGE } from "@parcha/agentrun-computer"; console.log(EGRESS_IMAGE)')"`
@@ -893,7 +895,9 @@ key.
   leaves the host; an IP literal outside a listed CIDR of its own family; any port but 80 and 443; a listed name or
   address that is private, loopback, link-local, metadata, multicast or reserved, in any form it is written (decimal,
   octal, hex, IPv4-mapped, NAT64, 6to4), or one of this machine's own; a Host header that names another host than the
-  URI; SOCKS5 BIND and UDP ASSOCIATE; an HTTP upgrade; past 64 connections open at once or 20,000 in all. A name is
+  URI; SOCKS5 BIND and UDP ASSOCIATE; an HTTP upgrade; past its cap of connections open at once (64 unless
+  `egress.maxTunnels` sets a whole number from 1 to 256: the proxy's 1024 open files hold two per connection; anything
+  else is refused when the provider is made) or 20,000 in all; past the cap a new one is answered 429. A name is
   resolved once, every answer is checked, and the checked address is the one dialled, so rebinding a name between the
   check and the dial reaches nothing new; a redirect reaches the client as sent and is never followed. A log line holds
   the host, port, address and class, never a path, query or header. A refusal reads `403 <host> is not on this box's
@@ -921,7 +925,8 @@ key.
   deadline, runs while the computer runs, is hardened and bounded as above (its memory and swap, pids limit, private
   IPC and cgroup namespaces, and json-file log of 1m and 2 files included) with exactly its volume and code, and whose
   argv holds the list (or `--open public`) and refuses every one of the Docker host's own addresses the provider
-  requires now (more is fine). Anything less is `{ other: "network allow, but its egress proxy ... <why>" }` (or
+  requires now (more is fine), and whose `--max-tunnels`, if any, is a cap create gives (1 to 256), whatever the cap is
+  set to now, so a changed setting leaves running proxies as they are. Anything less is `{ other: "network allow, but its egress proxy ... <why>" }` (or
   `network open, ...`). **A crashed proxy** is not
   restarted: the computer then reaches nothing, its network reads back `other` ("is not running"), and `attach` refuses
   it, so a caller makes a new computer. `list` reads every listed computer's proxy in one more inspect.
@@ -1071,7 +1076,9 @@ const made = await docker.create({ image: image.value, lifetimeMs: 600_000, netw
     built.
 - `DockerProvider`'s `image` option is that source; the default is `{ recipe: DOCKER_RECIPE }`, the provider's own
   image (`DEFAULT_DOCKER_IMAGE`): `python:3.12-slim` pinned by its index digest (`DOCKER_BASE`), with git, curl,
-  nodejs, npm, ripgrep and socat from apt. `docker.image({ signal?, timeoutMs?, onWait? })` is `ensureImage` of it with the
+  xz-utils, ripgrep and socat from apt, and Node.js with its npm in `/usr/local` from the release's own tarball
+  (`DOCKER_NODE_VERSION`, checked against `DOCKER_NODE_SHA256` for the host's architecture before it is unpacked), the
+  release the box image and serve's own image run. `docker.image({ signal?, timeoutMs?, onWait? })` is `ensureImage` of it with the
   provider's docker CLI. A source that is neither throws at construction, in words.
 - **The docker CLI gets only what it reads.** The provider reads no environment: its `env` option is the host's (serve
   passes its own values of the docker descriptor's `hostEnv`), and every docker call it makes (`dockerArch`,
@@ -1975,7 +1982,8 @@ option, never the key. It reads no setting from the environment (see [Settings](
 `E2B_API_KEY`, and the conformance module the `COMPUTER_E2B_API_KEY` it reads, never `E2B_API_KEY`, whose value may be
 another team's on a shared host. The SDK reads `E2B_API_KEY`, `E2B_DOMAIN`, `E2B_API_URL` and `E2B_DEBUG` from
 `process.env` whenever it is not given them (`index.mjs:1140-1152`, `1177-1191`), so every call is given the key, the
-domain (`options.domain`, default `e2b.app`), the API URL `https://api.<domain>` and `debug: false` explicitly: with
+domain (`options.domain`, default `e2b.app`), the API URL (`options.apiUrl`, default `https://api.<domain>`) and
+`debug: false` explicitly: with
 debug on, the SDK fakes a create and skips a kill (`index.mjs:5402`, `6021-6024`). The SDK also takes
 `E2B_SANDBOX_URL` when it is given no sandbox URL, and no option clears it (`index.mjs:1152`, `1183-1185`): it would
 send every call into a sandbox, the upload and the bridge with it, there. So the provider refuses to start while it is
@@ -1986,6 +1994,34 @@ Every call is also given `httpVersion: "1.1"`, which wins over `E2B_HTTP_VERSION
 HTTP/2 otherwise, and when an idle HTTP/2 session times out it throws on a stream with no `error` listener, which ends
 the whole process. A unit test points the real SDK, given the provider's options, at a local server that prefers HTTP/2
 and reads HTTP/1.1 arriving.
+
+### Other clouds, and the operator's template
+
+Three options, each filled by serve's setting of the same row (optional keys of E2B's descriptor, none a secret), point
+the provider at a cloud that speaks E2B's API, with the stock SDK, or at a template of the operator's own:
+
+| option | serve's setting | what it is | unset |
+| --- | --- | --- | --- |
+| `domain` | `AGENTRUN_E2B_DOMAIN` | the cloud's domain: each sandbox's envd is under it, and so is the API unless `apiUrl` names another | `e2b.app` |
+| `apiUrl` | `AGENTRUN_E2B_API_URL` | the API's URL, for a cloud whose API is not `https://api.<domain>`: https, with no login, query or fragment, since the key goes to it; another is refused, naming the setting, before any call | `https://api.<domain>` |
+| `template` | `AGENTRUN_E2B_TEMPLATE` | the template `prepareImage()` answers, so every computer, sandbox or desktop, starts from it; E2B's descriptor names it as its `imageEnv` too, so serve takes an agent's `computer.image` that names it | the box template |
+
+`apiKey` stays `E2B_API_KEY`, the key of whichever cloud the domain names. The SDK sends every call through one proxy,
+so it is given the process's proxy unless `NO_PROXY` exempts the whole domain and a given API URL's host too. The box
+template is public on E2B's own cloud alone; on another, a template of `box/Dockerfile` built on that cloud, named in
+`AGENTRUN_E2B_TEMPLATE`, is the one with Archil's client, which a Mode 2 folder mounts.
+
+The clouds whose docs say they speak E2B's API, and what each needs. None of them is run live yet:
+
+| cloud | settings | status |
+| --- | --- | --- |
+| Maritime | `AGENTRUN_E2B_DOMAIN=sb.mtm.sh` | not yet run live |
+| Orble | `AGENTRUN_E2B_DOMAIN=orble.tech`; it can't build templates, so `AGENTRUN_E2B_TEMPLATE` names one it has | not yet run live |
+| SUFY | `AGENTRUN_E2B_API_URL=https://us-south-1-sandbox.sufyapi.com` | not yet run live |
+| Alibaba Cloud Agent Sandbox | `AGENTRUN_E2B_DOMAIN=<region>.sandbox.aliyuncs.com` and `AGENTRUN_E2B_API_URL`, the API URL its docs give for the region | not yet run live |
+| PPIO | `AGENTRUN_E2B_DOMAIN=sandbox.ppio.cn`; its docs set `E2B_VALIDATE_API_KEY=false`, which e2b@2.63.0 never reads (it checks no key's form) | not yet run live |
+| UCloud | `AGENTRUN_E2B_DOMAIN=cn-wlcb.sandbox.ucloudai.com` | not yet run live |
+| Tencent Cloud Agent Runtime | `AGENTRUN_E2B_DOMAIN`, the endpoint its docs give | not yet run live |
 
 ### How the daemon gets in, and how it is reached
 

@@ -614,6 +614,7 @@ AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1 to allow it, only on a machine you alone use`
 | `AGENTRUN_PRIVATE_HOSTS` | Bounds the private-network hosts an owner may allow an MCP server or a calendar on (Settings → MCP servers): `none` allows none (and only an empty list can be saved), or a comma list of address ranges (`10.20.0.0/16,fd12:3456::/32`) every listed host's address must also fall in. Loopback, link-local (cloud metadata) and this machine's addresses stay refused whatever it says. A value that is neither reads as `none` | unset: the owner's list holds | On a server or runner many customers share, an owner's list would reach the operator's own private network: set `none` there, on the server and on each runner (each process holds to its own) |
 | `AGENTRUN_BOX_ALLOW` | The hosts a run's computer may reach: a comma list, or `none` ([A run in a Docker box](#a-run-in-a-docker-box)) | the package registries and GitHub | A run's network is the operator's policy, not a caller's |
 | `AGENTRUN_BOX_CPUS`, `AGENTRUN_BOX_MEMORY`, `AGENTRUN_BOX_PIDS` | A Docker computer's size ([Computers](#computers)) | 2 CPUs, 4 GiB, 1,024 processes | The machine's capacity is the operator's |
+| `AGENTRUN_BOX_MAX_TUNNELS` | How many connections a Docker computer's egress proxy holds open at once, from 1 to 256; past that a new one is answered 429 ([Computers](#computers)) | 64 | The machine's capacity is the operator's |
 
 On a server the installer runs as a service, `agentrun service install --env AGENTRUN_MCP_ALLOW_LOOPBACK=1 --env
 AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` saves the two yes-or-no switches in the service and restarts it; `--env KEY=` takes
@@ -1106,7 +1107,8 @@ run's hold), newest first. The runs list carries no computer, so this is the one
 across runs and agents; the console's Settings → Computers shows it as Running now. An agent's own computer kept
 between runs is on the agent's read (`own_computer`), and a paired computer under `paired` in `GET /v2/computers`. The keys are
 `DAYTONA_API_KEY` (with `DAYTONA_API_URL` and `DAYTONA_TARGET` optional), `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`,
-`E2B_API_KEY`, `AGENT37_API_KEY` (with `AGENT37_SSH_KEY` optional: unset, the server makes its own SSH key on first use,
+`E2B_API_KEY` (with `AGENTRUN_E2B_DOMAIN`, `AGENTRUN_E2B_API_URL` and `AGENTRUN_E2B_TEMPLATE` optional, below),
+`AGENT37_API_KEY` (with `AGENT37_SSH_KEY` optional: unset, the server makes its own SSH key on first use,
 seals it in its store as every saved key under `AGENTRUN_SEAL_KEY`, and registers it on the workspace as
 `agentrun-<hash>`, one key per store even when claims or servers reach first use together; without a seal key, a new
 key each restart, the old one left on the workspace), `MORPH_API_KEY`, `ORGO_API_KEY`, `PHONE_HARNESS_API_KEY`,
@@ -1132,6 +1134,12 @@ and the Docker provider runs the container with them (`--cpu-quota`, `--memory` 
 They apply to Docker computers only: a vendor's computer (Daytona, Modal, E2B, Orgo, a phone, a hosted browser) is the
 size its provider makes it, and is never given them. A value the Docker provider refuses stops the server's start, in
 the provider's words.
+
+**A Docker computer's egress connections.** A Docker computer whose network is open or a list reaches it through its
+own egress proxy, which holds 64 connections open at once and answers a new one past that with 429.
+`AGENTRUN_BOX_MAX_TUNNELS` sets the cap, a whole number from 1 to 256 (the proxy's 1024 open files hold two per
+connection); the claim gives it to the Docker provider as `egress.maxTunnels`, which a running proxy keeps. Any other
+value stops the server's start, in words naming the setting.
 
 **What a sandbox needs.** A sandbox may list the programs its agent's work needs on the box's PATH:
 `"computer": {"kind": "sandbox", "provider": "docker", "needs": ["chrome", "ffmpeg", "ffprobe", "hyperframes"]}`, 1 to
@@ -1385,6 +1393,22 @@ DAYTONA_API_KEY=... python3 packages/computer/box/build-daytona.py   # prints sn
 A Daytona computer mounts the run's folder only where `DAYTONA_ARCHIL_EGRESS` names a self-hosted target's Archil
 egress relay (see Mode 2 above), and then it needs this snapshot. A changed recipe is a new name, so build again after
 an upgrade that changes `box/`. A Daytona [box](#sandbox) never reads it.
+
+**An E2B computer's cloud and template.** Three optional settings beside `E2B_API_KEY`, each set in the environment or
+saved in Settings → Computers as the keys are, and none a secret:
+
+- `AGENTRUN_E2B_DOMAIN`: the domain of a cloud that speaks E2B's API. Each sandbox is under it, and the API is
+  `https://api.<domain>`. Unset, `e2b.app`.
+- `AGENTRUN_E2B_API_URL`: the API's URL, for a cloud whose API is not `https://api.<domain>`. It must be https, with no
+  login, query or fragment, since the key goes to it; another is refused, naming the setting, before any call. Unset,
+  `https://api.<domain>`.
+- `AGENTRUN_E2B_TEMPLATE`: the template every E2B computer starts from, sandbox or desktop, in place of the box template,
+  as `AGENTRUN_DAYTONA_SNAPSHOT` names Daytona's snapshot. An agent's `computer.image` may name it. A Mode 2 folder is an
+  Archil mount in it, so it needs `box/Dockerfile`'s Archil client (`box/build-e2b.mjs` builds one).
+
+`E2B_API_KEY` holds the key of whichever cloud the domain names, and the proxy (`HTTPS_PROXY`, `NO_PROXY`) is decided for
+that domain and the API URL's host. The computer package's README lists the clouds that speak E2B's API and the settings
+each needs ([E2B: other clouds](../computer/README.md#other-clouds-and-the-operators-template)).
 
 **Before unsetting `DAYTONA_ARCHIL_EGRESS` on a server with open runs.** Each open run's folder moves from the Archil
 mount to a synced folder at its next claim. The synced claim reads the folder through Archil's file API, which lists a
@@ -4135,17 +4159,22 @@ ids of the tokens whose every request must carry it (comma-separated): such a to
 backend that forgot the header is refused rather than handed every tenant's rows. A request with no header is served
 as before.
 
-A request in a workspace is served only: the runs' reads and lists (`GET /runs`, `/runs/{id}`, its timeline, files and
-export), a run's message, stop and cancel; the agents' list, read, create, revisions, definition and current revision,
-archive, unarchive and delete, a run started on one, and its Archil disk (`/agents/{id}/archil`, read and removed); the
-computers this server offers (`GET /computers`, never a paired computer of the operator's) and the runs of the
-workspace's own going on one (`GET /computers/running`); the templates' list, read, import, apply and delete (a bundled
-package stays `403`); the marketplace's list (`/marketplace/templates`, each entry's `here` naming only a package the
-workspace sees); the uploaded files' create, upload, list, read and delete (`/files`); the triggers' list, read,
-firings, create, edit, delete, run now and a webhook's new secret (`/triggers`); the MCP servers' list, names, read,
-preview, save, Composio save, refresh and delete (`/settings/mcp-servers`); and `/capabilities`, `/health` and
-`/openapi.json`. Every other route is `403 forbidden` with
-`details.reason: "not_scoped"`. In it, an agent, run, imported template package or file of another workspace (or of none)
+A request in a workspace is served only: the runs' reads and lists (`GET /runs`, `/runs/{id}`, its timeline, files,
+export, graph and trace), a run's message, stop, cancel, cap raise, pause, resume, archive, unarchive, grade, held start
+and purge (`DELETE /runs/{id}`); the agents' list, read, create, revisions, definition and current revision,
+archive, unarchive, delete and package, a revision's skills, its home's list, reads and removals (not a write: nothing
+bounds a home's size on a disk the workspaces share), a run started on one, and its Archil disk (`/agents/{id}/archil`,
+read and removed); the computers this server offers (`GET /computers`, never a paired computer of the operator's) and the
+runs of the workspace's own going on one (`GET /computers/running`); a workflow's check (`POST /workflows/validate`); the
+templates' list, read, import, apply and delete (a bundled package stays `403`); the marketplace's list
+(`/marketplace/templates`, each entry's `here` naming only a package the workspace sees); the uploaded files' create,
+upload, list, read and delete (`/files`); the triggers' list, read, firings, create, edit, delete, run now and a
+webhook's new secret (`/triggers`); the MCP servers' list, names, read, preview, save, Composio save, refresh and delete
+(`/settings/mcp-servers`); and `/capabilities`, `/health` and `/openapi.json`. Every other route is `403 forbidden` with
+`details.reason: "not_scoped"`, a sign-in's removal among them (removing a secret takes the owner's session). An agent's
+package in a workspace reads the workspace's own MCP servers alone: a shared one is not the workspace's to read, so a
+granted tool of one is blocked as a server saved nowhere. In it, an agent, run, imported template package or file of
+another workspace (or of none)
 answers the same `404` as an id no row has, and every list holds the workspace's rows alone, paged within them; bundled
 template packages are every workspace's. What it makes is the workspace's: an agent (made or applied), an imported
 package (its name is the workspace's own: another workspace imports the same name as its own package), a file. A run is its agent's workspace's,

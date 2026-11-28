@@ -186,7 +186,7 @@ test("a private key header with no body line after it is still cut, alone (contr
 // text, so the reading stays linear. A reading from each BEGIN that ran past the next "-----", or a line read again from
 // each of its characters, visits a long run once per character of it. Counted, not timed: no wall clock.
 //
-// WORK is the shapes' own bound (redact-contract.test.mjs reads it as a part of its whole-pipeline bound): with no held
+// WORK is the shapes' own bound (fixtures/redact-work.mjs reads it as a part of its whole-pipeline bound): with no held
 // value, the pipeline is the shapes, sought over the text and over its cut, and the cut. The key block's reading adds a
 // few characters per character to that: the header (at most 140), the search for the next "-----" (each character once:
 // it stops at the next header's dashes), and the body's lines (each character at most three times: a line break's other
