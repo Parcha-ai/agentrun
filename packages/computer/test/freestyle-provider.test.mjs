@@ -265,16 +265,20 @@ test("a listing of many pages is held to the caller's timeout as a whole, each p
 		});
 	const fake = fakeFreestyle({ answer: (method, path, body, { signal }) => (method === "GET" && path === "/vms" ? slow(signal) : undefined) });
 	const { host } = provider(fake);
-	for (let n = 0; n < 350; n++) fake.add({ agentrun: NAME });
+	const listings = () => fake.calls.filter(({ method, url }) => method === "GET" && url.pathname === "/v5/vms").length;
+	for (let n = 0; n < 450; n++) fake.add({ agentrun: NAME });
+	assert.equal((await host.list({ agentrun: NAME }, CTX)).length, 450, "five pages of 100, given the time");
+	assert.equal(listings(), 5);
+	const before = listings();
 	const started = Date.now();
 	const late = await host.list({ agentrun: NAME }, { timeoutMs: 400 }).catch((caught) => caught);
 	const took = Date.now() - started;
 	assert.equal(codeOfError(host, late), "timeout", late?.message);
 	assert.ok(took < 1_000, `the whole listing ended near its 400 ms (${took} ms)`);
-	const pages = fake.calls.filter(({ method, url }) => method === "GET" && url.pathname === "/v5/vms").length;
-	assert.ok(pages <= 3, `no page asked once the time was spent (${pages} asked)`);
+	const pages = listings() - before;
+	assert.ok(pages <= 3, `five 150 ms pages don't fit in 400 ms: the third is cut at the bound, and none asked after it (${pages} asked)`);
 	await new Promise((resolve) => setTimeout(resolve, 300));
-	assert.equal(fake.calls.filter(({ method, url }) => method === "GET" && url.pathname === "/v5/vms").length, pages, "nothing fetched after the listing gave up");
+	assert.equal(listings() - before, pages, "nothing fetched after the listing gave up");
 });
 
 test("delete deletes the VM, a missing one is done, and a VM deleted reads none after", async () => {
