@@ -192,9 +192,12 @@ test("a run that ends on its own on a dead daemon cuts its end at the release's 
   let dead = false;
   docker.hang = (_one, method) => dead || (method.startsWith("process.") && (dead = true));
   const { server, rows } = await oneRun(t, docker, [WRITE, { say: "done" }], 4_000);
-  const ended = await until(async () => (await server.runs.get(RUN)).state !== "running" && docker.released.length > 0, "the run ends and its computer is let go", 75_000).catch(() => false);
+  // Let go means the release's whole write: the provider's release answered, then the computer's interval ended (in
+  // that order, providerComputer's release), so the wait reads both, never the first alone.
+  const lets = () => docker.released.length > 0 && rows().intervals.length > 0 && rows().intervals.every((one) => one.ended_at !== null);
+  const ended = await until(async () => (await server.runs.get(RUN)).state !== "running" && lets(), "the run ends and its computer is let go", 75_000).catch(() => false);
   const row = await server.runs.get(RUN);
-  assert.ok(ended, `the run ended and its computer was let go: ${JSON.stringify({ state: row.state, runner: row.runner, released: docker.released, hung: docker.hung })}`);
+  assert.ok(ended, `the run ended and its computer was let go: ${JSON.stringify({ state: row.state, runner: row.runner, released: docker.released, intervals: rows().intervals, hung: docker.hung })}`);
   assert.equal(row.state, "ended");
   // Its end's first call on the dead daemon was cut at the release's bound (releaseBoundMs of the runner's cleanup bound
   // and release margin) from when the end began.
