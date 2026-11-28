@@ -5,12 +5,13 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer as createTcpServer } from "node:net";
 import { join } from "node:path";
 import test from "node:test";
 import { FakeWorld, fakeBackend } from "../dist/fake-world.js";
-import { loadSuite, loadTask, resolveTask, runBench, runChecks, stage1Of, TaskError } from "../dist/index.js";
-import { arm, ROOT, store, tmp } from "./support.mjs";
+import { loadSuite, loadTask, resolveTask, runBench, runChecks, Store, stage1Of, TaskError } from "../dist/index.js";
+import { arm, ROOT, tmp } from "./support.mjs";
 
 const OSW = join(ROOT, "image", "osw", "osw.py");
 const FIXTURE = join(ROOT, "test", "fixtures", "osworld-port");
@@ -22,14 +23,21 @@ const json = (path) => JSON.parse(read(path));
 // Imported in each test, so the check tests below run, and fail on their own, without it.
 const loader = () => import("../scripts/port-osworld.mjs");
 
+/** A new folder under the system's temp folder, removed when the test ends. */
+function scratch(t, prefix) {
+	const dir = tmp(prefix);
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	return dir;
+}
+
 async function portFixture(sums = json(join(FIXTURE, "sums.json"))) {
 	const { portAll, treeOf } = await loader();
 	return portAll({ osworld: OSWORLD, trees: new Map([[DATASET, treeOf(json(join(FIXTURE, "tree.json")))]]), sums });
 }
 
-test("the loader writes each portable fixture's task.json as expected, and the suite it writes loads", async () => {
+test("the loader writes each portable fixture's task.json as expected, and the suite it writes loads", async (t) => {
 	const { writeSuite, INFEASIBLE_RUBRIC } = await loader();
-	const out = tmp("osw-port-");
+	const out = scratch(t, "osw-port-");
 	const written = writeSuite(await portFixture(), out);
 	assert.deepEqual([...written].sort(), ["chrome-bb5e4c0d", "gimp-dbbf4b99", "gimp-fbb548ca", "libreoffice-calc-1273e544"]);
 	for (const folder of written) {
@@ -45,7 +53,7 @@ test("the loader writes each portable fixture's task.json as expected, and the s
 	assert.deepEqual(calc.checks[0].argv.slice(3), ["sh", inlined]);
 });
 
-test("each fixture the bench desktop can't run is refused with its reason, and PORT.md lists it", async () => {
+test("each fixture the bench desktop can't run is refused with its reason, and PORT.md lists it", async (t) => {
 	const { writeSuite } = await loader();
 	const results = await portFixture();
 	const refused = Object.fromEntries(results.filter((one) => one.reasons).map((one) => [`${one.domain}/${one.uuid.slice(0, 8)}`, one.reasons]));
@@ -54,7 +62,7 @@ test("each fixture the bench desktop can't run is refused with its reason, and P
 		"os/a4d98375": ["the check reads GNOME-only state (gsettings)"],
 		"vs_code/7aeae0e2": ["the check reads the accessibility tree over GNOME's AT-SPI (accessibility_tree)"],
 	});
-	const out = tmp("osw-port-");
+	const out = scratch(t, "osw-port-");
 	writeSuite(results, out);
 	const port = read(join(out, "PORT.md"));
 	assert.match(port, /\| `chrome\/7b6c7e24-c58a-49fc-a5bb-d57b80e5b4c3` \| opens or reads a live host: www\.amazon\.com \|/);
@@ -75,10 +83,10 @@ test("a task whose setup or check runs sudo is refused: osw runs as the computer
 	assert.equal(classify(task(execute("mkdir ~/sudoku"), "ls ~"), names).reasons.includes(NO_ROOT), false, "a word with sudo in it is not sudo");
 });
 
-test("a port that now refuses a task removes its folder from an earlier port, in the domains it writes alone", async () => {
+test("a port that now refuses a task removes its folder from an earlier port, in the domains it writes alone", async (t) => {
 	const { writeSuite } = await loader();
 	const ids = (out) => loadSuite(out).map((task) => task.spec.id).sort();
-	const out = tmp("osw-port-");
+	const out = scratch(t, "osw-port-");
 	writeSuite(await portFixture(), out);
 	writeFileSync(join(out, "chrome-bb5e4c0d", "kept.txt"), "an earlier port's\n");
 	// Without the sums, the calc task's two files have no sha256: refused.
@@ -171,10 +179,10 @@ test("an exec check's infra exit code means it could not run: 75 is an error (in
 	assert.equal((await runChecks([plain], { wire: exitsWith(75) }))[0].status, "fail");
 });
 
-test("infra is an exec check's list of exit codes, never the code it passes on", () => {
+test("infra is an exec check's list of exit codes, never the code it passes on", (t) => {
 	const spec = (check) => ({ id: "t.infra", version: 1, title: "t", split: "dev", needs: { os: "linux", kind: "desktop" }, instruction: "i", budget: { steps: 1, usd: 1, wall_s: 1 }, checks: [check] });
 	const write = (check) => {
-		const dir = tmp("osw-infra-");
+		const dir = scratch(t, "osw-infra-");
 		writeFileSync(join(dir, "task.json"), JSON.stringify(spec(check)));
 		return loadTask(dir);
 	};
@@ -198,50 +206,96 @@ test("infra is an exec check's list of exit codes, never the code it passes on",
  * A folder for the front of PATH: `osw` as given, and a `sudo` that refuses as it does under computerd's no_new_privs
  * (writing that it ran to sudo.log), so no test here ever reaches the host's own sudo.
  */
-function binWith(osw) {
-	const bin = tmp("osw-bin-");
+function binWith(t, osw) {
+	const bin = scratch(t, "osw-bin-");
 	writeFileSync(join(bin, "osw"), osw, { mode: 0o755 });
 	writeFileSync(join(bin, "sudo"), `#!/bin/sh\necho ran >> ${bin}/sudo.log\necho 'sudo: The "no new privileges" flag is set, which prevents sudo from running as root.' >&2\nexit 1\n`, { mode: 0o755 });
 	return { bin, env: { PATH: `${bin}:${process.env.PATH}` } };
 }
 
 /** The fixture suite's calc task, as the loader writes it. */
-async function portedCalc() {
+async function portedCalc(t) {
 	const { writeSuite } = await loader();
-	const out = tmp("osw-port-");
+	const out = scratch(t, "osw-port-");
 	writeSuite(await portFixture(), out);
 	return { out, task: loadSuite(out).find((task) => task.spec.id.endsWith("1273e544")) };
 }
 
-test("the check runs osw only when it is the bench's osw.py: a changed one refuses the eval in words, infra, never a score", async () => {
+const freePort = () =>
+	new Promise((resolve, reject) => {
+		const server = createTcpServer();
+		server.on("error", reject);
+		server.listen(0, "127.0.0.1", () => {
+			const { port } = server.address();
+			server.close(() => resolve(port));
+		});
+	});
+
+/**
+ * The calc task's check, run by a real `sh` as the desktop would run it, with `osw` on PATH as given. With `osworld`
+ * true its OSWorld JSON is a stand-in task that scores 1 on osw's stub OSWorld (test/fixtures/osworld-stub), so osw
+ * runs a whole eval: its server, a getter and a metric.
+ */
+async function runCheck(t, osw, { osworld = false, more = () => {} } = {}) {
+	const { task } = await portedCalc(t);
+	const { checks, nonce } = resolveTask(task, 1);
+	const [check] = checks;
+	// The run's own cache, which osw eval makes.
+	t.after(() => rmSync(`/tmp/computer-bench-${nonce}-osw-cache`, { recursive: true, force: true }));
+	const { bin, env } = binWith(t, osw);
+	more(bin, env);
+	const argv = [...check.argv];
+	if (osworld) {
+		const dir = scratch(t, "osw-stub-");
+		cpSync(join(ROOT, "test", "fixtures", "osworld-stub"), join(dir, "osworld"), { recursive: true });
+		mkdirSync(join(dir, "home"));
+		Object.assign(env, { OSW_OSWORLD: join(dir, "osworld"), OSW_HOME: join(dir, "home"), OSW_PORT: String(await freePort()) });
+		argv[argv.length - 1] = JSON.stringify({ id: "eq-1", evaluator: { func: "score", result: { type: "rule", rules: { score: 1 } } } });
+	}
+	return { check, bin, ...spawnSync(argv[0], argv.slice(1), { env, encoding: "utf8", timeout: 60_000 }) };
+}
+
+test("the check runs osw only when it is the bench's osw.py: a changed one refuses the eval in words, infra, never a score", async (t) => {
 	const { OSW_SHA256 } = await loader();
 	const bench = read(OSW);
 	assert.equal(OSW_SHA256, createHash("sha256").update(bench).digest("hex"), "the tasks pin the bench's own osw.py");
-	const { task } = await portedCalc();
-	const [check] = resolveTask(task, 1).checks;
-	assert.deepEqual(check.infra, [75]);
-	const run = (osw) => {
-		const { bin, env } = binWith(osw);
-		return { ...spawnSync(check.argv[0], check.argv.slice(1), { env, encoding: "utf8", timeout: 60_000 }), bin };
-	};
 
 	// Changed in the agent's turn (the computer's own user can write it): refused before it runs.
-	const changed = run(`${bench}\nraise SystemExit(0)\n`);
+	const changed = await runCheck(t, `${bench}\nraise SystemExit(0)\n`);
+	assert.deepEqual(changed.check.infra, [75]);
 	assert.equal(changed.status, 75, changed.stderr);
 	assert.match(changed.stderr, new RegExp(`osw \\(${changed.bin}/osw\\) is not the bench's osw\\.py: its sha256 is [0-9a-f]{64}, the bench's is ${OSW_SHA256}; the check refuses to run it, and the task is not scored`));
-	// The bench's own runs: here, with no OSWorld checkout named, it stops on that in its own words.
-	const same = run(bench);
-	assert.equal(same.status, 2, same.stderr);
-	assert.match(same.stderr, /--osworld or OSW_OSWORLD names OSWorld's checkout/);
+	// The bench's own runs a whole eval as the check runs it: its server, a getter and a metric, a score of 1.
+	const same = await runCheck(t, bench, { osworld: true });
+	assert.equal(same.status, 0, same.stderr);
+	assert.match(same.stdout, /^score 1$/m);
 	assert.equal(existsSync(join(same.bin, "sudo.log")), false, "no sudo");
 });
 
-test("a ported osw task passes its preconditions on a desktop with osw and no sudo, and its setup runs osw setup on the task's OSWorld JSON as the desktop's own user", async () => {
-	const { out, task } = await portedCalc();
+test("the check runs the bytes it checked: osw changed on disk once they are read still runs the bench's own", async (t) => {
+	const bench = read(OSW);
+	const real = spawnSync("sh", ["-c", "command -v sha256sum"], { encoding: "utf8" }).stdout.trim();
+	assert.ok(real, "sha256sum is on PATH");
+	// sha256sum, the step after the read, stands in for an agent loop: it changes osw on disk (and any file it is
+	// given) to one that would exit 42, then answers as the real one does.
+	const ran = await runCheck(t, bench, {
+		osworld: true,
+		more: (bin) => {
+			writeFileSync(join(bin, "changed.py"), `raise SystemExit(42)\n${bench}`);
+			writeFileSync(join(bin, "sha256sum"), `#!/bin/sh\nout=$(${real} "$@")\nfor f in ${bin}/osw "$@"; do [ -f "$f" ] && cp ${bin}/changed.py "$f"; done\nprintf '%s\\n' "$out"\n`, { mode: 0o755 });
+		},
+	});
+	assert.equal(read(join(ran.bin, "osw")).startsWith("raise SystemExit(42)"), true, "osw was changed on disk");
+	assert.equal(ran.status, 0, ran.stderr);
+	assert.match(ran.stdout, /^score 1$/m);
+});
+
+test("a ported osw task passes its preconditions on a desktop with osw and no sudo, and its setup runs osw setup on the task's OSWorld JSON as the desktop's own user", async (t) => {
+	const { out, task } = await portedCalc(t);
 	const nonce = resolveTask(task, 1).nonce;
-	const ran = join(tmp("osw-ran-"), "osw.log");
+	const ran = join(scratch(t, "osw-ran-"), "osw.log");
 	// A stand-in osw: what it was asked, its cache, and its stdin.
-	const { bin, env } = binWith(`#!/bin/sh\necho "$* OSW_CACHE=$OSW_CACHE" >> ${ran}\ncat > ${ran}.$1.stdin\n`);
+	const { bin, env } = binWith(t, `#!/bin/sh\necho "$* OSW_CACHE=$OSW_CACHE" >> ${ran}\ncat > ${ran}.$1.stdin\n`);
 	const setupFiles = ["log", "exit"].map((end) => `/tmp/computer-bench-${nonce}-osw-setup.${end}`);
 	const clear = () => setupFiles.forEach((path) => rmSync(path, { force: true }));
 	clear();
@@ -268,7 +322,7 @@ test("a ported osw task passes its preconditions on a desktop with osw and no su
 			},
 		};
 		const backend = fakeBackend({ agents: {}, connect: async () => ({ wire, close: async () => {} }) });
-		const [result] = await runBench({ tasks: [task], arms: [arm("none")], seeds: [1], backend, store: store(), mode: "null", frames: false, retries: 0, grade: "never" });
+		const [result] = await runBench({ tasks: [task], arms: [arm("none")], seeds: [1], backend, store: new Store(scratch(t, "osw-store-")), mode: "null", frames: false, retries: 0, grade: "never" });
 		assert.notEqual(result.phase, "preconditions", result.why);
 		assert.notEqual(result.phase, "setup", result.why);
 		assert.equal(read(ran).split("\n")[0], `setup /dev/stdin OSW_CACHE=/tmp/computer-bench-${nonce}-osw-cache`);
