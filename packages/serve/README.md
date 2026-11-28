@@ -3946,8 +3946,10 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /usage` | The runs' costs, by meter, agent, key, day or region (`key` and `region` are one line, `local`). By meter, `tools` holds the runs' paid tool calls and the workflow decisions Parallel charged on its own API, as `cost.tools_usd` does. A run of unknown cost adds what it is known to have spent so far (its `so_far_usd`: each priced charge, browser time and paid tools included) and is counted in `unpriced_runs` (in the total and in each line it is unknown on), so no sum is ever null, it never passes as $0, and a total is never below a line of its own: with `unpriced_runs` above 0 the total is a lower bound. `basis` says how the costs were reached ([A run's cost](#a-runs-cost-its-tokens-and-its-basis)). |
 
 Quotes answer `501 unsupported_here` naming the feature. Home export and import (`GET` and `PUT /agents/{id}/home`) and
-`POST /runs/{id}/kill` are not served here: they answer `404`, and the served document leaves them out (its
-`info.x-agentrun-serve.not_served` lists them). Capabilities declare each of the four false. No run waits out `input_wait_s` here (`null`). `limits.max_cost_usd` is the highest cap a run may name: `null` here, as any cap
+`POST /runs/{id}/kill` are not served here either: they answer `501 unsupported_here` naming `home.export`,
+`home.import` or `runs.kill`, after the token and before any lookup, so an agent or run that is here and one that is not
+get the same answer. The served document leaves them out (its `info.x-agentrun-serve.not_served` lists them).
+Capabilities declare each of the four false. No run waits out `input_wait_s` here (`null`). `limits.max_cost_usd` is the highest cap a run may name: `null` here, as any cap
 above $0 is taken; it does not mean caps are unsupported ([spend cap](#spend-cap)).
 
 ### Unified token usage
@@ -4562,7 +4564,7 @@ device and inode), so a disk that takes another spelling for one name is refused
 segments: each its own NFC form, with no default-ignorable code point, or it is `400 invalid_file_path`. An archived agent's home is read and written as
 its definition is. A write is held to its directory through `/proc/self/fd`; where there is none (macOS),
 `capabilities.home.writes` is `false` and `PUT` and `DELETE` are `501 unsupported_here`, as Node has no `openat` to
-write safely by path, while the list and reads still work. `GET` and `PUT /agents/{id}/home`, the contract's packed home, are not served (`404`).
+write safely by path, while the list and reads still work. `GET` and `PUT /agents/{id}/home`, the contract's packed home, are not served (`501 unsupported_here`, naming `home.export` or `home.import`).
 
 ## For coding agents
 
