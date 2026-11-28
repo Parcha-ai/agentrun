@@ -4213,13 +4213,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // by the triggers' own clock, the one POST /triggers checks by and they fire by (a template eval case's `now`).
     // A feed trigger whose urls are one array parameter given empty reads no feed: skipped, never the apply (feedLeftEmpty).
     const emptyFeeds = new Set(made.triggers.flatMap((trigger, i) => (feedLeftEmpty(trigger) ? [i] : [])));
-    // A trigger is made only when its firings have somewhere to go: on an API-only server, a schedule or a feed with the
-    // launch hook set (api-only.ts); under the run-keys setting, for an agent whose runs owe keys, only with the launch
-    // hook, the one way a firing's run carries them (run-keys.ts). Each other is said, and stays listed, so a trigger the
-    // agent has by its name is left as it is, never removed. One left on still fires, so its skip says so and how to stop it.
+    // A trigger is made only when its firings have somewhere to go: on an API-only server, a schedule, a feed or (outside a
+    // workspace) a webhook with the launch hook set (api-only.ts); under the run-keys setting, for an agent whose runs owe
+    // keys, only with the launch hook, the one way a firing's run carries them (run-keys.ts). Each other is said, and stays
+    // listed, so a trigger the agent has by its name is left as it is, never removed. One left on still fires, so its skip
+    // says so and how to stop it.
     const hooked = options.launchHook !== undefined;
     const hostless = new Map(made.triggers.flatMap((trigger, i) => {
-      const apiOnlySkip = options.apiOnly ? apiOnlyTriggerSkipped(pkg.name, trigger, hooked) : undefined;
+      const apiOnlySkip = options.apiOnly ? apiOnlyTriggerSkipped(pkg.name, trigger, hooked, workspaceNow() !== undefined) : undefined;
       const skip = apiOnlySkip ?? runKeysTriggerSkipped(pkg.name, trigger, brought, hooked);
       if (!skip) return [];
       const keptOn = had.find((row) => row.enabled && row.name === String(trigger.name).trim());
@@ -5345,8 +5346,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // The one route with no token: a pushed trigger source's request, checked by its source before anything else is
     // read (push-handler.ts).
     if (found.name === "receiveHook") {
+      // An API-only server takes a trigger's own hook alone (no source's whose key is the server's, as GitHub's is), for a
+      // trigger its apply would make, so the firing goes to the backend (api-only.ts).
+      const hookAdapters = options.apiOnly ? adapters.filter((adapter) => adapter.settings?.scope === "trigger") : adapters;
+      const takes = options.apiOnly ? (source: string, target: string) => apiOnlyTurnsOn(source, target, options.launchHook !== undefined) : undefined;
       // A body cut at its cap or its time is answered, then its socket closed: never read to its end.
-      const answer = await receivePush({ adapters, hooked: (id) => triggers.hookSource(id), ...(options.hookBodyMs !== undefined ? { bodyMs: options.hookBodyMs } : {}), ignored: (id, eventId) => triggers.ignored(id, eventId), listening: (kind) => triggers.listening(kind), notice: async (adapterId, event, body) => (adapterId === "github" && event === "installation" ? githubConnect.installationEvent(body, (detail) => triggers.turnOff("github", detail)) : undefined), receive: (id, eventId, payload, attrs) => triggers.receive(id, eventId, payload, attrs), scoped: (kind, scope) => triggers.scoped(kind, scope), setting: (adapterId, scope, field) => triggerSettings.get(adapterId)?.get(scope, field), refused: authFailed, say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)) }, req, ...((([, segment, sub]) => [segment!, sub] as const)(/^\/hooks\/([^/]+)(?:\/([^/]+))?$/.exec(path)!)));
+      const answer = await receivePush({ adapters: hookAdapters, hooked: (id) => triggers.hookSource(id, undefined, takes), ...(options.hookBodyMs !== undefined ? { bodyMs: options.hookBodyMs } : {}), ignored: (id, eventId) => triggers.ignored(id, eventId), listening: (kind) => triggers.listening(kind), notice: async (adapterId, event, body) => (adapterId === "github" && event === "installation" ? githubConnect.installationEvent(body, (detail) => triggers.turnOff("github", detail)) : undefined), receive: (id, eventId, payload, attrs) => triggers.receive(id, eventId, payload, attrs), scoped: (kind, scope) => triggers.scoped(kind, scope), setting: (adapterId, scope, field) => triggerSettings.get(adapterId)?.get(scope, field), refused: authFailed, say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)) }, req, ...((([, segment, sub]) => [segment!, sub] as const)(/^\/hooks\/([^/]+)(?:\/([^/]+))?$/.exec(path)!)));
       return send(res, answer.status, answer.body, answer.headers ?? {});
     }
     // A paired computer's driver trading its pairing code for its token: the code is its credential (computer-attach.ts),
@@ -7275,7 +7280,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (shareRoute) return void shareRoute(req, res, raw).catch(fail);
     // API-only (api-only.ts): any address but the run routes is refused here, before the page, the owner's routes, the
     // MCP endpoint, the token-less hooks or the token check read anything of the request.
-    if (options.apiOnly && !servedApiOnly(ROUTES, req.method, raw, apiOnlyMcpOrigins.length > 0)) return fail(new ApiError("not_found", apiOnlyRefusal(raw)));
+    if (options.apiOnly && !servedApiOnly(ROUTES, req.method, raw, apiOnlyMcpOrigins.length > 0, options.launchHook !== undefined)) return fail(new ApiError("not_found", apiOnlyRefusal(raw)));
     // Before the page: its cookie must not stand in for the token on the owner's own routes, nor on the MCP endpoint.
     if (owner && (raw === "/v2/setup" || raw === "/v2/setup/import" || raw === "/v2/setup/code" || raw.startsWith("/v2/auth/"))) return void ownerRoute(req, res, raw.slice(3), owner).catch(fail);
     if (raw === MCP_PATH) return void mcp(req, res).catch(fail);

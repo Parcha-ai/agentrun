@@ -508,11 +508,12 @@ export class Triggers {
 
   /** The source of trigger `id` when it is hookable: what its pushed source's check and parse read (its filter). With no
    *  `kind`, the source of any pushed trigger `id` that is on, so the hook's resolution can read its kind to find its
-   *  adapter (push-handler.ts): a path that names no such trigger is checked against the decoy, and learns no id. */
-  async hookSource(id: string, kind?: string): Promise<Source | undefined> {
+   *  adapter (push-handler.ts): a path that names no such trigger is checked against the decoy, and learns no id.
+   *  `takes`, when given, must also take the trigger's source and target kinds (an API-only server's: apiOnlyTurnsOn). */
+  async hookSource(id: string, kind?: string, takes?: (source: string, target: string) => boolean): Promise<Source | undefined> {
     const row = await this.store.triggers.get(id);
     const trigger = row && asTrigger(row);
-    return trigger !== undefined && (kind === undefined || trigger.source.kind === kind) && this.adapter(trigger.source)?.delivery === "push" && trigger.enabled ? trigger.source : undefined;
+    return trigger !== undefined && (kind === undefined || trigger.source.kind === kind) && this.adapter(trigger.source)?.delivery === "push" && trigger.enabled && (takes === undefined || takes(trigger.source.kind, trigger.target.kind)) ? trigger.source : undefined;
   }
 
   /** The triggers of the pushed source `kind` that are on and listen on `scope` (its adapter's scopeOf): the ones an

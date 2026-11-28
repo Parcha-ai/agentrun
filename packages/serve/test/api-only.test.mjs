@@ -116,6 +116,16 @@ test("the profile serves a run's routes by method and path, and nothing else", (
   ]) assert.equal(served(method, raw), false, `${method} ${raw}`);
 });
 
+test("with the launch hook the profile serves a POST to one trigger's hook as well, and no path under a hook", () => {
+  const hooked = (method, raw) => servedApiOnly(ROUTES, method, raw, false, true);
+  assert.equal(hooked("POST", "/v2/hooks/trg_1"), true);
+  assert.equal(servedApiOnly(ROUTES, "POST", "/v2/hooks/trg_1", false, false), false, "not without the hook");
+  for (const [method, raw] of [["GET", "/v2/hooks/trg_1"], ["POST", "/v2/hooks/composio/p1"], ["POST", "/v2/hooks/trg_1/x"], ["POST", "/v2/hooks"], ["POST", "/v2/triggers"], ["GET", "/v2/settings/tools"]]) {
+    assert.equal(hooked(method, raw), false, `${method} ${raw}`);
+  }
+  assert.equal(hooked("GET", "/v2/runs/run_1"), true, "the rest as before");
+});
+
 /** One request to `server` (its path from the root, the token unless `token` is false): its status and body. */
 async function send(server, method, path, { token = true, body, headers = {} } = {}) {
   const res = await fetch(`${server.url}${path}`, {
