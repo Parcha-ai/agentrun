@@ -41,7 +41,7 @@ import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-ho
  *  - a backend reads the triggers (their list, one, its firings) and turns one on or off (updateTrigger, `enabled` alone:
  *    apiOnlyTriggerEdit), since a trigger whose firings failed FAILURES_TO_PAUSE times in a row turns itself off and
  *    there is no console here to turn it on in. It turns one on under the apply's rule: a schedule or a feed, with the
- *    launch hook. Making, deleting, firing a trigger and its secret stay refused;
+ *    launch hook. Making, deleting, firing a trigger and its secret stay refused to an unscoped request (a scoped one: WORKSPACE_ROUTES);
  *  - an API-only server has no owner, so the token is the backend's own, as with take-over: it saves the Composio servers
  *    its agents need through the preset (saveComposioServer), saves over or deletes only a server it saved
  *    (mcp-secret-writes.ts tokenWriteOverRefused), and never writes a secret (secret-writes.ts). A Composio server names
@@ -120,6 +120,29 @@ export function apiOnlyTriggerEdit(body: unknown, kind: string, hooked: boolean,
   return issues;
 }
 
+/** Why an API-only server refuses `body`, a scoped request's new trigger, each an issue (none: it goes on to the trigger's
+ *  own checks, a body with no source or target among them). It makes what its apply makes, on or off: a schedule or a
+ *  feed that starts its own workspace's agent's runs (apiOnlyTurnsOn), each firing handed to the backend by the launch
+ *  hook. Any other source needs a route or setting this profile refuses, and a message_run would open a run on this
+ *  server's keys. */
+export function apiOnlyTriggerMade(body: unknown, hooked: boolean): InputIssue[] {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) return [];
+  const kindOf = (value: unknown) => (value !== null && typeof value === "object" ? (value as { kind?: unknown }).kind : undefined);
+  const source = kindOf((body as { source?: unknown }).source);
+  const target = kindOf((body as { target?: unknown }).target);
+  const named = `This server serves the run API only (${API_ONLY_ENV}=1)`;
+  const issues: InputIssue[] = [];
+  if (typeof source === "string" && !API_ONLY_HOOKED_KINDS.has(source)) {
+    issues.push({ field: "source.kind", reason: "not_an_option", message: `${named}, which serves no route or setting a ${source} trigger needs, so it is not made here. Make a schedule or a feed, or start its runs through the API.` });
+  } else if (typeof source === "string" && !hooked) {
+    issues.push({ field: "source.kind", reason: NOT_SET_UP, message: `${named} and has no launch hook, so this ${source} trigger's firings would start runs on this server's keys: set the launch hook (${LAUNCH_HOOK_URL_ENV} and ${LAUNCH_HOOK_SECRET_ENV}), then make it.` });
+  }
+  if (typeof target === "string" && target !== "start_run") {
+    issues.push({ field: "target.kind", reason: "not_an_option", message: `${named}, and a trigger that messages a run never goes to the launch hook, so each firing would open that run on this server's keys. Send the run its messages through the API instead.` });
+  }
+  return issues;
+}
+
 /** Whether an API-only server saves `body` through the generic save (saveMcpServer) over the name its path gives: a
  *  per_run server (no credential kept) whose url's origin is one of `origins`, under a name that is not a Composio
  *  preset's (`preset`; Composio's own route saves those). Checked before anything reaches the address. A body that
@@ -155,9 +178,11 @@ export function servedApiOnly(routes: readonly Route[], method: string | undefin
 export const apiOnlyRefusal = (raw: string): string => `this server serves the run API only (${API_ONLY_ENV}=1): ${raw} is not served here`;
 
 /** The operations a scoped request (the AgentRun-Workspace header, workspace-scope.ts) is served: its own agents, runs,
- *  imported template packages and uploaded files, and the server's description. Every other is refused with 403 not_scoped, whatever
- *  API_ONLY_ROUTES serves an unscoped request. listAgents, createAgent, updateDefinition, getTemplate, listTemplates,
- *  deleteTemplate and getOpenapi are not in API_ONLY_ROUTES: an API-only server serves them to a scoped request alone. */
+ *  imported template packages, uploaded files and the triggers on its own agents, and the server's description. Every
+ *  other is refused with 403 not_scoped, whatever API_ONLY_ROUTES serves an unscoped request. listAgents, createAgent,
+ *  updateDefinition, getTemplate, listTemplates, deleteTemplate, getOpenapi, createTrigger, deleteTrigger and fireTrigger
+ *  are not in API_ONLY_ROUTES: an API-only server serves them to a scoped request alone (a new trigger under
+ *  apiOnlyTriggerMade, a firing under apiOnlyTurnsOn). */
 export const WORKSPACE_ROUTES: ReadonlySet<string> = new Set([
   "listAllRuns", "listRuns", "getRun", "getTimeline", "listRunFiles", "readRunFile", "getRunExport",
   "listAgents", "getAgent", "listRevisions", "createAgent", "updateDefinition", "setCurrent",
@@ -165,6 +190,7 @@ export const WORKSPACE_ROUTES: ReadonlySet<string> = new Set([
   "importTemplate", "applyTemplate", "getTemplate", "listTemplates", "deleteTemplate",
   "createRun", "sendMessage", "stopRun", "cancelRun",
   "createFile", "listFiles", "getFile", "uploadFile", "deleteFile",
+  "listTriggers", "getTrigger", "listTriggerFirings", "createTrigger", "updateTrigger", "deleteTrigger", "fireTrigger",
   "getCapabilities", "getHealth", "getOpenapi",
   // Composio's catalog, read with the server's own key (api_key_env alone: mcp-secret-writes.ts composioListingOwners): no
   // workspace's row in it.

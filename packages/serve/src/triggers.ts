@@ -435,8 +435,10 @@ export class Triggers {
     this.timer = undefined;
   }
 
-  async list() {
-    return { triggers: await Promise.all((await this.all()).map((t) => this.view(t))) };
+  /** Every trigger's view, or only those of the triggers whose agent `keep` takes (a scoped request's: trigger-scope.ts):
+   *  no view is built for the rest. */
+  async list(keep?: (agentId: string) => boolean) {
+    return { triggers: await Promise.all((await this.all()).filter((t) => keep === undefined || keep(t.agentId)).map((t) => this.view(t))) };
   }
 
   async get(id: string) {
