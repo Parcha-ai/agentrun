@@ -140,6 +140,30 @@ test("labels: the adapter's and the caller's go packed into the annotations, and
 	assert.deepEqual(listed.value.map((info) => [info.ref, info.labels]), [[{ id: NAME, name: NAME }, labels]]);
 });
 
+test("a service whose deployment FAILED stays in the provider's list, so the janitor deletes it at its deadline; a create whose deployment fails ends in Northflank's words and deletes the service", { timeout: 60_000 }, async () => {
+	const { vendor, provider, host } = northflankOf();
+	const labels = { ...LABELS, "agentrun.run": "run-1", "agentrun.computer.deadline": new Date(Date.now() - 1_000).toISOString(), "agentrun.computer.network": "none" };
+	await host.create(request({ labels: packLabels(labels, NAME, host.facts.labels).labels }), CTX);
+	vendor.services.get(NAME).service.status.deployment.status = "FAILED";
+	const listed = await provider.list({ "agentrun.run": "run-1" });
+	assert.equal(listed.ok, true, JSON.stringify(listed.error));
+	assert.deepEqual(listed.value.map((info) => [info.ref.id, info.state]), [[NAME, "stopped"]], "the failed service is listed, past its deadline");
+	assert.equal((await provider.delete(listed.value[0].ref)).ok, true);
+	assert.deepEqual([...vendor.services.keys()], [], "the janitor's delete leaves nothing");
+	// A create whose deployment fails after the scale: the create stops in Northflank's words, and the service is deleted.
+	const failing = fakeNorthflank();
+	const failed = new NorthflankProvider({ token: TOKEN, projectId: PROJECT, webSocket: failing.webSocket, daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, createMs: 30_000 }, fetch: async (url, init) => {
+		const answer = await failing.fetch(url, init);
+		if (init?.method === "POST" && new URL(url).pathname.endsWith("/scale")) for (const { service } of failing.services.values()) service.status.deployment.status = "FAILED";
+		return answer;
+	} });
+	const created = await failed.create({ image: IMAGE, lifetimeMs: 600_000, network: "none" }, { requestId: "req-failed" });
+	assert.equal(created.ok, false);
+	assert.match(created.error.message, /could not start computer-[0-9a-f]{12}: Northflank reads its deployment FAILED/);
+	assert.match(created.error.message, /was deleted/);
+	assert.equal(failing.services.size, 0, "nothing is left on Northflank");
+});
+
 test("a create of a name the project holds is exists (unverified until the live run: Northflank's 409); a rate cap is a limit; a token Northflank refuses is denied, never echoed", async () => {
 	const { host } = northflankOf();
 	await host.create(request(), CTX);
@@ -173,12 +197,12 @@ test("a create whose service was made and whose scale then fails deletes the ser
 	assert.equal(swept.vendor.services.size, 0, "nothing is left on Northflank");
 });
 
-test("get reads a service: PENDING and IN_PROGRESS are starting, COMPLETED running, FAILED gone, one past its expiry stopped, a status unknown stopped in words; its plan's size; one Northflank lacks is none", async () => {
+test("get reads a service: PENDING and IN_PROGRESS are starting, COMPLETED running, FAILED stopped in words, one past its expiry stopped, a status unknown stopped in words; its plan's size; one Northflank lacks is none", async () => {
 	const { vendor, host } = northflankOf();
 	await host.create(request(), CTX);
 	const { service } = vendor.services.get(NAME);
 	assert.deepEqual(await host.get(NAME, CTX), { id: NAME, labels: { agentrun: NAME }, state: "running", createdAt: new Date(service.createdAt), resources: { cpus: 2, memoryMb: 4096 } });
-	for (const [status, state] of Object.entries({ PENDING: "starting", IN_PROGRESS: "starting", COMPLETED: "running", FAILED: "gone", PAUSING: "stopped" })) {
+	for (const [status, state] of Object.entries({ PENDING: "starting", IN_PROGRESS: "starting", COMPLETED: "running", FAILED: "stopped", PAUSING: "stopped" })) {
 		service.status.deployment.status = status;
 		const read = await host.get(NAME, CTX);
 		assert.equal(read.state, state, status);
