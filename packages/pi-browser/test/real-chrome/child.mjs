@@ -27,6 +27,9 @@ async function proxied() {
     const upstream = net.connect(target);
     for (const socket of [client, upstream]) { live.add(socket); socket.on("close", () => live.delete(socket)); socket.on("error", () => undefined); }
     client.pipe(upstream); upstream.pipe(client);
+    // Either side's close ends the other, as a TCP path does: pipe() passes on an orderly end only, so a Chrome that resets
+    // its socket (killed at release) would otherwise leave the driver's side open, and the driver waiting out its bounds.
+    upstream.on("close", () => client.destroy()); client.on("close", () => upstream.destroy());
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   server.unref();
