@@ -30,7 +30,7 @@ export function keyedClient({ who, base, headers, feeOf, timeoutMs, refuseOn, ch
     async post(path, body, signal) {
       const fee = feeOf(path, body);
       if (!fee) throw new PaidRefused(`${who}'s ${path} was not sent: it has no price here`);
-      // What a 2xx answer reports it cost, read from a copy of its body before the cap settles; never above the hold.
+      // What a 2xx answer reports it cost, read from its body before the cap settles; never above the hold.
       let charge: { usd: number; basis: string } | undefined;
       const charged = chargeOf ? chargedSaying(() => Math.min(charge?.usd ?? fee.usd, fee.usd), () => charge?.basis) : undefined;
       return paidSend(pay, fee, signal, async () => {
@@ -43,14 +43,15 @@ export function keyedClient({ who, base, headers, feeOf, timeoutMs, refuseOn, ch
           signal: AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(signal ? [signal] : [])]),
         });
         if (refuseOn.includes(response.status)) refused = true;
-        if (chargeOf && response.ok) {
-          let json: unknown;
-          try {
-            json = await response.clone().json();
-          } catch {}
-          charge = chargeOf(fee, path, json);
-        }
-        return response;
+        if (!chargeOf || !response.ok) return response;
+        // The answer read once, to KEYED_MAX_BYTES at most (bytesOf), and handed on as read: keyedCall takes its parse
+        // (readAhead), and one past the bound goes on with no body, unreadable as before; its charge is the hold.
+        const bytes = await bytesOf(response);
+        const json = bytes === undefined ? undefined : parsed(bytes);
+        charge = chargeOf(fee, path, json);
+        const read = new Response(bytes === undefined ? null : new Uint8Array(bytes), { status: response.status, statusText: response.statusText, headers: response.headers });
+        readAhead.set(read, json);
+        return read;
       }, charged);
     },
   };
@@ -119,8 +120,9 @@ export function statusLimit(response: Response): Limit | undefined {
 /** A provider's machine code (Exa's `tag`, Firecrawl's `code`): upper-case words joined by underscores, else none. */
 export const codeOf = (said: unknown): string | undefined => (typeof said === "string" && /^[A-Z][A-Z0-9_]{2,63}$/.test(said) ? said : undefined);
 
-/** An answer's JSON, read to at most KEYED_MAX_BYTES; undefined when it runs past them or is not JSON. */
-async function jsonOf(response: Response): Promise<unknown> {
+/** An answer's body, read to at most KEYED_MAX_BYTES; undefined when it has none or runs past them (the rest is not
+ *  read). */
+async function bytesOf(response: Response): Promise<Buffer | undefined> {
   const reader = response.body?.getReader();
   if (!reader) return undefined;
   const chunks: Uint8Array[] = [];
@@ -135,11 +137,24 @@ async function jsonOf(response: Response): Promise<unknown> {
     }
     chunks.push(value);
   }
+  return Buffer.concat(chunks);
+}
+/** `bytes` as JSON, or undefined when they are not. */
+const parsed = (bytes: Buffer): unknown => {
   try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    return JSON.parse(bytes.toString("utf8"));
   } catch {
     return undefined;
   }
+};
+/** The parse of an answer a keyed client read ahead (keyedClient's chargeOf), so it is not parsed again. */
+const readAhead = new WeakMap<Response, unknown>();
+
+/** An answer's JSON, read to at most KEYED_MAX_BYTES; undefined when it runs past them or is not JSON. */
+async function jsonOf(response: Response): Promise<unknown> {
+  if (readAhead.has(response)) return readAhead.get(response);
+  const bytes = await bytesOf(response);
+  return bytes === undefined ? undefined : parsed(bytes);
 }
 
 /** How a provider names a thrown failure: `who` and `what` (its name, the tool), the caller's `signal`, `read` where it
