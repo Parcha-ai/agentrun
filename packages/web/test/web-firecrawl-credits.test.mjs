@@ -243,6 +243,7 @@ test("a send that fails after the request may have left (a reset socket) stays c
   const { w, booked } = firecrawlWeb(reset, { pdfMaxPages: 100 });
   const { answer } = await w.fetch(PUBLIC);
   assert.equal(answer.ok, false);
+  assert.match(JSON.stringify(answer), /Firecrawl's fetch failed to connect/, "no answer came: not an answer that broke off");
   assert.deepEqual(booked[0], { name: "Firecrawl's scrape", hold: credits(100), usd: credits(100) });
 });
 
