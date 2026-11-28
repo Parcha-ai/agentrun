@@ -503,12 +503,13 @@ class TensorlakeHost implements MachineHost {
 	/**
 	 * A sandbox's labels: the ones this process knows, else its name's (nameLabels), else its labels file's, read once and
 	 * kept. `need`: a listing's labels; when the name's hold every one asked, no file is read. A sandbox not named as a
-	 * computer carries none; one not running, one deleted from this process, or one with no file yet, its name's (its run
-	 * as RUN_HASH_LABEL, the name's hash, unless `need` names the run, so the janitor can still tell whose it is). A file
-	 * whose run, epoch or deadline is not the name's (misnamed) is not read: the guest's root rewrote it. The read is held
-	 * to `end` (epoch ms, the call's own bound): one that fails, disagrees with the name, or has no answer by then gives
-	 * the name's, kept for nothing, so the next read tries again, with `unread`, why: get answers the name's (release and
-	 * the janitor need no more), and a listing fails closed on it. Only the caller's own abort throws.
+	 * computer carries none; one deleted from this process its name's (its run as RUN_HASH_LABEL, the name's hash, unless
+	 * `need` names the run, so the janitor can still tell whose it is). A file whose run, epoch or deadline is not the
+	 * name's (misnamed) is not read: the guest's root rewrote it. The read is held to `end` (epoch ms, the call's own
+	 * bound). One not running (no read wakes it), one with no file yet, or a read that fails, disagrees with the name, or
+	 * has no answer by then gives the name's, kept for nothing, so the next read tries again, with `unread`, why: get
+	 * answers the name's (release and the janitor need no more), and a listing fails closed on it. Only the caller's own
+	 * abort throws.
 	 */
 	async #labelsOf(found: TensorlakeSandbox, ctx: HostCall, end: number, need?: Record<string, string>): Promise<{ labels: Record<string, string>; unread?: string }> {
 		const parts = nameParts(found.name);
@@ -518,7 +519,9 @@ class TensorlakeHost implements MachineHost {
 		// The name's run is a hash: with no `need` that names the run, the hash is all there is to tell whose run it is.
 		const named = nameLabels(parts, need);
 		const own = named[RUN_LABEL] === undefined && parts.run !== undefined ? { ...named, [RUN_HASH_LABEL]: parts.run } : named;
-		if ((need !== undefined && Object.keys(need).every((key) => key in own)) || found.status !== "running" || this.#ending.has(found.id)) return { labels: own };
+		if ((need !== undefined && Object.keys(need).every((key) => key in own)) || this.#ending.has(found.id)) return { labels: own };
+		// No read wakes a sandbox: one not running is left unread, and a listing that needs more than its name fails closed.
+		if (found.status !== "running") return { labels: own, unread: `it is ${found.status}, and its labels file is read only while it runs` };
 		const late = { labels: own, unread: `no answer within ${seconds(ctx.timeoutMs)}` };
 		const left = end - Date.now();
 		if (left <= 0) return late;
@@ -529,7 +532,7 @@ class TensorlakeHost implements MachineHost {
 			if (ctx.signal?.aborted) throw error;
 			return error instanceof HostError && error.code === "timeout" ? late : { labels: own, unread: error instanceof Error ? error.message : String(error) };
 		}
-		if (file === undefined) return { labels: own };
+		if (file === undefined) return { labels: own, unread: "it has no labels file yet (its create has not written it)" };
 		const differs = misnamed(parts, file);
 		if (differs !== undefined) return { labels: own, unread: `the labels file of ${found.id} does not match its name ${found.name}: ${differs}` };
 		const labels = { ...file, ...nameLabels(parts) };
@@ -637,9 +640,10 @@ class TensorlakeHost implements MachineHost {
 	/**
 	 * GET /sandboxes (O list_sandboxes: those not terminated), every page by next_cursor. Tensorlake filters by status
 	 * alone, so every label is matched here: only sandboxes named as computers whose name may carry the labels asked
-	 * (mayCarry), and a label asked that is not the name's is read from each running one's labels file (#labelsOf),
-	 * LABEL_READS at once, all within this call's own bound; only those that carry every label asked are answered. A file
-	 * that can't be read by then fails the listing closed, once every read has ended, naming each such sandbox and why:
+	 * (mayCarry), and a label asked that is not the name's is read from each one's labels file (#labelsOf), LABEL_READS
+	 * at once, all within this call's own bound; only those that carry every label asked are answered. A file that can't
+	 * be read by then (the sandbox not running, no file yet, a read that fails) fails the listing closed, once every read
+	 * has ended, naming each such sandbox and why:
 	 * the listing can't tell whether it carries the labels asked, and leaving it out would let a run's listing miss a
 	 * newer epoch's fence or call a partial cleanup whole (janitor.ts releaseOlder). A listing by run reads only the
 	 * sandboxes whose name has the run's hash, so another run's never fails it. What this process kept of a sandbox the
