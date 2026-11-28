@@ -14,6 +14,10 @@ import { ProjectCaptureRefusal } from "../source-sync/capture-refusal.js";
 export function runProjectCheckpoint(input: {
   store: Store; agentId: string; claim: Claim; launch: RunLaunch; tools: Pick<RunTools, "workspace" | "settleProject">; computer: ClaimComputer;
   workspace: SourceWorkspaceOptions; secrets(): Promise<readonly string[]>;
+  /** Whether the claim still holds the run's folder, asked by settleProject at its sweep, once the project's processes
+   *  are ended (RunTools.settleProject `sweep`): the runner's fence in a run's spec (SpecHolds.stillHolds), the run's row
+   *  in the run's process host (run-child-host.ts projectOwns). Only true sweeps. */
+  stillHolds(): boolean | Promise<boolean>;
   /** Trusted host capability already holds durable ownership through its remote-call drain and this capture. */
   ioHeld?: true;
 }) {
@@ -31,7 +35,7 @@ export function runProjectCheckpoint(input: {
       signal.throwIfAborted();
       if (launch.audit || launch.replay) {
         const settle = async (): Promise<ProjectCheckpoint> => {
-          stage = "settle"; await tools.settleProject(); signal.throwIfAborted();
+          stage = "settle"; await tools.settleProject({ sweep: input.stillHolds }); signal.throwIfAborted();
           stage = "sync";
           if (computer.computer && !computer.syncProject) throw new Error("The project's computer has no verified durable synchronization capability.");
           await computer.syncProject?.(signal); signal.throwIfAborted();
@@ -56,7 +60,7 @@ export function runProjectCheckpoint(input: {
       // therefore cannot protect these writes from deletion: keep independent durable ownership through cleanup.
       const captureOwned = async () => {
         stage = "settle";
-        const logs = await tools.settleProject();
+        const logs = await tools.settleProject({ sweep: input.stillHolds });
         signal.throwIfAborted();
         stage = "sync";
         if (computer.computer && !computer.syncProject) throw new Error("The project's computer has no verified durable synchronization capability.");

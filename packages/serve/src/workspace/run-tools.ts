@@ -373,10 +373,17 @@ export type RunTools = {
    *  other than true or a throw: nothing is swept. Its computer calls are cut by the end's cut (endCut). */
   end(options?: { readonly sweep?: () => boolean | Promise<boolean> }): Promise<void>;
   /** Strict checkpoint stop: cleanup errors or any still-running tracked process refuse publication. Its scratch is swept
-   *  as at the end (`sweep` asked once the processes are ended, only true sweeps): a claim lost during their end may
-   *  share the run's folder with a later claim. */
+   *  as at the end: only where `sweep`, asked once the processes are ended, answers true (a claim lost during their end
+   *  may share the run's folder with a later claim). Not given, an answer other than true or a throw: nothing is swept. */
   settleProject(options?: { readonly sweep?: () => boolean | Promise<boolean> }): Promise<readonly string[]>;
 };
+
+/** Whether a sweep's `sweep` (RunTools.end, settleProject) answers true, asked now, once the run's background processes
+ *  are ended: not given, an answer other than true or a throw is false, and nothing is swept. */
+async function stillSaid(sweep: (() => boolean | Promise<boolean>) | undefined): Promise<boolean> {
+  if (sweep === undefined) return false;
+  return (await Promise.resolve().then(sweep).catch(() => false)) === true;
+}
 
 /**
  * A run's tools on `workspace`, attached to `computer` when its kind has files and exec and its provider mounts the
@@ -387,12 +394,6 @@ export type RunTools = {
  * their executors to the run. A browser computer brings none of the registry's: the run's browser tool (tools.ts,
  * pi-browser's durable extension) drives it.
  */
-/** Whether a sweep's `sweep` answers true, asked now: not given, another answer or a throw is false. */
-async function stillSaid(sweep: (() => boolean | Promise<boolean>) | undefined): Promise<boolean> {
-  if (sweep === undefined) return false;
-  return (await Promise.resolve().then(sweep).catch(() => false)) === true;
-}
-
 export async function runTools(workspace: Workspace, computer: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly noExec: string | undefined; readonly context: Context; readonly aliases?: readonly string[]; readonly hold?: RunHold; readonly bashPolicy?: string; /** The computer replaced an earlier claim's (runHands). */ readonly replaced?: boolean; /** The claim's signal: the computer's calls are cut by it (runHands, claimCut). */ readonly signal?: AbortSignal; /** The end's cut, made as the end begins: its computer calls are cut by it (RunHands.ending; AdapterRun.endCut). */ readonly endCut?: () => AbortSignal }): Promise<RunTools> {
   const run = await runHands(workspace, computer, options);
   const registry = createRegistry({ maxExecS: run.maxExecS, shell: run.shell, kinds: run.kinds, groups: run.groups, executors: run.executors });

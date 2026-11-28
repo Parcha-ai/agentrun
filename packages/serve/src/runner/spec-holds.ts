@@ -75,12 +75,13 @@ export class SpecHolds {
   #endTools(): Promise<void> {
     return (this.#toolsEnded ??= (async () => {
       const tools = this.#held.tools;
-      if (tools) await tools.end({ sweep: () => this.#stillHolds() });
+      if (tools) await tools.end({ sweep: () => this.stillHolds() });
     })().catch((error: unknown) => this.#log(`the run's tools' end failed: ${words(error)}`)));
   }
 
-  /** Whether the claim still holds, by the runner's fence: false where none was given or it throws. */
-  async #stillHolds(): Promise<boolean> {
+  /** Whether the claim still holds, by the runner's fence: false where none was given or it throws (logged). What the
+   *  tools' end and a project capture's settle ask at their sweeps. */
+  async stillHolds(): Promise<boolean> {
     const fence = this.#held.stillHolds;
     if (fence === undefined) return false;
     try {
