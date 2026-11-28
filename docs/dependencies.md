@@ -76,7 +76,7 @@ Optional peer/dependency names absent from this lockfile: `encoding`, `react`, `
 | @browserbasehq/sdk | 2.21.0 | Apache-2.0 | agentrun, pi-browser, serve | no | 1 |
 | @browserbasehq/stagehand | 4.4.0 | MIT | agentrun, pi-browser, serve | no | 1 |
 | @bufbuild/protobuf | 2.17.0 | (Apache-2.0 AND BSD-3-Clause) | agentrun, computer, serve | no | 1 |
-| @bytecodealliance/preview2-shim | 0.19.0 | (Apache-2.0 WITH LLVM-exception) | agentrun, serve | yes | 1 |
+| @bytecodealliance/preview2-shim | 0.19.0 | (Apache-2.0 WITH LLVM-exception) | agentrun, serve | no | 1 |
 | @cbor-extract/cbor-extract-darwin-arm64 | 2.2.3 | MIT | agentrun, computer, serve | yes | 1 |
 | @cbor-extract/cbor-extract-darwin-x64 | 2.2.3 | MIT | agentrun, computer, serve | yes | 1 |
 | @cbor-extract/cbor-extract-linux-arm | 2.2.3 | MIT | agentrun, computer, serve | yes | 1 |
@@ -118,7 +118,7 @@ Optional peer/dependency names absent from this lockfile: `encoding`, `react`, `
 | @openai/codex | 0.164.0-linux-x64 | Apache-2.0 | agentrun, run-adapters-codex, serve | yes | 1 |
 | @openai/codex | 0.164.0-win32-arm64 | Apache-2.0 | agentrun, run-adapters-codex, serve | yes | 1 |
 | @openai/codex | 0.164.0-win32-x64 | Apache-2.0 | agentrun, run-adapters-codex, serve | yes | 1 |
-| @opentelemetry/api-logs | 0.222.0 | Apache-2.0 | agentrun, serve | yes | 1 |
+| @opentelemetry/api-logs | 0.222.0 | Apache-2.0 | agentrun, serve | no | 1 |
 | @opentelemetry/api | 1.10.0 | Apache-2.0 | agentrun, serve | no | 1 |
 | @opentelemetry/api | 1.9.1 | Apache-2.0 | agentrun, pi-browser, serve | no | 1 |
 | @opentelemetry/core | 2.9.0 | Apache-2.0 | agentrun, pi-browser, serve | no | 1 |
@@ -147,7 +147,7 @@ Optional peer/dependency names absent from this lockfile: `encoding`, `react`, `
 | @pydantic/monty-linux-arm64-gnu | 1.6.0 | MIT | agentrun, serve | yes | 1 |
 | @pydantic/monty-linux-x64-gnu | 1.6.0 | MIT | agentrun, serve | yes | 1 |
 | @pydantic/monty-win32-x64-msvc | 1.6.0 | MIT | agentrun, serve | yes | 1 |
-| @pydantic/monty | 1.6.0 | MIT | agentrun, serve | yes | 1 |
+| @pydantic/monty | 1.6.0 | MIT | agentrun, serve | no | 1 |
 | @rolldown/binding-android-arm-eabi | 1.3.2 | MIT | eve | yes | 1 |
 | @rolldown/binding-android-arm64 | 1.3.2 | MIT | eve | yes | 1 |
 | @rolldown/binding-darwin-arm64 | 1.3.2 | MIT | eve | yes | 1 |

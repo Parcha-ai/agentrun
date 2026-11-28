@@ -2189,9 +2189,11 @@ them. None of them goes around the run's tool settings:
   same calls.
   It runs at most 10 minutes (its calls' time included: the tool call it waits on is cut at the deadline too) in 256
   MiB, prints at most 120,000 characters (the host's tool-result bound), and makes at most 1,000 tool calls. A Python
-  script gets no `computer`: it calls the computer's tools among its `tools`. `@pydantic/monty` is an optional
-  dependency, loaded on the first Python script: an install without it, or without its build for the platform (none for
-  musl), runs JavaScript scripts, and a Python one answers that the package is missing, with nothing run.
+  script gets no `computer`: it calls the computer's tools among its `tools`. Python is opt-in: `@pydantic/monty` is
+  an exact optional peer of the server, which npm leaves out (it adds about 70 MB), loaded on the first Python script.
+  `npm i @pydantic/monty@1.6.0` beside the server adds it; with npx, `npx -p @parcha/agentrun -p
+  @pydantic/monty@1.6.0 agentrun`. It has builds for glibc Linux and macOS, x64 or arm64, and Windows x64, none for
+  musl. An install without it runs JavaScript scripts, and a Python one answers that line, with nothing run.
 
 A paid call made through `tools_call` or a script is held at its price before it is sent and settled once, as a direct
 call is, so the cap holds it. A run with a desktop or a phone has this same `codemode`, its computer's tools among

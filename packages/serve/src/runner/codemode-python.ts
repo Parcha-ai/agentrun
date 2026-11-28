@@ -23,8 +23,10 @@ import type { FunctionSnapshot, FutureResolution, MontySession, Snapshot } from 
 import { CODEMODE } from "../meta-tool-names.js";
 import { CODEMODE_MEMORY_BYTES, CODEMODE_MS, endedWith, imagesIn, type ScriptAnswer, scriptStart, scriptValue, shownOf } from "./meta-tools.js";
 
-/** The package that runs a Python script: one of the server's optionalDependencies. */
+/** The package that runs a Python script, and its version: an optional peer of the server, which npm installs only when
+ *  asked (Python is opt-in). The version is the server's pinned one (package.json's peerDependencies). */
 export const MONTY_PACKAGE = "@pydantic/monty";
+const MONTY_VERSION = "1.6.0";
 /** The most tool calls one Python script may make. */
 export const CODEMODE_PY_CALLS = 1_000;
 /** Monty's own bound on the times a script pauses for its host (each call, each wait for one, each import): a backstop
@@ -89,7 +91,7 @@ export async function runPython(script: string, tools: readonly HostTool[], nest
   try {
     lib = await monty();
   } catch (error) {
-    const why = notInstalled(error) ? `this install lacks the optional package ${MONTY_PACKAGE} or its build for this platform (npm installs both with the server on glibc Linux and macOS, x64 or arm64, and on Windows x64, unless optional dependencies are left out)` : `${MONTY_PACKAGE} did not load: ${(error instanceof Error ? error.message : String(error)).replace(/\.+$/, "")}`;
+    const why = notInstalled(error) ? `Python is opt-in, and this install lacks ${MONTY_PACKAGE} or its build for this platform (there are builds for glibc Linux and macOS, x64 or arm64, and Windows x64): \`npm i ${MONTY_PACKAGE}@${MONTY_VERSION}\` beside the server adds it` : `${MONTY_PACKAGE} did not load: ${(error instanceof Error ? error.message : String(error)).replace(/\.+$/, "")}`;
     return { text: `${CODEMODE} can't run Python here: ${why}. Write the script in JavaScript instead. Nothing was run.`, isError: true };
   }
   let pool: Awaited<ReturnType<Monty["Monty"]["create"]>>;

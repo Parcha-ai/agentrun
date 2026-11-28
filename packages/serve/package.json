@@ -107,9 +107,13 @@
     "@earendil-works/chord": "1.5.2",
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-durable": "1.5.2",
+    "@pydantic/monty": "1.6.0",
     "opencode-ai": "1.19.5"
   },
   "peerDependenciesMeta": {
+    "@pydantic/monty": {
+      "optional": true
+    },
     "opencode-ai": {
       "optional": true
     }
@@ -118,6 +122,7 @@
     "@earendil-works/chord": "1.5.2",
     "@earendil-works/pi-ai": "1.5.2",
     "@earendil-works/pi-durable": "1.5.2",
+    "@pydantic/monty": "1.6.0",
     "@types/pg": "8.23.1",
     "@types/proxy-addr": "2.0.3",
     "@types/ws": "8.18.2",
@@ -135,8 +140,5 @@
   "publishConfig": {
     "access": "public",
     "tag": "beta"
-  },
-  "optionalDependencies": {
-    "@pydantic/monty": "1.6.0"
   }
 }
