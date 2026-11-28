@@ -1,0 +1,91 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "osworld-verified.chrome.bb5e4c0d",
+  "version": 1,
+  "title": "Can you make Bing the main search engine when I look stuff up on the internet?",
+  "split": "heldout",
+  "source": {
+    "suite": "OSWorld-Verified",
+    "id": "chrome/bb5e4c0d-f964-439c-97b6-bdb9747de3f4",
+    "revision": "0ad41bee56565efe7bb3c3a5ebc67590a1b8276f",
+    "licence": "Apache-2.0 (Copyright 2024 XLANG NLP Lab); the instruction is copied word for word, and osworld.json is the task's own JSON with the changes named here",
+    "changes": "osworld.json is the task's OSWorld JSON with each file-cache URL pinned to a dataset revision (main is e28460ae734cb1b33901d232cef8747c20ccd677) and each download and gold given its sha256. Setup runs the task's config, and the check its evaluator, through osw in the bench image: OSWorld's own SetupController, getters and metrics, on a Debian Xfce desktop instead of OSWorld's Ubuntu GNOME VM."
+  },
+  "tags": [
+    "osworld",
+    "osworld-verified",
+    "chrome"
+  ],
+  "needs": {
+    "os": "linux",
+    "kind": "desktop",
+    "apps": [
+      "google-chrome"
+    ],
+    "capabilities": [
+      {
+        "id": "osw",
+        "kind": "exec",
+        "why": "osw, which runs OSWorld's setup and evaluator, on PATH, and sudo with no password, which runs it: the bench image has both, and a desktop without them skips the task, never fails it.",
+        "argv": [
+          "sh",
+          "-c",
+          "command -v osw && sudo -n true"
+        ]
+      }
+    ]
+  },
+  "setup": [
+    {
+      "method": "process.start",
+      "why": "osw setup: OSWorld's own SetupController runs the task's config (downloads checked against their pinned sha256, files opened, apps launched) against OSWorld's server on loopback. A process, not exec.run, so the apps it launches outlive it (orphans: keep); its exit code goes beside its log.",
+      "params": {
+        "argv": [
+          "sh",
+          "-c",
+          "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); eval $(xdotool getdisplaygeometry --shell 2>/dev/null); printf '%s' \"$1\" | sudo -n env DISPLAY=\"$DISPLAY\" SCREEN_WIDTH=\"${WIDTH:-1920}\" SCREEN_HEIGHT=\"${HEIGHT:-1080}\" osw setup /dev/stdin > /tmp/computer-bench-{{nonce}}-osw-setup.log 2>&1; echo $? > /tmp/computer-bench-{{nonce}}-osw-setup.exit",
+          "sh",
+          "{{file:osworld.json}}"
+        ],
+        "orphans": "keep"
+      }
+    },
+    {
+      "method": "exec.run",
+      "why": "Wait for osw setup to end (600 s at most) and exit with its code, the end of its log on stderr: a setup that did not end with 0 is infra, run again.",
+      "params": {
+        "argv": [
+          "sh",
+          "-c",
+          "f=/tmp/computer-bench-{{nonce}}-osw-setup; i=0; until [ -s $f.exit ]; do i=$((i+1)); if [ $i -gt 1200 ]; then echo 'osw setup did not end within 600 s' >&2; exit 75; fi; sleep 0.5; done; tail -c 400 $f.log >&2; exit \"$(cat $f.exit)\""
+        ],
+        "timeoutMs": 630000
+      }
+    }
+  ],
+  "exec": "deny",
+  "instruction": "Can you make Bing the main search engine when I look stuff up on the internet?",
+  "budget": {
+    "steps": 100,
+    "usd": 3,
+    "wall_s": 900
+  },
+  "checks": [
+    {
+      "id": "osworld",
+      "kind": "exec",
+      "why": "OSWorld's own evaluator for the task, run by osw eval after the agent ended: postconfig, then each getter and metric with its options, golds fetched only now and checked against their pinned sha256. Exit 0 is a score of 1 and 1 a lower score; 75 is a check that could not run (the server, a getter, a metric or a download failed), infra, run again.",
+      "argv": [
+        "sh",
+        "-c",
+        "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); eval $(xdotool getdisplaygeometry --shell 2>/dev/null); printf '%s' \"$1\" | sudo -n env DISPLAY=\"$DISPLAY\" SCREEN_WIDTH=\"${WIDTH:-1920}\" SCREEN_HEIGHT=\"${HEIGHT:-1080}\" osw eval /dev/stdin",
+        "sh",
+        "{{file:osworld.json}}"
+      ],
+      "timeoutMs": 120000,
+      "infra": [
+        75
+      ]
+    }
+  ]
+}
