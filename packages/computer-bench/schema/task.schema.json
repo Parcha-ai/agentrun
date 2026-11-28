@@ -255,6 +255,13 @@
             "argv": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
             "timeoutMs": { "type": "integer", "minimum": 1, "maximum": 120000 },
             "exit": { "type": "integer" },
+            "infra": {
+              "type": "array",
+              "items": { "type": "integer" },
+              "minItems": 1,
+              "uniqueItems": true,
+              "description": "Exit codes that mean the check could not run, such as a program's 75 (EX_TEMPFAIL) for a dependency that failed: an error, so the run is infra, done again and never scored. Never the code it passes on."
+            },
             "stdout": { "$ref": "#/$defs/match" },
             "stderr": { "$ref": "#/$defs/match" }
           },
