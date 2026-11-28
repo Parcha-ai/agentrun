@@ -198,10 +198,56 @@ test("a redirect is never followed under the mode: at the save it is 422 redirec
   });
   assert.deepEqual(target.log, [], "the save followed no redirect");
 
+  for (const [what, request] of [
+    ["the preview by url", () => inWorkspace(W1, () => registry.preview({ url: "https://hop.example.test/mcp", auth: { type: "per_run" } }, undefined, true))],
+    ["the preview by name", () => inWorkspace(W1, () => registry.preview({ name: "srv" }, undefined, true))],
+    ["the refresh", () => inWorkspace(W1, () => registry.refresh("srv"))],
+  ]) {
+    await assert.rejects(request(), (error) => {
+      assert.equal(error.code, "input_invalid", `${what}: ${error.message}`);
+      assert.equal(error.extra.fields[0].reason, "redirect", what);
+      return true;
+    });
+    assert.deepEqual(target.log, [], `${what} followed no redirect`);
+  }
+
   const { call } = await w1Run(t, store, dir, network, "srv", "https://hop.example.test/mcp");
   const answer = await call("call-1");
   assert.equal(answer.isError, true, JSON.stringify(answer));
   assert.deepEqual(target.log, [], "the run's call followed no redirect");
+});
+
+test("a redirect is never followed in a workspace's sign-in discovery under the mode: the protected-resource metadata a 401 names, the authorization server's metadata, and the metadata the listing's own 401 probe reads each answer 307 to loopback, and loopback hears nothing", async (t) => {
+  // Where every redirect points: a server nothing else sends to, so any request it hears is a redirect followed.
+  const heardByTarget = [];
+  const target = createServer((req, res) => (heardByTarget.push(req.url), res.writeHead(404).end()));
+  await new Promise((resolve) => target.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => target.close(resolve)));
+  const away = `http://127.0.0.1:${target.address().port}/elsewhere`;
+  const ORIGIN = "https://disc.example.test";
+  let variant;
+  const heard = [];
+  const server = createServer((req, res) => {
+    heard.push(req.url);
+    const json = (body) => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(body));
+    if (req.url.startsWith("/.well-known/oauth-protected-resource")) return variant === "authorization server metadata" ? json({ resource: `${ORIGIN}/mcp`, authorization_servers: [`${ORIGIN}/as`] }) : res.writeHead(307, { location: away }).end();
+    if (req.url.startsWith("/.well-known/oauth-authorization-server") || req.url.startsWith("/.well-known/openid-configuration") || req.url.startsWith("/as/.well-known/")) return variant === "authorization server metadata" ? res.writeHead(307, { location: away }).end() : res.writeHead(404).end();
+    res.writeHead(401, { "www-authenticate": variant === "the listing's 401 probe" ? "Bearer" : `Bearer resource_metadata="${ORIGIN}/.well-known/oauth-protected-resource/mcp"` }).end();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const network = routed({ "disc.example.test": [PUBLIC] }, { "disc.example.test": `http://127.0.0.1:${server.address().port}` });
+  const { registry } = await registryOn(t, network);
+  for (const [name, asked] of [["protected-resource metadata", /^\/\.well-known\/oauth-protected-resource/], ["authorization server metadata", /^\/(as\/)?\.well-known\/(oauth-authorization-server|openid-configuration)/], ["the listing's 401 probe", /^\/\.well-known\/oauth-protected-resource/]]) {
+    variant = name;
+    heard.length = 0;
+    await assert.rejects(inWorkspace(W1, () => registry.preview({ url: `${ORIGIN}/mcp`, auth: { type: "per_run" } }, undefined, true)), (error) => {
+      assert.equal(error.code, "auth_required", `${name}: ${error.message}`);
+      return true;
+    });
+    assert.ok(heard.some((path) => asked.test(path)), `${name}: the redirecting endpoint was asked (${heard.join(", ")})`);
+    assert.deepEqual(heardByTarget, [], `${name}: no redirect followed`);
+  }
 });
 
 /** A W1 agent whose revision pins `name`'s add (as W1's row lists it), a run of it handed its own per_run header, claimed
