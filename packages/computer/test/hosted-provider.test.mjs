@@ -618,6 +618,29 @@ test("two provider instances racing one request each make a machine; both conver
 	}
 });
 
+test("two provider instances racing one request with different epochs, on a host that looks a name up whole (facts.labels.named, as Render's names carry the run and epoch): convergence lists by the request's name alone, so each sees the other's machine; one is kept, and the other create is refused as exists", async () => {
+	for (const [what, born] of [
+		["by creation time", (n) => new Date(Date.UTC(2026, 0, 1) - n * 1_000)],
+		["with no creation time", () => undefined],
+	]) {
+		const fake = fakeHost({ create: "hold", born, facts: { labels: { named: true } } });
+		const one = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+		const two = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+		const at = (epoch) => ({ ...SPEC, labels: { "agentrun.run": "run-1", "agentrun.epoch": epoch } });
+		// Both read the name's listing and find nothing, then both creates are in flight at the vendor.
+		const pending = [one.create(at("2"), { requestId: "two-epochs" }), two.create(at("3"), { requestId: "two-epochs" })];
+		for (let i = 0; i < 100 && fake.creates() < 2; i++) await new Promise((done) => setImmediate(done));
+		assert.equal(fake.creates(), 2, `${what}: both instances called the vendor's create`);
+		await fake.release();
+		const answers = await Promise.all(pending);
+		const kept = answers.filter((answer) => answer.ok);
+		const refused = answers.filter((answer) => !answer.ok);
+		assert.equal(kept.length, 1, `${what}: one create answers its machine (${answers.map((answer) => (answer.ok ? answer.value.id : `${answer.error.code}: ${answer.error.message}`)).join("; ")})`);
+		assert.equal(refused[0]?.error.code, "exists", `${what}: the other is refused: ${refused[0]?.error.message}`);
+		assert.deepEqual(fake.live().map((m) => m.id), [kept[0].value.id], `${what}: the kept machine alone is left`);
+	}
+});
+
 test("a retry of a request whose computer ended, stopped or was deleted is refused as exists, in words; one made with other labels too", async () => {
 	const { provider, fake } = setup();
 	const ref = made(await provider.create(SPEC, { requestId: "ends" }));
