@@ -223,8 +223,15 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
       // A workspace's server that stands on the workspace public-https mode alone (mcp-api-only-origins.ts
       // onPublicHttpsAlone), at the claim (strictAtClaim) or now, is held to publicMcpServerAt at each request instead,
       // whatever its save checked: no private host the owner allows, no loopback, no cloud metadata name.
+      // A request whose rule can't be read now (the stored mode, its workspace's row) is refused, that call alone: refused
+      // here, it is marked unsent, so nothing is booked for it.
       reach: async (url, signal, server) => {
-        const strict = strictAtClaim.has(server) || (await strictNow(url, server));
+        let strict: boolean;
+        try {
+          strict = strictAtClaim.has(server) || (await strictNow(url, server));
+        } catch {
+          return { refused: "the rule its requests are held to could not be read just now" };
+        }
         const at = strict ? await publicMcpServerAt(new URL(url), signal, network, options.own ?? []) : await mcpServerAt(new URL(url), signal, network, { allowed: await privateOAuthHosts(options.store), loopback: options.loopback === true, own: options.own ?? [] });
         return "refused" in at ? { refused: at.refused } : { send: dialAt(network, at.address, options.fetch ?? fetch) as typeof fetch };
       },

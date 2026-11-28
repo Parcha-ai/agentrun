@@ -407,6 +407,55 @@ test("at run time the stricter rule is a workspace's mode server's alone: the ow
   assert.equal(network.dialled.at(-1)[1], "10.20.30.40");
 });
 
+test("a request whose rule cannot be read is that one call's refusal in words: the stored mode's read, or the workspace-server read, failing at a request of a run's call after its claim opened refuses that call in words, nothing sent and nothing booked, and the claim's next call goes through", async (t) => {
+  const seen = [];
+  for (const failing of ["the stored mode's read", "the workspace-server read"]) {
+    const fake = await startFakeMcp();
+    t.after(() => fake.close());
+    const network = routed({ "shared.example.test": [PUBLIC] }, { "shared.example.test": fake.url.replace(/\/mcp$/, "") });
+    const { store, dir, registry } = await registryOn(t, network);
+    // The owner's shared server at an https origin off the list, called by a run in W1 (which has no row of that name):
+    // not strict at its claim, so each request reads the store for its rule.
+    const url = "https://shared.example.test/mcp";
+    await registry.save("srv", { url, auth: { type: "none" } });
+    const row = await store.mcp.server("srv");
+    await store.agents.create({ id: "agent-w1", name: "w1", workspace: W1 }, { id: "rev-w1", kind: "agentic", body: {}, mcpPin: { srv: { url, tools: row.tools.map(({ input_schema, ...tool }) => ({ ...tool, inputSchema: input_schema })) } } });
+    await store.runs.create({ id: "run-w1", agentId: "agent-w1", revisionId: "rev-w1" });
+    // The read fails only where the request's rule reads it (mcp-api-only-origins.ts heldPublicHttps, mcp-run.ts
+    // workspaceServer), never at the claim's own reads.
+    let armed = false;
+    let thrown = 0;
+    const fails = (where) => armed && new Error().stack.includes(where) && ++thrown > 0;
+    const settings = new Proxy(store.settings, { get: (target, key) => (key === "get" ? (name, ...rest) => (failing === "the stored mode's read" && fails("heldPublicHttps") ? Promise.reject(new Error("the settings read failed")) : target.get(name, ...rest)) : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
+    const mcpRows = new Proxy(store.mcp, { get: (target, key) => (key === "server" ? (name, ...rest) => (failing === "the workspace-server read" && fails("workspaceServer") ? Promise.reject(new Error("the server read failed")) : target.server(name, ...rest)) : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
+    const failingStore = new Proxy(store, { get: (target, key) => (key === "settings" ? settings : key === "mcp" ? mcpRows : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
+    const claim = await store.claim("run-w1", "runner-a", { leaseMs: 600_000 });
+    // Each call that left is booked on the run's root (not metered here), through the harness's commit.
+    let booked = 0;
+    const mcp = await mcpForClaim({ redact: heldRedactor(keepText), claim, store: failingStore, sealKey: KEY, grants: ["mcp:srv/add"], harness: { commit: async () => void (booked += 1) }, work: () => dir, network });
+    t.after(() => mcp.release());
+    const tool = mcp.tools.find((one) => one.name === "mcp__srv__add");
+    assert.deepEqual(await tool.call({ a: 2, b: 3 }, add("call-before")), { text: "5" }, "connected and called before the read fails");
+    assert.equal(booked, 1, "the call that left is booked");
+    armed = true;
+    const from = network.dialled.length;
+    const bookedFrom = booked;
+    let result;
+    try {
+      result = await tool.call({ a: 2, b: 3 }, add("call-failing"));
+    } catch (error) {
+      result = { rejected: String(error?.message ?? error) };
+    }
+    armed = false;
+    const sent = network.dialled.length - from;
+    const bookedFailing = booked - bookedFrom;
+    const after = await tool.call({ a: 2, b: 3 }, add("call-after"));
+    seen.push({ failing, readFailed: thrown > 0, result, sent, booked: bookedFailing, after });
+  }
+  for (const one of seen) console.log(`# reach read failure: ${JSON.stringify(one)}`);
+  assert.deepEqual(seen.map(({ failing, readFailed, result, sent, booked, after }) => ({ failing, readFailed, result, sent, booked, after })), ["the stored mode's read", "the workspace-server read"].map((failing) => ({ failing, readFailed: true, result: { text: "The MCP server srv's address is refused here: the rule its requests are held to could not be read just now. Nothing was sent.", isError: true }, sent: 0, booked: 0, after: { text: "5" } })));
+});
+
 test("a call's rule is the one its claim opened: a workspace's mode server stays strict for the whole call when its row is removed mid-call (the owner's shared server of that name left) or the mode is turned off mid-call, so a request after it to a host the owner allows on a private network is refused unsent", async (t) => {
   const seen = [];
   for (const change of ["row removed", "mode off"]) {
