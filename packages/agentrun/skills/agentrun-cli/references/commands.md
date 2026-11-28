@@ -953,6 +953,26 @@ Route: none, it runs on this machine.
 - `--data DIR` (string, this CLI's own): the data directory of the AgentRun to open (default ~/.agentrun)
 - `--setup-only` (boolean, this CLI's own): open nothing once the owner's password is set (the installer's last step)
 
+## race
+
+### `agentrun race show LABEL`
+
+A race's lanes: each lane's harness, model, run, status, cost and seconds, in lane order.
+
+Route: `GET /runs?label=race:LABEL`.
+
+### `agentrun race start`
+
+Run one task on 2 to 4 harness and model lanes side by side, as the console's New race form does.
+
+Route: `POST /agents, then POST /agents/{agent_id}/runs, a lane each`.
+
+- `--lane HARNESS/MODEL` (string, this CLI's own): a lane, 2 to 4 times: the harness, then its model (pi/anthropic/claude-sonnet-4.5)
+- `--task TEXT|@FILE` (string, this CLI's own): the task every lane runs, the same on each
+- `--max-cost-usd USD` (string, this CLI's own): each lane's cap (default 1)
+- `--label LABEL` (string, this CLI's own): the race's label (default: the start time and random letters, as the console's)
+- `--file FILE_ID` (string, this CLI's own): a file uploaded with POST /files, given to every lane's run (repeatable)
+
 ## revisions
 
 ### `agentrun revisions list AGENT_ID`

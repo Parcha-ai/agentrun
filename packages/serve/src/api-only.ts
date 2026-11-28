@@ -143,9 +143,10 @@ export function apiOnlyTriggerMade(body: unknown, hooked: boolean): InputIssue[]
   return issues;
 }
 
-/** Whether an API-only server saves `body` through the generic save (saveMcpServer) over the name its path gives: a
- *  per_run server (no credential kept) whose url's origin is one of `origins`, under a name that is not a Composio
- *  preset's (`preset`; Composio's own route saves those). Checked before anything reaches the address. A body that
+/** Whether an API-only server saves `body` through the generic save (saveMcpServer) over the name its path gives, or
+ *  previews it (previewMcpServer, `preset` false): a per_run server (no credential kept) whose url's origin is one of
+ *  `origins`, under a name that is not a Composio preset's (`preset`; Composio's own route saves those). A preview of a
+ *  saved server by its name alone has no url, so it is not one. Checked before anything reaches the address. A body that
  *  carries a credential never gets here: the secret-write gate refuses it first (403), as it refuses the token's save
  *  over a server it did not save or one that seals a credential (mcp-secret-writes.ts tokenWriteOverRefused). */
 export function apiOnlyMcpSave(body: unknown, preset: boolean, origins: readonly string[]): boolean {
@@ -162,15 +163,19 @@ export function apiOnlyMcpSave(body: unknown, preset: boolean, origins: readonly
 /** A run's computer live view: its page, files and socket, which take the viewer credential alone here (server.ts). */
 const COMPUTER_LIVE = /^\/v2\/runs\/[^/]+\/computer\/live\//;
 
+/** The MCP settings routes an API-only server serves when the operator names MCP origins, each body checked at its route
+ *  by apiOnlyMcpSave: the generic save, and the preview that lists such a server's tools before it is saved. */
+const API_ONLY_MCP_ORIGIN_ROUTES: ReadonlySet<string> = new Set(["saveMcpServer", "previewMcpServer"]);
+
 /** Whether an API-only server serves `method` on `raw` (the path as sent, its query cut): a /v2 path one of
- *  API_ONLY_ROUTES matches for that method (HEAD as GET), the generic MCP save when the operator names MCP origins
- *  (`mcpSave`, its body checked at the route: apiOnlyMcpSave), or a GET of a run's computer live view. */
+ *  API_ONLY_ROUTES matches for that method (HEAD as GET), the generic MCP save and the preview when the operator names
+ *  MCP origins (`mcpSave`, their bodies checked at the route: apiOnlyMcpSave), or a GET of a run's computer live view. */
 export function servedApiOnly(routes: readonly Route[], method: string | undefined, raw: string, mcpSave = false): boolean {
   if (!raw.startsWith("/v2/")) return false;
   const path = raw.slice(3);
   const asked = method === "HEAD" ? "GET" : method;
   if (asked === "GET" && COMPUTER_LIVE.test(raw)) return true;
-  const served = (name: string) => API_ONLY_ROUTES.has(name) || (name === "saveMcpServer" && mcpSave);
+  const served = (name: string) => API_ONLY_ROUTES.has(name) || (mcpSave && API_ONLY_MCP_ORIGIN_ROUTES.has(name));
   return routes.some((route) => served(route.name) && route.method === asked && route.pattern.test(path));
 }
 
@@ -178,17 +183,20 @@ export function servedApiOnly(routes: readonly Route[], method: string | undefin
 export const apiOnlyRefusal = (raw: string): string => `this server serves the run API only (${API_ONLY_ENV}=1): ${raw} is not served here`;
 
 /** The operations a scoped request (the AgentRun-Workspace header, workspace-scope.ts) is served: its own agents, runs,
- *  imported template packages, uploaded files and the triggers on its own agents, its own suggested agents (with GitHub
- *  read as not connected: the server's App is the operator's), and the server's description. Every other is refused
- *  with 403 not_scoped, whatever API_ONLY_ROUTES serves an unscoped request. listAgents, createAgent, updateDefinition,
- *  getTemplate, listTemplates, deleteTemplate, getOpenapi, createTrigger, deleteTrigger, fireTrigger and the suggestion
- *  and GitHub reads are not in API_ONLY_ROUTES: an API-only server serves them to a scoped request alone (a new trigger
- *  under apiOnlyTriggerMade, a firing under apiOnlyTurnsOn). */
+ *  imported template packages, uploaded files and the triggers on its own agents, its agents' Archil disks and the runs of
+ *  its own computers going now, the computers this server offers (never the operator's paired ones), the marketplace's
+ *  list (its `here` naming only a package the workspace sees), its own suggested agents (with GitHub read as not
+ *  connected: the server's App is the operator's), and the server's description. Every other is refused with 403
+ *  not_scoped, whatever API_ONLY_ROUTES serves an unscoped request. listAgents, createAgent, updateDefinition,
+ *  getTemplate, listTemplates, deleteTemplate, listMarketplaceTemplates, getOpenapi, createTrigger, deleteTrigger,
+ *  fireTrigger and the suggestion and GitHub reads are not in API_ONLY_ROUTES: an API-only server serves them to a
+ *  scoped request alone (a new trigger under apiOnlyTriggerMade, a firing under apiOnlyTurnsOn). */
 export const WORKSPACE_ROUTES: ReadonlySet<string> = new Set([
   "listAllRuns", "listRuns", "getRun", "getTimeline", "listRunFiles", "readRunFile", "getRunExport",
   "listAgents", "getAgent", "listRevisions", "createAgent", "updateDefinition", "setCurrent",
   "archiveAgent", "unarchiveAgent", "deleteAgent",
-  "importTemplate", "applyTemplate", "getTemplate", "listTemplates", "deleteTemplate",
+  "getAgentArchil", "deleteAgentArchil", "listComputers", "listRunningComputers",
+  "importTemplate", "applyTemplate", "getTemplate", "listTemplates", "deleteTemplate", "listMarketplaceTemplates",
   "createRun", "sendMessage", "stopRun", "cancelRun",
   "createFile", "listFiles", "getFile", "uploadFile", "deleteFile",
   "listTriggers", "getTrigger", "listTriggerFirings", "createTrigger", "updateTrigger", "deleteTrigger", "fireTrigger",

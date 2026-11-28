@@ -16,8 +16,9 @@
   ],
   "properties": {
     "head_sha": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{40}$"
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{40}$",
+      "description": "The full sha of the head commit reviewed; null for a pasted diff that names no head commit."
     },
     "summary": {
       "type": "string",
