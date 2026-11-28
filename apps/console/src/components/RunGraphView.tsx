@@ -94,7 +94,7 @@ export function RunGraphView({ data, actions = {}, fileUrl, initial = null, last
           </div>
         </div>
         {selected && (
-          <div className="flex min-h-0 shrink-0 flex-col border-t lg:w-[460px] lg:border-l lg:border-t-0">
+          <div data-node-drawer className="relative flex min-h-0 shrink-0 flex-col border-t lg:w-[460px] lg:border-l lg:border-t-0 lg:shadow-drawer">
             <NodeDrawer data={data} selected={selected} onSelect={setSelected} onClose={() => setSelected(null)} fileUrl={fileUrl} shared={shared} />
           </div>
         )}

@@ -106,6 +106,23 @@ class FolderNotMade extends Error {
   }
 }
 
+/** What a write or an append to a link an exec made fails with, naming no path. */
+const LINK_IN_THE_WAY = "a symbolic link an exec made is in the way: Archil's file API neither writes one nor writes through it";
+
+/** A call Archil refused 409 for the whole of the workspace's wait (queueMs): another client held the folder, a
+ *  computer's mount of it (Archil's write delegation) or an exec (its checkout). `words` name no path: Archil's own
+ *  message names the disk key, so only its status and code are kept there; the message keeps all of it. */
+class FolderHeld extends Error {
+  readonly status = 409;
+  readonly words: string;
+  constructor(waitedMs: number, cause: unknown) {
+    super(describe(cause), { cause });
+    const code = (cause as { code?: unknown } | null)?.code;
+    const waited = waitedMs >= 1000 ? `${Math.round(waitedMs / 100) / 10} s` : `${waitedMs} ms`;
+    this.words = `the folder is held by another client (a computer's mount of it, or a command running in it) and was not let go in ${waited} (Archil: 409${typeof code === "string" && /^\w{1,40}$/.test(code) ? ` ${code}` : ""})`;
+  }
+}
+
 /** A disk API failure as a WorkspaceError, Archil's words kept. A disk that is not there is UNAVAILABLE, never a file or
  *  folder that is not there: no caller takes it for an empty folder. */
 function failed(error: unknown, path: string, what: string): WorkspaceError {
@@ -114,6 +131,7 @@ function failed(error: unknown, path: string, what: string): WorkspaceError {
   const status = statusOf(error);
   const at = { path, cause: error };
   if (error instanceof ArchilDiskMissing) return new WorkspaceError("UNAVAILABLE", `${what} ${show(path)}: ${error.message}`, at);
+  if (error instanceof FolderHeld) return new WorkspaceError("UNAVAILABLE", `${what} ${show(path)}: ${error.words}: ${error.message}`, { ...at, words: error.words });
   if (status === 404) return new WorkspaceError("NOT_FOUND", `${show(path)} is not there (${what}; Archil: ${describe(error)})`, at);
   if (status === 413 || (error as { code?: unknown })?.code === "EntityTooLarge") return new WorkspaceError("TOO_LARGE", `${what} ${show(path)}: more than the disk takes in one call`, at);
   if (status === 401 || status === 403) return new WorkspaceError("UNAVAILABLE", `${what} ${show(path)}: Archil refused the key: ${describe(error)}`, at);
@@ -186,25 +204,27 @@ class ArchilWorkspace implements Workspace {
     return segments;
   }
 
-  /** `call`, again while another client holds the path checked out (409), for up to queueMs. A 409 because a file is
-   *  on the way to `rel` is not waited on. */
-  async #settle<T>(rel: string, call: () => Promise<T>): Promise<T> {
+  /** `call`, again while another client holds the path checked out (409), for up to queueMs; a hold that outlasts it
+   *  fails FolderHeld. A 409 because a file is on the way to `rel` is no hold, and neither is one for a put (`put`) to a
+   *  link an exec made at `rel`: each is thrown at once. A delete of a link is allowed, so its 409 is a hold. */
+  async #settle<T>(rel: string, call: () => Promise<T>, put = false): Promise<T> {
     const deadline = Date.now() + this.#queueMs;
     for (let first = true; ; first = false) {
       try {
         return await call();
       } catch (error) {
-        if (statusOf(error) !== 409 || Date.now() >= deadline) throw error;
-        if (first && (await this.#fileOnTheWay(rel).catch(() => undefined)) !== undefined) throw error;
+        if (statusOf(error) !== 409) throw error;
+        if (first && ((await this.#fileOnTheWay(rel).catch(() => undefined)) !== undefined || (put && (await this.#isLink(rel))))) throw error;
+        if (Date.now() >= deadline) throw new FolderHeld(this.#queueMs, error);
         await pause(200);
       }
     }
   }
 
   /** A mutating call made after this workspace's execs are done. */
-  async #write<T>(rel: string, call: () => Promise<T>): Promise<T> {
+  async #write<T>(rel: string, call: () => Promise<T>, put = false): Promise<T> {
     await this.#execs;
-    return this.#settle(rel, call);
+    return this.#settle(rel, call, put);
   }
 
   /** Relative path of disk key `key` under the root ("" for the root, or for a folder above or beside it). */
@@ -225,7 +245,7 @@ class ArchilWorkspace implements Workspace {
    *  expert run's `.agents/skills/` on a fresh run folder), so on a 404 each folder above `key` that is not there is
    *  made, from the highest down, and `put` is made once more. A folder already there is left as it is. */
   async #put<T>(key: string, put: () => Promise<T>, inExec = false): Promise<T> {
-    const call = <U>(rel: string, fn: () => Promise<U>): Promise<U> => (inExec ? this.#settle(rel, fn) : this.#write(rel, fn));
+    const call = <U>(rel: string, fn: () => Promise<U>): Promise<U> => (inExec ? this.#settle(rel, fn, true) : this.#write(rel, fn, true));
     try {
       return await call(this.#relOf(key), put);
     } catch (error) {
@@ -281,6 +301,12 @@ class ArchilWorkspace implements Workspace {
     return undefined;
   }
 
+  /** Whether `rel` is a link an exec made: the file API lists one as a file and answers a read of it 501. */
+  async #isLink(rel: string): Promise<boolean> {
+    if (rel === "") return false;
+    return this.#disk.getRange(this.#key(rel), "bytes=0-0").then(() => false, (error: unknown) => statusOf(error) === 501);
+  }
+
   /** Why a write, an append or a mkdir of `rel` failed, in the port's words: the disk's code for it is not documented,
    *  so on a refusal what is there is looked at. */
   async #writeFailed(error: unknown, rel: string, making: "file" | "dir", what: string): Promise<WorkspaceError> {
@@ -292,6 +318,9 @@ class ArchilWorkspace implements Workspace {
       const kind = await this.#kind(rel).catch(() => undefined);
       if (kind === "file" && making === "dir") return new WorkspaceError("EXISTS", `${show(rel)} is a file, in the way`, { path: rel, cause: error });
       if (kind === "dir" && making === "file") return new WorkspaceError("REFUSED", `${show(rel)} is a directory`, { path: rel, cause: error });
+      if (kind === "file" && making === "file" && (await this.#isLink(rel))) {
+        return new WorkspaceError("EXISTS", `${show(rel)} is a symbolic link (an exec made it), in the way: Archil's file API does not write one (Archil: ${describe(error)})`, { path: rel, cause: error, words: LINK_IN_THE_WAY });
+      }
     }
     return failed(error, rel, what);
   }
@@ -371,7 +400,7 @@ class ArchilWorkspace implements Workspace {
       if (chunks === 1) {
         // A refusal (4xx) applied nothing; any other failure may have come after the bytes were committed.
         if (refused) throw why;
-        throw new WorkspaceError(why.code, `the append to ${show(rel)} may also have landed: unknown, re-read the file before retrying: ${why.message}`, { path: rel, cause: error });
+        throw new WorkspaceError(why.code, `the append to ${show(rel)} may also have landed: unknown, re-read the file before retrying: ${why.message}`, { path: rel, cause: error, words: why.words });
       }
       // Part of it may be on the disk. Only what is known is said: the size read back, or else what was acknowledged, with
       // the failed chunk's outcome unknown unless it was refused (as one chunk's refusal applied nothing). A chunk may
@@ -382,7 +411,7 @@ class ArchilWorkspace implements Workspace {
         : refused
           ? `${landed} of ${bytes.length} bytes were appended (the chunk that failed was refused, so none of it landed)`
           : `at least ${landed} of ${bytes.length} bytes were appended; the failed chunk may also have landed: unknown, re-read the file before retrying`;
-      throw new WorkspaceError(why.code, `${known} to ${show(rel)} before it failed: ${why.message}`, { path: rel, cause: error });
+      throw new WorkspaceError(why.code, `${known} to ${show(rel)} before it failed: ${why.message}`, { path: rel, cause: error, words: why.words });
     }
   }
 
@@ -605,7 +634,14 @@ class ArchilWorkspace implements Workspace {
       }
       if (files.length > 0) {
         const errors = await this.#settle(rel, () => this.#disk.deleteObjects(files));
-        if (errors.length > 0) throw new WorkspaceError("UNAVAILABLE", `${errors.length} of ${files.length} files under ${show(rel)} were not removed: ${errors[0]!.key}: ${errors[0]!.code ?? ""} ${errors[0]!.message ?? ""}`.trim(), { path: rel });
+        // The bulk answer lists a key's refusal with no status, so each refused key is deleted again alone, where a hold
+        // answers 409 and is waited on as any other (FolderHeld past the wait).
+        for (const refused of errors) {
+          await this.#settle(rel, () => this.#disk.deleteObject(refused.key)).catch((error: unknown) => {
+            if (error instanceof FolderHeld) throw error;
+            throw new WorkspaceError("UNAVAILABLE", `${errors.length} of ${files.length} files under ${show(rel)} were not removed: ${refused.key}: ${refused.code ?? ""} ${refused.message ?? ""}`.trim(), { path: rel, cause: error });
+          });
+        }
       }
       // Folders in the reverse of the order they were found (every folder after its parent), so each is empty when it goes.
       for (const folder of folders.reverse()) await this.#settle(rel, () => this.#disk.deleteObject(folder));

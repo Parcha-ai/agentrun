@@ -23,7 +23,8 @@ you add or restyle anything a person sees there.
    far right of the toolbar, after secondary actions. Secondary controls stay
    neutral; destructive actions use their own tone. Do not give adjacent actions equal primary emphasis.
    Orange words are `text-primary-text`. Never use orange for decoration.
-5. **Flat.** One shadow exists (`shadow-float`), only under what floats over the page.
+5. **Flat.** Two shadows exist: `shadow-float`, only under what floats over the page, and `shadow-drawer`, only at
+   the left edge of a drawer.
 6. **Light and dark are equals.** Every token has both values, and every story shows both.
 
 ## Before you write UI
@@ -129,8 +130,13 @@ a small link in a row gets there with padding the layout does not see (`-my-1 py
   action uses the same radius on its single outer edge; its main action and chooser stay square inside that edge.
   Its tinted main action and chooser share the foreground, hover, open and focus treatment across the whole group,
   with no internal divider. Compact row actions keep the neutral secondary treatment.
-- `shadow-float` goes under a menu, a picker's list, a tip, a toast and a dialog. Nothing in the page's flow has a
-  shadow.
+- `shadow-float` goes under a menu, a picker's list, a tip, a toast and a dialog.
+- `shadow-drawer` goes at the left edge of a drawer: a panel that opens at a page's right to show one thing picked
+  from it, and closes again (Agent Factory's open session, a call's details in Dev tools, a node's details beside a
+  run's graph). It is soft and cast to the left only, so the drawer reads as above the page beside it. Write it with
+  the breakpoint the drawer is at the right from (`xl:shadow-drawer`), on a positioned box so it is drawn over the
+  page's own content. A column that is always there (a recording's steps) is not a drawer.
+- Nothing else in the page's flow has a shadow.
 
 ### Layers
 
@@ -241,9 +247,12 @@ Never write `outline-none` without a `focus-visible:` replacement drawn with the
 
 - **The shell** is a 220px sidebar and a main column. The `roomy:` variant shows the sidebar at 768px wide and 501px tall; smaller or shorter windows use a top bar with a menu.
   Banners sit above the page, outside its scroller.
-- **A page's top bar stays in view.** A page with a top bar (`pageToolbarClass`) is `pageClass`, exactly as tall as
-  `main`: the bar first, then the body in `pageBodyClass` (marked `data-page-body`), the box that scrolls. `main` never
-  scrolls such a page, or the bar would go with it. A page made of panes (Mission Control, a run, an agent, the
+- **A page's top bar stays in view beside the sidebar.** A page with a top bar (`pageToolbarClass`) is `pageClass`:
+  where the sidebar shows (`roomy:`) it is exactly as tall as `main`, the bar first, then the body in `pageBodyClass`
+  (marked `data-page-body`), the box that scrolls. `main` never scrolls such a page there, or the bar would go with it.
+  In a window too small for the sidebar (a phone, upright or on its side) a `pageClass` page scrolls in `main` as a
+  whole, bar and all: there is no logo row for the bar to meet, and a bar whose actions wrap would hold much of the
+  screen (Triggers' is 197px at 390px wide). A page made of panes (Mission Control, a run, an agent, the
   Playground) scrolls each pane in its own box under the bar. A Settings page scrolls in its own `h-full overflow-auto`
   box under the Settings tabs. A page with no top bar (Build an agent, a trigger's page) scrolls in `main`. A run's page
   on a `short:` window scrolls as a whole, so its panels are not squeezed to nothing. `e2e/flows/page-frames.mjs`
@@ -255,6 +264,12 @@ Never write `outline-none` without a `focus-visible:` replacement drawn with the
   `@5xl:` (64rem) on the part. The Dev tools table shows its time axis and its Size column this way beside an open call.
   The stylesheet writes these before the breakpoints, so one never undoes a breakpoint's class: write the breakpoint's
   side as a range (`hidden max-xl:table-cell @4xl:table-cell`). Do not add a width.
+- **A panel over a page** shows one thing from a list without leaving it (Agent Factory's open session,
+  `FactorySession`): an `<aside>` placed over the right side of the page's body (`absolute inset-y-0 right-0`, in a
+  `relative` box under the top bar), `xl:w-3/5 xl:max-w-3xl` and the whole body below `xl`, on `z-sticky` with
+  `xl:shadow-drawer`, since it is over the list, which scrolls under it. The list is never reflowed or hidden, so it keeps
+  its place. The address names what is open; Close and Escape drop it, and the keyboard goes back to what opened it.
+  Escape from a field being typed in, or from a menu or dialog inside the panel, is theirs.
 - **Widths.** A page fills the width it has, so nothing is left empty beside it on a wide screen. What changes with
   the width is how its parts are laid out, never a margin:
   - A page of data (Mission Control, a list, a table) is fluid: its tables stretch and its card grids take more columns.

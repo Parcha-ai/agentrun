@@ -11,6 +11,7 @@ import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { asOwner, call, serve, withEnv } from "./support.mjs";
 
 const gate = await import("../dist/secret-writes.js");
+const { tokenWriteOverWords } = await import("../dist/mcp-secret-writes.js");
 // The planes register their operations as their modules load: the server's own imports, as a started server has them.
 await import("../dist/server.js");
 
@@ -122,9 +123,9 @@ test("a token's save that would drop a saved server's credential links to its Ch
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   // No auth is none (the save drops the token): the link says none, so the Change form never falls back to bearer.
   const dropped = await token("PUT", "/settings/mcp-servers/docs", { url: mcp.url });
-  assert.deepEqual(queryOf(refusedWithLink(dropped, origin)), { change: "docs", url: mcp.url, auth: "none" });
+  assert.deepEqual(queryOf(refusedWithLink(dropped, origin, tokenWriteOverWords("docs", true))), { change: "docs", url: mcp.url, auth: "none" });
   const perRun = await token("PUT", "/settings/mcp-servers/docs", { url: mcp.url, auth: { type: "per_run" } });
-  assert.equal(refusedWithLink(perRun, origin), `${origin}/#/settings/mcp`);
+  assert.equal(refusedWithLink(perRun, origin, tokenWriteOverWords("docs", true)), `${origin}/#/settings/mcp`);
 });
 
 test("a token's Composio save over a saved server's name links to replace it (change), never to add a server beside it", async (t) => {

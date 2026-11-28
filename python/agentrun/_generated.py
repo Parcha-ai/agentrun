@@ -1189,6 +1189,11 @@ __all__ = [
     "SaveWebhookResponseObject22Disabled",
     "ScanForSuggestionsBody",
     "ScanForSuggestionsResponse",
+    "ScanForSuggestionsResponseObject11",
+    "ScanForSuggestionsResponseObject12",
+    "ScanForSuggestionsResponseObject12Input",
+    "ScanForSuggestionsResponseObject13",
+    "ScanForSuggestionsResponseObject2",
     "SdkRunEventsBody",
     "SdkRunEventsBodyEventsItem1",
     "SdkRunEventsBodyEventsItem2",
@@ -1641,7 +1646,7 @@ class DefinitionPlace1(TypedDict):
 
 class DefinitionPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox", "vercel", "sprites"]
 
 
 class _DefinitionComputerRequired(TypedDict):
@@ -2150,7 +2155,7 @@ class DefinitionInputPlace1(TypedDict):
 
 class DefinitionInputPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox", "vercel", "sprites"]
 
 
 class _DefinitionInputComputerRequired(TypedDict):
@@ -2843,6 +2848,8 @@ class ListLearningPromotionsResponsePromotionsItemCheck(_ListLearningPromotionsR
     unstarted: int
     skipped_tools: list[ListLearningPromotionsResponsePromotionsItemCheckSkippedToolsItem]
     disagreements: list[ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem]
+    unread: int
+    undecided: Literal[True]
     stopped: Literal[True]
     released: int
     fresh_reads: int
@@ -2850,7 +2857,7 @@ class ListLearningPromotionsResponsePromotionsItemCheck(_ListLearningPromotionsR
 
 
 _ListLearningPromotionsResponsePromotionsItemCheckFieldsValueRequired = TypedDict("_ListLearningPromotionsResponsePromotionsItemCheckFieldsValueRequired", {"n": "int", "workflow_right": "int", "agent_right": "int", "known": "Literal[\"grade\", \"agent\"]", "pass": "bool", "reason": "str", "by": "ListLearningPromotionsResponsePromotionsItemCheckFieldsValueBy"})
-_ListLearningPromotionsResponsePromotionsItemCheckFieldsValueOptional = TypedDict("_ListLearningPromotionsResponsePromotionsItemCheckFieldsValueOptional", {"unjudged": "int"}, total=False)
+_ListLearningPromotionsResponsePromotionsItemCheckFieldsValueOptional = TypedDict("_ListLearningPromotionsResponsePromotionsItemCheckFieldsValueOptional", {"unjudged": "int", "unread": "int"}, total=False)
 
 
 class ListLearningPromotionsResponsePromotionsItemCheckFieldsValue(_ListLearningPromotionsResponsePromotionsItemCheckFieldsValueRequired, _ListLearningPromotionsResponsePromotionsItemCheckFieldsValueOptional):
@@ -2924,12 +2931,14 @@ class _ListLearningPromotionsResponsePromotionsItemCheckTurnsRequired(TypedDict)
 class ListLearningPromotionsResponsePromotionsItemCheckTurns(_ListLearningPromotionsResponsePromotionsItemCheckTurnsRequired, total=False):
     disagreements: list[ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItem]
     fresh_reads: int
+    unread: int
 
 
 class ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValue(TypedDict, total=False):
     grade: ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueGrade
     agent: ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueAgent
     unjudged: int
+    unread: int
 
 
 class ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueGrade(TypedDict):
@@ -3067,6 +3076,8 @@ class ListLearningPromotionsResponseServingItemChampionCheck(_ListLearningPromot
     unstarted: int
     skipped_tools: list[ListLearningPromotionsResponseServingItemChampionCheckSkippedToolsItem]
     disagreements: list[ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItem]
+    unread: int
+    undecided: Literal[True]
     stopped: Literal[True]
     released: int
     fresh_reads: int
@@ -3074,7 +3085,7 @@ class ListLearningPromotionsResponseServingItemChampionCheck(_ListLearningPromot
 
 
 _ListLearningPromotionsResponseServingItemChampionCheckFieldsValueRequired = TypedDict("_ListLearningPromotionsResponseServingItemChampionCheckFieldsValueRequired", {"n": "int", "workflow_right": "int", "agent_right": "int", "known": "Literal[\"grade\", \"agent\"]", "pass": "bool", "reason": "str", "by": "ListLearningPromotionsResponseServingItemChampionCheckFieldsValueBy"})
-_ListLearningPromotionsResponseServingItemChampionCheckFieldsValueOptional = TypedDict("_ListLearningPromotionsResponseServingItemChampionCheckFieldsValueOptional", {"unjudged": "int"}, total=False)
+_ListLearningPromotionsResponseServingItemChampionCheckFieldsValueOptional = TypedDict("_ListLearningPromotionsResponseServingItemChampionCheckFieldsValueOptional", {"unjudged": "int", "unread": "int"}, total=False)
 
 
 class ListLearningPromotionsResponseServingItemChampionCheckFieldsValue(_ListLearningPromotionsResponseServingItemChampionCheckFieldsValueRequired, _ListLearningPromotionsResponseServingItemChampionCheckFieldsValueOptional):
@@ -3148,12 +3159,14 @@ class _ListLearningPromotionsResponseServingItemChampionCheckTurnsRequired(Typed
 class ListLearningPromotionsResponseServingItemChampionCheckTurns(_ListLearningPromotionsResponseServingItemChampionCheckTurnsRequired, total=False):
     disagreements: list[ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItem]
     fresh_reads: int
+    unread: int
 
 
 class ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValue(TypedDict, total=False):
     grade: ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueGrade
     agent: ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueAgent
     unjudged: int
+    unread: int
 
 
 class ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueGrade(TypedDict):
@@ -3794,10 +3807,14 @@ class RunSummaryReview(TypedDict):
     at: str
 
 
-class RunSummaryPending1(TypedDict):
+class _RunSummaryPending1Required(TypedDict):
     kind: Literal["question"]
     question: str
     asked_at: str
+
+
+class RunSummaryPending1(_RunSummaryPending1Required, total=False):
+    expires_at: str
 
 
 class _RunSummaryPending2Required(TypedDict):
@@ -3854,7 +3871,7 @@ class RunSummaryPending6(TypedDict):
 
 
 class RunSummaryImportedFrom(TypedDict):
-    source: Literal["claude-code", "codex", "pi", "opencode", "copilot"]
+    source: Literal["claude-code", "codex", "pi", "opencode", "copilot", "cursor"]
     session: str
 
 
@@ -6144,7 +6161,7 @@ class RunPlace1(TypedDict):
 
 class RunPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox", "vercel", "sprites"]
 
 
 class _RunComputerRequired(TypedDict):
@@ -6195,10 +6212,14 @@ class RunReview(TypedDict):
     at: str
 
 
-class RunPending1(TypedDict):
+class _RunPending1Required(TypedDict):
     kind: Literal["question"]
     question: str
     asked_at: str
+
+
+class RunPending1(_RunPending1Required, total=False):
+    expires_at: str
 
 
 class _RunPending2Required(TypedDict):
@@ -6255,7 +6276,7 @@ class RunPending6(TypedDict):
 
 
 class RunImportedFrom(TypedDict):
-    source: Literal["claude-code", "codex", "pi", "opencode", "copilot"]
+    source: Literal["claude-code", "codex", "pi", "opencode", "copilot", "cursor"]
     session: str
 
 
@@ -6925,11 +6946,45 @@ class SaveModelGatewayResponseSecret(TypedDict):
     changed_at: str | None
 
 
-class ScanForSuggestionsBody(TypedDict):
+class _ScanForSuggestionsBodyRequired(TypedDict):
     repo: str
 
 
-class ScanForSuggestionsResponse(TypedDict):
+class ScanForSuggestionsBody(_ScanForSuggestionsBodyRequired, total=False):
+    start: Literal["host"]
+    run_id: str
+    scan: str
+
+
+ScanForSuggestionsResponse: TypeAlias = "ScanForSuggestionsResponseObject11 | ScanForSuggestionsResponseObject12 | ScanForSuggestionsResponseObject13 | ScanForSuggestionsResponseObject2"
+
+
+class ScanForSuggestionsResponseObject11(TypedDict):
+    repo: str
+    run_id: str
+    agent_id: str
+    status: Literal["running"]
+    already_running: bool
+
+
+class ScanForSuggestionsResponseObject12(TypedDict):
+    repo: str
+    agent_id: str
+    input: ScanForSuggestionsResponseObject12Input
+    scan: str
+    status: Literal["starting"]
+
+
+class ScanForSuggestionsResponseObject12Input(TypedDict):
+    content: str
+
+
+class ScanForSuggestionsResponseObject13(TypedDict):
+    repo: str
+    status: Literal["released"]
+
+
+class ScanForSuggestionsResponseObject2(TypedDict):
     repo: str
     run_id: str
     agent_id: str
@@ -9149,7 +9204,7 @@ class CapabilitiesPlaces(_CapabilitiesPlacesRequired, total=False):
 
 
 class _CapabilitiesPlacesBoxesItemRequired(TypedDict):
-    id: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
+    id: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox", "vercel", "sprites"]
     available: bool
     state: Literal["ready", "unavailable"]
 
@@ -9167,7 +9222,7 @@ class CapabilitiesPlacesDefaultPlace1(TypedDict):
 
 class CapabilitiesPlacesDefaultPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox", "vercel", "sprites"]
 
 
 class _CapabilitiesHarnessesItemRequired(TypedDict):
@@ -9560,7 +9615,7 @@ class GetStatsResponseAnalyticsByDayItem(TypedDict):
 
 
 class GetStatsResponseAnalyticsBySourceItem(TypedDict):
-    source: Literal["live", "claude-code", "codex", "pi", "opencode", "copilot"]
+    source: Literal["live", "claude-code", "codex", "pi", "opencode", "copilot", "cursor"]
     runs: int
     completed: int
     needs_review: int

@@ -332,3 +332,36 @@ test("a required need with no matching saved server refuses the apply, naming th
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
   assert.deepEqual(applied.body.servers, { notes: "notes" });
 });
+
+test("a need whose toolkit is its source's name (github/github) is named once where the apply says it is not set up: the warning, its plan and a required one's refusal; a url need keeps both", async (t) => {
+  const github = (files, required) => {
+    for (const path of ["agent.md", "skills/digest/SKILL.md"]) files[path] = files[path].replaceAll("mcp:notes/", "mcp:github/");
+    files["agent.md"] = files["agent.md"].replace("source: url", "source: github").replace("toolkit: notes", "toolkit: github").replace("required: false", `required: ${required}`);
+  };
+  const optional = await notesPackage(t, (files) => github(files, false));
+  const { api } = await serve(t, { templates: optional.root });
+  const skipped = await api("POST", "/templates/notes-digest/apply", { parameters: { to: "me" } });
+  assert.equal(skipped.status, 201, JSON.stringify(skipped.body));
+  const warning = skipped.body.warnings.find((w) => w.field === "mcp.github");
+  assert.equal(warning?.message, "No saved MCP server is github, so the agent was made without its tools (list_notes, send_note).", JSON.stringify(skipped.body.warnings));
+  const planned = await api("POST", "/templates/notes-digest/apply", { parameters: { to: "me" }, dry_run: true });
+  assert.equal(planned.status, 200, JSON.stringify(planned.body));
+  assert.deepEqual(planned.body.plan.unmatched_mcp, [{ source: "github", toolkit: "github", required: false }], JSON.stringify(planned.body.plan));
+  const picked = await api("POST", "/templates/notes-digest/apply", { parameters: { to: "me" }, servers: { github: "nowhere" } });
+  assert.equal(picked.status, 422, JSON.stringify(picked.body));
+  assert.equal(picked.body.error.fields.find((f) => f.field === "servers.github")?.message, "nowhere is not a saved MCP server that is github: none is saved here.");
+
+  const required = await notesPackage(t, (files) => github(files, true));
+  const strict = await serve(t, { templates: required.root });
+  const refused = await strict.api("POST", "/templates/notes-digest/apply", { parameters: { to: "me" } });
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.match(refused.body.error.message, /needs a github MCP server, which this server does not have/);
+  assert.equal(refused.body.error.fields.find((f) => f.field === "mcp.github")?.message, "No saved MCP server is github.");
+
+  const url = await notesPackage(t, (files) => void (files["agent.md"] = files["agent.md"].replace("required: false", "required: true")));
+  const named = await serve(t, { templates: url.root });
+  const both = await named.api("POST", "/templates/notes-digest/apply", { parameters: { to: "me" } });
+  assert.equal(both.status, 409, JSON.stringify(both.body));
+  assert.match(both.body.error.message, /needs a url MCP server of the toolkit notes/);
+  assert.equal(both.body.error.fields.find((f) => f.field === "mcp.notes")?.message, "No saved MCP server is url notes.");
+});

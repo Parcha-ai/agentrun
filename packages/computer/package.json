@@ -10,7 +10,9 @@
     "daytona",
     "boxd",
     "smolcloud",
-    "groundbox"
+    "groundbox",
+    "vercel",
+    "sprites"
   ],
   "type": "module",
   "license": "Apache-2.0",
@@ -80,6 +82,14 @@
     "./groundbox": {
       "types": "./dist/groundbox.d.ts",
       "default": "./dist/groundbox.js"
+    },
+    "./vercel": {
+      "types": "./dist/vercel.d.ts",
+      "default": "./dist/vercel.js"
+    },
+    "./sprites": {
+      "types": "./dist/sprites.d.ts",
+      "default": "./dist/sprites.js"
     },
     "./orgo": {
       "types": "./dist/orgo.d.ts",
