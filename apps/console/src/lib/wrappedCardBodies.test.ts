@@ -71,8 +71,8 @@ describe("the cards drawn now", () => {
     }
   });
 
-  it("draws every word and bar of each body: no row, bar or value is cut or left out", () => {
-    const big: Wrapped = { ...YEAR, sessions: 123_456, turns: 9_876_543, requests: 12_345_678, cost_usd: 1_234_567.89, unpriced_requests: 1_234_567, unread_files: 12_345, days: Array.from({ length: 366 }, (_, i) => ({ day: `2024-01-${String((i % 28) + 1).padStart(2, "0")}`, requests: 1, tokens: 1 })), active_ms: 9_876_543_210 };
+  it("draws every word and bar of each body: no row, bar, value or unit is cut or left out", () => {
+    const big: Wrapped = { ...YEAR, secrets: { runs: 123_456, runs_holding: 98_765, removed: 1_234_567 }, sessions: 123_456, turns: 9_876_543, requests: 12_345_678, cost_usd: 1_234_567.89, unpriced_requests: 1_234_567, unread_files: 12_345, days: Array.from({ length: 366 }, (_, i) => ({ day: `2024-01-${String((i % 28) + 1).padStart(2, "0")}`, requests: 1, tokens: 1 })), active_ms: 9_876_543_210 };
     const causes = { model: 7, idle: 123_456, compaction: 9_876, edited: 55, sidechain: 4, unknown: 3_210 };
     const allCauses: Wrapped = { ...big, cache: { runs: 98_765, hit_rate: 0.4321, breaks: causes, extra_cost_usd: { ...causes, idle: 123_456.78 }, unpriced_breaks: 98_765 } };
     for (const data of [YEAR, PRICED, UNPRICED, big, allCauses]) {
@@ -84,6 +84,7 @@ describe("the cards drawn now", () => {
         const texts = [...new DOMParser().parseFromString(renderCard(b).svg, "image/svg+xml").querySelectorAll("text")].map((t) => t.textContent);
         for (const row of b.rows ?? []) expect(texts, `${id}: ${row.value}`).toContain(row.value);
         if (b.figure) expect(texts, id).toContain(b.figure.value);
+        if (b.figure?.unit) expect(texts, `${id}: ${b.figure.unit}`).toContain(b.figure.unit);
         if (b.footnote) expect(texts, id).toContain(b.footnote);
       }
     }

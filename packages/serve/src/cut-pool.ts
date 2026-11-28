@@ -62,8 +62,15 @@ export class CutPool {
     if (this.#running || this.#queue.length === 0) return;
     const pending = this.#queue.shift()!;
     this.#running = pending;
-    this.#worker ??= this.#make();
-    this.#worker.postMessage(pending.job);
+    try {
+      this.#worker ??= this.#make();
+      this.#worker.postMessage(pending.job);
+    } catch (error) {
+      // A worker that can't be made (no thread left to start one), or a job it can't be handed: the cut is refused now,
+      // never left to its deadline, and never thrown out of the timer or message that pumped it, where it would end the
+      // server.
+      this.#settle(new CutUnserved(`its worker could not take the cut (${error instanceof Error ? error.name : "error"})`));
+    }
   }
 
   #settle(error: CutUnserved | undefined, text?: string): void {
