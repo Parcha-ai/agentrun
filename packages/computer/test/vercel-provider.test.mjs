@@ -194,7 +194,7 @@ test("a log stream that drops is read again from the start, the text already giv
 	record.out("stderr", "warn\n");
 	record.exit(0);
 	assert.deepEqual([await textOf(proc.stdout), await textOf(proc.stderr), await proc.wait()], ["1\n2\n3\n", "warn\n", 0]);
-	assert.equal(vendor.calls.filter((call) => call.path.endsWith("/logs")).length, 2);
+	assert.equal(vendor.calls.filter((call) => call.path.endsWith("/logs")).length, 3, "the dropped read, the read again, and the read once the command has exited");
 });
 
 test("a log stream that ends before the command's last write, which the command read then finds exited, still gives that write: byte-exact, in order, once", async () => {

@@ -204,12 +204,14 @@ class VercelHost implements MachineHost {
 	/**
 	 * A command's output (GET .../logs, NDJSON {stream, data} lines, as text), then its exit code (GET the command:
 	 * exitCode once it ended). A stream that ends or drops while the command runs is read again: Vercel answers it from
-	 * the start, so the characters already given each stream are skipped (S getLogsStream). An `error` line is the
-	 * command's end in Vercel's words (the sandbox stopped); READ_TRIES failed reads running end it too.
+	 * the start, so the characters already given each stream are skipped (S getLogsStream). A stream can end before the
+	 * command's last write, so once the command read finds it exited the logs are read once more before the exit. An
+	 * `error` line is the command's end in Vercel's words (the sandbox stopped); READ_TRIES failed reads in a row end it too.
 	 */
 	async *#events(cmd: Command, path: string): AsyncGenerator<FramedEvent> {
 		const given = { stdout: 0, stderr: 0 };
 		const ctx = { timeoutMs: CALL_MS, signal: cmd.killed.signal };
+		let exit: number | undefined;
 		for (let failed = 0; ; ) {
 			try {
 				const skip = { ...given };
@@ -223,9 +225,13 @@ class VercelHost implements MachineHost {
 					given[line.stream] += text.length;
 					yield { stream: line.stream, text };
 				}
-				failed = 0;
+				if (exit !== undefined) return yield { exit };
 				const { command } = await this.#call<{ command: { exitCode: number | null } }>("GET", path, {}, ctx, { retry: true });
-				if (typeof command.exitCode === "number") return yield { exit: command.exitCode };
+				failed = 0;
+				if (typeof command.exitCode === "number") {
+					exit = command.exitCode;
+					continue;
+				}
 			} catch (error) {
 				if (cmd.killed.signal.aborted) return;
 				if ((error instanceof HostError && error.code === "gone") || ++failed >= READ_TRIES) throw error;
