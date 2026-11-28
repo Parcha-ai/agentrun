@@ -93,27 +93,6 @@ const PRESCAN_BYTES = 1024;
  *  taken off; undefined when there is none. */
 const charsetParam = (words: string): string | undefined => /(?:^|[;\s])charset\s*=\s*["']?([^"';\s]+)/i.exec(words)?.[1];
 
-/** The charset an HTML page's own <meta> names in its first 1024 bytes: a `<meta charset>`, else a
- *  `<meta http-equiv="Content-Type" content="...; charset=...">`. Undefined when neither does. */
-function metaCharset(bytes: Uint8Array): string | undefined {
-  // latin1 maps each byte to one char: an ASCII tag reads the same whatever the page's charset.
-  const head = Buffer.from(bytes.buffer, bytes.byteOffset, Math.min(bytes.byteLength, PRESCAN_BYTES)).toString("latin1");
-  for (const [tag] of head.matchAll(/<meta\b[^>]*>/gi)) {
-    const attributes = new Map<string, string>();
-    for (const [, name, double, single, bare] of tag.slice(5).matchAll(/([^\s"'>/=]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g)) {
-      const key = name!.toLowerCase();
-      if (!attributes.has(key)) attributes.set(key, (double ?? single ?? bare ?? "").trim());
-    }
-    const charset = attributes.get("charset");
-    if (charset) return charset;
-    if (attributes.get("http-equiv")?.toLowerCase() === "content-type") {
-      const said = charsetParam(attributes.get("content") ?? "");
-      if (said) return said;
-    }
-  }
-  return undefined;
-}
-
 /** A decoder for `label`, or undefined when no encoding goes by it. A page's <meta> naming UTF-16 is read as UTF-8, as a
  *  browser does: a page whose bytes are UTF-16 could not have spelled the tag in ASCII. */
 function decoderFor(label: string | undefined, fromMeta: boolean): TextDecoder | undefined {
@@ -123,11 +102,41 @@ function decoderFor(label: string | undefined, fromMeta: boolean): TextDecoder |
   return fromMeta && decoder.encoding.startsWith("utf-16") ? new TextDecoder("utf-8") : decoder;
 }
 
-/** A text page's `bytes` as text, decoded by the charset it declares: its Content-Type's `charset`, else (an HTML page)
- *  its <meta> charset in the first 1024 bytes, else UTF-8. A label no encoding goes by is passed over for the next.
- *  Bytes the charset cannot read become U+FFFD. */
+/** A decoder for the charset an HTML page's own <meta> names in its first 1024 bytes: the first `<meta charset>` or
+ *  `<meta http-equiv="Content-Type" content="...; charset=...">` whose label an encoding goes by, as a browser's
+ *  prescan takes it. A tag inside a comment is not read. Undefined when none does. */
+function metaDecoder(bytes: Uint8Array): TextDecoder | undefined {
+  // latin1 maps each byte to one char: an ASCII tag reads the same whatever the page's charset. A comment, and one left
+  // open at the scan's end, is dropped first.
+  const head = Buffer.from(bytes.buffer, bytes.byteOffset, Math.min(bytes.byteLength, PRESCAN_BYTES)).toString("latin1").replace(/<!--[\s\S]*?(?:-->|$)/g, "");
+  for (const [tag] of head.matchAll(/<meta\b[^>]*>/gi)) {
+    const attributes = new Map<string, string>();
+    for (const [, name, double, single, bare] of tag.slice(5).matchAll(/([^\s"'>/=]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g)) {
+      const key = name!.toLowerCase();
+      if (!attributes.has(key)) attributes.set(key, (double ?? single ?? bare ?? "").trim());
+    }
+    const charset = attributes.get("charset");
+    const said = charset ? charset : attributes.get("http-equiv")?.toLowerCase() === "content-type" ? charsetParam(attributes.get("content") ?? "") : undefined;
+    const decoder = decoderFor(said, true);
+    if (decoder) return decoder;
+  }
+  return undefined;
+}
+
+/** The encoding a page's byte order mark names (UTF-8, UTF-16LE, UTF-16BE), or undefined with none. */
+function bomEncoding(bytes: Uint8Array): string | undefined {
+  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) return "utf-8";
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) return "utf-16le";
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) return "utf-16be";
+  return undefined;
+}
+
+/** A text page's `bytes` as text, decoded as a browser decodes it: by its byte order mark, else its Content-Type's
+ *  `charset`, else (an HTML page) its <meta> charset in the first 1024 bytes, else UTF-8. A label no encoding goes by is
+ *  passed over for the next. The mark itself is not kept. Bytes the charset cannot read become U+FFFD. */
 function pageText(bytes: Uint8Array, contentType: string): string {
-  const decoder = decoderFor(charsetParam(contentType), false) ?? (HTML_TYPE.test(contentType) ? decoderFor(metaCharset(bytes), true) : undefined) ?? new TextDecoder("utf-8");
+  const bom = bomEncoding(bytes);
+  const decoder = (bom ? new TextDecoder(bom) : undefined) ?? decoderFor(charsetParam(contentType), false) ?? (HTML_TYPE.test(contentType) ? metaDecoder(bytes) : undefined) ?? new TextDecoder("utf-8");
   return decoder.decode(bytes);
 }
 

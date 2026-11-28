@@ -29,7 +29,7 @@ const cases = [
 for (const [name, bytes, type, words] of cases) {
   test(`a page whose charset is ${name} is decoded by it, never read as UTF-8`, async () => {
     const body = await read(bytes, type);
-    assert.ok(!body.includes("�"), `U+FFFD in the body: ${body}`);
+    assert.ok(!body.includes("\uFFFD"), `U+FFFD in the body: ${body}`);
     assert.ok(body.includes(words), body);
   });
 }
@@ -62,4 +62,25 @@ test("a plain-text page's <meta>-like words are never read as its charset", asyn
 
 test("a <meta> naming UTF-16 reads as UTF-8, as a browser reads it", async () => {
   assert.ok((await read(page('<meta charset="utf-16">', Buffer.from(LATIN1, "utf8")), "text/html")).includes(LATIN1));
+});
+
+test("a <meta> inside a comment is not read: the next one is", async () => {
+  const commented = page('<!-- <meta charset="utf-8"> --><meta charset="iso-8859-1">', Buffer.from(LATIN1, "latin1"));
+  assert.ok((await read(commented, "text/html")).includes(LATIN1));
+  const only = page('<!-- <meta charset="shift_jis"> -->', Buffer.from(LATIN1, "utf8"));
+  assert.ok((await read(only, "text/html")).includes(LATIN1), "a commented charset alone leaves UTF-8");
+});
+
+test("a <meta> whose label no encoding goes by is passed over for the next <meta>", async () => {
+  const body = await read(page('<meta charset="no-such-charset"><meta charset="shift_jis">', SJIS), "text/html");
+  assert.ok(body.includes("こんにちは"), body);
+});
+
+test("a byte order mark wins over a declared charset, and is not kept in the text", async () => {
+  const marked = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), page('<meta charset="iso-8859-1">', Buffer.from(LATIN1, "utf8"))]);
+  const body = await read(marked, "text/html; charset=iso-8859-1");
+  assert.ok(body.includes(LATIN1), body);
+  assert.ok(!body.startsWith("\uFEFF") && body.startsWith("<html>"), "the mark is dropped");
+  const utf16 = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(`<p>${LATIN1}</p>`, "utf16le")]);
+  assert.ok((await read(utf16, "text/html; charset=utf-8")).includes(LATIN1), "a UTF-16LE mark");
 });
