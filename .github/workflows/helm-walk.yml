@@ -37,7 +37,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-helm-walk-${{ github.ref }}
+  group: ${{ github.workflow }}-helm-walk-${{ github.ref }}${{ inputs.ref && format('-{0}', inputs.ref) || '' }}
   cancel-in-progress: true
 
 jobs:

@@ -47,7 +47,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-selfhost-walk-${{ github.ref }}-${{ inputs.platforms }}
+  group: ${{ github.workflow }}-selfhost-walk-${{ github.ref }}-${{ inputs.platforms }}${{ inputs.ref && format('-{0}', inputs.ref) || '' }}
   cancel-in-progress: true
 
 jobs:

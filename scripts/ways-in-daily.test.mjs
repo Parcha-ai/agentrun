@@ -145,3 +145,13 @@ test("after a publish each row walks the tag's commit, not main's tip: its own c
   // The launcher row calls install-walk, which on a publish installs what npm and the registry serve: the release itself.
   assert.match(readFileSync(new URL('../.github/workflows/install-walk.yml', import.meta.url), 'utf8'), /github\.event_name \}\}" = workflow_run/);
 });
+
+test("a called walk's concurrency group names the commit it was handed, so a daily run never cancels a release's walk", () => {
+  // A called workflow's github.workflow is the caller's and its github.ref is main on the schedule and after a publish
+  // alike, and helm-walk and selfhost-walk cancel in progress: without the commit both runs share one group.
+  for (const name of ['helm-walk.yml', 'selfhost-walk.yml']) {
+    const { concurrency } = workflowAt(name);
+    assert.equal(concurrency['cancel-in-progress'], true, `${name} still cancels a superseded run of the same commit`);
+    assert.ok(concurrency.group.endsWith("${{ inputs.ref && format('-{0}', inputs.ref) || '' }}"), `${name}'s group names the handed commit, and is as before with none`);
+  }
+});
