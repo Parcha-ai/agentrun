@@ -1,14 +1,20 @@
 // The boat host: boat sandboxes (https://boat.dev), each a Firecracker microVM with its own kernel in one of boat's EU
-// regions (boat picks the region; there is no field for it). The control plane is boat's REST API over fetch
+// regions ("You cannot pick a region": no request field names one). The control plane is boat's REST API over fetch
 // (https://boat.dev/api/v1, a Bearer key, every answer an { ok, type } envelope; the API reference's OpenAPI). One adapter
 // serves boat's general sandbox and its CI-as-compute alike: both are the same sandbox resource here.
 //
 // Every command (the daemon's upload, its install, init's start, the stdio bridge) goes over SSH through the shared
 // SshExec (./hosted/ssh-exec.ts). This provider makes its own ed25519 key, once per host, and hands boat its public half
-// (POST /sandboxes/{id}/sshkey); boat answers the login (sshUser "user", passwordless sudo), where to reach the sshd, and
+// (POST /sandboxes/{id}/sshkey); boat answers the login (sshUser; the docs' user `user` when the answer leaves it out,
+// as its schema allows; passwordless sudo), where to reach the sshd, and
 // the sshd's host key, which the handshake pins ("Pin it in known_hosts"). Each command runs under `sudo -n --`, so it
 // is root's. boat's REST commands (POST /sandboxes/{id}/commands) take no stdin and end within 600 s, so they cannot
 // carry the bridge and are not used. The rest of the computer is the shared machine-host adapter's (./hosted/provider.ts).
+//
+// boat stops (archives) a sandbox ttlSeconds after its create or its last PATCH, activity or not ("The timer counts from
+// creation or from the last resume, not from your last activity"); with no ttlSeconds
+// the default is 3600 s (OpenAPI CreateSandboxRequest, docs: auto-stop). create always sends the computer's lifetime as
+// ttlSeconds, so no default applies, and extend PATCHes it: a held computer lives to its deadline, then boat stops it.
 //
 // Unverified until the live run, each pinned here:
 // - unshare -n (init's network none and the egress fence) under the exec user's sudo, in boat's microVM.
@@ -19,7 +25,6 @@
 // - Which of machineIp:22 and sshEndpoint boat means when it answers both: sshEndpoint is used when given.
 // - That label values come back byte for byte, an "=" inside a value included, through the label= filter.
 // - Ubuntu's sudo with use_pty and no terminal: the command gets the channel's pipes as they are.
-// - That an SSH session does not move archiveAfter: the deadline is ttlSeconds alone.
 // - The trial's 2 h cap on ttlSeconds (a longer lifetime is boat's 400, invalid).
 import { isIP } from "node:net";
 import { BOAT, BOAT_IMAGE } from "./descriptors/boat.js";
@@ -87,8 +92,9 @@ const SHARE_CODE = /^bsh_[A-Za-z0-9_-]{1,120}$/;
 /** A label boat takes: a key of this form, a value of at most 256 bytes, 20 of them (OpenAPI Labels). */
 const LABEL_KEY = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,62}$/;
 const LABEL_VALUE_BYTES = 256;
-/** The login boat answers, a Unix user name. */
+/** The login boat answers, a Unix user name, and the one its sshkey docs name ("SSH as user `user`"). */
 const SSH_USER = /^[a-z_][a-z0-9_-]{0,31}$/;
+const DOCS_SSH_USER = "user";
 /** The host key types an OpenSSH line names, each with its base64 blob after it. */
 const HOST_KEY = /(?:^|\s)(ssh-ed25519|ecdsa-sha2-nistp(?:256|384|521)|ssh-rsa) ([A-Za-z0-9+/]+={0,2})(?:\s|$)/;
 /** boat's codes that say the account may not have this now: a rate, its plan, its billing, or no machine free. */
@@ -286,8 +292,9 @@ class BoatHost implements MachineHost {
 	async #loginFor(id: string, ctx: HostCall): Promise<BoatLogin> {
 		const path = `/sandboxes/${id}/sshkey`;
 		const answer = (await this.#rest<{ sshUser?: unknown; machineIp?: unknown; sshEndpoint?: unknown; hostKey?: unknown }>("POST", path, { json: { key: this.#publicLine }, retry: true }, ctx)) ?? {};
-		const username = answer.sshUser;
-		if (typeof username !== "string" || !SSH_USER.test(username)) throw new HostError("vendor", `POST ${path} answered no SSH user: ${show(username)}`);
+		// The schema requires no field; the endpoint's docs name the user `user`.
+		const username = answer.sshUser ?? DOCS_SSH_USER;
+		if (typeof username !== "string" || !SSH_USER.test(username)) throw new HostError("vendor", `POST ${path} answered an SSH user that is not a Unix user name: ${show(username)}`);
 		const endpoint = endpointOf(answer);
 		if (endpoint === undefined) throw new HostError("vendor", `POST ${path} answered no sshd to reach: machineIp ${show(answer.machineIp)}, sshEndpoint ${show(answer.sshEndpoint)}`);
 		const hostKey = hostKeyOf(answer.hostKey);

@@ -3396,7 +3396,7 @@ const made = await boat.create({ image: "ubuntu-24.04", lifetimeMs: 600_000, net
 ```
 
 A boat computer is a [boat](https://boat.dev/docs) sandbox: a Firecracker microVM with its own kernel, in boat's EU
-regions only (Germany, Finland or France, boat's pick: the API has no region field, so neither does the provider). It
+regions only (Germany, Finland or France; boat's docs: "You cannot pick a region", so the provider has no region). It
 starts from boat's Ubuntu 24.04 base (`"ubuntu-24.04"`), a snapshot the account saved, by name, or another account's
 share code (`bsh_...`). It is a sandbox alone: with no image of ours there is no desktop and no Archil mount. boat's
 CI-as-compute runner is the same sandbox; this provider drives the sandbox API, not the GitHub App. boat runs on the
@@ -3406,11 +3406,11 @@ the host's `ssh2` package (no SDK).
 
 | MachineHost | boat |
 | --- | --- |
-| `create` | `POST /sandboxes` with the request's name, the labels as boat's map, the lifetime as `ttlSeconds`, `noEnv: true`, `snapshots: false`, a size (`type`) when the spec names one or the base is asked (`small`), `from` for a snapshot or share code, and the request's name as the `Idempotency-Key`: a create sent again is the same sandbox, another body under the name a 409, `exists` |
+| `create` | `POST /sandboxes` with the request's name, the labels as boat's map, the whole lifetime as `ttlSeconds` (at most boat's 30 days; boat stops a sandbox that long after create or the last PATCH, activity or not, and 3600 s when none is sent), `noEnv: true`, `snapshots: false`, a size (`type`) when the spec names one or the base is asked (`small`), `from` for a snapshot or share code, and the request's name as the `Idempotency-Key`: a create sent again is the same sandbox, another body under the name a 409, `exists` |
 | `get` | `GET /sandboxes/{id}`: `init`, `provisioning`, `provisioned` and `cloning` are starting, `ready`, `idle` and `running` running, `archiving` and `archived` stopped, `error` and `cancelled` gone in boat's words, any other state stopped; a 404 is none |
 | `list` | `GET /sandboxes?namePrefix=computer-&limit=200` with one `label=name=value` per asked label, every page, then the prefix and labels held again here |
 | `delete` | `DELETE /sandboxes/{id}` with `X-Ascii-Confirm-Delete: <id>`; a 404 is done |
-| `exec` | SSH ([`src/hosted/ssh-exec.ts`](src/hosted/ssh-exec.ts)) to the sandbox's sshd: the provider's own ed25519 public key handed to boat once per sandbox (`POST /sandboxes/{id}/sshkey`), the login boat answers (`user`, passwordless sudo), each command and kill under `sudo -n --`, and the host key boat answers pinned in the handshake; an sshd with another is `denied` and the next exec asks boat again |
+| `exec` | SSH ([`src/hosted/ssh-exec.ts`](src/hosted/ssh-exec.ts)) to the sandbox's sshd: the provider's own ed25519 public key handed to boat once per sandbox (`POST /sandboxes/{id}/sshkey`), the login boat answers (`user`, also when the answer names none, passwordless sudo), each command and kill under `sudo -n --`, and the host key boat answers pinned in the handshake; an sshd with another is `denied` and the next exec asks boat again |
 | `extend` | `PATCH /sandboxes/{id}` with `ttlSeconds` to the new end, never past the max-deadline label, and the whole label map with the deadline label moved (boat's PATCH labels replace them all) |
 
 No `upload` (the adapter sends the daemon through exec's stdin). `check()` takes boat's four sizes (`small` 2 vCPUs /
