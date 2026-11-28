@@ -1045,8 +1045,8 @@ export class HostedProvider implements ComputerProvider {
 			const read = await readMachine(this.host, ref.id, this.#timeouts.requestMs, signal);
 			if (!read.ok) return read;
 			const machine = read.value;
-			// A machine the vendor failed is gone in its words: the create stops in them, not at createMs.
-			if (machine?.why !== undefined && machine.state === "gone") return this.#fail("vendor", `${this.#label} could not start ${ref.name}: ${machine.why}`);
+			// A machine the vendor failed, gone or stopped in its words: the create stops in them, not at createMs.
+			if (machine?.why !== undefined && (machine.state === "gone" || machine.state === "stopped")) return this.#fail("vendor", `${this.#label} could not start ${ref.name}: ${machine.why}`);
 			if (machine === undefined || machine.state === "gone") return this.#fail("gone", `${ref.name} was gone before it ran`);
 			if (machine.state !== "starting") return ok(machine);
 			if (Date.now() + this.#startPollMs() >= until) return this.#fail("timeout", `${ref.name} did not start within ${seconds(this.#timeouts.createMs)}`);

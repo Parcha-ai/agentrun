@@ -14,6 +14,7 @@ import { KERNEL } from "./kernel.js";
 import { LOCAL } from "./local-chrome.js";
 import { MODAL } from "./modal.js";
 import { MORPH } from "./morph.js";
+import { NORTHFLANK } from "./northflank.js";
 import { ORGO } from "./orgo.js";
 import { PHONE_HARNESS } from "./phone-harness.js";
 import { RENDER } from "./render.js";
@@ -21,9 +22,9 @@ import { SMOLCLOUD } from "./smolcloud.js";
 import { SPRITES } from "./sprites.js";
 import { VERCEL } from "./vercel.js";
 
-export const DESCRIPTORS = [DOCKER, DAYTONA, MODAL, E2B, AGENT37, MORPH, CLOUDFLARE, FLY, RENDER, ORGO, PHONE_HARNESS, BROWSERBASE, KERNEL, LOCAL, BOXD, SMOLCLOUD, GROUNDBOX, VERCEL, SPRITES, INSTABOX] as const;
+export const DESCRIPTORS = [DOCKER, DAYTONA, MODAL, E2B, AGENT37, MORPH, CLOUDFLARE, FLY, RENDER, ORGO, PHONE_HARNESS, BROWSERBASE, KERNEL, LOCAL, BOXD, SMOLCLOUD, GROUNDBOX, VERCEL, SPRITES, INSTABOX, NORTHFLANK] as const;
 
-export { AGENT37, BOXD, BROWSERBASE, CLOUDFLARE, DAYTONA, DOCKER, E2B, FLY, GROUNDBOX, INSTABOX, KERNEL, LOCAL, MODAL, MORPH, ORGO, PHONE_HARNESS, RENDER, SMOLCLOUD, SPRITES, VERCEL };
+export { AGENT37, BOXD, BROWSERBASE, CLOUDFLARE, DAYTONA, DOCKER, E2B, FLY, GROUNDBOX, INSTABOX, KERNEL, LOCAL, MODAL, MORPH, NORTHFLANK, ORGO, PHONE_HARNESS, RENDER, SMOLCLOUD, SPRITES, VERCEL };
 export { AGENT37_BASE_TEMPLATE } from "./agent37.js";
 export { BOXD_DEFAULT_IMAGE } from "./boxd.js";
 export { GROUNDBOX_OWN_IMAGE } from "./groundbox.js";

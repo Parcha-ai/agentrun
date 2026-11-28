@@ -488,31 +488,60 @@ test('the scan stays linear on a long line of host characters and still finds an
   assert.ok(receipt.findings.some(finding => finding.path === 'docs/host.md' && finding.rule === 'internal_domain'));
 });
 
-test('a Northflank docs URL in the provider scorecard is a reviewed citation; the domain anywhere else still blocks', async t => {
+test('Northflank\'s public API host, docs and pricing are reviewed in the Northflank provider\'s own files; any other form, or any other file, still blocks', async t => {
   const f = await fixture(t);
   // Built from parts so this file carries none of the internal domains it tests.
   const northflank = ['northflank', 'com'].join('.');
+  const codeRun = ['code', 'run'].join('.');
+  const tsNet = ['ts', 'net'].join('.');
   const scorecard = 'packages/computer/SCORECARD.md';
-  await f.write(scorecard, `exec ([execute command](https://${northflank}/docs/v1/api/execute-command.md)), sandboxes ([cloud](https://${northflank}/docs/v1/application/sandboxes))\n`);
-  await f.run();
-  const passed = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
-  assert.deepEqual(passed.findings, []);
-  assert.deepEqual(passed.reviewedFindings.map(finding => [finding.path, finding.rule, finding.reason]), [[scorecard, 'internal_domain', 'public vendor documentation citation']]);
+  const own = [
+    'packages/computer/src/northflank.ts',
+    'packages/computer/src/conformance/northflank.ts',
+    'packages/computer/test/northflank-provider.test.mjs',
+    'packages/computer/test/fake-northflank.mjs',
+    'packages/computer/README.md',
+    scorecard,
+    'packages/computer/PROVIDERS.md',
+  ];
+  const publicUrls = [
+    `the API (https://api.${northflank}/v1, a Bearer token)\n`,
+    `export const DEFAULT_API_URL = "https://api.${northflank}";\n`,
+    `the exec socket (\`wss://api.${northflank}/v1/command-exec/projects/{project}/services/{service}\`)\n`,
+    `[sandboxes](https://${northflank}/docs/v1/application/sandboxes) and [exec](https://${northflank}/docs/v1/api/execute-command.md)\n`,
+    `plans: https://${northflank}/pricing.\n`,
+  ];
+  const receipt = async () => JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  for (const path of own) {
+    for (const text of publicUrls) {
+      await f.write(path, text);
+      await f.run();
+      const passed = await receipt();
+      assert.deepEqual(passed.findings, [], `${path}: ${text}`);
+      assert.deepEqual(passed.reviewedFindings.map(finding => [finding.path, finding.rule]), [[path, 'internal_domain']], `${path}: ${text}`);
+      await rm(join(f.root, path));
+    }
+  }
   const blocking = [
-    [scorecard, `pricing: https://${northflank}/pricing\n`],
-    [scorecard, `an app URL: https://app.${northflank}/docs/v1/api\n`],
-    [scorecard, `[docs](https://${northflank}/docs/v1/api) and the console at ${northflank}\n`],
-    [scorecard, `a service at build-box.${['code', 'run'].join('.')}\n`],
-    [scorecard, `a box at build-box.example.${['ts', 'net'].join('.')}\n`],
-    ['packages/computer/PROVIDERS.md', `see https://${northflank}/docs/v1/api/execute-command.md\n`],
+    ...own.flatMap(path => [
+      [path, `a service at build-box.${codeRun}\n`],
+      [path, `the console: https://app.${northflank}/t/my-team/project/sandboxes\n`],
+      [path, `the console at app.${northflank}/t/my-team\n`],
+      [path, `[docs](https://${northflank}/docs/v1/api) and the console at ${northflank}\n`],
+      [path, `the API at https://api.${northflank}.example.test/v1\n`],
+      [path, `an api host by plain http: http://api.${northflank}\n`],
+      [path, `the blog: https://${northflank}/blog/sandboxes\n`],
+      [path, `a box at build-box.example.${tsNet}\n`],
+    ]),
+    ['packages/computer/src/e2b.ts', `const API = "https://api.${northflank}";\n`],
+    ['packages/serve/src/computer-keys.ts', `// https://api.${northflank}/v1\n`],
     ['docs/vendors.md', `see https://${northflank}/docs/v1/application/sandboxes\n`],
   ];
   for (const [path, text] of blocking) {
-    await f.write(scorecard, '# Provider scorecard\n');
     await f.write(path, text);
-    await assert.rejects(f.run(), /Source export blocked/, text);
-    const blocked = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
-    assert.deepEqual(blocked.findings.map(finding => [finding.path, finding.rule]), [[path, 'internal_domain']], text);
+    await assert.rejects(f.run(), /Source export blocked/, `${path}: ${text}`);
+    const blocked = await receipt();
+    assert.deepEqual([...new Set(blocked.findings.map(finding => `${finding.path} ${finding.rule}`))], [`${path} internal_domain`], `${path}: ${text}`);
     await rm(join(f.root, path));
   }
 });

@@ -16,7 +16,7 @@ import { checkMount, readBackOf, WORKSPACE, type MountSpec } from "@parcha/agent
 
 The package root holds the protocol, the registry and the descriptors, and loads no provider: a provider loads by its
 id (`providerFor(id, options)`, which imports that one provider's file), or from its subpath (`/docker`, `/daytona`,
-`/modal`, `/e2b`, `/orgo`, `/orgo-desktop`, `/phone-harness`, `/browserbase`, `/kernel`, `/local-chrome`, `/boxd`, `/smolcloud`, `/groundbox`, `/vercel`, `/sprites`, `/instabox`). A provider's
+`/modal`, `/e2b`, `/orgo`, `/orgo-desktop`, `/phone-harness`, `/browserbase`, `/kernel`, `/local-chrome`, `/boxd`, `/smolcloud`, `/groundbox`, `/vercel`, `/sprites`, `/instabox`, `/northflank`). A provider's
 option types (`DockerProviderOptions`, `ModalProviderOptions` and the like) come from its subpath too, not the root.
 
 The package carries the daemon for Linux amd64 and arm64 in `dist/`, so a provider runs it with no Go on the host. A
@@ -691,6 +691,7 @@ live under:
   | `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` | Vercel Sandbox's `token`, `teamId` and `projectId`, all required |
   | `SPRITES_TOKEN` | Fly Sprites' `token`: the name Fly's own CLI reads |
   | `INSTABOX_API_KEY` | InstaBox's `apiKey`: the name InstaBox's own CLI and SDK read |
+  | `NORTHFLANK_API_TOKEN`, `NORTHFLANK_COMPUTER_PROJECT_ID`, `NORTHFLANK_COMPUTER_TEAM_ID` | Northflank's `token` (the name Northflank's own client reads), `projectId` (required, no default) and `teamId` (an organisation token's alone) |
 
 - **the conformance CLI and the live harness** (`src/conformance/`: the CLI, each provider's conformance module and the
   sweeps) read their own `COMPUTER_<ID>_*` names, the ones the live scripts set, through each module's
@@ -3460,6 +3461,52 @@ Unverified until the live run: the gateway taking the token as the username with
 ssh2 verifies, whose sha256 is `hostKeyFingerprint`; a taken name answering 409; a deleted machine reading 404 or a
 `deleted` record; sshd's port 22 being the one vendor listener; `minimal` being on every paid plan; the 8 KiB metadata
 bound counting compact JSON; a silent SSH channel holding 75 s; and root making a network namespace.
+
+## Northflank
+
+```ts
+import { providerFor } from "@parcha/agentrun-computer";
+
+// The token and the project are the caller's to pass (serve's NORTHFLANK_API_TOKEN and NORTHFLANK_COMPUTER_PROJECT_ID).
+const northflank = await providerFor("northflank", { token, projectId });
+const image = await northflank.prepareImage();
+const made = await northflank.create({ image: image.value, lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
+```
+
+A Northflank computer is a [Northflank sandbox](https://northflank.com/docs/v1/application/sandboxes): a service in your
+own project, on Northflank's cloud a Kata microVM, from the box image's public tag (`prepareImage()`, no call) or the
+spec's image, its command `sleep infinity`. The project is required and has no default; `teamId` is for an organisation
+token alone. It is a sandbox alone for now: no desktop and no Archil mount. Northflank runs on the shared machine-host
+adapter ([PROVIDERS.md](PROVIDERS.md)): `src/northflank.ts` is its `MachineHost`, over the Northflank API
+(`https://api.northflank.com/v1`, `Authorization: Bearer <token>`) with `fetch`, the shared REST client and Node's
+`WebSocket` (no SDK).
+
+| MachineHost | Northflank |
+| --- | --- |
+| `create` | `POST .../projects/{project}/services/deployment` with the request's name, the plan of its size, the image as `external.imagePath` under `/bin/sh -c 'exec sleep infinity'`, one instance, the packed labels as the workload's annotations and `createOptions.expiryTime` at the backstop (300 s to 7 days); then `POST .../services/{name}/scale` to one instance; the name is the id. A scale that fails deletes the service before create answers, and where that delete fails too create answers `vendor`, so the adapter sweeps the name |
+| `get` | `GET .../services/{id}`: `PENDING` and `IN_PROGRESS` are starting, `COMPLETED` running; `FAILED`, one past its expiry (`expiredAt`) or one in a status it doesn't know is stopped, with the reason, so it stays listed and the janitor deletes it; a 404 is none |
+| `list` | `GET .../services`, every page, the `computer-` services kept (and the asked name alone when one is asked), each read by `get` for its annotations, which the listing lacks. That read answers the adapter's own read of each listed computer once, within 2 s, so a sweep reads each computer once; a create or delete drops it |
+| `delete` | `DELETE .../services/{id}`, a 404 done |
+| `exec` | the command-exec WebSocket (`wss://api.northflank.com/v1/command-exec/projects/{project}/services/{id}`) through `framedExec`: an `init` message with the token and argv (no shell, root, `latin1`, no tty), stdin as `payload` messages and its end as `stdInEnd`, `stdOut` and `stdErr` bytes as latin1 strings, the exit from `completion` once the socket closes or 30 s after the last output; `kill` is the shared pid wrapper's, Northflank having none |
+
+An organisation token's paths start `/v1/teams/{team}/projects/...`. No `upload` and no `extend` (the janitor moves the
+deadline label, 7 days at most; past the backstop Northflank pauses the service and schedules its deletion). `check()`
+takes a registry image reference and the plans' sizes: 1 vCPU with 2048 MB, 2 with 4096, 4 with 8192, 8 with 16384, one
+alone taking the other's match. The adapter reads status every 2 s, since a token has 1000 requests an hour. A 409 on
+create is `exists`; a 429 a `limit`.
+
+The conformance module, `dist/conformance/northflank.js`, checks `AGENTRUN_COMPUTER_LIVE_NORTHFLANK=1` first, then reads
+`COMPUTER_NORTHFLANK_TOKEN` (`token`) and `COMPUTER_NORTHFLANK_PROJECT_ID` (`projectId`), both required, and
+`COMPUTER_NORTHFLANK_TEAM_ID`, `COMPUTER_NORTHFLANK_API_URL`, `COMPUTER_NORTHFLANK_DAEMON` and
+`COMPUTER_NORTHFLANK_IMAGE` (the run's image, default the box image), never `NORTHFLANK_API_TOKEN`, `NF_API_TOKEN`,
+`NF_PROJECT_ID` (which Northflank injects into its own services) or `NORTHFLANK_PROJECT_ID`. Every computer of a run
+lives at most 30 minutes.
+
+Unverified until the live run: latin1 carrying every byte both ways; the exec socket holding 75 s of silence with no
+ping; output trailing the `completion` message, and the socket closing after it; the exec user root being root; a taken
+name answering 409; a service's id being its name; the annotations read back on `get` as given; the quickstart's scale
+call after create being needed or harmless; a deleted service answering 404; amd64, with no vendor agent on TCP; and
+root making a network namespace.
 
 ## Conformance
 
