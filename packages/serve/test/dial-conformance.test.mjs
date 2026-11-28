@@ -259,13 +259,15 @@ test("a request target no URL parses (//[/) is refused, a socket's and a plain r
 
 test("nothing runs until AGENTRUN_PUBLIC_URL reaches the script: an address still answered by another process (a host's previous instance) is waited out", { skip: BUILT, timeout: 120_000 }, async () => {
   const port = await freePort();
-  // The public address, as a host that picks an instance per connection moves it over: the first four connections that
-  // ask GET /v2/health stay with the previous instance, which answers every request on them with its own /v2/health (no
-  // run id) and keeps them open, so an ask that kept one alive would never reach the script; every other connection goes
-  // to the script as is (the machine's daemon fetch with its token, and its attach socket). A connection is routed by its
-  // first request, not by its order: the front listens on an ephemeral port, where a stray connection from another
-  // process on a busy machine (one that dials a port its own server left) could otherwise take one of the four, and
-  // the script would then count fewer answers from another than it was given.
+  // The public address, as a host that picks an instance per connection moves it over: the first four connections whose
+  // first request is the script's ask (GET /v2/health with cache-control: no-store, as reachesThisRun asks) stay with the
+  // previous instance, which answers every request on them with its own /v2/health (no run id) and keeps them open, so an
+  // ask that kept one alive would never reach the script; every other connection goes to the script as is (the machine's
+  // daemon fetch with its token, and its attach socket). A connection is routed by its first request, not by its order:
+  // the front listens on an ephemeral port, where a stray client on a busy machine (a daemon of another suite redialing a
+  // port its server left, saying GET / as Go-http-client) could otherwise take one of the four, and the script would then
+  // count fewer answers from another than it was given.
+  const isAsk = (head) => head.startsWith("GET /v2/health HTTP/1.1\r\n") && /\r\ncache-control: no-store\r\n/i.test(head.slice(0, head.indexOf("\r\n\r\n") + 2));
   let stale = 0;
   // Every connection the front took, ended with it: one that never sends a request holds no close open.
   const taken = new Set();
@@ -278,7 +280,8 @@ test("nothing runs until AGENTRUN_PUBLIC_URL reaches the script: an address stil
       said += chunk.toString("latin1");
       if (!said.includes("\r\n\r\n")) return;
       socket.off("data", first);
-      if (said.startsWith("GET /v2/health ") && ++stale <= 4) {
+      if (stale < 4 && isAsk(said)) {
+        stale += 1;
         const old = (more) => {
           said += more;
           for (; said.includes("\r\n\r\n"); said = said.slice(said.indexOf("\r\n\r\n") + 4)) socket.write('HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 15\r\nconnection: keep-alive\r\n\r\n{"status":"ok"}');
