@@ -3311,8 +3311,9 @@ What Vercel refuses or this host works around:
 
 - Tags are 5 at most, a value 256 characters at most, so the labels are packed into them (`facts.labels.packed`).
 - The log stream answers from the command's start each time it is read, so a stream that drops while the command runs
-  is read again with the characters already given each stream skipped. An `error` line is the command's end in
-  Vercel's words; ten failed reads in a row end it too.
+  is read again with the characters already given each stream skipped. A stream can also end before the command's
+  last write, so once the command read finds it exited, the stream is read once more. An `error` line is the
+  command's end in Vercel's words; ten failed reads in a row end it too.
 - Images come from Vercel Container Registry alone (`check()` refuses another registry's path), as `linux/amd64`
   builds, and Sandbox never runs an image's `ENTRYPOINT`. A create before the image is ready answers
   `image_not_ready`, read as `timeout`.
