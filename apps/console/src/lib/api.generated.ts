@@ -1016,6 +1016,7 @@ export interface components {
     }[];
     input?: Record<string, unknown> | null;
     file_ids?: string[];
+    warnings?: components["InputIssue"][];
     claim?: {
       runner: string;
       epoch: number;

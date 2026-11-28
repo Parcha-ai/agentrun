@@ -1,5 +1,5 @@
-// The console's real-browser flows, in the order they run. A flow is
-// { name, run, server?, origin?, allow?, shares?, signedIn?, pending? }:
+// The console's real-browser flows, in the order they start (several run at once: run.mjs --lanes) and report. A flow is
+// { name, run, server?, origin?, allow?, shares?, signedIn?, alone?, pending? }:
 //   run({ server, context, page, errors, blocked, origin, base, api })
 //                                                            drives the page; throws on what it finds wrong. `base` is
 //                                                            `origin`; `api(method, path, body?)` calls /v2 with the
@@ -11,7 +11,11 @@
 //   shares                                                   it can run against a server already running (run.mjs --url);
 //                                                            or a function of the run's { setupCodeFile } saying so
 //   signedIn                                                 the page starts signed in (the owner set first if it has none)
+//   alone                                                    why it cannot run beside another flow: it runs after the
+//                                                            rest, by itself
 //   pending                                                  what the flow waits on; it doesn't run until then
+// Flows run at once share this process, the one browser (each its own context) and the machine: a flow keeps its state
+// in its own server, context and temp dirs, never in process.env or a fixed path.
 import connectGitHub from "./connect-github.mjs";
 import githubTrigger from "./github-trigger.mjs";
 import setupOpen from "./setup-open.mjs";

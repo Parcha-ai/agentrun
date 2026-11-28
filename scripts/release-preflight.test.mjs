@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fold } from './changes.mjs';
-import { checkManifest, checkNotice, checkPublished, noticeAppendices, checkReleaseAudit, checkReleaseDispatch, checkReleaseTree, heldPackages, listedPackages, ownVersionPackages, releaseLayers, releasePackages, releasePackageNames, releasePreflight } from './release-preflight.mjs';
+import { checkManifest, launcherPins, checkNotice, checkPublished, noticeAppendices, checkReleaseAudit, checkReleaseDispatch, checkReleaseTree, heldPackages, listedPackages, ownVersionPackages, releaseLayers, releasePackages, releasePackageNames, releasePreflight } from './release-preflight.mjs';
 
 const exec = promisify(execFile);
 const version = '0.1.0-beta.1';
@@ -423,7 +423,7 @@ test('a package on its own version line is checked, named and published at its o
   await assert.rejects(preflight(root), /Package versions must match the workspace version/);
 }));
 
-test('npx @parcha/agentrun installs the server it was released with: its one dependency is @parcha/agentrun-serve at the release version', () => fixture(async root => {
+test('npx @parcha/agentrun installs the server it was released with: @parcha/agentrun-serve at the release version, and nothing else but its pi pins', () => fixture(async root => {
   const pinned = manifest('agentrun');
   assert.doesNotThrow(() => checkManifest(pinned, 'agentrun', '0.3.0', 'MIT', version));
   for (const dependencies of [undefined, { '@parcha/agentrun-serve': '0.1.0-beta.0' }, { '@parcha/agentrun-serve': `^${version}` }, { '@parcha/agentrun-serve': 'latest' }, { '@parcha/agentrun-serve': version, 'left-pad': '1.0.0' }]) {
@@ -434,9 +434,45 @@ test('npx @parcha/agentrun installs the server it was released with: its one dep
   await putJson(join(root, 'packages', 'agentrun', 'package.json'), { ...pinned, dependencies: { '@parcha/agentrun-serve': '0.1.0-beta.0' } });
   await recordPackages(root);
   await assert.rejects(preflight(root), /@parcha\/agentrun must depend on @parcha\/agentrun-serve at the release version 0\.1\.0-beta\.1/);
-  // This repository's own command pins its own server.
+  // This repository's own command pins its own server, and the pi packages the server takes by a range at the versions
+  // this repository installs.
   const workspace = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
-  checkManifest(repoManifest('agentrun'), 'agentrun', repoManifest('agentrun').version, workspace.license, workspace.version);
+  const lock = JSON.parse(readFileSync(new URL('../package-lock.json', import.meta.url), 'utf8')).packages;
+  checkManifest(repoManifest('agentrun'), 'agentrun', repoManifest('agentrun').version, workspace.license, workspace.version, launcherPins(repoManifest('serve'), lock));
+}));
+
+test('npx @parcha/agentrun pins each pi package the server takes by a range, at the version the lockfile installs', () => fixture(async root => {
+  const lock = { 'node_modules/@earendil-works/pi-ai': { version: '1.5.2' }, 'node_modules/@earendil-works/pi-durable': { version: '1.5.2' } };
+  const peers = { '@earendil-works/pi-ai': '*', '@earendil-works/pi-durable': '1.5.2', 'opencode-ai': '1.19.5' };
+  // A ranged pi peer is pinned at the lock's version; an exact one installs as it is, and a peer outside pi is not ours to pin.
+  assert.deepEqual(launcherPins({ peerDependencies: peers }, lock), { '@earendil-works/pi-ai': '1.5.2' });
+  assert.deepEqual(launcherPins({ peerDependencies: { ...peers, '@earendil-works/pi-ai': '^1.5.0' } }, lock), { '@earendil-works/pi-ai': '1.5.2' });
+  assert.deepEqual(launcherPins({}, lock), {});
+  assert.throws(() => launcherPins({ peerDependencies: peers }, {}), /@earendil-works\/pi-ai is a peer of @parcha\/agentrun-serve at \*, and package-lock\.json installs no @earendil-works\/pi-ai/);
+  assert.throws(() => launcherPins({ peerDependencies: peers }, undefined), /package-lock\.json installs no @earendil-works\/pi-ai/);
+
+  const pins = { '@earendil-works/pi-ai': '1.5.2' };
+  const pinned = { ...manifest('agentrun'), dependencies: { '@parcha/agentrun-serve': version, ...pins } };
+  assert.doesNotThrow(() => checkManifest(pinned, 'agentrun', '0.3.0', 'MIT', version, pins));
+  // The pin missing, at another version than the lock's (the newest, which npm would take), or as a range: each refused.
+  for (const piAi of [undefined, '1.7.0', '*', '^1.5.2']) {
+    const dependencies = { '@parcha/agentrun-serve': version, ...(piAi ? { '@earendil-works/pi-ai': piAi } : {}) };
+    assert.throws(() => checkManifest({ ...pinned, dependencies }, 'agentrun', '0.3.0', 'MIT', version, pins),
+      /@parcha\/agentrun must depend on @parcha\/agentrun-serve at the release version 0\.1\.0-beta\.1 and on @earendil-works\/pi-ai at 1\.5\.2, and on nothing else/, String(piAi));
+  }
+
+  // On the tree: the server takes pi-ai at "*", the lockfile installs 1.5.2, and the command pins another: the release stops.
+  const serve = JSON.parse(await readFile(join(root, 'packages', 'serve', 'package.json'), 'utf8'));
+  await putJson(join(root, 'packages', 'serve', 'package.json'), { ...serve, peerDependencies: { '@earendil-works/pi-ai': '*' } });
+  await putJson(join(root, 'package-lock.json'), { lockfileVersion: 3, packages: { 'node_modules/@earendil-works/pi-ai': { version: '1.5.2' } } });
+  await putJson(join(root, 'packages', 'agentrun', 'package.json'), { ...pinned, dependencies: { '@parcha/agentrun-serve': version, '@earendil-works/pi-ai': '1.7.0' } });
+  await recordPackages(root);
+  await assert.rejects(preflight(root), /@parcha\/agentrun must depend on @parcha\/agentrun-serve at the release version 0\.1\.0-beta\.1 and on @earendil-works\/pi-ai at 1\.5\.2, and on nothing else/);
+  // The lockfile moved to 1.7.0 and the command did not: refused the same way, naming the lock's version.
+  await putJson(join(root, 'package-lock.json'), { lockfileVersion: 3, packages: { 'node_modules/@earendil-works/pi-ai': { version: '1.7.0' } } });
+  await putJson(join(root, 'packages', 'agentrun', 'package.json'), pinned);
+  await recordPackages(root);
+  await assert.rejects(preflight(root), /and on @earendil-works\/pi-ai at 1\.7\.0, and on nothing else/);
 }));
 
 test('the browser package is published: listed, not held, a release manifest at the workspace version, and in the plan after jev', () => fixture(async root => {

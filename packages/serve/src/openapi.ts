@@ -4385,6 +4385,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "runinput/1",
     },
     file_ids: { type: "array", items: { type: "string" }, description: "On the run read, never a list's: the uploaded files the run was started with (RunCreate `file_ids`), in order; empty for none.", "x-agentrun-serve": "runinput/1" },
+    warnings: { type: "array", items: ref("schemas/InputIssue"), description: "On a create's answer alone (POST /agents/{agent_id}/runs, POST /runs), never a read's: what the run's start lacks, the run started all the same. `file_ids` (reason `no_file_tool`): its files are attached, but its agent has no tool that reads files (read, bash), so its model is told their names and can't open them.", "x-agentrun-serve": "runwarnings/1" },
     claim: {
       type: ["object", "null"],
       additionalProperties: false,

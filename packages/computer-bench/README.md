@@ -46,7 +46,7 @@ Checks, each `{id, kind, why}` plus its fields, all read through the protocol on
 
 | kind | reads | passes when |
 | --- | --- | --- |
-| `exec` | `exec.run` `argv` | `exit` (default [0]), and `stdout`/`stderr` match |
+| `exec` | `exec.run` `argv` | `exit` (default [0]), and `stdout`/`stderr` match; an exit code in `infra` means it could not run (infra, never a fail) |
 | `file` | `files.read` `path` | `exists`, and `text` matches |
 | `ui` | `ui.observe` (full) of `app` | between `min` and `max` nodes match `find` (`role`, `name`, `value`, `flags`) |
 | `app` | `apps.list` | `front` is in front, or `installed` is installed |
@@ -205,6 +205,12 @@ arm, the route mix, the passes that ran a program, the failure loci, and what wa
 | [osworld-pilot](suites/osworld-pilot/PORT.md) | 15 (all held out) | ported from OSWorld-Verified (Apache-2.0): 10 terminal tasks, a git push, 2 VS Code text tasks in Mousepad and 2 Chrome settings tasks in Firefox, on a Linux desktop (five more were dropped after a live verify, see PORT.md); its `arms.json` is the Sonnet 5.5 against GPT-6.1 Terra pilot on E2B; verify live decides its oracles |
 
 Each suite's README says which tasks are proven only on the fake and which wait on a live run.
+
+`scripts/port-osworld.mjs` ports OSWorld-Verified mechanically instead of by hand: from an OSWorld checkout and the
+file cache's tree it writes one folder per task the bench desktop image can run (`task.json`, and `osworld.json`, the
+task's own JSON with every download and gold pinned to a revision and a sha256), whose setup and check run OSWorld's own
+SetupController, getters and metrics through osw (`image/osw/osw.py`), and a `PORT.md` that gives each refused task its
+reason. `port-osworld.mjs sums` fetches the sha256 of each file the cache keeps outside LFS, checked against its git oid.
 
 ## Arms
 

@@ -64,6 +64,7 @@ import { FAUX_EXA_ENV, FAUX_FIRECRAWL_ENV, FAUX_WEB_ENV, withHeld } from "./web-
 import { FAUX_MONID_ENV, MONID_KEY_ENV, monidReads, pinMonid, PRICED_BY_USAGE } from "./monid.js";
 import { FAUX_BROWSER_ENV, NODE_TOOLS, shellTools, toolingOf, toolOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, sentence, unsupported } from "./errors.js";
+import { opensFiles, unreadFilesWarning } from "./run-manifest.js";
 import { deref, explain } from "./explain.js";
 import { HOME_HOST_OWNED } from "./files.js";
 import { DATA_ENV, syncDir, TOKEN_FILE, writeDurable } from "./server-fs.js";
@@ -4730,7 +4731,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if (first) {
         if (first.existing?.fingerprint !== origin.fingerprint) throw mismatch();
         const headers: Record<string, string> = { location: `/v2/runs/${first.runId}`, "idempotent-replayed": "true" };
-        return { status: 202, body: await viewOverStore(store, first.runId, viewDepsFor(linkOrigin(req))), headers };
+        return { status: 202, body: await withFileWarning(await viewOverStore(store, first.runId, viewDepsFor(linkOrigin(req))), first.runId, body.file_ids), headers };
       }
       const secrets = await handed(runIn);
       const seal = startSeal(secrets);
@@ -4738,7 +4739,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // idempotency fingerprint stays the body's as sent.
       const run = await startRunOf(entry, cutHanded(body, handedSecretValues(secrets)), { ...(origin ? { origin } : {}), ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets) });
       // Its view from the store: the run and its launch were inserted in one transaction, so the view reads it whole.
-      return { status: 202, body: await viewOverStore(store, run.id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${run.id}` } };
+      return { status: 202, body: await withFileWarning(await viewOverStore(store, run.id, viewDepsFor(linkOrigin(req))), run.id, body.file_ids), headers: { location: `/v2/runs/${run.id}` } };
     });
   }
 
@@ -4787,15 +4788,30 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if (first) {
         if (first.existing?.fingerprint !== origin.fingerprint) throw mismatch();
         const headers: Record<string, string> = { location: `/v2/runs/${first.runId}`, "idempotent-replayed": "true" };
-        return { status: 202, body: await viewOverStore(store, first.runId, viewDepsFor(linkOrigin(req))), headers };
+        return { status: 202, body: await withFileWarning(await viewOverStore(store, first.runId, viewDepsFor(linkOrigin(req))), first.runId, run.file_ids), headers };
       }
       // An inline agent already stored is in its own workspace: its runs call that workspace's servers.
       const secrets = await handed(mapped ? ((await store.agents.workspace(mapped.id)) ?? null) : undefined);
       const seal = startSeal(secrets);
       // What the server writes of the start (its input, which the run's title is read from) is cut of what it hands.
       const started = await startInline(store, startDeps, inline, cutHanded(run, handedSecretValues(secrets)), { ...(origin ? { origin } : {}), ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets) });
-      return { status: 202, body: await viewOverStore(store, started.id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${started.id}` } };
+      return { status: 202, body: await withFileWarning(await viewOverStore(store, started.id, viewDepsFor(linkOrigin(req))), started.id, run.file_ids), headers: { location: `/v2/runs/${started.id}` } };
     });
+  }
+
+  /** A run create's answer (`view`, the run as read): with what its start lacks in `warnings`, where `fileIds` (the body's
+   *  file_ids) names files and the run's revision grants no tool that reads them (run-manifest.ts opensFiles). The run
+   *  starts all the same, its model told the files' names only; a replay under the same key answers the same. */
+  async function withFileWarning(view: Record<string, unknown> | undefined, runId: string, fileIds: unknown): Promise<Record<string, unknown> | undefined> {
+    if (!view || !Array.isArray(fileIds) || fileIds.length === 0) return view;
+    const row = await store.runs.get(runId);
+    const revision = row ? await store.agents.revision(row.revisionId) : undefined;
+    const body = revision?.body as { tools?: readonly unknown[]; harness?: string; toolSettings?: Parameters<typeof permissionFrom>[2] } | undefined;
+    // A reader whose permission in force is deny (the agent's setting or this server's) reads nothing, as the run's gate refuses it.
+    const server = settings.get() as Parameters<typeof permissionFrom>[1];
+    const denied = (tool: string) => permissionFrom(tool, server, body?.toolSettings ?? {}).permission === "deny";
+    if (!revision || opensFiles(revision.kind, body?.tools, harnessOf(env, harnessOfBody(body ?? {}))?.promises?.tool_gate, denied)) return view;
+    return { ...view, warnings: [unreadFilesWarning()] };
   }
 
   /** An inline run's `external`, field by field: its source and kind (no colon, which the reference's key splits on), its

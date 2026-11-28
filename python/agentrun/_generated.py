@@ -5983,6 +5983,7 @@ class Run(_RunRequired, total=False):
     recordings: list[RunRecordingsItem]
     input: dict[str, Any] | None
     file_ids: list[str]
+    warnings: list[InputIssue]
     claim: RunClaim | None
     computer: RunComputer
     learning: RunLearning | None

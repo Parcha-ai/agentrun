@@ -27,7 +27,7 @@ import { dropLiveViewer, putLiveViewer } from "../browser-live.js";
 import { liveForRun, type RunnerLive, runnerLiveOf } from "../live-reach.js";
 import { llmTiers, type ModelRef, nodeTiers, type PinnedModel, type Tier, thinkingLevel, TIERS, tierModelOf, workflowNodes } from "../model.js";
 import { heldRefusedProvider } from "../provider.js";
-import { firstMessage, inputMessage, messageText } from "../run-manifest.js";
+import { firstMessage, inputMessage, messageText, opensFiles } from "../run-manifest.js";
 import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
 import { isWebHostTool } from "../tool-list.js";
@@ -1048,7 +1048,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // The person's first message: the start body's content, with the run's file manifest beside it (run-manifest.ts), read
   // through the run's Workspace (Mode 2: its inputs/ on the disk, never a folder of this machine).
   // A typed input's other fields follow its content as one json block (inputMessage).
-  const input = await firstMessage(inputMessage(launch.input), ws.workspace);
+  // An agent with no tool that reads files is told its files are out of its reach (opensFiles).
+  const input = await firstMessage(inputMessage(launch.input), ws.workspace, undefined, opensFiles(revision.kind, granted, undefined, (tool) => gate.permissions.policy(tool) === "deny"));
 
   // The run's end-of-run step, when it learns (learningEndOfRun from the launch's learning start; none otherwise): the
   // compile turn and the owner's correction over the run's store, asked in the end turn while the claim is held

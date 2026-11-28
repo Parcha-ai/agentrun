@@ -120,6 +120,9 @@ test("a start that fails to listen sends no key check: the check starts only onc
   withEnv(t, { BROWSERBASE_API_KEY: wrong(), BROWSERBASE_PROJECT_ID: "proj-1" }, KEYS);
   const { createServer } = await import("node:net");
   const taken = createServer();
+  // A process on the box GETs / on each new loopback listener (fixtures/stranger.mjs); a connection kept open here would
+  // hold the close below until the test's timeout, so this port drops each one as it comes.
+  taken.on("connection", (socket) => socket.destroy());
   await new Promise((go) => taken.listen(0, "127.0.0.1", go));
   t.after(() => new Promise((go) => taken.close(go)));
   const before = bbCalls.length;

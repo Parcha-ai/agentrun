@@ -95,10 +95,17 @@ function agentsOwn(computer: RunComputer | undefined): RunComputer | undefined {
 
 /** The run's folder `workspace` attached to the computer `claimed`, as runHands attaches it, when that computer mounts the
  *  folder; undefined when none does. For what the runner itself writes in a Mode 2 run's folder while the computer's mount
- *  holds the disk's write delegation (run-child-host.ts, the claim's MCP). */
-export async function attachedIn(workspace: Workspace, claimed: RunComputer | undefined): Promise<Workspace | undefined> {
-  const mounted = mountedIn(agentsOwn(claimed));
-  return mounted === undefined ? undefined : await workspace.attach(mounted.computer, mounted.check);
+ *  holds the disk's write delegation (run-child-host.ts, the claim's MCP). `signal`: the claim's, which cuts the attach
+ *  (its mount's read-back) so a provider that never answers holds no runner's close. */
+export async function attachedIn(workspace: Workspace, claimed: RunComputer | undefined, signal?: AbortSignal): Promise<Workspace | undefined> {
+  // The attach cut by the claim's `signal` (claimCut), its read-back among it; what the Workspace does after it is not.
+  const cut = claimCut(claimed, signal);
+  try {
+    const mounted = mountedIn(agentsOwn(cut.computer));
+    return mounted === undefined ? undefined : await workspace.attach(mounted.computer, mounted.check);
+  } finally {
+    cut.release();
+  }
 }
 
 /** Whether a computer's tool is bound for a script's nested calls alone (deferred: never listed to the model) under
@@ -113,8 +120,8 @@ function scriptsOnly(name: string, surface: AgentComputer["surface"]): boolean {
  *  the agent's ask for the person (`handoff`, computer_request_handoff's port), through the same hold. */
 export type RunHold = (ports: Pick<Hands, "computer">) => Pick<Hands, "computer" | "handoff">;
 
-/** `claimed` with its computer's calls cut by the claim's `signal` until `release(then)` (computer-calls.ts
- *  claimCutClient): a run stopped for the runner's shutdown, or whose claim was lost, ends a call to a daemon that never
+/** `claimed` with its computer's calls, its mount's read-back among them, cut by the claim's `signal` until
+ *  `release(then)` (computer-calls.ts claimCutClient): a run stopped for the runner's shutdown, or whose claim was lost, ends a call to a daemon that never
  *  answers (its start's attach and scratch folder, a tool's file call) instead of holding the runner's close for its
  *  whole window, while its end (RunTools.end) runs past the claim's signal, cut by the end's own (`then`: at the close's
  *  releaseBy), so the claim's release after it lands in the close's window. As it is with no signal, and for a browser,
@@ -122,7 +129,10 @@ export type RunHold = (ports: Pick<Hands, "computer">) => Pick<Hands, "computer"
 function claimCut(claimed: RunComputer | undefined, signal: AbortSignal | undefined): { readonly computer: RunComputer | undefined; release(then?: AbortSignal): void } {
   if (signal === undefined || claimed === undefined || claimed.kind === "browser") return { computer: claimed, release: () => {} };
   const cut = claimCutClient(claimed.computer.client, signal);
-  return { computer: { ...claimed, computer: { ...claimed.computer, client: cut.client } } as RunComputer, release: cut.release };
+  const own = claimed.computer;
+  // The mount's read-back (the provider's read of the machine, the attach's check) is cut by it too.
+  const readBack = "readBack" in own ? { readBack: (options?: { readonly signal?: AbortSignal }) => own.readBack({ signal: options?.signal ? AbortSignal.any([options.signal, cut.signal]) : cut.signal }) } : {};
+  return { computer: { ...claimed, computer: { ...own, client: cut.client, ...readBack } } as RunComputer, release: cut.release };
 }
 
 /** The computer the run's folder is attached to, with its check: a sandbox, or a desktop with files and exec whose
