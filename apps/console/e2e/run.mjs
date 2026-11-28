@@ -14,11 +14,12 @@
 // context in the one browser, and must end within FLOW_MS. A flow marked pending names what it waits on and does not run.
 // Results print in the flows' order once all have ended. Exits 1 when a flow fails; a failure prints the server's output,
 // keys redacted.
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { promiseHooks } from "node:v8";
-import { apiOf, attachServer, flowScope, launchBrowser, newContext, newPage, owner, ROOT, signIn, startServer, STOP_MS, strayed } from "./harness.mjs";
+import { apiOf, attachServer, DRAIN_MS, flowScope, launchBrowser, newContext, newPage, owner, ROOT, signIn, startServer, STOP_MS, strayed } from "./harness.mjs";
 import { flows } from "./flows/index.mjs";
 
 const FLOW_MS = 60_000;
@@ -38,7 +39,10 @@ const lanes = values.url ? 1 : Number(values.lanes ?? LANES);
 const only = values.only ? new Set(values.only.split(",").map((s) => s.trim())) : null;
 const checkout = values.checkout ?? ROOT;
 const chosen = flows.filter((f) => !only || only.has(f.name));
-if (only) for (const name of only) if (!flows.some((f) => f.name === name)) { console.error(`no flow named ${name}`); process.exit(2); }
+/** The harness's own stop (harness-stop.test.mjs): a server drained inside STOP_MS, never killed. It starts its own
+ *  server from the checkout, so it runs with a checkout target and not with --url; with --only, only when named. */
+const STOP_CHECK = "harness-stop";
+if (only) for (const name of only) if (name !== STOP_CHECK && !flows.some((f) => f.name === name)) { console.error(`no flow named ${name}`); process.exit(2); }
 
 const within = (promise, ms, what) => {
   let timer;
@@ -110,22 +114,26 @@ async function runFlow(flow) {
       result = failed(error);
     } finally {
       await context?.close().catch(() => {});
-      // The server stops while the next flow starts: one with a run still in its turn waits out its drain (up to the
-      // harness's SIGKILL at 10 s), and nothing of the next flow is its. Results print once every one has stopped, and
-      // a stop that failed (the server would not die, left a process running, or its directory stayed) fails its flow.
-      // One that had to be killed (SIGKILL) passes, and is reported with its flow and counted.
+      // The server stops while the next flow starts: one with a run still in its turn waits out its drain (DRAIN_MS,
+      // inside the harness's SIGKILL at STOP_MS), and nothing of the next flow is its. Results print once every one has stopped, and
+      // a stop that failed (the server would not die, left a process running, or its directory stayed) fails its flow,
+      // as does one that had to be killed (SIGKILL): a run left in its turn outlasted the server's drain (DRAIN_MS).
       if (server) stopping.push(server.stop().then((how) => { if (how?.killed) killed = how.pid; }, (error) => { unstopped = error; }));
       running.delete(self);
     }
   });
   // One that comes after it passed (while it was closed, or later in the run), fails it too, as does a server that did
-  // not stop: read once all have ended and stopped.
+  // not stop or had to be killed: read once all have ended and stopped.
   return () => {
     const r = result.state === "PASS" && strays.length ? { ...failed(strays[0]), ms: result.ms } : result;
     const k = killed ? { killed } : {};
-    if (!unstopped) return { ...r, ...k };
-    const note = `its server did not stop: ${unstopped.message}`;
-    return r.state === "PASS" ? { ...failed(unstopped), note, ms: r.ms } : { ...r, note: `${r.note}\n${note}` };
+    const why = [
+      ...(unstopped ? [`its server did not stop: ${unstopped.message}`] : []),
+      ...(killed ? [`its server (pid ${killed}) was still running ${STOP_MS / 1000} s after SIGTERM and was killed (SIGKILL): a run left in its turn kept it draining (the harness passes --drain-timeout ${DRAIN_MS / 1000}s, which a flow's own server args may override)`] : []),
+    ];
+    if (!why.length) return r;
+    const note = why.join("\n");
+    return r.state === "PASS" ? { ...failed(new Error(note)), note, ms: r.ms, ...k } : { ...r, note: `${r.note}\n${note}`, ...k };
   };
 }
 
@@ -146,19 +154,28 @@ const inLanes = async (list, n) => {
     while (next < list.length) { const i = list[next++]; ended[i] = await runFlow(chosen[i]); }
   }));
 };
+// The stop check first, alone, on the same checkout as the flows: its result is one more row.
+const stopCheck = values.url || (only && !only.has(STOP_CHECK)) ? [] : [await new Promise((resolve) => {
+  const began = Date.now();
+  let out = "";
+  const child = spawn(process.execPath, ["--test", fileURLToPath(new URL("./harness-stop.test.mjs", import.meta.url))], { env: { ...process.env, AGENTRUN_E2E_CHECKOUT: checkout }, stdio: ["ignore", "pipe", "pipe"] });
+  child.stdout.on("data", (chunk) => { out += chunk; });
+  child.stderr.on("data", (chunk) => { out += chunk; });
+  child.on("close", (code, signal) => resolve(code === 0 ? { name: STOP_CHECK, state: "PASS", ms: Date.now() - began } : { name: STOP_CHECK, state: "FAIL", ms: Date.now() - began, note: `node --test harness-stop.test.mjs exited ${code ?? signal}`, log: out }));
+})];
 await inLanes(queued.together, lanes);
 await inLanes(queued.alone, 1);
 await Promise.all(stopping);
 await browser.close();
-const results = ended.map((result) => result());
+const results = [...stopCheck, ...ended.map((result) => result())];
 
 for (const r of results) {
   console.log(`${r.state.padEnd(7)} ${r.name}${r.ms !== undefined ? ` (${(r.ms / 1000).toFixed(1)} s)` : ""}${r.state === "PENDING" || r.state === "SKIP" ? `: ${r.note}` : ""}`);
   if (r.state === "FAIL") console.log(`  ${r.note.replaceAll("\n", "\n  ")}\n  -- the server's output --\n  ${(r.log ?? "").replaceAll("\n", "\n  ")}`);
 }
 const count = (s) => results.filter((r) => r.state === s).length;
-// A server still running STOP_MS after SIGTERM (a run left in its turn, draining) was killed: the flow passes, but no
-// kill goes unsaid.
+// A server still running STOP_MS after SIGTERM (a run left in its turn, draining past DRAIN_MS) was killed: its flow
+// failed above, and each kill is said here too, with its flow and its server.
 const STOP_S = STOP_MS / 1000;
 const kills = results.filter((r) => r.killed);
 for (const r of kills) console.log(`KILLED  ${r.name}: its server (pid ${r.killed}) was still running ${STOP_S} s after SIGTERM and was killed (SIGKILL)`);

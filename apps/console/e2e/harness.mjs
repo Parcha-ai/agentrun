@@ -37,6 +37,16 @@ const redact = (line) => line.replace(/(AGENTRUN_API_KEY=)\S+/g, "$1<redacted>")
  *  has to be gone. */
 export const STOP_MS = 10_000;
 const KILLED_MS = 5_000;
+/** What a stopped server is given after its drain: its runs still in their turn stopped where they resume, and the server
+ *  closed. 4 s because it is the image's own margin: its CMD's --drain-timeout 6s inside Docker's 10 s grace, the same
+ *  10 s as STOP_MS (packages/serve/docker/Dockerfile). The stop after the drain takes about 0.2 s here
+ *  (harness-stop.test.mjs). */
+const AFTER_DRAIN_MS = 4_000;
+/** How long a stopped server lets a run still in its turn finish it (--drain-timeout) before it stops it to resume: inside
+ *  STOP_MS with what the stop takes after it, so a stop with a run in its turn is a drain, never the SIGKILL at STOP_MS.
+ *  The server's own default (30 s, for a person's machine with no grace to keep to) outlasts STOP_MS. A flow's own
+ *  --drain-timeout (its server's `args`) wins over it. */
+export const DRAIN_MS = STOP_MS - AFTER_DRAIN_MS;
 /** How long the processes a server started have to go once it has exited, before they count as left running. */
 const LEFT_MS = 2_000;
 /** The servers' process groups not yet stopped, each to its directory: killed, and the directory removed, when this
@@ -76,7 +86,7 @@ export async function startServer({ env = {}, faux = "faux-model.mjs", fauxBrows
   const dir = mkdtempSync(join(tmpdir(), "agentrun-e2e-"));
   const home = join(dir, "home");
   mkdirSync(home, { recursive: true });
-  const command = [join(checkout, "packages/serve/dist/cli.js"), "--data", join(dir, "data"), "--port", String(port), "--listen", LOOPBACK, ...(faux ? ["--faux", fixture(faux, checkout)] : []), ...(fauxBrowser ? ["--faux-browser", fixture(fauxBrowser, checkout)] : []), ...args];
+  const command = [join(checkout, "packages/serve/dist/cli.js"), "--data", join(dir, "data"), "--port", String(port), "--listen", LOOPBACK, ...(faux ? ["--faux", fixture(faux, checkout)] : []), ...(fauxBrowser ? ["--faux-browser", fixture(fauxBrowser, checkout)] : []), "--drain-timeout", `${DRAIN_MS}ms`, ...args];
   // Detached: the server leads a process group of its own, so what it starts can be found, and killed, with it.
   const child = spawn(process.execPath, command, {
     detached: true,
@@ -119,7 +129,7 @@ export async function startServer({ env = {}, faux = "faux-model.mjs", fauxBrows
       void exited.then(({ code, signal }) => { if (waiters.delete(w)) { clearTimeout(timer); reject(new Error(`the server exited (${signal ?? code}) before printing a line matching ${re}`)); } });
     });
   };
-  /** Stops it as a person does (SIGTERM: it drains its runs and exits), killing its process group at STOP_MS. Resolves to
+  /** Stops it as a person does (SIGTERM: it drains its runs for DRAIN_MS and exits), killing its process group at STOP_MS. Resolves to
    *  its pid and whether it had to be killed (SIGKILL) for the caller to report; refused
    *  when it is still running KILLED_MS after that, when it exits leaving a process of its group running (killed then),
    *  or when its directory cannot be removed: a stop that did not happen is never taken for one that did. */
