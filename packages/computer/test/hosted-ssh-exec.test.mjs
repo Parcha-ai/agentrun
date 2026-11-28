@@ -1,11 +1,14 @@
 // The shared SSH exec (src/hosted/ssh-exec.ts): the login is the host's, and no error carries its secrets. Its
-// connections, channels and kills are tested through Agent37's host, against a real sshd (agent37-provider.test.mjs).
+// connections, channels and kills are tested through Agent37's host, against a real sshd (agent37-provider.test.mjs);
+// the host-key pin here, against the same sshd.
 import assert from "node:assert/strict";
 import { generateKeyPairSync, verify } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { connect } from "node:net";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import ssh2 from "ssh2";
+import { fakeSshd, fingerprintOf, keyPair } from "./fake-agent37.mjs";
 
 const { SshExec, pemOf } = await import("../dist/hosted/ssh-exec.js");
 const { redact } = await import("../dist/hosted/process.js");
@@ -44,6 +47,30 @@ test("an SshExec logs in as the host gives (a username carrying a key, Morph's),
 	// A password login: the password never shows either.
 	const password = new SshExec({ ssh2: echoingSsh2([]), loginOf: () => ({ username: "root", password: SECRET }), tunnelOf });
 	await assert.rejects(password.exec("m2", ["true"], { timeoutMs: 2_000 }), { message: "authentication as root with [redacted] failed" });
+});
+
+test("a login's hostKey pins the sshd by its sha256: the right one runs; another fails the handshake in ssh2's words, once, the login never sent", async (t) => {
+	const sshd = await fakeSshd({ accept: () => true });
+	t.after(() => sshd.close());
+	let tunnels = 0;
+	const loopback = () => {
+		tunnels++;
+		const socket = connect(sshd.port, "127.0.0.1");
+		socket.on("error", () => {});
+		return { duplex: socket, opened: new Promise((resolve, reject) => socket.once("connect", resolve).once("error", reject)), host: `127.0.0.1:${sshd.port}` };
+	};
+	const pinned = (hostKey) => new SshExec({ ssh2, loginOf: () => ({ username: "u", hostKey }), tunnelOf: loopback });
+	const right = pinned(fingerprintOf(sshd.hostKey));
+	const proc = await right.exec("m1", ["echo", "pinned"], { timeoutMs: 5_000 });
+	assert.equal(Buffer.concat(await proc.stdout.toArray()).toString("utf8"), "pinned\n");
+	assert.equal(await proc.wait(), 0);
+	right.closeAll("m1");
+	const logins = sshd.state.logins;
+	tunnels = 0;
+	const wrong = pinned(fingerprintOf(keyPair().public));
+	await assert.rejects(wrong.exec("m1", ["true"], { timeoutMs: 5_000 }), (error) => /verification failed/.test(error.message));
+	assert.equal(tunnels, 1, "a host key that is not the pinned one is not tried again");
+	assert.equal(sshd.state.logins, logins, "no login reached the impostor");
 });
 
 test("redact takes every secret out of words, the longest first, and skips an empty or missing one", () => {

@@ -154,10 +154,11 @@ export function fakeRest({ key = KEY, settleMs = 0 } = {}) {
  * connection takes MAX_SESSIONS sessions at once and refuses the next, as OpenSSH's sshd does by default (MaxSessions).
  * refuseSessions(n) refuses the next n session channels besides, dropAll() cuts every connection from the server's
  * side, and close() ends them all, then the server. accept(ctx), when given, decides each login in place of the one
- * key as root (Morph's gateway: its own username, any key); run(command, stream), when given, may answer a command
- * itself (true), in place of bash. authorized(id), when given, is the public lines instance id's sshd takes as root now
- * (fakeRest's authorizedFor: the workspace's registered keys), the instance named by the client's port in routes, which
- * fakeWebSocket fills; state.denied counts the logins refused.
+ * key as root (Morph's gateway: its own username, any key); run(command, stream, { username }), when given, may answer
+ * a command itself (true), in place of bash, told the user the connection logged in as. authorized(id), when given, is
+ * the public lines instance id's sshd takes as root now (fakeRest's authorizedFor: the workspace's registered keys), the
+ * instance named by the client's port in routes, which fakeWebSocket fills; state.denied counts the logins refused.
+ * hostKey is the server's host key, its OpenSSH public line, which a client pins by its sha256 (fingerprintOf).
  */
 export async function fakeSshd({ publicKey, accept, run, authorized, routes }) {
 	const host = keyPair();
@@ -169,12 +170,14 @@ export async function fakeSshd({ publicKey, accept, run, authorized, routes }) {
 	const server = new Server({ hostKeys: [host.private] }, (client, info) => {
 		clients.add(client);
 		state.live++;
+		let username;
 		client.on("close", () => {
 			clients.delete(client);
 			state.live--;
 		});
 		client.on("error", () => {});
 		client.on("authentication", (ctx) => {
+			username = ctx.username;
 			if (accept !== undefined) return accept(ctx) ? ctx.accept() : ctx.reject(["publickey"]);
 			const key = ctx.method === "publickey" ? ctx.key : undefined;
 			const takes = authorized === undefined ? [allowed] : authorized(routes?.get(info.port)).map((line) => utils.parseKey(line));
@@ -203,7 +206,7 @@ export async function fakeSshd({ publicKey, accept, run, authorized, routes }) {
 				session.on("exec", (acceptExec, _reject, { command }) => {
 					commands.push(command);
 					const stream = acceptExec();
-					if (run?.(command, stream)) return;
+					if (run?.(command, stream, { username })) return;
 					const child = spawn("bash", ["-c", command], { detached: true, stdio: ["pipe", "pipe", "pipe"] });
 					children.add(child);
 					child.stdout.pipe(stream, { end: false });
@@ -242,6 +245,7 @@ export async function fakeSshd({ publicKey, accept, run, authorized, routes }) {
 	};
 	return {
 		port: server.address().port,
+		hostKey: host.public,
 		commands,
 		state,
 		refuseSessions: (count) => (state.refusing = count),
