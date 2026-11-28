@@ -26,8 +26,9 @@ export const namesPaired = (setting: object | undefined): setting is { readonly 
 };
 
 /** Why an agent in a workspace (workspace-scope.ts) can't have the paired computer `provider`: a paired computer is a
- *  machine of this server's own, never a workspace's. Its save is refused in these words, and its run's claim too. */
-export const scopedPairedWords = (provider: string): string => `${provider} is a computer paired with this server, which an agent in a workspace can't use: pick one GET /v2/computers lists`;
+ *  machine of this server's own, never a workspace's. Its save is refused in these words, and its run's claim too. The
+ *  words point at what a workspace is served (its capabilities' kinds), never at GET /v2/computers, the operator's list. */
+export const scopedPairedWords = (provider: string): string => `${provider} is a computer paired with this server, which an agent in a workspace can't use: name a provider of this server's own for one of the kinds GET /v2/capabilities offers it (features.computers.kinds), never one whose id begins with ${PAIRED_ID_PREFIX}`;
 
 /** The image a paired computer's spec names: none is made, so this only says what it is. */
 export const ATTACHED_IMAGE = "attached";
