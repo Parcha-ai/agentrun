@@ -1,13 +1,15 @@
 // Jev setups (decide/setup.ts): what the decide layer does with Jev's scores. "shipped" is the default and answers as the
 // decide layer did before setups existed. "top2-best300-found5" keeps Jev's two most relevant search results whole, shows
 // each later one only its passage Jev scores most relevant (300 characters at most), and shows a fetch's objective 5
-// found chunks instead of 8.
+// found chunks instead of 8. "top3-best300-found8" keeps Jev's three most relevant whole, the same passage pick for each
+// later one, and shows a fetch's objective 8 found chunks, as shipped does.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as web from "../dist/index.js";
 import { decideSteps, decideWeb, pagesOf, PUBLIC, scoringProvider, TASK } from "./fixtures/decide-runs.mjs";
 
 const TRIM = "top2-best300-found5";
+const TOP3 = "top3-best300-found8";
 const withSetup = (provider, name) => ({ ...web.deciderFrom(provider, { price: { requestUsd: 0.0002 } }), ...(name ? { setup: web.JEV_SETUPS?.[name] } : {}) });
 const jev = (provider) => ({ key: "k", jevProvider: () => provider, price: { requestUsd: 0 } });
 
@@ -33,7 +35,7 @@ test("jevWebDecider takes a setup by name; an unknown name is refused, naming th
   const made = web.jevWebDecider(jev(scoringProvider().provider), TRIM);
   assert.equal(made.setup?.name, TRIM);
   assert.equal(made.decider.setup, web.JEV_SETUPS?.[TRIM]);
-  assert.throws(() => web.jevWebDecider(jev(scoringProvider().provider), "nope"), /no Jev setup "nope": one of shipped, top2-best300-found5/);
+  assert.throws(() => web.jevWebDecider(jev(scoringProvider().provider), "nope"), /no Jev setup "nope": one of shipped, top2-best300-found5, top3-best300-found8/);
 });
 
 test("shipped answers, writes for the model and records byte for byte as a decider with no setup", async () => {
@@ -76,6 +78,33 @@ test("top2-best300-found5 search: a snippet that fits in one passage stays whole
   const fell = await web.siftSearch(withSetup(flaky, TRIM), search, { policy: "rerank+label" });
   for (const r of fell.answer.results.slice(2)) assert.ok(r.snippet.startsWith("Alpha opens here") && r.snippet.length <= 301, r.snippet);
   assert.match(fell.answer.sift, /past the first 2, a result shows only the start of its text: web_fetch its url to read it/);
+});
+
+test("top3-best300-found8 is Jev's top 3 whole, each later result its best passage of at most 300 characters, and a fetch's 8 found chunks", () => {
+  assert.deepEqual(web.JEV_SETUPS?.[TOP3], { name: TOP3, search: { full: 3, cut: 300, pick: "best" }, fetch: { found: 8 } });
+  assert.ok(Object.isFrozen(web.JEV_SETUPS[TOP3]) && Object.isFrozen(web.JEV_SETUPS[TOP3].search) && Object.isFrozen(web.JEV_SETUPS[TOP3].fetch));
+  assert.equal(web.JEV_SETUPS[TOP3].fetch.found, web.JEV_SETUPS.shipped.fetch.found, "the fetch step as shipped");
+});
+
+test("top3-best300-found8 search: Jev's top 3 whole; the 2 later results their best-scored passage, url, title and relevance kept; one judge request per cut result", async () => {
+  const { answer, classifier } = await web.siftSearch(withSetup(scoringProvider(SCORES).provider, TOP3), search, { policy: "rerank+label" });
+  assert.deepEqual(answer.results.map((r) => r.url), [2, 4, 3, 5, 1].map((i) => `https://r.example/${i}`));
+  assert.deepEqual(answer.results.slice(0, 3).map((r) => r.snippet), [EXCERPTS, EXCERPTS, EXCERPTS]);
+  for (const r of answer.results.slice(3)) {
+    assert.ok(r.snippet.startsWith("… Bravo holds the answer") && r.snippet.endsWith(" …"), r.snippet);
+    assert.ok(r.snippet.length <= 300 + 4, `${r.snippet.length} characters`);
+    assert.ok(r.title && r.url && typeof r.relevance === "number");
+  }
+  assert.match(answer.sift, /past the first 3, a result shows only its passage most relevant to the search: web_fetch its url to read it/);
+  assert.equal(classifier.requests, 3, "the sift, and one judge request for each of the 2 cut results");
+});
+
+test("top3-best300-found8 fetch: an objective shows 8 found chunks, as shipped does", async () => {
+  const objective = "Where is Widgets, Inc. registered?";
+  const top3 = await decideWeb({ decider: withSetup(scoringProvider().provider, TOP3), send: { parallel: pagesOf(MANY) } }).fetch(PUBLIC, { objective, task: TASK });
+  const shipped = await decideWeb({ decider: withSetup(scoringProvider().provider, "shipped"), send: { parallel: pagesOf(MANY) } }).fetch(PUBLIC, { objective, task: TASK });
+  assert.equal(top3.answer.found?.length, 8);
+  assert.deepEqual(top3.answer.found, shipped.answer.found);
 });
 
 test("top2-best300-found5 fetch: an objective shows 5 found chunks where shipped shows 8", async () => {
