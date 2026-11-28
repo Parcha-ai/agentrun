@@ -2,7 +2,8 @@
 // fetch in the OpenAPI's shapes, the proxy's TCP tunnel as a WebSocket, and the sandbox's sshd as ssh2's own Server on
 // loopback, taking as tl-user the key the last ssh/enable named. What Tensorlake's host decides is tested here: the
 // create's body, the name that carries the run, the epoch and the deadline, the labels file written and read through the
-// processes API, get's states, list's filter and its fail-closed reads, delete, the error codes, the SSH enable and the
+// processes API, get's states, list's filter and its fail-closed reads, delete, a run's end and the janitor's sweep by
+// the labels in the names, the error codes, the SSH enable and the
 // host-key pin, an exec's frames and kill through the tunnel, the bounds on each call, check()'s refusals, the exec
 // pre-check, and the provider's Core conformance cases. The adapter's lifecycle is tested once, against its fake host
 // (hosted-provider.test.mjs); Tensorlake's own is proven live.
@@ -11,6 +12,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { releaseOlder, sweep } from "../dist/index.js";
 import * as registry from "../dist/providers.js";
 import { fingerprintOf, keyPair } from "./fake-agent37.mjs";
 import { fakeHost } from "./fake-host.mjs";
@@ -358,6 +360,40 @@ test("delete deletes by id and lets go; a sandbox gone is done (a 404); the prov
 	assert.equal(kept.rest.calls.at(-1).method, "GET", "the last call is the read-back after the delete");
 });
 
+// --- a run's end and the janitor ---
+
+test("a run's end (releaseOlder at its claim's epoch + 1) deletes the run's sandboxes another process made, by their run and epoch, and is fenced by a later claim's; the janitor's sweep deletes a sandbox past the deadline its name carries and keeps one before it", async () => {
+	const { rest, provider } = restOnly();
+	const soon = new Date(Date.now() + 60_000).toISOString();
+	const later = new Date(Date.now() + 3_600_000).toISOString();
+	const made = async (computer, run, epoch, deadline) => {
+		const file = labelsOf({ "agentrun.computer.name": computer, "agentrun.computer.deadline": deadline, "agentrun.run": run, "agentrun.epoch": epoch });
+		return { name: computer, id: await madeElsewhere(rest, nameOf({ computer, run, epoch, deadline }), { file }) };
+	};
+	const e1 = await made("computer-0000000000e1", "run-1", "1", later);
+	const e2 = await made("computer-0000000000e2", "run-1", "2", later);
+	const e3 = await made("computer-0000000000e3", "run-1", "3", later);
+	const due = await made("computer-0000000000a1", "run-2", "1", soon);
+	const live = await made("computer-0000000000a2", "run-3", "1", later);
+	const stranger = await madeElsewhere(rest, "a-sandbox-of-the-project", {});
+	const status = (id) => rest.sandboxes.get(id).sandbox.status;
+
+	const fenced = await releaseOlder(provider, "run-1", 2);
+	assert.equal(fenced.ok, false);
+	assert.match(fenced.error.message, /^fenced: /, "the end of claim 1, with claims 2 and 3 there");
+	assert.deepEqual([e1, e2, e3].map(({ id }) => status(id)), ["running", "running", "running"], "a fenced end deletes nothing");
+
+	const ended = await releaseOlder(provider, "run-1", 4);
+	assert.equal(ended.ok, true, JSON.stringify(ended.error));
+	assert.deepEqual(ended.value.released.map(({ name }) => name).sort(), [e1.name, e2.name, e3.name], "the end of claim 3: every claim's at or below it");
+	assert.deepEqual([e1, e2, e3].map(({ id }) => status(id)), ["terminated", "terminated", "terminated"]);
+
+	const swept = await sweep(provider, { now: new Date(Date.now() + 120_000) });
+	assert.equal(swept.ok, true, JSON.stringify(swept.error));
+	assert.deepEqual(swept.value.deleted, [due.name], "past the deadline in its name: deleted");
+	assert.deepEqual([status(due.id), status(live.id), status(stranger)], ["terminated", "running", "running"], "before its deadline, or not a computer: left");
+});
+
 // --- exec over SSH ---
 
 test("exec enables SSH once for this process's key as tl-user through the sandbox's proxy, opens the proxy's TCP tunnel to port 22 with the key and the sandbox id, pins the host key it names, and runs argv with stdin, stdout, stderr and the exit code", async (t) => {
@@ -385,7 +421,8 @@ test("an sshd whose host key is not the one the enable named is refused in the h
 	const pin = rest.ssh.fingerprint;
 	rest.ssh.fingerprint = fingerprintOf(keyPair().public);
 	await assert.rejects(host.exec(id, ["true"], CTX), (error) => /verification failed/.test(error.message));
-	assert.equal(fake.sshd.state.logins, 0);
+	assert.equal(fake.sshd.state.logins, 0, "no login reached the sshd");
+	assert.deepEqual(fake.sshd.commands, [], "no command reached the sshd");
 	const fresh = new TensorlakeProvider({ ...fake.options, timeouts: { pollMs: 1 } }).host;
 	rest.ssh.fingerprint = null;
 	assert.deepEqual(await run(fresh, id, ["echo", "ok"]), { code: 0, stdout: "ok\n", stderr: "" }, "no fingerprint named: no pin");
