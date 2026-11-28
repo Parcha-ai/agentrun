@@ -415,7 +415,7 @@ test("exec enables SSH once for this process's key as tl-user through the sandbo
 	assert.equal(enables(rest)[1].body.proxy_pubkey, enable.body.proxy_pubkey);
 });
 
-test("an sshd whose host key is not the one the enable named is refused in the handshake, before any login; an enable that names none pins nothing; one of another form, or not enabled, is the vendor's", async (t) => {
+test("an sshd whose host key is not the one the enable named is refused in the handshake, before any login; one of another form, or not enabled, is the vendor's", async (t) => {
 	const { fake, rest, host } = await setup(t);
 	const { id } = await host.create(request(), CTX);
 	const pin = rest.ssh.fingerprint;
@@ -423,9 +423,6 @@ test("an sshd whose host key is not the one the enable named is refused in the h
 	await assert.rejects(host.exec(id, ["true"], CTX), (error) => /verification failed/.test(error.message));
 	assert.equal(fake.sshd.state.logins, 0, "no login reached the sshd");
 	assert.deepEqual(fake.sshd.commands, [], "no command reached the sshd");
-	const fresh = new TensorlakeProvider({ ...fake.options, timeouts: { pollMs: 1 } }).host;
-	rest.ssh.fingerprint = null;
-	assert.deepEqual(await run(fresh, id, ["echo", "ok"]), { code: 0, stdout: "ok\n", stderr: "" }, "no fingerprint named: no pin");
 	for (const bad of [`MD5:${"ab:".repeat(15)}ab`, `${pin}=`, 42, ""]) {
 		rest.ssh.fingerprint = bad;
 		const one = new TensorlakeProvider({ ...fake.options, timeouts: { pollMs: 1 } }).host;
@@ -436,6 +433,27 @@ test("an sshd whose host key is not the one the enable named is refused in the h
 	const off = new TensorlakeProvider({ ...fake.options, timeouts: { pollMs: 1 } }).host;
 	await assert.rejects(off.exec(id, ["true"], CTX), (error) => error.code === "vendor" && /SSH is not enabled: false/.test(error.message));
 	assert.deepEqual(await run(off, id, ["echo", "ok"]), { code: 0, stdout: "ok\n", stderr: "" }, "a failed enable is let go: the next exec enables again");
+});
+
+test("an enable that names no host key is refused as the vendor's before any tunnel opens: no exec runs through an sshd it can't pin, and a create, whose daemon start is an exec, fails", async (t) => {
+	const { fake, rest, host } = await setup(t);
+	const { id } = await host.create(request(), CTX);
+	rest.ssh.fingerprint = null;
+	await assert.rejects(host.exec(id, ["true"], CTX), (error) => error.code === "vendor" && /no host key/.test(error.message));
+	assert.deepEqual(fake.ws.opened, [], "no tunnel opened");
+	assert.equal(fake.sshd.state.logins, 0, "no login reached the sshd");
+	assert.deepEqual(fake.sshd.commands, [], "no command reached the sshd");
+
+	const machines = fakeHost();
+	const daemon = await setup(t, { backend: machines.host }, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	daemon.rest.ssh.fingerprint = null;
+	const made = await daemon.provider.create({ image: IMAGE, lifetimeMs: 600_000, network: "none" }, { requestId: "tensorlake-no-pin" });
+	assert.equal(made.ok, false, "the create fails");
+	assert.match(made.error.message, /no host key/);
+	assert.deepEqual(daemon.fake.ws.opened, [], "no tunnel opened for the create");
+	assert.equal(daemon.fake.sshd.state.logins, 0, "no login reached the create's sshd");
+	assert.deepEqual(daemon.fake.sshd.commands, [], "no command reached the create's sshd");
+	assert.deepEqual(machines.uploads, [], "no daemon went up");
 });
 
 test("a login the sshd refuses (another key enabled since) lets the enable go and enables again, once, and the exec runs; two execs refused at once share the one enable in its place", async (t) => {
