@@ -82,7 +82,7 @@ const timer = setInterval(() => {
 		const containers = items.filter((line) => line.startsWith("c ")).map((line) => line.slice(2));
 		const volumes = items.filter((line) => line.startsWith("v ")).map((line) => line.slice(2));
 		// One command each, not one per item: docker rm removes the containers it names at once, so a pass takes about as
-		// long as the slowest removal, not their sum. It fails when any is already gone; the look after it says what is left.
+		// long as the slowest removal, not their sum. The look after it, by name, says what is left.
 		if (containers.length > 0) docker(["rm", "--force", "--volumes", ...containers]);
 		if (volumes.length > 0) docker(["volume", "rm", "--force", ...volumes]);
 		const absent = items.every((line) => !docker(line.startsWith("c ") ? ["inspect", "--type", "container", line.slice(2)] : ["volume", "inspect", line.slice(2)]));
