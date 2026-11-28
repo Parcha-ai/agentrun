@@ -262,6 +262,27 @@ test("at run time a workspace's own server under the mode is held to the stricte
   assert.equal(network.dialled.length, dialled, "nothing dialled");
 });
 
+test("rebinding inside one request at run time: a name that answers public to one lookup and inward to the next is dialled at the address its check saw, never at a second answer", async (t) => {
+  const fake = await startFakeMcp();
+  t.after(() => fake.close());
+  let flip = false;
+  const answers = [];
+  const network = routed({ "flip.example.test": () => { flip = !flip; const answer = flip ? [PUBLIC] : ["10.20.30.40"]; answers.push(answer[0]); return answer; } }, { "flip.example.test": fake.url.replace(/\/mcp$/, "") });
+  const { store, dir, registry } = await registryOn(t, network);
+  const url = "https://flip.example.test/mcp";
+  await savedInW1(registry, "srv", url);
+  const { call } = await w1Run(t, store, dir, network, "srv", url);
+  const from = network.dialled.length;
+  const looked = answers.length;
+  for (const callId of ["call-1", "call-2", "call-3"]) {
+    const result = await call(callId);
+    assert.ok(result.text === "5" || (result.isError === true && /is a private address; refused\. Nothing was sent\.$/.test(result.text)), JSON.stringify(result));
+  }
+  assert.ok(answers.length > looked && answers.slice(looked).includes("10.20.30.40"), "the name answered inward during the run");
+  assert.ok(network.dialled.length > from, "the run dialled");
+  assert.deepEqual(network.dialled.slice(from).filter(([, address]) => address !== PUBLIC), [], "every dial went to the public address a check saw");
+});
+
 test("at run time the stricter rule is a workspace's mode server's alone: the owner's shared server on the same store, at a host the owner allows on a private network, is called there as before", async (t) => {
   const fake = await startFakeMcp();
   t.after(() => fake.close());
