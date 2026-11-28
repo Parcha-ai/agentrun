@@ -546,9 +546,12 @@ test("a workspace run's claim reads every server the owner saved for its Composi
     t.after(() => step.release());
     return step;
   };
+  const sent = composio.calls.length;
   const refused = await claimOf("run-owner");
+  assert.equal(composio.calls.length, sent, "the refused claim sent nothing to Composio");
   assert.match(refused.credentials.mail?.unopened ?? "", /owner calls as here/, `handed on as ${JSON.stringify(refused.credentials.mail?.query ?? null)}`);
   assert.equal(refused.credentials.mail.query, undefined, "nothing calls as the owner's user");
+  assert.equal(refused.credentials.mail.headers, undefined, "no key handed for its calls");
   const handed = await claimOf("run-theirs");
   assert.equal(handed.credentials.mail?.unopened, undefined, handed.credentials.mail?.unopened);
   assert.equal(handed.credentials.mail.query?.user_id, "u_1", "another user's binding is handed on");

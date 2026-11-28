@@ -68,6 +68,7 @@ import { type McpCredentials, type McpPin } from "../mcp-gateway.js";
 import { type PinListing, pinFirst } from "../mcp-pin-first.js";
 import { mcpNameOf } from "../tool-names.js";
 import { runMcp } from "../mcp-workspace.js";
+import { outsideWorkspace } from "../workspace-scope.js";
 import { composioEnvKey, composioMadeKey, composioPerRun, recordedMade } from "../composio-made.js";
 import { COMPOSIO_OWNERS_USER_WORDS, composioRunQuery } from "../composio-preset.js";
 import { META_REASON, metaToolOf } from "../mcp-meta.js";
@@ -469,9 +470,10 @@ export async function mcpClaim(given: McpClaimOptions): Promise<McpClaimStep> {
     if (!composioPerRun(row, await store.settings.get(composioMadeKey(name)))) return undefined;
     const given = await handed(name, row.url, "composio");
     if ("unopened" in given) return given;
-    // Every server the owner saved (`registry`), never the run's view: there a shared one under the name of the run's
-    // workspace's own server is hidden behind it, and its user is the owner's all the same.
-    const owners = await ownersComposioUsers(registry);
+    // Every server the owner saved, read from the registry as the start's check reads it (outside any workspace), never
+    // from the run's view: there a shared one under the name of the run's workspace's own server is hidden behind it, and
+    // its user is the owner's all the same.
+    const owners = await outsideWorkspace(() => ownersComposioUsers(registry));
     const apiOnly = (await heldApiOnlyMcpOrigins(store)) !== undefined;
     if (apiOnly ? ownersUser(owners, given.composio.user_id) : !bindingRuns(given.composio, owners)) return { unopened: apiOnly ? COMPOSIO_OWNERS_USER_WORDS : UNUSABLE.composioOwnersUser };
     return { query: composioRunQuery(given.composio) };
