@@ -88,7 +88,7 @@ async function call(cli, target, io, method, path, value, headers = {}) {
     ...cli.clientOf(target, io),
     refused: (response, bytes) => {
       const answer = parsed(bytes);
-      said = { status: response.status, code: answer?.error?.code ?? answer?.code ?? `http_${response.status}`, message: answer?.error?.message ?? answer?.message ?? `HTTP ${response.status}` };
+      said = { status: response.status, code: answer?.error?.code ?? answer?.code ?? `http_${response.status}`, message: answer?.error?.message ?? answer?.message ?? `HTTP ${response.status}`, reason: answer?.error?.details?.reason };
       return 1;
     },
   };
@@ -252,10 +252,13 @@ export const RACE_START = {
     const target = cli.targetOf(values, env);
     // What a new agent gets here: the server's tools for each harness, where its default place is, and the runner's shell.
     // Both are read before any lane starts, as the console's form waits for them: without the computers, a lane on the
-    // runner would start without the shell its runner runs.
+    // runner would start without the shell its runner runs. A server that does not serve its computers to a request in a
+    // workspace (403, reason not_scoped) runs no shell of its own for it: the lanes go on with none. Any other refusal of
+    // either read stops the race, in the server's words.
     for (const path of ["/capabilities", "/computers"]) {
       const read = await call(cli, target, io, "GET", path);
-      if (read.refused) throw cli.fail(1, `GET ${path}: ${read.refused.message}. No lane was started.`);
+      if (path === "/computers" && read.refused?.status === 403 && read.refused.reason === "not_scoped") continue;
+      if (read.refused) throw cli.fail(1, `GET ${path}: ${read.refused.message.replace(/\.$/, "")}. No lane was started.`);
       reads[path] = read.answer;
     }
     // Every lane at once, each on its own: one refused, or cut off, leaves the others started and every lane reported.
