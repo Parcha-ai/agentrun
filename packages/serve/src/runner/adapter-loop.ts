@@ -66,7 +66,7 @@ import { answerOnce, HAND_BACK, handBackOf } from "./hand-back.js";
 import { isComputerCommand, type JournalHold, journalHold } from "./computer-journal.js";
 import { type HeldSpec, isHeldCommand, type JournalHeld, journalHeld } from "./held-run.js";
 import { HELD_KIND, heldWords } from "../computer-held.js";
-import { CALL_KIND, CALL_MS, COMPUTER_CALL } from "../computer-channel.js";
+import { CALL_KIND, COMPUTER_CALL, callBudgetMs } from "../computer-channel.js";
 import { COMPUTER_CALLS, type ComputerCallRecord, recordingCalls } from "../computer-calls.js";
 import { channelCallOf, type LoopComputer, runChannelCall } from "./computer-channel.js";
 import type { ParkCause } from "../workspace/computer-kept.js";
@@ -1197,6 +1197,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** The current pass's spec's release, until it is called (closeSession). */
   let releaseNow: AdapterRunSpec["release"];
   const projectWork = new ProjectDrain();
+  /** Aborted when the run's end begins (writeEnd), after a stop that kept the computer has waited out its hold: an owner's
+   *  channel call still running is cut then, so the end, a project checkpoint's drain among it, never waits out a call's
+   *  own time, and a call that comes after it is refused. */
+  const callsEnd = new AbortController();
+  /** Channel calls in flight now: a call the end cuts may still be stopping on the computer (its client answers the
+   *  cancel at once), so an end that cut one keeps an uncertain project checkpoint rather than a snapshot. */
+  let liveCalls = 0;
   const projectCall = <T>(call: () => Promise<T>, strict = !!specNow?.projectCheckpoint): Promise<T> => strict ? projectWork.run(call) : call();
   /** The current pass ended in a park that keeps its computer (keepAtPark), for this cause, until its release reads it. */
   let parkedNow: ParkCause | undefined;
@@ -1510,7 +1517,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   const channelCommand = async (command: Command): Promise<CommandOutcome> => {
     await Promise.race([ready, (finished ?? new Promise<never>(() => {})).then(() => undefined, () => undefined)]);
     const [theGate, pass, theHeld] = [gate, channelNow, heldNow];
-    if (!theGate || theGate.sealed || projectWork.closed) return { refused: "The run's computer is not up now: the run is starting, parking or ending." };
+    if (!theGate || theGate.sealed || projectWork.closed || callsEnd.signal.aborted) return { refused: "The run's computer is not up now: the run is starting, parking or ending." };
     if (!pass) return { refused: specNow?.computer ? "The run's computer is not up now: the run is starting, parking or ending." : "This run has no computer that takes protocol calls: none, or a browser." };
     const refusal = theHeld?.refusesCall();
     if (refusal) return { refused: refusal };
@@ -1519,10 +1526,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     void (async () => {
       // The hold's idle count stands still while the call runs, and starts again when the last one ends.
       theHeld?.callStarted();
+      liveCalls += 1;
       let done: Awaited<ReturnType<typeof runChannelCall>>;
       try {
-        done = await projectCall(() => runChannelCall(pass.computer, call, AbortSignal.any([deps.signal, AbortSignal.timeout(CALL_MS)]), now));
+        done = await projectCall(() => runChannelCall(pass.computer, call, AbortSignal.any([deps.signal, AbortSignal.timeout(callBudgetMs(call))]), now, callsEnd.signal));
       } finally {
+        liveCalls -= 1;
         theHeld?.callEnded(now());
       }
       unsettledCalls.add(async () => {
@@ -4519,6 +4528,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         take = [...take, later.commandId];
       }
     }
+    const cutCalls = liveCalls > 0;
+    callsEnd.abort(new Error("the run ended before the call did"));
     // The end is the run's release: nothing of this claim lands after it, so the tool host is let go first (its writes in
     // their own commits, the end's patch reading the cost they book), and its requests' bookings come first.
     await releaseHost(on);
@@ -4529,10 +4540,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       const signal = AbortSignal.any([deps.signal, AbortSignal.timeout(project.timeoutMs ?? 60_000)]);
       try {
         await projectWork.close(signal);
+        // A channel call the end cut may still be writing on the computer: its outcome is unknown, so no snapshot.
         // Abort asks the bounded backend operations to stop; it is not evidence that they stopped. Keep the actual
         // capture promise through its cleanup before teardown/end. A capability that ignores cancellation leaves
         // this claim unresolved, never a published candidate or a falsely completed release.
-        projectCheckpoint = await project.capture(signal);
+        projectCheckpoint = cutCalls ? project.uncertain() : await project.capture(signal);
         signal.throwIfAborted();
       } catch { projectCheckpoint = project.uncertain(); }
     }

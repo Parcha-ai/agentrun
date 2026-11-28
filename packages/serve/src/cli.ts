@@ -42,7 +42,7 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
        agentrun-serve sign-in-harness --recipe FILE [--data DIR]
        agentrun-serve check-harness --recipe FILE [--model PROVIDER/MODEL] [--data DIR] [--report FILE] [--cap USD]
        agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL | --on-data DIR] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
-       agentrun-serve import [--data DIR] [--from claude-code,codex,pi,opencode,copilot] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
+       agentrun-serve import [--data DIR] [--from claude-code,codex,pi,opencode,copilot,cursor] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
        agentrun-serve learning connect|status|disconnect|retry --project PATH --runtime codex|claude-code [--url URL] [--data DIR] [--no-sync]
        agentrun-serve runner --data DIR [--loops N] [--drain-timeout D] [--name NAME]
        agentrun-serve runner --check --data DIR [--name NAME]
@@ -155,16 +155,17 @@ start: set it only on a machine you alone use, since loopback is this machine's 
 process reaches one only with the variable set in its own environment, on its own loopback (its own machine or
 container), never at a server's own port (${DEFAULT_PORT}, or where the server says it listens).
 
-\`agentrun-serve import\` reads the Claude Code, Codex, pi, OpenCode and Copilot CLI sessions in your own home
-(~/.claude/projects, ~/.codex/sessions, ~/.pi/agent/sessions, ~/.local/share/opencode, ~/.copilot/session-state) into
-the data directory, once: each project directory an agent, with its CLAUDE.md or AGENTS.md and its skill folders, and
-each session a run you can read but not continue. Nothing leaves this machine; the values of key-shaped environment
-variables are cut out of what is written. --dry-run lists what it would import; run again, it imports only what it has
-not. Sessions written in the last 10 minutes wait for the next import. What is left out is counted by why; --verbose
-lists each file. --include-deleted keeps projects whose directory is gone (a deleted worktree's); --all keeps those and
-temporary ones too. Each run keeps what its session used (tokens, requests, tools, time at work), priced at the
-catalog's list prices when its source did not price it. Both end with a summary of every session found, those imported
-before included, and the address to open the console at (--port as the server takes it).
+\`agentrun-serve import\` reads the Claude Code, Codex, pi, OpenCode, Copilot CLI and Cursor CLI sessions in your own
+home (~/.claude/projects, ~/.codex/sessions, ~/.pi/agent/sessions, ~/.local/share/opencode, ~/.copilot/session-state,
+~/.cursor/chats) into the data directory, once: each project directory an agent, with its CLAUDE.md or AGENTS.md and
+its skill folders, and each session a run you can read but not continue. Nothing leaves this machine; the values of
+key-shaped environment variables are cut out of what is written. --dry-run lists what it would import; run again, it
+imports only what it has not. Sessions written in the last 10 minutes wait for the next import. What is left out is
+counted by why; --verbose lists each file. --include-deleted keeps projects whose directory is gone (a deleted
+worktree's); --all keeps those and temporary ones too. Each run keeps what its session used (tokens, requests, tools,
+time at work), priced at the catalog's list prices when its source did not price it; Cursor keeps no tokens on the
+machine, so a Cursor run's are unknown. Both end with a summary of every session found, those imported before
+included, and the address to open the console at (--port as the server takes it).
 
 \`agentrun-serve store-schema\` prints, as one line of JSON, the store's schema version and runner floor (the oldest version
 a runner's build must know to run on it) beside the version this build knows, and what this build's server and runner do

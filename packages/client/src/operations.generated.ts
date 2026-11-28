@@ -182,7 +182,7 @@ export type DefinitionInput = {
     mode: "runner";
   } | {
     mode: "sandbox";
-    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel";
+    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel" | "sprites";
   };
   computer?: {
     kind: "none" | "sandbox" | "desktop" | "phone" | "browser";
@@ -557,7 +557,7 @@ export type RunSummary = {
     kind: "stopped";
   } | null;
   imported_from?: {
-    source: "claude-code" | "codex" | "pi" | "opencode" | "copilot";
+    source: "claude-code" | "codex" | "pi" | "opencode" | "copilot" | "cursor";
     session: string;
   } | null;
   trigger?: {
@@ -825,7 +825,7 @@ export type Run = {
     mode: "runner";
   } | {
     mode: "sandbox";
-    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel";
+    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel" | "sprites";
   };
   computer?: {
     kind: "sandbox" | "desktop" | "phone" | "browser";
@@ -900,7 +900,7 @@ export type Run = {
     kind: "stopped";
   } | null;
   imported_from?: {
-    source: "claude-code" | "codex" | "pi" | "opencode" | "copilot";
+    source: "claude-code" | "codex" | "pi" | "opencode" | "copilot" | "cursor";
     session: string;
   } | null;
   trigger?: {
@@ -1195,7 +1195,7 @@ export type Capabilities = {
   places: {
     modes: Array<"runner" | "sandbox">;
     boxes: Array<{
-      id: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel";
+      id: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel" | "sprites";
       available: boolean;
       state: "ready" | "unavailable";
       reason?: string;
@@ -1207,7 +1207,7 @@ export type Capabilities = {
       mode: "runner";
     } | {
       mode: "sandbox";
-      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel";
+      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel" | "sprites";
     } | null;
     default_reason?: string;
     allow: Array<string>;
@@ -4422,8 +4422,28 @@ export type SaveModelGatewayResponse = {
 /** Scan a repository for places its app needs an agent (POST /suggestions/scans). */
 export type ScanForSuggestionsBody = {
   repo: string;
+  start?: "host";
+  run_id?: string;
+  scan?: string;
 };
 export type ScanForSuggestionsResponse = {
+  repo: string;
+  run_id: string;
+  agent_id: string;
+  status: "running";
+  already_running: boolean;
+} | {
+  repo: string;
+  agent_id: string;
+  input: {
+    content: string;
+  };
+  scan: string;
+  status: "starting";
+} | {
+  repo: string;
+  status: "released";
+} | {
   repo: string;
   run_id: string;
   agent_id: string;
@@ -5914,7 +5934,7 @@ export type GetStatsResponse = {
       unknown_cost_runs: number;
     }>;
     by_source: Array<{
-      source: "live" | "claude-code" | "codex" | "pi" | "opencode" | "copilot";
+      source: "live" | "claude-code" | "codex" | "pi" | "opencode" | "copilot" | "cursor";
       runs: number;
       completed: number;
       needs_review: number;

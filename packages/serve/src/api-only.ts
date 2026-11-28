@@ -6,6 +6,7 @@
 // hook's host sends), the hooks but a webhook trigger's own with the launch hook set, the rest of agents and templates.
 // Off by default.
 import { API_ONLY_ENV } from "./env-switch.js";
+import { TOKEN_SAVED_MCP_AUTHS } from "./mcp-api-only-origins.js";
 import type { InputIssue } from "./errors.js";
 import { NOT_SET_UP } from "./runnable.js";
 import type { Route } from "./server.js";
@@ -160,12 +161,32 @@ export function apiOnlyTriggerMade(body: unknown, hooked: boolean): InputIssue[]
  *  previews it (previewMcpServer, `preset` false): a per_run server (no credential kept) whose url's origin is one of
  *  `origins`, under a name that is not a Composio preset's (`preset`; Composio's own route saves those). A preview of a
  *  saved server by its name alone has no url, so it is not one. Checked before anything reaches the address. A body that
- *  carries a credential never gets here: the secret-write gate refuses it first (403), as it refuses the token's save
- *  over a server it did not save or one that seals a credential (mcp-secret-writes.ts tokenWriteOverRefused). */
-export function apiOnlyMcpSave(body: unknown, preset: boolean, origins: readonly string[]): boolean {
+ *  carries a credential never gets here outside a workspace: the secret-write gate refuses it first (403), as it refuses
+ *  the token's save over a server it did not save or one that seals a credential (mcp-secret-writes.ts
+ *  tokenWriteOverRefused). In a workspace (`scoped`), also a server with headers or a bearer token at one of `origins`:
+ *  its credential is sealed in the workspace's own row (mcp-secret-writes.ts workspaceWriteRefused). */
+export function apiOnlyMcpSave(body: unknown, preset: boolean, origins: readonly string[], scoped = false): boolean {
   if (preset || origins.length === 0 || body === null || typeof body !== "object") return false;
   const { url, auth } = body as { url?: unknown; auth?: unknown };
-  if (auth === null || typeof auth !== "object" || (auth as { type?: unknown }).type !== "per_run" || typeof url !== "string") return false;
+  const type = auth !== null && typeof auth === "object" ? (auth as { type?: unknown }).type : undefined;
+  if (!(scoped ? TOKEN_SAVED_MCP_AUTHS : ["per_run"]).includes(String(type)) || typeof url !== "string") return false;
+  try {
+    return origins.includes(new URL(url).origin);
+  } catch {
+    return false;
+  }
+}
+
+/** Whether a request in a workspace on an API-only server previews `body` (previewMcpServer): one of its own servers by
+ *  `name` alone (an address it saved, one of `origins`), or an address whose origin is one of `origins`, per_run, with
+ *  headers or a bearer token sent for the listing alone, or with none. Anything else (a github_app server, another address)
+ *  is the refused route's own 404, before anything reaches the address. */
+export function apiOnlyMcpPreview(body: unknown, origins: readonly string[]): boolean {
+  if (body === null || typeof body !== "object") return false;
+  const { url, auth } = body as { url?: unknown; auth?: unknown };
+  if (url === undefined) return true;
+  const type = auth === undefined ? "none" : auth !== null && typeof auth === "object" ? (auth as { type?: unknown }).type : undefined;
+  if (typeof url !== "string" || !["none", "per_run", "headers", "bearer"].includes(String(type))) return false;
   try {
     return origins.includes(new URL(url).origin);
   } catch {
@@ -201,14 +222,23 @@ export function servedApiOnly(routes: readonly Route[], method: string | undefin
 export const apiOnlyRefusal = (raw: string): string => `this server serves the run API only (${API_ONLY_ENV}=1): ${raw} is not served here`;
 
 /** The operations a scoped request (the AgentRun-Workspace header, workspace-scope.ts) is served: its own agents, runs,
- *  imported template packages, uploaded files and the triggers on its own agents, its agents' Archil disks and the runs of
- *  its own computers going now, the computers this server offers (never the operator's paired ones), the marketplace's
- *  list (its `here` naming only a package the workspace sees), and the server's description. Every other is refused with
- *  403 not_scoped, whatever API_ONLY_ROUTES serves an unscoped request. listAgents, createAgent, updateDefinition,
- *  getTemplate, listTemplates, deleteTemplate, listMarketplaceTemplates, getOpenapi, createTrigger, deleteTrigger,
- *  fireTrigger and rotateTriggerSecret are not in API_ONLY_ROUTES: an API-only server serves them to a scoped request
- *  alone (a new trigger under apiOnlyTriggerMade, a firing under apiOnlyTurnsOn, a webhook's new secret shown once to
- *  the backend, which decides who in the workspace sees it: trigger-secrets-shown.ts). */
+ *  imported template packages, uploaded files, the triggers on its own agents and its own MCP servers, its agents' Archil
+ *  disks and the runs of its own computers going now, the computers this server offers (never the operator's paired
+ *  ones), the marketplace's list (its `here` naming only a package the workspace sees), its own suggested agents (with
+ *  GitHub read as not connected: the server's App is the operator's), and the server's description. Every other is
+ *  refused with 403 not_scoped, whatever API_ONLY_ROUTES serves an unscoped request. listAgents, createAgent,
+ *  updateDefinition, getTemplate, listTemplates, deleteTemplate, listMarketplaceTemplates, getOpenapi, createTrigger,
+ *  deleteTrigger, fireTrigger, rotateTriggerSecret, listMcpServers, getMcpServer, previewMcpServer, refreshMcpServer and
+ *  the suggestion and GitHub reads are not in API_ONLY_ROUTES: an API-only server serves them to a scoped request alone
+ *  (a new trigger under apiOnlyTriggerMade, a firing under apiOnlyTurnsOn, a webhook's new secret shown once to the
+ *  backend, which decides who in the workspace sees it: trigger-secrets-shown.ts).
+ *
+ *  A workspace's MCP servers are its own rows (mcp-workspace.ts): it lists, reads, saves, refreshes and deletes those
+ *  alone, another workspace's name reading as an unknown one, and its agents grant its own server of a name before the
+ *  shared one. Its saves are of an address at the operator's MCP origins (apiOnlyMcpSave): per_run, or headers or a
+ *  bearer token sealed in its own row (mcp-secret-writes.ts workspaceWriteRefused). listMcpServerNames is its own
+ *  servers' names and the shared ones'. A preview is of its own server by name, or of an address at the operator's MCP
+ *  origins (apiOnlyMcpPreview). */
 export const WORKSPACE_ROUTES: ReadonlySet<string> = new Set([
   "listAllRuns", "listRuns", "getRun", "getTimeline", "listRunFiles", "readRunFile", "getRunExport",
   "listAgents", "getAgent", "listRevisions", "createAgent", "updateDefinition", "setCurrent",
@@ -217,8 +247,11 @@ export const WORKSPACE_ROUTES: ReadonlySet<string> = new Set([
   "importTemplate", "applyTemplate", "getTemplate", "listTemplates", "deleteTemplate", "listMarketplaceTemplates",
   "createRun", "sendMessage", "stopRun", "cancelRun",
   "createFile", "listFiles", "getFile", "uploadFile", "deleteFile",
+  "listMcpServerNames", "listMcpServers", "getMcpServer", "previewMcpServer", "saveMcpServer", "saveComposioServer", "refreshMcpServer", "deleteMcpServer",
   "listTriggers", "getTrigger", "listTriggerFirings", "createTrigger", "updateTrigger", "deleteTrigger", "fireTrigger",
   "rotateTriggerSecret",
+  "listSuggestions", "scanForSuggestions", "getSuggestion", "discardSuggestion", "restoreSuggestion", "createSuggestedAgent",
+  "getGitHubConnection", "listGitHubRepositories",
   "getCapabilities", "getHealth", "getOpenapi",
   // Composio's catalog, read with the server's own key (api_key_env alone: mcp-secret-writes.ts composioListingOwners): no
   // workspace's row in it.
