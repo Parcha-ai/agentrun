@@ -264,10 +264,11 @@ test("a --data directory this user can't write stops server-and-runner in one li
   }
   assert.equal(lines(at.log).length, 0, "nothing started");
 
-  // Writable, or not made yet (the server makes it), it starts as before.
+  // Writable, or not made yet (the server makes it), it starts as before. Its stand-in server listens, so on a port of
+  // its own: a fixed one is taken whenever another file of the suite, run beside this one, listens there.
   await chmod(data, 0o755);
   for (const dir of [data, join(data, "not-yet")]) {
-    const run = start(at, ["server-and-runner", "--data", dir, "--port", "7340", "--no-runner"], { env: { STUB_SERVER_EXIT: "0" } });
+    const run = start(at, ["server-and-runner", "--data", dir, "--port", String(await freePort()), "--no-runner"], { env: { STUB_SERVER_EXIT: "0" } });
     assert.equal((await run.exited).code, 0, run.seen.err);
   }
   assert.equal(lines(at.log).filter((line) => line.event === "up").length, 2);
