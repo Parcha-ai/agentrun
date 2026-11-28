@@ -23,7 +23,11 @@
 // then booked (owed: its provider is owed it, so the cap never refuses it) and the next stretch held, a refusal of which
 // pauses the run as a browser call's does. Before the run's end or park is written (the spec's beforeRelease: settle),
 // what it ran since is booked and its hold let go, so the end's cost holds it; the moments between that and its delete
-// are no claim's. Time no claim holds (a computer kept
+// are no claim's. A computer let go while the run's spec is still built has its time booked once the cap can judge,
+// never waited for there (the build may be what lets it go); a spec that never gets built books none, said on the log.
+// The meter runs where the claim's computer is (the runner) and books on the run's ledger wherever it is: a run in a
+// process of its own hands its ledger across its channel (run-child-deps.ts), where `judges` answers as a promise.
+// Time no claim holds (a computer kept
 // past its claim for a follow-up, one deleted after its run ended, one whose delete failed) is booked by none: it is on the
 // usage read (`unheld_quantity`) and in no cap.
 import { PROVIDERS } from "@parcha/agentrun-computer";
@@ -116,8 +120,9 @@ export const computeTag = (one: Pick<ResourceOf, "resource" | "gpuType">): strin
 const microUsd = (usd: number) => Math.ceil(Math.round(usd * 1e12) / 1e6) / 1e6;
 
 /** The run's ledger as the meter books on it, the run's pause for a refusal of the next stretch, and whether its cap can
- *  judge a step now (`judges`, RunLedger.judges: false while the run's spec, whose cap it is, is still built). */
-export type ComputeLedger = { readonly paid?: PaidBooking; readonly pause?: (refusal: Refusal) => Promise<void>; readonly judges?: () => boolean };
+ *  judge a step now (`judges`, RunLedger.judges: false while the run's spec, whose cap it is, is still built; a promise
+ *  of it from a run's own process, across its channel). */
+export type ComputeLedger = { readonly paid?: PaidBooking; readonly pause?: (refusal: Refusal) => Promise<void>; readonly judges?: () => boolean | Promise<boolean> };
 
 /** A hold-only step on the ledger, given back by `drop` (answered once the ledger has it back). */
 type Hold = { drop(): Promise<void> };
@@ -184,8 +189,9 @@ export function computeMeter(options: ComputeMeterOptions): ComputeMeter {
     let dropped: Promise<void> | undefined;
     return { hold: { drop: () => (dropped ??= paid.settle(id, 0, { givenBack: true }).then(() => undefined, () => undefined)) } };
   };
-  /** Whether the run's cap can judge a step now: false while the run's spec, whose cap it is, is built. */
-  const judging = () => ledger.judges?.() !== false;
+  /** Whether the run's cap can judge a step now: false while the run's spec, whose cap it is, is built, and when it can't
+   *  be asked (a run's process gone). */
+  const judging = async (): Promise<boolean> => (await Promise.resolve(ledger.judges?.()).catch(() => false)) !== false;
   const stretchUsd = (priced: readonly Priced[]) => microUsd(priced.reduce((sum, one) => sum + one.usdPerSecond, 0) * COMPUTE_STRETCH_S);
   const basisOf = (provider: string, priced: readonly Priced[]) =>
     `${provider}'s computer time for its next ${COMPUTE_STRETCH_S} s: ${priced.map((one) => `${one.perSecond} ${COMPUTE_UNITS[one.resource].replace("_second", "")}${one.gpuType ? ` ${one.gpuType}` : ""} at $${one.rate} a ${COMPUTE_UNITS[one.resource].replace(/^[a-z]+_/, "")}`).join(", ")}`;
@@ -197,23 +203,25 @@ export function computeMeter(options: ComputeMeterOptions): ComputeMeter {
   const key = (provider: string, providerId: string) => `${provider}\u0000${providerId}`;
 
   /** The time `one` ran since its last booking, up to `to`, booked on the ledger: one owed step per priced resource, each
-   *  named by its computer, resource and time (ref), so it is booked once; then its interval's booked time. */
+   *  named by its computer, resource and time (ref), so it is booked once; then its interval's booked time, once every
+   *  step of it landed. A step the ledger refused (a run's spec never built, a ledger that can't be written) is said on
+   *  the log, and its time stays the run's unheld time. */
   const book = async (one: Held, to: number): Promise<void> => {
-    // A cap that can't judge yet would keep this booking waiting on the run's spec, which may be what is let go now (a
-    // computer deleted because its spec's build failed): nothing is booked, and its time is the run's unheld time.
-    if (!judging()) return;
     const from = one.from;
     const ms = Math.max(0, Math.floor(to - from));
     one.from = from + ms;
     if (ms === 0 || one.priced.length === 0) return;
     const paid = ledger.paid;
     if (paid) {
-      await Promise.all(one.priced.map(async (resource) => {
+      const landed = await Promise.all(one.priced.map(async (resource) => {
         const usd = resource.usdPerSecond * (ms / 1000);
         const tag = computeTag(resource);
         const stepped = await paidStep(paid, undefined, { name: `${one.provider}'s computer time (${tag})`, holdUsd: usd, basis: `${ms / 1000} s of ${resource.perSecond} ${COMPUTE_UNITS[resource.resource]} at $${resource.rate}`, by: one.provider, tool: COMPUTE_TOOL, tag, ...OWED.bookedTime, ref: `compute:${one.provider}:${one.providerId}:${tag}@${from}-${from + ms}` }, async () => undefined, () => usd).catch((error: unknown) => ({ refused: String((error as Error)?.message ?? error) }));
-        if ("refused" in stepped) log(logLine("compute_spend_unbooked", { said: `${ms / 1000} s of ${one.provider} ${one.providerId}'s ${tag} time was not booked on the run's ledger (${stepped.refused.slice(0, 200)})` }));
+        if (!("refused" in stepped)) return true;
+        log(logLine("compute_spend_unbooked", { said: `${ms / 1000} s of ${one.provider} ${one.providerId}'s ${tag} time was not booked on the run's ledger (${stepped.refused.slice(0, 200)})` }));
+        return false;
       }));
+      if (landed.includes(false)) return;
     }
     await options.booked?.(one.provider, one.providerId, ms).catch(() => undefined);
   };
@@ -222,7 +230,7 @@ export function computeMeter(options: ComputeMeterOptions): ComputeMeter {
   const tick = async (one: Held): Promise<void> => {
     // A stretch that passes while the run's spec is still built (a long image build) waits for the next: what ran is
     // booked from where it was then.
-    if (!judging()) return;
+    if (!(await judging())) return;
     await book(one, now());
     // The stretch just booked is no longer ahead: its hold is given back, and the ledger has it back, before the next
     // stretch is asked for. Else the cap would count that stretch twice (booked and still held), and refuse a next one
@@ -250,7 +258,11 @@ export function computeMeter(options: ComputeMeterOptions): ComputeMeter {
     return (one.stopped ??= (async () => {
       one.cancel();
       await one.ticking;
-      await book(one, now());
+      // Let go while the run's spec is built (its cap can't judge yet): its time is booked once the cap can, the ledger's
+      // steps waiting for it, and never waited for here, where the build may be what lets it go (a computer deleted
+      // because the build failed). A spec never built books none: book says so on the log.
+      if (await judging()) await book(one, now());
+      else void book(one, now());
       const last = one.hold;
       one.hold = undefined;
       await last?.drop();
@@ -264,7 +276,7 @@ export function computeMeter(options: ComputeMeterOptions): ComputeMeter {
       const usd = stretchUsd(priced);
       // A cap that can't judge yet (the claim's first computer, made while the run's spec is built) holds nothing ahead:
       // the computer's first stretch is held, owed, once it can (start), before the run's first request is judged.
-      if (!ledger.paid || usd === 0 || ledger.judges?.() === false) return undefined;
+      if (!ledger.paid || usd === 0 || !(await judging())) return undefined;
       const held = await holdOf(provider, usd, basisOf(provider, priced));
       if ("refused" in held) throw new ComputeRefused(held.refused);
       return held.hold;
@@ -292,8 +304,8 @@ export function computeMeter(options: ComputeMeterOptions): ComputeMeter {
         }
         void ahead?.drop();
       });
-      if (judging()) one.ticking = first;
-      else void first.catch(() => undefined);
+      void first.catch(() => undefined);
+      one.ticking = judging().then((can) => (can ? first : undefined));
       const cancel = every(() => {
         one.ticking = one.ticking.then(() => (one.stopped ? undefined : tick(one))).catch(() => undefined);
       }, COMPUTE_STRETCH_S * 1000);

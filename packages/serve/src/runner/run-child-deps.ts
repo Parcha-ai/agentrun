@@ -11,6 +11,7 @@ import { remoteSaveSlots } from "./save-slots.js";
 import { runEnv } from "./main.js";
 import { heldHands, type ComputerHold, type HoldAsk, type HoldEvent, type HoldState } from "../workspace/computer-hold.js";
 import type { ClaimComputer } from "../workspace/computer-for-claim.js";
+import type { ComputeLedger } from "../compute-cost.js";
 import type { AdapterSpecDeps } from "./adapter-run-spec.js";
 import type { Store } from "../store/store.js";
 import { postedTracing } from "../otel/tracer.js";
@@ -128,6 +129,7 @@ export async function computerHere(got: ClaimComputer): Promise<ClaimComputer> {
 export function childDeps(init: ChildInit, store: Store, journal: Journal, held: Held, channel: Pick<Channel, "post" | "call">): AdapterSpecDeps {
   const computerForClaim = (async (_launch: unknown, _store: unknown, given: Record<string, unknown>) => {
     const recordings = given.recordings as { say?: (words: string) => void } | undefined;
+    const compute = given.compute as { ledger?: ComputeLedger } | undefined;
     const ask: HeldComputerAsk = {
       hadComputer: given.hadComputer as () => Promise<boolean>,
       ...(typeof given.turnedOff === "string" ? { turnedOff: given.turnedOff } : {}),
@@ -137,6 +139,8 @@ export function childDeps(init: ChildInit, store: Store, journal: Journal, held:
       ...(typeof given.onStarting === "function" ? { onStarting: given.onStarting as HeldComputerAsk["onStarting"] } : {}),
       ...(typeof given.onConnected === "function" ? { onConnected: given.onConnected as HeldComputerAsk["onConnected"] } : {}),
       ...(typeof given.onComputerNote === "function" ? { onComputerNote: given.onComputerNote as HeldComputerAsk["onComputerNote"] } : {}),
+      // The run's ledger, for its computers' time: the meter is the runner's, beside the computer, at the runner's prices.
+      ...(compute?.ledger ? { compute: { ledger: compute.ledger } } : {}),
     };
     return await computerHere((await held.computer(ask)) as ClaimComputer);
   }) as unknown as AdapterSpecDeps["computerForClaim"];

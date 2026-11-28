@@ -997,6 +997,9 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
           ...(typeof ask.onStarting === "function" ? { onStarting: ask.onStarting } : {}),
           ...(typeof ask.onConnected === "function" ? { onConnected: ask.onConnected } : {}),
           ...(typeof ask.onComputerNote === "function" ? { onComputerNote: ask.onComputerNote } : {}),
+          // Its computers' time metered here, beside them, on the run's ledger in its process, at this runner's prices:
+          // the same settings the runs' processes and a server beside this runner read.
+          ...(ask.compute?.ledger ? { compute: { ledger: ask.compute.ledger, env: deps.env } } : {}),
         } as never,
       );
       releases.push(() => ws.end());

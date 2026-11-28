@@ -10,6 +10,7 @@ import type { Tier } from "../model.js";
 import type { RunSignIn } from "../sign-ins-store.js";
 import type { LiveHandover } from "../browser-live.js";
 import type { ComputerHoldChange } from "./computer-journal.js";
+import type { ComputeLedger } from "../compute-cost.js";
 import type { ApprovalPrice, ToolEffect } from "../tool-gate.js";
 import type { OpenedAccount } from "../email/account.js";
 import type { SavedCalendar } from "../calendar/address.js";
@@ -52,9 +53,9 @@ export interface HeldMcpAsk {
   readonly appendRoot: (entry: unknown) => Promise<void>;
 }
 
-/** What the run's process gives the runner's computerForClaim (workspace/computer-for-claim.ts): its callbacks, and the
- *  kind its journal says an earlier claim's deny turned off (ComputerForClaimDeps.turnedOff), read there as hadComputer
- *  is. The run, its epoch, its folder, its mode and its revision are the runner's own reads of the claim. */
+/** What the run's process gives the runner's computerForClaim (workspace/computer-for-claim.ts): its callbacks, its
+ *  ledger, and the kind its journal says an earlier claim's deny turned off (ComputerForClaimDeps.turnedOff), read there
+ *  as hadComputer is. The run, its epoch, its folder, its mode and its revision are the runner's own reads of the claim. */
 export interface HeldComputerAsk {
   readonly hadComputer: () => Promise<boolean>;
   readonly turnedOff?: string;
@@ -64,6 +65,9 @@ export interface HeldComputerAsk {
   readonly onStarting?: (said: string) => void;
   readonly onConnected?: (said: string) => void;
   readonly onComputerNote?: (words: string) => void;
+  /** The run's one ledger, whose cap is the process's (ComputerForClaimDeps.compute's): the runner's meter books each
+   *  computer's time on it and holds its next stretch there, at the runner's own prices. */
+  readonly compute?: { readonly ledger: ComputeLedger };
 }
 
 export interface Held {
