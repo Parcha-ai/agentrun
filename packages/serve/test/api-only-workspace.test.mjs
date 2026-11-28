@@ -1061,6 +1061,24 @@ test("the save check of a revision is its agent's workspace's, whoever asks: cal
   await inWorkspace(W1, () => server.saveable(revision, null, { workspace: null }));
 });
 
+test("an inline run's new version is checked in its agent's workspace: an external agent a backfill put in W1, run unscoped at a version naming a paired computer, is refused at definition.computer with no version written; its version naming none runs", { timeout: 120_000 }, async (t) => {
+  const server = await scopedServer(t);
+  await pairPhone(server, "cmp-pixel");
+  const inline = (version, computer) => ({ external: { source: "grep", kind: "expert", id: "w1-expert", version }, definition: { name: "W1 expert", instructions: "Answer.", skills: [], tools: [], ...(computer ? { computer } : {}) }, input: { content: "What is six times seven?" } });
+  const first = await unscoped(server, "POST", "/v2/runs", { body: inline("1") });
+  assert.equal(first.status, 202, first.text);
+  const agent = first.body.agent_id;
+  assert.deepEqual((await backfillWorkspaces(server.store, { [agent]: W1 }, true)).map((one) => one.outcome), ["set"]);
+  const refused = await unscoped(server, "POST", "/v2/runs", { body: inline("2", { kind: "phone", provider: "cmp-pixel" }) });
+  assert.equal(refused.status, 422, refused.text);
+  assert.deepEqual(refused.body.error.fields.map(({ field, reason }) => ({ field, reason })), [{ field: "definition.computer", reason: "not_an_option" }]);
+  assert.ok(refused.body.error.fields[0].message.startsWith(scopedPairedWords("cmp-pixel")), refused.text);
+  assert.equal(await server.store.agents.hasExternalVersion(agent, "2"), false, "no version written");
+  const next = await unscoped(server, "POST", "/v2/runs", { body: inline("3") });
+  assert.equal(next.status, 202, next.text);
+  assert.equal(next.body.agent_id, agent);
+});
+
 test("a scoped request's capabilities count no paired computer's kind; the operator's count it", { timeout: 120_000 }, async (t) => {
   const server = await scopedServer(t);
   const kinds = async (request) => (await request(server, "GET", "/v2/capabilities")).body.features.computers.kinds;
