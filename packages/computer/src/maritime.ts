@@ -272,13 +272,21 @@ class MaritimeHost implements MachineHost {
 		return new HostError(error.code, `${error.message}; ${outcome}`);
 	}
 
-	/** GET /v1/sandboxes/{id}; a 404 is none, and an ended VM is none. */
+	/**
+	 * GET /v1/sandboxes/{id}; a 404 is none, and an ended VM is none. A VM read none drops what this process kept of its
+	 * agentrun-dial, as delete() does: the adapter's release() skips delete() for a machine get() reads none.
+	 */
 	async get(id: string, ctx: HostCall): Promise<Machine | undefined> {
 		const read = await this.#call(this.#api, "GET", `/v1/sandboxes/${encodeURIComponent(id)}`, ctx, { retry: true, accept: (status) => status === 404 || status === 410 || (status >= 200 && status < 300) });
-		if (read.status === 404 || read.status === 410) return undefined;
+		if (read.status === 404 || read.status === 410) {
+			this.#dials.delete(id);
+			return undefined;
+		}
 		const sandbox = read.body as Sandbox | null;
 		if (typeof sandbox?.state !== "string") throw new HostError("vendor", `GET /v1/sandboxes/${id} answered no state`);
-		return machineOf({ ...sandbox, id: typeof sandbox.id === "string" ? sandbox.id : id });
+		const machine = machineOf({ ...sandbox, id: typeof sandbox.id === "string" ? sandbox.id : id });
+		if (machine === undefined) this.#dials.delete(id);
+		return machine;
 	}
 
 	/**
