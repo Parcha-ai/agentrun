@@ -15,7 +15,7 @@ import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, LEARNING_LEDGER, LEARNING_LEDGER_ADDED, LEARNING_LEDGER_AGENT, LEARNING_LEDGER_BY_HAND, LEARNING_ROWS, LEARNING_SPEND, LEARNING_SPEND_AGENT, LEARNING_SPEND_OF_RUN, ledgerUpgrade, learningRowsUpgrade, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUN_LAUNCH_CENSUS, RUN_LAUNCH_CENSUS_ERASED, RUN_LAUNCH_CENSUS_ERASED_MADE, RUN_LAUNCH_CENSUS_SETTLE, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, splitUpgrade, STORE_META_LEDGER_BACKFILLED, STORE_META_LEDGER_RERECORDED, TRIGGER_FIRINGS_HOOKED, TRIGGERS_TEMPLATE_ID, WORKSPACE_ADDED, WORKSPACE_INDEXES } from "../schema.js";
 import {
   ActiveRuns, AgentArchived, AgentDeleting, AgentPurged, CommandTaken, ExternalBodyConflict, Fenced, FiringMoved, RunFinal, RunPurged, RunnerBelowFloor, RunsMadeFromLeft, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, UPLOAD_PREFIX, type AgentRow, type Agents,
-  type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
+  type Claim, type Command, type FiringHooked, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
   type JournalReads, type KeptListing, type LaunchSealedWrite, type RunLabels, type UpdatedRun,
   type ReleasedState, type RunState, type SecureRewriteOptions, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type LearningSpend, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpCredentialMark, type McpPinRow, type McpRemoved, type McpServerRow, type McpServerWrite, type McpTokensMark, type McpOwnersMark,
@@ -257,6 +257,17 @@ const triggerOf = (r: TriggerRecord): TriggerRow => ({
   createdAt: r.created_at, updatedAt: r.updated_at, templateId: r.template_id ?? null,
 });
 const json = (value: unknown): string => JSON.stringify(value ?? null);
+
+/** A firing's kept cap after a hand that tells its target's cap `now` (Triggers.hooked): the first hand's, else the lower
+ *  of the kept one and `now`, so it is the lowest any hand has told the host. A cap told after a kept null stays under
+ *  the agent's default that null stood for (`under_default`). */
+function lowestHooked(kept: FiringHooked | null, now: number | null): FiringHooked {
+  if (!kept) return { max_cost_usd: now };
+  if (now === null) return kept;
+  if (kept.max_cost_usd === null) return { max_cost_usd: now, under_default: true };
+  return now < kept.max_cost_usd ? { ...kept, max_cost_usd: now } : kept;
+}
+
 /** A UTF-16 surrogate standing alone (in `u` mode a whole pair is one code point, so only a lone half matches). */
 const LONE_SURROGATE = /[\ud800-\udfff]/u;
 /** A run's labels as its column holds them: keys sorted, so the same labels are the same text; null for none. A key or value
@@ -1324,11 +1335,15 @@ class SqliteStore implements Store {
       },
       firings: async (triggerId) =>
         (await db.all<FiringRecord>(`SELECT ${FIRING_COLUMNS} FROM trigger_firings WHERE trigger_id = ? AND shown = 1 ORDER BY at DESC, ${d.firingOrder} DESC`, triggerId)).map(firingOf),
-      hooked: async (triggerId, key, told) =>
+      hooked: async (triggerId, key, now) =>
         db.transaction(async (tx) => {
-          await tx.run("UPDATE trigger_firings SET hooked = ? WHERE trigger_id = ? AND key = ? AND hooked IS NULL", json({ max_cost_usd: told.max_cost_usd }), triggerId, key);
-          const row = await tx.get<{ hooked: string | null }>("SELECT hooked FROM trigger_firings WHERE trigger_id = ? AND key = ?", triggerId, key);
-          return row?.hooked ? JSON.parse(row.hooked) : undefined;
+          // Read under the row's lock, so two hands of the firing never both read the cap the other lowers.
+          const row = await tx.get<{ hooked: string | null }>(`SELECT hooked FROM trigger_firings WHERE trigger_id = ? AND key = ?${d.claimOneLock}`, triggerId, key);
+          if (!row) return undefined;
+          const kept: FiringHooked | null = row.hooked ? JSON.parse(row.hooked) : null;
+          const next = lowestHooked(kept, now.max_cost_usd);
+          if (next !== kept) await tx.run("UPDATE trigger_firings SET hooked = ? WHERE trigger_id = ? AND key = ?", json(next), triggerId, key);
+          return next;
         }),
       settle: async (triggerId, key, change, streak) =>
         db.transaction(async (tx) => {
