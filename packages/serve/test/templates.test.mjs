@@ -262,7 +262,7 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   meets("/templates/{template}/apply", "post", "201", applied.body);
   assert.deepEqual([applied.body.template, applied.body.version, applied.body.triggers], ["code-review", "0.4.0", []]);
   const skipped = applied.body.warnings.find((w) => w.field === "mcp.github");
-  assert.match(skipped?.message ?? "", /No saved MCP server is github github, so the agent was made without its tools/, JSON.stringify(applied.body.warnings));
+  assert.match(skipped?.message ?? "", /No saved MCP server is github, so the agent was made without its tools/, JSON.stringify(applied.body.warnings));
   assert.equal(applied.headers.get("location"), `/v2/agents/${applied.body.agent_id}`);
 
   const agent = (await api("GET", `/agents/${applied.body.agent_id}`)).body;
