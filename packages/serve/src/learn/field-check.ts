@@ -99,8 +99,8 @@ export type CheckTally = {
   readonly agreed: number;
   readonly agent_agreed: number;
   readonly fields: Readonly<Record<string, FieldTally>>;
-  /** Of `alone`, the inputs with a field whose grader's verdict could not be read: out of `agreed` and the joint floor.
-   *  Absent: none. */
+  /** Of `alone`, the inputs with a field whose grader's verdict could not be read: out of `agreed`, `agent_agreed` and
+   *  the joint floor. Absent: none. */
   readonly unread?: number;
 };
 
@@ -203,10 +203,9 @@ export function tallyOf(rows: readonly CheckInput[], before: CheckTally = NO_TAL
       const by = fields.get(name) ?? {};
       fields.set(name, by);
       if (one.unread) {
-        // No verdict read: neither way. The agent's side is what it would be on any verdict.
+        // No verdict read: neither way, on either side.
         by.unread = (by.unread ?? 0) + 1;
         rowUnread = true;
-        if (!judged({ ...one, agrees: false })?.agent) agentAll = false;
         continue;
       }
       const j = judged(one);
@@ -222,9 +221,12 @@ export function tallyOf(rows: readonly CheckInput[], before: CheckTally = NO_TAL
       if (!j.workflow) all = false;
       if (!j.agent) agentAll = false;
     }
+    // An input with an unread field counts on neither side: not in `agreed`, nor in `agent_agreed`.
     if (rowUnread) unread += 1;
-    else if (all) agreed += 1;
-    if (agentAll) agentAgreed += 1;
+    else {
+      if (all) agreed += 1;
+      if (agentAll) agentAgreed += 1;
+    }
   }
   return { n, alone, agreed, agent_agreed: agentAgreed, fields: Object.fromEntries(fields), ...(unread ? { unread } : {}) };
 }

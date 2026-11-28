@@ -1307,6 +1307,20 @@ type ReplayView = {
 
 const NO_SCORE: ReplayScore = { n: 0, agree: 0, agent_acc: 0, wf_acc: 0, delta: 0, handed_back: 0 };
 
+/** A decided check's score as its replay's read answers it (checkView): on the inputs it was decided on, `n` less those
+ *  whose grader's verdict could not be read (CheckRecord.unread, counted on neither side), the workflow's accuracy (its
+ *  `agreed` plus its hand-backs) and the agent's (its misses counted where the workflow's are, on the inputs it answered
+ *  alone that could be compared: `agent_agreed`). */
+export function checkScoreOf(check: CheckRecord): ReplayScore {
+  const unread = check.unread ?? 0;
+  const n = (check.n ?? 0) - unread;
+  const handedBack = check.outcomes?.handed_back ?? 0;
+  const wf = n ? Math.round(((check.agreed ?? 0) + handedBack) / n * 1e4) / 1e4 : 0;
+  const alone = (check.alone ?? 0) - unread;
+  const agent = n ? Math.round((n - (alone - (check.agent_agreed ?? 0))) / n * 1e4) / 1e4 : 0;
+  return { n, agree: check.agreed ?? 0, agent_acc: agent, wf_acc: wf, delta: n ? Math.round((wf - agent) * 1e4) / 1e4 : 0, handed_back: handedBack };
+}
+
 /** A check's replay as its read answers it (replayView): decided, its record's numbers (CheckRecord), else its runs ended
  *  so far. */
 async function checkView(ask: ReplayAsk, record: PromotionRecord, id: string, name: string, digest: string): Promise<ReplayView> {
@@ -1314,14 +1328,8 @@ async function checkView(ask: ReplayAsk, record: PromotionRecord, id: string, na
   const decided = record.decided === "promote" || record.decided === "hold" ? record.decided : undefined;
   const check = record.check;
   if (decided && check?.outcomes) {
-    const n = check.n ?? 0;
-    const handedBack = check.outcomes.handed_back;
-    const wf = n ? Math.round(((check.agreed ?? 0) + handedBack) / n * 1e4) / 1e4 : 0;
-    // The agent's misses are counted where the workflow's are, on the inputs it answered alone (agent_agreed).
-    const alone = check.alone ?? 0;
-    const agent = n ? Math.round((n - (alone - (check.agent_agreed ?? 0))) / n * 1e4) / 1e4 : 0;
     const neverStarted = inputs > 0 && check.unstarted === inputs;
-    return { replay: id, workflow: name, digest, status: neverStarted ? "failed" : "done", inputs, outcomes: check.outcomes, score: { n, agree: check.agreed ?? 0, agent_acc: agent, wf_acc: wf, delta: n ? Math.round((wf - agent) * 1e4) / 1e4 : 0, handed_back: handedBack }, cost_usd: check.cost_usd ?? null, decided, reason: record.reason };
+    return { replay: id, workflow: name, digest, status: neverStarted ? "failed" : "done", inputs, outcomes: check.outcomes, score: checkScoreOf(check), cost_usd: check.cost_usd ?? null, decided, reason: record.reason };
   }
   const runs = await Promise.all((record.runs ?? []).map((run) => ask.store.runs.get(run)));
   return { replay: id, workflow: name, digest, status: decided ? "done" : "running", inputs, outcomes: outcomesOf(runs, false), score: NO_SCORE, cost_usd: replayCost(runs, false), ...(decided ? { decided, reason: record.reason } : {}) };

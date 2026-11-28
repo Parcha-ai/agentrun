@@ -561,6 +561,9 @@ function heldLine(workflow: string, held: HeldAsk): string {
   // A check on no input has no numbers to say: its hold's reason says why.
   if (check?.n) {
     const shares = checkShares({ n: check.n, agreed: check.agreed ?? 0, alone: check.alone ?? 0 });
+    // Agreement is of the inputs answered alone that could be compared: an unread verdict counts on neither side.
+    const compared = (check.alone ?? 0) - (check.unread ?? 0);
+    const agreement = compared ? (check.agreed ?? 0) / compared : 0;
     const fields = Object.entries(check.fields ?? {});
     const failing = fields.filter(([, one]) => !one.pass).map(([name]) => name);
     // The joint floor as the check decided it (check.joint): said as the check's reason says it (jointSaid), so a hold on
@@ -569,8 +572,8 @@ function heldLine(workflow: string, held: HeldAsk): string {
     const said = jointSaid(fields.map(([, one]) => one.pass), together);
     const short = [...failing, ...(together || !said ? [] : ["its fields together"])];
     const judged = fields.length
-      ? `; field by field: ${fields.map(([, one]) => one.reason).join("; ")}${said ? `; right on every field at once: ${check.agreed ?? 0} of ${check.alone ?? 0} (${pct(shares.agreement)}, at least ${pct(check.agree_min)} needed)` : ""}${short.length ? `. It fell short on ${listed(short)}` : ""}`
-      : `, and ${check.agreed ?? 0} of those said what you said${check.agree_on?.length ? ` on ${listed(check.agree_on)}` : ""} (${pct(shares.agreement)}, at least ${pct(check.agree_min)} needed)`;
+      ? `; field by field: ${fields.map(([, one]) => one.reason).join("; ")}${said ? `; right on every field at once: ${check.agreed ?? 0} of ${compared} (${pct(agreement)}, at least ${pct(check.agree_min)} needed)` : ""}${short.length ? `. It fell short on ${listed(short)}` : ""}`
+      : `, and ${check.agreed ?? 0} of those said what you said${check.agree_on?.length ? ` on ${listed(check.agree_on)}` : ""} (${pct(agreement)}, at least ${pct(check.agree_min)} needed)`;
     return `Your learned workflow \`${workflow}\` does not run first: checked on ${check.n} ${check.n === 1 ? "input" : "inputs"} of your last ${check.compile_after} completed runs, it answered ${check.alone ?? 0} alone (${pct(shares.alone)}, at least ${pct(check.alone_min)} needed)${judged}.`;
   }
   const why = `it was held (${clean(held.reason, 400).replace(/\n/g, " ").replace(/\.$/, "")}).`;

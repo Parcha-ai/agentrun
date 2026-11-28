@@ -251,7 +251,8 @@ export function servingLinesOf(records: readonly PromotionRecord[], rows: readon
     const at = digest ?? newest?.digest;
     return {
       state: servingStateOf(records, workflow, costStop),
-      check: checked ? { n: checked.n!, agreed: checked.agreed ?? 0, alone: checked.alone ?? 0, attempt: checked.attempt } : null,
+      // `alone`: the inputs answered alone that could be compared (an unread verdict counts on neither side: CheckRecord.unread).
+      check: checked ? { n: checked.n!, agreed: checked.agreed ?? 0, alone: (checked.alone ?? 0) - (checked.unread ?? 0), attempt: checked.attempt } : null,
       audit: at === undefined ? null : auditLineOf(rows, workflow, at, promotionStartOf(records, workflow, at)?.at ?? null, loop),
     };
   });
