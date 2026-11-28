@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.69 (2026-11-28)
+
+- Codex on a model on the host's own machine (an Ollama model) waits out a silent stream for 30 minutes, as claude-agent's CLI already does. A slow machine that took more than five minutes to load the model or read a long prompt used to end the turn with "stream disconnected before completion: idle timeout waiting for SSE". The Codex adapter takes `streamIdleMs` (Codex's `stream_idle_timeout_ms` on its provider) and exports `LOCAL_STREAM_IDLE_MS`; serve sets it for an Ollama model, in process and on a runner. Any other route keeps Codex's own five minutes. <!-- changes/codex-local-stream-idle.md -->
+
 ## 0.1.0-beta.64 (2026-11-26)
 
 - pi's turn budget now outlasts a process that stops in the turn, as Claude's, Codex's, ACP's and OpenCode's do: a pi session opened again takes the turn back from its conversation (its last answer's usage and calls, and each result handed since) before a call claims, so the calls a resume answers split what their answer left instead of each taking its whole bound. A read of the turn that fails runs no call: the call is an error naming why, and the next call reads again. <!-- changes/turn-budget-resume-pi-scripts.md -->
