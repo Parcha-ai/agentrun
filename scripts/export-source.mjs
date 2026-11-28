@@ -8,11 +8,6 @@ import { dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MACHINE_PATH } from './machine-path.mjs';
 
-// A URL's password is an explicit fake when it is not-a-secret, alone or after one word and a hyphen; nothing else is.
-export const fakeUrlPassword = password => /^(?:[a-z0-9]+-)?not-a-secret$/i.test(password);
-
-// The export runs only as the script; a test imports fakeUrlPassword without running it.
-if (import.meta.main) {
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const arguments_ = process.argv.slice(2);
 assert.ok(arguments_.length <= 1 && arguments_.every(argument => ['--inventory-only'].includes(argument)), 'Usage: node scripts/export-source.mjs [--inventory-only]');
@@ -195,10 +190,8 @@ function scan(path, content) {
         const fakeCredential = rule === 'literal_credential' && /^(?:api[_-]?key|password|access[_-]?token|auth[_-]?token|client[_-]?secret)['"]?\s*[=:]\s*['"](?:fake-test-key|fake|test-key|example|your-key|YOUR_[A-Z_]+|not-a-secret)['"]$/i.test(matched);
         const docsCitation = rule === 'internal_domain' && path === vendorDocsCitation.path &&
           ![line, decoded].some(text => text.replaceAll(vendorDocsCitation.url, '').toLowerCase().includes(matched.toLowerCase()));
-        const fakeUrl = rule === 'credential_url' && fakeUrlPassword(/^https?:\/\/[^\s/:]+:([^\s/@]+)@$/.exec(matched)[1]);
         if (fakeCredential) reviewed.push({ ...proof, reason: 'Explicit fake/example credential literal.' });
         else if (docsCitation) reviewed.push({ ...proof, reason: 'public vendor documentation citation' });
-        else if (fakeUrl) reviewed.push({ ...proof, reason: 'Explicit fake credential in URL.' });
         else findings.push(proof);
       }
     }
@@ -265,5 +258,4 @@ try {
 } finally {
   await writeFile(join(release, 'source-export-receipt.json'), JSON.stringify(receipt, null, 2) + '\n');
   await rm(staging, { recursive: true, force: true });
-}
 }
