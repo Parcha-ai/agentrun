@@ -164,34 +164,39 @@ export function apiOnlyTriggerMade(body: unknown, hooked: boolean): InputIssue[]
  *  carries a credential never gets here outside a workspace: the secret-write gate refuses it first (403), as it refuses
  *  the token's save over a server it did not save or one that seals a credential (mcp-secret-writes.ts
  *  tokenWriteOverRefused). In a workspace (`scoped`), also a server with headers or a bearer token at one of `origins`:
- *  its credential is sealed in the workspace's own row (mcp-secret-writes.ts workspaceWriteRefused). */
-export function apiOnlyMcpSave(body: unknown, preset: boolean, origins: readonly string[], scoped = false): boolean {
-  if (preset || origins.length === 0 || body === null || typeof body !== "object") return false;
+ *  its credential is sealed in the workspace's own row (mcp-secret-writes.ts workspaceWriteRefused). With the workspace
+ *  public-https mode (`publicHttps`, WORKSPACE_MCP_PUBLIC_HTTPS_ENV) in a workspace, also a per_run server at any https
+ *  address, the list or none. */
+export function apiOnlyMcpSave(body: unknown, preset: boolean, origins: readonly string[], scoped = false, publicHttps = false): boolean {
+  const anyHttps = scoped && publicHttps;
+  if (preset || (origins.length === 0 && !anyHttps) || body === null || typeof body !== "object") return false;
   const { url, auth } = body as { url?: unknown; auth?: unknown };
   const type = auth !== null && typeof auth === "object" ? (auth as { type?: unknown }).type : undefined;
   if (!(scoped ? TOKEN_SAVED_MCP_AUTHS : ["per_run"]).includes(String(type)) || typeof url !== "string") return false;
-  try {
-    return origins.includes(new URL(url).origin);
-  } catch {
-    return false;
-  }
+  const at = URL.parse(url);
+  if (!at) return false;
+  // The workspace public-https mode (WORKSPACE_MCP_PUBLIC_HTTPS_ENV): a per_run server at any https address, which its
+  // every request holds to a public one (mcp-oauth.ts publicMcpServerAt). Headers or a bearer token stay at the list's.
+  if (anyHttps && type === "per_run" && at.protocol === "https:") return true;
+  return origins.includes(at.origin);
 }
 
 /** Whether a request in a workspace on an API-only server previews `body` (previewMcpServer): one of its own servers by
  *  `name` alone (an address it saved, one of `origins`), or an address whose origin is one of `origins`, per_run, with
  *  headers or a bearer token sent for the listing alone, or with none. Anything else (a github_app server, another address)
- *  is the refused route's own 404, before anything reaches the address. */
-export function apiOnlyMcpPreview(body: unknown, origins: readonly string[]): boolean {
+ *  is the refused route's own 404, before anything reaches the address. With the workspace public-https mode
+ *  (`publicHttps`), also an https address at any origin, per_run or with none. */
+export function apiOnlyMcpPreview(body: unknown, origins: readonly string[], publicHttps = false): boolean {
   if (body === null || typeof body !== "object") return false;
   const { url, auth } = body as { url?: unknown; auth?: unknown };
   if (url === undefined) return true;
   const type = auth === undefined ? "none" : auth !== null && typeof auth === "object" ? (auth as { type?: unknown }).type : undefined;
   if (typeof url !== "string" || !["none", "per_run", "headers", "bearer"].includes(String(type))) return false;
-  try {
-    return origins.includes(new URL(url).origin);
-  } catch {
-    return false;
-  }
+  const at = URL.parse(url);
+  if (!at) return false;
+  // The workspace public-https mode: per_run or no credential at any https address, as its save takes (apiOnlyMcpSave).
+  if (publicHttps && (type === "none" || type === "per_run") && at.protocol === "https:") return true;
+  return origins.includes(at.origin);
 }
 
 /** A run's computer live view: its page, files and socket, which take the viewer credential alone here (server.ts). */

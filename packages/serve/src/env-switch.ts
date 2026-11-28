@@ -9,6 +9,9 @@ export const RUN_KEYS_ENV = "AGENTRUN_RUN_KEYS";
 export const SHARE_HOST_ENV = "AGENTRUN_SHARE_HOST";
 /** Jev off for the web tools (web-run.ts jevWebOf): web_search's results go unranked, whatever key the server holds. */
 export const WEB_JEV_OFF_ENV = "AGENTRUN_WEB_JEV_OFF";
+/** On an API-only server, a workspace's per_run MCP server saved at any public https origin, not only the operator's MCP
+ *  origins (api-only.ts apiOnlyMcpSave; the serve README's API-only section). */
+export const WORKSPACE_MCP_PUBLIC_HTTPS_ENV = "AGENTRUN_API_ONLY_WORKSPACE_MCP_PUBLIC_HTTPS";
 
 /** What each setting means on, and off where off needs saying: the words a refused value answers. */
 const MEANS = {
@@ -16,6 +19,7 @@ const MEANS = {
   [RUN_KEYS_ENV]: ["each run brings the tool keys this server does not hold"],
   [SHARE_HOST_ENV]: ["serve shares under /r/ alone", "the whole server"],
   [WEB_JEV_OFF_ENV]: ["the web tools run without Jev", "Jev ranks web_search's results where the server holds a TypeSafe key"],
+  [WORKSPACE_MCP_PUBLIC_HTTPS_ENV]: ["a workspace saves a per_run MCP server at any public https origin", "at the operator's MCP origins alone"],
 } as const satisfies Record<string, readonly [string, string?]>;
 
 /** Whether `env` turns setting `name` on: `1` or `true` on; unset, empty, `0` or `false` off. Any other value is refused

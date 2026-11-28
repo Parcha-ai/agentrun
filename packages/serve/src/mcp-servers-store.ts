@@ -8,7 +8,7 @@
 // and does NO token refresh: it is the owner's create/preview/save/refresh(tools)/remove and the OAuth sign-in, and nothing
 // a run's launch calls.
 import { outsideWorkspace, workspaceNow } from "./workspace-scope.js";
-import { heldApiOnlyMcpOrigins, offApiOnlyMcpOrigins } from "./mcp-api-only-origins.js";
+import { heldApiOnlyMcpOrigins, offApiOnlyMcpOrigins, onPublicHttpsAlone, workspaceMcpRow } from "./mcp-api-only-origins.js";
 import { ApiError, invalid, type InputIssue } from "./errors.js";
 import {
   type Auth, authOf, canonical, credentialInQuery, credentialInQueryWords, credentialMissing, type HeaderMap, savedOrGiven, shownUrl, type Listed, listServer, marked, MAX_OAUTH_VALUE_BYTES, type McpPrices,
@@ -21,7 +21,7 @@ import { credentialMark, ownersAuthConfig, tokensAccount } from "./mcp-secret-wr
 import { ownersComposioUsers, ownersUser } from "./composio-owners.js";
 import type { ComposioCredentialOf } from "./composio-triggers.js";
 import { type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
-import { type ClientKind, dialAt, issuerOf, LOOPBACK, MAX_PENDING, MCP_SETTINGS_PAGE, mcpServerAt, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
+import { type ClientKind, dialAt, issuerOf, LOOPBACK, MAX_PENDING, MCP_SETTINGS_PAGE, mcpServerAt, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, publicMcpServerAt, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
 import { type Cleanup, cleanupOf, type ComposioKeyEnv, COMPOSIO_ORIGIN, composioAccountKey, composioEnvKey, composioKeyFromEnv, composioMadeKey, type ComposioMade, composioPerRun, droppedOf, madeToWrite, recordedMade, releasedOf, storedMade } from "./composio-made.js";
 import { asking, COMPOSIO_PER_RUN, COMPOSIO_OWNERS_USER_WORDS, COMPOSIO_USER, COMPOSIO_USER_ID, composioAccount, composioAccountBoundWords, type ComposioAccount, type ComposioControl, composioListingAddress, composioListsAccount, composioServerId } from "./composio-preset.js";
 import { mcpSourceKey, type RecordedRow, recordedForAnother, savedByToken, sourceOf, type SourceRecord, sourceToWrite, standInGiven, storedSource, toolkitGiven } from "./mcp-sources.js";
@@ -282,7 +282,7 @@ export class McpServersOverStore {
       const listed = marked(row.url, { tools });
       return { url: row.url, tools: listed.tools, prices: pricesListed((row.prices ?? undefined) as McpPrices | undefined, listed.tools), toolkit };
     };
-    const send = await this.reached(row.auth, url, stop);
+    const send = await this.reached(row.auth, url, stop, { name, row });
     try {
       return pinned((await this.listServer(url, await this.withAppToken(row.auth, url, (await this.opened(name, row, "name")).headers, stop), send, stop, await this.perRunComposio(name, row))).tools);
     } catch (error) {
@@ -773,8 +773,11 @@ export class McpServersOverStore {
    *  is, since that one origin is this server's to name, never the owner's; any other server held to the address rule
    *  (mcp-oauth.ts mcpServerAt, the one an authorization server's endpoint is held to), with the private-network hosts the
    *  owner allows read now, loopback only for a local install. The fetch it answers dials the address checked. A name
-   *  that does not resolve is the unreachable server it always was (424). */
-  private async reached(type: string, url: URL, stop?: AbortSignal): Promise<typeof fetch> {
+   *  that does not resolve is the unreachable server it always was (424). A workspace's server (a request in a workspace,
+   *  or the saved row `of` that is one, as a runner's listing reads it) that stands on the workspace public-https mode
+   *  alone (mcp-api-only-origins.ts onPublicHttpsAlone) is held to publicMcpServerAt instead: no private host the owner
+   *  allows, no loopback even on a local install, no cloud metadata name. */
+  private async reached(type: string, url: URL, stop?: AbortSignal, of?: { name: string; row: { sealedAs?: string } }): Promise<typeof fetch> {
     // A saved row's URL is held to the save's rule too: one with a credential in its query is refused, nothing sent.
     const inQuery = credentialInQuery(url);
     if (inQuery) throw invalid([{ field: "url", reason: "invalid", message: credentialInQueryWords(inQuery) }]);
@@ -782,12 +785,13 @@ export class McpServersOverStore {
       if (!githubMcpUrl(url, this.appOrigin)) throw invalid([{ field: "url", reason: "not_allowed", message: GITHUB_MCP_ONLY }]);
       return fetch;
     }
+    const strict = (workspaceNow() !== undefined || (of !== undefined && workspaceMcpRow(of.name, of.row))) && (await onPublicHttpsAlone(this.store, url));
     // A URL on loopback as written, on a server its operator never said is a local install: refused, saying how to say so.
-    if (!this.loopback && LOOPBACK.test(url.hostname)) throw invalid([{ field: "url", reason: "not_allowed", message: loopbackWords(url.hostname) }]);
+    if (!strict && !this.loopback && LOOPBACK.test(url.hostname)) throw invalid([{ field: "url", reason: "not_allowed", message: loopbackWords(url.hostname) }]);
     const signal = AbortSignal.any([AbortSignal.timeout(ADDRESS_CHECK_MS), this.stopped.signal, ...(stop ? [stop] : [])]);
     let at: Awaited<ReturnType<typeof mcpServerAt>>;
     try {
-      at = await mcpServerAt(url, signal, this.network, { own: this.signIns.own, allowed: await privateOAuthHosts(this.store), loopback: this.loopback });
+      at = strict ? await publicMcpServerAt(url, signal, this.network, this.signIns.own) : await mcpServerAt(url, signal, this.network, { own: this.signIns.own, allowed: await privateOAuthHosts(this.store), loopback: this.loopback });
     } catch (error) {
       if (stop?.aborted || this.stopped.signal.aborted) throw error;
       // Its address check outlived its time: a name lookup that never answered.

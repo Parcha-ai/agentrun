@@ -24,7 +24,9 @@ import { FAUX_ENV } from "../model.js";
 import { fetchOptions } from "../web-run.js";
 import { fakeSaveOptions, type WebFake } from "../web-fake.js";
 import type { SaveSlots } from "../web-save.js";
-import { dialAt, mcpServerAt, type OAuthNetwork, systemNetwork } from "../mcp-oauth.js";
+import { dialAt, mcpServerAt, type OAuthNetwork, publicMcpServerAt, systemNetwork } from "../mcp-oauth.js";
+import { onPublicHttpsAlone } from "../mcp-api-only-origins.js";
+import { mcpRowKey } from "../mcp-workspace.js";
 import { privateOAuthHosts } from "../mcp-private-hosts.js";
 import type { Store } from "../store/index.js";
 import { mcpNameOf } from "../tool-names.js";
@@ -147,6 +149,15 @@ export function catalogSessionNames(catalog: Pick<ClaimMcp, "tools" | "catalogOf
   return given.length ? given : [wireName(grant)];
 }
 
+/** Whether the server `name` a run in `workspace` calls is its workspace's own, as its claim resolves it
+ *  (mcp-workspace.ts resolvedMcpKey: the workspace's row of that name before a shared one), or none is saved under it:
+ *  one removed mid-run is held to the stricter rule until its calls are refused. A run outside a workspace calls shared
+ *  servers alone. */
+async function workspaceServer(store: { mcp: Pick<Store["mcp"], "server"> }, workspace: string | null | undefined, name: string): Promise<boolean> {
+  if (workspace === null || workspace === undefined) return false;
+  return (await store.mcp.server(mcpRowKey(name, workspace))) !== undefined || (await store.mcp.server(name)) === undefined;
+}
+
 /** The run's MCP for one claim: undefined when it grants no MCP tool. Throws McpClaimRefused (a granted tool its pin lacks,
  *  a pinned tool that is a meta tool now: the loop ends the run in those words, before its session opens) or Fenced (the
  *  claim lost while a refresh was awaited: the loop ends interrupted). A builder calls it before it takes anything it
@@ -197,8 +208,12 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
     // so by the local-install server beside it, in its own process (options.loopback): never by what a store says, so
     // one host's local install never opens loopback for another host's runner on a shared store; and never at that
     // server's own ports (options.own).
-    reach: async (url, signal) => {
-      const at = await mcpServerAt(new URL(url), signal, network, { allowed: await privateOAuthHosts(options.store), loopback: options.loopback === true, own: options.own ?? [] });
+    // A workspace's server that stands on the workspace public-https mode alone (mcp-api-only-origins.ts
+    // onPublicHttpsAlone) is held to publicMcpServerAt at each request instead, whatever its save checked: no private
+    // host the owner allows, no loopback, no cloud metadata name.
+    reach: async (url, signal, server) => {
+      const strict = (await onPublicHttpsAlone(options.store, url)) && (await workspaceServer(options.store, await options.store.runs.workspace(options.claim.runId), server));
+      const at = strict ? await publicMcpServerAt(new URL(url), signal, network, options.own ?? []) : await mcpServerAt(new URL(url), signal, network, { allowed: await privateOAuthHosts(options.store), loopback: options.loopback === true, own: options.own ?? [] });
       return "refused" in at ? { refused: at.refused } : { send: dialAt(network, at.address, options.fetch ?? fetch) as typeof fetch };
     },
     beforeCall: step.beforeCall,

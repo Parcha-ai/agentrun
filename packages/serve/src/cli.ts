@@ -16,7 +16,7 @@ import { banner } from "./print.js";
 import { type ApiToken, parseTokens } from "./api-token.js";
 import type { LearningMode } from "./learning.js";
 import type { Serve, ServeOptions } from "./server.js";
-import { API_ONLY_ENV, API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV, SHARE_HOST_ENV, switchFrom, WEB_JEV_OFF_ENV } from "./env-switch.js";
+import { API_ONLY_ENV, API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV, SHARE_HOST_ENV, switchFrom, WEB_JEV_OFF_ENV, WORKSPACE_MCP_PUBLIC_HTTPS_ENV } from "./env-switch.js";
 import { WORKSPACE_TOKENS_ENV, workspaceTokenIds } from "./workspace-scope.js";
 import { harnessModulesOf, harnessRecipesOf } from "./harness-table.js";
 import { hookOrigin, LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV, type LaunchHook, launchHookFrom } from "./trigger-launch-hook.js";
@@ -135,7 +135,8 @@ is off unless set to an address.
 
 AGENTRUN_API_ONLY=1 serves the run API alone, for a server behind its caller's backend (the routes in api-only.ts; every
 other address is a 404, and there are no accounts). AGENTRUN_API_ONLY_MCP_ORIGINS: the MCP origins the token may save a
-per_run MCP server at (README, API only). AGENTRUN_WORKSPACE_TOKENS: the ids of the AGENTRUN_TOKENS tokens whose every
+per_run MCP server at (README, API only). AGENTRUN_API_ONLY_WORKSPACE_MCP_PUBLIC_HTTPS=1: a workspace's token saves a
+per_run MCP server at any public https origin too (README, API only). AGENTRUN_WORKSPACE_TOKENS: the ids of the AGENTRUN_TOKENS tokens whose every
 request carries the AgentRun-Workspace header, which keeps each of the backend's workspaces to its own agents, runs,
 templates and files (README, API only).
 
@@ -602,6 +603,9 @@ if (process.argv[2] === "eval-template") {
   // --share-host, or AGENTRUN_SHARE_HOST=1: shares under /r/ alone (share-host.ts), with no runner beside the server.
   let shareHost: boolean;
   let apiOnlyMcpOrigins: string[];
+  // AGENTRUN_API_ONLY_WORKSPACE_MCP_PUBLIC_HTTPS=1: a workspace's per_run MCP server at any public https origin, read with
+  // AGENTRUN_API_ONLY alone.
+  let workspaceMcpPublicHttps: boolean;
   // AGENTRUN_WORKSPACE_TOKENS: the tokens whose every request names its workspace (workspace-scope.ts); the start checks them.
   const workspaceTokens = workspaceTokenIds(process.env[WORKSPACE_TOKENS_ENV]);
   try {
@@ -610,6 +614,7 @@ if (process.argv[2] === "eval-template") {
     shareHost = values["share-host"] === true || switchFrom(SHARE_HOST_ENV);
     switchFrom(WEB_JEV_OFF_ENV);
     apiOnlyMcpOrigins = apiOnly ? apiOnlyMcpOriginsFrom(process.env[API_ONLY_MCP_ORIGINS_ENV]) : [];
+    workspaceMcpPublicHttps = apiOnly && switchFrom(WORKSPACE_MCP_PUBLIC_HTTPS_ENV);
   } catch (error) {
     console.error(`${(error as Error).message}\n\n${USAGE}`);
     process.exit(2);
@@ -689,7 +694,7 @@ if (process.argv[2] === "eval-template") {
       // The public address is the server's with accounts on or off: the Host names it serves, the webhook URLs it gives.
       ...(publicUrl && publicName ? { publicUrl, publicUrlFrom: publicName } : {}),
       ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true } : {}), ...(apiOnly ? { apiOnly } : {}), ...(shareHost ? { shareHost } : {}), ...(launchHook ? { launchHook } : {}), ...(runKeys ? { runKeys } : {}),
-      ...(apiOnlyMcpOrigins.length ? { apiOnlyMcpOrigins } : {}),
+      ...(apiOnlyMcpOrigins.length ? { apiOnlyMcpOrigins } : {}), ...(workspaceMcpPublicHttps ? { workspaceMcpPublicHttps } : {}),
       // The proxies whose X-Forwarded-For the sign-in limit reads (comma-separated); none unless set.
       ...(trustedProxies.length ? { trustedProxies } : {}),
       // A local install only as its operator says, never inferred: an MCP server on loopback is refused without it.

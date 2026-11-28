@@ -407,6 +407,9 @@ export type ServeOptions = {
   shareHost?: boolean;
   /** AGENTRUN_API_ONLY_MCP_ORIGINS, read as the environment's is (the serve README's API-only section); only with apiOnly. */
   apiOnlyMcpOrigins?: readonly string[];
+  /** AGENTRUN_API_ONLY_WORKSPACE_MCP_PUBLIC_HTTPS=1 (env-switch.ts WORKSPACE_MCP_PUBLIC_HTTPS_ENV): a workspace saves a
+   *  per_run MCP server at any public https origin, not only at apiOnlyMcpOrigins; only with apiOnly. Off by default. */
+  workspaceMcpPublicHttps?: boolean;
   /** AGENTRUN_WORKSPACE_TOKENS (workspace-scope.ts): the ids of the tokens whose every request must carry the
    *  AgentRun-Workspace header; only with apiOnly. */
   workspaceTokens?: readonly string[];
@@ -1112,7 +1115,7 @@ type Handed = { mcp?: RunMcpAuth; model?: string; keys?: RunKeys };
 
 /** The start-time switches a server takes as options (ServeOptions mcpLoopback, webhookPrivateTargets, and the API-only
  *  profile's MCP origins as the server holds them). */
-type SwitchedOn = { mcpLoopback: boolean; webhookPrivateTargets: boolean; apiOnlyMcpOrigins?: readonly string[] };
+type SwitchedOn = { mcpLoopback: boolean; webhookPrivateTargets: boolean; apiOnlyMcpOrigins?: readonly string[]; workspaceMcpPublicHttps?: boolean };
 /** Those switches as `env` sets them, the CLI's way, for a server whose options name neither. */
 const switchedOnBy = (env: NodeJS.ProcessEnv, options: { mcpLoopback?: boolean; webhookPrivateTargets?: boolean } = {}): SwitchedOn => ({
   mcpLoopback: options.mcpLoopback ?? env[MCP_ALLOW_LOOPBACK_ENV] === "1",
@@ -1633,7 +1636,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // The API-only profile's MCP origins, normalized as the environment's are (a list passed in code included), and held in
   // the store for every reader of a saved server there (mcp-api-only-origins.ts); removed when the profile is off.
   const apiOnlyMcpOrigins = options.apiOnly ? apiOnlyMcpOriginsFrom((options.apiOnlyMcpOrigins ?? []).join(",")) : [];
-  await holdApiOnlyMcpOrigins(store, options.apiOnly === true, apiOnlyMcpOrigins);
+  // And whether a workspace saves a per_run server at any public https origin (WORKSPACE_MCP_PUBLIC_HTTPS_ENV), held with
+  // the list, so each run's claim and every request to such a server reads it.
+  const workspaceMcpPublicHttps = options.apiOnly === true && options.workspaceMcpPublicHttps === true;
+  await holdApiOnlyMcpOrigins(store, options.apiOnly === true, apiOnlyMcpOrigins, workspaceMcpPublicHttps);
   // Said once at an API-only start: the per_run servers the token saved whose origin is off that list (with the setting
   // unset, every one, as on an upgrade whose operator has not listed them), whose runs are refused until it lists them.
   // Their names alone, never an address. Nothing is said when there are none.
@@ -1802,7 +1808,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const isolation = await runIsolationOf(base, 1, () => {}).then(runIsolationName, () => "process" as const);
   // The start-time switches as this server was started: its options, else the CLI's variables. mcpLoopback is the
   // option alone, as everywhere it is read here (localInstall): the CLI sets it from AGENTRUN_MCP_ALLOW_LOOPBACK.
-  const switched: SwitchedOn = { mcpLoopback: options.mcpLoopback === true, webhookPrivateTargets: switchedOnBy(process.env, options).webhookPrivateTargets, apiOnlyMcpOrigins };
+  const switched: SwitchedOn = { mcpLoopback: options.mcpLoopback === true, webhookPrivateTargets: switchedOnBy(process.env, options).webhookPrivateTargets, apiOnlyMcpOrigins, workspaceMcpPublicHttps };
   const compose = (runner: RunnerShell = false) => askNeeds(capabilitiesWith(env, maxRuns, offers, learning, needs, settings.get(), boxOffers, toolKeys.refused(), runner, isolation, switched));
   const recompose = () => void (caps = compose());
   // What the offers held now were made from (offersInputs), and the latest probe: one a later probe overtook is dropped.
@@ -6674,7 +6680,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const body = await bodyOf(req);
         const scoped = workspaceNow() !== undefined;
         // Its own server by name, at an origin taken off the list since its save: refused as a new save there is.
-        if (options.apiOnly && scoped && (!apiOnlyMcpPreview(body, apiOnlyMcpOrigins) || (isObject(body) && (await scopedOffApiOnlyOrigins(body.name))))) throw new ApiError("not_found", apiOnlyRefusal(`/v2${path}`));
+        if (options.apiOnly && scoped && (!apiOnlyMcpPreview(body, apiOnlyMcpOrigins, workspaceMcpPublicHttps) || (isObject(body) && (await scopedOffApiOnlyOrigins(body.name))))) throw new ApiError("not_found", apiOnlyRefusal(`/v2${path}`));
         if (options.apiOnly && !scoped && !apiOnlyMcpSave(body, false, apiOnlyMcpOrigins)) throw new ApiError("not_found", apiOnlyRefusal(`/v2${path}`));
         return send(res, 200, await mcpServers.preview(body, stopping.signal, req.headers.authorization !== undefined && !mayHoldSecrets(req)));
       }
@@ -6686,7 +6692,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // bearer token, sealed in its own row. Anything else is the refused route's own 404, before anything reaches the
         // address. The secret-write gate has already refused a credential outside a workspace, and a save over a server
         // the token did not save or (outside a workspace) one that seals a credential (403).
-        if (options.apiOnly && !apiOnlyMcpSave(body, preset, apiOnlyMcpOrigins, workspaceNow() !== undefined)) throw new ApiError("not_found", apiOnlyRefusal(`/v2${path}`));
+        if (options.apiOnly && !apiOnlyMcpSave(body, preset, apiOnlyMcpOrigins, workspaceNow() !== undefined, workspaceMcpPublicHttps)) throw new ApiError("not_found", apiOnlyRefusal(`/v2${path}`));
         // A server that isn't a Composio preset's is saved at once, as ever: no save waits on another's listing.
         if (!preset) {
           const saved = await mcpServers.save(id, body, stopping.signal, secretSeen as McpCredentialMark | undefined, undefined, undefined, undefined, undefined, byToken);
