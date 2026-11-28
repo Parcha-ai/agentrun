@@ -171,10 +171,17 @@ const forbidden = [
   ['bearer_secret', /\bBearer\s+[A-Za-z0-9._-]{24,}/],
   ['literal_credential', /(?:api[_-]?key|password|access[_-]?token|auth[_-]?token|client[_-]?secret)['"]?\s*[=:]\s*['"][^'"\n]{8,}['"]/i],
 ];
-// Northflank's domain counts as an internal domain: an address under it names a hosted deployment. The provider
-// scorecard cites Northflank's public docs as a vendor, so an https URL under that domain's /docs/ path, in that one
-// file only, is reviewed; any other mention of the domain on the same line, or the domain in any other file, still blocks.
-const vendorDocsCitation = { path: 'packages/computer/SCORECARD.md', url: /https:\/\/northflank\.com\/docs\//g };
+// Northflank's domain counts as an internal domain: an address under it names a hosted deployment. Northflank is also a
+// computer vendor, so each {path, url} pair below is reviewed in its file alone: the provider scorecard cites
+// Northflank's public docs, and the Northflank provider's own files name its public API host (https and wss), docs and
+// pricing page. Any other mention of the domain on the same line (a console URL under app., a host under the domain's own
+// name), a host under the other internal domains, or the domain in any other file, still blocks.
+const northflankPublic = /(?:https|wss):\/\/api\.northflank\.com(?![\w-]|\.[\w-])|https:\/\/northflank\.com\/(?:docs\/|pricing(?![\w-]|\.[\w-]))/g;
+const vendorCitations = [
+  { path: 'packages/computer/SCORECARD.md', url: /https:\/\/northflank\.com\/docs\//g },
+  ...['src/northflank.ts', 'src/conformance/northflank.ts', 'test/northflank-provider.test.mjs', 'test/fake-northflank.mjs', 'README.md', 'SCORECARD.md', 'PROVIDERS.md']
+    .map(file => ({ path: `packages/computer/${file}`, url: northflankPublic })),
+];
 const findings = [], reviewed = [], files = [];
 function scan(path, content) {
   const lines = content.split('\n');
@@ -188,8 +195,9 @@ function scan(path, content) {
         const proof = { path, line: index + 1, rule, lineSha256: sha256(line) };
         // Public examples/tests may use explicit fake credentials, never plausible secrets.
         const fakeCredential = rule === 'literal_credential' && /^(?:api[_-]?key|password|access[_-]?token|auth[_-]?token|client[_-]?secret)['"]?\s*[=:]\s*['"](?:fake-test-key|fake|test-key|example|your-key|YOUR_[A-Z_]+|not-a-secret)['"]$/i.test(matched);
-        const docsCitation = rule === 'internal_domain' && path === vendorDocsCitation.path &&
-          ![line, decoded].some(text => text.replaceAll(vendorDocsCitation.url, '').toLowerCase().includes(matched.toLowerCase()));
+        const citations = vendorCitations.filter(pair => pair.path === path);
+        const docsCitation = rule === 'internal_domain' && citations.length > 0 &&
+          ![line, decoded].some(text => citations.reduce((rest, pair) => rest.replaceAll(pair.url, ''), text).toLowerCase().includes(matched.toLowerCase()));
         if (fakeCredential) reviewed.push({ ...proof, reason: 'Explicit fake/example credential literal.' });
         else if (docsCitation) reviewed.push({ ...proof, reason: 'public vendor documentation citation' });
         else findings.push(proof);
