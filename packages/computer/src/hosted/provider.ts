@@ -666,8 +666,12 @@ export class HostedProvider implements ComputerProvider {
 	/**
 	 * A dial create of one request after any other of it on this server, whichever provider instance makes it. A
 	 * machine's token and socket go by the request's name, so two machines of one request must never dial at once: the
-	 * second create finds the first's computer instead (#createOnce). One server process is what dial asks for. A caller
-	 * that aborts while it waits stops waiting; the turn after it still waits for the create before it.
+	 * second create finds the first's computer instead (#createOnce). The turns hold within one process alone: a dial
+	 * request must be created by one process. Two processes sharing one MachineTokens that create one request's name
+	 * cut each other's machine: the second mint replaces the first's token, and a converge delete revokes the name's
+	 * token and drops the name's socket, which may be the kept machine's (#converge). Serve never does: its request
+	 * carries the run's claim epoch, and each epoch is one claim's. A caller that aborts while it waits stops waiting;
+	 * the turn after it still waits for the create before it.
 	 */
 	async #inTurn(hub: object, name: string, signal: AbortSignal | undefined, make: () => Promise<Result<CreatedComputer>>): Promise<Result<CreatedComputer>> {
 		const turns = DIAL_TURNS.get(hub) ?? new Map<string, Promise<void>>();
@@ -778,6 +782,9 @@ export class HostedProvider implements ComputerProvider {
 	 * The listing that settles a create (after a failed prepare, and the last) is by the name alone, never narrowed
 	 * (nameAsk): two creates of one request that ask another run or epoch must still see each other's machine, so one is
 	 * kept and the other answered exists. `also` narrows the first look after the vendor's answer alone (#createOnce).
+	 * Across processes this settles the vendor's machines alone. A dial machine's token and hub socket go by the name,
+	 * not the machine, so a delete here revokes the name's token and drops the name's socket in this process's hub, and
+	 * either can be the kept machine's own. So a dial request must be created by one process (#inTurn).
 	 */
 	async #converge(name: string, mine: string, signal?: AbortSignal, also?: Record<string, string>): Promise<Result<Machine | undefined>> {
 		const listed = await foundBy(this.host, "the listing by the request's name", byName(name), this.#timeouts, signal, also);

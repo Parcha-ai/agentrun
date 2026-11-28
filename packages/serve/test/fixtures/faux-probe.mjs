@@ -2,8 +2,7 @@
 // An agentic run's first message is `{"probe": [...]}`; a workflow node's input is `{"question": "{\"probe\": [...]}"}`.
 // A step is `{tool, args}`, or `{wait: <absolute path>}`, which holds the next call until the test has made that file.
 import { access } from "node:fs/promises";
-
-const textOf = (message) => (typeof message?.content === "string" ? message.content : (message?.content ?? []).map((c) => (c.type === "text" ? c.text : "")).join(""));
+import { personText } from "./faux-model.mjs";
 
 function planOf(text) {
   try {
@@ -19,7 +18,8 @@ const until = async (file) => {
 };
 
 export default async function reply(context, faux) {
-  const plan = planOf(textOf(context.messages.find((m) => m.role === "user")));
+  // The person's words: a server note the host appends to the message (a computer's reach) is no step of the plan.
+  const plan = planOf(personText(context.messages.find((m) => m.role === "user")));
   const calls = plan.filter((step) => step.tool);
   const done = context.messages.filter((m) => m.role === "toolResult").length;
   const node = context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit"));

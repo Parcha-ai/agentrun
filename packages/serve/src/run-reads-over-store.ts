@@ -341,9 +341,14 @@ export function runTimelines(deps: TimelineDeps): { page(store: Store, runId: st
     const final = view.poll_after_ms === 0;
     // What it waits on now, while it is live: a request sent or answered is a change, as a row is (GRE-4835).
     const waiting = final ? inFlightOf([], []) : inFlightOf(deps.inFlight ? await deps.inFlight(store, runId, deps.context) : [], toolsInFlight(rows));
+    // A queued run reads queued whether a runner holds it or not (its first rows not shown yet), so whether one does (the
+    // view's claim, true or false: never its renewal) is a change too: a long poll on a queued page ends when a claim
+    // lapses or comes back, as a run read would tell. Only while queued, the one status that hides it: the pages of a run
+    // that shows add no change at its claim's release, which a page reader (the console, follow) would read as nothing new.
+    const held = status === "queued" ? (view.claim ? ":held" : ":unheld") : "";
     // The run's rows as they stand now, then its status and what it waits on: a change to any is one more change the page carries.
     log.sync(rows);
-    log.setState(`${status}:${state}${waiting.key ? `:${waiting.key}` : ""}`);
+    log.setState(`${status}:${state}${held}${waiting.key ? `:${waiting.key}` : ""}`);
     const page = log.page(after, limit);
     // The run's whole Cost object, as GET /runs/{id} serves it (store-view costOfView): the page and the run read send the
     // same shape, so a reader need not read both to price the run.

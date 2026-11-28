@@ -252,7 +252,9 @@ test("a person's stop of a run in a process of its own, its browser's release ne
   withEnv(t, { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project", FAUX_BROWSER_RELEASE_HOLD: hold }, ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAUX_BROWSER_RELEASE_HOLD", "FAUX_BROWSER_PROVIDER"]);
   const gate = join(dir, "gate");
   const lines = [];
-  const { api, store } = await serve(t, { faux: new URL("./fixtures/faux-browse-gated.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname, childRuns: { log: (line) => void lines.push(line) } });
+  // A 1.5 s cleanup bound (the release cut at it and its margin, 6.5 s), not the providers' default 30 s: the same cut,
+  // before the same end of the process (the runner gives a stopped process the release's whole bound and more).
+  const { api, store } = await serve(t, { faux: new URL("./fixtures/faux-browse-gated.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname, childRuns: { log: (line) => void lines.push(line) }, runnerTiming: { cleanupMs: 1_500 } });
   const records = async (runId) => (await journalRecords(store.readJournal(runId), BACKGROUND_CONTEXT)).entries;
   const charges = async (runId) => (await records(runId)).filter((entry) => entry.kind === "agentrun.browser_charged").map((entry) => entry.data);
   // The run browses once and then waits, its session open, on a gate that never opens: only the person's stop ends it.
@@ -340,25 +342,36 @@ test("where runs have users of their own, a run reopened by a message while its 
   const dir = scratchDir(t, "runas-reopen-");
   const helper = join(dir, "agentrun-runas");
   // The image's helper, stood in for: every call logged, `run` becomes the run's process, and a slot's reap after a run of
-  // it is slow (its processes killed one by one), so the run's end commit lands well before its claim lets go.
+  // it is slow (its processes killed one by one), so the run's end commit lands well before its claim lets go. Its 3 s is
+  // a window, not a wait for something: a runner that started the reopened run's next process under the reap would do so
+  // inside it, and no event the right runner makes says it did not.
   writeFileSync(helper, `#!/bin/sh\nd=$(dirname "$0")\nran=no; grep -q "^run $2 " "$d/log" 2>/dev/null && ran=yes\necho "$*" >> "$d/log"\ncase "$1" in\nreap) [ "$ran" = yes ] && { sleep 3; echo "reaped $2" >> "$d/events"; }; exit 0 ;;\nrun) echo "run $2" >> "$d/events"; shift 2; while [ "$1" != -- ]; do shift; done; shift; exec "$@" ;;\nesac\nexit 0\n`);
   chmodSync(helper, 0o755);
-  // Its first turn answers at once; its second (the message's) waits past the first claim's cleanup, then says whether its
-  // TMPDIR is still there and takes a file.
+  // Its first turn answers at once; its second (the message's) waits until the first claim's cleanup is over (released,
+  // written by the test at the runner's release of that claim, after its reap and sweep), then says whether its TMPDIR is
+  // still there and takes a file.
+  const released = join(dir, "released");
   const faux = join(dir, "faux-tmpdir.mjs");
   writeFileSync(faux, `import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 export default async function reply(context, faux) {
   if (context.messages.filter((m) => m.role === "user").length < 2) return faux.message("First.");
-  await new Promise((resolve) => setTimeout(resolve, 6000));
+  while (existsSync(${JSON.stringify(dir)}) && !existsSync(${JSON.stringify(released)})) await new Promise((resolve) => setTimeout(resolve, 50));
   const tmp = process.env.TMPDIR;
   let wrote = "no";
   try { writeFileSync(join(tmp, "after.txt"), "x"); wrote = "yes"; } catch (error) { wrote = error.code; }
   return faux.message(\`tmp \${existsSync(tmp) ? "kept" : "gone"}, write \${wrote}\`);
 }
 `);
+  // The run's first claim (its epoch, the server's one run's first): its release, the runner's once the claim's cleanup
+  // is over, lets the second turn look.
+  let firstEpoch;
+  const onEvent = (event) => {
+    if (event.type === "claimed") firstEpoch ??= event.claim.epoch;
+    else if (event.type === "released" && event.epoch === firstEpoch) writeFileSync(released, "");
+  };
   const lines = [];
-  const server = await serve(t, { faux, childRuns: { isolation: { kind: "uid", helper, first: 0, slots: 2 }, log: (line) => void lines.push(line) } });
+  const server = await serve(t, { faux, onEvent, childRuns: { isolation: { kind: "uid", helper, first: 0, slots: 2 }, log: (line) => void lines.push(line) } });
   const runId = await started(server.api, "reopened", {}, { input: { content: "Hello." } });
   await follow(server.api, runId, ["completed"], { deadlineMs: 60_000 });
   assert.equal(await answerOf(server.api, runId), "First.");
