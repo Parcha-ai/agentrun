@@ -721,14 +721,16 @@ test("pi: a run that ends in the close's drain, its browser's release never answ
   const { runnerStopBy } = await import("../dist/runner/runner.js");
   const said = warnings(t);
   const stderr = stderrLines(t);
-  // A 4 s lease less its 1 s margin is a 3 s stop, after a 4 s drain: the close's window ends 7.5 s from its start, its
-  // release cut at 6.5 s (CLEANUP_MS and its margin). The run ends 2.5 s into the drain, so a release bound from its own
+  // A 4 s lease less its 1 s margin is a 3 s stop, after a 4 s drain: the close's window ends 11.5 s from its start, its
+  // release cut at 6.5 s (CLEANUP_MS and its margin), the release's margin kept after it for the cut's booking. The run ends 2.5 s into the drain, so a release bound from its own
   // start would be cut at 9 s, past the window; the drain's end at 4 s stops the run mid-release and seals its journal.
   // The default margin (RELEASE_MARGIN_MS), not MARGIN_MS: the release's window must outlast the drain and the stop after
   // it, or the close's window is the lease's and the cut is never set again by the window from the close's start.
   const window = { leaseMs: 4_000, renewEveryMs: 500, stopMarginMs: 1_000, drainMs: 4_000, cleanupMs: CLEANUP_MS, releaseMarginMs: RELEASE_MARGIN_MS };
   const releaseBy = CLEANUP_MS + RELEASE_MARGIN_MS;
-  assert.equal(runnerStopBy(0, window.drainMs, window.leaseMs, window.stopMarginMs, CLEANUP_MS, RELEASE_MARGIN_MS), releaseBy + window.stopMarginMs);
+  // The window keeps the release's margin after the cut (longer than the stop's), for the cut's booking.
+  const windowMs = releaseBy + Math.max(window.stopMarginMs, RELEASE_MARGIN_MS);
+  assert.equal(runnerStopBy(0, window.drainMs, window.leaseMs, window.stopMarginMs, CLEANUP_MS, RELEASE_MARGIN_MS), windowMs);
   const hold = join(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "release-hold-")), "let-go");
   t.after(() => writeFileSync(hold, ""));
   let answer;
@@ -745,7 +747,7 @@ test("pi: a run that ends in the close's drain, its browser's release never answ
   await closing;
   const took = Date.now() - began;
 
-  assert.ok(took < releaseBy + window.stopMarginMs + 1_500, `the close ended inside its window (${releaseBy + window.stopMarginMs} ms): ${took} ms`);
+  assert.ok(took < windowMs + 1_500, `the close ended inside its window (${windowMs} ms): ${took} ms`);
   const records = await recordsOf(server);
   const cuts = cutsOf(records);
   assert.equal(cuts.length, 1, `the run says its release was cut, once: ${JSON.stringify(cuts)}`);
@@ -767,14 +769,16 @@ test("pi: a person's stop in the close's drain, its browser's release never answ
   const { sendCommand } = await import("../dist/runner/commands.js");
   const said = warnings(t);
   const stderr = stderrLines(t);
-  // As above: the close's window ends 7.5 s from its start, its release cut at 6.5 s. The stop comes 2.5 s into the
+  // As above: the close's window ends 11.5 s from its start, its release cut at 6.5 s. The stop comes 2.5 s into the
   // drain, so a release bound from its own start would be cut at 9 s, past the window. A stopping loop is sent no
   // shutdown stop at the drain's end: only the window the drain's end sets moves its cut.
   // The default margin (RELEASE_MARGIN_MS), not MARGIN_MS: the release's window must outlast the drain and the stop after
   // it, or the close's window is the lease's and the cut is never set again by the window from the close's start.
   const window = { leaseMs: 4_000, renewEveryMs: 500, stopMarginMs: 1_000, drainMs: 4_000, cleanupMs: CLEANUP_MS, releaseMarginMs: RELEASE_MARGIN_MS };
   const releaseBy = CLEANUP_MS + RELEASE_MARGIN_MS;
-  assert.equal(runnerStopBy(0, window.drainMs, window.leaseMs, window.stopMarginMs, CLEANUP_MS, RELEASE_MARGIN_MS), releaseBy + window.stopMarginMs);
+  // The window keeps the release's margin after the cut (longer than the stop's), for the cut's booking.
+  const windowMs = releaseBy + Math.max(window.stopMarginMs, RELEASE_MARGIN_MS);
+  assert.equal(runnerStopBy(0, window.drainMs, window.leaseMs, window.stopMarginMs, CLEANUP_MS, RELEASE_MARGIN_MS), windowMs);
   const hold = join(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "release-hold-")), "let-go");
   t.after(() => writeFileSync(hold, ""));
   const { server, runner, live } = await piRun(t, "runner-close-stop-release-", { runnerOptions: window, launch: { max_cost_usd: 1 }, env: { FAUX_BROWSER_RELEASE_HOLD: hold } });
@@ -789,7 +793,7 @@ test("pi: a person's stop in the close's drain, its browser's release never answ
   await closing;
   const took = Date.now() - began;
 
-  assert.ok(took < releaseBy + window.stopMarginMs + 1_500, `the close ended inside its window (${releaseBy + window.stopMarginMs} ms): ${took} ms`);
+  assert.ok(took < windowMs + 1_500, `the close ended inside its window (${windowMs} ms): ${took} ms`);
   assert.equal((await server.runs.get(RUN)).state, "stopped", "the person's stop is the run's end");
   const records = await recordsOf(server);
   const cuts = cutsOf(records);
@@ -807,13 +811,15 @@ test("the close's window runs from its start: a drain, then a release that never
   const { RELEASE_MARGIN_MS } = await import("../dist/runner/loop-contract.js");
   const { runnerStopBy } = await import("../dist/runner/runner.js");
   // A 4 s lease less its 1 s margin is a 3 s stop; a 4 s drain first. The release's window from the close's start is
-  // CLEANUP_MS and its margin (6.5 s), the cut's booking the stop's margin after it (7.5 s): past the old 3 s stop after
-  // the drain (7 s from the start), and past the lease, so the claim lives only by its renewals.
+  // CLEANUP_MS and its margin (6.5 s), the cut's booking the release's margin after it (11.5 s): past the old 3 s stop
+  // after the drain (7 s from the start), and past the lease, so the claim lives only by its renewals.
   // The default margin (RELEASE_MARGIN_MS), not MARGIN_MS: the release's window must outlast the drain and the stop after
   // it, or the close's window is the lease's and the cut is never set again by the window from the close's start.
   const window = { leaseMs: 4_000, renewEveryMs: 500, stopMarginMs: 1_000, drainMs: 4_000, cleanupMs: CLEANUP_MS, releaseMarginMs: RELEASE_MARGIN_MS };
   const releaseBy = CLEANUP_MS + RELEASE_MARGIN_MS;
-  assert.equal(runnerStopBy(0, window.drainMs, window.leaseMs, window.stopMarginMs, CLEANUP_MS, RELEASE_MARGIN_MS), releaseBy + window.stopMarginMs);
+  // The window keeps the release's margin after the cut (longer than the stop's), for the cut's booking.
+  const windowMs = releaseBy + Math.max(window.stopMarginMs, RELEASE_MARGIN_MS);
+  assert.equal(runnerStopBy(0, window.drainMs, window.leaseMs, window.stopMarginMs, CLEANUP_MS, RELEASE_MARGIN_MS), windowMs);
   const { dir, server, runner } = await cliRun(t, "runner-close-window-", { runnerOptions: window, hooks: (registered) => [...registered, () => new Promise(() => {})] });
   const other = await bystander(t, dir, "runner-b");
 
@@ -821,7 +827,7 @@ test("the close's window runs from its start: a drain, then a release that never
   await runner.close();
   const took = Date.now() - began;
 
-  assert.ok(took >= window.drainMs && took < releaseBy + window.stopMarginMs + 1_500, `the close ended inside its window from its start (${releaseBy + window.stopMarginMs} ms): ${took} ms`);
+  assert.ok(took >= window.drainMs && took < windowMs + 1_500, `the close ended inside its window from its start (${windowMs} ms): ${took} ms`);
   const cuts = cutsOf(await recordsOf(server));
   assert.equal(cuts.length, 1, `the release was cut, once: ${JSON.stringify(cuts)}`);
   assert.ok(cuts[0].bound_ms <= releaseBy - window.drainMs + 200, `cut where the window from the close's start ends, not a whole bound after the drain: ${JSON.stringify(cuts[0])}`);
@@ -830,6 +836,45 @@ test("the close's window runs from its start: a drain, then a release that never
   const handedBack = began + releaseBy - 200;
   const early = other.claims.filter((claim) => claim.at < handedBack);
   assert.deepEqual(early, [], `no other runner claimed the run while runner-a held it (before ${handedBack - began} ms): ${JSON.stringify(other.claims.map((claim) => ({ ...claim, after: claim.at - began })))}`);
+});
+
+test("pi: a close whose release margin is longer than its stop's margin keeps that margin after the cut: a release that never answers and a cut's booking that outlasts the stop's margin still have the cut's charge booked and the cut recorded before the claim is given up", { timeout: 60_000 }, async (t) => {
+  const { runnerStopBy } = await import("../dist/runner/runner.js");
+  // A 4 s lease less its 0.5 s margin, no drain: the release is cut at CLEANUP_MS and its 2 s margin (3.5 s from the
+  // close's start), and the window keeps the 2 s margin after it, not the 0.5 s stop margin, for the cut's booking.
+  const window = { leaseMs: 4_000, renewEveryMs: 500, stopMarginMs: 500, cleanupMs: CLEANUP_MS, releaseMarginMs: 2_000 };
+  const releaseBy = CLEANUP_MS + window.releaseMarginMs;
+  assert.equal(runnerStopBy(0, 0, window.leaseMs, window.stopMarginMs, CLEANUP_MS, window.releaseMarginMs), releaseBy + window.releaseMarginMs);
+  // The vendor's release never answers, so the release is cut; the cut's booking (its let-go of the run's unheld
+  // sessions) then waits on the vendor's list, which answers a second after it is asked: past the stop's margin, inside
+  // the release's.
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "release-hold-"));
+  const hold = join(dir, "let-go");
+  const listHold = join(dir, "list-go");
+  const BOOKING_MS = 1_000;
+  t.after(() => (writeFileSync(hold, ""), writeFileSync(listHold, "")));
+  const said = warnings(t);
+  const { server, runner, live } = await piRun(t, "runner-close-booking-margin-", { runnerOptions: window, launch: { max_cost_usd: 1 }, env: { FAUX_BROWSER_RELEASE_HOLD: hold, FAUX_BROWSER_LIST_HOLD: listHold } });
+
+  const began = Date.now();
+  const closing = runner.close();
+  await until(() => existsSync(`${listHold}.asked`), "the cut's booking asked the vendor's list", 15_000);
+  await new Promise((resolve) => setTimeout(resolve, BOOKING_MS));
+  writeFileSync(listHold, "");
+  await closing;
+  const took = Date.now() - began;
+
+  assert.ok(BOOKING_MS > window.stopMarginMs && BOOKING_MS < window.releaseMarginMs);
+  assert.ok(existsSync(`${hold}.asked`), "the vendor was asked to release the session");
+  const records = await recordsOf(server);
+  const context = JSON.stringify({ cuts: cutsOf(records), charges: chargesOf(records), said: said.filter((line) => /could not be written|releaseCut failed|beforeRelease failed/.test(line)) });
+  assert.equal(cutsOf(records).length, 1, `the run says its release was cut, its record written while the claim was renewed: ${context}`);
+  const asked = statSync(`${hold}.asked`).mtimeMs;
+  assert.equal(chargesOf(records).filter((charge) => !charge.final && Date.parse(charge.at) >= asked).length, 1, `the cut charged the session's time through the cut: ${context}`);
+  assert.deepEqual(unbookedCharges(records), [], `every charge is booked on the run's ledger: ${context}`);
+  assert.deepEqual(said.filter((line) => /could not be written|releaseCut failed/.test(line)), [], `nothing of the cut was refused: ${context}`);
+  assert.equal(live().length, 1, "the vendor still holds the session");
+  assert.ok(took < releaseBy + window.releaseMarginMs + 1_500, `the close ended inside its window (${releaseBy + window.releaseMarginMs} ms): ${took} ms`);
 });
 
 test("a lost create's recovery under way when a runner's close begins is waited for: the browser it finds is released before close() resolves", { timeout: 30_000 }, async (t) => {

@@ -389,13 +389,14 @@ test("a person's stop of a run in a process of its own, sent in its runner's dra
   const hold = join(dir, "let-go");
   t.after(() => existsSync(dir) && writeFileSync(hold, ""));
   withEnv(t, { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project", FAUX_BROWSER_RELEASE_HOLD: hold }, ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAUX_BROWSER_RELEASE_HOLD", "FAUX_BROWSER_PROVIDER"]);
-  // A 4 s lease less its 1 s margin is a 3 s stop, after a 4 s drain: the close's window ends 7.5 s from its start, its
-  // release cut at 6.5 s (the 1.5 s cleanup bound and its margin). The stop comes 2.5 s into the drain, so a release bound
+  // A 4 s lease less its 1 s margin is a 3 s stop, after a 4 s drain: the close's window ends 11.5 s from its start, its
+  // release cut at 6.5 s (the 1.5 s cleanup bound and its margin), the margin kept after it for the cut's booking. The stop comes 2.5 s into the drain, so a release bound
   // from its own start would be cut past the window; a stopping run is sent no shutdown stop at the drain's end.
   const cleanupMs = 1_500;
   const timing = { leaseMs: 4_000, renewEveryMs: 500, stopMarginMs: 1_000, drainMs: 4_000, cleanupMs, commandPollMs: 50 };
   const releaseBy = cleanupMs + RELEASE_MARGIN_MS;
-  assert.equal(runnerStopBy(0, timing.drainMs, timing.leaseMs, timing.stopMarginMs, cleanupMs), releaseBy + timing.stopMarginMs);
+  const windowMs = releaseBy + Math.max(timing.stopMarginMs, RELEASE_MARGIN_MS);
+  assert.equal(runnerStopBy(0, timing.drainMs, timing.leaseMs, timing.stopMarginMs, cleanupMs), windowMs);
   const gate = join(dir, "gate");
   const lines = [];
   const { api, store, closeRunner } = await serve(t, { faux: new URL("./fixtures/faux-browse-gated.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname, childRuns: { log: (line) => void lines.push(line) }, runnerTiming: timing });
@@ -419,7 +420,7 @@ test("a person's stop of a run in a process of its own, sent in its runner's dra
   assert.ok(asked - began < timing.drainMs, `the release began in the drain: ${asked - began} ms`);
   await closing;
   const took = Date.now() - began;
-  assert.ok(took < releaseBy + timing.stopMarginMs + 1_500, `the close ended inside its window (${releaseBy + timing.stopMarginMs} ms): ${took} ms`);
+  assert.ok(took < windowMs + 1_500, `the close ended inside its window (${windowMs} ms): ${took} ms`);
   assert.equal((await store.runs.get(runId)).state, "stopped", "the person's stop is the run's end");
   const cuts = (await records(runId)).filter((entry) => entry.kind === "agentrun.release.cut").map((entry) => entry.data);
   assert.equal(cuts.length, 1, `the run says its release was cut, inside the close's window: ${JSON.stringify(cuts)}; ${lines.join("\n")}`);

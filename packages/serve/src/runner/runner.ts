@@ -58,8 +58,13 @@ export const RUNNER_STOP_MARGIN_MS = 5_000;
  *  after the drain began (`stopFrom`): the lease less its margin after the stop's start, or, when later, a computer
  *  provider's cleanup bound and the release's margin from the close's start (releaseBoundMs of `cleanupMs` and
  *  `releaseMarginMs`, default RELEASE_MARGIN_MS: a recovery under way when the close began, or a tool host's release,
- *  ends inside it) and the stop's margin for the loops' release to be cut and written. Claims are renewed until then. */
-export const runnerStopBy = (closedAt: number, stopFrom: number, leaseMs: number, stopMarginMs: number, cleanupMs?: number, releaseMarginMs?: number): number => Math.max(stopFrom + leaseMs - stopMarginMs, closedAt + releaseBoundMs(cleanupMs, releaseMarginMs) + stopMarginMs);
+ *  ends inside it) and, for the loops' release to be cut and what it books written, the stop's margin or the release's
+ *  margin (the cut's booking), whichever is longer (runnerReserveMs). Claims are renewed until then. */
+export const runnerStopBy = (closedAt: number, stopFrom: number, leaseMs: number, stopMarginMs: number, cleanupMs?: number, releaseMarginMs?: number): number => Math.max(stopFrom + leaseMs - stopMarginMs, closedAt + releaseBoundMs(cleanupMs, releaseMarginMs) + runnerReserveMs(stopMarginMs, releaseMarginMs));
+/** What the end of close()'s window keeps after its loops' release is cut (Runner.close's releaseBy): the stop's margin
+ *  or the release's margin (default RELEASE_MARGIN_MS, what the cut's booking may take), whichever is longer, so the
+ *  cut's booking and record land while the claims are still renewed. */
+export const runnerReserveMs = (stopMarginMs: number, releaseMarginMs: number = RELEASE_MARGIN_MS): number => Math.max(stopMarginMs, releaseMarginMs);
 /** The longest close() takes with the default lease and cleanup bound (Runner.close, runnerStopBy): its drain and the
  *  lease less its margin, or the providers' cleanup bound and its margins, whichever is longer (40 s with the default
  *  6 s drain). A claim in flight at the close is waited for inside them, never in a window of its own. A stop deadline that cuts the process sooner cuts a run's end or release short, and the run waits out its
@@ -165,7 +170,8 @@ export interface RunnerOptions {
   cleanupMs?: number;
   /** That margin (default RELEASE_MARGIN_MS): what a claim's tool hosts get beyond the cleanup bound to let the run go,
    *  what a release's cut gets to book what it could not let go (LoopDeps.releaseMarginMs), and what close() gives a lost
-   *  create's recovery under way to book its release (recoveriesDone). */
+   *  create's recovery under way to book its release (recoveriesDone). close() keeps it at its window's end, after the
+   *  loops' release is cut, when it is longer than the stop's margin (runnerReserveMs). A finite number, 0 or more. */
   releaseMarginMs?: number;
   /** Claiming by memory as well as by count: a waiting run is claimed only while the runs this runner holds and it weigh
    *  no more than `budgetMib` together (each run's weight, `weigh`'s, is what a run of its harness reserves:
@@ -387,6 +393,9 @@ export function startRunner(options: RunnerOptions): Runner {
   };
   if (!(stopMarginMs < leaseMs && renewEveryMs < leaseMs - stopMarginMs)) {
     throw new RangeError(`a claim of ${leaseMs} ms must be renewed (every ${renewEveryMs} ms) before its stop margin (${stopMarginMs} ms)`);
+  }
+  if (!(Number.isFinite(releaseMarginMs) && releaseMarginMs >= 0)) {
+    throw new RangeError(`a release margin must be a finite number of ms, 0 or more: ${releaseMarginMs}`);
   }
   // The runs' live view: every loop this runner makes reports its run's held state to the one ticker, which writes it
   // once a tick and is closed at the end of close(), after the drain and the loops' stop.
@@ -1613,8 +1622,9 @@ export function startRunner(options: RunnerOptions): Runner {
       // stop grace allows for.
       const stopBy = runnerStopBy(closedAt, Date.now(), leaseMs, stopMarginMs, cleanupMs, releaseMarginMs);
       recoverBy = stopBy;
-      // A loop's release is cut the stop's margin before the window ends, so its cut and what it books land inside it.
-      releaseBy = stopBy - stopMarginMs;
+      // A loop's release is cut the stop's margin or the release's margin (its cut's booking) before the window ends,
+      // whichever is longer (runnerReserveMs), so its cut and what it books land inside it, its claim still renewed.
+      releaseBy = stopBy - runnerReserveMs(stopMarginMs, releaseMarginMs);
       // A stop or cancel a person sent before the close is the run's end, never a resume: one no delivery has handed on
       // yet (the command poll's tick had not come) is read here, once, for every run still going, and stops its loop as
       // its delivery would. Its end is in the store when the close is done, and the next start never resumes the turn.

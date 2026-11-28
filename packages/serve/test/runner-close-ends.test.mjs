@@ -237,3 +237,10 @@ for (const kind of ["cancel", "stop"]) {
     assert.notEqual((await commandRow(server, "run-1", row.id)).takenAt, null, "its row is taken");
   });
 }
+
+test("a runner refuses a release margin that is not a finite number of ms, 0 or more: close()'s window would have no end to keep for the cut's booking", async () => {
+  const { runners: [store] } = await stores({ runners: 1 });
+  for (const releaseMarginMs of [Number.NaN, -1, Number.POSITIVE_INFINITY]) {
+    assert.throws(() => startRunner({ store, createLoop: () => assert.fail("no loop"), name: "runner-a", ...TIMING, releaseMarginMs }), RangeError, `refused: ${releaseMarginMs}`);
+  }
+});
