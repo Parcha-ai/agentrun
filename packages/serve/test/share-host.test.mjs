@@ -436,6 +436,10 @@ test("LVI (11-26 r2): an exported title holding any env command's output is cut,
     const doc = JSON.parse(await bundleOf());
     await assert.rejects(screenShare(resigned({ ...doc, run: { ...doc.run, title } }), []), (error) => error.code === "input_invalid" && (error.extra.details.counts["env-dump"] ?? 0) >= 1, title);
   }
+  // A value ahead of a cut marker is output, not the export's cut: refused.
+  const doc = JSON.parse(await bundleOf());
+  const title = `Say: $ echo $SYNTH_ROOM ${seed} [redacted:env-dump 1 lines]`;
+  await assert.rejects(screenShare(resigned({ ...doc, run: { ...doc.run, title } }), []), (error) => error.code === "input_invalid" && (error.extra.details.counts["env-dump"] ?? 0) >= 1, title);
 });
 
 test("a call's long command is read once per call, never once per string of its output: ≥1 MiB of command over 5,000 strings screens in bounded time", { timeout: 900_000 }, async () => {

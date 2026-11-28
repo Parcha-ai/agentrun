@@ -2002,7 +2002,7 @@ test("LVI (11-26): a transcript flattened onto one line (a run's title) is cut a
   assert.equal(clipped.text, "Say: $ env [redacted:env-dump 1 lines]");
   // Through a pipe, after a full PS1 prompt, and env's own value a label rule cut already: one dump cut holds it all.
   const piped = await gone(`user@host:~$ env | sort SYNTH_A=1 SYNTH_SEED=${seed} user@host:~$ ls`, [seed], { flattened: true });
-  assert.equal(piped.text, "user@host:~$ env | sort [redacted:env-dump 1 lines] user@host:~$ ls");
+  assert.equal(piped.text, "user@host:~$ env [redacted:env-dump 1 lines] user@host:~$ ls");
   const labelled = await gone(`Say: $ env AWS_SECRET_ACCESS_KEY=${seed}Zx81 $ ls README`, [seed], { flattened: true });
   assert.equal(labelled.text, "Say: $ env [redacted:env-dump 1 lines] $ ls README");
   // Flattened, a command that prints nothing of the environment, or a dollar that is no prompt, keeps its words.
@@ -2032,8 +2032,14 @@ test("LVI (11-26 r2): a flattened title cuts any env command's output, not only 
     // Read again as the share host reads an uploaded title: what the export cut is no new hit.
     assert.deepEqual((await scrub(out.text, { mode: "count", flattened: true })).cuts, [], out.text);
   }
-  // A cut whose command runs past its fewest env words (a pipe, a sort) is read again as no new hit too.
-  assert.deepEqual((await scrub("user@host:~$ env | sort [redacted:env-dump 1 lines] user@host:~$ ls", { mode: "count", flattened: true })).cuts, []);
+  // A NAME=value word later in the output moves no cut past a value before it: the cut starts after the fewest words.
+  const later = await gone(`Say: $ echo $SYNTH_ROOM ${seed} SYNTH_REGION=north $ ls`, [seed], { flattened: true });
+  assert.equal(later.text, "Say: $ echo $SYNTH_ROOM [redacted:env-dump 1 lines] $ ls");
+  // Only a segment whose words after the command are one marker is the export's own cut. Words before a marker are
+  // output, read again: a value pasted ahead of a cut, or an older export's `env | sort` ahead of its cut, is a hit.
+  for (const text of [`Say: $ echo $SYNTH_ROOM ${seed} [redacted:env-dump 1 lines]`, "user@host:~$ env | sort [redacted:env-dump 1 lines] user@host:~$ ls"]) {
+    assert.deepEqual((await scrub(text, { mode: "count", flattened: true })).cuts.map((c) => c.rule), ["env-dump"], text);
+  }
   // A command that prints nothing of the environment, a .env template, or one with no output after it: kept.
   for (const text of ["Fix it: $ echo hello world $ ls", "Say: $ cat README.md then fix it", "Say: $ cat .env.example SYNTH_ROOM=placeholder", "Say: $ printenv", "Say: $ ls src/env.ts"]) {
     assert.deepEqual((await scrub(text, { mode: "count", flattened: true })).cuts, [], text);
