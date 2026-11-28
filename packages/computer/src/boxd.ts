@@ -126,9 +126,11 @@ const MOZILLA_KEY_SHA256 = "3ecc63922b7795eb23fdc449ff9396f9114cb3cf186d6f5b53ad
  * What a desktop needs that boxd's own image lacks (Xvfb, xdotool and Thunar are the image's already): Xfce's text
  * editor and terminal (mousepad and xfce4-terminal, from Ubuntu's universe) and Firefox ESR, from Mozilla's APT
  * repository, since Ubuntu 24.04's firefox is a snap and a microVM runs no snapd. Mozilla's key is held to its sha256
- * before apt reads anything it signs. Each program and desktop file is checked. Run as root on a build machine of boxd's
- * own image, with no single quote in it (it goes in one pair). The snapshot's name carries this recipe's hash, so a
- * new recipe is a new snapshot.
+ * before apt reads anything it signs. That origin is pinned before its source is written, so apt never reads it
+ * unpinned: firefox-esr and its own firefox-esr-* packages at 500, every other package from it at -1 (never installed),
+ * so it can never replace or downgrade a distro package. Each program and desktop file is checked. Run as root on a
+ * build machine of boxd's own image, with no single quote in it (it goes in one pair). The snapshot's name carries this
+ * recipe's hash, so a new recipe is a new snapshot.
  */
 const DESKTOP_RECIPE = [
 	"set -e",
@@ -138,8 +140,8 @@ const DESKTOP_RECIPE = [
 	"install -d -m 0755 /etc/apt/keyrings",
 	`curl -fsSL https://packages.mozilla.org/apt/repo-signing-key.gpg -o ${MOZILLA_KEY}`,
 	`echo "${MOZILLA_KEY_SHA256}  ${MOZILLA_KEY}" | sha256sum -c --quiet - || { echo "the APT signing key from packages.mozilla.org is not the one this recipe pins" >&2; exit 1; }`,
+	'printf "Package: firefox-esr*\\nPin: origin packages.mozilla.org\\nPin-Priority: 500\\n\\nPackage: *\\nPin: origin packages.mozilla.org\\nPin-Priority: -1\\n" > /etc/apt/preferences.d/mozilla',
 	`echo "deb [signed-by=${MOZILLA_KEY}] https://packages.mozilla.org/apt mozilla main" > /etc/apt/sources.list.d/mozilla.list`,
-	'printf "Package: *\\nPin: origin packages.mozilla.org\\nPin-Priority: 1000\\n" > /etc/apt/preferences.d/mozilla',
 	"apt-get update -qq",
 	"apt-get install -y -qq --no-install-recommends mousepad xfce4-terminal firefox-esr >/dev/null",
 	'for x in mousepad xfce4-terminal firefox-esr; do command -v "$x" >/dev/null || { echo "the desktop has no $x" >&2; exit 1; }; done',
