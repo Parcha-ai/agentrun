@@ -95,8 +95,11 @@ start asks for it with `learning: {settings}` (RunCreate; its own model key and 
 learning is on. Such a run's loop numbers are its start's settings when it gave them, else its definition's
 (learning-setting.ts runLearningOf), and every piece of its learning work spends inside its own cap. Asked on a server
 whose learning is off, the start is refused (`400 learning_off`). The agent's own reads (its pending count, the loop and
-promotions reads, an owner's replay, an audit's hold) take its newest asking run's settings, else its current
-definition's (agent-run-learning.ts learningOfAgentNow).
+promotions reads, an owner's replay, an audit's hold) take the newer of its newest asking run's settings (by its start)
+and its current revision's definition (by its save): a revision saved later wins, one with no learning reading as not
+learning, until another run asks (agent-run-learning.ts learningOfAgentNow). The asking run is named in its agent's
+settings row before it is made; a failed write refuses the start with nothing made, and a row whose run does not exist
+is ignored.
 
 The compile turn is one more turn of a run's session at its end. It asks for the first workflow once the agent has its
 definition's (or the run's own settings') `learning.compile_after` completed runs of its own (20 by default; a run its learned workflow answered

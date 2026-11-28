@@ -607,14 +607,19 @@ export async function startRun(store: Store, deps: StartDeps, entry: AgentEntry,
   const target = keyTargetOf(launch, revision);
   keyedOrRefused(deps, target, sealed);
   const runId = (deps.newRunId ?? uuidv7)();
+  // A run that asks to learn is named its agent's newest that did, which its agent-level reads take the settings of
+  // (agent-run-learning.ts), BEFORE it is made: the store writes no settings row in the run's own transaction, so a name
+  // that fails to write refuses the start (the error answers, nothing made), never a run its agent reads nothing of. A
+  // start that then makes no run of this id puts the row it replaced back; a reader ignores a row whose run is not there.
+  const named = launch.learning?.settings ? await noteRunLearning(store.settings, entry.agent.id, runId, Date.now()) : undefined;
   try {
     const labels = labelsOf(body.labels);
     const row = await withHeldFiles(store, deps, runId, entry.agent.id, revision, launch, (launch) => store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, expectedCurrent: entry.agent.currentRevision, ...(origin ? { origin } : {}), ...(labels ? { labels } : {}), ...(firing ? { firing } : {}) }, { body: launchBody(launch), ...(sealed ? { sealed: sealed(runId, launch, target) } : {}) }));
-    // A run that asked to learn is named its agent's newest that did, which its agent-level reads take the settings of
-    // (agent-run-learning.ts). The run is made either way: a name that fails to write leaves them on the one before.
-    if (launch.learning?.settings && row.id === runId) await noteRunLearning(store.settings, entry.agent.id, row.id, row.startedAt).catch(() => undefined);
+    if (row.id !== runId) await named?.undo().catch(() => undefined);
     return row;
   } catch (error) {
+    // Put back only when no run of this id was made (an answer lost after its commit keeps its name).
+    if (named && (await store.runs.get(runId).then((row) => row === undefined, () => false))) await named.undo().catch(() => undefined);
     if (error instanceof RevisionMoved) throw new ApiError("precondition_failed", "The agent changed while this run was prepared. Start again using its current setup.");
     // Only another writer of the store got here first under the same origin key: its run is the one asked for.
     if (origin && error instanceof StoreConstraint) {

@@ -27,7 +27,7 @@
 //     against it (answerJudged). A graded run is counted by its grade row alone (learn/audit.ts
 //     windowOf): the check and the audit read one ground truth, a grade's answer where a person gave one, else the agent's.
 // Every number is the agent definition's (learning-setting.ts auditLoopOf), or a run's that asked to learn with its own:
-// a draw reads its run's (runLearningOf), the hold its agent's newest asking run's (agent-run-learning.ts). Nothing here
+// a draw reads its run's (runLearningOf), the hold its agent's as agent-run-learning.ts takes it. Nothing here
 // fails a claim: a failure is logged.
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import { overCapMessage } from "@parcha/agentrun-kernel/kernel/cap";
@@ -93,11 +93,14 @@ const turnOf = (id: string | undefined): { turn?: string } => (id === undefined 
 const auditedAnswer = (deps: Pick<AuditDeps, "store" | "context">, row: Pick<AuditRow, "run" | "turn">) => (row.turn === undefined ? Promise.resolve(null) : answerOf(deps.store, row.run, deps.context, row.turn));
 
 /** The audit numbers agent `agentId`'s hold reads, as every agent-level reader takes them (agent-run-learning.ts): its
- *  newest run that asked to learn's settings, else revision `revisionId`'s definition's (each one left out at its
- *  default). */
+ *  newest run that asked to learn's settings when that run was named no earlier than its current revision was saved,
+ *  else revision `revisionId`'s definition's (each one left out at its default). */
 export async function auditLoopOfAgent(store: Pick<Store, "agents" | "runs" | "settings">, agentId: string, revisionId: string): Promise<AuditLoop> {
   try {
-    return auditLoopOf(await learningOfAgentNow(store, agentId, (await store.agents.revision(revisionId))?.body));
+    const revision = await store.agents.revision(revisionId);
+    const current = (await store.agents.get(agentId))?.currentRevision;
+    const savedAt = !current || current === revisionId ? revision?.createdAt : (await store.agents.revision(current))?.createdAt;
+    return auditLoopOf(await learningOfAgentNow(store, agentId, revision, savedAt));
   } catch {
     return auditLoopOf(undefined);
   }

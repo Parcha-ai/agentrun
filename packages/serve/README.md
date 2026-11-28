@@ -5106,9 +5106,12 @@ A run can also ask for it at its start (`POST /v2/agents/{id}/runs`, the field `
   shadow that does not fit is dropped before it starts, nothing spent, and says so in words in the run's
   `learning_work.dropped` and in a `learning` row of its timeline. On a server whose learning is off the object is
   `400 learning_off` ("Learning is off on this server."), nothing stored, and `features.run_learning` is `false`. Once
-  a run asked, its agent's own learning reads take the settings of its newest run that asked, else its revision's: the
-  agent's `learning.pending`, its learning loop and promotions reads, an owner's replay and an audit's hold. So an agent
-  whose definition has no learning reads as learning while its runs learn. An inline run (`POST /v2/runs`) takes
+  a run asked, its agent's own learning reads take the newer of its newest run that asked (from its start) and its
+  current revision (from its save): the agent's `learning.pending`, its learning loop and promotions reads, an owner's
+  replay and an audit's hold. So an agent whose definition has no learning reads as learning while its runs learn, a
+  revision saved after that run wins (one saying `learning: false` reads as not learning), and the next run that asks
+  wins again. The ask is recorded for the agent before the run is made: if that write fails the start is refused with a
+  5xx and nothing is made. An inline run (`POST /v2/runs`) takes
   `"use"` alone, and a run a trigger starts keeps its revision's learning.
 
 An agent learns two things. Its owner's corrections: the words they give after a run (a grade's, or a message after

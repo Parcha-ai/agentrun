@@ -36,10 +36,10 @@ export async function agentLoopOverStore(store: Store, agentId: string): Promise
   const ended = (await store.runs.list({ agentId, disk: null })).filter((run) => run.agentId === agentId && FINAL_STATES.includes(run.state) && !run.importedFrom && run.archivedAt === null && since(run)).sort((a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1));
   // The completed runs of the agent's own toward its compile (what compileDue counts), at most compile_after: the tab
   // says "N of compile_after" from this, never from the one page of runs it reads. compile_after as its agent-level
-  // readers take it (agent-run-learning.ts): its newest asking run's, else its current revision's.
+  // readers take it (agent-run-learning.ts): the newer of its newest asking run's and its current revision's.
   const current = (await store.agents.get(agentId))?.currentRevision;
-  const body = current ? (await store.agents.revision(current))?.body : undefined;
-  const completed_runs = (await lastOwnRuns(store, agentId, loopOf(await learningOfAgentNow(store, agentId, body)).compile_after)).length;
+  const revision = current ? await store.agents.revision(current) : undefined;
+  const completed_runs = (await lastOwnRuns(store, agentId, loopOf(await learningOfAgentNow(store, agentId, revision)).compile_after)).length;
   const promotions = await promotionsOf(store.learning, agentId).catch(() => []);
   const compiles: (LoopCompile & { createdAt: number })[] = [];
   for (const run of ended) {

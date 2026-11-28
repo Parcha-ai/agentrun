@@ -1456,11 +1456,11 @@ async function whileReplaced<T>(take: () => Promise<T> | T, held: (error: unknow
 async function startHolding(options: ServeOptions, data: string, checked: { maxRuns: number; minFreeBytes: number; learning: LearningMode; boxAllow: readonly string[] | "none"; templates: Package[]; ollamaHost: string | undefined; notOwn: readonly string[] }, stops: Array<() => Promise<void>>): Promise<Serve> {
   const { maxRuns, minFreeBytes, learning, boxAllow, templates, ollamaHost, notOwn } = checked;
   /** What an agent's view says of its learning: how many learned items wait for its owner's OK, for an agent that learns
-   *  on this server (learning on, and its learning on as agent-run-learning.ts reads it: its newest run that asked to
-   *  learn's settings, else its current revision's `learning`); none for another, or when the count cannot be read (the
-   *  view never fails for it). */
-  const learningOfAgent = async (entry: { agent: { id: string }; revision?: { kind: string; body: unknown } | null }): Promise<{ pending: number } | undefined> => {
-    if (learning === "off" || entry.revision?.kind !== "agentic" || !learnsOf(await learningOfAgentNow(store, entry.agent.id, entry.revision.body))) return undefined;
+   *  on this server (learning on, and its learning on as agent-run-learning.ts reads it: the newer of its newest run
+   *  that asked to learn and its current revision); none for another, or when the count cannot be read (the view never
+   *  fails for it). */
+  const learningOfAgent = async (entry: { agent: { id: string }; revision?: { kind: string; body: unknown; createdAt: number } | null }): Promise<{ pending: number } | undefined> => {
+    if (learning === "off" || entry.revision?.kind !== "agentic" || !learnsOf(await learningOfAgentNow(store, entry.agent.id, entry.revision))) return undefined;
     const pending = await pendingCount(store, entry.agent.id);
     return pending === undefined ? undefined : { pending };
   };
@@ -4065,14 +4065,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** A replay's ports for agent `entry` (runner/promotion.ts askReplay, replayView): its learning as this server
    *  reads it, cut of the host's secrets as the learning reads cut them, and a replay run's launch made as a run's start
    *  makes one now (prepareLaunch: the agent's current revision, model, plane and learning start), with the settings of
-   *  the agent's newest run that asked to learn when one did (agent-run-learning.ts), so the replay learns as its agent
-   *  does. */
+   *  the agent's newest run that asked to learn when one did after its current revision was saved (agent-run-learning.ts),
+   *  so the replay learns as its agent does. */
   const replayAskOf = (entry: AgentEntry): ReplayAsk => ({
     admitAuxiliary: auxiliaryAdmitter(store, { data, project: startDeps.project }),
     store, agentId: entry.agent.id, context: ctx, log: (line) => void log?.(line),
     shown: () => learningShown(entry.agent.id),
     launchOf: async (input) => {
-      const settings = await askedLearningOf(store, entry.agent.id);
+      const settings = await askedLearningOf(store, entry.agent.id, entry.revision?.createdAt);
       const { launch, revision } = await prepareLaunch(startDeps, entry, { input, ...(settings ? { learning: { settings: settings as Json } } : {}) });
       return { launch, revisionId: revision.id };
     },
@@ -6946,8 +6946,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const shown = await learningShown(id);
         const shownRead = promotionsShown(records, shown);
         // A ledger that can't be read now leaves each audit line at no rows, never the read refused.
-        // The audit numbers its agent-level readers take (agent-run-learning.ts): its newest asking run's, else its revision's.
-        const loop = auditLoopOf(await learningOfAgentNow(store, id, entry.revision?.body));
+        // The audit numbers its agent-level readers take (agent-run-learning.ts): the newer of its newest asking run's and its revision's.
+        const loop = auditLoopOf(await learningOfAgentNow(store, id, entry.revision));
         // Each one's state with the money rule's decision a run's launch reads (costStopOverStore): a champion it stopped
         // running first reads `stopped`.
         const lines = servingLinesOf(records, await auditsOfAgent(id).catch(() => []), loop, await costStopOverStore(store, id));
