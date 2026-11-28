@@ -4619,7 +4619,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const seal = startSeal(secrets);
         // What the server writes of the start (its input, which the run's title is read from) is cut of what it hands.
         const cut = cutHanded(rest, handedSecretValues(secrets));
-        return targets.start(firing.target, cut.input, firing.trigger, firing.from, firing.title, firing.previous, { body: cut, ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets) });
+        return targets.start(firing.target, cut.input, firing.trigger, firing.from, firing.title, firing.previous, { body: cut, ...(firing.told !== undefined ? { told: firing.told } : {}), ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets) });
       });
       return { status: 202, body: await viewOverStore(store, run.run_id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${run.run_id}`, ...(run.replayed ? { "idempotent-replayed": "true" } : {}) } };
     }

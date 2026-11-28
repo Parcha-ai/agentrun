@@ -816,9 +816,9 @@ export const STORE_DDL: readonly string[] = [
     ${json("attrs", true)},
     shown INTEGER,
     waits_on TEXT,
-    -- What the launch hook told the host of the firing's run (FiringRow.hooked), written at its first hand and kept, so a
-    -- retry names the same cap and the host's start runs under it. Added at a server open to a store an earlier build of
-    -- this version made (TRIGGER_FIRINGS_HOOKED).
+    -- What the launch hook told the host of the firing's run (FiringRow.hooked): the lowest cap any hand of it told, so
+    -- the host's start never runs past it. Added at a server open to a store an earlier build of this version made
+    -- (TRIGGER_FIRINGS_HOOKED).
     ${json("hooked", true)},
     PRIMARY KEY (trigger_id, key)
   ) STRICT`,

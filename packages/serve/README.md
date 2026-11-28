@@ -4240,9 +4240,11 @@ host, and this server starts no run for it:
 ```
 
 `max_cost_usd` is the trigger's cap, the most the firing's run may cost, so a host that pays for runs can check the
-payer's balance against it before it starts one. The firing keeps the cap it was handed with: a retry of the hand sends
-the same one, and the run the host starts for the firing runs under it even if the trigger's target changed since. A
-`null` means the agent's default when the host starts the run: the target set no cap when the firing was handed.
+payer's balance against it before it starts one. The firing keeps the lowest cap any hand of it sent: a retry of the
+hand sends the lower of that and the target's cap by then, and the run the host starts for the firing never runs past
+it. A target lowered after the hand lowers the firing's cap; one raised after, even back to where it was, never raises
+it. A `null` means the agent's default when the host starts the run: the target set no cap when the firing was
+handed. A cap the target gains after that is sent on a retry, and the run takes it under the agent's default.
 
 The POST carries `webhook-id` (the firing's id, the same if it is handed again), `webhook-timestamp` and
 `webhook-signature` as [webhooks](#webhooks) do: check them with any Standard Webhooks library before reading the
@@ -4257,11 +4259,12 @@ trigger's title and input origin, and the firing reads `started` with it, so the
 The run starts on the trigger's target as it stands when the host starts it, as the run this server would start for
 the firing, except for its cap:
 
-- Its cap is the `max_cost_usd` the hook sent for the firing, which the host's `max_cost_usd` may lower and never
-  raise: the lower of the two is taken. A firing handed at 0.5 runs at 0.5 when the host sends 10, and at 0.2 when the
-  host sends 0.2, even if the target's cap was raised after the hand. A firing handed with `null` takes the agent's
-  default when the host starts it, which the host's may lower the same way: on an agent with a $5 default, the host's
-  500 runs at 5 and its 1 at 1.
+- Its cap is the lowest `max_cost_usd` the hook sent for the firing or the target's cap when the host starts it,
+  whichever is lower, which the host's `max_cost_usd` may lower and never raise. A firing handed at 0.5 runs at 0.5 when
+  the host sends 10, and at 0.2 when the host sends 0.2 or the target was lowered to 0.2 after the hand; a target raised
+  after the hand still runs at 0.5, and a firing retried at 0.2 still runs at 0.2 after its target is set back to 0.5. A firing handed with `null` takes the agent's default when the host starts it, or the cap
+  the target has gained since when that is lower, which the host's may lower the same way: on an agent with a $5
+  default, the host's 500 runs at 5 and its 1 at 1, and a target capped at 2 after the hand runs at 2.
 - Its effort is the target's when the target sets one, else the host's `effort`, else the agent's.
 - It runs on the agent's current revision and holds no computer: `revision`, `hold` or `hold_minutes` in the host's
   body is refused with 422 `not_allowed`, naming the field.
