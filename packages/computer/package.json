@@ -12,7 +12,8 @@
     "smolcloud",
     "groundbox",
     "vercel",
-    "sprites"
+    "sprites",
+    "boat"
   ],
   "type": "module",
   "license": "Apache-2.0",
@@ -90,6 +91,10 @@
     "./sprites": {
       "types": "./dist/sprites.d.ts",
       "default": "./dist/sprites.js"
+    },
+    "./boat": {
+      "types": "./dist/boat.d.ts",
+      "default": "./dist/boat.js"
     },
     "./orgo": {
       "types": "./dist/orgo.d.ts",

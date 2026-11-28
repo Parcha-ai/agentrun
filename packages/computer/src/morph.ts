@@ -14,16 +14,15 @@
 // Facts the docs do not settle are marked **unverified**; d7/morph-branch-1 (the lane's live kit) settles most of them.
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { isIP, connect as tcp } from "node:net";
+import { isIP } from "node:net";
 import { boxRecipeHash } from "./box-image.js";
 import { MORPH } from "./descriptors/morph.js";
 import { DEADLINE_LABEL, DEFAULT_CPUS, DEFAULT_MEMORY_MB, show } from "./drift.js";
-import { proxyFor, tunnelThrough } from "./env-proxy.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
 import { orThrow, pause, runToExit, uploadThroughExec } from "./hosted/process.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts, isoOf, MAX_LABEL } from "./hosted/provider.js";
 import { httpsBase, jsonOf, type Rest, rest } from "./hosted/rest.js";
-import { pemOf, type Ssh2Module, SshExec, SshTunnelError, type SshTunnel } from "./hosted/ssh-exec.js";
+import { pemOf, type Ssh2Module, SshExec, tcpTunnel } from "./hosted/ssh-exec.js";
 import { DOMAIN, dateOf, sizeRefusals } from "./hosted/values.js";
 import type { CallContext, ComputerSpec, Refusal } from "./provider.js";
 import { type ComputerErrorCode, failFor, ok, type Result } from "./result.js";
@@ -176,8 +175,10 @@ class MorphHost implements MachineHost {
 		this.#sshHost = options.sshHost;
 		this.#sshPort = options.sshPort;
 		// The user is the instance id alone and the key is the instance's: the account's key never goes over SSH. An
-		// instance whose key was let go logs in with none, which the gateway refuses (denied).
-		this.#ssh = new SshExec({ ssh2: options.ssh2, loginOf: (id) => ({ username: id, ...(this.#keys.has(id) ? { privateKey: this.#keys.get(id) } : {}), secrets: [apiKey] }), tunnelOf: () => this.#tunnel() });
+		// instance whose key was let go logs in with none, which the gateway refuses (denied). No host key is pinned: Morph
+		// publishes none, and both SDKs take any (paramiko's AutoAddPolicy). The login is a public key, so a host posing as
+		// the gateway learns no credential.
+		this.#ssh = new SshExec({ ssh2: options.ssh2, loginOf: (id) => ({ username: id, ...(this.#keys.has(id) ? { privateKey: this.#keys.get(id) } : {}), secrets: [apiKey] }), tunnelOf: () => tcpTunnel(this.#sshHost, this.#sshPort) });
 		this.#client = rest({
 			base: options.apiUrl,
 			headers: () => ({ Authorization: `Bearer ${apiKey}`, Accept: "application/json" }),
@@ -194,30 +195,6 @@ class MorphHost implements MachineHost {
 
 	errorCode(error: unknown): ComputerErrorCode {
 		return codeOf(error);
-	}
-
-	/**
-	 * A TCP connection to the gateway, through the proxy's CONNECT tunnel when the proxy the process installed into Node
-	 * applies to it (env-proxy.ts). No host key is pinned: Morph publishes none, and both SDKs take any (paramiko's AutoAddPolicy). The
-	 * login is a public key, so a host posing as the gateway learns no credential.
-	 */
-	#tunnel(): SshTunnel {
-		const host = `${this.#sshHost}:${this.#sshPort}`;
-		const name = isIP(this.#sshHost) === 6 ? `[${this.#sshHost}]` : this.#sshHost;
-		const proxy = proxyFor(new URL(`https://${name}:${this.#sshPort}`));
-		const through = proxy && tunnelThrough(proxy, name, this.#sshPort);
-		const socket = through ? through.socket : tcp(this.#sshPort, this.#sshHost);
-		// ssh2 reads the socket's errors once it has it; this keeps one before then from being thrown.
-		socket.on("error", () => {});
-		const failed = (error: Error) => new SshTunnelError(`the SSH connection to ${host}${proxy ? ` through the proxy ${proxy.host}` : ""} failed to open: ${error.message}`);
-		const opened = through
-			? through.opened.catch((error: Error) => Promise.reject(failed(error)))
-			: new Promise<void>((resolve, reject) => {
-					socket.once("connect", resolve);
-					socket.once("error", (error) => reject(failed(error)));
-				});
-		opened.catch(() => {});
-		return { duplex: socket, opened, host };
 	}
 
 	/**
