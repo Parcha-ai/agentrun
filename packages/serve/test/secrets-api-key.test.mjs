@@ -88,8 +88,9 @@ test("a key the server makes is cut by the same shape, in a learned note and in 
   const keys = new ApiKeys(store, randomBytes(32));
   // Several, so the test does not pass by one key's luck: each is random, and "-" and "_" are among its characters. The
   // first is fixed: a key whose 43 random characters start with "sk-", as about one in 160,000 the server makes do.
-  const made = [`${PREFIX}sk-${BODY}`];
+  const made = [`${PREFIX}sk-${BODY.slice(0, 40)}`];
   for (let i = 0; i < 25; i++) made.push((await keys.create({ name: `key ${i}` })).api_key);
+  assert.equal(made[0].length, made[1].length, "the fixed key is as long as a key the server makes");
   for (const api_key of made) {
     const text = `curl -H "Authorization: ${SCHEME} ${api_key}" then AGENTRUN_API_KEY=${api_key} done`;
     const want = `curl -H "Authorization: ${SCHEME} [redacted]" then AGENTRUN_API_KEY=[redacted] done`;
