@@ -63,6 +63,18 @@ test("each fixture the bench desktop can't run is refused with its reason, and P
 	assert.match(port, /\| \*\*all\*\* \| \*\*7\*\* \| \*\*4\*\* \| \*\*1\*\* \| \*\*3\*\* \| \*\*4\*\* \|/);
 });
 
+test("a task whose setup or check runs sudo is refused: osw runs as the computer's own user, with no root", async () => {
+	const { classify, osworldNames } = await loader();
+	const names = osworldNames(OSWORLD);
+	const NO_ROOT = "a setup or check step runs sudo, and the bench desktop gives no root: osw runs as the computer's own user";
+	const task = (config, command) => ({ id: "00000000-0000-0000-0000-000000000000", related_apps: ["os"], config, evaluator: { func: "exact_match", result: { type: "vm_command_line", command }, expected: { type: "rule", rules: { expected: "x" } } } });
+	const execute = (line) => [{ type: "execute", parameters: { command: ["bash", "-c", line] } }];
+	assert.ok(classify(task(execute("echo {CLIENT_PASSWORD} | sudo -S apt-get install -y expect"), "which expect"), names).reasons.includes(NO_ROOT), "in the config");
+	assert.ok(classify(task([], ["bash", "-c", "echo '{CLIENT_PASSWORD}' | sudo -S cat /etc/shadow"]), names).reasons.includes(NO_ROOT), "in the check");
+	assert.ok(classify({ ...task([], "true"), evaluator: { ...task([], "true").evaluator, postconfig: execute("sudo mkdir /opt/x") } }, names).reasons.includes(NO_ROOT), "in the postconfig");
+	assert.equal(classify(task(execute("mkdir ~/sudoku"), "ls ~"), names).reasons.includes(NO_ROOT), false, "a word with sudo in it is not sudo");
+});
+
 test("a port that now refuses a task removes its folder from an earlier port, in the domains it writes alone", async () => {
 	const { writeSuite } = await loader();
 	const ids = (out) => loadSuite(out).map((task) => task.spec.id).sort();
