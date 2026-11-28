@@ -52,6 +52,7 @@ import { INPUTS_DIR } from "./uploads.js";
 import { inputIssues, inputSchemaOf, isObject, type Json, MODEL_REF } from "./validate.js";
 import { RUN_FILE_CUT_MAX } from "./run-files.js";
 import { ON_DATA_WITH_SERVER } from "./template-eval-words.js";
+import { PATTERN_MS, PatternTimeout, testPattern } from "./pattern-bound.js";
 
 /** What a grader run is told, whatever the rubric: blind, strict, and its verdict as one JSON block. */
 export const GRADER_INSTRUCTIONS = `You grade one run of an AI agent against one rubric. You see the rubric, the task the agent was given, its answer, and the tool calls it made; nothing else, and nothing else matters.
@@ -86,6 +87,7 @@ export const EVAL_TIMELINE_POLL_MS = 250;
 /** The folder under TMPDIR where local evals keep the one install of each harness's pin they all share. */
 export const EVAL_HARNESSES = "agentrun-eval-harnesses";
 export { ON_DATA_WITH_SERVER };
+export { PATTERN_MS };
 
 const PROMPT_FIELDS = ["description", "runs", "max_cost_usd", "input"];
 const CASE_FIELDS = ["parameters", "grants", "mcp", "web", "monid", "learning", "now", "email", "calendar", "feed", "previous", "files"];
@@ -126,9 +128,10 @@ export type Grader = (
  *  <regex>}`, is a string the regex matches whole; `when` a list, when any one of its entries does (one answer for each
  *  spelling of a call: a file by `sha` or by `ref`, say). */
 type Answer = { when: Json | Json[]; result: Json };
-/** The regex a `when` value matches by, when it is `{"$pattern": <regex>}` and nothing else: anchored here, so a key
- *  made of a run's random stem (ns-k7m2p9qa-voice-cold-open) matches whole, never by a prefix the author left open. */
-const patternOf = (value: unknown): RegExp | undefined => (isObject(value) && Object.keys(value).length === 1 && typeof value.$pattern === "string" ? new RegExp(`^(?:${value.$pattern})$`) : undefined);
+/** The regex source a `when` value matches by, when it is `{"$pattern": <regex>}` and nothing else. testPattern anchors
+ *  it, so a key made of a run's random stem (ns-k7m2p9qa-voice-cold-open) matches whole, never by a prefix the author
+ *  left open, and stops it at PATTERN_MS, so a pattern that backtracks without end never holds a fake or a grade. */
+const patternOf = (value: unknown): string | undefined => (isObject(value) && Object.keys(value).length === 1 && typeof value.$pattern === "string" ? value.$pattern : undefined);
 /** Why a value that names $pattern is no pattern: one that is no string, does not compile, or sits beside another key
  *  would be compared by equality and match nothing, so it is refused when the case is read, not missed silently. */
 const patternProblem = (value: unknown): string | undefined => {
@@ -678,10 +681,17 @@ const same = (a: unknown, b: unknown): boolean => JSON.stringify(canonical(a)) =
 const canonical = (value: unknown): unknown => (Array.isArray(value) ? value.map(canonical) : isObject(value) ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value);
 /** Whether `call` carries `args`: each key's value equal, an object's compared as a subset in turn, and a value written
  *  `{"$pattern": <regex>}` a string the regex matches whole (patternOf, as a fixture's `when` reads it). */
-const carries = (call: unknown, args: unknown): boolean => {
+const carries = (call: unknown, args: unknown, at = "args"): boolean => {
   const pattern = patternOf(args);
-  if (pattern) return typeof call === "string" && pattern.test(call);
-  return isObject(args) ? isObject(call) && Object.entries(args).every(([key, value]) => Object.hasOwn(call, key) && carries(call[key], value)) : same(call, args);
+  if (pattern !== undefined) {
+    if (typeof call !== "string") return false;
+    try {
+      return testPattern(pattern, call);
+    } catch (error) {
+      throw error instanceof PatternTimeout ? new PatternTimeout(`the $pattern at ${at} ${error.message}`) : error;
+    }
+  }
+  return isObject(args) ? isObject(call) && Object.entries(args).every(([key, value]) => Object.hasOwn(call, key) && carries(call[key], value, `${at}.${key}`)) : same(call, args);
 };
 
 /** What the run's cut writes in place of a secret's span in a file it serves (handed-values.ts). */
@@ -722,9 +732,15 @@ export function fakeAnswer(fixture: McpFixture, tool: string, args: Json): Json 
   const matches = (when: Json) => Object.entries(when).every(([key, value]) => {
     if (!Object.hasOwn(args, key)) return false;
     const pattern = patternOf(value);
-    return pattern ? typeof args[key] === "string" && pattern.test(args[key]) : same(args[key], value);
+    return pattern !== undefined ? typeof args[key] === "string" && testPattern(pattern, args[key]) : same(args[key], value);
   });
-  const hit = spec.answers.find((answer) => (Array.isArray(answer.when) ? answer.when.some(matches) : matches(answer.when)));
+  let hit: Answer | undefined;
+  try {
+    hit = spec.answers.find((answer) => (Array.isArray(answer.when) ? answer.when.some(matches) : matches(answer.when)));
+  } catch (error) {
+    if (!(error instanceof PatternTimeout)) throw error;
+    return { isError: true, content: [{ type: "text", text: `The fake ${fixture.server}'s ${tool}: a when $pattern ${error.message} on this call's arguments, so it gives no answer.` }] };
+  }
   if (hit) return hit.result;
   if (spec.search && typeof args[spec.search.query] === "string") return { content: [{ type: "text", text: searched(spec.search, args[spec.search.query] as string) }] };
   return spec.default ?? { isError: true, content: [{ type: "text", text: `The fake ${fixture.server}'s ${tool} has no answer for these arguments.` }] };
@@ -809,11 +825,19 @@ export function gradeDeterministic(grader: Exclude<Grader, { type: "llm" }>, run
     case "tool_used": {
       // A faked MCP tool's calls are its fake's log (each call that reached it, whole: fakeLog, never shown); any other
       // tool's, the timeline's, its arguments as the run's redaction shows them (callsOf).
-      const calls = grader.tools.flatMap((tool) => {
-        const server = mcpNameOf(tool)?.server;
-        const from = server !== undefined && faked.includes(server) ? run.fakeLog : run.calls;
-        return from.filter((call) => call.tool === tool && (!grader.args || carries(call.arguments, grader.args)));
-      });
+      // A $pattern stopped at its limit fails the grade: never a match or a miss it did not finish, which expect:
+      // not_called would read as a pass.
+      let calls: ToolCall[];
+      try {
+        calls = grader.tools.flatMap((tool) => {
+          const server = mcpNameOf(tool)?.server;
+          const from = server !== undefined && faked.includes(server) ? run.fakeLog : run.calls;
+          return from.filter((call) => call.tool === tool && (!grader.args || carries(call.arguments, grader.args)));
+        });
+      } catch (error) {
+        if (!(error instanceof PatternTimeout)) throw error;
+        return { pass: false, reason: `${error.message} on a call's value, so the grader can't say whether a call carries args: a pattern that can't backtrack without end (no quantifier inside a quantified group) can` };
+      }
       const what = `${grader.tools.join(" or ")}${grader.args ? ` with ${JSON.stringify(grader.args)}` : ""}`;
       const said = `${calls.length} call${calls.length === 1 ? "" : "s"} of ${what}`;
       if (grader.argsFile !== undefined) return argsFileVerdict(grader.argsFile, run.argsFiles?.[grader.argsFile], calls, said, grader.count);

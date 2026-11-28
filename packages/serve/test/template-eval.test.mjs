@@ -9,7 +9,7 @@ import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import Ajv2020 from "ajv/dist/2020.js";
-import { CaseError, CLAIM_READ_TIMEOUT_MS, callsOf, evalTemplate, exitCodeOf, fakeAnswer, gradeDeterministic, graderInput, markdownReport, metricsOf, outputVerdict, PAGE_READ_TIMEOUT_MS, readBound, readCases, searched, startFake, verdictOf, waitRun } from "../dist/template-eval.js";
+import { CaseError, CLAIM_READ_TIMEOUT_MS, callsOf, evalTemplate, exitCodeOf, fakeAnswer, gradeDeterministic, graderInput, markdownReport, metricsOf, outputVerdict, PAGE_READ_TIMEOUT_MS, PATTERN_MS, readBound, readCases, searched, startFake, verdictOf, waitRun } from "../dist/template-eval.js";
 import { lastJsonBlock, structuredAnswer } from "../dist/answer-json.js";
 import { MAX_EVAL_FILE_BYTES, MAX_FILE_BYTES, MAX_PACKAGE_BYTES, PackageError, readPackage, readPackages, TEMPLATES_DIR } from "../dist/templates.js";
 import { scratch, serve, withEnv } from "./support.mjs";
@@ -316,6 +316,24 @@ test("tool_used's args take {\"$pattern\": <regex>} as a fixture's when does: a 
     ]) assert.match(e.message, said);
     return true;
   });
+});
+
+test("a $pattern that backtracks without end stops at its limit: the tool_used grade fails naming it, a fake answers an error naming it, and the next pattern still matches", () => {
+  // (a+)+b over 40 a's tries every split of them: hours on the regex engine, so only the limit ends it.
+  const stuck = "a".repeat(40);
+  const run = (path) => ({ answer: "", calls: [{ tool: "read", arguments: { path }, status: "success", result: "" }], mcpCalls: [], files: [] });
+  const grade = (args, path) => gradeDeterministic({ file: "r.md", type: "tool_used", tools: ["read"], expect: "not_called", args }, run(path), []);
+  const started = Date.now();
+  assert.deepEqual(grade({ path: { $pattern: "(a+)+b" } }, stuck), { pass: false, reason: `the $pattern at args.path did not finish within ${PATTERN_MS} ms on a call's value, so the grader can't say whether a call carries args: a pattern that can't backtrack without end (no quantifier inside a quantified group) can` }, "expect: not_called fails, never passes on a match it could not finish");
+  assert.ok(Date.now() - started < PATTERN_MS + 5_000, `stopped near its limit, ${Date.now() - started} ms`);
+  assert.equal(grade({ path: { $pattern: "a+" } }, stuck).pass, false, "the next pattern runs on a fresh worker and matches");
+  assert.equal(grade({ path: { $pattern: "b+" } }, stuck).pass, true);
+  // A fake's when: the call gets an error naming the pattern's limit, not an answer by a match it could not finish.
+  const fixture = { server: "files", description: "Files.", tools: { open: { description: "Opens a file.", input: { type: "object" }, answers: [{ when: { path: { $pattern: "(a+)+b" } }, result: { content: [{ type: "text", text: "opened" }] } }] } } };
+  const answered = fakeAnswer(fixture, "open", { path: stuck });
+  assert.equal(answered.isError, true);
+  assert.match(answered.content[0].text, new RegExp(`The fake files's open: a when \\$pattern did not finish within ${PATTERN_MS} ms`));
+  assert.deepEqual(fakeAnswer(fixture, "open", { path: "aab" }), { content: [{ type: "text", text: "opened" }] }, "the same pattern on a short value still answers");
 });
 
 test("tool_used's args_file is read from a grader's front matter: a path in the run's work folder, never beside expect: not_called, at_least or at_most", async (t) => {

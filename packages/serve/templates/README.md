@@ -256,7 +256,9 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   argument must be a string the JavaScript regular expression matches whole, as if it began with `^` and ended with
   `$` (`{"submission_key": {"$pattern": "ns-[a-z0-9]{8}-voice-cold-open"}}` answers whatever random stem a run made,
   and never `ns-k7m2p9qa-voice-cold-open-2`). A `$pattern` that is no string or does not compile, or one beside another
-  key, fails the case when it is read. Any other value, a string or a mapping, is compared by equality. Each `result`
+  key, fails the case when it is read. Each test of a `$pattern` runs at most 2 seconds, in a worker thread: one that
+  backtracks without end (`(a+)+b` on forty a's) is stopped there, and the call gets an error saying so rather than
+  an answer. Any other value, a string or a mapping, is compared by equality. Each `result`
   is an MCP tool result. A tool may also hold `search`, `{query, files: [{path,
   text}], limit?, note?}`: a call no answer matches is answered by searching its `query` argument over those files
   (GitHub code search's syntax, read loosely: terms every one of which a file holds, `NOT` before a term or a
@@ -365,7 +367,8 @@ answer when it is one JSON object and nothing else. The report lists it as the g
   timeline's. With `count`, exactly that many calls; else `expect: called`, one or more, or `not_called`, none. `args` keeps the calls
   that carry each of its arguments (an object's own fields compared the same way, a `{"$pattern": <regex>}` value
   matched against a string whole, any other value equal: `expect: not_called` with `args: { path: { $pattern:
-  '(?!skills/).*' } }` fails a run that read anything outside `skills/`), on any
+  '(?!skills/).*' } }` fails a run that read anything outside `skills/`; a pattern test stopped at its 2 seconds
+  fails the grader, whatever `expect` says), on any
   tool's calls: the eval reads the timeline with `calls=whole`, which carries each call's arguments through the run's
   redaction (a held value or a key-shaped string reads `[redacted]`, and so never matches), each string cut at 2,000
   characters. With `args_file`, the eval reads that file from the run's work folder after the run (under the run's
