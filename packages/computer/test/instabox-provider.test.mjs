@@ -308,7 +308,8 @@ async function unpinned(t, fingerprintsOf) {
 	const fingerprints = fingerprintsOf(pin);
 	for (const fingerprint of fingerprints) {
 		rest.gateway.fingerprint = fingerprint;
-		await assert.rejects(host.exec(id, ["true"], CTX), (error) => error.code === "vendor" && /no host key fingerprint \(SHA256:\.\.\.\) to pin the gateway by/.test(error.message), JSON.stringify(fingerprint));
+		// The token answer's check refuses it, and the exec, which pins every InstaBox login, would refuse it after.
+		await assert.rejects(host.exec(id, ["true"], CTX), (error) => error.code === "vendor" && /no host key (fingerprint )?\(SHA256:\.\.\.\) to pin/.test(error.message), JSON.stringify(fingerprint));
 	}
 	assert.equal(rest.tokens.size, fingerprints.length, "each answer minted a token");
 	assert.equal(fake.sshd.state.connections, 0, "no TCP connection reached the gateway");
