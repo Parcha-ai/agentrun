@@ -109,7 +109,7 @@ jobs:
             if [ -n "$need" ]; then
               echo "npm lacks: $need"
               npm ci --no-audit --no-fund
-              node scripts/build-workspaces.mjs --only "$(echo "$need" | tr ' ' ',')"
+              # It builds them first (the console before the server), packs them, and refuses a server with no console.
               note=$(node packages/agentrun/test/walk-unpublished.mjs pack "launcher/$package" launcher /tmp/launcher)
               echo "serve=$note" >> "$GITHUB_OUTPUT"
               echo "::notice title=Install walk::$note"

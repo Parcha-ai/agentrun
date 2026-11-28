@@ -7,7 +7,8 @@
 //       the @parcha packages the launcher needs, at their pinned versions, that npm does not have: their names, one
 //       line, space separated (nothing when npm has them all). Each must be a workspace here at that version.
 //   node walk-unpublished.mjs pack <launcher.tgz> <dir> <dir at walk time>
-//       packs each of those (built already: build-workspaces.mjs --only) into <dir>, and points the launcher's and each
+//       builds those (buildSteps: the console first when the server is among them), packs each into <dir>, refuses a
+//       packed server with no console, and points the launcher's and each
 //       packed package's dependency on them at `file:<dir at walk time>/<tarball>`, where the walk's jobs download them.
 //       Writes <dir>/unpublished.txt (name@version, a line each) and prints the row's words.
 import { execFileSync } from "node:child_process";
@@ -80,6 +81,25 @@ export function rowWords(need) {
   return `npm has no ${first.name}@${first.version} yet: walked with this checkout's packed ${need.map((p) => p.name).join(", ")}${rest.length ? ` (${need.length} packages)` : ""}, not npm's`;
 }
 
+/** What a fresh checkout (npm ci, nothing built) builds before `need` is packed: the console first when the server is
+ *  among them (its build copies apps/console's dist into its own, which it answers at /; the root build's order), then
+ *  those packages, with each workspace they depend on that is stale. [command, args] each, run from the repository. */
+export function buildSteps(need) {
+  const names = need.map((p) => p.name);
+  if (!names.length) return [];
+  return [
+    ...(names.includes(`${SCOPE}agentrun-serve`) ? [["node", ["scripts/build-console.mjs"]]] : []),
+    ["node", ["scripts/build-workspaces.mjs", "--only", names.join(",")]],
+  ];
+}
+
+/** Why a packed server can't be walked, or undefined: it must carry the console, since the walk opens it at /. */
+export function consoleProblem(tgz) {
+  const files = execFileSync("tar", ["-tzf", tgz], { encoding: "utf8" }).split("\n");
+  if (files.includes("package/dist/console/index.html")) return undefined;
+  return `${basename(tgz)} has no dist/console/index.html: the console was not built before the server (scripts/build-console.mjs)`;
+}
+
 /** Writes a tarball again with `manifest` as its package.json. */
 export function repack(tgz, manifest) {
   const work = mkdtempSync(join(tmpdir(), "walk-unpublished-"));
@@ -93,6 +113,8 @@ async function main([command, launcher, dir, walkDir]) {
   if (command === "plan") return console.log(need.map((p) => p.name).join(" "));
   if (command !== "pack" || !dir || !walkDir) throw new Error("usage: walk-unpublished.mjs plan <launcher.tgz> | pack <launcher.tgz> <dir> <dir at walk time>");
   if (!need.length) return;
+  // The builds' output goes to stderr: stdout is the row's words alone.
+  for (const [command, args] of buildSteps(need)) execFileSync(command, args, { cwd: root, stdio: ["ignore", process.stderr, process.stderr] });
   const packed = {};
   const files = {};
   for (const p of need) {
@@ -100,6 +122,9 @@ async function main([command, launcher, dir, walkDir]) {
     files[p.name] = join(dir, file);
     packed[p.name] = `file:${walkDir}/${basename(file)}`;
   }
+  const server = files[`${SCOPE}agentrun-serve`];
+  const problem = server && consoleProblem(server);
+  if (problem) throw new Error(problem);
   for (const tgz of [launcher, ...Object.values(files)]) repack(tgz, pointAt(manifestOf(tgz), packed));
   writeFileSync(join(dir, "unpublished.txt"), need.map((p) => `${p.name}@${p.version}\n`).join(""));
   console.log(rowWords(need));

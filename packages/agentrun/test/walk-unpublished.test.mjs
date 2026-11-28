@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { manifestOf, pointAt, repack, rowWords, unpublished, workspaces } from "./walk-unpublished.mjs";
+import { buildSteps, consoleProblem, manifestOf, pointAt, repack, rowWords, unpublished, workspaces } from "./walk-unpublished.mjs";
 
 const ws = (name, version, dependencies = {}) => ({ dir: `/repo/packages/${name.split("/")[1]}`, manifest: { name, version, dependencies } });
 const LOCAL = {
@@ -62,6 +62,34 @@ test("repack writes a tarball again with the new package.json and every other fi
   repack(tgz, pointAt(LAUNCHER, { "@parcha/agentrun-serve": "file:/tmp/launcher/serve.tgz" }));
   assert.equal(manifestOf(tgz).dependencies["@parcha/agentrun-serve"], "file:/tmp/launcher/serve.tgz");
   assert.equal(execFileSync("tar", ["-xzOf", tgz, "package/bin/agentrun.mjs"], { encoding: "utf8" }), "#!/usr/bin/env node\n");
+});
+
+test("a fresh checkout builds the console before the server, since the server's build copies it in; then those packages", async () => {
+  const need = await unpublished(LAUNCHER, LOCAL, nothingOnNpm);
+  assert.deepEqual(buildSteps(need), [
+    ["node", ["scripts/build-console.mjs"]],
+    ["node", ["scripts/build-workspaces.mjs", "--only", "@parcha/agentrun-serve,@parcha/agentrun-dsl,@parcha/agentrun-kernel"]],
+  ]);
+  const dslOnly = need.filter((p) => p.name !== "@parcha/agentrun-serve");
+  assert.deepEqual(buildSteps(dslOnly), [["node", ["scripts/build-workspaces.mjs", "--only", "@parcha/agentrun-dsl,@parcha/agentrun-kernel"]]], "no server, no console");
+  assert.deepEqual(buildSteps([]), []);
+});
+
+test("a packed server with no console is refused: the walk's served name must open the console, not a 404", () => {
+  const dir = mkdtempSync(join(tmpdir(), "walk-unpublished-console-"));
+  const pack = (name, files) => {
+    const at = join(dir, name);
+    for (const [file, text] of Object.entries(files)) {
+      mkdirSync(join(at, "package", file, ".."), { recursive: true });
+      writeFileSync(join(at, "package", file), text);
+    }
+    execFileSync("tar", ["-czf", join(dir, `${name}.tgz`), "-C", at, "package"]);
+    return join(dir, `${name}.tgz`);
+  };
+  const withConsole = pack("served", { "package.json": "{}", "dist/console/index.html": "<html>" });
+  const without = pack("bare", { "package.json": "{}", "dist/cli.js": "" });
+  assert.equal(consoleProblem(withConsole), undefined);
+  assert.match(consoleProblem(without), /bare\.tgz has no dist\/console\/index\.html: the console was not built before the server \(scripts\/build-console\.mjs\)/);
 });
 
 test("the workspaces here: each package under packages/ by name, the launcher and the server among them", () => {
