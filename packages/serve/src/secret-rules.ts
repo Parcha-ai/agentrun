@@ -2585,8 +2585,9 @@ const ENV_TOKEN_BREAK = /[^a-z0-9_-]{1,4096}/;
  *  `:`, its whole name up to where a path ends: a file, which env-file reads, not the environment. `process.env`,
  *  `process?.env`, `Bun.env` keep the character before their dot and are read. A glob or a brace (`.env*`, `.env.*`,
  *  `.env.{local,production}`) names no one file env-file can test: it is no path end, so its env token stays (11-26).
- *  Its case is env-file's (ENV_FILE_NAME): `.ENV` or `.Env.local` is no file env-file cuts, so its env token stays too. */
-const DOT_ENV_FILE = /(^|[ \t/=<>,:])\.env(?:\.[A-Za-z0-9_-]{1,64}){0,8}(?=$|[\s/;|&<>),:])/g;
+ *  Its case and its length are env-file's (ENV_FILE_NAME, `.env.` and up to 64 characters): `.ENV`, `.Env.local` or a
+ *  longer name is no file env-file cuts, so its env token stays too. */
+const DOT_ENV_FILE = /(^|[ \t/=<>,:])\.env(?:rc|\.[A-Za-z0-9_.-]{1,64})?(?=$|[\s/;|&<>),:])/g;
 /** A line break before a member access's dot (`process` then `  .env` on the next line, a chained call's formatting):
  *  dropped, so the member reads joined to what it is a member of. */
 const MEMBER_BREAK = /[ \t]{0,64}\r?\n\s{0,64}(?=\.[A-Za-z_$])/g;
@@ -2679,14 +2680,23 @@ function wholeDump(text: string): Hit[] {
 /** A prompt inside a line flattened from many (a run's title): one PROMPT_HEAD opens, after a blank or at the start. */
 const FLAT_PROMPT = /(?<=^|\s)(?:\([^()\n]{1,64}\)[ \t]{1,3})?(?:[$%❯]|(?:[A-Za-z0-9_.-]{1,64}@[A-Za-z0-9_.-]{1,128}:[^\s]{0,256}|\[[^\]@\n]{1,64}@[^\]\n]{1,192}\])[$#])[ \t]{1,3}(?=\S)/g;
 const FLAT_WORD = /\S{1,4096}/g;
-/** The most words a flattened command is read for before its output's first NAME=value. */
+/** The most words a flattened command is read for before its output. */
 const FLAT_COMMAND_WORDS = 16;
+/** Whether a flattened command prints the environment (printsEnvironment) or reads one .env file whole (`cat .env`,
+ *  which env-file cuts on a line of its own). */
+const flatPrints = (command: string): boolean => {
+  const path = readPath(command);
+  return (path !== undefined && envFilePath(path)) || printsEnvironment(command);
+};
 /** A transcript flattened onto one line (11-26: a run's title is its first message with every run of blanks one
- *  space, so `$ printenv\nAPP_SEED=v\n...` reads `$ printenv APP_SEED=v ...`): after each prompt, the fewest words that
- *  print the environment (printsEnvironment) followed by a NAME=value word (ENV_LINE) are the command, and from that word
- *  to the next prompt or the text's end is its output, cut. Where a flattened command ends can't be told from its
- *  output's first word, so `$ env NAME=value command` is cut there too: an over-cut, fails closed, and only for a text
- *  its caller says was flattened. */
+ *  space, so `$ printenv\nAPP_SEED=v\n...` reads `$ printenv APP_SEED=v ...`): after each prompt, the command is the
+ *  fewest words that print the environment or read one .env file (flatPrints), and every word after them to the next
+ *  prompt or the text's end is its output, cut. Where a flattened command ends can't be told from its output, so an
+ *  argument is cut with the output (`$ printenv NAME`'s NAME, `$ env | sort`'s `| sort`) and so is
+ *  `$ env NAME=value command`: over-cuts, fail closed, and only for a text its caller says was flattened. The cut starts
+ *  at the fewest words, never at a later NAME=value word, so no output before that word is kept (11-28). A segment
+ *  whose words after the command are one cut marker is the export's own cut and no new hit (the share host reads an
+ *  exported title again); any other word there, before a marker or not, is output and cut. */
 function flatDumps(text: string): Hit[] {
   const prompts = [...text.matchAll(FLAT_PROMPT)];
   const out: Hit[] = [];
@@ -2694,12 +2704,11 @@ function flatDumps(text: string): Hit[] {
     const from = prompt.index + prompt[0].length;
     const segment = text.slice(from, at + 1 < prompts.length ? prompts[at + 1]!.index : text.length).trimEnd();
     const words = [...segment.matchAll(FLAT_WORD)];
-    for (let next = 1; next < words.length && next <= FLAT_COMMAND_WORDS; next++) {
-      const head = words[next]!.index;
-      if (!ENV_LINE.test(segment.slice(head)) || !printsEnvironment(segment.slice(0, head).trimEnd())) continue;
-      out.push({ start: from + head, end: from + segment.length });
-      break;
-    }
+    const last = Math.min(words.length - 1, FLAT_COMMAND_WORDS);
+    const before = (next: number): string => segment.slice(0, words[next]!.index).trimEnd();
+    let head: number | undefined;
+    for (let next = 1; next <= last && head === undefined; next++) if (flatPrints(before(next))) head = words[next]!.index;
+    if (head !== undefined && !DUMP_MARKER_LINE.test(segment.slice(head))) out.push({ start: from + head, end: from + segment.length });
   }
   return out;
 }
