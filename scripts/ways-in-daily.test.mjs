@@ -108,6 +108,21 @@ test('a hosted row that skipped reads not walked, saying why, and does not make 
   assert.match(table, /\| Render \(hosted\) \| [^|]+ \| PASS \|/);
 });
 
+test("the launcher row walked on this checkout's packed server (npm lacking the release's) says so on the row, pass or fail", () => {
+  const serve = "npm has no @parcha/agentrun-serve@0.1.0-beta.68 yet: walked with this checkout's packed @parcha/agentrun-serve, not npm's";
+  const passed = summarize({ ...green, launcher: { result: 'success', outputs: { serve } } }, {}, run);
+  assert.deepEqual(passed.broken, []);
+  assert.ok(passed.table.includes(`| launcher | ${ROWS.find(({ job }) => job === 'launcher').walks} | PASS (${serve}) |`), passed.table);
+  const failed = summarize({ ...green, launcher: { result: 'failure', outputs: { serve } } }, {}, run);
+  assert.deepEqual(failed.broken, ['launcher']);
+  assert.ok(failed.table.includes(`| FAIL (${serve}) |`), failed.table);
+  assert.match(summarize(green, {}, run).table, /\| launcher \| [^|]+ \| PASS \|/, 'npm had it: a plain PASS');
+  // The called walk hands the words up, from its pack job.
+  const walk = parse(readFileSync(new URL('../.github/workflows/install-walk.yml', import.meta.url), 'utf8'));
+  assert.equal(walk.on.workflow_call.outputs.serve.value, '${{ jobs.pack.outputs.serve }}');
+  assert.equal(walk.jobs.pack.outputs.serve, '${{ steps.pack.outputs.serve }}');
+});
+
 // After each publish the daily walk also runs at the release's tag, so every beta gets its npx, Compose, Railway-on-image
 // and Render rows, not only main's tip once a day. A workflow_run event carries main's tip as github.sha (the workflow file
 // is the default branch's), so each checkout names the tag's commit, and the called walks are handed it.

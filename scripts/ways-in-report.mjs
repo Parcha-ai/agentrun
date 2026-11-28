@@ -26,11 +26,14 @@ const PREFIX = 'ways in: ';
 const SUFFIX = ' broke';
 
 /** A row's result as the table says it: PASS, FAIL, or GitHub's word (cancelled, skipped) for the rest. A hosted row
- *  that walked nothing (no secrets yet, or a pull request's run) passes: its job's `skip` output says why. */
+ *  that walked nothing (no secrets yet, or a pull request's run) passes: its job's `skip` output says why. A walk that
+ *  installed this checkout's packed server, npm not having the release's yet (install-walk.yml's `serve` output), says
+ *  so beside its result. */
 function said({ result, outputs } = {}, image) {
+  const serve = outputs?.serve ? ` (${outputs.serve})` : '';
   if (result === 'success' && outputs?.skip) return `not walked: ${outputs.skip}`;
-  if (result === 'success') return 'PASS';
-  if (result === 'failure') return 'FAIL';
+  if (result === 'success') return `PASS${serve}`;
+  if (result === 'failure') return `FAIL${serve}`;
   if (result === 'skipped' && image !== 'success') return "not walked: main's image did not build";
   return result ?? 'not run';
 }
