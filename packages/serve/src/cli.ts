@@ -3,6 +3,7 @@
 // First: the secrets the launcher hands over, read and its pipe closed before anything else runs (secrets.ts). It loads
 // nothing but node:fs and node:os.
 import { secret } from "./secrets.js";
+import { ON_DATA_WITH_SERVER } from "./template-eval-words.js";
 // Then, before anything loads node:sqlite, the filter for its ExperimentalWarning (quiet-sqlite-warning.ts).
 import "./quiet-sqlite-warning.js";
 import { parseArgs } from "node:util";
@@ -398,8 +399,6 @@ if (process.argv[2] === "validate-template") {
 class EvalTemplateUsage extends Error {}
 
 async function evalTemplateCommand(): Promise<number> {
-  const { CaseError, evalTemplate, exitCodeOf, markdownReport, ON_DATA_WITH_SERVER } = await import("./template-eval.js");
-  const { PackageError } = await import("./templates.js");
   const usage = (message: string): never => {
     throw new EvalTemplateUsage(`agentrun-serve eval-template: ${message}\n\n${USAGE}`);
   };
@@ -435,6 +434,9 @@ async function evalTemplateCommand(): Promise<number> {
     })();
     if (!writable) usage(`--report's folder ${folder} is not a folder this command can write in, or the report's path is a folder or a file it can't write.`);
   }
+  // The eval's modules once its flags are checked: a refused call never waits on loading them.
+  const { CaseError, evalTemplate, exitCodeOf, markdownReport } = await import("./template-eval.js");
+  const { PackageError } = await import("./templates.js");
   // The first Ctrl-C (or a stop) cancels the run in progress and cleans up what the eval made, as its end does: a run
   // left going would go on spending. A second one leaves at once (stop-signals.ts stopOnce).
   const stop = stopOnce(() => console.error("agentrun-serve eval-template: stopping: cancelling the run in progress and cleaning up (again to leave now)"));
