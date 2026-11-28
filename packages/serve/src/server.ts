@@ -243,7 +243,7 @@ import { mintViewerCredential, VIEWER_PARAM, viewerCookie, viewerCredentialFor, 
 import { ATTACH_PATH, AttachHub, containerSigns, type HostedDial, PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
 import { dockerDaemonOf } from "@parcha/agentrun-computer/docker";
 import { type AttachTiming, createAttachRoutes, liveRelays, pairedView } from "./computer-attach.js";
-import { pairedRefusal, withPaired } from "./workspace/attached-computers.js";
+import { namesPaired, pairedRefusal, scopedPairedWords, withPaired } from "./workspace/attached-computers.js";
 import { PAIRED_ROUTE_MS, readRoute } from "./workspace/paired-route.js";
 import { COMPUTER_TOOLS, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { freeModelRequestsOf } from "@parcha/agentrun-kernel/kernel/cap";
@@ -3811,6 +3811,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // The store's NewRevision keeps the revision's fields under `body` (AgenticBody|WorkflowBody); build the flat shape the
     // host checks (runnable.ts RevisionShape) from it, as shapeOf does for a run's Revision.
     const body = revision.body as AgenticBody & Partial<WorkflowBody>;
+    // An agent in a workspace never names a paired computer; its run's claim refuses one too (computer-for-claim.ts).
+    const setting = workspaceNow() === undefined ? undefined : settingOfDefinition(body)?.computer;
+    if (setting && namesPaired(setting)) throw invalid([{ field: body.computer !== undefined ? "definition.computer" : "definition.place", reason: "not_an_option", message: scopedPairedWords(setting.provider) }]);
     if (nativeOf(body)) {
       const overrides = nativeModelOverrides(body);
       if (overrides.length) throw invalid(overrides.map(field => ({ field: `definition.${field}`, reason: "not_allowed", message: NATIVE_MODEL_SETTINGS_UNSUPPORTED })));
@@ -5328,7 +5331,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if (req.headers.authorization !== undefined && !byOwnerSession(req) && !bearer(req.headers.authorization, req)) authFailed(`/v2${path}`, "wrong_token");
       // tools[].held: the server's keyless holds on each web tool now (web-run.ts withHeld), never cached.
       // features.api_keys.routes: false on an API-only server, which serves none of the keys' routes and reads no key.
-      return send(res, 200, { ...answer, tools: withHeld(answer.tools), ...storeSchema, runner_refused: runnerRefused, features: { ...answer.features, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) }, claude_login: loginServed, api_keys: { ...answer.features.api_keys, routes: !options.apiOnly }, workspaces: { ...answer.features.workspaces, enforced: options.apiOnly === true, required_for_tokens: (options.workspaceTokens ?? []).length > 0 } } });
+      // features.computers for a request in a workspace counts no paired computer's kind: none is its to use.
+      return send(res, 200, { ...answer, tools: withHeld(answer.tools), ...storeSchema, runner_refused: runnerRefused, features: { ...answer.features, computers: await computerCapabilities(computersOf(), { scoped: workspaceNow() !== undefined }), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) }, claude_login: loginServed, api_keys: { ...answer.features.api_keys, routes: !options.apiOnly }, workspaces: { ...answer.features.workspaces, enforced: options.apiOnly === true, required_for_tokens: (options.workspaceTokens ?? []).length > 0 } } });
     }
     if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, ownerCookieName(req)));
     // With accounts off there is no owner, and the console still asks whether it may save a secret: secret-writes.ts'
