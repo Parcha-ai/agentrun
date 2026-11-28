@@ -42,8 +42,10 @@ export function fakeVercel({ backend, split = (bytes) => [bytes], dropAfter, pag
 		};
 		return record;
 	};
+	// A command's process exists once its POST answers, as Vercel's does: stdin and kill wait on record.started.
 	const run = async (record, name, argv) => {
-		const proc = await backend.exec(name, argv, { timeoutMs: 10_000 });
+		record.started = backend.exec(name, argv, { timeoutMs: 10_000 });
+		const proc = await record.started;
 		record.proc = proc;
 		const pump = async (stream, name) => {
 			const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
@@ -140,11 +142,13 @@ export function fakeVercel({ backend, split = (bytes) => [bytes], dropAfter, pag
 			if (method === "GET" && cmd[3] === "/logs") return new Response(logs(record, init.signal), { status: 200, headers: { "content-type": "application/x-ndjson" } });
 			if (method === "POST" && cmd[3] === "/kill") {
 				record.killed = body.signal;
+				await record.started;
 				await record.proc?.kill();
 				if (!record.proc) record.exit(128 + body.signal);
 				return json(200, { command });
 			}
 			if (method === "POST" && cmd[3] === "/stdin") {
+				await record.started;
 				if (record.exitCode !== null) return refuse(410, "command_finished", "The command has finished");
 				const bytes = Buffer.from(body.data ?? "", "base64");
 				// The offset makes a resend safe: bytes Vercel already has are skipped.
