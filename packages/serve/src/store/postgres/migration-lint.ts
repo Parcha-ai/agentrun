@@ -3,7 +3,9 @@
 // is the deploy order's: the server migrates first, under runners of the earlier release that keep running; a schema
 // change those runners' statements no longer fit (a table or column they read gone or renamed, a type they write changed,
 // a column they never write made NOT NULL) fails their runs. Such a change lands in two releases: the additive half first,
-// and the destructive cleanup one release later, marked, which raises the runner floor.
+// and the destructive cleanup one release later, marked, which raises the runner floor. A table no runner reads or writes
+// is the exception: a migration that names it in RUNNERS_UNAFFECTED may alter or drop it unmarked, and the lint's test
+// fails while any runner code names it.
 //
 // It reads statements, never meaning: a tightened constraint an earlier runner's writes break (a new UNIQUE, CHECK or
 // FOREIGN KEY on what it writes) is not found here, and its author marks it as well. A new PRIMARY KEY is found: it makes
@@ -105,6 +107,41 @@ function addedColumns(statement: string): string[] {
     }
   }
   return clauses.filter((clause) => /\bADD\s+COLUMN\b/.test(clause) || /^\s*ADD\s+(?!CONSTRAINT\b|PRIMARY\b|UNIQUE\b|CHECK\b|FOREIGN\b|EXCLUDE\b)/.test(clause.replace(/^ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?\S+\s*/, "")));
+}
+
+/** The line of a migration's leading comment that names tables no runner reads or writes:
+ *  `-- runners: unaffected (imported_templates, ...)`. A statement that alters or drops one of them alone leaves a runner
+ *  of an earlier build running, so the lint passes it (breakingForRunners); the lint's test holds each named table to no
+ *  runner code naming it. */
+export const RUNNERS_UNAFFECTED = "-- runners: unaffected";
+
+/** The tables `sql`'s leading comment (its first lines, each a `--` comment or blank) names in RUNNERS_UNAFFECTED. */
+export function unaffectedTables(sql: string): string[] {
+  for (const line of sql.split("\n")) {
+    const text = line.trim();
+    if (text === "") continue;
+    if (!text.startsWith("--")) return [];
+    const named = /^-- runners: unaffected \(([a-z_][a-z0-9_]*(?:, [a-z_][a-z0-9_]*)*)\)$/.exec(text);
+    if (named) return named[1]!.split(", ");
+  }
+  return [];
+}
+
+/** The one table an ALTER TABLE or DROP TABLE statement names, unquoted and unqualified, lower-cased; undefined for any
+ *  other statement, and for a DROP TABLE of more than one. */
+function tableOf(statement: string): string | undefined {
+  const named = /^(ALTER|DROP)\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?([A-Za-z_][A-Za-z0-9_]*)(?=\s|$)/i.exec(statement);
+  if (!named || (named[1]!.toUpperCase() === "DROP" && statement.includes(","))) return undefined;
+  return named[2]!.toLowerCase();
+}
+
+/** breakingStatements of `sql`, less each that alters or drops a table its header names unaffected (unaffectedTables). */
+export function breakingForRunners(sql: string): BreakingStatement[] {
+  const spared = new Set(unaffectedTables(sql));
+  return breakingStatements(sql).filter((found) => {
+    const table = tableOf(found.statement);
+    return table === undefined || !spared.has(table);
+  });
 }
 
 /** The statements of `sql` an earlier build's runner cannot run beside (BREAKING), in their order. */

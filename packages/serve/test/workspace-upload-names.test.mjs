@@ -2,7 +2,7 @@
 // workspaces upload a package of one name and each gets its own, `upload:<name>` in both. Each workspace's read, apply,
 // reimport and delete reaches its own package alone, and an agent's purge takes its own workspace's upload alone. A
 // request with no workspace keeps the packages of none, as a server with no workspaces always did. Postgres migration
-// 0035 and a SQLite server's open (in place, at version 18) key the rows each in the workspace it already had; neither
+// 0036 and a SQLite server's open (in place, at version 18) key the rows each in the workspace it already had; neither
 // stops a runner of the build before, which never reads or writes the table.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
@@ -244,29 +244,30 @@ test("a server with no workspaces keeps its uploads as before: one package a nam
   assert.deepEqual(await server.store.importedTemplates.keys(), []);
 });
 
-test("Postgres migration 0035 keys each imported package in the workspace it had: rows from before it land in their workspace, and the name is each workspace's after", postgresOnly("the Postgres migration"), async (t) => {
+test("Postgres migration 0036 keys each imported package in the workspace it had: rows from before it land in their workspace, the name is each workspace's after, and a runner of the build before opens it", postgresOnly("the Postgres migration"), async (t) => {
   const schema = await freshSchema();
   const sql = await client(schema);
   t.after(async () => {
     await sql.end();
     await dropSchema(schema);
   });
-  await migrate(sql, schema, Date.now(), migrationsIn().filter((m) => m.version < 35));
+  await migrate(sql, schema, Date.now(), migrationsIn().filter((m) => m.version < 36));
   const put = (id, sha, workspace) => sql.query("INSERT INTO imported_templates (id, source, sha, publisher, files, imported_at, workspace) VALUES ($1, $1, $2, '', '{}', 1, $3)", [id, sha.repeat(64), workspace]);
   await put(ID, "a", A);
   await put("upload:plans", "b", null);
   await put("github:acme/notes", "c", B);
-  const step = migrationsIn().find((m) => m.version === 35);
+  const step = migrationsIn().find((m) => m.version === 36);
+  assert.equal(step.name, "imported_templates_by_workspace");
   assert.equal(step.breaking, false, "no runner reads or writes imported_templates, so it leaves the runner floor");
   await migrate(sql, schema, Date.now());
-  // A runner of the build before (it knows 34) opens the migrated schema, as its open reads it: ahead of it, under its floor.
+  // A runner of the build before (it knows 35) opens the migrated schema, as its open reads it: ahead of it, under its floor.
   const state = await runnerFloorOf(sql, schema);
-  assert.deepEqual(state, { version: 35, runnerFloor: 34 });
-  assert.equal(runnerOn(state, 34), "opens", "a runner that knows 34");
-  assert.doesNotThrow(() => refuseBelowFloor(schema, state, 34));
+  assert.deepEqual(state, { version: 36, runnerFloor: 34 });
+  assert.equal(runnerOn(state, 35), "opens", "a runner that knows 35");
+  assert.doesNotThrow(() => refuseBelowFloor(schema, state, 35));
   const store = await openPostgresStore({ url: PG_URL, schema });
   t.after(() => store.close());
-  assert.equal((await store.schemaState()).version, 35);
+  assert.equal((await store.schemaState()).version, 36);
   const rows = async () => (await store.importedTemplates.list()).map((row) => [row.workspace, row.id, row.sha[0]]).sort((x, y) => `${x}`.localeCompare(`${y}`));
   assert.deepEqual(await rows(), [[A, ID, "a"], [B, "github:acme/notes", "c"], [null, "upload:plans", "b"]].sort((x, y) => `${x}`.localeCompare(`${y}`)));
   assert.deepEqual(await store.importedTemplates.stamp(ID, A), { sha: "a".repeat(64), importedAt: 1 }, "A's row, in A");
