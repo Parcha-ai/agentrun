@@ -31,7 +31,7 @@ export function settingsFromEnv(env: Env = process.env): Pick<VercelProviderOpti
 }
 
 export const conformanceNotes: string[] = [
-	"vercel: every computer is a Vercel Sandbox (a Firecracker microVM, amd64) made with persistent false and its session timeout at the computer's lifetime; the daemon is a child of a detached command, its stdio the command's log stream and a stdin write per call; labels are packed into its 5 tags; lifetime is Vercel's timer, capped at 30 minutes for the run. Network none, open and a list are init's (vendor deny-all on none). No mount and no desktop.",
+	"vercel: every computer is a Vercel Sandbox (a Firecracker microVM, amd64) made with persistent false and its session timeout at the computer's lifetime; the daemon is a child of a detached command, its stdio the command's log stream and a stdin write per call; labels are packed into its 5 tags; lifetime is Vercel's timer, capped at 30 minutes for the run. Network none, open and a list are init's (vendor deny-all on none). No Archil mount and no desktop.",
 ];
 
 export interface VercelModuleOptions extends HostedModuleOptions, Pick<VercelProviderOptions, "fetch" | "daemonPath" | "timeouts" | "onNote"> {}

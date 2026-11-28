@@ -1,7 +1,7 @@
 // Vercel Sandbox's descriptor: a Linux sandbox on a Vercel Sandbox (a Firecracker microVM), started from our box image
 // as the project's registry holds it, the tag its prepareImage() answers (agentrun-box:<recipe hash>). Three keys: the
 // access token, a secret, and the team and project ids, which aren't secrets but have no default, so Settings asks for
-// them. No mount yet: whether an Archil client mounts in the microVM is unverified until a live run.
+// them. No Archil mount yet: whether its client mounts in the microVM is unverified until a live run.
 import { defineProvider } from "../descriptor.js";
 import { SANDBOX } from "./shared.js";
 
