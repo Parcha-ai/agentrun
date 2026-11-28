@@ -103,6 +103,10 @@ test("every route the server serves is in the document, and every operation in i
   assert.equal(ops.filter(({ op }) => op["x-agentrun-serve-unsupported"]).length, 1, "the one this server answers 501: quotes");
   assert.deepEqual(doc.info["x-agentrun-serve"].unsupported, ["POST /quotes"]);
   assert.deepEqual(doc.info["x-agentrun-serve"].not_served, ["GET /agents/{agent_id}/home", "PUT /agents/{agent_id}/home", "POST /runs/{run_id}/kill"]);
+  // The info's description says how they answer: 501 unsupported_here naming the capability, as the routes do.
+  const said = doc.info["x-agentrun-serve"].description;
+  assert.match(said, /not_served are left out of this document, and answer 501 unsupported_here naming their capability/);
+  assert.doesNotMatch(said, /404/, "no operation of this document is said to answer 404 for being unserved");
   for (const id of ["exportHome", "importHome", "killRun"]) assert.ok(!ops.some(({ op }) => op.operationId === id), `${id} is not in the document`);
 });
 
