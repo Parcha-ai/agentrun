@@ -16,7 +16,7 @@ import { checkMount, readBackOf, WORKSPACE, type MountSpec } from "@parcha/agent
 
 The package root holds the protocol, the registry and the descriptors, and loads no provider: a provider loads by its
 id (`providerFor(id, options)`, which imports that one provider's file), or from its subpath (`/docker`, `/daytona`,
-`/modal`, `/e2b`, `/orgo`, `/orgo-desktop`, `/phone-harness`, `/browserbase`, `/kernel`, `/local-chrome`, `/boxd`, `/smolcloud`, `/groundbox`, `/vercel`, `/sprites`). A provider's
+`/modal`, `/e2b`, `/orgo`, `/orgo-desktop`, `/phone-harness`, `/browserbase`, `/kernel`, `/local-chrome`, `/boxd`, `/smolcloud`, `/groundbox`, `/vercel`, `/sprites`, `/maritime`). A provider's
 option types (`DockerProviderOptions`, `ModalProviderOptions` and the like) come from its subpath too, not the root.
 
 The package carries the daemon for Linux amd64 and arm64 in `dist/`, so a provider runs it with no Go on the host. A
@@ -688,6 +688,7 @@ live under:
   | `GROUNDBOX_API_KEY` | Groundbox's `apiKey` |
   | `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` | Vercel Sandbox's `token`, `teamId` and `projectId`, all required |
   | `SPRITES_TOKEN` | Fly Sprites' `token`: the name Fly's own CLI reads |
+  | `MARITIME_API_KEY` | Maritime's `apiKey`: the name Maritime's own SDK reads |
 
 - **the conformance CLI and the live harness** (`src/conformance/`: the CLI, each provider's conformance module and the
   sweeps) read their own `COMPUTER_<ID>_*` names, the ones the live scripts set, through each module's
@@ -3383,6 +3384,45 @@ a concurrency cap (`concurrent_sprite_limit_exceeded`) is a `limit`.
 Unverified until the live run: the arch (amd64); a label string's room (64 bytes); a taken name answering 409; the exec
 user being root or having passwordless sudo, and root making a network namespace; no vendor agent on TCP; the exec
 socket holding 75 s of silence with no ping; and a sprite with an exec running never going to sleep.
+
+## Maritime
+
+```ts
+import { providerFor } from "@parcha/agentrun-computer";
+
+// The key is the caller's to pass (serve's MARITIME_API_KEY); the server needs a public https address, which the VM dials.
+const maritime = await providerFor("maritime", { apiKey, dial: { url: "https://agentrun.example.com", tokens, hub } });
+const image = await maritime.prepareImage?.(); // the box image's public tag, with no call
+if (image?.ok) await maritime.create({ image: image.value, lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
+```
+
+A Maritime computer is a [Maritime](https://maritime.sh/docs) VM: an isolated Linux micro-VM with its own kernel,
+started from the box image by its public tag (`prepareImage()`, no call; Maritime pulls it at the first create). It is
+a sandbox alone: no desktop and no Archil mount. Maritime runs on the shared machine-host adapter
+([PROVIDERS.md](PROVIDERS.md)) as a [dial](PROVIDERS.md#machines-that-dial-in) host: a command's stdin is one string
+given at its start, which can't carry the daemon's stdio, so the VM dials the server. `src/maritime.ts` is its
+`MachineHost`, over Maritime's REST API with `fetch` and the shared REST client (no SDK): the control plane
+(`https://api.maritime.sh/v1`, `Authorization: Bearer <key>`) and each VM's data plane (its `dataPlaneUrl`, its
+`secret` in `X-Maritime-Token`).
+
+| MachineHost | Maritime |
+| --- | --- |
+| `create` | `POST /v1/sandboxes` with the request's name, the image as `from`, the labels as `metadata`, egress `all`, `keepAwake` and the backstop as `timeLimitSeconds`; a `200` (the live VM of that name) is `exists`. Once the VM reads `running`, `POST {dataPlaneUrl}/commands` starts `sh -c` agentrun-dial's launch line in the background, the boot env as the command's env |
+| `get` | `GET /v1/sandboxes/{id}`: `starting` and `resuming` are starting, `pausing` and `paused` stopped, `error` stopped with Maritime's reason; `ended` and a 404 are none |
+| `list` | `GET /v1/sandboxes?namePrefix=computer-&limit=100`, every page by cursor, ended VMs left out, then the asked labels matched here |
+| `delete` | `DELETE /v1/sandboxes/{id}` (repeatable), a 404 done |
+| `dialLog`, `dialExit`, `redial` | `GET {dataPlaneUrl}/commands/{id}` of agentrun-dial's command: its stdout and stderr, its exit code (a killed one 128 and its signal), and the same command started again; the id is kept in the process that made the VM |
+
+No `exec`, `upload` or `extend` (the janitor ends a VM at its deadline, Maritime at its time limit). `check()` takes 1
+to 16 vCPUs and 1 to 64 GiB in whole GiB, and an OCI reference with a repository path: Maritime's templates and
+snapshots (`base`, `python`, ...) hold no `agentrun-dial`. A 401 or 403 is `denied`, a 402 (a trial's size or spend cap)
+or 429 `limit`, and every refusal carries Maritime's error code.
+
+Unverified until the live run: the arch (amd64) and no vendor agent on TCP; commands running as root in a VM from the
+box image, and root making a network namespace; a background command's env reaching its process; metadata taking the
+dotted label names with room for all of them; whether a VM from an OCI image runs its CMD (create relies on neither); a
+name reused once its VM ended making a new VM; `DELETE` taking the id alone; and the box image's first pull fitting the
+10-minute create.
 
 ## Conformance
 

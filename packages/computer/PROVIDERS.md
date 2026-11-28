@@ -497,6 +497,17 @@ labels: a sandbox's name gives the computer's own two, and `get` and `list` read
 `dialExit` and `redial` read and rerun the same files. The image is the box image as a sandbox build of the workspace
 (`agentrun-box-<tag>`), which `prepareImage()` imports once.
 
+Maritime ([`src/maritime.ts`](src/maritime.ts)) dials alone too: a command's stdin is one string given at its start.
+Once the VM reads `running`, create starts `agentrun-dial` as a background command on the VM's own data plane, the boot
+env as that command's env, and keeps the command's id; `dialLog` reads its stdout and stderr, `dialExit` its exit code
+(a killed one 128 and its signal), and `redial` starts the same command again. The image is the box image by its public
+tag, which Maritime pulls at the first create.
+
+Gap, docs only: a host whose vendor keeps a started process by an id the host was answered (Maritime's command id) holds
+that id in memory, so `dialLog`, `dialExit` and `redial` answer nothing for a machine made by an earlier process of the
+server. The adapter reads them during a create, in the process that made the machine, so nothing is lost today; the
+machine is still listed and ended by any process.
+
 #### Worked example: Fly Machines
 
 [`src/fly.ts`](src/fly.ts) is a dial host on the [Machines API](https://fly.io/docs/machines/api/machines-resource/).
