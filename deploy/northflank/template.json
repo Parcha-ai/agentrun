@@ -64,7 +64,7 @@
                     "docker": {
                       "configType": "default"
                     },
-                    "gracePeriodSeconds": 35
+                    "gracePeriodSeconds": 45
                   },
                   "ports": [
                     {

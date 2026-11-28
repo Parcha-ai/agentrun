@@ -89,10 +89,10 @@ test("one instance, never scaled, on a single read/write volume at /data, so the
   assert.equal(volume.spec.spec.accessMode, "ReadWriteOnce");
   assert.equal(service.spec.deployment.strategy, undefined);
   // The stop grace covers the runner's whole close (its drain, then the stop of a stuck run), so a restart never cuts a
-  // run's end and the release of its claim short: 35 s, as deploy/README.md asks of every host.
+  // run's end and the release of its claim short: 45 s, as deploy/README.md asks of every host.
   assert.equal(RUNNER_DRAIN_TIMEOUT, "6s");
   assert.ok(service.spec.deployment.gracePeriodSeconds * 1000 > runnerCloseBoundMs(6_000), "the grace outlasts the runner's close");
-  assert.equal(service.spec.deployment.gracePeriodSeconds, 35);
+  assert.equal(service.spec.deployment.gracePeriodSeconds, 45);
   // 10 GB, as render.yaml's disk: Claude Code and Codex install themselves onto it on first use.
   assert.equal(volume.spec.spec.storageSize, 10240);
   // A run of the template again never replaces the data's volume.
