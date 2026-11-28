@@ -20,7 +20,7 @@ export const FIRECRAWL_KEYED_MS = 60_000;
  *  - `country`: the country a search is made from, ISO 3166-1 alpha-2; unset, Firecrawl's own (US);
  *  - `highlights`: each result's description is its query-relevant highlight; unset, Firecrawl's own (true);
  *  - `pdfMaxPages`: the most pages of a PDF a web_fetch parses, and is held for (1 credit a page), 1 to 10,000; unset,
- *    FIRECRAWL_FETCH_PDF_PAGES. */
+ *    no cap: a PDF is read whole, and a fetch is held at Firecrawl's most, 10,000 pages (fees.ts firecrawlFeeOf). */
 export type FirecrawlSettings = {
   onlyMainContent?: boolean;
   maxAgeMs?: number;
@@ -55,16 +55,12 @@ export const firecrawlClient = (apiKey: string, send: typeof fetch = fetch, pay?
 
 /** How many of a search's queries Firecrawl is sent: one request each, at once. */
 export const FIRECRAWL_QUERIES_MAX = 3;
-/** The scrape a Firecrawl search asks of each result, as Firecrawl's guidance for agents asks: its page as markdown, its
- *  main content alone unless `settings` say otherwise (each a scrape, priced by fees.ts firecrawlFeeOf). */
+/** The scrape keyless Firecrawl's search asks of each result, as Firecrawl's guidance for agents asks: its page as
+ *  markdown, its main content alone unless `settings` say otherwise. A keyed search asks none (firecrawlSearchBody). */
 export const firecrawlScrapeOptions = (settings: FirecrawlSettings = {}) => ({ formats: ["markdown"], onlyMainContent: settings.onlyMainContent ?? FIRECRAWL_DEFAULTS.onlyMainContent });
-/** The most pages of a PDF a keyed search parses of each result: a result keeps its first SNIPPET_MAX characters, about
- *  a page, and each page parsed is a credit (fees.ts firecrawlFeeOf). */
-export const FIRECRAWL_SEARCH_PDF_PAGES = 2;
-/** The most pages of a PDF a keyed web_fetch parses, unless the pdfMaxPages setting says otherwise. */
-export const FIRECRAWL_FETCH_PDF_PAGES = 100;
-/** How a keyed request has Firecrawl read a page: on its basic proxy (the one priced here), a PDF to `pages` at most. */
-const keyedRead = (pages: number) => ({ proxy: "basic", parsers: [{ type: "pdf", maxPages: pages }] });
+/** How a keyed web_fetch has Firecrawl read a page: on its basic proxy (the one priced here), a PDF to `pages` at most
+ *  when a cap is set (pdfMaxPages), else whole. */
+const keyedRead = (pages: number | undefined) => ({ proxy: "basic", ...(pages === undefined ? {} : { parsers: [{ type: "pdf", maxPages: pages }] }) });
 
 /** Firecrawl's search rows, an answer's `data` or its `data.web`, as hits: each row whose url parses, its snippet its
  *  page's markdown, else its description; undefined where the answer holds no rows this server reads. */
@@ -117,12 +113,13 @@ export function firecrawlMerged(provider: "firecrawl" | "firecrawl-keyless", { o
   return { answer: { provider, objective, queries, results }, ...held };
 }
 
-/** The /v2/search request for `query`, `n` results, under `settings`: each result scraped (firecrawlScrapeOptions). */
+/** The /v2/search request for `query`, `n` results, under `settings`. It asks no scrape of its results: each result's
+ *  snippet is Firecrawl's description of it (its query-relevant highlight unless `highlights` is false), as Exa's
+ *  highlights and Parallel's excerpts are, and the search is Firecrawl's 2 credits per 10 results alone. */
 export function firecrawlSearchBody(query: string, n: number, settings: FirecrawlSettings = {}): Record<string, unknown> {
   return {
     query,
     limit: n,
-    scrapeOptions: { ...firecrawlScrapeOptions(settings), ...keyedRead(FIRECRAWL_SEARCH_PDF_PAGES) },
     ...(settings.tbs ? { tbs: settings.tbs } : {}),
     ...(settings.includeDomains ? { includeDomains: settings.includeDomains } : {}),
     ...(settings.excludeDomains ? { excludeDomains: settings.excludeDomains } : {}),
@@ -146,9 +143,9 @@ export async function firecrawlSearched(args: Record<string, unknown>, client: K
   return firecrawlMerged("firecrawl", ask, each);
 }
 
-/** The /v2/scrape request for `url` under `settings`: markdown alone, a PDF to pdfMaxPages (FIRECRAWL_FETCH_PDF_PAGES). */
+/** The /v2/scrape request for `url` under `settings`: markdown alone, on the basic proxy, a PDF to pdfMaxPages when set. */
 export function firecrawlScrapeBody(url: string, settings: FirecrawlSettings = {}): Record<string, unknown> {
-  return { url, formats: ["markdown"], onlyMainContent: settings.onlyMainContent ?? FIRECRAWL_DEFAULTS.onlyMainContent, ...(settings.maxAgeMs === undefined ? {} : { maxAge: settings.maxAgeMs }), ...keyedRead(settings.pdfMaxPages ?? FIRECRAWL_FETCH_PDF_PAGES) };
+  return { url, formats: ["markdown"], onlyMainContent: settings.onlyMainContent ?? FIRECRAWL_DEFAULTS.onlyMainContent, ...(settings.maxAgeMs === undefined ? {} : { maxAge: settings.maxAgeMs }), ...keyedRead(settings.pdfMaxPages) };
 }
 
 /** A page Firecrawl scraped for `url` (`page`, its scrape's `{markdown, metadata}`, keyed or keyless alike) as a Read:
