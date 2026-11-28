@@ -141,11 +141,30 @@ test("a cross-origin POST that Chrome loses with its network service is run agai
 test("a cross-origin POST whose preflight the network answers late is waited for, not read as an effect the observer missed: under deny it is journaled and denied", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {
   const { driver, observer, server } = await denyRig(t, "effects-slow");
   // Longer than the journal's own wait, by more than the run's own wait after the click: the request is still on its way,
-  // neither journaled nor dropped, when that wait ends.
+  // neither journaled nor dropped, when that wait ends. Every preflight on the path is late, so an attempt CI's Chrome
+  // loses with its network service (journalCase runs it again) is late again, and `late`, the last attempt's, still holds.
   server.slowPreflight("/api/xorigin", 5_000);
   const c = CASES.find((each) => each.name.startsWith("G3"));
   const { rows, attempts, lost, late } = await journalCase({ driver, observer, server, mode: "deny", c, journalMs: 2_000 });
   assert.equal(late, true, "the request was still on its way when the journal's wait ended");
+  assert.deepEqual([...rows.values()].map((row) => `${label(row)} ${row.held}`), ["POST /api/xorigin denied"], `the late request is journaled (the server got ${JSON.stringify(server.nonGet())})`);
+  assert.equal(attempts - lost, 1, "it was waited for, not run again");
+  assert.deepEqual(server.nonGet(), [], "nothing reached the server");
+});
+
+test("a late preflight whose first attempt Chrome loses with its network service is waited for on the attempt that follows: under deny it is journaled and denied", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {
+  const { driver, observer, server } = await denyRig(t, "effects-slow-lost");
+  // The late case above, with its first attempt taken by the network service, as CI's Chrome sometimes does (see journalCase).
+  // The next attempt's navigation ends the request the lost one left (net::ERR_ABORTED), and that is no drop of its own:
+  // its preflight is late too, and it is waited for.
+  const pid = await driver.networkService();
+  assert.ok(pid, "Chrome names its network service's process");
+  server.slowPreflight("/api/xorigin", 5_000);
+  server.onPreflight("/api/xorigin", () => { try { process.kill(pid, "SIGKILL"); } catch {} });
+  const c = CASES.find((each) => each.name.startsWith("G3"));
+  const { rows, attempts, lost, late } = await journalCase({ driver, observer, server, mode: "deny", c, journalMs: 2_000 });
+  assert.ok(lost >= 1, `the first attempt was lost and run again (${attempts} attempts, ${lost} lost)`);
+  assert.equal(late, true, `the attempt that followed was still on its way when the journal's wait ended (${attempts} attempts, ${lost} lost)`);
   assert.deepEqual([...rows.values()].map((row) => `${label(row)} ${row.held}`), ["POST /api/xorigin denied"], `the late request is journaled (the server got ${JSON.stringify(server.nonGet())})`);
   assert.equal(attempts - lost, 1, "it was waited for, not run again");
   assert.deepEqual(server.nonGet(), [], "nothing reached the server");

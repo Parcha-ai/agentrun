@@ -12,7 +12,9 @@ export function cdpDriver(base) {
     const loaded = new Set();
     // Fetches, XHRs and their CORS preflights the browser or the network dropped (net::ERR_ABORTED, a preflight with no
     // answer, ...), not documents: re-running a case over a navigation still in flight races it. A request the observer
-    // refused (net::ERR_BLOCKED_BY_CLIENT) is the effect under test, never a drop.
+    // refused (net::ERR_BLOCKED_BY_CLIENT) is the effect under test, never a drop. Only a request still in flight counts: one
+    // a restart of the network service took with it was counted as that restart and forgotten, and when the next run's
+    // navigation ends it (net::ERR_ABORTED), that is not a drop of the next run's own request.
     let aborted = 0;
     // The page's own requests (not documents) the browser has announced and not yet ended, by request id.
     const inFlight = new Set();
@@ -22,11 +24,11 @@ export function cdpDriver(base) {
       if (m.id !== undefined) { const p = pending.get(m.id); pending.delete(m.id); if (m.error) p?.reject(new Error(m.error.message)); else p?.resolve(m.result); return; }
       if (m.method === "Page.lifecycleEvent" && m.params.name === "load") loaded.add(m.params.loaderId);
       if (m.method === "Network.requestWillBeSent" && m.params.type !== "Document") inFlight.add(m.params.requestId);
+      if (m.method === "Network.loadingFailed" && inFlight.has(m.params.requestId) && ["Fetch", "XHR", "Preflight"].includes(m.params.type) && !m.params.errorText.startsWith("net::ERR_BLOCKED_BY_CLIENT")) aborted += 1;
       if (m.method === "Network.loadingFinished" || m.method === "Network.loadingFailed") {
         inFlight.delete(m.params.requestId);
         if (inFlight.size === 0) for (const wake of settledWaiters.splice(0)) wake();
       }
-      if (m.method === "Network.loadingFailed" && ["Fetch", "XHR", "Preflight"].includes(m.params.type) && !m.params.errorText.startsWith("net::ERR_BLOCKED_BY_CLIENT")) aborted += 1;
       for (const w of waiters.splice(0)) if (w.test(m)) w.resolve(); else waiters.push(w);
     };
     ws.onclose = () => { for (const p of pending.values()) p.reject(new Error("the test driver's socket closed")); pending.clear(); };
