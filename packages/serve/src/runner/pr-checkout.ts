@@ -92,8 +92,11 @@ const REMOVAL_SCRIPT = `rm -rf -- "${PRIVATE_DIR}\${2:?}" || exit 1; [ "$(cat "\
  *  folder. Every call that reaches GitHub runs there, so the one config git reads beside the command line's is the one
  *  this script wrote: nothing another writer of the run's folder puts in a .git/config there (a URL's own proxy or
  *  sslVerify, which beat a generic -c, or an insteadOf) decides where the header goes. `land` moves the repository into
- *  the run's folder once the header is gone and the last fetch is done: its .git whole (refs, objects, the shallow file,
- *  the owner file), with no gitdir file or core.worktree that points back at $P. */
+ *  the run's folder once the header is gone and the last fetch is done: every file of its .git (refs, objects, the
+ *  shallow file), with no gitdir file or core.worktree that points back at $P. The owner file is written into the
+ *  folder's .git before anything is moved: between two filesystems (/tmp and the run's mount) mv copies, then removes,
+ *  and a copy cut short (a stop, the deadline, a full disk) leaves a folder the checkout's removal still knows as this
+ *  claim's. */
 const GIT_PRELUDE = `export GIT_TERMINAL_PROMPT=0 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
 g() { git -c core.hooksPath=/dev/null "$@"; }
 net() {
@@ -108,8 +111,8 @@ trap 'rm -rf "$P"' EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
-g init -q --template= "$P" >/dev/null 2>&1 && cd "$P" && printf '%s\\n' "$claim" > .git/${OWNER_FILE} && g remote add origin "$url" || exit 10
-land() { cd "$here" && rm -rf "\${dir:?}" && mkdir -p "$dir" && mv "$P/.git" "$dir/.git" && cd "$dir"; }`;
+g init -q --template= "$P" >/dev/null 2>&1 && cd "$P" && g remote add origin "$url" || exit 10
+land() { cd "$here" && rm -rf "\${dir:?}" && mkdir -p "$dir/.git" && printf '%s\\n' "$claim" > "$dir/.git/${OWNER_FILE}" && mv "$P/.git"/* "$dir/.git/" && cd "$dir"; }`;
 
 /** The checkouts' environment (each exec's, its removal's too): the run's shell's (shellEnv), its PATH with /usr/bin and
  *  /bin first, so sh, git and every program the scripts run are the system's own, never one a folder ahead of them on
