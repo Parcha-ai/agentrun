@@ -179,6 +179,11 @@ export interface LoopDeps {
   flush(): Promise<void>;
   /** Aborted on claim loss, self-stop or shutdown: in-flight model and tool calls are cut at once. */
   signal: AbortSignal;
+  /** Whether this runner still holds the claim, by its own fence (lost on a Fenced answer or at the claim's deadline
+   *  unrenewed, a shutdown's included): the run's end sweeps its scratch only while it does (spec-holds.ts), since a lost
+   *  claim's run folder may be a later claim's. Never the signal's reason, which a shutdown sets before a loss can.
+   *  Absent: unknown, and nothing is swept. */
+  stillHolds?: () => boolean | Promise<boolean>;
   /** A learning child's (a check's replay run, an audit's shadow run): aborted at its deadline (runner.ts
    *  cancelOverdue), after which its loop sends no model request; the runner's cancel then stops it. Absent for any other
    *  run. */

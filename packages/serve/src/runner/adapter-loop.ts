@@ -467,6 +467,9 @@ export type AdapterRun = PiRun & {
    *  runner's close cuts the tool hosts' release (LoopDeps.releaseBy: its window less its reserve), or, with no close,
    *  at the release's own bound from then (releaseBoundMs). Absent where no loop gave one. */
   readonly endCut?: () => AbortSignal;
+  /** The runner's fence on the claim (LoopDeps.stillHolds): the spec's holds sweep the run's scratch at its end only
+   *  while it says held (spec-holds.ts). Absent where no loop gave one: nothing is swept. */
+  readonly stillHolds?: () => boolean | Promise<boolean>;
   /** LoopDeps.handBack: a request the run needs refused because the runner is closing hands the run back to resume
    *  (claim-secrets.ts: the plan's renewal). Absent where no loop gave one. */
   readonly handBack?: () => Promise<void>;
@@ -2094,7 +2097,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           if (passGate.sealed) return;
           passGate.expect(writesEntry(kind, test), { run: { summary } }).catch(() => undefined);
         };
-        const runOf: AdapterRun = { harness, registry, setModels: (given) => (models = given), ledger, redact: deps.redact, signal: deps.signal, stopped: AbortSignal.any([deps.signal, stopAbort.signal]), phase, rowSummaryOn, ...(deps.incarnation ? { incarnation: deps.incarnation } : {}), ...(deps.handBack ? { handBack: deps.handBack } : {}), endCut };
+        const runOf: AdapterRun = { harness, registry, setModels: (given) => (models = given), ledger, redact: deps.redact, signal: deps.signal, stopped: AbortSignal.any([deps.signal, stopAbort.signal]), phase, rowSummaryOn, ...(deps.incarnation ? { incarnation: deps.incarnation } : {}), ...(deps.handBack ? { handBack: deps.handBack } : {}), ...(deps.stillHolds ? { stillHolds: deps.stillHolds } : {}), endCut };
         // The spec, its MCP claim step among it (mcpForClaim, before the session opens). A refusal there ends the run in its
         // words with nothing sent; a claim lost during its refresh ends the loop with nothing more written. A claim the spec
         // refuses (ClaimRefused: a handed sign-in that won't read back) ends the run in its words too.

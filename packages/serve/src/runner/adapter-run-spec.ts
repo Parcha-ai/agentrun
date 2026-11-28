@@ -747,7 +747,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // The ToolHost's tools (web_save, uploads) and monid write in the run's files where the MCP files, for the same reason.
   const written = mode === 2 ? tools.workspace : ws.workspace;
   let remoteProjectCapture = false;
-  holds.hold({ tools: { end: () => remoteProjectCapture ? Promise.resolve() : tools.end() } });
+  // Its scratch swept at the end only while the runner's fence says the claim still holds (spec-holds.ts).
+  holds.hold({ tools: { end: (options) => remoteProjectCapture ? Promise.resolve() : tools.end(options) }, ...(run.stillHolds ? { stillHolds: run.stillHolds } : {}) });
   // On an Archil region with no serverless exec, the checkout now: in the computer that mounts the run's folder, through
   // its own exec, writing through its mount, where this claim started it (ClaimComputer.fresh); with none, or one an
   // earlier claim or another run had, the run is told why there is none (pr-checkout.ts).

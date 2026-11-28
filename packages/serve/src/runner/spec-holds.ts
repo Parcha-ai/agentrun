@@ -4,11 +4,19 @@
 // A builder that throws part-way never hands the loop a spec to release, so specBuilt lets go what was made by then, the
 // same way, and throws the builder's own error unchanged: a credential minted for the run is revoked and a computer made
 // for it let go, never left to the credential's 24 h ttl or the computer's lifetime. Each is let go at most once.
+//
+// The tools' end sweeps the run's scratch only while the claim still holds (`stillHolds`, the runner's fence on the claim:
+// LoopDeps.stillHolds): a lost claim's run folder may be a later claim's by then, its scratch at the same paths. A fence
+// not given, or one that throws, sweeps nothing: unknown is never taken for held. Background processes are ended either
+// way.
 import type { ParkCause } from "../workspace/computer-kept.js";
 
 /** One part a spec holds, by how it is let go. */
 type Held = {
-  readonly tools?: { end(): Promise<void> };
+  /** `sweep`: whether the end sweeps the run's scratch (RunTools.end): only where the claim still holds. */
+  readonly tools?: { end(options: { readonly sweep: boolean }): Promise<void> };
+  /** The runner's fence on the claim (LoopDeps.stillHolds): whether this runner still holds it, read at the tools' end. */
+  readonly stillHolds?: () => boolean | Promise<boolean>;
   /** The run's checkout of its pull request (pr-checkout.ts), removed from its folder while the Workspace still answers. */
   readonly checkout?: { end(): Promise<void> } | undefined;
   /** `park`: its release at the run's park, for its cause, true when it kept the computer (computer-for-claim.ts
@@ -50,20 +58,36 @@ export class SpecHolds {
     this.#held = { ...this.#held, ...parts };
   }
 
-  /** Everything held let go, once: the tools' end (background processes ended, scratch swept), the pull request's
-   *  checkout removed, the computer, the Archil mount credential (idempotent: the computer's release revokes it too), the
-   *  Workspace's end, the CLI's scratch, then the claim's keys where they are held. A second call waits for the first and
-   *  does nothing more. At a park (`parked`, its cause), a computer that keeps (a desktop, a phone or a sandbox) is kept
-   *  for the resume first: the tools' end is left out (the processes they started and their output live on it) and so is
-   *  the revoke (its mount writes on); a keep that fails lets it go as above, as does a park of a computer this claim's
-   *  gate turned off (computerOff). */
+  /** Everything held let go, once: the tools' end (background processes ended, scratch swept while the claim holds),
+   *  the pull request's checkout removed, the computer, the Archil mount credential (idempotent: the computer's release
+   *  revokes it too), the Workspace's end, the CLI's scratch, then the claim's keys where they are held. A second call
+   *  waits for the first and does nothing more. At a park (`parked`, its cause), a computer that keeps (a desktop, a
+   *  phone or a sandbox) is kept for the resume first: the tools' end is left out (the processes they started and their
+   *  output live on it) and so is the revoke (its mount writes on); a keep that fails lets it go as above, as does a park
+   *  of a computer this claim's gate turned off (computerOff). */
   release(how?: { readonly parked?: ParkCause }): Promise<void> {
     return (this.#released ??= this.#releaseAll(how?.parked));
   }
 
-  /** The tools' end, once: the run's background commands stopped, scratch swept. The end and the release share it. */
+  /** The tools' end, once: the run's background commands stopped, scratch swept while the claim still holds. The end and
+   *  the release share it. */
   #endTools(): Promise<void> {
-    return (this.#toolsEnded ??= (this.#held.tools?.end() ?? Promise.resolve()).catch((error: unknown) => this.#log(`the run's tools' end failed: ${words(error)}`)));
+    return (this.#toolsEnded ??= (async () => {
+      const tools = this.#held.tools;
+      if (tools) await tools.end({ sweep: await this.#stillHolds() });
+    })().catch((error: unknown) => this.#log(`the run's tools' end failed: ${words(error)}`)));
+  }
+
+  /** Whether the claim still holds, by the runner's fence: false where none was given or it throws. */
+  async #stillHolds(): Promise<boolean> {
+    const fence = this.#held.stillHolds;
+    if (fence === undefined) return false;
+    try {
+      return (await fence()) === true;
+    } catch (error) {
+      this.#log(`the claim's fence could not be read, so the run's scratch is left: ${words(error)}`);
+      return false;
+    }
   }
 
   /** The pull request's checkout removed: the run's end calls it before it commits, so a run never reads final while

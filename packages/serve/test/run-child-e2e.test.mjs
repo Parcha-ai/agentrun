@@ -17,6 +17,7 @@ import { agent, claimsAfterRow, client, FAST_BEATS, follow, serve, webhookLookup
 
 const { serveWithRunner } = await import("../dist/runner/beside.js");
 const { settingFor } = await import("../dist/claude-login.js");
+const { runFolder } = await import("../dist/workspace/paths.js");
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
 const FAUX_CHANNEL = new URL("./fixtures/faux-channel.mjs", import.meta.url).pathname;
@@ -59,6 +60,10 @@ export default function reply(context, faux) {
   assert.ok(match, `${said}; ${lines.join("\n")}`);
   assert.match(match[1], new RegExp(words.replace(/[.']/g, "\\$&")));
   assert.notEqual(Number(match[2]), process.pid, "read in a process of its own");
+  // Its end swept its TMPDIR: the runner's fence on the claim, asked over the channel (LoopDeps.stillHolds), said held.
+  const folder = runFolder(server.data, "reader", runId);
+  assert.ok(existsSync(folder), `the run's folder: ${folder}`);
+  assert.ok(!existsSync(join(folder, ".agentrun", "tmp")), "the end swept the run's TMPDIR");
 });
 
 test("a priced MCP tool called from a run's process is held under its run's cap and booked as its tool cost", { timeout: 120_000 }, async (t) => {

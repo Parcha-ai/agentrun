@@ -3,7 +3,7 @@
 // exec; in Mode 1 the folder is one of this server's own, and a bash call answers how to get a shell), and its hands have
 // no processes; a computer gives the five background tools too, on the attached Workspace's processes (hands.ts
 // processesOf, the kernel's narrow port over computerd's calls). bash's bound is the registry's, by the hands' ceiling;
-// a timeout keeps what the command printed; the run's end ends background processes, then sweeps.
+// a timeout keeps what the command printed; the run's end ends background processes, then sweeps where its claim holds.
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,7 +27,7 @@ function scratch() {
 }
 const call = (tools, name, args, attempt) => tools.find((tool) => tool.name === name).call(args, { callId: `c-${name}-${Math.random()}`, signal: new AbortController().signal, ...(attempt ? { attempt } : {}) });
 
-test("no computer in Mode 1: the file tools alone (no bash family), no processes on the hands, a bash or background call refused in words naming the setting; the end sweeps", async () => {
+test("no computer in Mode 1: the file tools alone (no bash family), no processes on the hands, a bash or background call refused in words naming the setting; the end sweeps where the claim holds", async () => {
   const root = scratch();
   const run = await runTools(localWorkspace(root), undefined, { mode: 1, context: ctx });
   assert.deepEqual(run.registry.list().map((def) => def.name), ["read", "write", "edit"]);
@@ -41,7 +41,9 @@ test("no computer in Mode 1: the file tools alone (no bash family), no processes
   const refused = await run.registry.invoke("bash_background", { command: "sleep 9" }, { hands: run.hands });
   assert.equal(refused.error, NEEDS_A_COMPUTER, "the registry's own words for it");
   await run.end();
-  assert.ok(!existsSync(join(root, ".agentrun", "tmp")), "the end swept TMPDIR");
+  assert.ok(existsSync(join(root, ".agentrun", "tmp")), "an end not told the claim holds sweeps nothing");
+  await run.end({ sweep: true });
+  assert.ok(!existsSync(join(root, ".agentrun", "tmp")), "the end swept TMPDIR where the claim holds");
 });
 
 test("no computer in Mode 2: bash on Archil's exec (never a process of this server's), the background tools still refused", async () => {

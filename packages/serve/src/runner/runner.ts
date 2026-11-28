@@ -1099,6 +1099,9 @@ export function startRunner(options: RunnerOptions): Runner {
       journal: (forClaim) => fenced(store.journal(forClaim), fence, forClaim.runId, () => ending()),
       flush: () => store.flush(),
       signal: abort.signal,
+      // The claim's own fence (loseClaim), read at the run's end: a shutdown's abort leaves it held while its claim is
+      // renewed, and a loss after it still says lost.
+      stillHolds: () => !fence.lost && !killed,
       ...(pastDeadline ? { pastDeadline: pastDeadline.signal } : {}),
       delivered,
       // A delivery under way first (its rows are the loop's already), then one more read of the run's new rows.
