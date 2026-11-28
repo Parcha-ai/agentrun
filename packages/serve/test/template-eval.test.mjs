@@ -336,6 +336,19 @@ test("a $pattern that backtracks without end stops at its limit: the tool_used g
   assert.deepEqual(fakeAnswer(fixture, "open", { path: "aab" }), { content: [{ type: "text", text: "opened" }] }, "the same pattern on a short value still answers");
 });
 
+test("code-review's off-by-one passes a read of the skill's folder or the run's message however its path is spelled, and fails any other read, a .. in it included", () => {
+  const graders = readCases(join(TEMPLATES_DIR, "code-review"), ["off-by-one"]).cases[0].graders;
+  const reads = graders.find((g) => g.file === "reads-only-skill.md");
+  assert.ok(reads && graders.some((g) => g.file === "no-bash.md"), "off-by-one checks its reads and its bash calls in code");
+  const grade = (path) => gradeDeterministic(reads, { answer: "", calls: [{ tool: "read", arguments: { path }, status: "success", result: "" }], mcpCalls: [], files: [] }, []);
+  for (const path of [".agents/skills/review/SKILL.md", ".agents/skills/review/findings.schema.json", "inputs/message.md", "./inputs/message.md", "@inputs/message.md", "./.agents/skills/review/DEEP.md", "@.agents/skills/review/CODEREVIEW.md", "/workspace/run/.agents/skills/review/REVIEWER.md", "/work/inputs/message.md"]) {
+    assert.equal(grade(path).pass, true, `a read of ${path} passes`);
+  }
+  for (const path of ["src/totals.ts", "./src/totals.ts", "/work/src/totals.ts", "CODEREVIEW.md", "REVIEW.md", ".git/HEAD", ".agents/skills/code-review-knowledge/rules.md", ".agents/skills/review/sub/x.md", "inputs/message.md.bak", "inputs/other.md", "inputs/../src/totals.ts", ".agents/skills/review/../../../src/totals.ts", "/work/../src/.agents/skills/review/SKILL.md", "..", "./"]) {
+    assert.equal(grade(path).pass, false, `a read of ${path} fails`);
+  }
+});
+
 test("tool_used's args_file is read from a grader's front matter: a path in the run's work folder, never beside expect: not_called, at_least or at_most", async (t) => {
   const dir = await webPackage(t, "graded", "unavailable", [["web_search", { query: "x" }]]);
   const grader = (name, front) => writeFileSync(join(dir, "evals", "graded", "graders", name), `---\ntype: tool_used\ntool: web_search\n${front}\n---\n`);

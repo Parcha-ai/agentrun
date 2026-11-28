@@ -6,7 +6,7 @@
 // a new one, and the test throws PatternTimeout: never a match or a miss the engine did not finish. The worker never holds
 // a process open: it is unref'd.
 import { MessageChannel, type MessagePort, receiveMessageOnPort, Worker } from "node:worker_threads";
-import type { PatternReply } from "./pattern-worker.js";
+import type { PatternJob, PatternReply } from "./pattern-worker.js";
 
 /** The longest one `$pattern` test runs before it is stopped. */
 export const PATTERN_MS = 2_000;
@@ -19,7 +19,8 @@ export class PatternTimeout extends Error {
   override readonly name = "PatternTimeout";
 }
 
-type Held = { worker: Worker; port: MessagePort; flag: Int32Array };
+/** The kept worker, its reply port, the signal it sets to the id of the job it finished, and the last id asked. */
+type Held = { worker: Worker; port: MessagePort; flag: Int32Array; jobs: number };
 let held: Held | undefined;
 
 function stop(): void {
@@ -40,20 +41,29 @@ function worker(): Held {
   made.on("error", () => {
     if (held?.worker === made) stop();
   });
-  held = { worker: made, port: port1, flag: new Int32Array(signal) };
+  held = { worker: made, port: port1, flag: new Int32Array(signal), jobs: 0 };
   // A first test that tells nothing (the empty pattern on the empty value) waits out the start, under START_MS.
   ask(held, "", "", START_MS);
   return held;
 }
 
 function ask(on: Held, source: string, text: string, ms: number): boolean {
-  Atomics.store(on.flag, 0, 0);
-  on.worker.postMessage({ source, text });
-  if (Atomics.wait(on.flag, 0, 0, ms) === "timed-out") {
-    stop();
-    throw new PatternTimeout(`did not finish within ${ms} ms`);
+  const id = ++on.jobs;
+  const deadline = performance.now() + ms;
+  on.worker.postMessage({ id, source, text } satisfies PatternJob);
+  // Done when the signal holds this job's id. Any other wake-up (a late notify of the job before, or a spurious one)
+  // waits again for what is left of the one deadline.
+  for (let seen = Atomics.load(on.flag, 0); seen !== id; seen = Atomics.load(on.flag, 0)) {
+    const left = deadline - performance.now();
+    if (left <= 0 || Atomics.wait(on.flag, 0, seen, left) === "timed-out") {
+      stop();
+      throw new PatternTimeout(`did not finish within ${ms} ms`);
+    }
   }
-  const reply = receiveMessageOnPort(on.port)?.message as PatternReply | undefined;
+  // The reply is posted before the signal is set: this job's is on the port now, after any an earlier job left there.
+  let reply: PatternReply | undefined;
+  do reply = receiveMessageOnPort(on.port)?.message as PatternReply | undefined;
+  while (reply && reply.id !== id);
   if (!reply) {
     stop();
     throw new PatternTimeout("the pattern's worker gave no answer");
