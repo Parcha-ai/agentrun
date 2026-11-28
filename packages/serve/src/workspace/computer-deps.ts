@@ -32,7 +32,7 @@ import { readLaunchBody } from "../run-launch.js";
 import type { Store } from "../store/index.js";
 import { SERVER_NOTE_LABEL } from "@parcha/agentrun-kernel/kernel/cap";
 import type { PairedRelay } from "./attached-computers.js";
-import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type ComputerSaid, type KeptKind, type OpenComputerView, type Replaced } from "./computer-for-claim.js";
+import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type ComputerSaid, type KeptKind, type OpenComputerView, type Reach, type Replaced } from "./computer-for-claim.js";
 import { computerHeldWords, computerLapsedWords, computerLostWords, computerRefusedWords, KEEP_WORDS } from "./computer-kept.js";
 import { storeLedger } from "./computer-ledger.js";
 import { computerProviderFactories, computerProviderMakers, type ProviderLoad, providerSecretsOf } from "./computer-providers.js";
@@ -339,12 +339,16 @@ export const computerFilesNote = ({ kind, screenshot, writes, outlives }: { read
   return `${SERVER_NOTE_LABEL}this ${kind}'s own disk is not this run's files: nothing saved on the ${kind} reaches the user, and ${outlives ? `it stays on the ${kind} after the run ends` : "it is deleted when the run ends"}. ${keep}`;
 };
 
-/** What the run's model is told, once in its run, when its computer was made with network "none" (ClaimComputer.offline:
- *  its provider makes no other, or the run allows none), labelled as the server's (SERVER_NOTE_LABEL): nothing on it
- *  reaches the internet, so it never spends its steps retrying a page, a download or an install there. Tools that run
- *  outside the computer (the server's own) are not held to it. */
-export const computerOfflineNote = ({ kind }: { readonly kind: "sandbox" | "desktop" | "phone" }): string =>
-  `${SERVER_NOTE_LABEL}this ${kind} has no internet access: nothing on it reaches a website or a server outside it, so a page, a download or a package install from the internet fails there. Don't retry one; say in your answer what needed the internet. Tools of yours that don't run on the ${kind} aren't affected.`;
+/** What the run's model is told, once in its run, when its computer reaches less than the internet (ClaimComputer.reach),
+ *  labelled as the server's (SERVER_NOTE_LABEL), so it never spends its steps retrying what is refused there: with
+ *  "none", that nothing on it reaches the internet; with a list, the hosts it reaches, on ports 80 and 443 alone (the
+ *  egress proxy's rule, hosted/network.ts), and that anything else is refused. Tools that run outside the computer (the
+ *  server's own) are not held to it. */
+export const computerReachNote = ({ kind, reach }: { readonly kind: "sandbox" | "desktop" | "phone"; readonly reach: Reach }): string => {
+  const after = `Don't retry what fails for that; say in your answer what needed it. Tools of yours that don't run on the ${kind} aren't affected.`;
+  if (reach === "none") return `${SERVER_NOTE_LABEL}this ${kind} has no internet access: nothing on it reaches a website or a server outside it, so a page, a download or a package install from the internet fails there. ${after}`;
+  return `${SERVER_NOTE_LABEL}this ${kind} reaches only these hosts on the internet, on ports 80 and 443: ${reach.allow.join(", ")}. Anything else from it is refused. ${after}`;
+};
 
 /** The claim's computer as the runner's specs call it: what the run's launch lets the computer reach (its box_allow),
  *  read from the launch row when the store has one and the claim does not say, then computerForClaim. */

@@ -607,24 +607,23 @@ test("a sandbox's GPUs go into the spec its provider makes the computer with; GP
   assert.match(await refusal({ kind: "sandbox", provider: "docker", gpu: { type: "T4", count: 1 } }), /^A Docker sandbox can't have this agent's GPUs: this provider offers no GPU/);
 });
 
-// The network each computer is made with is the server's own spec builder's (computerSpecOf, under the default list):
-// a desktop whose provider makes no network but none (its programs held to loopback) is made with none and is offline,
-// so the run's model is told it has no internet (computerOfflineNote); one whose provider makes open is made open, and
-// a sandbox under an allow list is made with that list: neither is offline. A sandbox of a launch that names no list
-// is made with none, as it always was, and is offline.
-test("a computer made with network none is offline; one made open or with an allow list is not", async () => {
+// The network each computer is made with is the server's own spec builder's (computerSpecOf, under the default list),
+// and where it reaches is the claim's (ClaimComputer.reach), which the run's model is told (computerReachNote): a
+// desktop whose provider makes no network but none (its programs held to loopback) is made with none and reaches
+// nowhere; a sandbox under an allow list reaches that list's hosts; a sandbox of a launch that names no list is made
+// with none, as it always was. A desktop whose provider makes open is made open and has no reach to tell.
+test("where a computer reaches: none made with none, the list made with a list, nothing to tell made open", async () => {
   const DESKTOP_GROUPS = ["screen", "input.pointer", "input.keys"];
-  for (const [what, setting, options, network, offline] of [
-    ["a desktop whose provider makes none alone", { kind: "desktop", provider: "e2b" }, { keys: { E2B_API_KEY: "ek-test" }, groups: DESKTOP_GROUPS, networks: ["none"] }, "none", true],
+  for (const [what, setting, options, network, reach] of [
+    ["a desktop whose provider makes none alone", { kind: "desktop", provider: "e2b" }, { keys: { E2B_API_KEY: "ek-test" }, groups: DESKTOP_GROUPS, networks: ["none"] }, "none", "none"],
     ["a desktop whose provider makes open", { kind: "desktop", provider: "e2b" }, { keys: { E2B_API_KEY: "ek-test" }, groups: DESKTOP_GROUPS, networks: ["none", "open", "allow"] }, "open", undefined],
-    ["a sandbox under an allow list", { kind: "sandbox", provider: "docker" }, { networks: ["none", "allow"], boxAllow: ["pypi.org"] }, "allow", undefined],
-    ["a sandbox of a launch that names no list", { kind: "sandbox", provider: "docker" }, { networks: ["none", "allow"] }, "none", true],
+    ["a sandbox under an allow list", { kind: "sandbox", provider: "docker" }, { networks: ["none", "allow"], boxAllow: ["pypi.org"] }, { allow: ["pypi.org"] }, { allow: ["pypi.org"] }],
+    ["a sandbox of a launch that names no list", { kind: "sandbox", provider: "docker" }, { networks: ["none", "allow"] }, "none", "none"],
   ]) {
     const { record, run } = await claim(setting, { ...options, spec: computerSpecOf({}) });
     const answer = await run();
-    const made = record.created[0].network;
-    assert.equal(typeof made === "string" ? made : Object.keys(made)[0], network, `${what}: made with ${JSON.stringify(made)}`);
-    assert.equal(answer.offline, offline, `${what}: offline ${answer.offline}`);
+    assert.deepEqual(record.created[0].network, network, `${what}: made with it`);
+    assert.deepEqual(answer.reach, reach, `${what}: reaches ${JSON.stringify(answer.reach)}`);
     await answer.release();
   }
 });

@@ -1,9 +1,10 @@
-// A computer made with network "none" (its provider makes no other, or the run allows none): the model is told once in
-// the run, on its first request, that nothing on it reaches the internet, as the server's note, and the person reading
-// the run sees it once on its timeline. A computer with a network (an allow list, or open) gets no such note. A resumed
-// claim (a park on a tool's approval, then the approval) never tells it again. Through the runner, the pi spec and the
-// adapter loop as they really run, the claim's computer the runner's own (claimComputer: the run's box_allow read from its
-// launch row) and its spec built by the server's own spec builder (computerSpecOf).
+// A computer that reaches less than the internet tells the model so once in the run, on its first request, as the
+// server's note, and the person reading the run sees it once on its timeline: one made with network "none" (its
+// provider makes no other, or the run allows none) that nothing on it reaches the internet; one made with an allow list
+// the hosts it reaches, on ports 80 and 443, and that anything else is refused. One made open gets no such note. A
+// resumed claim (a park on a tool's approval, then the approval) never tells it again. Through the runner, the pi spec
+// and the adapter loop as they really run, the claim's computer the runner's own (claimComputer: the run's box_allow
+// read from its launch row) and its spec built by the server's own spec builder (computerSpecOf).
 //
 // The sandbox is a loopback stand-in for Docker's over the run's folder; the model is a script.
 import assert from "node:assert/strict";
@@ -31,11 +32,13 @@ const SEAL_KEY = Buffer.alloc(32, 7);
 const HELLO = { version: "0", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
 after(closeOpenSessions);
 
-/** The note the model is told, exactly, labelled as the server's. */
-const NOTE = "AgentRun server note: this sandbox has no internet access: nothing on it reaches a website or a server outside it, so a page, a download or a package install from the internet fails there. Don't retry one; say in your answer what needed the internet. Tools of yours that don't run on the sandbox aren't affected.";
-/** Its row on the run's timeline: the server's, labelled once. */
-const ROW = "AgentRun: This sandbox has no internet access: nothing on it reaches a website or a server outside it, so a page, a download or a package install from the internet fails there. Don't retry one; say in your answer what needed the internet. Tools of yours that don't run on the sandbox aren't affected.";
-const NOTES = /AgentRun server note: this sandbox has no internet access[^<]*/g;
+const TAIL = "Don't retry what fails for that; say in your answer what needed it. Tools of yours that don't run on the sandbox aren't affected.";
+/** The notes the model is told, exactly, labelled as the server's: a sandbox with no network, and one on a list. */
+const NONE = `AgentRun server note: this sandbox has no internet access: nothing on it reaches a website or a server outside it, so a page, a download or a package install from the internet fails there. ${TAIL}`;
+const LISTED = `AgentRun server note: this sandbox reaches only these hosts on the internet, on ports 80 and 443: pypi.org, files.pythonhosted.org. Anything else from it is refused. ${TAIL}`;
+/** Their rows on the run's timeline: the server's, labelled once. */
+const rowOf = (note) => `AgentRun: T${note.slice("AgentRun server note: t".length)}`;
+const NOTES = /AgentRun server note: this sandbox (?:has no internet access|reaches only these hosts)[^<]*/g;
 
 const until = async (done, what, ms = 60_000) => {
   const end = Date.now() + ms;
@@ -85,7 +88,7 @@ function box() {
  *  with `script` as its model; `spec`, given, stands in for the server's spec builder; `body`, the agent's; `approvers`,
  *  given, the server's approvers row. Each pi request's body is kept in `requests`. */
 async function sandboxRun(t, { script, boxAllow, spec, body = { tools: ["read", "write"] }, approvers }) {
-  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-offline-note-"));
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-reach-note-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
   let runner;
@@ -116,38 +119,38 @@ const rests = (one, states) => until(async () => {
 }, `the run rests (${states.join(", ")})`);
 
 const count = (requests) => requests.map((body) => (JSON.stringify(body).match(NOTES) ?? []).length);
-const offlineRows = async (one) => (await runTimeline(one.server, RUN, ctx)).map((entry) => entry.summary).filter((summary) => /^AgentRun: This \w+ has no internet access/.test(summary ?? ""));
+const reachRows = async (one) => (await runTimeline(one.server, RUN, ctx)).map((entry) => entry.summary).filter((summary) => /^AgentRun: This \w+ (?:has no internet access|reaches only these hosts)/.test(summary ?? ""));
 
 const WRITE = { call: "write", args: { path: "notes.txt", content: "looked" } };
 
-test("a sandbox the run allows no network (box_allow none): the spec asks network none, the model's first request carries the offline note once, in its words, and the timeline shows it once", { timeout: 120_000 }, async (t) => {
-  const one = await sandboxRun(t, { script: [WRITE, { say: "done" }], boxAllow: "none" });
+for (const [what, boxAllow, network, note] of [
+  ["no network (box_allow none)", "none", "none", NONE],
+  ["an allow list (box_allow)", ["pypi.org", "files.pythonhosted.org"], { allow: ["pypi.org", "files.pythonhosted.org"] }, LISTED],
+]) {
+  test(`a sandbox the run gives ${what}: the spec asks it, the model's first request carries the reach note once, in its words, and the timeline shows it once`, { timeout: 120_000 }, async (t) => {
+    const one = await sandboxRun(t, { script: [WRITE, { say: "done" }], boxAllow });
+    const row = await rests(one, ["ended"]);
+    assert.equal(row.state, "ended", JSON.stringify(row));
+    assert.deepEqual(one.docker.specs[0]?.network, network, "the sandbox was made with it");
+    assert.equal(one.requests.length, 2, "a write, then the answer");
+    assert.deepEqual(count(one.requests), [1, 0], "the first request carries it, the next does not");
+    assert.equal(JSON.stringify(one.requests[0]).match(NOTES)[0], note, "in its exact words");
+    assert.deepEqual(await reachRows(one), [rowOf(note)], "one row of the server's, labelled once");
+  });
+}
+
+test("a sandbox made open: no request carries a reach note and the timeline shows none", { timeout: 120_000 }, async (t) => {
+  const one = await sandboxRun(t, { script: [WRITE, { say: "done" }], spec: () => ({ image: "agentrun/computer:test", lifetimeMs: 60_000, network: "open" }) });
   const row = await rests(one, ["ended"]);
   assert.equal(row.state, "ended", JSON.stringify(row));
-  assert.equal(one.docker.specs[0]?.network, "none", "the sandbox was made with no network");
+  assert.equal(one.docker.specs[0]?.network, "open", "the sandbox was made open");
   assert.equal(one.requests.length, 2, "a write, then the answer");
-  assert.deepEqual(count(one.requests), [1, 0], "the first request carries it, the next does not");
-  assert.equal(JSON.stringify(one.requests[0]).match(NOTES)[0], NOTE, "in its exact words");
-  assert.deepEqual(await offlineRows(one), [ROW], "one row of the server's, labelled once");
+  assert.deepEqual(count(one.requests), [0, 0], "no request carries a reach note");
+  assert.doesNotMatch(JSON.stringify(one.requests), /has no internet access|reaches only these hosts/, "nor any words of one");
+  assert.deepEqual(await reachRows(one), [], "no row");
 });
 
-test("a sandbox with a network, an allow list (box_allow) or open: no request carries the offline note and the timeline shows none", { timeout: 120_000 }, async (t) => {
-  for (const [what, given, network] of [
-    ["an allow list", { boxAllow: ["pypi.org"] }, { allow: ["pypi.org"] }],
-    ["open", { spec: () => ({ image: "agentrun/computer:test", lifetimeMs: 60_000, network: "open" }) }, "open"],
-  ]) {
-    const one = await sandboxRun(t, { script: [WRITE, { say: "done" }], ...given });
-    const row = await rests(one, ["ended"]);
-    assert.equal(row.state, "ended", `${what}: ${JSON.stringify(row)}`);
-    assert.deepEqual(one.docker.specs[0]?.network, network, `${what}: the sandbox was made with it`);
-    assert.equal(one.requests.length, 2, `${what}: a write, then the answer`);
-    assert.deepEqual(count(one.requests), [0, 0], `${what}: no request carries the offline note`);
-    assert.doesNotMatch(JSON.stringify(one.requests), /has no internet access/, `${what}: nor any words of it`);
-    assert.deepEqual(await offlineRows(one), [], `${what}: no row`);
-  }
-});
-
-test("the offline note is told once a run: the claim that resumes it after a park never tells it again", { timeout: 120_000 }, async (t) => {
+test("the reach note is told once a run: the claim that resumes it after a park never tells it again", { timeout: 120_000 }, async (t) => {
   const one = await sandboxRun(t, {
     script: [WRITE, { say: "done" }],
     boxAllow: "none",
@@ -167,6 +170,6 @@ test("the offline note is told once a run: the claim that resumes it after a par
   }, "the run ends");
   assert.equal(row.state, "ended", JSON.stringify(row));
   assert.ok(one.requests.length > before, "the resume asked the model");
-  assert.equal(count(one.requests).reduce((a, b) => a + b, 0), 1, `the offline note once in the whole run: ${JSON.stringify(count(one.requests))}`);
-  assert.deepEqual(await offlineRows(one), [ROW], "its row once");
+  assert.equal(count(one.requests).reduce((a, b) => a + b, 0), 1, `the reach note once in the whole run: ${JSON.stringify(count(one.requests))}`);
+  assert.deepEqual(await reachRows(one), [rowOf(NONE)], "its row once");
 });

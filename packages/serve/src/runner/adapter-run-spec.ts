@@ -84,7 +84,7 @@ import type { ModelRoute, RouteCost } from "./model-route.js";
 import { archilClaim, archilWhereHeld, type ArchilClaimOptions, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings, noExecRegionOf } from "../archil-settings.js";
 import { settingOfDefinition } from "../computer-setting.js";
-import { type claimComputer, type ComputerDeps, computerFilesNote, computerKeptWords, computerOfflineNote, computerReadyWords, computerReplacedNote, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
+import { type claimComputer, type ComputerDeps, computerFilesNote, computerKeptWords, computerReachNote, computerReadyWords, computerReplacedNote, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
 import type { RunComputer } from "../workspace/run-tools.js";
 import { computerTurnedOff, hadComputer, recordComputerOff, type RunComputerHold } from "./computer-journal.js";
 import type { KeptKind, MadeKind, Replaced } from "../workspace/computer-for-claim.js";
@@ -1121,9 +1121,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     ...(tools.computer ? { scriptComputer: { ...tools.computer, opsRefused: gate.opsRefused() } } : {}),
     // A computer that replaced an earlier claim's: the model is told once, on its next request (the loop's computer note).
     ...(computer.replaced ? { computerNote: computerReplacedNote(computer.replaced) } : {}),
-    // A computer made with no network: the model is told once in the run, on its first request, that nothing on it reaches
-    // the internet.
-    ...(computer.offline && computer.computer && computer.computer.kind !== "browser" ? { computerOfflineNote: computerOfflineNote({ kind: computer.computer.kind }) } : {}),
+    // A computer that reaches less than the internet: the model is told once in the run, on its first request, where it
+    // reaches (nowhere, or the hosts of its list).
+    ...(computer.reach && computer.computer && computer.computer.kind !== "browser" ? { computerReachNote: computerReachNote({ kind: computer.computer.kind, reach: computer.reach }) } : {}),
     // A desktop or a phone that holds none of the run's files: the model is told once in the run where they are, or, where
     // the gate would refuse a save (RunGate.writeBar), that a screenshot can't be saved to them.
     ...(tools.apart ? { computerFilesNote: computerFilesNote({ ...tools.apart, writes: gate.writes(), outlives: computer.outlives === true }) } : {}),
