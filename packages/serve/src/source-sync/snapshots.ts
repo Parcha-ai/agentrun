@@ -1,7 +1,7 @@
 // Immutable source bundles and first-task seeding over Workspace. Authority/current pointers belong to the caller's
 // store transaction. This layer neither chooses a current snapshot nor proves project continuity between runs.
 import { createHash } from "node:crypto";
-import { isNativeRuntime, NATIVE_RUNTIME_FACTS } from "../native/runtimes.js";
+import { isSourceRuntime, sourceRuntimeProtocol } from "../native/source-snapshot-types.js";
 import { removeOwnedCaptureHooks } from "../native/source-capture-hooks.js";
 import { sourceMcpSelection } from "../native/source-mcp-selection.js";
 import { sourceAccountMetadataValid } from "../native/source-account.js";
@@ -67,7 +67,7 @@ function validateManifest(value: unknown, cap: SnapshotLimits): Manifest {
   if (new Set(value.blobs).size !== value.blobs.length) fail("Snapshot blob identities must be unique.");
   value.blobs.forEach(digest);
   const source = value.source;
-  if (!record(source) || !isNativeRuntime(source.runtime) || typeof source.machine_id !== "string" || typeof source.project !== "string" || !record(source.selector)
+  if (!record(source) || !isSourceRuntime(source.runtime) || typeof source.machine_id !== "string" || typeof source.project !== "string" || !record(source.selector)
     || !["project", "profile", "agent"].includes(source.selector.kind) || source.selector.kind !== "project" && typeof source.selector.name !== "string") fail("Snapshot source identity is invalid.");
   const entries = new Map<string, SourceSnapshotEntry>(), references = new Map<string, number>();
   const reference = (sha: unknown, bytes: unknown, maximum: number) => {
@@ -107,7 +107,7 @@ function validateManifest(value: unknown, cap: SnapshotLimits): Manifest {
   }
   for (const entry of entries.values()) if (entry.role === "skill" && !skillPaths.some(p => entry.path === p || entry.path.startsWith(`${p}/`))) fail("A skill asset is outside the selected skill closure.");
   const config = value.configuration;
-  if (!record(config) || !(config.model === null || typeof config.model === "string") || !Array.isArray(config.tools) || !record(config.permissions) || !strings(config.credentials)) fail("Snapshot configuration is invalid.");
+  if (!record(config) || config.thinking !== undefined && (typeof config.thinking !== "string" || !["low", "medium", "high", "xhigh", "max"].includes(config.thinking)) || !(config.model === null || typeof config.model === "string") || !Array.isArray(config.tools) || !record(config.permissions) || !strings(config.credentials)) fail("Snapshot configuration is invalid.");
   for (const tool of config.tools) if (!record(tool) || typeof tool.name !== "string" || !["http", "stdio"].includes(tool.transport) || !strings(tool.credentials) || tool.url !== undefined && typeof tool.url !== "string"
     || tool.selection !== undefined && !sourceMcpSelection(tool.selection)
     || tool.resources !== undefined && (!strings(tool.resources) || tool.resources.length > 3 || new Set(tool.resources).size !== tool.resources.length || tool.resources.some((op: string) => !["list", "templates", "read"].includes(op)))) fail("Snapshot tool requirements are invalid.");
@@ -135,9 +135,10 @@ function validateManifest(value: unknown, cap: SnapshotLimits): Manifest {
   for (const transform of value.transforms ?? []) {
     if (!record(transform) || transform.kind !== "agentrun-capture-hooks" || typeof transform.path !== "string" || transformed.has(transform.path)
       || !record(transform.receipt)) fail("A capture-hook transform is invalid or duplicated.");
+    if (sourceRuntimeProtocol(source.runtime) === "pi-settings") fail("Pi snapshots cannot rewrite native capture hooks.");
     const original = entries.get(transform.path), receipt = entries.get(transform.receipt.path);
-    const projectPath = NATIVE_RUNTIME_FACTS[source.runtime].protocol === "codex-json" ? "project/.codex/hooks.json" : "project/.claude/settings.local.json";
-    const external = /^instructions\/capture-hooks\/[a-f0-9]{12}\/hooks\.json$/.test(transform.path) && NATIVE_RUNTIME_FACTS[source.runtime].protocol === "codex-json";
+    const projectPath = sourceRuntimeProtocol(source.runtime) === "codex-json" ? "project/.codex/hooks.json" : "project/.claude/settings.local.json";
+    const external = /^instructions\/capture-hooks\/[a-f0-9]{12}\/hooks\.json$/.test(transform.path) && sourceRuntimeProtocol(source.runtime) === "codex-json";
     if (!original || original.type !== "file" || original.sha256 !== transform.original_sha256 || original.bytes !== transform.original_bytes
       || (transform.path !== projectPath && !external) || original.role !== (external ? "instruction" : "project")
       || transform.receipt.path !== `project/.agentrun/cli-learning/${source.runtime}.json`

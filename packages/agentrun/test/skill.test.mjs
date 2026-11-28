@@ -16,7 +16,7 @@ const BIN = new URL("../bin/agentrun.mjs", import.meta.url).pathname;
 const ROOT = new URL("../../../", import.meta.url).pathname;
 const SKILL = join(ROOT, "packages", "agentrun", "skills", "agentrun-cli");
 const GENERATOR = join(ROOT, "scripts", "generate-clients.mjs");
-const DROPPED = ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL", "AGENTRUN_BOXES", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "PARALLEL_API_KEY"];
+const DROPPED = ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL", "AGENTRUN_BOXES", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "PI_CODING_AGENT_DIR", "PARALLEL_API_KEY"];
 
 // Writes the file the first message names (`write NAME.md`); asks its person first when told to ask, and writes what
 // they said; then answers. Priced, so recipe 5's run stops at its cap.
@@ -144,6 +144,14 @@ test("SKILL.md: its front matter, and each recipe block run in order against the
     // With no flag: each of ~/.claude and ~/.agents that exists.
     const both = cli(["skill", "install"]);
     assert.deepEqual(both.json().installed, [join(server.dir, ".claude", "skills", "agentrun-cli"), agents]);
+
+    const piHome = join(server.dir, "pi-home");
+    const pi = cli(["skill", "install", "--pi"], { extra: { PI_CODING_AGENT_DIR: piHome } });
+    assert.equal(pi.code, 0, pi.err);
+    assert.deepEqual(pi.json().installed, [join(piHome, "skills", "agentrun-cli")]);
+    assert.deepEqual(readdirSync(join(piHome, "skills", "agentrun-cli")).sort(), ["SKILL.md", "references"]);
+    const all = cli(["skill", "install"], { extra: { PI_CODING_AGENT_DIR: piHome } });
+    assert.deepEqual(all.json().installed, [...both.json().installed, join(piHome, "skills", "agentrun-cli")]);
 
     const other = join(server.dir, "other");
     mkdirSync(join(other, "agentrun-cli"), { recursive: true });

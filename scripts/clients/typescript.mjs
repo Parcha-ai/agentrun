@@ -106,6 +106,12 @@ export function clientProblems(ops, map, commandOf) {
     if (!group && (groups.has(name) || OWN.includes(name))) problems.push(`${op.operationId} is client.${name}, which the client already has`);
     if (group && HAND[group]?.includes(name)) problems.push(`${op.operationId} is client.${at}, a method the client writes by hand`);
     if (group && OWN.includes(group)) problems.push(`${op.operationId}'s group ${group} is a name the client already has`);
+    if (op.clientResponseVariants !== undefined) {
+      const bodies = op.body?.type?.oneOf, answers = op.answer?.oneOf;
+      if (!Array.isArray(op.clientResponseVariants) || !Array.isArray(bodies) || op.clientResponseVariants.length !== bodies.length || !Array.isArray(answers)
+          || op.clientResponseVariants.some((index) => !Number.isSafeInteger(index) || index < 0 || index >= answers.length))
+        problems.push(`${op.operationId}'s x-agentrun-client-response-variants must name one response oneOf branch for each request oneOf branch`);
+    }
   }
   for (const group of Object.keys(HAND)) if (!groups.has(group)) problems.push(`the client writes ${HAND[group].map((n) => `${group}.${n}`).join(' and ')} by hand, and no operation is in the group ${group}`);
   return problems;
@@ -150,15 +156,29 @@ export function clientText(ops, map, commandOf) {
     args.push({ name: 'options', type: download ? 'DownloadOptions<S>' : rawBody ? 'BodyOptions' : 'RequestOptions', required: false });
     // An optional argument before a required one is required, `undefined` allowed.
     const lastRequired = args.findLastIndex((a) => a.required);
-    const signature = args.map((a, i) => (a.required ? `${a.name}: ${a.type}` : i < lastRequired ? `${a.name}: ${a.type} | undefined` : `${a.name}?: ${a.type}`)).join(', ');
+    const signatureOf = (bodyType) => args.map((a, i) => {
+      const type = a.name === 'body' && bodyType ? bodyType : a.type;
+      return a.required ? `${a.name}: ${type}` : i < lastRequired ? `${a.name}: ${type} | undefined` : `${a.name}?: ${type}`;
+    }).join(', ');
+    const signature = signatureOf();
     const plain = { none: 'void', json, text: 'string', bytes: 'S extends true ? Response : Uint8Array', 'json+text': `${json} | string`, 'json+bytes': `${json} | Uint8Array`, 'text+bytes': 'string | Uint8Array', 'json+text+bytes': `${json} | string | Uint8Array` }[answer];
     // A 204 beside a body: the transport answers nothing for it, so the type holds that.
     const orNothing = op.noContent && answer !== 'none' ? `${plain} | undefined` : plain;
     const result = tagged && !download ? `Tagged<${orNothing}>` : orNothing;
     const argOf = (n) => (args.some((a) => a.name === n) ? n : 'undefined');
+    const implementation = `${download ? '<S extends boolean = false>' : ''}(${signature}): Promise<${result}> => call(${JSON.stringify(id)}, [${pathParams.map(argName).join(', ')}], ${argOf('body')}, ${argOf('params')}, options)`;
+    const variants = op.clientResponseVariants?.map((answerIndex, bodyIndex) => {
+      const bodyType = types.ts(op.body.type.oneOf[bodyIndex]);
+      const answerType = types.ts(op.answer.oneOf[answerIndex]);
+      const taggedAnswer = tagged ? `Tagged<${answerType}>` : answerType;
+      return { bodyType, answerType: op.noContent ? `${taggedAnswer} | undefined` : taggedAnswer };
+    });
+    // A generic conditional keeps a branch-shaped request tied to its response and distributes over a union body.
+    const conditional = variants ? `${variants.map(({ bodyType, answerType }) => `B extends ${bodyType} ? ${answerType} : `).join('')}${result}` : undefined;
+    const value = variants ? `(${implementation}) as {\n        <B extends ${P}Body>(${signatureOf('B')}): Promise<${conditional}>;\n      }` : implementation;
     const method = [
       `      /** ${doc(op.summary)} (${route}). */`,
-      `      ${key(name)}: ${download ? '<S extends boolean = false>' : ''}(${signature}): Promise<${result}> => call(${JSON.stringify(id)}, [${pathParams.map(argName).join(', ')}], ${argOf('body')}, ${argOf('params')}, options),`,
+      `      ${key(name)}: ${value},`,
     ].join('\n');
     // A browser-only operation (x-agentrun-browser-only) gets no method; it stays in the table, so a raw call's body bound
     // for it, a secret route, is still cut.

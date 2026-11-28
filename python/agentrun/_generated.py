@@ -77,6 +77,7 @@ __all__ = [
     "CapabilitiesResource",
     "CapabilitiesSecrets",
     "CapabilitiesServer",
+    "CapabilitiesSourceDeployment",
     "CapabilitiesStoreSchema",
     "CapabilitiesSwitchesValue",
     "CapabilitiesToolsItem",
@@ -665,6 +666,11 @@ __all__ = [
     "ImportRemoteHistoryResponse",
     "ImportRemoteHistoryResponseRunsItem",
     "ImportRemoteTargetBody",
+    "ImportRemoteTargetBody2",
+    "ImportRemoteTargetBody2Target",
+    "ImportRemoteTargetBody2TargetCapabilities",
+    "ImportRemoteTargetBody2TargetConfigurationItem",
+    "ImportRemoteTargetBody2TargetSelector",
     "ImportRemoteTargetBodyCliAdoption",
     "ImportRemoteTargetBodyTarget",
     "ImportRemoteTargetBodyTargetCapabilities",
@@ -672,6 +678,11 @@ __all__ = [
     "ImportRemoteTargetBodyTargetRemote",
     "ImportRemoteTargetBodyTargetSelector",
     "ImportRemoteTargetResponse",
+    "ImportRemoteTargetResponse2",
+    "ImportRemoteTargetResponse2Target",
+    "ImportRemoteTargetResponse2TargetCapabilities",
+    "ImportRemoteTargetResponse2TargetConfigurationItem",
+    "ImportRemoteTargetResponse2TargetSelector",
     "ImportRemoteTargetResponseNative",
     "ImportRemoteTargetResponseNativeCapabilities",
     "ImportRemoteTargetResponseNativeConfigurationItem",
@@ -3212,7 +3223,8 @@ class ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsIt
     value: str
 
 
-MoveSourceAgentBody: TypeAlias = "dict[str, Any]"
+class MoveSourceAgentBody(TypedDict, total=False):
+    snapshot: str
 
 
 class MoveSourceAgentResponse(TypedDict):
@@ -4348,6 +4360,7 @@ class _ImportRemoteTargetBodyRequired(TypedDict):
 class ImportRemoteTargetBody(_ImportRemoteTargetBodyRequired, total=False):
     name: str
     history_only: bool
+    deployment: Literal[False]
     cli_adoption: ImportRemoteTargetBodyCliAdoption
 
 
@@ -4405,6 +4418,58 @@ class ImportRemoteTargetBodyCliAdoption(TypedDict):
     proof: str
 
 
+class _ImportRemoteTargetBody2Required(TypedDict):
+    target_id: str
+    target: ImportRemoteTargetBody2Target
+    deployment: Literal[True]
+
+
+class ImportRemoteTargetBody2(_ImportRemoteTargetBody2Required, total=False):
+    name: str
+
+
+class _ImportRemoteTargetBody2TargetRequired(TypedDict):
+    runtime: Literal["claude-code", "codex", "pi"]
+    project: str
+    selector: ImportRemoteTargetBody2TargetSelector
+    machine_id: str
+    version: str | None
+    model: str | None
+    fingerprint: str
+    configuration: list[ImportRemoteTargetBody2TargetConfigurationItem]
+    skills: list[str]
+    mcp_servers: list[str]
+    state: Literal["needs_verification", "needs_attention", "ready"]
+    issues: list[str]
+    capabilities: ImportRemoteTargetBody2TargetCapabilities
+    sync_only: Literal[True]
+
+
+class ImportRemoteTargetBody2Target(_ImportRemoteTargetBody2TargetRequired, total=False):
+    connected: bool
+
+
+class _ImportRemoteTargetBody2TargetSelectorRequired(TypedDict):
+    kind: Literal["project", "agent", "profile"]
+
+
+class ImportRemoteTargetBody2TargetSelector(_ImportRemoteTargetBody2TargetSelectorRequired, total=False):
+    name: str
+
+
+class ImportRemoteTargetBody2TargetConfigurationItem(TypedDict):
+    path: str
+    sha256: str
+
+
+class ImportRemoteTargetBody2TargetCapabilities(TypedDict):
+    launch: bool
+    learning: bool
+    workflows: Literal[False]
+    approval: Literal["native", "unavailable"]
+    usage: bool
+
+
 class ImportRemoteTargetResponse(TypedDict):
     agent_id: str
     native: ImportRemoteTargetResponseNative
@@ -4456,6 +4521,48 @@ class ImportRemoteTargetResponseNativeCapabilities(TypedDict):
 class ImportRemoteTargetResponseNativeRemote(TypedDict):
     connector_id: str
     target_id: str
+
+
+class ImportRemoteTargetResponse2(TypedDict):
+    agent_id: str
+    target: ImportRemoteTargetResponse2Target
+
+
+class ImportRemoteTargetResponse2Target(TypedDict):
+    runtime: Literal["claude-code", "codex", "pi"]
+    project: str
+    selector: ImportRemoteTargetResponse2TargetSelector
+    machine_id: str
+    version: str | None
+    model: str | None
+    fingerprint: str
+    configuration: list[ImportRemoteTargetResponse2TargetConfigurationItem]
+    skills: list[str]
+    mcp_servers: list[str]
+    state: Literal["needs_verification", "needs_attention", "ready"]
+    issues: list[str]
+    capabilities: ImportRemoteTargetResponse2TargetCapabilities
+
+
+class _ImportRemoteTargetResponse2TargetSelectorRequired(TypedDict):
+    kind: Literal["project", "agent", "profile"]
+
+
+class ImportRemoteTargetResponse2TargetSelector(_ImportRemoteTargetResponse2TargetSelectorRequired, total=False):
+    name: str
+
+
+class ImportRemoteTargetResponse2TargetConfigurationItem(TypedDict):
+    path: str
+    sha256: str
+
+
+class ImportRemoteTargetResponse2TargetCapabilities(TypedDict):
+    launch: bool
+    learning: bool
+    workflows: Literal[False]
+    approval: Literal["native", "unavailable"]
+    usage: bool
 
 
 class ListRemoteConnectorsResponse(TypedDict):
@@ -8925,6 +9032,7 @@ class Capabilities(_CapabilitiesRequired, total=False):
     links: CapabilitiesLinks
     home: CapabilitiesHome
     secrets: CapabilitiesSecrets
+    source_deployment: CapabilitiesSourceDeployment
     run_isolation: Literal["uid", "process"]
     runner_refused: str | None
 
@@ -9340,6 +9448,11 @@ class CapabilitiesSecrets(TypedDict):
     handoff: Literal["pipe"]
     condition: str
     limit: str
+
+
+class CapabilitiesSourceDeployment(TypedDict):
+    version: Literal[1]
+    runtimes: list[Literal["claude-code", "codex", "pi"]]
 
 
 class CapabilitiesSwitchesValue(TypedDict):
@@ -12802,8 +12915,14 @@ class ConnectorsResource(Group):
         """Import explicitly selected, redacted past sessions without running or learning from them (POST /connectors/{connector_id}/targets/{target_id}/history)."""
         return self._call("importRemoteHistory", (connector_id, target_id), body, None, timeout=timeout)
 
-    def import_remote_target(self, connector_id: str, body: ImportRemoteTargetBody, *, timeout: float | None = None) -> ImportRemoteTargetResponse:
-        """Import an explicitly selected source-native agent reference (POST /connectors/{connector_id}/import)."""
+    @overload
+    def import_remote_target(self, connector_id: str, body: ImportRemoteTargetBody, *, timeout: float | None = None) -> ImportRemoteTargetResponse: ...
+    @overload
+    def import_remote_target(self, connector_id: str, body: ImportRemoteTargetBody2, *, timeout: float | None = None) -> ImportRemoteTargetResponse2: ...
+    @overload
+    def import_remote_target(self, connector_id: str, body: ImportRemoteTargetBody | ImportRemoteTargetBody2, *, timeout: float | None = None) -> ImportRemoteTargetResponse | ImportRemoteTargetResponse2: ...
+    def import_remote_target(self, connector_id: str, body: ImportRemoteTargetBody | ImportRemoteTargetBody2, *, timeout: float | None = None) -> ImportRemoteTargetResponse | ImportRemoteTargetResponse2:
+        """Import a selected source reference or reserve a setup-only deployment without native execution (POST /connectors/{connector_id}/import)."""
         return self._call("importRemoteTarget", (connector_id,), body, None, timeout=timeout)
 
     def list_remote_connectors(self, *, timeout: float | None = None) -> ListRemoteConnectorsResponse:

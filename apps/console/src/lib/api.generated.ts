@@ -280,6 +280,10 @@ export interface components {
       condition: string;
       limit: string;
     };
+    source_deployment?: {
+      version: 1;
+      runtimes: ("claude-code" | "codex" | "pi")[];
+    };
     run_isolation?: "uid" | "process";
     runner_refused?: string | null;
     switches: Record<string, {
@@ -4630,11 +4634,45 @@ export interface operations {
         };
       };
       history_only?: boolean;
+      deployment?: false;
       cli_adoption?: {
         connection_id: string;
         credential_epoch: string;
         proof: string;
       };
+    } | {
+      target_id: string;
+      name?: string;
+      target: {
+        runtime: "claude-code" | "codex" | "pi";
+        project: string;
+        selector: {
+          kind: "project" | "agent" | "profile";
+          name?: string;
+        };
+        machine_id: string;
+        version: string | null;
+        model: string | null;
+        fingerprint: string;
+        configuration: {
+          path: string;
+          sha256: string;
+        }[];
+        skills: string[];
+        mcp_servers: string[];
+        state: "needs_verification" | "needs_attention" | "ready";
+        issues: string[];
+        capabilities: {
+          launch: boolean;
+          learning: boolean;
+          workflows: false;
+          approval: "native" | "unavailable";
+          usage: boolean;
+        };
+        sync_only: true;
+        connected?: boolean;
+      };
+      deployment: true;
     };
     answer: {
       agent_id: string;
@@ -4669,6 +4707,35 @@ export interface operations {
         remote?: {
           connector_id: string;
           target_id: string;
+        };
+      };
+    } | {
+      agent_id: string;
+      target: {
+        runtime: "claude-code" | "codex" | "pi";
+        project: string;
+        selector: {
+          kind: "project" | "agent" | "profile";
+          name?: string;
+        };
+        machine_id: string;
+        version: string | null;
+        model: string | null;
+        fingerprint: string;
+        configuration: {
+          path: string;
+          sha256: string;
+        }[];
+        skills: string[];
+        mcp_servers: string[];
+        state: "needs_verification" | "needs_attention" | "ready";
+        issues: string[];
+        capabilities: {
+          launch: boolean;
+          learning: boolean;
+          workflows: false;
+          approval: "native" | "unavailable";
+          usage: boolean;
         };
       };
     };
@@ -6033,7 +6100,9 @@ export interface operations {
     answer: Record<string, unknown>;
   };
   moveSourceAgent: {
-    body: Record<string, never>;
+    body: {
+      snapshot?: string;
+    };
     answer: {
       agent: components["Agent"];
       source: {

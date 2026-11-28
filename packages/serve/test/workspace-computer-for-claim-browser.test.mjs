@@ -177,4 +177,3 @@ test("a browser computer's claim releases the run's sessions of a lower epoch fi
   assert.equal(next.computer.browser.sweptOlder, undefined, "a sweep that released none hands nothing over");
   await next.release();
 });
-

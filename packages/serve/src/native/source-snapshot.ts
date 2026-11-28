@@ -1,6 +1,6 @@
 /** Source-side exporter. No service, native CLI, model or network calls; credentials are never copied/exported. */
 import { constants } from "node:fs";
-import { open, opendir, mkdtemp, mkdir, rm, writeFile, type FileHandle } from "node:fs/promises";
+import { open, opendir, mkdtemp, mkdir, readlink, rm, writeFile, type FileHandle } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -11,30 +11,40 @@ import { secretsIn, keyShaped } from "../secret-cut.js";
 import { secretShapes, valueMatcher } from "../learn/secrets.js";
 import type { SourceSnapshot, SourceSnapshotOptions, SourceSnapshotEntry } from "./source-snapshot-types.js";
 import { removeOwnedCaptureHooks } from "./source-capture-hooks.js";
-import { NATIVE_RUNTIME_FACTS } from "./runtimes.js";
-import { SOURCE_CODEX_FEATURES, sourceNativeTools } from "./source-runtime-tools.js";
+import { sourceRuntimeProtocol } from "./source-snapshot-types.js";
+import { isNativeRuntime } from "./runtimes.js";
+import { SOURCE_CODEX_FEATURES, SOURCE_CODEX_VERSIONS, sourceNativeTools } from "./source-runtime-tools.js";
 import { claudeMcpSelector, nativeToolNames, selectedMcpServer, sourceMcpSelection } from "./source-mcp-selection.js";
 import { sourceSnapshotDigest } from "./source-snapshot-types.js";
 import { sourceAccountContainsSecret, sourceAccountMetadata } from "./source-account.js";
+import { capturePiSetup, PI_CONTEXT_FILES } from "./source-pi.js";
+import { PosixSourceReader, PosixSourceHandle } from "./source-posix.js";
+import { SourceSnapshotError } from "./source-snapshot-error.js";
+export { SourceSnapshotError } from "./source-snapshot-error.js";
+type SourceHandle = FileHandle | PosixSourceHandle;
 export type * from "./source-snapshot-types.js";
 export { sourceSnapshotDigest } from "./source-snapshot-types.js";
 
 const SYSTEM_POLICY_PATHS = ["/etc/codex/config.toml", "/etc/codex/requirements.toml", "/etc/codex/managed_config.toml"] as const;
+export async function macOSSystemPolicyPath(path: string, link: (path: string) => Promise<string> = path => readlink(path, "utf8")): Promise<string> {
+  if (!(SYSTEM_POLICY_PATHS as readonly string[]).includes(path)) return path;
+  let target: string;
+  try { target = await link("/etc"); }
+  catch { throw new SourceSnapshotError("source_unavailable", "The macOS system policy path could not be checked safely."); }
+  if (target !== "private/etc" && target !== "/private/etc") throw new SourceSnapshotError("source_unavailable", "The macOS system policy path is not the expected alias.");
+  return `/private${path}`;
+}
 const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const object = (value: unknown): Record<string, any> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : {};
 const canonical = (value: any): string => JSON.stringify(value, function (_key, item) {
   return item && typeof item === "object" && !Array.isArray(item) ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item;
 });
-const within = (root: string, path: string) => path === root || path.startsWith(root + sep);
-const credentialPath = (path: string) => path.split(/[\\/]/).some(part => /^(?:\.env(?:\..*)?|auth\.json|credentials(?:\.json)?|\.credentials\.json|\.claude\.json|id_(?:rsa|ed25519)|\.netrc|\.npmrc|\.pypirc|\.ssh|\.aws|\.gnupg)$/i.test(part)) || /\.(?:pem|p12|pfx|key)$/i.test(path);
+const within = (root: string, path: string) => path === root || path.startsWith(root.endsWith(sep) ? root : root + sep);
+const credentialPath = (path: string) => path.split(/[\\/]/).some(part => /^(?:\.env(?:\..*)?|(?:mcp-)?auth\.json|credentials(?:\.json)?|\.credentials\.json|\.claude\.json|id_(?:rsa|ed25519)|\.netrc|\.npmrc|\.pypirc|\.ssh|\.aws|\.gnupg)$/i.test(part)) || /\.(?:pem|p12|pfx|key)$/i.test(path);
 const portable = (path: string) => path.length > 0 && Buffer.byteLength(path) <= 4096 && !path.includes("\\") && !/[\x00-\x1f\x7f]/.test(path)
   && !isAbsolute(path) && path.split("/").every(part => part && part !== "." && part !== "..");
 const text = (bytes: Buffer) => new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-const signature = (s: Awaited<ReturnType<FileHandle["stat"]>>) => [s.dev, s.ino, s.size, s.mode, s.mtimeMs, s.ctimeMs].join(":");
-
-export class SourceSnapshotError extends Error {
-  constructor(readonly code: "source_changed" | "source_unavailable" | "unsupported_platform" | "limit", message: string) { super(message); this.name = "SourceSnapshotError"; }
-}
+const signature = (s: Awaited<ReturnType<FileHandle["stat"]>>, timestamps = true) => [s.dev, s.ino, s.size, s.mode, ...(timestamps ? [s.mtimeMs, s.ctimeMs] : [])].join(":");
 
 /** Open every component with NOFOLLOW, including the authorized root. /proc fd paths anchor subsequent
  * reads to already-open directories: swapping a parent for a link cannot redirect a read outside the grant. */
@@ -69,7 +79,9 @@ async function noLinks(path: string, expectedRoots: SourceSnapshotOptions["expec
 }
 
 class Reader {
-  readonly records = new Map<string, { stamp: string; bytes?: Buffer; names?: string[] } | null>();
+  readonly records = new Map<string, { stamp: string; identity: string; bytes?: Buffer; names?: string[] } | null>();
+  readonly refreshableFiles = new Set<string>();
+  readonly refreshableDirectories = new Set<string>();
   readonly policyStamps = new Map<string, string | null>();
   private readonly accountStamps = new Map<string, string>();
   private readonly checkedContents = new Map<string, string>();
@@ -78,7 +90,8 @@ class Reader {
   readonly deadline: number;
   readonly limits: Required<NonNullable<SourceSnapshotOptions["limits"]>>;
   private readBytes = 0;
-  isolatedGit?: { directory: string; worktree: FileHandle };
+  readonly portable?: PosixSourceReader;
+  isolatedGit?: { directory: string; worktree: SourceHandle };
   constructor(readonly options: SourceSnapshotOptions) {
     this.limits = { files: 10_000, bytes: 64 * 1024 * 1024, fileBytes: 8 * 1024 * 1024, gitBytes: 32 * 1024 * 1024, timeoutMs: 30_000, ...options.limits };
     for (const value of Object.values(this.limits)) if (!Number.isSafeInteger(value) || value <= 0) throw new SourceSnapshotError("limit", "Snapshot limits must be positive safe integers.");
@@ -88,34 +101,41 @@ class Reader {
       || options.authorizedRoots.some(path => !options.expectedRoots!.some(root => root.path === resolve(path)))))
       throw new SourceSnapshotError("source_unavailable", "Source consent must bind every authorized root exactly.");
     this.deadline = Date.now() + this.limits.timeoutMs;
+    if (process.platform === "darwin") this.portable = new PosixSourceReader(this.deadline, options.signal);
+  }
+  private open(path: string): Promise<SourceHandle> { return this.portable ? this.portable.open(path, this.options.expectedRoots) : noLinks(path, this.options.expectedRoots); }
+  async names(handle: SourceHandle): Promise<string[]> {
+    if (handle instanceof PosixSourceHandle) return handle.names(this.limits.files);
+    const names: string[] = [], directory = await opendir(`/proc/self/fd/${handle.fd}`, { bufferSize: 16 });
+    try { for (;;) { const entry = await directory.read(); if (!entry) break; names.push(entry.name); if (names.length > this.limits.files) throw new SourceSnapshotError("limit", "A source directory exceeds the file limit."); } }
+    finally { await directory.close(); }
+    return names;
   }
   async verifyRoots() {
     for (const root of this.options.expectedRoots ?? []) {
-      this.check(); const handle = await noLinks(root.path, this.options.expectedRoots); await handle.close();
+      this.check(); const handle = await this.open(root.path); await handle.close();
     }
   }
   check() { this.options.signal?.throwIfAborted(); if (Date.now() > this.deadline) throw new SourceSnapshotError("limit", "The source snapshot exceeded its time limit."); }
   granted(path: string) { return this.options.authorizedRoots.some(root => isAbsolute(root) && within(resolve(root), resolve(path))); }
-  async read(path: string, fresh = false, fileLimit = this.limits.fileBytes): Promise<{ stamp: string; bytes?: Buffer; names?: string[] } | null> {
+  async read(path: string, fresh = false, fileLimit = this.limits.fileBytes): Promise<{ stamp: string; identity: string; bytes?: Buffer; names?: string[] } | null> {
     this.check(); path = resolve(path);
     if (this.options.secretValues?.some(secret => secret && path.includes(secret))) throw new SourceSnapshotError("source_unavailable", "A source path contains a held credential and cannot be exported.");
     if (!this.granted(path)) throw new SourceSnapshotError("source_unavailable", "A required source path is outside the authorized roots.");
     if (!fresh && this.records.has(path)) return this.records.get(path)!;
     if (!fresh && this.records.size >= this.limits.files * 3) throw new SourceSnapshotError("limit", "The source snapshot contains too many paths.");
-    let handle: FileHandle;
-    try { handle = await noLinks(path, this.options.expectedRoots); }
+    let handle: SourceHandle;
+    try { handle = await this.open(path); }
     catch (error) {
       if (error instanceof SourceSnapshotError) throw error;
       if ((error as NodeJS.ErrnoException).code === "ENOENT") { if (!fresh) this.records.set(path, null); return null; }
       throw new SourceSnapshotError("source_unavailable", "A source path cannot be read safely; links and special files need an explicit portable equivalent.");
     }
     try {
-      const before = await handle.stat(); let value: { stamp: string; bytes?: Buffer; names?: string[] };
+      const before = await handle.stat(); let value: { stamp: string; identity: string; bytes?: Buffer; names?: string[] };
       if (before.isDirectory()) {
-        const names: string[] = [], dir = await opendir(`/proc/self/fd/${handle.fd}`, { bufferSize: 16 });
-        try { for (;;) { const entry = await dir.read(); if (!entry) break; names.push(entry.name); if (names.length > this.limits.files) throw new SourceSnapshotError("limit", "A source directory exceeds the file limit."); } }
-        finally { await dir.close(); }
-        value = { stamp: signature(before), names: names.sort() };
+        const names = await this.names(handle);
+        value = { stamp: signature(before), identity: signature(before, false), names: names.sort() };
       } else {
         if (!before.isFile() || before.nlink !== 1 || (before.mode & 0o6000)) throw new SourceSnapshotError("source_unavailable", "Special, linked or privileged files need an explicit portable equivalent.");
         if (before.size > fileLimit) throw new SourceSnapshotError("limit", "A source file exceeds the per-file byte limit.");
@@ -123,7 +143,7 @@ class Reader {
         const bytes = Buffer.alloc(before.size + 1); let offset = 0;
         while (offset < bytes.length) { const read = await handle.read(bytes, offset, bytes.length - offset, offset); if (!read.bytesRead) break; offset += read.bytesRead; this.check(); }
         if (offset !== before.size) throw new SourceSnapshotError("source_changed", "A source file changed while it was read.");
-        value = { stamp: signature(before), bytes: bytes.subarray(0, offset) };
+        value = { stamp: signature(before), identity: signature(before, false), bytes: bytes.subarray(0, offset) };
       }
       if (signature(await handle.stat()) !== value.stamp) throw new SourceSnapshotError("source_changed", "A source path changed while it was read.");
       if (!fresh) this.records.set(path, value);
@@ -134,9 +154,12 @@ class Reader {
    * reading content or broadening the project's export grant; account files stay opaque too. */
   async policyPresent(path: string, fresh = false): Promise<boolean> {
     this.check();
-    if (!this.granted(path) && !(SYSTEM_POLICY_PATHS as readonly string[]).includes(path)) throw new SourceSnapshotError("source_unavailable", "A required policy path is outside the source grant.");
-    let handle: FileHandle | undefined, stamp: string | null = null;
-    try { handle = await noLinks(path, this.options.expectedRoots); stamp = signature(await handle.stat()); }
+    const piMetadata = sourceRuntimeProtocol(this.options.target.runtime) === "pi-settings" && ((PI_CONTEXT_FILES as readonly string[]).includes(basename(path)) && within(dirname(path), this.options.target.project)
+      || basename(path) === ".git" && within(dirname(path), this.options.target.project)
+      || basename(path) === "skills" && basename(dirname(path)) === ".agents" && within(dirname(dirname(path)), this.options.target.project));
+    if (!this.granted(path) && !(SYSTEM_POLICY_PATHS as readonly string[]).includes(path) && !piMetadata) throw new SourceSnapshotError("source_unavailable", "A required policy path is outside the source grant.");
+    let handle: SourceHandle | undefined, stamp: string | null = null;
+    try { handle = await this.open(this.portable ? await macOSSystemPolicyPath(path) : path); stamp = signature(await handle.stat()); }
     catch (error) { if (error instanceof SourceSnapshotError) throw error; if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new SourceSnapshotError("source_unavailable", "Required native policy could not be checked safely."); }
     finally { await handle?.close(); }
     if (!fresh) this.policyStamps.set(path, stamp);
@@ -155,15 +178,18 @@ class Reader {
     for (const path of this.accountStamps.keys()) await this.accountMetadata(path, true, metadata);
     for (const [path, stamp] of this.objectStamps) {
       this.check();
-      let handle: FileHandle | undefined;
-      try { handle = await noLinks(path, this.options.expectedRoots); if (signature(await handle.stat()) !== stamp) throw new Error(); }
+      let handle: SourceHandle | undefined;
+      try { handle = await this.open(path); if (signature(await handle.stat()) !== stamp) throw new Error(); }
       catch { throw new SourceSnapshotError("source_changed", "Git objects changed during export."); }
       finally { await handle?.close(); }
     }
     for (const [path, old] of this.records) {
       let current: Awaited<ReturnType<Reader["read"]>>;
       try { current = await this.read(path, true, Math.max(this.limits.fileBytes, old?.bytes?.length ?? 0)); } catch (error) { if (error instanceof SourceSnapshotError && error.code === "limit") throw error; throw new SourceSnapshotError("source_changed", "Source paths changed during export; retry from fresh discovery."); }
-      if (!old !== !current || (old && current && (old.stamp !== current.stamp || (old.bytes ? !current.bytes?.equals(old.bytes) : canonical(old.names) !== canonical(current.names)))))
+      const refreshable = this.refreshableFiles.has(path) && old?.bytes && current?.bytes
+        || this.refreshableDirectories.has(path) && old?.names && current?.names;
+      const refreshed = refreshable && old?.identity === current?.identity;
+      if (!old !== !current || (old && current && ((!refreshed && old.stamp !== current.stamp) || (old.bytes ? !current.bytes?.equals(old.bytes) : canonical(old.names) !== canonical(current.names)))))
         throw new SourceSnapshotError("source_changed", "Source content changed during export; retry from fresh discovery.");
     }
   }
@@ -172,9 +198,9 @@ class Reader {
   async accountMetadata(path: string, fresh = false, metadata?: string) {
     this.check();
     if (!this.granted(path)) throw new SourceSnapshotError("source_unavailable", "Source account metadata is outside the source grant.");
-    let handle: FileHandle | undefined, bytes: Buffer | undefined, stamp = "missing", projection = sourceAccountMetadata(null);
+    let handle: SourceHandle | undefined, bytes: Buffer | undefined, stamp = "missing", projection = sourceAccountMetadata(null);
     try {
-      handle = await noLinks(path, this.options.expectedRoots);
+      handle = await this.open(path);
       const before = await handle.stat();
       if (!before.isFile() || before.nlink !== 1 || (before.mode & 0o6000)) throw new SourceSnapshotError("source_unavailable", "Source account metadata cannot be inspected safely.");
       stamp = signature(before);
@@ -184,9 +210,12 @@ class Reader {
         if (offset !== before.size || signature(await handle.stat()) !== stamp) throw new SourceSnapshotError("source_changed", "Source account metadata changed during export.");
         projection = sourceAccountMetadata(bytes.subarray(0, offset)); stamp += ":" + hash(bytes.subarray(0, offset));
         if (fresh && this.accountStamps.get(path) !== stamp + ":" + canonical(projection)) throw new SourceSnapshotError("source_changed", "Source account metadata changed during export.");
-        if (fresh && sourceAccountContainsSecret(bytes.subarray(0, offset), function* (contents: Iterable<string>) { if (metadata) yield metadata; yield* contents; }(this.checkedContents.values())))
+        if (fresh && sourceAccountContainsSecret(bytes.subarray(0, offset), function* (contents: Iterable<string>) { if (metadata) yield metadata; yield* contents; }(this.checkedContents.values()), this.options.target.runtime))
           throw new SourceSnapshotError("source_unavailable", "Source content contains a native credential and cannot be exported.");
-      } else projection = sourceAccountMetadata(new Uint8Array(65_537));
+      } else {
+        if (sourceRuntimeProtocol(this.options.target.runtime) === "pi-settings") throw new SourceSnapshotError("source_unavailable", "Pi authentication metadata exceeds its private inspection bound.");
+        projection = sourceAccountMetadata(new Uint8Array(65_537));
+      }
     } catch (error) {
       if (error instanceof SourceSnapshotError) throw error;
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new SourceSnapshotError("source_unavailable", "Source account metadata cannot be inspected safely.");
@@ -200,9 +229,9 @@ class Reader {
    * through the same no-link reader, synthesize safe config, and inherit an already-open worktree descriptor. */
   async isolateGit(directory: string, common: string): Promise<void> {
     const temporary = await mkdtemp(join(tmpdir(), "agentrun-source-git-"));
-    let worktree: FileHandle | undefined, copied = 0;
+    let worktree: SourceHandle | undefined, copied = 0;
     try {
-      worktree = await noLinks(this.options.target.project, this.options.expectedRoots);
+      worktree = await this.open(this.options.target.project);
       const copy = async (source: string, target: string): Promise<void> => {
         const value = await this.read(source, false, this.limits.gitBytes); if (!value) return;
         if (value.names) {
@@ -231,16 +260,14 @@ class Reader {
   async inspectObjects(path: string): Promise<void> {
     this.check();
     if (!this.granted(path)) throw new SourceSnapshotError("source_unavailable", "Git objects are outside the source grant.");
-    const handle = await noLinks(path, this.options.expectedRoots);
+    const handle = await this.open(path);
     try {
       const stat = await handle.stat();
       if (!stat.isDirectory() && !stat.isFile()) throw new SourceSnapshotError("source_unavailable", "Git has an unsupported object path.");
       if (this.objectStamps.size >= this.limits.files) throw new SourceSnapshotError("limit", "Git object paths exceed the snapshot bound.");
       this.objectStamps.set(path, signature(stat));
       if (stat.isDirectory()) {
-        const directory = await opendir(`/proc/self/fd/${handle.fd}`, { bufferSize: 16 });
-        try { for (;;) { const entry = await directory.read(); if (!entry) break; await this.inspectObjects(join(path, entry.name)); } }
-        finally { await directory.close(); }
+        for (const name of await this.names(handle)) await this.inspectObjects(join(path, name));
       }
     } finally { await handle.close(); }
   }
@@ -251,10 +278,14 @@ class Reader {
 async function git(reader: Reader, args: string[], max = reader.limits.gitBytes): Promise<Buffer> {
   reader.check();
   const isolated = reader.isolatedGit; if (!isolated) throw new SourceSnapshotError("source_unavailable", "Git source data was not safely isolated.");
+  const worktree = isolated.worktree;
+  const workPath = worktree instanceof PosixSourceHandle ? "." : "/proc/self/fd/3";
+  const gitArgs = ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", "core.hooksPath=/dev/null", "-c", "core.attributesFile=/dev/null", "-c", "protocol.allow=never", "-c", "pack.threads=1", "-c", `core.excludesFile=${join(isolated.directory, "source-ignore")}`, "--git-dir", isolated.directory, "--work-tree", workPath, "-C", workPath, ...args];
+  const env = { PATH: "/usr/bin:/bin", HOME: reader.options.home, GIT_CONFIG_NOSYSTEM: "1", GIT_ATTR_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", GIT_NO_LAZY_FETCH: "1" };
+  if (worktree instanceof PosixSourceHandle) return worktree.git(gitArgs, env, max);
   return new Promise((accept, reject) => {
-    const child = spawn("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", "core.hooksPath=/dev/null", "-c", "core.attributesFile=/dev/null", "-c", "protocol.allow=never", "-c", "pack.threads=1", "-c", `core.excludesFile=${join(isolated.directory, "source-ignore")}`, "--git-dir", isolated.directory, "--work-tree", "/proc/self/fd/3", "-C", "/proc/self/fd/3", ...args], {
-      env: { PATH: "/usr/bin:/bin", HOME: reader.options.home, GIT_CONFIG_NOSYSTEM: "1", GIT_ATTR_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", GIT_NO_LAZY_FETCH: "1" },
-      detached: true, stdio: ["ignore", "pipe", "ignore", isolated.worktree.fd],
+    const child = spawn("git", gitArgs, {
+      env, detached: true, stdio: ["ignore", "pipe", "ignore", worktree.fd],
     });
     const chunks: Buffer[] = []; let length = 0, settled = false, failure: Error | undefined;
     const finish = (error?: Error, closed = false) => {
@@ -276,7 +307,7 @@ async function git(reader: Reader, args: string[], max = reader.limits.gitBytes)
 }
 
 export async function exportSourceSnapshot(options: SourceSnapshotOptions): Promise<SourceSnapshot> {
-  if (process.platform !== "linux") throw new SourceSnapshotError("unsupported_platform", "Safe source snapshots currently require Linux fd-relative reads.");
+  if (process.platform !== "linux" && process.platform !== "darwin") throw new SourceSnapshotError("unsupported_platform", "Whole-setup capture requires Linux or macOS (with Python 3).");
   if (![options.target.project, options.home, ...options.authorizedRoots].every(isAbsolute)) throw new SourceSnapshotError("source_unavailable", "Snapshot roots must be explicit absolute paths.");
   const reader = new Reader(options), target = options.target;
   reader.check();
@@ -289,7 +320,7 @@ export async function exportSourceSnapshot(options: SourceSnapshotOptions): Prom
     instructions: { text: "", layers: [] }, skills: [], configuration: { model: target.model, tools: [], permissions: {}, credentials: ["model-provider"] }, project: { git: null }, blockers: [], transforms: [],
   };
   const block = (code: string, message: string, path?: string) => { if (path && (options.secretValues?.some(secret => secret && path!.includes(secret)) || secretShapes(path).length)) path = undefined; if (!result.blockers.some(x => x.code === code && x.path === path)) result.blockers.push({ code, message, ...(path ? { path } : {}) }); };
-  const runtimeConfiguration: Record<string, any> = {}; let modelCache: unknown, selectedAgentModel = false;
+  const runtimeConfiguration: Record<string, any> = {}; let modelCache: unknown, selectedAgentModel = false, piSkillRoots: string[] = [];
   let bytes = 0, expandedBytes = 0;
   const blob = (body: Buffer) => { const sha = hash(body); if (!Object.hasOwn(result.blobs, sha)) { if (bytes + body.length > reader.limits.bytes) throw new SourceSnapshotError("limit", "Snapshot exceeds its total byte limit."); bytes += body.length; result.blobs[sha] = body.toString("base64"); } return sha; };
   // A held value in a form no literal check finds (split by a control character, a terminal sequence, a character that
@@ -355,7 +386,7 @@ export async function exportSourceSnapshot(options: SourceSnapshotOptions): Prom
       expandedBytes += body.length; result.entries.push({ path, role: "instruction", type: "file", mode: 0o644, bytes: body.length, sha256: blob(body) });
     }
     let decoded: string; try { decoded = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(body); } catch { block("instruction_encoding", "Instructions must be valid UTF-8.", path); return; }
-    if (NATIVE_RUNTIME_FACTS[target.runtime].protocol === "claude-json" && /(^|\s)@[^\s]/m.test(decoded)) block("instruction_import", "Claude instruction imports require explicit closure and approval; they were not silently omitted.", path);
+    if (sourceRuntimeProtocol(target.runtime) === "claude-json" && /(^|\s)@[^\s]/m.test(decoded)) block("instruction_import", "Claude instruction imports require explicit closure and approval; they were not silently omitted.", path);
     result.instructions.layers.push({ path, precedence: result.instructions.layers.length, source }); if (decoded.length) instructionTexts.push(decoded);
   };
   const config = async (path: string) => {
@@ -366,13 +397,13 @@ export async function exportSourceSnapshot(options: SourceSnapshotOptions): Prom
     catch { block("configuration_parse", "Required configuration could not be parsed.", basename(path)); return {}; }
   };
   const captureHooks = async (path: string, value: Record<string, any>): Promise<Record<string, any>> => {
-    if (!Object.keys(object(value.hooks)).length) return value;
+    if (!isNativeRuntime(target.runtime) || !Object.keys(object(value.hooks)).length) return value;
     const receiptPath = join(target.project, ".agentrun", "cli-learning", `${target.runtime}.json`);
     const receipt = await read(receiptPath, "configuration/capture-receipt"), original = await read(path, "configuration/hooks");
     if (!receipt?.bytes || !original?.bytes) return value;
     try {
       const transformed = removeOwnedCaptureHooks(original.bytes, receipt.bytes, result.source);
-      const expected = join(transformed.configRoot, NATIVE_RUNTIME_FACTS[target.runtime].protocol === "codex-json" ? ".codex/hooks.json" : ".claude/settings.local.json");
+      const expected = join(transformed.configRoot, sourceRuntimeProtocol(target.runtime) === "codex-json" ? ".codex/hooks.json" : ".claude/settings.local.json");
       if (resolve(path) !== resolve(expected) || transformed.configRoot !== target.project && (!gitCommonDirectory || resolve(transformed.configRoot) !== dirname(gitCommonDirectory))) return value;
       const projectPath = within(resolve(target.project), resolve(path)) ? `project/${relative(target.project, path).split(sep).join("/")}` : undefined;
       const sourceEntry = projectPath ?? `instructions/capture-hooks/${hash(path).slice(0, 12)}/${basename(path)}`;
@@ -391,7 +422,7 @@ export async function exportSourceSnapshot(options: SourceSnapshotOptions): Prom
     } catch { return value; } // An unproven installation remains required source policy, never an exemption.
   };
   const toolDefinitions = new Map<string, Record<string, any>>(), handledTools = new Set<string>();
-  const codexTools = NATIVE_RUNTIME_FACTS[target.runtime].protocol === "codex-json";
+  const codexTools = sourceRuntimeProtocol(target.runtime) === "codex-json";
   const mergeTable = (prior: Record<string, any>, next: Record<string, any>): Record<string, any> => {
     const merged: Record<string, any> = Object.assign(Object.create(null), prior);
     for (const [key, value] of Object.entries(next)) merged[key] = value && typeof value === "object" && !Array.isArray(value)
@@ -541,7 +572,20 @@ export async function exportSourceSnapshot(options: SourceSnapshotOptions): Prom
 
   const ancestors: string[] = [];
   for (let path = root; ; path = dirname(path)) { ancestors.unshift(path); if (path === (gitRoot ?? root) || dirname(path) === path) break; }
-  if (NATIVE_RUNTIME_FACTS[target.runtime].protocol === "codex-json") {
+  if (sourceRuntimeProtocol(target.runtime) === "pi-settings") {
+    const agentDir = options.piHome ?? join(options.home, ".pi", "agent");
+    // Register both private credential stores for the final held-secret check. Their bytes and
+    // Codex-specific classification never enter Pi's public snapshot.
+    await reader.accountMetadata(join(agentDir, "auth.json"));
+    await reader.accountMetadata(join(agentDir, "mcp-auth.json"));
+    piSkillRoots = await capturePiSetup({ target, home: options.home, agentDir, result,
+      read, config, instruction, tools, block,
+      context: async path => {
+        if (reader.granted(path)) return Boolean(await read(path, "instructions"));
+        if (await reader.policyPresent(path)) block("source_scope", "A required Pi instruction or resource lies outside the approved source folders.", "configuration/source_roots");
+        return false;
+      } });
+  } else if (sourceRuntimeProtocol(target.runtime) === "codex-json") {
     const home = options.codexHome ?? join(options.home, ".codex");
     for (const path of SYSTEM_POLICY_PATHS) if (await reader.policyPresent(path))
       block("native_managed_policy", "This source has managed system policy that needs a verified destination equivalent before Move.", "configuration/managed_policy");
@@ -553,6 +597,9 @@ export async function exportSourceSnapshot(options: SourceSnapshotOptions): Prom
       block("native_account_policy", "The source account policy is managed or unresolved. Resolve it locally before Move; native sign-in is never copied.", "configuration/account_policy");
     const accountPaths = [join(home, "cloud-config-bundle-cache.json")];
     const homeNames = (await reader.read(home))?.names ?? [];
+    // Runtime bookkeeping may refresh this directory's timestamps. Its exact inventory, size, mode and identity
+    // must still match; selected files, private account metadata and managed policy keep their own strict checks.
+    reader.refreshableDirectories.add(resolve(home));
     accountPaths.push(...homeNames.filter(name => /^managed-config-.*\.json$/.test(name)).map(name => join(home, name)));
     for (const path of accountPaths) if (await reader.policyPresent(path))
       block("native_account_policy", "The source account may supply managed policy. Resolve its effective policy without copying native sign-in before Move.", "configuration/account_policy");
@@ -623,7 +670,10 @@ export async function exportSourceSnapshot(options: SourceSnapshotOptions): Prom
     }
     await tools(Object.fromEntries(toolDefinitions), "tools");
     modelCache = await config(join(home, "models_cache.json"));
-    if (target.version === "0.171.0" && result.configuration.permissions.web_search === undefined) result.configuration.permissions.web_search = "cached";
+    // A cache may refresh in place during export. Both reads must be stable and its bytes, inode and mode must agree;
+    // authored policy, account metadata and Git objects retain their stricter timestamp checks.
+    reader.refreshableFiles.add(resolve(home, "models_cache.json"));
+    if (SOURCE_CODEX_VERSIONS.includes(target.version ?? "") && result.configuration.permissions.web_search === undefined) result.configuration.permissions.web_search = "cached";
     if (target.selector.kind === "agent") block("selector", "Codex agent selectors are not supported by this exporter.");
   } else {
     const home = options.claudeHome ?? join(options.home, ".claude");
@@ -704,7 +754,7 @@ export async function exportSourceSnapshot(options: SourceSnapshotOptions): Prom
   }
 
   const environment = options.environment ?? {};
-  if (NATIVE_RUNTIME_FACTS[target.runtime].protocol === "claude-json") {
+  if (sourceRuntimeProtocol(target.runtime) === "claude-json") {
     const model = environment.ANTHROPIC_MODEL || (!result.configuration.model ? environment.ANTHROPIC_DEFAULT_MODEL : undefined);
     if (model) {
       if (selectedAgentModel && model !== result.configuration.model) block("native_environment", "The selected agent and source environment disagree on the model; resolve the native selection before Move.");
@@ -712,22 +762,54 @@ export async function exportSourceSnapshot(options: SourceSnapshotOptions): Prom
     }
     if (["ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_ENABLE_TASKS"].some(name => environment[name] && environment[name] !== "0" && environment[name] !== "false"))
       block("native_environment", "An enabled source provider or tool environment override needs verified destination equivalence.");
-  } else if (environment.OPENAI_BASE_URL) block("native_environment", "The source model endpoint needs verified destination equivalence before Move.");
+  } else if (sourceRuntimeProtocol(target.runtime) === "codex-json" && environment.OPENAI_BASE_URL) block("native_environment", "The source model endpoint needs verified destination equivalence before Move.");
+  if (isNativeRuntime(target.runtime)) {
   const native = sourceNativeTools({ runtime: target.runtime, version: target.version, model: result.configuration.model,
     config: runtimeConfiguration, permissions: result.configuration.permissions, mcp: result.configuration.tools.length > 0, modelCache });
   result.configuration.native_tools = native.tools;
   for (const reason of native.blockers) block(reason.code, reason.message, reason.path);
+  }
   const skillNames = new Set<string>(), skillSources = new Set(target.configuration.filter(file => basename(file.path) === "SKILL.md").map(file => dirname(file.path)));
-  const skillRoots = NATIVE_RUNTIME_FACTS[target.runtime].protocol === "codex-json"
+  const skillRoots = sourceRuntimeProtocol(target.runtime) === "pi-settings" ? piSkillRoots : sourceRuntimeProtocol(target.runtime) === "codex-json"
     ? [join(options.codexHome ?? join(options.home, ".codex"), "skills"), join(options.home, ".agents", "skills"), ...ancestors.flatMap(dir => [join(dir, ".agents", "skills"), join(dir, ".codex", "skills")])]
     : [join(options.claudeHome ?? join(options.home, ".claude"), "skills"), ...ancestors.map(dir => join(dir, ".claude", "skills"))];
+  const piSkills = async (directory: string): Promise<void> => {
+    const value = await read(directory, "skills");
+    if (!value?.names) return;
+    if (value.names.some(name => [".gitignore", ".ignore", ".fdignore"].includes(name))) block("pi_skill_filter", "Pi skill ignore rules need a verified selected-resource closure.", "configuration/skills");
+    if (value.names.includes("SKILL.md")) { skillSources.add(directory); return; }
+    for (const name of value.names) {
+      if (name.startsWith(".") || name === "node_modules") continue;
+      const child = await read(join(directory, name), "skills");
+      if (child?.names) await piSkills(join(directory, name));
+      else if (name.endsWith(".md")) block("pi_skill_format", "Use a skill directory with SKILL.md and its supporting files before deploying standalone Pi skill files.", "configuration/skills");
+    }
+  };
   for (const directory of new Set(skillRoots)) {
+    if (sourceRuntimeProtocol(target.runtime) === "pi-settings") { await piSkills(directory); continue; }
     const value = await read(directory, "skills");
     for (const name of value?.names ?? []) if ((await read(join(directory, name, "SKILL.md"), "skills"))?.bytes) skillSources.add(join(directory, name));
   }
   for (const source of [...skillSources].sort()) {
     if (options.secretValues?.some(secret => secret && source.includes(secret))) { block("secret_content", "A skill path contains a held credential and was withheld."); continue; }
     const name = basename(source), path = `skills/${hash(source).slice(0, 12)}/${name}`;
+    if (sourceRuntimeProtocol(target.runtime) === "pi-settings") {
+      const definition = await read(join(source, "SKILL.md"), "skills");
+      if (definition?.bytes) {
+        const front = text(definition.bytes).replace(/^\uFEFF/, "").match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1];
+        if (front) try {
+          const document = parseDocument(front);
+          if (document.errors.length) block("pi_skill_definition", "The authored Pi skill front matter cannot be parsed safely.", path);
+          else {
+            const metadata = object(document.toJS({ maxAliasCount: 0 })), named = metadata.name;
+            if (named !== undefined && named !== name) block("pi_skill_name", "The Pi skill's declared name must match its directory for a faithful managed skill index.", path);
+            if (typeof metadata.description !== "string" || !metadata.description.trim()) block("pi_skill_definition", "Add the description Pi requires to activate this authored skill before deploying it.", path);
+            if (metadata["disable-model-invocation"] === true) block("pi_skill_invocation", "A Pi skill restricted to manual invocation needs an equivalent managed invocation policy.", path);
+          }
+        } catch { block("pi_skill_definition", "The authored Pi skill front matter cannot be parsed safely.", path); }
+        else block("pi_skill_definition", "Add the description Pi requires to activate this authored skill before deploying it.", path);
+      }
+    }
     if (skillNames.has(name)) block("skill_precedence", "Multiple authored skills have the same name; choose an explicit managed precedence.", `skills/${name}`);
     skillNames.add(name); result.skills.push({ name, path, source }); await tree(source, path, "skill");
   }
@@ -744,5 +826,5 @@ export async function exportSourceSnapshot(options: SourceSnapshotOptions): Prom
   result.blockers.sort((a, b) => `${a.code}:${a.path ?? ""}`.localeCompare(`${b.code}:${b.path ?? ""}`));
   const complete = result.blockers.length === 0;
   return { ...result, complete, digest: sourceSnapshotDigest({ ...result, complete }) };
-  } finally { await reader.closeGit(); }
+  } finally { try { await reader.closeGit(); } finally { await reader.portable?.close(); } }
 }

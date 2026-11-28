@@ -11,6 +11,24 @@ and tag references, remotes and Git configuration are not migrated.
 The source and server must use matching development builds. This feature does not change the published
 observation-only connector.
 
+## Deploy a configured local agent
+
+The setup skill offers **AgentRun Cloud**, **Deploy locally**, and **Self Host**. All use the same CLI upload and
+Move protocol. Run `agentrun connect PROJECT --from claude-code --to cloud --dry-run` to preview, then
+`agentrun deploy PROJECT --from claude-code --to cloud` to connect, upload and move the selected setup. Use `codex`
+or `pi` for those runtimes, `--source-agent NAME` for a named Claude agent, or `--profile NAME` for a Codex profile.
+Replace `cloud` with the selected install's URL. The dashboard's Import agents action hands this work to the local
+coding agent; the browser does not upload files.
+
+This setup-only connection grants configuration sync, with source execution and history import disabled. Its
+pending console agent cannot run until Move succeeds. Preview and deployment check the destination's versioned
+`source_deployment` capability first. A Cloud workspace supplied with `--workspace ID` must match the credential's
+workspace. Failed or interrupted requests retain the same agent identity and pending bytes in a private local journal.
+
+`connect --from` without `--dry-run` stops after upload. `deploy --connected AGENT_ID` moves an already uploaded setup;
+it cannot recover missing local files, so resume an interrupted upload with its original `--from` command. Later
+source changes are copied by rerunning that command. This CLI does not install a background sync worker.
+
 ## Connect once
 
 On the same machine as a loopback AgentRun server, `agentrun-serve native connect` and
@@ -63,8 +81,11 @@ the previous managed revision; new source changes cannot change the version name
 
 ## Current compatibility
 
-The source snapshot reader supports Linux. Its native capability evidence currently covers Codex 0.171.0 and
-Claude Code 2.1.322 with explicit supported configurations. Account-provided tools, plugins, default catalogs and
+The source snapshot reader supports Linux and macOS; macOS requires Python 3 for descriptor-relative file reads.
+Its native capability evidence currently covers Codex 0.171.0, Claude Code 2.1.322 and Pi 1.5.2 with explicit supported
+configurations. Pi captures project instructions, trusted settings, authored skills and assets, its exact model and
+thinking level, and supported native tools. Custom extensions/packages/models, prompt replacements and unsupported
+resource or permission settings remain blockers. Account-provided tools, plugins, default catalogs and
 permission behavior without a verified managed equivalent produce named prerequisites. Default native setups can
 therefore sync successfully while Move still needs attention.
 

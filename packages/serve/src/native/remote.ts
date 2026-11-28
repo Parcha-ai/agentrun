@@ -3,7 +3,9 @@
  * CAS settings rows keep this contract across API/runner processes and restarts without a second run registry. */
 import type { AdoptionResolver } from "../source-sync/adoption.js";
 import { sourceKey, type SourceAuthority, type SourceRecord } from "../source-sync/registry.js";
-import { sourceSyncOf } from "../source-sync/types.js";
+import { sourceDeploymentOf, sourceSyncOf } from "../source-sync/types.js";
+import { sourceDeploymentTargetOf } from "../source-sync/deployment.js";
+import type { SourceTarget } from "./source-snapshot-types.js";
 import { cliCaptureOf } from "../source-sync/capture.js";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -33,7 +35,7 @@ const bounded = (v: unknown, max = MAX_COMMAND_BYTES) => { if (Buffer.byteLength
 
 type Connector = { id: string; installation_id: string; label: string; created_at: string; last_seen: number; credential_hash: string; expires: number; revoked: boolean; native_execution: boolean; history_import?: boolean; config_sync?: boolean };
 type Enrollment = { expires: number; label: string; capabilities?: {native_execution:boolean;history_import:boolean;config_sync?:boolean}; replace_id?:string; replace_credential_hash?:string; replace_revoked?:boolean; connector_id?: string; request_hash?: string };
-type Target = { target_id: string; agent_id: string; name: string; target: NativeBinding; history_only?: boolean; sync_only?:boolean; cli_connection_id?:string; owner_disconnected?: boolean };
+type Target = { target_id: string; agent_id: string; name: string; target: SourceTarget & { connected?: boolean }; deployment?: boolean; history_only?: boolean; sync_only?:boolean; cli_connection_id?:string; owner_disconnected?: boolean };
 export type RemoteCommandType = 'prepare' | 'open' | 'send' | 'close';
 type EventBatch = { sequence: number; events: NativeEvent[]; hash: string };
 type Command = { command_id: string; connector_id: string; target_id: string; type: RemoteCommandType; session_key?: string; payload: unknown; deadline_at: number; created_at: number; state: 'queued'|'leased'|'complete'|'cancelled'|'unknown'; lease_token?: string; lease_expires_at?: number; worker_id?: string; result?: unknown; error?: string; completion_hash?: string; batches: EventBatch[] };
@@ -161,9 +163,13 @@ export class RemoteConnectors {
   async importTarget(id: string, input: unknown, resolveAdoption?: AdoptionResolver) {
     const b = object(input); bounded(b, 256_000);
     if(b.history_only!==undefined && typeof b.history_only!=='boolean')throw new ApiError('input_invalid','history_only must be a boolean.');
+    if(b.deployment!==undefined && typeof b.deployment!=='boolean')throw new ApiError('input_invalid','deployment must be a boolean.');
     if (!validId(b.target_id) || (b.name !== undefined && !text(b.name))) throw new ApiError('input_invalid', 'Choose a source-approved target and name.');
     const raw = object(b.target);
     if (raw.remote !== undefined) throw new ApiError('input_invalid', 'The connector cannot choose another connector binding.');
+    if (b.deployment === true) return this.importDeployment(id, b, raw);
+    const reserved = await this.store.settings.get(keyOf('target', `${id}.${b.target_id}`)) as Target | undefined;
+    if (reserved?.deployment) throw new ApiError('idempotency_mismatch', 'A target id cannot change its deployment or adoption mode.');
     let native: NativeBinding;
     try { native = nativeBindingOf({ ...raw, connected: true }); } catch { throw new ApiError('input_invalid', 'Invalid native target metadata.'); }
     if (native.configuration.length > 2048 || native.skills.length > 2048 || native.mcp_servers.length > 256 || native.issues.length > 64 || !['ready','needs_attention','needs_verification'].includes(native.state) || !native.configuration.every(file => text(file.path, 4096) && /^[a-f0-9]{64}$/.test(file.sha256)) || !native.skills.every(s=>text(s,256)) || !native.mcp_servers.every(s=>text(s,256)) || !native.issues.every(s=>text(s,4096))) throw new ApiError('input_invalid', 'Invalid or excessive native metadata.');
@@ -179,7 +185,7 @@ export class RemoteConnectors {
     const targetKey = keyOf('target', `${id}.${b.target_id}`);
     let prior = await this.store.settings.get(targetKey) as Target | undefined;
     const sameSource=(saved:Target)=>saved.target.project===native.project&&saved.target.runtime===native.runtime&&saved.target.machine_id===native.machine_id&&JSON.stringify(saved.target.selector)===JSON.stringify(native.selector);
-    if(prior&&!sameSource(prior))throw new ApiError('idempotency_mismatch','A target id cannot be reused for another source agent.');
+    if(prior&&(prior.deployment||!sameSource(prior)))throw new ApiError('idempotency_mismatch','A target id cannot be reused for another source agent or import mode.');
     if(prior&&adoption&&prior.agent_id!==adoption.agentId)throw new ApiError('input_invalid','This target already has its own durable agent. Its history cannot be replaced by a different profile.');
     const agentId=prior?.agent_id??adoption?.agentId??`remote-${hash(`${id}:${b.target_id}`).slice(0,40)}`;
     const name = b.name ?? `${native.runtime} · ${native.selector.name ?? native.project.split('/').filter(Boolean).at(-1) ?? 'project'}`;
@@ -188,7 +194,7 @@ export class RemoteConnectors {
     // reservation is repairable by the same target's retry. A reservation alone grants no execution or export.
     if(!prior){
       prior=await this.store.settings.putIfAbsent(targetKey,{target_id:b.target_id,agent_id:agentId,name,target:native,history_only:historyOnly,sync_only:syncOnly,owner_disconnected:false,...(adoption?{cli_connection_id:adoption.connectionId}:{})} satisfies Target) as Target;
-      if(prior.agent_id!==agentId||!sameSource(prior))throw new ApiError('idempotency_mismatch','Another source association reserved this target.');
+      if(prior.deployment||prior.agent_id!==agentId||!sameSource(prior))throw new ApiError('idempotency_mismatch','Another source association reserved this target.');
     }
     let entry=await getAgent(this.store,agentId);
     if(prior.owner_disconnected)native={...native,connected:false};
@@ -214,6 +220,42 @@ export class RemoteConnectors {
     if(!await this.store.settings.replaceIf(targetKey,prior,savedTarget,undefined,[connectorGuard,...(adoption?.guards??[])]))throw new ApiError('home_busy','The owner changed this target while it was being imported. Retry after reviewing its connection.');
     return { agent_id: agentId, native };
   }
+  private async importDeployment(id: string, b: Record<string, any>, raw: Record<string, any>) {
+    if (raw.sync_only !== true || b.history_only === true || b.cli_adoption !== undefined) throw new ApiError('input_invalid', 'A fresh deployment requires sync_only and cannot import history or adopt a CLI profile.');
+    const connector = await this.connector(id);
+    if (connector.revoked || connector.expires <= this.now() || connector.native_execution || connector.history_import || !connector.config_sync) throw new ApiError('forbidden', 'A fresh deployment requires a setup-only connector with configuration sync and no native execution or history import.');
+    const target = sourceDeploymentTargetOf(raw), targetKey = keyOf('target', `${id}.${b.target_id}`);
+    const agentId = `remote-${hash(`${id}:${b.target_id}`).slice(0,40)}`;
+    const name = b.name ?? `${target.runtime} · ${target.selector.name ?? target.project.split('/').filter(Boolean).at(-1) ?? 'project'}`;
+    const same = (saved: Target) => saved.deployment === true && saved.agent_id === agentId
+      && saved.target.runtime === target.runtime && saved.target.machine_id === target.machine_id && saved.target.project === target.project
+      && JSON.stringify(saved.target.selector) === JSON.stringify(target.selector);
+    // Reserve a durable identity before creating its pending revision, so the same request repairs an interrupted import.
+    const prior = await this.store.settings.putIfAbsent(targetKey, { target_id: b.target_id, agent_id: agentId, name, target,
+      deployment: true, history_only: false, sync_only: true, owner_disconnected: false } satisfies Target) as Target;
+    if (!same(prior)) throw new ApiError('idempotency_mismatch', 'A target id cannot be reused for another source agent or import mode.');
+    const connection = { connector_id: id, target_id: b.target_id as string };
+    let entry = await getAgent(this.store, agentId);
+    if (!entry) {
+      try {
+        entry = await createAgent(this.store, { definition: { id: agentId, name, instructions: '',
+          harness: target.runtime === 'claude-code' ? 'claude-agent' : target.runtime, place: { mode: 'runner' }, tools: [], learning: false }, skills: {} },
+          { sourceDeployment: connection });
+      } catch (error) {
+        if (!(error instanceof ApiError && error.code === 'agent_exists')) throw error;
+        entry = await getAgent(this.store, agentId);
+        if (!entry) throw error;
+      }
+    }
+    const pending = sourceDeploymentOf(entry.revision?.body), moved = sourceSyncOf(entry.revision?.body);
+    const record = moved ? await this.store.settings.get(sourceKey(agentId)) as SourceRecord | undefined : undefined;
+    if (entry.agent.archivedAt || entry.agent.purgedAt || (moved
+      ? record?.id !== moved.id || record.connection?.connector_id !== id || record.connection.target_id !== b.target_id
+      : pending?.connector_id !== id || pending.target_id !== b.target_id)) throw new ApiError('forbidden', 'The agent no longer has this source deployment association.');
+    const guard = { key: keyOf('connector', id), fields: { revoked: false, credential_hash: connector.credential_hash, expires: connector.expires, native_execution: false, history_import: false, config_sync: true } };
+    if (!await this.store.settings.replaceIf(targetKey, prior, { ...prior, name, target }, undefined, [guard])) throw new ApiError('home_busy', 'The owner changed this target while it was being imported. Retry after reviewing its connection.');
+    return { agent_id: agentId, target };
+  }
   async syncAuthority(id:string,targetId:string):Promise<{agentId:string;authority:SourceAuthority}>{
     const connector=await this.connector(id), targetKey=keyOf('target',`${id}.${targetId}`);
     if(connector.revoked||connector.expires<=this.now()||connector.config_sync!==true)throw new ApiError('forbidden','Authorize configuration sync on the source machine with a new owner connection code.');
@@ -221,12 +263,12 @@ export class RemoteConnectors {
     if(!target||target.owner_disconnected)throw new ApiError('forbidden','This source target is unavailable or disconnected by its owner.');
     const entry=await getAgent(this.store,target.agent_id);
     if(!entry?.revision||entry.agent.archivedAt||entry.agent.purgedAt)throw new ApiError('not_found','The connected agent is unavailable.');
-    const native=nativeOf(entry.revision.body), moved=sourceSyncOf(entry.revision.body), capture=await cliCaptureOf(this.store,entry);
+    const native=nativeOf(entry.revision.body), moved=sourceSyncOf(entry.revision.body), pending=sourceDeploymentOf(entry.revision.body), capture=await cliCaptureOf(this.store,entry);
     const record=await this.store.settings.get(sourceKey(entry.agent.id)) as SourceRecord|undefined;
-    if(moved?record?.id!==moved.id||record?.connection?.connector_id!==id||record?.connection?.target_id!==targetId:target.cli_connection_id?capture?.binding.connection_id!==target.cli_connection_id:native?.remote?.connector_id!==id||native.remote.target_id!==targetId)
+    if(moved?record?.id!==moved.id||record?.connection?.connector_id!==id||record?.connection?.target_id!==targetId:target.deployment?pending?.connector_id!==id||pending.target_id!==targetId:target.cli_connection_id?capture?.binding.connection_id!==target.cli_connection_id:native?.remote?.connector_id!==id||native.remote.target_id!==targetId)
       throw new ApiError('forbidden','This connector no longer owns the agent’s source association.');
     const guards:SettingsGuard[]=[{key:keyOf('connector',id),fields:{revoked:false,config_sync:true,credential_hash:connector.credential_hash,expires:connector.expires}},
-      {key:targetKey,fields:{agent_id:target.agent_id,owner_disconnected:target.owner_disconnected,cli_connection_id:target.cli_connection_id}}];
+      {key:targetKey,fields:{agent_id:target.agent_id,owner_disconnected:target.owner_disconnected,cli_connection_id:target.cli_connection_id,deployment:target.deployment}}];
     if(target.cli_connection_id){
       const row=await this.store.settings.get(`cli-learning-connection:${target.cli_connection_id}`) as {active?:boolean;generation?:string;agent_id?:string}|undefined;
       if(!row?.active||row.agent_id!==target.agent_id)throw new ApiError('forbidden','The source CLI capture connection was revoked.');

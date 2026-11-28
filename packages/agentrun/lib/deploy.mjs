@@ -17,6 +17,7 @@ import { homedir, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { toUrl } from "./target.mjs";
+import { localSetup, SOURCE_HELP, SOURCE_OPTIONS } from "./deploy-local.mjs";
 
 /** What of a folder its package is, as the target reads it (its readPackage reads nothing else): agent.md, these trees,
  *  and the answer's schema file the manifest names at the folder's root. */
@@ -496,6 +497,8 @@ async function sourceSchedules(io, from, values) {
 }
 
 async function deploy(ctx) {
+  if (ctx.values.from !== undefined || ctx.values.connected !== undefined) return localSetup(ctx);
+  if (["source-agent", "profile", "name", "dry-run", "workspace"].some(key => ctx.values[key] !== undefined)) throw ctx.cli.fail(2, "Local setup options require --from; --dry-run also accepts --connected AGENT_ID.");
   const { values, env, io, cli } = ctx;
   const fail = cli.fail;
   const from = await sourceOf(ctx, fail);
@@ -720,20 +723,22 @@ export const DEPLOY = {
   command: ["deploy"],
   pathParams: ["source"],
   argsOptional: true,
-  summary: "Deploy an agent's package to another AgentRun: upload, plan, apply, lock (deploy rollback, deploy delete)",
+  summary: "Deploy a local harness setup, a connected agent, or an agent package into AgentRun Console",
   route: ["POST /templates/import", "POST /templates/{template}/apply"],
   help: [
     SOURCE,
     TO,
+    ...SOURCE_HELP,
+    ["--connected ID", "deploy an already connected console agent using its synchronized setup and preserve its identity"],
     ["--yes", "apply without asking (needed off a terminal)"],
     ["--force", "replace an agent edited on the target since the last deploy"],
     ["--params FILE", "the package's parameters, a JSON object"],
     ["--pause-source", "an install agent: turn its schedules off on this install once deployed (else they fire in both places); exits 1, once deployed, when it could not turn every one off"],
     ["--agent ID|new", "with no lock for the target: deploy onto its agent ID, or make another agent (new), where it has one this package made with these parameters; with a lock, only the lock's agent while it is there (one gone from the target, any)"],
     ["", TOKEN],
-    ["", "Exit codes: 0 deployed or up to date, 2 refused (bad input, edited on the target, an agent there this package made that no lock names, not confirmed), 3 not runnable yet there (nothing made), 1 the target refused or was not reached, or deployed but --pause-source left a schedule on."],
+    ["", "Exit codes: 0 deployed or up to date, 2 refused (bad input, edited on the target, an agent there this package made that no lock names, not confirmed), 3 not runnable yet there (source setup may be connected pending required setup), 1 the target refused or was not reached, or deployed but --pause-source left a schedule on."],
   ],
-  options: { to: { type: "string" }, yes: { type: "boolean" }, force: { type: "boolean" }, params: { type: "string" }, "pause-source": { type: "boolean" }, agent: { type: "string" } },
+  options: { ...SOURCE_OPTIONS, connected: { type: "string" }, to: { type: "string" }, yes: { type: "boolean" }, force: { type: "boolean" }, params: { type: "string" }, "pause-source": { type: "boolean" }, agent: { type: "string" } },
   run: ending(deploy),
 };
 

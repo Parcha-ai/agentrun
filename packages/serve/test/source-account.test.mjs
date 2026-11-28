@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { sourceAccountMetadata } from '../dist/native/source-account.js';
+import { sourceAccountMetadata, sourceAccountContainsSecret } from '../dist/native/source-account.js';
 const now = Date.parse('2030-01-01T00:00:00Z');
 const jwt = claims => [Buffer.from('{}').toString('base64url'), Buffer.from(JSON.stringify(claims)).toString('base64url'), 'Zml4dHVyZQ'].join('.');
 const classify = value => sourceAccountMetadata(Buffer.from(JSON.stringify(value)), now);
@@ -28,4 +28,17 @@ test('refresh-due and malformed saved metadata never claims a portable account',
     const changed = auth(); changed.tokens.id_token = jwt({ 'https://api.openai.com/auth': claims });
     assert.notEqual(classify(changed).plan, 'ordinary');
   }
+});
+
+test('Pi private credential scan rejects OAuth, MCP, and custom credential environment copies without emitting values', () => {
+  const privateState = Buffer.from(JSON.stringify({ provider: { type: 'oauth', access: 'fixture-private-access', refresh: 'fixture-private-refresh', expires: 123 },
+    api: { type: 'api_key', key: 'fixture-private-key', env: { CUSTOM_AUTH: 'fixture-private-env' } },
+    mcp: { pending: { codeVerifier: 'fixture-private-verifier' }, client: { client_secret: 'not-a-secret' } } }));
+  for (const value of ['fixture-private-access', 'fixture-private-refresh', 'fixture-private-key', 'fixture-private-env', 'fixture-private-verifier', 'not-a-secret']) {
+    for (const encoded of [value, Buffer.from(value).toString('base64')])
+      assert.equal(sourceAccountContainsSecret(privateState, [`ordinary project file ${encoded}`], 'pi'), true);
+  }
+  assert.equal(sourceAccountContainsSecret(privateState, ['ordinary project file without credentials'], 'pi'), false);
+  for (const bytes of [Buffer.from('{'), Buffer.from('null'), Buffer.from('[]'), Buffer.alloc(65_537)])
+    assert.equal(sourceAccountContainsSecret(bytes, [], 'pi'), true, 'uninspectable private auth must prevent publication');
 });

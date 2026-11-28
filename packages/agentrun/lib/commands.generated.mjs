@@ -480,7 +480,14 @@ export const COMMANDS = [
     "multiSegment": [],
     "query": [],
     "headers": [],
-    "bodyFlags": [],
+    "bodyFlags": [
+      {
+        "name": "snapshot",
+        "type": "string",
+        "required": false,
+        "description": "When supplied, Move refuses unless this reviewed snapshot is still current."
+      }
+    ],
     "hasBody": true,
     "bodyRequired": true,
     "bodyTypes": [
@@ -1256,7 +1263,7 @@ export const COMMANDS = [
     ],
     "secretBody": false,
     "raw": false,
-    "summary": "Import an explicitly selected source-native agent reference"
+    "summary": "Import a selected source reference or reserve a setup-only deployment without native execution"
   },
   {
     "command": [

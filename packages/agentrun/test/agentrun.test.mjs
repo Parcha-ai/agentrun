@@ -794,7 +794,7 @@ const shellBlocks = (text) => [...text.matchAll(/```sh\n([\s\S]*?)```/g)].map((m
 // brings its own Node, and every later command is the one it installs: no Node check, no nvm, no npx.
 test("the setup skill installs with the installer and runs the command it installs", (t) => {
   const skill = setupSkill();
-  const here = skillSection(skill, "3. Start it where they chose").split(/^### /m).find((part) => part.startsWith("This computer\n"));
+  const here = skillSection(skill, "3. Start it where they chose").split(/^### /m).find((part) => part.startsWith("Deploy locally\n"));
   const [look, install, ...more] = shellBlocks(here);
   assert.equal(install, "curl -fsSL https://agentrun.ai/install | sh\n", "this computer's one command is the installer");
   assert.deepEqual(more, []);
@@ -874,10 +874,10 @@ test("the setup skill asks every choice with the host's question tool, recommend
   for (const tool of ["`AskUserQuestion`", "`request_user_input`", "`AskQuestion`", "`question`"]) assert.ok(how.includes(tool), tool);
   assert.match(how, /Call the tool; don't write the choices as chat text\./);
   assert.match(how, /Reply with a number\." Then stop\./, "a host with no tool gets a numbered fallback that stops the turn");
-  assert.match(how, /Never answer a question for the person, and never pass a flag that answers one\./);
+  assert.match(how, /Pass a confirmation flag only after they authorize that exact action/);
   assert.doesNotMatch(skill, /\bbatch/i, "nothing tells the model to batch its questions into one message");
   const questions = setupQuestions(skill);
-  assert.deepEqual(questions.map((q) => q.header), ["Run where", "Scan", "Host", "Local reach", "Agent", "First run", "Model", "First run"], "every choice point, in order");
+  assert.deepEqual(questions.map((q) => q.header), ["Run where", "Agents", "Host", "Local reach", "Agent", "First run", "Model", "First run"], "every choice point, in order");
   for (const q of questions) {
     assert.ok(q.header.length <= 12, `${q.header}: a header of 12 characters or less`);
     assert.match(q.question, /\?/, `${q.header} asks a question`);
@@ -888,9 +888,9 @@ test("the setup skill asks every choice with the host's question tool, recommend
     for (const label of q.options) assert.ok(label.split(/\s+/).length <= 5, `${q.header}: "${label}" is 1-5 words`);
   }
   const options = Object.fromEntries(questions.map((q) => [q.header, q.options]));
-  assert.deepEqual(options["Run where"], ["This computer", "My always-on machine", "A hosted service"]);
-  assert.deepEqual(options.Scan, ["Check", "I'll tell you", "No, start fresh"]);
-  assert.deepEqual(options.Host, ["Railway", "Render", "AgentRun Cloud"]);
+  assert.deepEqual(options["Run where"], ["AgentRun Cloud", "Deploy locally", "Self Host"]);
+  assert.deepEqual(options.Agents, ["Check", "I'll tell you", "No, start fresh"]);
+  assert.deepEqual(options.Host, ["My server", "Railway", "Render"]);
   assert.deepEqual(options["Local reach"], ["Not now", "Yes, only me"], "the start-time switches stay off unless the person says only they use the machine");
   assert.deepEqual(options.Model, ["Continue with ChatGPT", "OpenRouter key", "Local model"], "ChatGPT, then a capped key, then a local model");
   assert.match(questions.find((q) => q.header === "Agent").paragraph, /then \*\*Start\s+fresh\*\*/, "a found agent or a fresh start");
@@ -900,17 +900,11 @@ test("the setup skill asks every choice with the host's question tool, recommend
 // browser could not reach, and a signed-in provider was taken as a choice. The prompt now reads the session first and
 // asks where before any install or deploy, with each place's cost. In the same call it asks to look, read-only, for the
 // Claude Code and Codex jobs the person already schedules: a found one is the first run, ahead of any model step.
-test("the setup skill asks where AgentRun should run before any install, with a cost for each place, and looks for existing agents first", () => {
+test("the setup skill asks where AgentRun should run before any install and looks for existing agents first", () => {
   const skill = setupSkill();
   const title = "2. Ask where it runs, and whether to look for their agents";
   const where = skillSection(skill, title);
   assert.match(where, /^Before any install or deploy command, ask these two with the question tool in one call/m);
-  const costs = Object.fromEntries(setupQuestions(where).flatMap((q) => [...q.paragraph.matchAll(/^- ([^:(]+?)(?: \(Recommended\))?: (.+)$/gm)]).map((m) => [m[1], m[2]]));
-  assert.match(costs["This computer"], /^free;/);
-  assert.match(costs["My always-on machine"], /^free;/);
-  assert.match(costs.Railway, /^about \$5 a month/);
-  assert.match(costs.Render, /^about \$27\.50 a month/);
-  assert.match(costs["AgentRun Cloud"], /^hosted for you; request access/);
   assert.doesNotMatch(skill, /AgentRun Cloud[^\n]*\$\d/, "AgentRun Cloud names no price");
   assert.match(where, /A provider CLI that is signed in, a deploy button, `render\.yaml` or a README section\s+is never a choice/);
   assert.match(where, /Never create a service on a provider the person did not name in this conversation/);
@@ -923,7 +917,7 @@ test("the setup skill asks where AgentRun should run before any install, with a 
   const at = (heading) => { const i = skill.indexOf(`## ${heading}`); assert.ok(i > 0, heading); return i; };
   assert.ok(at("4. Look for the agents they already run") < at("5. Bring in the agent they picked"));
   assert.ok(at("5. Bring in the agent they picked") < at("6. Connect a model"), "a found agent comes before any model step");
-  assert.match(skillSection(skill, "3. Start it where they chose"), /On \*\*Check\*\*, run the step 4 scan now, while AgentRun installs/);
+  assert.match(skillSection(skill, "3. Start it where they chose"), /On \*\*Check\*\*, run the step 4 scan now, while preparing the chosen destination/);
   const found = skillSection(skill, "4. Look for the agents they already run");
   for (const look of ["crontab -l", "list-timers", "LaunchAgents", ".github/workflows", "claude -p", "codex exec"]) assert.ok(found.includes(look), look);
   assert.match(found, /ask the person which of their jobs start\s+agents/, "a job the filter cannot see is asked about, not assumed absent");
@@ -970,8 +964,6 @@ test("the setup skill names a hosted cloud session before the questions, and its
   const look = skillSection(skill, "1. Look at this session");
   assert.match(look, /`CLAUDE_CODE_REMOTE`[^\n]*\n?[^\n]*a \*\*hosted cloud session\*\*/, "the cloud signal is read as a hosted session");
   assert.match(look, /In a hosted cloud session or sandbox, say so first, in one or two sentences, before the questions below/);
-  assert.match(skillSection(skill, "2. Ask where it runs, and whether to look for their agents"),
-    /In a hosted cloud session or sandbox, the options are \*\*A hosted service \(Recommended\)\*\*/, "there, the hosted option comes first");
   const [check] = shellBlocks(look);
   assert.ok(check, "the session check is a shell block");
   const f = setupFixture(t, {});

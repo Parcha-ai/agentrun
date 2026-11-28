@@ -34,6 +34,10 @@
       "types": "./dist/manifest.d.ts",
       "default": "./dist/manifest.js"
     },
+    "./deployment-source": {
+      "types": "./dist/deployment-source.d.ts",
+      "default": "./dist/deployment-source.js"
+    },
     "./template-source": {
       "types": "./dist/template-source.d.ts",
       "default": "./dist/template-source.js"

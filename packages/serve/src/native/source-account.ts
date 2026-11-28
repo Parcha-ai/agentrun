@@ -4,6 +4,7 @@
  * Native code itself decodes these saved claims without signature verification. We use them
  * only to refuse unproven policy portability; destination sign-in remains independently required. */
 import type { SourceNativeAccount } from "./source-snapshot-types.js";
+import { sourceRuntimeProtocol, type SourceRuntime } from "./runtimes.js";
 import { valueMatcher } from "../learn/secrets.js";
 import { keyShaped } from "../secret-name.js";
 
@@ -74,22 +75,26 @@ export function sourceAccountMetadataValid(value: unknown): value is SourceNativ
 
 /** Boolean-only private check, including escaped/percent/base64/hex spellings used by the existing
  * held-secret scanner. The credential strings and matcher exist only for this bounded call. */
-export function sourceAccountContainsSecret(bytes: Uint8Array, contents: Iterable<string>): boolean {
-  if (bytes.length > 65_536) return false; // No bytes of an oversized auth file are read.
+export function sourceAccountContainsSecret(bytes: Uint8Array, contents: Iterable<string>, runtime?: SourceRuntime): boolean {
+  const privateStore = runtime !== undefined && sourceRuntimeProtocol(runtime) === "pi-settings";
+  if (bytes.length > 65_536) return privateStore; // Codex's separate account projection blocks oversized input.
   const values: string[] = [];
   try {
-    const pending: unknown[] = [JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes))];
+    const parsed: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    if (privateStore && (!parsed || typeof parsed !== "object" || Array.isArray(parsed))) return true;
+    const pending: { value: unknown; parent: string }[] = [{ value: parsed, parent: "" }];
     for (let count = 0; pending.length; count++) {
       if (count > 10_000) return true;
-      const value = pending.pop();
+      const { value, parent } = pending.pop()!;
       if (!value || typeof value !== "object") continue;
       for (const [key, child] of Object.entries(value)) {
-        if (typeof child === "string" && child && keyShaped(key)) values.push(child);
-        else if (child && typeof child === "object") pending.push(child);
+        const piSecret = privateStore && (parent === "env" || /^(?:access|refresh|accessToken|refreshToken|clientSecret|codeVerifier|verifier)$/i.test(key));
+        if (typeof child === "string" && child && (keyShaped(key) || piSecret)) values.push(child);
+        else if (child && typeof child === "object") pending.push({ value: child, parent: key });
       }
     }
     const matches = valueMatcher(values);
     for (const content of contents) if (values.some(value => content.includes(value) || content.includes(JSON.stringify(value).slice(1, -1))) || matches(content)) return true;
     return false;
-  } catch { return false; } // Malformed auth already makes the snapshot incomplete.
+  } catch { return privateStore; } // Codex's separate account projection blocks malformed input.
 }

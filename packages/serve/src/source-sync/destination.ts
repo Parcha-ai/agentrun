@@ -2,7 +2,7 @@
 import { createHash } from "node:crypto";
 import { ApiError } from "../errors.js";
 import { factsOf, harnessForSourceProtocol } from "../harness-table.js";
-import { NATIVE_RUNTIME_FACTS } from "../native/runtimes.js";
+import { sourceRuntimeProtocol } from "../native/source-snapshot-types.js";
 import { chooseModel } from "../model.js";
 import { formOf, pickerCandidates } from "../model-form.js";
 import type { SourceSnapshot, SourceSnapshotTool } from "../native/source-snapshot-types.js";
@@ -105,7 +105,12 @@ export function sourcePolicy(snapshot: SourceSnapshot, boxes: readonly BoxOffer[
     }
   }
   let shellPermission: "allow" | "ask", externalPermission: "allow" | "ask";
-  if (NATIVE_RUNTIME_FACTS[snapshot.source.runtime].protocol === "codex-json") {
+  if (sourceRuntimeProtocol(snapshot.source.runtime) === "pi-settings") {
+    if (Object.keys(policy).some(key => !["tools", "project_trust"].includes(key)) || !Array.isArray(policy.tools)
+      || policy.tools.some(name => typeof name !== "string" || !["read", "bash", "edit", "write", "grep", "find", "ls"].includes(name))
+      || !["trusted", "none"].includes(String(policy.project_trust))) return block();
+    shellPermission = "allow"; externalPermission = "allow";
+  } else if (sourceRuntimeProtocol(snapshot.source.runtime) === "codex-json") {
     if (Object.keys(policy).some(key => !["approval_policy", "sandbox_mode", "sandbox_workspace_write", "web_search", "project_trust"].includes(key))) return block();
     if (policy.project_trust !== undefined && policy.project_trust !== "trusted") return block();
     // Codex workspace-write protects .git/.codex/.agents even inside writable roots. Our host
@@ -140,11 +145,11 @@ export function destinationPreparation(store: Store, agentId: string, options: {
   const authenticated = new Set<string>();
   return {
     model: async snapshot => {
-      const source = snapshot.configuration.model, harness = harnessForSourceProtocol(NATIVE_RUNTIME_FACTS[snapshot.source.runtime].protocol);
+      const source = snapshot.configuration.model, harness = harnessForSourceProtocol(sourceRuntimeProtocol(snapshot.source.runtime));
       if (!source) return refused("model_mapping", "Sync the source's effective model before Move.");
       const env = options.env(), candidates = pickerCandidates(env, harness);
       // Exact catalog IDs only; an alias such as `sonnet` cannot be guessed into a different model version.
-      const matches = candidates.filter(id => id === source || id.slice(id.lastIndexOf("/") + 1) === source);
+      const matches = sourceRuntimeProtocol(snapshot.source.runtime) === "pi-settings" && source.includes("/") ? [source] : candidates.filter(id => id === source || id.slice(id.lastIndexOf("/") + 1) === source);
       // The picker is a short convenience list, not the model catalog. Preserve its configured
       // route preference, otherwise ask the registered source wire's vendor for the exact ID.
       const facts = factsOf(env, harness), vendor = facts && wireOf(facts.wire)?.vendor;
@@ -153,7 +158,7 @@ export function destinationPreparation(store: Store, agentId: string, options: {
       const model = matches[0]!, chosen = await chooseModel(env, model, "default", harness);
       if ("why" in chosen) return refused("model_authentication", chosen.why);
       authenticated.add("model-provider");
-      return { sourceModel: source, model, harness };
+      return { sourceModel: source, model, harness, ...(snapshot.configuration.thinking ? { thinking: snapshot.configuration.thinking } : {}) };
     },
     tool: async source => {
       const key = bindingKey(agentId, source.name);

@@ -57,20 +57,22 @@ const ours = (dir) => {
 export const SKILL_INSTALL = {
   command: ["skill", "install"],
   pathParams: [],
-  summary: "Install this CLI's skill (agentrun-cli) for Claude Code and Codex, or into a skills directory",
+  summary: "Install this CLI's skill (agentrun-cli) for Claude Code, Codex or Pi, or into a project's skills directory",
   help: [
     ["--claude", "into Claude Code's skills: ~/.claude/skills/agentrun-cli"],
     ["--codex", "into ~/.agents/skills/agentrun-cli, the shared skills folder Codex reads (Cursor too)"],
+    ["--pi", "into Pi's skills: ~/.pi/agent/skills/agentrun-cli (PI_CODING_AGENT_DIR overrides its agent directory)"],
     ["--dir DIR", "into DIR/agentrun-cli (a project's .claude/skills or .agents/skills, say)"],
-    ["", "with none of them: each of ~/.claude (Claude Code) and ~/.agents that exists on this machine"],
+    ["", "with none of them: each existing Claude Code, shared Codex or Pi agent directory on this machine"],
   ],
-  options: { claude: { type: "boolean" }, codex: { type: "boolean" }, dir: { type: "string" } },
+  options: { claude: { type: "boolean" }, codex: { type: "boolean" }, pi: { type: "boolean" }, dir: { type: "string" } },
   async run({ values, env, io, cli }) {
     const claude = join(env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "skills");
     const agents = join(homedir(), ".agents", "skills");
-    const asked = [values.claude && claude, values.codex && agents, values.dir !== undefined && resolve(values.dir)].filter(Boolean);
-    const dirs = asked.length ? asked : [claude, agents].filter((dir) => existsSync(join(dir, "..")));
-    if (!dirs.length) throw cli.fail(2, `Neither ${join(claude, "..")} nor ${join(agents, "..")} exists: name where with --claude, --codex or --dir DIR.`);
+    const pi = join(env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent"), "skills");
+    const asked = [values.claude && claude, values.codex && agents, values.pi && pi, values.dir !== undefined && resolve(values.dir)].filter(Boolean);
+    const dirs = [...new Set(asked.length ? asked : [claude, agents, pi].filter((dir) => existsSync(join(dir, ".."))))];
+    if (!dirs.length) throw cli.fail(2, "No supported agent directory exists here: name where with --claude, --codex, --pi or --dir DIR.");
     // Every target checked before any is touched: none may be this package's own skill folder (through a link too),
     // lie inside it, or hold it, and each is empty or this skill.
     const source = realpathSync(SOURCE);

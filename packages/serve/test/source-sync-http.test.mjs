@@ -8,15 +8,15 @@ import { sourceSnapshotDigest } from '../dist/native/source-snapshot-types.js';
 const target = { runtime: 'codex', machine_id: 'fixture-machine', project: '/fixture/project', selector: { kind: 'project' },
   version: 'fixture', model: null, fingerprint: 'a'.repeat(64), configuration: [], skills: [], mcp_servers: [], connected: true,
   state: 'ready', issues: [], capabilities: { launch: true, learning: true, workflows: false, approval: 'unavailable', usage: true } };
-const snapshot = () => {
-  const value = { version: 1, complete: true, source: { runtime: target.runtime, machine_id: target.machine_id, project: target.project, selector: target.selector },
+const snapshot = (runtime = target.runtime) => {
+  const value = { version: 1, complete: true, source: { runtime, machine_id: target.machine_id, project: target.project, selector: target.selector },
     entries: [], blobs: {}, instructions: { text: 'Keep the existing project.', layers: [] }, skills: [],
     configuration: { model: null, tools: [], permissions: {}, credentials: [] }, project: { git: null }, blockers: [] };
   return { ...value, digest: sourceSnapshotDigest(value) };
 };
-async function connected(t, configSync = true) {
+async function connected(t, configSync = true, deploymentRuntime) {
   const s = await serve(t, { runner: false });
-  const cap = { native_execution: true, config_sync: configSync };
+  const cap = { native_execution: !deploymentRuntime, history_import: false, config_sync: configSync };
   const enrolled = await s.api('POST', '/connectors/enrollment', { capabilities: cap });
   assert.equal(enrolled.status, 200);
   const registration = await client(s.baseUrl, enrolled.body.enrollment_token)('POST', '/connectors', {
@@ -24,17 +24,33 @@ async function connected(t, configSync = true) {
   });
   assert.equal(registration.status, 200, JSON.stringify(registration.body));
   const id = registration.body.connector.id, api = client(s.baseUrl, registration.body.credential);
-  const imported = await api('POST', `/connectors/${id}/import`, { target_id: 'project', target });
+  const imported = await api('POST', `/connectors/${id}/import`, { target_id: 'project',
+    target: deploymentRuntime ? { ...target, runtime: deploymentRuntime, sync_only: true } : target,
+    ...(deploymentRuntime ? { deployment: true } : {}) });
   assert.equal(imported.status, 200, JSON.stringify(imported.body));
   return { ...s, worker: api, id, agent: imported.body.agent_id, path: `/connectors/${id}/targets/project/sync` };
 }
 
-test('sync HTTP defaults on only for an explicit source grant and stores complete bytes before publication', async t => {
-  const s = await connected(t);
+for (const deploymentRuntime of [undefined, 'claude-code', 'codex', 'pi']) test(`${deploymentRuntime ?? 'native'} sync HTTP requires a source grant and complete bytes; pending deployment cannot run or lose its binding`, async t => {
+  const s = await connected(t, true, deploymentRuntime);
+  if (deploymentRuntime) {
+    assert.deepEqual((await s.api('GET', '/capabilities')).body.source_deployment, { version: 1, runtimes: ['claude-code', 'codex', 'pi'] });
+    const agentPath = `/agents/${s.agent}`;
+    assert.equal((await s.api('GET', agentPath)).body.definition.native, undefined);
+    const pending = await s.api('POST', `${agentPath}/runs`, { input: { content: 'Start before upload.' } });
+    assert.equal(pending.status, 409, JSON.stringify(pending.body));
+    assert.match(pending.body.error.message, /complete.*deploy/i);
+    assert.equal((await s.api('PUT', `${agentPath}/definition`, { definition: { instructions: 'Remove pending state.', tools: [] } })).status, 409);
+    const pendingAgent = await s.store.agents.get(s.agent);
+    assert.equal((await s.api('POST', `${agentPath}/current`, { revision: pendingAgent.currentRevision })).status, 409);
+    assert.equal((await s.worker('POST', `/connectors/${s.id}/poll`, { worker_id: 'worker' })).status, 403);
+    assert.equal((await s.worker('POST', `/connectors/${s.id}/targets/project/history`, { sessions: [] })).status, 403);
+    assert.equal((await s.api('GET', `${agentPath}/source`)).body.connection.connector_id, s.id);
+  }
   const grant = await s.worker('POST', `${s.path}/grant`, {});
   assert.equal(grant.status, 200, JSON.stringify(grant.body));
   assert.equal(grant.body.enabled, true);
-  const body = { generation: grant.body.generation, sequence: 0, snapshot: snapshot() };
+  const body = { generation: grant.body.generation, sequence: 0, snapshot: snapshot(deploymentRuntime) };
   const accepted = await s.worker('POST', s.path, body);
   assert.equal(accepted.status, 200, JSON.stringify(accepted.body));
   assert.equal(accepted.body.snapshot, body.snapshot.digest);
@@ -45,8 +61,11 @@ test('sync HTTP defaults on only for an explicit source grant and stores complet
   assert.equal(state.status, 200, JSON.stringify(state.body));
   assert.equal(state.body.state, 'needs_attention');
   assert.equal(state.body.blockers[0].code, 'model_mapping', 'a missing effective source model must not become the host default');
+  assert.equal((await s.api('POST', `/agents/${s.agent}/source/move`, { snapshot: 'f'.repeat(64) })).status, 412, 'a different reviewed snapshot refuses before destination preparation');
+  assert.equal((await s.api('POST', `/agents/${s.agent}/source/move`, { snapshot: body.snapshot.digest })).status, 409, 'an exact reviewed snapshot reaches destination prerequisite checks');
+  assert.equal((await s.api('POST', `/agents/${s.agent}/source/move`, { snapshot: 'invalid' })).status, 422);
   assert.equal((await s.api('POST', `/agents/${s.agent}/source/move`, {})).status, 409);
-  assert.equal((await s.api('GET', `/agents/${s.agent}`)).body.definition.native.remote.connector_id, s.id);
+  if (!deploymentRuntime) assert.equal((await s.api('GET', `/agents/${s.agent}`)).body.definition.native.remote.connector_id, s.id);
   assert.equal((await s.worker('PATCH', `/agents/${s.agent}/source`, { enabled: false })).status, 401, 'source credential has no owner controls');
 });
 

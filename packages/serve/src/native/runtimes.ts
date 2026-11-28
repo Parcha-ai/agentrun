@@ -50,6 +50,20 @@ export const NATIVE_MINIMUM_VERSION: Readonly<Record<NativeRuntime, string>> = O
 export const isNativeRuntime = (value: unknown): value is NativeRuntime =>
   typeof value === "string" && Object.hasOwn(NATIVE_RUNTIME_FACTS, value);
 
+/** Portable setup sources include runtimes without a native execution or observation bridge.
+ * Profile locations and capture formats belong here; native admission still uses NATIVE_RUNTIME_FACTS. */
+export const SOURCE_RUNTIME_FACTS = Object.freeze({
+  "claude-code": Object.freeze({ ...NATIVE_RUNTIME_FACTS["claude-code"], homeEnvironment: "CLAUDE_CONFIG_DIR", homeOption: "claudeHome" } as const),
+  codex: Object.freeze({ ...NATIVE_RUNTIME_FACTS.codex, homeEnvironment: "CODEX_HOME", homeOption: "codexHome" } as const),
+  pi: Object.freeze({ binary: "pi", protocol: "pi-settings", namedSelector: null, homeEnvironment: "PI_CODING_AGENT_DIR", homeOption: "piHome" } as const),
+});
+export type SourceRuntime = keyof typeof SOURCE_RUNTIME_FACTS;
+export type SourceRuntimeProtocol = (typeof SOURCE_RUNTIME_FACTS)[SourceRuntime]["protocol"];
+export const SOURCE_RUNTIMES = Object.freeze(Object.keys(SOURCE_RUNTIME_FACTS) as SourceRuntime[]);
+export const isSourceRuntime = (value: unknown): value is SourceRuntime =>
+  typeof value === "string" && Object.hasOwn(SOURCE_RUNTIME_FACTS, value);
+export const sourceRuntimeProtocol = (runtime: SourceRuntime): SourceRuntimeProtocol => SOURCE_RUNTIME_FACTS[runtime].protocol;
+
 /** Native telemetry names are wire identifiers, independent of the managed harness that would execute a run. */
 export type NativeObservationHarness = (typeof NATIVE_RUNTIME_FACTS)[NativeRuntime]["observation"]["id"];
 export const NATIVE_OBSERVATION_HARNESSES = Object.freeze(

@@ -5,7 +5,8 @@
 // racing another writer; the store's own transactions make each write atomic.
 //
 // The run counts an agent view shows (runs.count, runs.live) are E3's run reads, not this module's; agentView takes them.
-import { sourceSyncOf } from "./source-sync/types.js";
+import { sourceSyncOf, type SourceDeploymentBinding } from "./source-sync/types.js";
+import { assertSourceDeployed } from "./source-sync/deployment.js";
 import { purgedAgent } from "./agents.js";
 import { uuidv7 } from "./ids.js";
 import { agentLink } from "./console-links.js";
@@ -227,7 +228,7 @@ export async function listAgents(store: AgentsStore, options: { archived?: boole
 export async function createAgent(
   store: AgentsStore,
   { definition, skills = {}, note }: DefinitionBody,
-  options: { check?: SaveCheck; fresh?: { place: RevisionPlace; tools: readonly string[] }; template?: TemplatePackage; workspace?: string } = {},
+  options: { sourceDeployment?: SourceDeploymentBinding; check?: SaveCheck; fresh?: { place: RevisionPlace; tools: readonly string[] }; template?: TemplatePackage; workspace?: string } = {},
 ): Promise<AgentEntry> {
   const given = typeof definition.id === "string" ? definition.id : undefined;
   if (given !== undefined && !ID_PATTERN.test(given)) throw invalid([{ field: "definition.id", reason: "invalid", message: `definition.id does not match ${ID_PATTERN.source}` }]);
@@ -237,7 +238,8 @@ export async function createAgent(
     ? { place: options.fresh.place, ...(definition.tools === undefined ? { tools: [...options.fresh.tools] } : {}) }
     : {};
   // A template's agent keeps the package it was applied from on its first revision (store `revisions.package`).
-  const made = makeRevision({ ...definition, ...placed }, skills, note);
+  const initial = makeRevision({ ...definition, ...placed }, skills, note);
+  const made = options.sourceDeployment ? { ...initial, body: bodyOf({ kind: "agentic", ...(initial.body as AgenticBody), skills, sourceDeployment: options.sourceDeployment }).body } : initial;
   const packaged = options.template ? { ...made, package: options.template } : made;
   checkVersion(definition, 1);
   const revision = stamped(packaged, await options.check?.(packaged, null));
@@ -355,6 +357,7 @@ export async function commitAgent(
  *  builds an update's revision with it too (server.ts planTemplate), as the update's commit does. */
 export function editOn(entry: AgentEntry, definition: Json, skills: Record<string, string> | undefined, note: string | undefined, fromPackage = false): NewRevision & { note?: string } {
   const current = entry.revision;
+  assertSourceDeployed(current?.body);
   const currentBody = (current?.body ?? {}) as Partial<AgenticBody & WorkflowBody>;
   let files = skills;
   if (files === undefined) files = (isObject(current?.skills) ? (current!.skills as Record<string, string>) : {});

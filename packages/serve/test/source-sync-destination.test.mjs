@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { sourcePolicy } from '../dist/source-sync/destination.js';
 import { bindSourceTool, destinationPreparation } from '../dist/source-sync/destination.js';
 import { resourceTools } from '../dist/mcp-resources.js';
+import { sourceNativeTools } from '../dist/native/source-runtime-tools.js';
 
 function mcpFixture(tools) {
   const row = { name: 'destination', url: 'https://tools.example.invalid/mcp', tools, auth: 'none', sealed: null, credentialChangedAt: null, tokenLeftMs: null };
@@ -65,6 +66,7 @@ const boxes = [{ id: 'docker', available: true, network: 'allowlist' }];
 function snapshot(runtime = 'codex', capabilities = ['file_read', 'file_write']) {
   return { source: { runtime }, configuration: { tools: [], permissions: runtime === 'codex'
     ? { sandbox_mode: 'danger-full-access', approval_policy: 'never', web_search: 'disabled', project_trust: 'trusted' }
+    : runtime === 'pi' ? { tools: ['read', 'write'], project_trust: 'trusted' }
     : { defaultMode: 'bypassPermissions', tools: ['Read', 'Write'] },
   native_tools: { version: runtime === 'codex' ? '0.171.0' : '2.1.322', complete: true, source: 'versioned-runtime', capabilities, disabled: [] } } };
 }
@@ -108,9 +110,9 @@ test('Claude bypass still asks before shell or destructive external operations',
   assert.equal(resolved.toolSettings['mcp:files/delete'].permission, 'ask');
   assert.equal(resolved.toolSettings.read.permission, 'allow');
 });
-test('a read-only Claude allowlist never gets shell or write through generic defaults', () => {
-  const source = snapshot('claude-code', ['file_read', 'image_read', 'session_end']);
-  source.configuration.permissions.tools = ['Read'];
+for (const runtime of ['claude-code', 'pi']) test(`a read-only ${runtime} allowlist never gets shell or write through generic defaults`, () => {
+  const source = snapshot(runtime, ['file_read', 'image_read', 'session_end']);
+  source.configuration.permissions.tools = runtime === 'pi' ? ['read'] : ['Read'];
   const resolved = sourcePolicy(source, boxes, []);
   assert.equal(resolved.blockers, undefined, JSON.stringify(resolved));
   assert.deepEqual(resolved.tools, ['read']);
@@ -130,14 +132,16 @@ for (const capability of ['planning', 'context_management', 'feedback']) test(`n
   assert.equal(sourcePolicy(snapshot('codex', [capability]), boxes, []).blockers[0].code, 'native_capability');
 });
 
-test('an exact source model outside the picker uses the registered route and actual catalog', async () => {
+for (const runtime of ['codex', 'pi']) test(`an exact ${runtime} source model outside the picker uses the registered route and actual catalog`, async () => {
   const { destinationPreparation } = await import('../dist/source-sync/destination.js');
   const deps = destinationPreparation({}, 'source-agent', { env: () => ({ OPENAI_API_KEY: 'fake-test-key' }), boxes: () => boxes,
     projectExecution: async () => ({ storage: 'local', isolation: 'process' }), check: async () => ({ warnings: [], stamp: {} }) });
-  const source = snapshot(); source.configuration.model = 'gpt-5.5';
+  const source = snapshot(runtime); source.configuration.model = runtime === 'pi' ? 'openai/gpt-5.5' : 'gpt-5.5';
+  if (runtime === 'pi') source.configuration.thinking = 'high';
   const result = await deps.model(source);
   assert.equal(result.blockers, undefined, JSON.stringify(result));
-  assert.equal(result.model, 'openai/gpt-5.5'); assert.equal(result.sourceModel, 'gpt-5.5');
+  assert.equal(result.model, 'openai/gpt-5.5'); assert.equal(result.sourceModel, source.configuration.model);
+  if (runtime === 'pi') { assert.equal(result.harness, 'pi'); assert.equal(result.thinking, 'high'); }
   source.configuration.model = 'gpt-nonexistent-fixture';
   assert.ok((await deps.model(source)).blockers?.length, 'ordinary catalog still refuses unknown exact IDs');
 });
@@ -164,17 +168,24 @@ test('a failed isolation probe is a named prerequisite, never a permissive displ
   assert.equal(JSON.stringify(result).includes('private probe diagnostic'), false);
 });
 
-for (const runtime of ['codex', 'claude-code']) test(`${runtime} shell family keeps its permission through the ordinary tool-settings validator`, async () => {
+for (const runtime of ['codex', 'claude-code', 'pi']) test(`${runtime} shell family keeps its permission through the ordinary tool-settings validator`, async () => {
   const { settingsIssues } = await import('../dist/tool-plane.js');
   const { permissionFrom, SHELL_FAMILY, SHELL_WATCHERS } = await import('../dist/tool-gate.js');
   const source = snapshot(runtime, ['shell', 'file_read', 'file_write']);
+  if (runtime === 'codex') {
+    const resolved = sourceNativeTools({ runtime, version: '0.172.0', model: 'gpt-5.5', mcp: false, permissions: source.configuration.permissions,
+      config: { agents: { enabled: false }, features: { apps: false, plugins: false, image_generation: false, goals: false }, cloud: { skills: { enabled: false } }, tools: { experimental_request_user_input: { enabled: false } } },
+      modelCache: { client_version: '0.172.0', identity: 'fixture-account', models: [{ slug: 'gpt-5.5', shell_type: 'unified_exec', apply_patch_tool_type: 'freeform', multi_agent_version: null, use_responses_lite: false, experimental_supported_tools: [] }] } });
+    assert.deepEqual(resolved.blockers, []);
+    source.configuration.native_tools = resolved.tools;
+  }
   const resolved = sourcePolicy(source, boxes, []);
   assert.equal(resolved.blockers, undefined);
   assert.deepEqual(settingsIssues(resolved.toolSettings, 'definition.tool_settings', 'agent'), [], 'the ordinary save/prepare validator accepts every emitted setting');
   for (const name of Object.keys(SHELL_FAMILY)) {
     assert.ok(resolved.tools.includes(name));
     assert.equal(permissionFrom(name, {}, resolved.toolSettings, resolved.approvals).permission,
-      runtime === 'codex' || SHELL_WATCHERS.has(name) ? 'allow' : 'ask');
+      runtime !== 'claude-code' || SHELL_WATCHERS.has(name) ? 'allow' : 'ask');
   }
   assert.equal(Object.keys(resolved.toolSettings).filter(name => name.startsWith('bash')).length, 1);
 });

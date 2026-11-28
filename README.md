@@ -105,9 +105,10 @@ Paste this into Claude Code, Codex or another coding agent:
 Read https://agentrun.ai/SKILL.md and follow it to set up AgentRun for me. Ask me where AgentRun should run before you install or deploy anything.
 ```
 
-Your agent first asks where AgentRun should run: this computer (macOS or Linux), your own always-on machine, Railway,
-Render or AgentRun Cloud. It installs nothing before you answer. It can bring in a Claude Code or Codex job you
-already schedule as the first run, or create and run a first agent with you. You save keys and passwords in the
+Your agent first offers **AgentRun Cloud (Recommended)**, **Deploy locally**, and **Self Host**. Self Host includes
+your own always-on machine, Railway, Render and other deployment options. It installs nothing before you answer.
+It can bring in a Claude Code or Codex job you already schedule as the first run, or create and run a first agent
+with you. You save keys and passwords in the
 AgentRun console, never in the chat. The link is [the setup skill](docs/SKILL.md) in this repository.
 
 <details>

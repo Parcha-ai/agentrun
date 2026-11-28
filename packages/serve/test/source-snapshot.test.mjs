@@ -1,14 +1,23 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, mkdir, writeFile, readFile, rm, chmod, symlink, rename, open, readlink, utimes, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, chmod, symlink, rename, open, readlink, utimes, stat, cp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { exportSourceSnapshot, sourceSnapshotDigest } from '../dist/native/source-snapshot.js';
+import { exportSourceSnapshot, macOSSystemPolicyPath, sourceSnapshotDigest } from '../dist/native/source-snapshot.js';
+import { validateSourceSnapshot } from '../dist/source-sync/snapshots.js';
+import { deploymentSource } from '../dist/deployment-source.js';
 
 const trusted = project => `[projects.${JSON.stringify(project)}]\ntrust_level = \"trusted\"\n`;
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+
+test('macOS Codex policy checks use only the fixed /etc system alias', async () => {
+  const alias = async path => { assert.equal(path, '/etc'); return 'private/etc'; };
+  assert.equal(await macOSSystemPolicyPath('/etc/codex/config.toml', alias), '/private/etc/codex/config.toml');
+  await assert.rejects(macOSSystemPolicyPath('/etc/codex/config.toml', async () => 'other/etc'), { code: 'source_unavailable' });
+  assert.equal(await macOSSystemPolicyPath('/tmp/project/config.toml', async () => { throw new Error('must not inspect /etc'); }), '/tmp/project/config.toml');
+});
 const authJwt = payload => [Buffer.from('{}').toString('base64url'), Buffer.from(JSON.stringify(payload)).toString('base64url'), Buffer.from('not-a-secret').toString('base64url')].join('.');
 const authFixture = (plan = 'pro', access = {}) => ({ auth_mode: 'chatgpt', last_refresh: new Date().toISOString(), tokens: {
   id_token: authJwt({ 'https://api.openai.com/auth': { chatgpt_plan_type: plan, chatgpt_account_id: 'fixture-account', chatgpt_user_id: 'fixture-user' } }),
@@ -32,6 +41,9 @@ async function fixture(t, runtime = 'codex') {
   if (runtime === 'codex') {
     await put(join(home, '.codex', 'config.toml'), trusted(project), true);
     await put(join(project, '.codex', 'config.toml'), '[features]\napps = false\nplugins = false\nimage_generation = false\n[cloud.skills]\nenabled = false\n', true);
+  } else if (runtime === 'pi') {
+    target.version = '1.5.2';
+    await put(join(home, '.pi', 'agent', 'settings.json'), '{"defaultProvider":"openai","defaultModel":"gpt-5.5","defaultProjectTrust":"always"}', true);
   } else {
     await put(join(home, '.claude', 'settings.json'), '{"agent":"source"}', true);
     await put(join(home, '.claude', 'agents', 'source.md'), '---\nname: source\ntools: [Read, Write, Edit, Bash]\n---\n', true);
@@ -94,13 +106,13 @@ const file = (snapshot, path) => snapshot.entries.find(x => x.path === path);
 const content = (snapshot, path) => Buffer.from(snapshot.blobs[file(snapshot, path).sha256], 'base64');
 const command = (cwd, ...args) => execFileSync('git', args, { cwd, env: { PATH: process.env.PATH, HOME: cwd, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_OPTIONAL_LOCKS: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
 
-for (const runtime of ['codex', 'claude-code']) test(`${runtime}: full authored assets, exact modes, deterministic no-op and references-only digest`, async t => {
-  const f = await fixture(t, runtime), dir = runtime === 'codex' ? '.codex' : '.claude';
-  const instruction = runtime === 'codex' ? 'AGENTS.md' : 'CLAUDE.md';
+for (const runtime of ['codex', 'claude-code', 'pi']) test(`${runtime}: full authored assets, exact modes, deterministic no-op and references-only digest`, async t => {
+  const f = await fixture(t, runtime), dir = runtime === 'codex' ? '.codex' : runtime === 'pi' ? '.pi/agent' : '.claude';
+  const instruction = runtime === 'claude-code' ? 'CLAUDE.md' : 'AGENTS.md';
   await f.put(join(f.home, dir, instruction), 'Global source policy.', true);
   await f.put(join(f.project, instruction), 'Project source policy.', true);
   const skill = join(f.home, dir, 'skills', 'build');
-  await f.put(join(skill, 'SKILL.md'), 'Read refs/guide.txt and run scripts/check.sh.', true);
+  await f.put(join(skill, 'SKILL.md'), (runtime === 'pi' ? '---\nname: build\ndescription: Build this project.\n---\n' : '') + 'Read refs/guide.txt and run scripts/check.sh.', true);
   await f.put(join(skill, 'refs', 'guide.txt'), 'Authored reference one.');
   await f.put(join(skill, 'scripts', 'check.sh'), '#!/bin/sh\nexit 0\n', false, 0o755);
   await f.put(join(skill, 'image.bin'), Buffer.from([0, 255, 2, 128]));
@@ -108,6 +120,7 @@ for (const runtime of ['codex', 'claude-code']) test(`${runtime}: full authored 
   f.target.skills.push('build');
   await f.put(join(f.project, 'work.txt'), 'Untracked work.');
   const first = await f.snapshot(); assert.equal(first.complete, true, JSON.stringify(first.blockers));
+  validateSourceSnapshot(first);
   assert.equal(first.instructions.text, 'Global source policy.\n\nProject source policy.');
   assert.ok(!first.instructions.text.includes('grader'));
   const prefix = first.skills[0].path;
@@ -121,6 +134,103 @@ for (const runtime of ['codex', 'claude-code']) test(`${runtime}: full authored 
   await f.put(join(skill, 'refs', 'guide.txt'), 'Authored reference two.');
   const changed = await f.snapshot(); assert.notEqual(changed.digest, first.digest);
   assert.equal((await f.snapshot()).digest, changed.digest, 'a repeated export is a no-op');
+});
+
+test('Pi setup preserves instruction precedence, model, thinking and tool selection', async t => {
+  const f = await fixture(t, 'pi');
+  await f.put(join(f.home, '.pi/agent/AGENTS.md'), 'Global instructions.', true);
+  await f.put(join(f.project, 'AGENTS.md'), 'Inactive instructions.', true);
+  await f.put(join(f.project, 'AGENTS.override.md'), 'Project instructions.', true);
+  await f.put(join(f.home, '.pi/agent/APPEND_SYSTEM.md'), 'Inactive append.', true);
+  await f.put(join(f.project, '.pi/APPEND_SYSTEM.md'), 'Project append.', true);
+  await f.put(join(f.project, '.pi/settings.json'), '{"defaultTools":["read"],"defaultThinkingLevel":"high"}', true);
+  const value = await f.snapshot();
+  assert.equal(value.complete, true, JSON.stringify(value.blockers));
+  assert.equal(value.instructions.text, 'Global instructions.\n\nProject instructions.\n\nProject append.');
+  assert.equal(value.configuration.model, 'openai/gpt-5.5');
+  assert.equal(value.configuration.thinking, 'high');
+  assert.deepEqual(value.configuration.permissions.tools, ['read']);
+  assert.equal(value.configuration.native_tools.capabilities.includes('shell'), false);
+  assert.equal(value.configuration.native_tools.capabilities.includes('file_read'), true);
+});
+
+test('deployment source exports the selected Pi setup with private consent and no native execution grant', async t => {
+  const f = await fixture(t, 'pi'), bin = join(f.root, 'bin');
+  await f.put(join(bin, 'pi'), '#!/bin/sh\nprintf "1.5.2\\n"\n', false, 0o755);
+  await f.put(join(f.home, '.pi/agent/auth.json'), '{"openai":{"type":"api_key","key":"private-provider-value"}}');
+  await f.put(join(f.project, 'work.txt'), 'Current work.');
+  const captured = await deploymentSource({ project: f.project, runtime: 'pi', environment: { HOME: f.home, PATH: bin }, secretValues: ['private-provider-value'] });
+  assert.equal(captured.snapshot.complete, true, JSON.stringify(captured.snapshot.blockers));
+  validateSourceSnapshot(captured.snapshot);
+  assert.equal(captured.target.capabilities.launch, false);
+  assert.equal(captured.target.runtime, 'pi');
+  assert.equal(captured.snapshot.source.project, f.project);
+  assert.equal(content(captured.snapshot, 'project/work.txt').toString(), 'Current work.');
+  assert.equal(JSON.stringify(captured).includes('private-provider-value'), false);
+});
+
+test('Pi project settings need saved source trust and shared authored skills retain their assets', async t => {
+  const f = await fixture(t, 'pi');
+  await f.put(join(f.home, '.pi/agent/settings.json'), '{"defaultProvider":"openai","defaultModel":"gpt-5.5"}', true);
+  await f.put(join(f.project, '.pi/settings.json'), '{"defaultTools":["read"]}', true);
+  await f.put(join(f.project, '.agents/skills/nested/check/SKILL.md'), '---\nname: check\ndescription: Check the project.\n---\nRead reference.txt.', true);
+  await f.put(join(f.project, '.agents/skills/nested/check/reference.txt'), 'Authored requirement.');
+  const untrusted = await f.snapshot();
+  assert.equal(untrusted.complete, false);
+  assert.ok(untrusted.blockers.some(item => item.code === 'pi_project_trust'));
+  await f.put(join(f.home, '.pi/agent/trust.json'), JSON.stringify({ [f.project]: true }), true);
+  const trusted = await f.snapshot();
+  assert.equal(trusted.complete, true, JSON.stringify(trusted.blockers));
+  assert.equal(trusted.skills.length, 1);
+  assert.equal(content(trusted, `${trusted.skills[0].path}/reference.txt`).toString(), 'Authored requirement.');
+});
+
+test('Pi provider and MCP credentials copied into ordinary assets cannot leave the private source boundary', async t => {
+  const f = await fixture(t, 'pi'), provider = 'fixture-source-provider-value', mcp = 'fixture-source-mcp-value';
+  await f.put(join(f.home, '.pi/agent/auth.json'), JSON.stringify({ openai: { type: 'oauth', access: provider, refresh: 'fixture-refresh-value', expires: 123 } }));
+  await f.put(join(f.home, '.pi/agent/mcp-auth.json'), JSON.stringify({ docs: { tokens: { access_token: mcp } } }));
+  for (const value of [provider, Buffer.from(provider).toString('base64'), mcp]) {
+    await f.put(join(f.project, 'ordinary.txt'), `Copied value: ${value}`);
+    await assert.rejects(f.snapshot(), error => error.code === 'source_unavailable' && !error.message.includes(value));
+  }
+  await rm(join(f.project, 'ordinary.txt'));
+  const clean = await f.snapshot();
+  assert.equal(clean.complete, true, JSON.stringify(clean.blockers));
+  assert.equal(JSON.stringify(clean).includes(provider), false);
+  for (const content of ['{', '[]', ' '.repeat(65_537)]) {
+    await f.put(join(f.home, '.pi/agent/auth.json'), content);
+    await assert.rejects(f.snapshot(), error => error.code === 'source_unavailable');
+  }
+});
+
+test('Pi inactive skills and discovery filters cannot silently become active managed skills', async t => {
+  const f = await fixture(t, 'pi'), root = join(f.home, '.pi/agent/skills');
+  await f.put(join(root, 'node_modules/ignored/SKILL.md'), 'Not an active Pi skill.');
+  assert.equal((await f.snapshot()).skills.length, 0, 'Pi does not discover dependency directories');
+  for (const [definition, filter, code] of [
+    ['Missing description.', false, 'pi_skill_definition'],
+    ['---\ndescription: Manual only.\ndisable-model-invocation: true\n---\n', false, 'pi_skill_invocation'],
+    ['---\ndescription: Active.\n---\n', true, 'pi_skill_filter'],
+  ]) {
+    await f.put(join(root, 'check/SKILL.md'), definition);
+    if (filter) await f.put(join(root, '.fdignore'), 'check/\n');
+    const value = await f.snapshot();
+    assert.equal(value.complete, false);
+    assert.ok(value.blockers.some(blocker => blocker.code === code), JSON.stringify(value.blockers));
+  }
+});
+
+for (const [path, content, code] of [
+  ['extensions/custom.ts', 'export default () => {};', 'pi_extension'],
+  ['SYSTEM.md', 'Replace all runtime policy.', 'pi_system_prompt'],
+  ['models.json', '{"providers":{"private":{}}}', 'pi_model_configuration'],
+  ['settings.json', '{"defaultProvider":"openai","defaultModel":"gpt-5.5","shellCommandPrefix":"guard"}', 'unsupported_setting'],
+]) test(`Pi setup refuses unmapped ${path} without dropping required configuration`, async t => {
+  const f = await fixture(t, 'pi');
+  await f.put(join(f.home, '.pi/agent', path), content, true);
+  const value = await f.snapshot();
+  assert.equal(value.complete, false);
+  assert.ok(value.blockers.some(blocker => blocker.code === code), JSON.stringify(value.blockers));
 });
 
 test('Codex override and selected profile preserve explicit source precedence', async t => {
@@ -366,6 +476,62 @@ test('a changed source file is rejected instead of committing mixed bytes', asyn
   await assert.rejects(f.snapshot(), error => error.code === 'source_changed'); assert.equal(changed, true);
 });
 
+test('a model cache refresh preserves identical content but rejects changed bytes, permissions or identity', async t => {
+  for (const change of ['timestamp', 'content', 'mode', 'identity']) await t.test(change, async t => {
+    const f = await fixture(t), cache = join(f.home, '.codex', 'models_cache.json');
+    const skill = join(f.home, '.codex', 'skills', 'refresh', 'SKILL.md');
+    await f.put(cache, '{"models":[]}'); await f.put(skill, 'Read the project files.', true);
+    const before = await f.snapshot();
+    const probe = await open(skill), prototype = Object.getPrototypeOf(probe); await probe.close();
+    const original = prototype.read; let changed = false;
+    t.mock.method(prototype, 'read', async function (...args) {
+      const result = await original.apply(this, args);
+      if (!changed && await readlink(`/proc/self/fd/${this.fd}`) === skill) {
+        changed = true;
+        if (change === 'timestamp') { await writeFile(cache, '{"models":[]}'); await utimes(cache, new Date(0), new Date(0)); }
+        if (change === 'content') await writeFile(cache, '{"models":{}}');
+        if (change === 'mode') await chmod(cache, 0o600);
+        if (change === 'identity') { await rename(cache, cache + '.old'); await writeFile(cache, '{"models":[]}'); }
+      }
+      return result;
+    });
+    if (change === 'timestamp') assert.equal((await f.snapshot()).digest, before.digest);
+    else await assert.rejects(f.snapshot(), error => error.code === 'source_changed');
+    assert.equal(changed, true);
+  });
+});
+
+test('the selected Codex metadata directory permits only an unchanged-inventory timestamp refresh', async t => {
+  for (const change of ['timestamp', 'inventory', 'mode', 'identity', 'child', 'account', 'policy', 'other-directory']) await t.test(change, async t => {
+    const f = await fixture(t), home = join(f.home, '.codex'), skill = join(home, 'skills', 'refresh', 'SKILL.md');
+    const instruction = join(home, 'AGENTS.md'), account = join(home, 'auth.json'), policy = join(home, 'cloud-config-bundle-cache.json');
+    await f.put(skill, 'Read the project files.', true); await f.put(instruction, 'Before.', true);
+    if (change === 'account') await f.put(account, JSON.stringify(authFixture()));
+    if (change === 'policy') await f.put(policy, '{}');
+    const before = await f.snapshot();
+    const probe = await open(skill), prototype = Object.getPrototypeOf(probe); await probe.close();
+    const original = prototype.read; let changed = false;
+    t.mock.method(prototype, 'read', async function (...args) {
+      const result = await original.apply(this, args);
+      if (!changed && await readlink(`/proc/self/fd/${this.fd}`) === skill) {
+        changed = true;
+        if (change === 'inventory') await writeFile(join(home, 'managed-config-new.json'), '{}');
+        if (change === 'mode') await chmod(home, 0o700);
+        if (change === 'identity') { await rename(home, home + '.old'); await cp(home + '.old', home, { recursive: true }); }
+        if (change === 'child') await writeFile(instruction, 'After!!');
+        if (change === 'account') await utimes(account, new Date(0), new Date(0));
+        if (change === 'policy') await utimes(policy, new Date(0), new Date(0));
+        if (change === 'other-directory') await utimes(f.project, new Date(0), new Date(0));
+        await utimes(home, new Date(0), new Date(0));
+      }
+      return result;
+    });
+    if (change === 'timestamp') assert.equal((await f.snapshot()).digest, before.digest);
+    else await assert.rejects(f.snapshot(), error => error.code === 'source_changed');
+    assert.equal(changed, true);
+  });
+});
+
 test('a parent swapped for an outside symlink during read cannot redirect the opened file', async t => {
   const f = await fixture(t), parent = join(f.project, 'folder'), path = join(parent, 'data.txt'), outside = join(f.root, 'outside');
   await f.put(path, 'Inside.'); await mkdir(outside); await writeFile(join(outside, 'data.txt'), 'Outside.');
@@ -382,7 +548,7 @@ test('a parent swapped for an outside symlink during read cannot redirect the op
 
 test('unsupported source platforms fail explicitly instead of using a path-based fallback', async t => {
   const f = await fixture(t), descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
-  Object.defineProperty(process, 'platform', { value: 'darwin' });
+  Object.defineProperty(process, 'platform', { value: 'win32' });
   try { await assert.rejects(f.snapshot(), error => error.code === 'unsupported_platform'); }
   finally { Object.defineProperty(process, 'platform', descriptor); }
 });
@@ -559,8 +725,9 @@ test('a held credential in a packed Git branch name is withheld from snapshot me
   assert.equal(JSON.stringify(snapshot).includes(secret), false);
 });
 
-test('Codex implicit cached search and explicit tool disables are represented, not reduced to MCP', async t => {
-  const f = await fixture(t), snapshot = await f.snapshot();
+for (const version of ['0.171.0', '0.172.0']) test(`Codex ${version} implicit cached search and explicit tool disables are represented, not reduced to MCP`, async t => {
+  const f = await fixture(t); f.target.version = version;
+  const snapshot = await f.snapshot();
   assert.equal(snapshot.configuration.native_tools.complete, true, JSON.stringify(snapshot.blockers));
   assert.equal(snapshot.configuration.permissions.web_search, 'cached');
   assert.ok(snapshot.configuration.native_tools.capabilities.includes('web_search'));
@@ -575,23 +742,29 @@ test('Codex implicit cached search and explicit tool disables are represented, n
   }
 });
 
-test('unresolved default account integrations and unsupported native versions never claim complete closure', async t => {
-  const f = await fixture(t);
+for (const version of ['0.171.0', '0.172.0']) test(`Codex ${version} account integrations remain blocked and unverified versions never claim complete closure`, async t => {
+  const f = await fixture(t); f.target.version = version;
   await f.put(join(f.project, '.codex', 'config.toml'), '', true);
   const unknown = await f.snapshot();
   assert.equal(unknown.complete, false); assert.equal(unknown.configuration.native_tools.complete, false);
   assert.ok(unknown.blockers.some(x => x.code === 'native_apps'));
+  assert.ok(unknown.blockers.some(x => x.code === 'native_plugins'));
+  assert.ok(unknown.blockers.some(x => x.code === 'native_image_generation'));
   assert.ok(unknown.blockers.some(x => x.code === 'native_cloud_skills'));
-  f.target.version = '0.172.0';
+  assert.equal(unknown.blockers.some(x => x.code === 'native_version'), false);
+  f.target.version = '0.0.0-unverified';
   assert.ok((await f.snapshot()).blockers.some(x => x.code === 'native_version'));
 });
 
-test('a model cache that changes native tools cannot silently use the bundled model assumptions', async t => {
-  const f = await fixture(t);
-  await f.put(join(f.home, '.codex', 'models_cache.json'), JSON.stringify({ client_version: '0.171.0', identity: 'fixture-account-scope', models: [{ slug: 'gpt-5.5', shell_type: 'disabled', apply_patch_tool_type: null, multi_agent_version: null, use_responses_lite: false, experimental_supported_tools: [] }] }));
+for (const version of ['0.171.0', '0.172.0']) for (const shell of ['shell_command', 'unified_exec', 'disabled', 'unverified'])
+test(`Codex ${version} model cache accepts only verified shell semantics: ${shell}`, async t => {
+  const f = await fixture(t); f.target.version = version; f.target.model = 'gpt-6-astra';
+  await f.put(join(f.home, '.codex', 'models_cache.json'), JSON.stringify({ client_version: version, identity: 'fixture-account-scope', models: [{ slug: 'gpt-6-astra', shell_type: shell, apply_patch_tool_type: 'freeform', multi_agent_version: 'v2', use_responses_lite: true, tool_mode: 'code_mode_only', experimental_supported_tools: ['send_user_message_async', 'clock'] }] }));
   const snapshot = await f.snapshot();
-  assert.equal(snapshot.complete, false);
-  assert.ok(snapshot.blockers.some(x => x.code === 'native_model_catalog'));
+  const supported = ['shell_command', 'unified_exec'].includes(shell);
+  assert.equal(snapshot.complete, supported, JSON.stringify(snapshot.blockers));
+  assert.equal(snapshot.blockers.some(x => x.code === 'native_model_catalog'), !supported);
+  assert.equal(snapshot.configuration.native_tools.capabilities.includes('shell'), true);
   assert.ok(!JSON.stringify(snapshot).includes('fixture-account-scope'), 'cache identity is inspected locally, not exported');
 });
 

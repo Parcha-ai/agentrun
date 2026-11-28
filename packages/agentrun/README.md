@@ -177,6 +177,30 @@ not, unless `AGENT_MODEL` names another. Other commands are the server's:
 `npx @parcha/agentrun reset-password` clears the console's password. `--data DIR` and `--port N` change where it keeps
 its data and the port it takes.
 
+To deploy an agent you already configured locally, use the same CLI for Cloud and your own install:
+
+```sh
+agentrun login --to cloud
+agentrun connect ./project --from codex --to cloud --dry-run
+agentrun deploy ./project --from codex --to cloud
+```
+
+Use `--from claude-code` or `--from pi` for those setups. `--source-agent NAME` chooses a named Claude Code agent;
+`--profile NAME` chooses a Codex profile. Replace `cloud` with your AgentRun URL for a local or self-hosted destination.
+A console handoff's `--workspace ID` verifies the signed-in Cloud workspace. Capture works on Linux and on macOS
+with Python 3 installed. The CLI confirms the destination supports source deployment before reading the selected setup.
+
+The preview reports project/skill/tool counts and unsupported requirements. Deployment uploads the complete supported
+setup and moves the same agent into managed execution; it returns `status: deployed` and a console link only after
+confirmation. `connect --from` without `--dry-run` stops after the upload, and `deploy --connected AGENT_ID` moves that
+already uploaded setup. Retry an interrupted upload with the original `--from` command: its private journal retains
+the identity and exact pending bytes. Source credentials and session history stay private; configure destination
+model and tool accounts when the readiness check requests them. `deploy DIR` without `--from` retains its separate
+AgentRun package format.
+
+Install the matching CLI skill with `agentrun skill install --claude`, `--codex`, or `--pi`; `--dir .agents/skills`
+installs it in the selected project. Website setup and the console's Import agents handoff use this same recipe.
+
 Every other command is the server's API, from a second terminal: `npx @parcha/agentrun agents list`,
 `agents create --body @agent.json`, `runs start AGENT_ID --max-cost-usd 2 --body '{"input":{"content":"..."}}'`,
 `runs get RUN_ID`, `runs message RUN_ID --content "..."`, and one command for each route the server serves

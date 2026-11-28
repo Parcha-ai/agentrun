@@ -3,8 +3,8 @@ import { beginSourceIO } from "../dist/source-sync/io.js";
 // selection/discovery is covered separately by runner-cli-spec; this suite does not claim a live vendor session.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
@@ -17,6 +17,7 @@ import { runFolder } from '../dist/workspace/paths.js';
 import { runTools } from '../dist/workspace/run-tools.js';
 import { launchBody, readLaunchBody } from '../dist/run-launch.js';
 import { sourceSnapshotDigest } from '../dist/native/source-snapshot-types.js';
+import { deploymentSource } from '../dist/deployment-source.js';
 import { commitSourceSnapshot, readSourceSnapshot } from '../dist/source-sync/snapshots.js';
 import { sourceWorkspace, sourceSnapshotReader, openRunPlacement } from '../dist/source-sync/workspace.js';
 import { projectPlacement } from '../dist/source-sync/projects.js';
@@ -24,7 +25,7 @@ import { piAdapterSpec, closeOpenSessions } from './conformance-pi-adapter.mjs';
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const timing = { leaseMs: 60_000, renewEveryMs: 20_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 20 };
 async function until(check) { const end = Date.now() + 30_000; for (;;) { const value = await check(); if (value) return value; if (Date.now() > end) throw new Error('fixture runner did not settle'); await new Promise(resolve => setTimeout(resolve, 20)); } }
-async function setup(t, clock) {
+async function setup(t, clock, captured) {
   const data = await mkdtemp(join(tmpdir(), 'source-project-life-')), sealKey = Buffer.alloc(32, 7), store = await openSqliteStore({ dataDir: data, role: 'server', ...(clock ? { now: () => clock.now } : {}) });
   t.after(async () => { await closeOpenSessions(); await store.close(); await rm(data, { recursive: true, force: true }); });
   const options = { data, sealKey, env: {} }, blobs = {}, entries = [{ path: 'project', role: 'project', type: 'directory', mode: 0o750, bytes: 0 }];
@@ -35,7 +36,7 @@ async function setup(t, clock) {
   file('skills/fixture/check/assets/reference.bin', 'skill', Uint8Array.of(0, 128, 255));
   const body = { version: 1, complete: true, source: { runtime: 'codex', machine_id: 'fixture', project: '/fixture/project', selector: { kind: 'project' } }, entries, blobs,
     instructions: { text: '', layers: [] }, skills: [{ name: 'check', path: 'skills/fixture/check', source: 'fixture' }], configuration: { model: null, tools: [], permissions: {}, credentials: [] }, project: { git: null }, blockers: [] };
-  const snapshot = { ...body, digest: sourceSnapshotDigest(body) }, source = { id: 'a'.repeat(64), snapshot: snapshot.digest, project: snapshot.digest, configuration: 'b'.repeat(64) };
+  const snapshot = captured ?? { ...body, digest: sourceSnapshotDigest(body) }, source = { id: 'a'.repeat(64), snapshot: snapshot.digest, project: snapshot.digest, configuration: 'b'.repeat(64) };
   await store.agents.create({ id: 'agent', name: 'Moved' }, { id: 'base', kind: 'agentic', body: { instructions: 'Work.', sourceSync: source } });
   const cache = await sourceWorkspace(store, 'agent', options); await commitSourceSnapshot(cache.workspace, snapshot); await cache.end();
   const placement = projectPlacement({ hold: ({ agentId }) => beginSourceIO(store, agentId, "placement"), snapshots: agentId => sourceSnapshotReader(store, agentId, options), destination: input => openRunPlacement(store, input, options) });
@@ -48,6 +49,47 @@ async function setup(t, clock) {
   }
   return { data, store, options, snapshot, admit };
 }
+
+test('a managed Pi run reads captured project and skill assets after the entire local setup is removed', { timeout: 45_000 }, async t => {
+  const source = await mkdtemp(join(tmpdir(), 'local-pi-deploy-')), project = join(source, 'project'), home = join(source, 'home'), bin = join(source, 'bin');
+  t.after(() => rm(source, { recursive: true, force: true }));
+  const put = async (path, contents, mode = 0o644) => { await mkdir(dirname(path), { recursive: true }); await writeFile(path, contents, { mode }); };
+  await put(join(bin, 'pi'), '#!/bin/sh\nprintf "1.5.2\\n"\n', 0o755);
+  await put(join(home, '.pi/agent/settings.json'), '{"defaultProvider":"openai","defaultModel":"gpt-5.5","defaultProjectTrust":"always"}');
+  await put(join(home, '.pi/agent/skills/check/SKILL.md'), '---\nname: check\ndescription: Verify the captured project.\n---\nRead assets/requirement.txt and run scripts/check.sh.\n');
+  await put(join(home, '.pi/agent/skills/check/assets/requirement.txt'), 'skill requirement from local setup');
+  await put(join(home, '.pi/agent/skills/check/scripts/check.sh'), '#!/bin/sh\ncat work.txt\nprintf "\\n"\ncat .agents/skills/check/assets/requirement.txt\n', 0o755);
+  await put(join(project, 'work.txt'), 'project content from local setup');
+  const { snapshot } = await deploymentSource({ project, runtime: 'pi', environment: { HOME: home, PATH: bin } });
+  assert.equal(snapshot.complete, true, JSON.stringify(snapshot.blockers));
+  await rm(source, { recursive: true });
+  const f = await setup(t, undefined, snapshot), requests = []; await f.admit('independent');
+  let released = false;
+  const runner = startRunner({ store: f.store, name: 'managed-pi', ...timing, onEvent: event => { if (event.type === 'released') released = true; },
+    createLoop: createAdapterLoop(async (claim, run) => {
+      const tools = await runTools(localWorkspace(runFolder(f.data, 'agent', claim.runId)), undefined, { mode: 1, context: BACKGROUND_CONTEXT });
+      const built = piAdapterSpec({ script: [
+        { call: 'read', args: { path: 'work.txt' } },
+        { call: 'read', args: { path: '.agents/skills/check/SKILL.md' } },
+        { call: 'read', args: { path: '.agents/skills/check/assets/requirement.txt' } },
+        { sayLastResult: true },
+      ], tools: {}, hooks: { beforeIntent: async () => {}, beforeResult: async () => {} } }, { requests })(claim, run);
+      return { ...built, agentId: 'agent', session: { ...built.session, tools: tools.hostTools(['read']) }, release: () => tools.end() };
+    }),
+  });
+  t.after(() => runner.close());
+  await until(async () => (await f.store.runs.get('independent')).state === 'ended' && released);
+  await runner.close();
+  const results = requests.at(-1).messages.flatMap(message => Array.isArray(message.content) ? message.content : []).filter(part => part.type === 'tool_result');
+  const output = value => typeof value.content === 'string' ? value.content : value.content.filter(part => part.type === 'text').map(part => part.text).join('');
+  assert.equal(results.length, 3, 'the managed adapter actually called all captured-file tools');
+  assert.match(output(results[0]), /project content from local setup/);
+  assert.match(output(results[1]), /Read assets\/requirement.txt and run scripts\/check.sh/);
+  assert.match(output(results[2]), /skill requirement from local setup/);
+  const executed = await localWorkspace(runFolder(f.data, 'agent', 'independent')).exec(['.agents/skills/check/scripts/check.sh'], { timeoutMs: 1000, maxOutput: 1000, env: {} });
+  assert.equal(executed.code, 0);
+  assert.equal(Buffer.from(executed.stdout).toString(), 'project content from local setup\nskill requirement from local setup');
+});
 
 for (const failedSync of [false, true]) test(`actual run writes ${failedSync ? 'retain uncertainty after failed sync' : 'publish durable project bytes and executable skill assets for the next run'}`, { timeout: 45_000 }, async t => {
   const { runProjectCheckpoint } = await import('../dist/runner/project-checkpoint.js');

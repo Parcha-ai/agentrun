@@ -4,9 +4,9 @@ Choose where your agents run:
 
 | Option | Start here | Who operates the server |
 | --- | --- | --- |
-| **AgentRun Cloud** | [Create an account or sign in](https://console.agentrun.ai/) | The Grep team |
-| **Local** | [Have your coding agent set it up](#run-locally) | You |
-| **Self-hosted** | [Deploy on Render or Docker](../README.md#deploy-it) | You, on your infrastructure |
+| **AgentRun Cloud (Recommended)** | [Create an account or sign in](https://console.agentrun.ai/) | The Grep team |
+| **Deploy locally** | [Have your coding agent set it up](#run-locally) | You |
+| **Self Host** | [Choose your server or hosting provider](../README.md#deploy-it) | You, on your infrastructure |
 
 ## AgentRun Cloud
 

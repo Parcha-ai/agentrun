@@ -1,5 +1,5 @@
 // A consumer of the client as its README shows it: this file must typecheck.
-import { AgentRun, AgentRunRefused, AgentRunTimeout, type Run, type TimelinePage } from "@parcha/agentrun-client";
+import { AgentRun, AgentRunRefused, AgentRunTimeout, type ImportRemoteTargetBody, type Run, type TimelinePage } from "@parcha/agentrun-client";
 import { BackendLearningClient, type BackendLearningStart, type ExternalLearningStart } from "@parcha/agentrun-client/learning";
 
 interface JobStart extends BackendLearningStart { jobId: string }
@@ -29,6 +29,10 @@ export async function consumer(): Promise<void> {
   const bytes: Uint8Array = await client.runs.readFile(run.run_id, "notes.md");
   const response: Response = await client.runs.readFile(run.run_id, "notes.md", undefined, { stream: true });
   const corrections: string = (await client.learning.writeCorrections("notes", { text: "- Look in policies/ first.\n" }, { "If-Match": "\"etag-1\"" })).body.text;
+  type NativeImport = Extract<ImportRemoteTargetBody, { target: { connected: boolean } }>;
+  const nativeTarget = {} as NativeImport["target"];
+  const nativeBody: NativeImport = { target_id: "target", target: nativeTarget };
+  const nativeConnected: boolean = (await client.connectors.importRemoteTarget("connector", nativeBody)).native.connected;
   await client.files.upload("f1", new Uint8Array([1, 2]), { contentType: "image/png" });
   // What the server serves, in the types with no cast: a workflow agent's definition with no instructions, version or
   // skills; a create's warnings; the archived agents' list; the usage report's unpriced runs.
@@ -44,7 +48,7 @@ export async function consumer(): Promise<void> {
     if (error instanceof AgentRunRefused) void [error.status, error.code, error.error?.message];
     if (error instanceof AgentRunTimeout) void error.run?.status;
   }
-  void [first, bytes, response, corrections];
+  void [first, bytes, response, corrections, nativeConnected];
 }
 
 // The backend explicitly supplies its interpreter; host adapter request types are inferred without casts.

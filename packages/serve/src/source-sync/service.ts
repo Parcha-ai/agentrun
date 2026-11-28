@@ -9,7 +9,7 @@ import { SourcePreparationError } from "./prepare.js";
 import { sourceToolConnections } from "./destination.js";
 import { SourceSync, type SourcePreparation, type SourceSyncOptions } from "./registry.js";
 import { commitSourceSnapshot, readSourceSnapshot, validateSourceSnapshot, SnapshotError } from "./snapshots.js";
-import { sourceSyncOf } from "./types.js";
+import { sourceDeploymentOf, sourceSyncOf } from "./types.js";
 import { sourceSnapshotReader, sourceWorkspace, type SourceWorkspaceOptions } from "./workspace.js";
 import { unresolvedProjects, type ProjectIssue } from "./checkpoint-gate.js";
 import { withSourceIO } from "./io.js";
@@ -40,7 +40,7 @@ export function sourceService(store: Store, workspace: SourceWorkspaceOptions,
   const sync = new SourceSync(store, {
     authorize: async (agentId) => {
       const record = await sync.get(agentId), entry = await getAgent(store, agentId);
-      const connection = record?.connection ?? nativeOf(entry?.revision?.body)?.remote;
+      const connection = record?.connection ?? sourceDeploymentOf(entry?.revision?.body) ?? nativeOf(entry?.revision?.body)?.remote;
       if (!connection) {
         if (localAuthorize) return localAuthorize(agentId, "move");
         throw new ApiError("agent_not_runnable", "Enable source sync from this agent's connector before moving it.");
@@ -75,7 +75,8 @@ export function sourceService(store: Store, workspace: SourceWorkspaceOptions,
       const entry = await getAgent(store, agentId);
       if (!entry?.revision || entry.agent.purgedAt || entry.agent.archivedAt) throw new ApiError("not_found", "Choose an active connected agent.");
       const record = await sync.get(agentId), binding = sourceSyncOf(entry.revision.body);
-      if (!record) return { enabled: false, moved: false, state: "needs_connection", ...(nativeOf(entry.revision.body)?.remote ? { connection: nativeOf(entry.revision.body)!.remote } : {}), blockers: [{ code: "source_consent", message: "Enable sync on this agent's source connection to bring its setup to AgentRun." }] };
+      const pendingConnection = sourceDeploymentOf(entry.revision.body) ?? nativeOf(entry.revision.body)?.remote;
+      if (!record) return { enabled: false, moved: false, state: "needs_connection", ...(pendingConnection ? { connection: pendingConnection } : {}), blockers: [{ code: "source_consent", message: "Enable sync on this agent's source connection to bring its setup to AgentRun." }] };
       const moved = binding?.id === record.id;
       const common = { enabled: record.enabled, moved, ...(record.snapshot ? { snapshot: record.snapshot } : {}),
         ...(binding ? { current_snapshot: binding.snapshot } : {}), ...(record.connection ? { connection: record.connection } : {}) };

@@ -1,13 +1,13 @@
 ---
 name: agentrun-setup
-description: Set up AgentRun, an open-source platform for running agents, and get the person to a finished first run in about five minutes. Asks every choice with the host's question tool, first where it should run and whether to look read-only for Claude Code or Codex jobs they already schedule; a found job becomes the first run on its own sign-in, otherwise a template agent on a model they connect. Use when asked to set up, install or try AgentRun.
+description: Set up AgentRun, an open-source platform for running agents. Offer AgentRun Cloud first, then Deploy locally and Self Host. Guide the person through their chosen destination and whether to deploy an existing local Claude Code, Codex or Pi setup or start a new agent. Use when asked to set up, install or try AgentRun.
 ---
 
 # Set up AgentRun
 
 AgentRun is an open-source platform for running agents: a console in the browser, runs that survive a restart, a
-spend cap on every run, and agents that learn from their own runs. Get the person from this prompt to a finished first
-run in about five minutes, with no Node install, no Terminal steps and no hunt for a key. Never ask for a password, key
+spend cap on every run, and agents that learn from their own runs. Guide the person from this prompt to their chosen destination and a deployed agent. Run the setup commands for them;
+keep the selected project, skills, tools and permissions together. Never ask for a password, key
 or token in this chat, never print one, and never put one on a command line.
 
 The person saves every secret (a model or tool key, an MCP server's token or headers, the webhook's secret, Slack's incoming-webhook URL, GitHub) in
@@ -39,7 +39,8 @@ an option; if it doesn't match one, answer it and ask again.
 
 No question tool, or the call fails: send the same question as one short message, options numbered, recommended
 first, and end with "Reply with a number." Then stop. A reply that doesn't pick an option is not a yes for anything
-that installs, deploys or spends. Never answer a question for the person, and never pass a flag that answers one.
+that installs, deploys or spends. Never answer a question for the person. Pass a confirmation flag only after they authorize that exact action;
+do not ask them to authorize it again when the conversation already establishes their choice.
 
 ## 1. Look at this session
 
@@ -58,8 +59,8 @@ if [ -f /.dockerenv ] || [ -f /run/.containerenv ]; then echo "in a container"; 
   forwards a port from it, and whatever is installed here is gone when the session ends.
 - Linux in a container, with no `DISPLAY` or `WAYLAND_DISPLAY` and none of the signals below (a Codex cloud task
   looks like this): most likely a hosted sandbox too. Treat it as one.
-- `CODESPACES`, `GITPOD_WORKSPACE_ID` (GitHub Codespaces, Ona) or `SSH_CONNECTION`: a remote machine. **This
-  computer** works only through its port forward, or a tunnel they already use (`ssh -L`).
+- `CODESPACES`, `GITPOD_WORKSPACE_ID` (GitHub Codespaces, Ona) or `SSH_CONNECTION`: a remote machine. **Deploy
+  locally** works only through its port forward, or a tunnel they already use (`ssh -L`).
 - macOS, or Linux with a display and none of the above: their own computer.
 
 In a hosted cloud session or sandbox, say so first, in one or two sentences, before the questions below: AgentRun
@@ -69,28 +70,32 @@ installed here could not be opened from their browser, and its data and keys wou
 
 Before any install or deploy command, ask these two with the question tool in one call (neither changes the other).
 
-Question tool, header `Run where`: "Where should AgentRun run?" Recommendation: This computer because it is free and
-the fastest way to a first run.
-- This computer (Recommended): free; one command, and the console opens in your browser.
-- My always-on machine: free; the same install on a machine you keep on, private on your own Tailscale.
-- A hosted service: Railway, Render or AgentRun Cloud; opened from any browser, monthly cost.
+Question tool, header `Run where`: "Where should AgentRun run?" Recommendation: AgentRun Cloud because AgentRun
+operates the server for them, with no infrastructure to maintain.
+- AgentRun Cloud (Recommended): hosted for you; sign in or request access, with no server to install or maintain.
+- Deploy locally: free; run on this computer, with the console in your browser while the computer is on.
+- Self Host: run on your own server or hosting account; you manage it and pay any infrastructure costs.
 
-In a hosted cloud session or sandbox, the options are **A hosted service (Recommended)**, **My always-on machine**,
-then **This session anyway** ("gone when the session ends; your browser can't reach it"). Recommendation: A hosted
-service because this session's console is unreachable and disappears with it.
+Keep these three options in this order in every session. In a hosted cloud session or sandbox, explain in the
+**Deploy locally** description that it installs in this temporary session, its data disappears when the session ends,
+and their browser cannot reach its console. AgentRun Cloud remains the recommended first option.
 
-Question tool, header `Scan`: "Do you already run Claude Code or Codex on a schedule? I can check this computer
-read-only while AgentRun installs; it shows only where, when and which tool." Recommendation: Check because a job you
-already run can be your first run, on its own sign-in, with no model key.
-- Check (Recommended): reads cron, systemd timers, launchd jobs and CI workflows; changes nothing.
-- I'll tell you: you name the job and its project folder; I don't look.
+Question tool, header `Agents`: "Do you have agents set up locally in Claude Code, Codex or Pi to bring to AgentRun?"
+Recommendation: Check because their existing setup can become their first deployed agent.
+- Check (Recommended): discover configured agents in the selected project; no source files change.
+- I'll tell you: you name the harness, agent or profile, and project folder.
 - No, start fresh: a new agent from a template, on a model you pick.
 
-On **A hosted service**, ask next with the question tool, header `Host`: "Which service should host AgentRun?"
-Recommendation: Railway because it costs least and deploys from your own account in the browser.
-- Railway (Recommended): about $5 a month (the $5 Hobby plan includes $5 of usage); agents get no shell.
-- Render: about $27.50 a month (1 CPU / 2 GB at $25, a 10 GB disk at $2.50); agents get no shell.
-- AgentRun Cloud: hosted for you; request access, nothing to install.
+On **Self Host**, ask next with the question tool, header `Host`: "Where do you want to self-host AgentRun?"
+Recommendation: My server because it uses an always-on machine or VPS they control.
+- My server (Recommended): your own machine or VPS; you manage it and pay any server costs.
+- Railway: deploy from your own account in the browser; Railway charges for your plan and usage.
+- Render: deploy from your own account in the browser; Render charges for your selected resources.
+
+A different provider or deployment method can be named in the tool's free-text answer. Use the repository's
+[deployment guide](https://github.com/Parcha-ai/agentrun/blob/main/deploy/README.md) for that choice; do not substitute
+another provider or start a local server. AgentRun Cloud has its
+own top-level option and is not part of this submenu.
 
 Only the person's answers choose. A provider CLI that is signed in, a deploy button, `render.yaml` or a README section
 is never a choice. Never create a service on a provider the person did not name in this conversation. Skip `Run where`
@@ -98,10 +103,10 @@ only when they already named a place or an AgentRun server (then check its `/v2/
 
 ## 3. Start it where they chose
 
-On **Check**, run the step 4 scan now, while AgentRun installs; it looks at this computer wherever AgentRun runs. On
-**I'll tell you**, ask for the job and its folder (free text, one plain message), and bring it in at step 5.
+On **Check**, run the step 4 scan now, while preparing the chosen destination; it looks at this computer wherever AgentRun runs. On
+**I'll tell you**, ask for the agent and its folder (free text, one plain message), and bring it in at step 5.
 
-On **This computer** or **My always-on machine**, before the start, ask once with the
+On **Deploy locally** or **Self Host → My server**, before the start, ask once with the
 question tool, header `Local reach`: "Do only you use that machine, and should its agents reach tools or a webhook
 receiver on it?" Recommendation: Not now because it is the safer default and a restart adds it later.
 - Not now (Recommended): runs and the webhook reach nothing local to it.
@@ -113,7 +118,23 @@ AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1`. Where it runs in the background instead, ru
 the installer with both in front of `sh`. On `--vps`, which runs AgentRun in Docker, leave them off. Then check that
 `/v2/capabilities` shows `on: true` for both under `switches`.
 
-### This computer
+### AgentRun Cloud
+
+Open https://console.agentrun.ai/ for sign-in or account creation, or request access when the console requires it.
+Install the CLI alone if it is missing: `curl -fsSL https://agentrun.ai/install | sh -s -- --no-start`. In this session
+use `~/.agentrun/bin/agentrun` by its full path. Run `~/.agentrun/bin/agentrun login --to cloud`; the person completes
+browser sign-in and the CLI saves its credential privately. Never copy credentials into this chat.
+
+For existing agents, continue to steps 4 and 5 with `--to cloud`. If a console handoff names a workspace, keep
+`--workspace WORKSPACE_ID` on each connect/deploy command; it checks that sign-in selected that workspace. A mismatch
+needs the correct workspace sign-in. The CLI checks the destination's source-deployment capability before reading
+local setup files. If this Cloud workspace does not offer it yet, report that limitation and retain the selection;
+do not substitute a package upload, another destination, or a live connection.
+
+For **No, start fresh**, use the console's Build an agent handoff and its matching skill. Cloud runs do not need a
+local AgentRun server. The local server setup page below applies only to Deploy locally and Self Host.
+
+### Deploy locally
 
 First look for a server that already runs here: `AGENTRUN_BASE_URL` is set, or the server `~/.agentrun` records
 answers, however it was started:
@@ -150,7 +171,7 @@ server the installer did not start (`service status` shows no service, and there
 started some other way: ask how it runs (free text, one plain message), agree on when to stop it, and restart that same
 service with its own settings; never stop it unasked.
 
-### My always-on machine
+### My server
 
 The browser is on another device here, so the server needs the address that browser opens. Continue in a session on
 that machine, or an SSH session they already use. With their OK, run
@@ -166,7 +187,7 @@ in the background (`~/.agentrun/bin/agentrun stop`) and have them start it in a 
 On a Linux server they rent (Ubuntu or Debian, as root), run `curl -fsSL https://agentrun.ai/install | sh -s -- --vps`
 instead. It runs AgentRun in Docker, gives its agents a shell, keeps it private the same way and prints the setup code.
 
-### A hosted service
+### Railway or Render
 
 - **Railway:** they open https://railway.com/deploy/agentrun-1 and deploy it from their own Railway account with one
   click. The template sets up the image, a volume at `/data` and a public domain, and makes the API token and the seal
@@ -176,8 +197,6 @@ instead. It runs AgentRun in Docker, gives its agents a shell, keeps it private 
   ChatGPT sign-in that is renewing finishes saving.
 - **Render:** they open https://render.com/deploy?repo=https://github.com/Parcha-ai/agentrun and confirm the plan
   Render shows; it reads the repository's `render.yaml` (the published image, 1 CPU / 2 GB, a 10 GB disk).
-- **AgentRun Cloud:** hosted for you, by request. They request access at https://console.agentrun.ai/ and follow its
-  onboarding; the steps below don't apply. For team onboarding, offer https://calendly.com/d/dtwn-dsp-nx5/agentrun.
 
 ### Open the setup page
 
@@ -193,7 +212,7 @@ while you can open it, and never a command that prints or fetches the code.
 2. Open it in a browser they are looking at: `open "<link>"` (macOS), `xdg-open "<link>"` (Linux) or `start ""
    "<link>"` (Windows) when this session runs on their computer, where the installer has already opened it; else your
    client's browser or preview tool. Only when you have neither, send the link itself as the first line.
-   When **This computer** is a remote machine (step 1's `SSH_CONNECTION`, Codespaces, Ona), AgentRun is on its
+   When **Deploy locally** is a remote machine (step 1's `SSH_CONNECTION`, Codespaces, Ona), AgentRun is on its
    loopback and their browser reaches it only through a port forward. Codespaces and Ona forward the port themselves.
    Over SSH, send the one command for their own computer, `ssh -o ExitOnForwardFailure=yes -L
    <local>:127.0.0.1:<port> <user>@<host>`, with this machine's port and a `<local>` port free on their computer (7340,
@@ -214,7 +233,17 @@ restarting it prints a new code.
 
 ## 4. Look for the agents they already run
 
-On **Check**, run this as written. It reads cron, systemd timers (the system's and the person's own), launchd jobs and
+On **Check**, use the current project if it is the setup they named; otherwise ask for its folder (free text, one plain message). Discover
+Claude Code project defaults/named agents and Codex project defaults/profiles with
+`~/.agentrun/bin/agentrun native discover --project <folder>`. For Pi, inspect the selected project's `.pi` settings
+and the user's Pi configuration to identify its saved setup; do not read authentication files, transcripts or unrelated
+projects. An agent does not need a schedule to be deployed. Show the available harness, agent/profile and project,
+then let the person select one or several. Preview and deploy each selected setup with step 5, preserving each identity.
+If no setup is found, ask which folder and harness they use (free text, one plain message) before concluding there are none.
+
+### Optional scheduled jobs
+
+Only when they request a scheduled job too, run this as written. It reads cron, systemd timers (the system's and the person's own), launchd jobs and
 the project's CI workflows, and reads the command each one runs, because a list of timers or launchd labels alone does
 not show it.
 
@@ -263,24 +292,43 @@ can be named in the free-text answer. Nothing found, no job named, or **Start fr
 
 ## 5. Bring in the agent they picked
 
-1. **Connect it.** It keeps its own sign-in; connecting and importing need no model key. Ask which project folder the
-   job runs in (free text, one plain message; never read it from the job). On this computer run
-   `~/.agentrun/bin/agentrun native discover --project <folder>`, show what it found, then the same with
-   `native connect --project <folder> --runtime claude-code` (or `codex`; `--agent NAME` or `--profile NAME` for the
-   setup they pick). It prints the agent's id. When AgentRun runs elsewhere, connect from here with a one-use code from
-   the console's **Connect agent → Another machine**, as `<console address>/skills/agentrun-serve/SKILL.md` says; the
-   person types the code into the connector's own prompt, never into this chat.
-2. **Import its recent history.** `~/.agentrun/bin/agentrun import --from claude-code --dry-run` (or `codex`)
-   lists every session of that tool in this home, not only this job's; nothing leaves this computer. With their OK,
-   stop the server (step 3), run it without `--dry-run`, and start the server again. Elsewhere, a one-use code with
-   **Both** scope imports this project's history. Then give them the console's **Runs** address, where it now shows.
-3. Question tool, header `First run`: "Run <agent> once through AgentRun now? It is a real run of that job: it may
-   post or write wherever the job does." Recommendation: Run it now because one finished run shows the job working.
-   - Run it now (Recommended): you give it a task next; I follow it to the end.
-   - Not now: it waits in the console; nothing runs until you press Run.
-4. On **Run it now**, ask for the task (free text, one plain message), then run `~/.agentrun/bin/agentrun runs start
-   <agent id> --wait --timeout 600 --body '{"input":{"content":"<task>"}}'`. AgentRun caps no connected agent;
-   its own plan bounds it. Go to step 8.
+Use the same process for Cloud, Deploy locally and Self Host. Set the destination to `cloud` or the selected
+instance URL; keep that choice throughout. On macOS, safe source capture also requires Python 3. If it is unavailable,
+explain the prerequisite and install it only within the person's setup authorization. Linux uses the native reader.
+
+1. **Preview the setup.** Run `~/.agentrun/bin/agentrun connect <folder> --from codex --to <destination> --dry-run`.
+   Use `claude-code` or `pi` for the other harnesses, with `--source-agent NAME` for a named Claude agent or
+   `--profile NAME` for a Codex profile. For a Cloud workspace handoff, also pass `--workspace WORKSPACE_ID`.
+   Show the source selection, destination, file/skill/tool counts and blockers. This captures project files,
+   instructions, authored skills and assets, effective settings and tool requirements. Credentials stay private.
+   Unsupported extensions, tools or policy are blockers; never remove them or widen permissions to make deployment pass.
+2. **Connect and deploy it.** After the person selects this setup and authorizes deployment, run
+   `~/.agentrun/bin/agentrun deploy <folder> --from codex --to <destination> --yes` with the same selector and workspace.
+   This connects, uploads and moves the same agent into managed execution. A separate connect without `--dry-run`
+   stops after upload; use it only when they requested connection first. If they already selected a connected console agent,
+   use `~/.agentrun/bin/agentrun deploy --connected <agent-id> --to <destination> --yes` to preserve its identity.
+3. **Resolve destination setup.** Model and tool accounts are configured at the destination. Open the console setup
+   links for missing requirements, then retry the same command. Keep the private deployment journal after interrupted
+   responses; it retains the identity and exact pending upload. Do not enroll another copy. Some source configurations
+   require an equivalent the destination does not yet offer; report that blocker instead of claiming success.
+4. **Verify deployment.** Only `status: deployed` and its confirmed snapshot establish managed execution. Show the
+   returned `console_url`; an upload or a connected status alone is incomplete. The source machine can be offline
+   for subsequent managed runs. No conversation history is imported and no original source session is stopped.
+
+Question tool, header `First run`: "Run <agent> once in AgentRun now? It is a real run of that job: it may
+post or write wherever the job does." Recommendation: Run it now because one finished run verifies the deployed setup.
+- Run it now (Recommended): you choose its task; I follow it to completion.
+- Not now: it remains deployed and ready for a later run.
+
+Once requested, ask for its task (free text, one plain message), use the destination's run command and follow its result. Go to step 8 with the
+deployment link and, if requested, the run result.
+
+A person who explicitly wants future jobs to execute on their source computer can choose the existing live connection
+instead: `~/.agentrun/bin/agentrun native connect --project <folder> --runtime claude-code` (or `codex`) locally, or the
+selected server's matching `/skills/agentrun-serve/SKILL.md` for a remote source. Source-native jobs use the source
+sign-in and need no model key on the destination. History is a separate optional operation: preview with
+`~/.agentrun/bin/agentrun import --from claude-code --dry-run` (or `codex`) and follow the matching skill only when
+requested. Neither path substitutes for a requested deployment.
 
 ## 6. Connect a model
 
