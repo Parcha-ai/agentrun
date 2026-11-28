@@ -168,10 +168,10 @@ test("agents.purge removes an upload once no agent left was applied from it: the
   // Each purge reads the other's agent before either commits, but for the upload's hold: the later one reads the
   // earlier purged.
   await Promise.all([store.agents.purge("agent-1"), store.agents.purge("agent-2")]);
-  assert.deepEqual(await store.importedTemplates.ids(), [GITHUB]);
+  assert.deepEqual(await store.importedTemplates.keys(), [{ id: GITHUB, workspace: null }]);
   await store.agents.purge("agent-3");
-  assert.deepEqual(await store.importedTemplates.ids(), [GITHUB]);
-  assert.deepEqual((await store.importedTemplates.list()).map((row) => row.id), [GITHUB], "ids() names what list() reads");
+  assert.deepEqual(await store.importedTemplates.keys(), [{ id: GITHUB, workspace: null }]);
+  assert.deepEqual((await store.importedTemplates.list()).map((row) => row.id), [GITHUB], "keys() names what list() reads");
 });
 
 test("agents.purge removes only the upload its agent was applied from: a newer upload of the same name, waiting for its apply, stays", async (t) => {

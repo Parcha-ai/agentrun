@@ -59,6 +59,17 @@ test("every route the profile serves is a route of the server", () => {
   for (const name of API_ONLY_ROUTES) assert.ok(names.has(name), `${name} is in ROUTES`);
 });
 
+test("with the operator's MCP origins named, the profile also serves the generic MCP save and the preview (each body checked at its route), and no other MCP settings route", () => {
+  const served = (method, raw, mcpSave) => servedApiOnly(ROUTES, method, raw, mcpSave);
+  for (const [method, raw] of [["PUT", "/v2/settings/mcp-servers/x"], ["POST", "/v2/settings/mcp-servers/preview"]]) {
+    assert.deepEqual([served(method, raw, false), served(method, raw, true)], [false, true], `${method} ${raw}`);
+  }
+  for (const [method, raw] of [
+    ["GET", "/v2/settings/mcp-servers"], ["GET", "/v2/settings/mcp-servers/x"],
+    ["POST", "/v2/settings/mcp-servers/x/refresh"], ["POST", "/v2/settings/mcp-servers/x/oauth/start"], ["GET", "/v2/settings/mcp-servers/preview"],
+  ]) assert.equal(served(method, raw, true), false, `${method} ${raw}`);
+});
+
 test("the profile serves a run's routes by method and path, and nothing else", () => {
   const served = (method, raw) => servedApiOnly(ROUTES, method, raw);
   for (const [method, raw] of [

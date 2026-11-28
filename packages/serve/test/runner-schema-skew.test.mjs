@@ -308,22 +308,25 @@ test("the learning rows' migration (0032) is breaking for runners: a schema migr
   assert.equal(runnerOn(state, ROWS), "opens", "this build's runner opens it");
 });
 
-// The ledger's re-record mark (0034) is breaking for runners, the workspace columns (0033) before it and the hooked firing
-// column (0035) after it additive: the floor this build's Postgres store holds is 0034, a runner that knows only 0033 is
-// refused, and one that knows 0034 still opens a store at 0035.
-test("the reopened-run ledger mark (0034) is breaking, the workspace columns (0033) and the hooked firing column (0035) additive: this build's floor is 34", () => {
+// The ledger's re-record mark (0034) and the imported packages' workspace keys (0036) are breaking for runners; the
+// workspace columns (0033) and the hooked firing column (0035) are additive: the floor this build's Postgres store holds
+// is 0036, so a runner of any earlier build is refused, and drains before this build's server starts.
+test("the reopened-run ledger mark (0034) and the upload keys (0036) are breaking, the workspace columns (0033) and the hooked firing column (0035) additive: this build's floor is 36", () => {
   const all = migrationsIn();
   const byName = (name) => all.find((m) => m.name === name);
   assert.deepEqual([byName("workspace")?.version, byName("workspace")?.breaking], [33, false], "0033_workspace.sql, additive");
   assert.deepEqual([byName("learning_ledger_rerecorded")?.version, byName("learning_ledger_rerecorded")?.breaking], [34, true], "0034_learning_ledger_rerecorded.sql, -- runners: breaking");
   assert.deepEqual([byName("trigger_firing_hooked")?.version, byName("trigger_firing_hooked")?.breaking], [35, false], "0035_trigger_firing_hooked.sql, additive");
+  assert.deepEqual([byName("imported_templates_by_workspace")?.version, byName("imported_templates_by_workspace")?.breaking], [36, true], "0036_imported_templates_by_workspace.sql, -- runners: breaking");
+  assert.deepEqual(all.slice(-2).map((m) => m.version), [35, 36], "0035 then 0036, in order");
   const latest = Math.max(...all.map((m) => m.version));
-  assert.equal(latest, 35);
+  assert.equal(latest, 36);
   const state = { version: latest, runnerFloor: floorAt(latest) };
-  assert.equal(state.runnerFloor, 34);
+  assert.equal(state.runnerFloor, 36);
   assert.equal(runnerOn(state, 33), "refused", "a runner that knows the workspace columns only");
-  assert.equal(runnerOn(state, 34), "opens", "a runner that knows the ledger mark but not the hooked column opens it");
-  assert.equal(runnerOn(state, 35), "opens", "this build's runner opens it");
+  assert.equal(runnerOn(state, 34), "refused", "a runner that knows the ledger mark but not the hooked column");
+  assert.equal(runnerOn(state, 35), "refused", "a runner of the build before the upload keys");
+  assert.equal(runnerOn(state, 36), "opens", "this build's runner opens it");
 });
 
 test("on SQLite, this build's store is past the release before learning rows: its runner is refused, a later store's runner gets RunnerBelowFloor naming the floor, and an earlier store waits for its server", async (t) => {

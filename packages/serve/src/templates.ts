@@ -32,6 +32,7 @@ import { triggerBodyIssues } from "./triggers.js";
 import { definitionBodyIssues, inputIssues, inputSchemaOf, isObject, type Json, MODEL_REF, MODEL_TIER_NAMES, unknownFields } from "./validate.js";
 import { schemaCheck } from "./answer-json.js";
 import { webFixtureOf } from "./web-fake.js";
+import { workspaceNow } from "./workspace-scope.js";
 import { APPROVALS, type Approvals } from "./approvals.js";
 import { agreeOnOf, type LearningSetting, learningSettingIssue, learningSettingOf, pathSegments } from "./learning-setting.js";
 
@@ -1099,27 +1100,39 @@ export function packageDetail<Pick, Tiers>(p: Package, computerHere: (p: Package
   return { template: { ...packageView(p), computer_here: computerHere(p), model_tiers_here: tiersHere(p) }, instructions: p.instructions, skill_files: { ...p.skills } };
 }
 
+/** The workspace the request being served reaches imported packages in (workspace-scope.ts): null for none. */
+const here = (): string | null => workspaceNow() ?? null;
+/** An imported package's key in the registry: its workspace and id, as the store keys it. */
+const importedKey = (workspace: string | null, id: string): string => JSON.stringify([workspace, id]);
+
 /** The packages this server serves: the ones it ships, read at its start, and the ones imported here (the store keeps
- *  them; the server loads them beside the bundled ones at its start). An id is one package; a bundled one is never
- *  replaced or removed, and an imported id (`github:…`) is never a bundled one's name. */
+ *  them; the server loads them beside the bundled ones at its start). A bundled package is every workspace's, never
+ *  replaced or removed, and an imported id (`github:…`, `upload:…`) is never a bundled one's name. An imported one is its
+ *  workspace's (none's for an unscoped import), so one id is a package in each workspace: each call reaches the
+ *  workspace it names, by default the request's. */
 export class TemplateRegistry {
-  private readonly imported = new Map<string, Package>();
+  private readonly imported = new Map<string, { workspace: string | null; pkg: Package }>();
   constructor(private readonly bundled: readonly Package[]) {}
-  /** The bundled packages by name, then the imported ones by id. */
-  list(): Package[] {
-    return [...this.bundled, ...[...this.imported.values()].sort((a, b) => a.id.localeCompare(b.id))];
+  /** The bundled packages by name, then the workspace's imported ones by id. */
+  list(workspace: string | null = here()): Package[] {
+    const own = [...this.imported.values()].filter((one) => one.workspace === workspace).map((one) => one.pkg);
+    return [...this.bundled, ...own.sort((a, b) => a.id.localeCompare(b.id))];
   }
-  get(id: string): Package | undefined {
-    return this.bundled.find((p) => p.id === id) ?? this.imported.get(id);
+  /** Every imported package of every workspace, with its workspace. */
+  everywhere(): { workspace: string | null; pkg: Package }[] {
+    return [...this.imported.values()];
   }
-  /** An imported package, in place of the one under its id. */
-  put(p: Package): void {
+  get(id: string, workspace: string | null = here()): Package | undefined {
+    return this.bundled.find((p) => p.id === id) ?? this.imported.get(importedKey(workspace, id))?.pkg;
+  }
+  /** An imported package, in place of the one under its id in the workspace. */
+  put(p: Package, workspace: string | null = here()): void {
     if (p.origin === null || this.bundled.some((one) => one.id === p.id)) throw new TypeError(`${p.id} is a bundled package's id`);
-    this.imported.set(p.id, p);
+    this.imported.set(importedKey(workspace, p.id), { workspace, pkg: p });
   }
-  /** Whether an imported package of that id was there to remove. */
-  remove(id: string): boolean {
-    return this.imported.delete(id);
+  /** Whether an imported package of that id was there in the workspace to remove. */
+  remove(id: string, workspace: string | null = here()): boolean {
+    return this.imported.delete(importedKey(workspace, id));
   }
 }
 

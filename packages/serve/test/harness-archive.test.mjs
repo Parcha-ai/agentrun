@@ -11,7 +11,7 @@
 // The archive is a small fake one (system tar and bzip2 pack it here), served on loopback, its digests passed as the pin.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, chmodSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
@@ -38,18 +38,26 @@ async function fakeRelease(t, body = "#!/bin/sh\necho fake goose\n") {
   return { bytes, archiveSha: sha256(bytes), binarySha: sha256(Buffer.from(body)) };
 }
 
-/** The archive on loopback at `path` (any other path 404), each request counted. Its close destroys every socket. */
+/**
+ * The archive on loopback at `path` (any other path 404), each request of this test's own counted. A port can be reused
+ * by another client on a busy box, so the origin's `url` carries a per-test prefix: a request under it is this test's
+ * (counted in `asked` by the path after the prefix), any other request (a stray `GET /`) is answered 404 and not counted.
+ * Its close destroys every socket.
+ */
 async function origin(t, bytes, path = "/goose.tar.bz2") {
   const sockets = new Set();
   const asked = [];
+  const prefix = `/t${randomBytes(8).toString("hex")}`;
   const server = createServer((req, res) => {
-    asked.push(req.url);
-    if (req.url !== path) return void res.writeHead(404).end("no such file");
+    if (!req.url.startsWith(`${prefix}/`)) return void res.writeHead(404).end("not this test's");
+    const own = req.url.slice(prefix.length);
+    asked.push(own);
+    if (own !== path) return void res.writeHead(404).end("no such file");
     res.writeHead(200, { "content-type": "application/octet-stream", "content-length": String(bytes.length) }).end(bytes);
   });
   server.on("connection", (socket) => (sockets.add(socket), socket.on("close", () => sockets.delete(socket))));
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const url = `http://127.0.0.1:${server.address().port}`;
+  const url = `http://127.0.0.1:${server.address().port}${prefix}`;
   const close = () => new Promise((resolve) => {
     for (const socket of sockets) socket.destroy();
     server.close(() => resolve());
@@ -296,6 +304,18 @@ test("a file beside the launcher that is not the pin's is refused before anythin
   const { tree: _tree, ...blind } = cursorOf(served.url, release);
   await assert.rejects(installArchive(blind, dir, { platform: PLATFORM }), (error) => error.code === "HARNESS_PLATFORM_UNSUPPORTED");
   assert.deepEqual(served.asked, ["/cursor.tar.gz"], "the blind install downloaded nothing");
+});
+
+test("a stray request at the origin (another test's client on a reused port) is not this test's: asked counts only the test's own", async (t) => {
+  const release = await fakeCursor(t);
+  const served = await origin(t, release.bytes, "/cursor.tar.gz");
+  const dir = join(await scratch(t), "harnesses", "cursor");
+  const port = new URL(served.url).origin;
+  for (const stray of ["/", "/", "/elsewhere"]) await fetch(`${port}${stray}`).then((r) => r.arrayBuffer());
+  assert.deepEqual(served.asked, [], "strays are not the test's requests");
+  await installArchive(cursorOf(served.url, release), dir, { platform: PLATFORM });
+  await fetch(`${port}/`).then((r) => r.arrayBuffer());
+  assert.deepEqual(served.asked, ["/cursor.tar.gz"], "the test's one download, and nothing else");
 });
 
 test("a format this installer does not unpack is refused before anything downloads", async (t) => {

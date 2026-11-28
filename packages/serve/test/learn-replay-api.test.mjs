@@ -107,10 +107,11 @@ test("an owner replays a held revision on the inputs its hold was decided on: 20
   const { answered, handed_back, failed, skipped_write } = view.outcomes;
   assert.equal(answered + handed_back + failed + skipped_write, 5, `every input is counted once: ${JSON.stringify(view)}`);
   assert.equal(answered, 5, `each replay run ran the revision at its learning commit, the workflow alone: ${JSON.stringify(view)}`);
-  assert.equal(view.score.n, answered + handed_back, "scored: the inputs it answered or handed back");
   // The record it decided is a replay's, as a claim's is: the Learning tab and the gate read it unchanged.
   const records = (await api("GET", "/agents/source/learning/promotions")).body.promotions;
   const mine = records.filter((one) => one.replay_id === started.json.replay);
+  // An input whose grader's verdict could not be read (this world's faux model gives none) is scored on neither side.
+  assert.equal(view.score.n, answered + handed_back - (mine[1].check.unread ?? 0), "scored: the inputs it answered or handed back, less the unread");
   assert.deepEqual(mine.map(({ decided }) => decided), ["replaying", view.decided], JSON.stringify(records));
   assert.deepEqual([...mine[1].check.of].sort(), [...held].sort(), "replayed on the held inputs");
   assert.deepEqual(mine[1].check.outcomes, view.outcomes, "the read's outcomes are the record's");
