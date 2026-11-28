@@ -727,7 +727,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
   const fromGitHub = launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github";
   // Each credential the claim opens, refreshes or mints here (its MCP's, its GitHub App tokens) joins the runner's redactor.
   const hold = (values: string[]) => cut.hold(values);
-  const github = () => githubAppAccess(store, sealKey, launch.input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub, hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) });
+  const github = () => githubAppAccess(store, sealKey, launch.input, { run: claim.runId, ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub, hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) });
   /** The run's folder as the computer this claim made mounts it (Mode 2), where the claim's MCP files once it is made. */
   let mountedFolder: Workspace | undefined;
   /** Mode 2's Archil claim, made once for the claim on the runner, its folder the run's. */
@@ -896,7 +896,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
         }
         return access.mint(bound, { contents: "read" });
       };
-      return { api: access.api, target: bound, mint, ...(access.revoke ? { revoke: access.revoke } : {}), ...(access.same ? { same: access.same } : {}) };
+      return { api: access.api, target: bound, mint, ...(access.revoke ? { revoke: access.revoke } : {}), ...(access.same ? { same: access.same } : {}), ...(access.withheld ? { withheld: access.withheld } : {}) };
     },
     subagentTierKeys: async () => {
       // A subagent's tiers alone: an agentic run granted the subagent tool routes each tier its revision's modelTiers or

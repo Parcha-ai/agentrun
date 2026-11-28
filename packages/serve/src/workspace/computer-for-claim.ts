@@ -56,7 +56,7 @@ import { getSealedKey } from "../server-keys.js";
 import type { Claim, Store } from "../store/index.js";
 import { type AgentComputerHold, agentComputerOf, forgetAgentComputer, holdAgentComputer, keepAgentComputer, liveHolderOf, reconcileAgentComputer, serverIdOf } from "./agent-computer.js";
 import type { MountCheck } from "./attach.js";
-import { type AttachedComputers, pairedProvider, withPaired } from "./attached-computers.js";
+import { type AttachedComputers, namesPaired, pairedProvider, scopedPairedWords, withPaired } from "./attached-computers.js";
 import { computerHold, type HeldComputer, heldHands } from "./computer-hold.js";
 import { endingDeletes, figuresOf, type IntervalWrites, intervalWrites, stderrLog } from "./computer-intervals.js";
 import { type ComputeLedger, type ComputeMeter, computeMeter, type ComputeMeterOptions } from "../compute-cost.js";
@@ -1391,6 +1391,8 @@ export async function computerForClaim(
     return { computer: undefined, off: true, release: noop };
   }
   const setting = await settingOf(launch, store);
+  // A run of an agent in a workspace never takes a paired computer, whatever its revision names (its save refuses one).
+  if (namesPaired(setting) && launch.agentId !== undefined && typeof (await store.agents.workspace(launch.agentId)) === "string") throw unavailable(scopedPairedWords(setting.provider));
   // Programs it needs (computer.needs) are checked in a sandbox's box alone: a setting that needs them and is any other
   // kind is refused before anything is rented, never run without them.
   const needs = (setting as { needs?: readonly string[] } | undefined)?.needs;

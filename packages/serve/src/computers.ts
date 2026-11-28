@@ -439,7 +439,8 @@ export async function settingsComputerRoute(routes: ComputerRoutes, name: string
   throw new ApiError("not_found", `no computer route ${name}`);
 }
 
-/** capabilities.computers: the kinds this server offers now, in the registry's order. */
-export async function computerCapabilities(routes: ComputerRoutes): Promise<{ kinds: ComputerKind[] }> {
-  return { kinds: (await routes.view()).kinds.filter((kind) => kind.offered).map((kind) => kind.kind) };
+/** capabilities.computers: the kinds this server offers now, in the registry's order. `scoped`: a request in a workspace,
+ *  whose count leaves out the paired computers (view). */
+export async function computerCapabilities(routes: ComputerRoutes, { scoped = false }: { scoped?: boolean } = {}): Promise<{ kinds: ComputerKind[] }> {
+  return { kinds: (await routes.view({ scoped })).kinds.filter((kind) => kind.offered).map((kind) => kind.kind) };
 }
