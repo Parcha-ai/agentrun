@@ -170,7 +170,9 @@ instead. It runs AgentRun in Docker, gives its agents a shell, keeps it private 
 
 - **Railway:** they open https://railway.com/deploy/agentrun-1 and deploy it from their own Railway account with one
   click. The template sets up the image, a volume at `/data` and a public domain, and makes the API token and the seal
-  key for them. Never create the service yourself with a Railway CLI.
+  key for them. Never create the service yourself with a Railway CLI. The published template is being republished:
+  once the deploy is active, they set `RAILWAY_DEPLOYMENT_DRAINING_SECONDS` to `45` in the service's Variables tab and
+  redeploy, so a redeploy never stops the server mid-run.
 - **Render:** they open https://render.com/deploy?repo=https://github.com/Parcha-ai/agentrun and confirm the plan
   Render shows; it reads the repository's `render.yaml` (the published image, 1 CPU / 2 GB, a 10 GB disk).
 - **AgentRun Cloud:** hosted for you, by request. They request access at https://console.agentrun.ai/ and follow its
