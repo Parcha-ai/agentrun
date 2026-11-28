@@ -14,7 +14,7 @@ import { after, test } from "node:test";
 import { AttachHub, readBackOf } from "@parcha/agentrun-computer";
 import { FakeUiDriver, serveUiSocket } from "@parcha/agentrun-computer/fake-ui-driver";
 import { putSealedKey } from "../dist/server-keys.js";
-import { computerForClaim, localWorkspace } from "../dist/workspace/index.js";
+import { computerForClaim, computerSpecOf, localWorkspace } from "../dist/workspace/index.js";
 import { pairedOf, scopedPairedWords } from "../dist/workspace/attached-computers.js";
 import { fauxComputers } from "../dist/faux-computers.js";
 import { computerReadyWords, computerStartingWords } from "../dist/workspace/computer-deps.js";
@@ -105,18 +105,18 @@ function views(refusal) {
   return { open, opened, closed, holds, gones };
 }
 
-async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine, unprepared = false, kinds = KINDS, onConnected, onStarting, hostWhy, hadComputer, epoch = 3, list, spec = SPEC, workspaceExec } = {}) {
+async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine, unprepared = false, kinds = KINDS, onConnected, onStarting, hostWhy, hadComputer, epoch = 3, list, spec = SPEC, workspaceExec, networks, boxAllow } = {}) {
   const root = scratch();
   const store = memoryStore();
   const sealKey = randomBytes(32);
   for (const [name, value] of Object.entries(keys)) await putSealedKey(store, sealKey, name, value);
   const record = { created: [], released: [], options: [], ...(existing ? { existing } : {}) };
-  const providers = Object.fromEntries(["docker", "e2b", "daytona", "modal", "agent37", "phone-harness"].map((id) => [id, (options, extras) => (record.options.push([id, options, typeof extras.ledger.put]), { ...fakeProvider(root, record, groups, machine), ...(unprepared ? { prepareImage: undefined } : {}), ...(list ? { list } : {}) })]));
+  const providers = Object.fromEntries(["docker", "e2b", "daytona", "modal", "agent37", "phone-harness"].map((id) => [id, (options, extras) => (record.options.push([id, options, typeof extras.ledger.put]), { ...fakeProvider(root, record, groups, machine), ...(unprepared ? { prepareImage: undefined } : {}), ...(list ? { list } : {}), ...(networks ? { capabilities: () => ({ lifetime: "janitor", maxLifetimeMs: 86_400_000, network: networks }) } : {}) })]));
   record.revoked = 0;
   const revokeMount = async () => void (record.revoked += 1);
   const workspace = localWorkspace(root);
   if (workspaceExec) { const execute = workspace.exec.bind(workspace); workspace.exec = (argv, options) => workspaceExec(argv, options, execute); }
-  const run = () => computerForClaim({ runId: "run-1", epoch, computer: setting }, store, { mode, kinds, sealKey, providers, spec, workspace, check: { readBackOf, epoch }, revokeMount, ...(view ? { openComputerView: view.open } : {}), ...(onConnected ? { onConnected } : {}), ...(onStarting ? { onStarting } : {}), ...(hostWhy ? { hostWhy } : {}), ...(hadComputer ? { hadComputer } : {}) });
+  const run = () => computerForClaim({ runId: "run-1", epoch, computer: setting, ...(boxAllow ? { boxAllow } : {}) }, store, { mode, kinds, sealKey, providers, spec, workspace, check: { readBackOf, epoch }, revokeMount, ...(view ? { openComputerView: view.open } : {}), ...(onConnected ? { onConnected } : {}), ...(onStarting ? { onStarting } : {}), ...(hostWhy ? { hostWhy } : {}), ...(hadComputer ? { hadComputer } : {}) });
   return { root, record, run };
 }
 
@@ -605,4 +605,25 @@ test("a sandbox's GPUs go into the spec its provider makes the computer with; GP
   assert.equal(await refusal({ kind: "sandbox", provider: "modal", gpu: { type: "H100", count: 1 } }, { mode: 2, keys: MODAL_KEYS }), "Modal could not start a sandbox computer: this run's folder can't be synced into a computer here");
   assert.equal(await refusal({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } }, { mode: 2, keys: { DAYTONA_API_KEY: "dk" } }), "Daytona could not start a sandbox computer: this run's folder can't be synced into a computer here");
   assert.match(await refusal({ kind: "sandbox", provider: "docker", gpu: { type: "T4", count: 1 } }), /^A Docker sandbox can't have this agent's GPUs: this provider offers no GPU/);
+});
+
+// The network each computer is made with is the server's own spec builder's (computerSpecOf, under the default list),
+// and where it reaches is the claim's (ClaimComputer.reach), which the run's model is told (computerReachNote): a
+// desktop whose provider makes no network but none (its programs held to loopback) is made with none and reaches
+// nowhere; a sandbox under an allow list reaches that list's hosts; a sandbox of a launch that names no list is made
+// with none, as it always was. A desktop whose provider makes open is made open and has no reach to tell.
+test("where a computer reaches: none made with none, the list made with a list, nothing to tell made open", async () => {
+  const DESKTOP_GROUPS = ["screen", "input.pointer", "input.keys"];
+  for (const [what, setting, options, network, reach] of [
+    ["a desktop whose provider makes none alone", { kind: "desktop", provider: "e2b" }, { keys: { E2B_API_KEY: "ek-test" }, groups: DESKTOP_GROUPS, networks: ["none"] }, "none", "none"],
+    ["a desktop whose provider makes open", { kind: "desktop", provider: "e2b" }, { keys: { E2B_API_KEY: "ek-test" }, groups: DESKTOP_GROUPS, networks: ["none", "open", "allow"] }, "open", undefined],
+    ["a sandbox under an allow list", { kind: "sandbox", provider: "docker" }, { networks: ["none", "allow"], boxAllow: ["pypi.org"] }, { allow: ["pypi.org"] }, { allow: ["pypi.org"] }],
+    ["a sandbox of a launch that names no list", { kind: "sandbox", provider: "docker" }, { networks: ["none", "allow"] }, "none", "none"],
+  ]) {
+    const { record, run } = await claim(setting, { ...options, spec: computerSpecOf({}) });
+    const answer = await run();
+    assert.deepEqual(record.created[0].network, network, `${what}: made with it`);
+    assert.deepEqual(answer.reach, reach, `${what}: reaches ${JSON.stringify(answer.reach)}`);
+    await answer.release();
+  }
 });

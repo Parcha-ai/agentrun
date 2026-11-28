@@ -405,6 +405,14 @@ extended: leave it out when what it moves (your timer, or with `"janitor"` your 
 checked yet. Leave out what you don't need. Settings' test of your keys is one `list` by AgentRun's label, so a
 `list` must never create anything.
 
+**A vendor limit: boxd's reads.** On boxd, reads (`files.read`, and a process's output through `exec`) run near
+0.3 MB/s at boxd's exec round trip of about 95 ms, while uploads run near 3 MB/s (sandbox bench probes, 2026-11-24 and
+2026-11-28). A `download` hook wouldn't help: every boxd call goes through the grpc-js client of `@boxd-sh/sdk` 0.3.1,
+which it builds without `grpc-node.flow_control_window`, so the HTTP/2 receive window stays at 64 KiB and a read moves
+about that much a round trip. The provider can't set it: `BoxdOptions` takes no channel options. A local grpc-js
+stream of 10 MiB across a 100 ms round trip read at 0.32 MB/s with the SDK's options, and at 52.8 MB/s with a 16 MiB
+window.
+
 ### Machines that dial in
 
 A vendor with no two-way exec, whose create boots an image with env, can still host computers: each machine dials the
@@ -437,6 +445,10 @@ new HostedProvider(host, { daemonPath, dial: { url: process.env.AGENTRUN_PUBLIC_
   host through it, unchanged.
 - **The token sits in the machine's env**, scoped to that machine (its kind, os and arch) until delete or its
   `backstopAt`, whichever comes first. A machine that never dials within `createMs` is deleted.
+- **Gap: one process creates a request.** Two `HostedProvider`s sharing one `MachineTokens` must not create the same
+  request name: a token goes by the machine's name, so the second mint replaces the first's token, and the delete that
+  settles the two machines revokes by name, which can cut the machine that is kept. Serve's requests carry the claim's
+  epoch, so two of its processes never share one.
 - **No Archil mount.** A spec with one is refused in words (`mountsOf` drops it on dial).
 - **A desktop over dial** works as on exec: create adds `DISPLAY` (`:0`) to the boot env, `agentrun-dial` gives it
   to init, and once the machine dials, its X server starts through computerd's `process.start` over that socket, as

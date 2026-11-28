@@ -59,6 +59,9 @@ function wrappedProblem(e: unknown): Problem {
 /** A model's price, by its own requests: whole, the priced part of them, or none known. */
 const priceOf = (m: Wrapped["models"][number]) => (m.unpriced_requests >= m.requests && m.requests > 0 ? "no known price" : `${dollars(m.cost_usd)}${m.unpriced_requests > 0 ? " priced only" : ""}`);
 /** Whether none of a year's (or a row's) requests had its tokens recorded: its tokens are unknown, never 0. */
+/** A year none of whose requests has a time of its own (Cursor dates each at its chat's start): its time at work is
+ *  unknown, not zero. */
+const untimed = (r: { requests: number; time_unknown_requests: number }) => r.requests > 0 && r.time_unknown_requests >= r.requests;
 /** The harnesses whose sessions never record tokens (Cursor's chat store keeps none). */
 const NO_TOKENS: ReadonlySet<string> = new Set(["cursor"]);
 const unrecorded = (r: { requests: number; tokens_unknown_requests: number }) => r.requests > 0 && r.tokens_unknown_requests >= r.requests;
@@ -220,7 +223,11 @@ export function WrappedPage({ v2, year, go, cards = wrappedCards }: { v2: Client
               </section>
               <section className={card} aria-labelledby="w-when">
                 <h2 id="w-when" className={heading}>When you work</h2>
-                <p className="mt-2 font-mono text-body text-muted-foreground">{hours(data.active_ms)} at work, in this machine's time zone.</p>
+                <p className="mt-2 font-mono text-body text-muted-foreground">
+                  {untimed(data)
+                    ? "Time at work not recorded: these sessions keep no time for each request."
+                    : `${hours(data.active_ms)} at work${data.time_unknown_requests > 0 ? `, + ${data.time_unknown_requests.toLocaleString("en-US")} requests with no recorded time` : ""}, in this machine's time zone.`}
+                </p>
                 <div className="mt-3 grid gap-6 md:grid-cols-2">
                   <div>
                     <Bars values={data.hours} labels={data.hours.map((_, h) => `${h}:00`)} label="Requests by hour of the day" />

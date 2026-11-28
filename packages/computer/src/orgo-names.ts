@@ -4,7 +4,7 @@
 // keeps in the computer, the truth attach reads.
 import { COMPUTER_LABEL } from "./drift.js";
 import { EPOCH_LABEL, IDLE_TTL_LABEL, OWNER_LABEL, OWNER_SERVER_LABEL, ownerLabels, ownerOf, RUN_LABEL, runHash } from "./labels.js";
-import type { ComputerClaim, ComputerOwner, ComputerRef } from "./provider.js";
+import type { ComputerClaim, ComputerOwner, ComputerRef, ComputerResources } from "./provider.js";
 import { failFor, ok, type Result, vendorFail } from "./result.js";
 
 const fail = failFor("orgo");
@@ -279,11 +279,29 @@ export interface OrgoComputer {
 	id: string;
 	name: string;
 	status: string;
+	/** The size it runs at, as Orgo's create and its reads answer it: RAM in GB and vCPUs. Orgo bills by it. */
+	ram?: unknown;
+	cpu?: unknown;
 	os?: string;
 	workspace_id?: string;
 	project_id?: string;
 	ends_at?: string | null;
 	created_at?: string;
+}
+
+const positive = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined);
+
+/**
+ * The size a computer runs at, as its create reports it (CreatedComputer.resources): what Orgo's answer says (ram in GB,
+ * cpu in vCPUs), each figure it leaves out the one the create sent (`sent`, as the labels file keeps it), which Orgo runs
+ * or refuses with a 400, never another. None where neither says one.
+ */
+export function orgoSize(answer: Pick<OrgoComputer, "ram" | "cpu"> | undefined, sent: { cpus?: number; memoryMb?: number }): { resources?: ComputerResources } {
+	const ramGb = positive(answer?.ram);
+	const cpus = positive(answer?.cpu) ?? sent.cpus;
+	const memoryMb = ramGb === undefined ? sent.memoryMb : ramGb * 1024;
+	const resources: ComputerResources = { ...(cpus === undefined ? {} : { cpus }), ...(memoryMb === undefined ? {} : { memoryMb }) };
+	return Object.keys(resources).length > 0 ? { resources } : {};
 }
 
 export const show = (value: unknown) => (value === undefined ? "nothing" : JSON.stringify(value));

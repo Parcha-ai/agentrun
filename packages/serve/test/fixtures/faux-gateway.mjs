@@ -43,8 +43,9 @@ export const RECORDED_HEADERS = Object.freeze(["authorization", "x-api-key", "an
  *   listen on (default: one the system picks); `grader`: what a grader request (learn/promote.ts GRADER_PROMPT) is
  *   answered with, as a function of the request (default: the faux grader's verdict, fixtures/faux-grader.mjs), before
  *   `text`; `hang`: a request it records and never answers, when it returns true (its connection stays open until the
- *   client drops it or close()); `models`: the model ids GET /v1/models lists (else that GET is 404); `key`: the bearer
- *   token that list takes (else any).
+ *   client drops it or close()); `wait`: what a model request waits for before it is answered (a test's step between a
+ *   request's arrival and its answer); `models`: the model ids GET /v1/models lists (else that GET is 404); `key`: the
+ *   bearer token that list takes (else any).
  * @returns {Promise<{ url: string, requests: GatewayRequest[], close(): Promise<void> }>} `url` is the origin
  *   (`http://127.0.0.1:<port>`), with no path.
  * @typedef {{ method: string, path: string, query: string, headers: Record<string, string | undefined>, body: any }} GatewayRequest
@@ -88,17 +89,23 @@ export async function startFauxGateway(options = {}) {
       if (req.method !== "POST") return void res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ error: { message: `no ${req.method} ${path} here` } }));
       // A request the test holds open: recorded, never answered (close() ends its connection).
       if (options.hang?.(request)) return;
-      const refused = options.refuse?.(request);
-      if (refused) return void res.writeHead(refused.status ?? 400, { "content-type": "application/json" }).end(JSON.stringify({ error: { message: refused.message } }));
-      const call = options.call?.(request);
-      if (call && path.endsWith(ROUTES.responses)) return responsesCall(res, body, call, usage, stream);
-      if (call && path.endsWith(ROUTES.messages)) return messagesCall(res, body, call, usage, stream);
-      if (path.endsWith(ROUTES.responses)) return responses(res, body, textOf(request), usage, stream);
-      if (path.endsWith(ROUTES.messages)) return messages(res, body, textOf(request), usage, stream);
-      if (path.endsWith(ROUTES.chat)) return chat(res, body, textOf(request), usage, stream);
-      res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ error: { message: `no route ${path} here` } }));
+      if (options.wait) return void Promise.resolve(options.wait(request)).then(() => answer(request, res, body, stream));
+      answer(request, res, body, stream);
     });
   });
+  /** A model request's answer: a refusal, a tool call or a text, by its route. */
+  const answer = (request, res, body, stream) => {
+    const path = request.path;
+    const refused = options.refuse?.(request);
+    if (refused) return void res.writeHead(refused.status ?? 400, { "content-type": "application/json" }).end(JSON.stringify({ error: { message: refused.message } }));
+    const call = options.call?.(request);
+    if (call && path.endsWith(ROUTES.responses)) return responsesCall(res, body, call, usage, stream);
+    if (call && path.endsWith(ROUTES.messages)) return messagesCall(res, body, call, usage, stream);
+    if (path.endsWith(ROUTES.responses)) return responses(res, body, textOf(request), usage, stream);
+    if (path.endsWith(ROUTES.messages)) return messages(res, body, textOf(request), usage, stream);
+    if (path.endsWith(ROUTES.chat)) return chat(res, body, textOf(request), usage, stream);
+    res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ error: { message: `no route ${path} here` } }));
+  };
   await new Promise((resolve, reject) => server.once("error", reject).listen(options.port ?? 0, "127.0.0.1", resolve));
   const url = `http://127.0.0.1:${server.address().port}`;
   return {

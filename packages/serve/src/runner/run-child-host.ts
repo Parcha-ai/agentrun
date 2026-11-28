@@ -41,7 +41,9 @@ import { storeSecrets } from "./store-secrets.js";
 import { FAUX_ENV, GATEWAY_KEY_ENV } from "../model.js";
 import { SAVED_GATEWAY_ENV, savedGatewayIn } from "../model-gateway.js";
 import { FAUX_VENDOR_API_ENV } from "../tools.js";
-import { withinCarried } from "../paid-calls.js";
+import { type PaidBooking, withinCarried } from "../paid-calls.js";
+import type { ComputeLedger } from "../compute-cost.js";
+import type { Refusal } from "@parcha/agentrun-kernel";
 import { sealHandedLaunch } from "../store/seal.js";
 import { runZone } from "../environment.js";
 import { shadowRunId } from "../learn/audit.js";
@@ -115,8 +117,9 @@ export const RUN_SLOTS = 256;
 const STOP_GRACE_MS = 30_000;
 /** How long a person's stop gives the run's process before the runner ends it: the turn's stop and end (STOP_GRACE_MS),
  *  and after it the tool hosts' release to its bound (`releaseBound`, LoopDeps.releaseBoundMs) and the cut's booking
- *  (RELEASE_MARGIN_MS), so a release that never answers is cut, charged and written before the process is ended. */
-const commandGraceMs = (releaseBound: number): number => STOP_GRACE_MS + releaseBound + RELEASE_MARGIN_MS;
+ *  (`releaseMargin`, LoopDeps.releaseMarginMs), so a release that never answers is cut, charged and written before the
+ *  process is ended. */
+const commandGraceMs = (releaseBound: number, releaseMargin: number): number => STOP_GRACE_MS + releaseBound + releaseMargin;
 /** How long a run's process has to exit once its loop ended, at the least: a lost create's recovery under way in it ends
  *  first (run-child.ts), so its exit is given the release's bound when that is longer (LoopDeps.releaseBoundMs). */
 const EXIT_GRACE_MS = 5_000;
@@ -983,6 +986,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
         ? await openRunWorkspace({ mode: 1, agentId: run.agentId, runId: claim.runId, data: deps.data, log })
         : await openRunWorkspace({ mode: 2, agentId: run.agentId, runId: claim.runId, archil: made, log });
       const say = typeof ask.say === "function" ? ask.say : undefined;
+      const computeLedger = heldComputeLedger(ask.compute);
       const got = await deps.computerForClaim(
         { runId: claim.runId, epoch: claim.epoch, claim, agentId: run.agentId, revisionId: run.revisionId, place: launch.place, ...(reads.incarnation ? { holder: { runner: claim.runner, incarnation: reads.incarnation } } : {}) } as never,
         store,
@@ -990,6 +994,9 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
           ...deps.computerDeps, mode, noExec, workspace: ws.workspace, sealKey,
           recordings: { folder: recordingsFolder(deps.data, run.agentId, claim.runId), say: (words: string) => say?.(cut(words)) },
           hadComputer: async () => (await ask.hadComputer()) === true,
+          // The run's ledger, in its process: the claim's computers' time metered on it, priced by this runner's settings.
+          ...(computeLedger ? { compute: { ledger: computeLedger, env: deps.env ?? {} } } : {}),
+          ...(typeof ask.stopRun === "function" ? { stopRun: async (words: string) => void (await ask.stopRun!(String(words))) } : {}),
           ...(typeof ask.turnedOff === "string" ? { turnedOff: ask.turnedOff } : {}),
           ...(ask.signal instanceof AbortSignal ? { signal: ask.signal } : {}),
           ...(made ? { revokeMount: () => made.revoke(), inheritMount: () => made.inherit(), mountDisk: () => made.disk.id } : {}),
@@ -1252,6 +1259,22 @@ function withGatewayKey(claimed: NodeJS.ProcessEnv, key: string): NodeJS.Process
   return out;
 }
 
+/** The run's ledger a run's process handed with its ask for its computer (HeldComputerAsk.compute), as the runner's meter
+ *  books on it (compute-cost.ts ComputeLedger): its admit, settle and pause called across the channel, and `judges` read
+ *  here at once, false until the process says its cap can judge (`judged`), and false for good when its spec's build
+ *  failed, as the process's own reads it. None when the process handed none, or what it handed is not one. */
+export function heldComputeLedger(given: unknown): ComputeLedger | undefined {
+  const handed = given as { paid?: { admit?: unknown; settle?: unknown }; pause?: unknown; judged?: unknown } | null | undefined;
+  if (!handed || typeof handed !== "object" || !handed.paid || typeof handed.paid.admit !== "function" || typeof handed.paid.settle !== "function" || typeof handed.judged !== "function") return undefined;
+  const paid = handed.paid as PaidBooking;
+  const pause = typeof handed.pause === "function" ? (handed.pause as (refusal: Refusal) => Promise<void>) : undefined;
+  let judges = false;
+  void Promise.resolve()
+    .then(() => (handed.judged as () => Promise<void>)())
+    .then(() => (judges = true), () => undefined);
+  return { paid: { admit: (request) => paid.admit(request), settle: (id, usd, options) => paid.settle(id, usd, options) }, ...(pause ? { pause: (refusal: Refusal) => pause(refusal) } : {}), judges: () => judges };
+}
+
 /** The environment a run's process starts with: the runner's run environment's plain values (runEnv: its secrets are
  *  not enumerable, so none is here), no key-shaped name, and where its keys come from. */
 function childEnv(base: NodeJS.ProcessEnv, keys: Buffer, extra: Record<string, string>): NodeJS.ProcessEnv {
@@ -1487,6 +1510,7 @@ export function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, 
             ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}),
             ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}),
             ...(loopDeps.releaseBoundMs === undefined ? {} : { releaseBoundMs: loopDeps.releaseBoundMs }),
+            ...(loopDeps.releaseMarginMs === undefined ? {} : { releaseMarginMs: loopDeps.releaseMarginMs }),
           };
           const ended = channel.call("loop", "start", [init]) as Promise<LoopEnd>;
           // From here a command or a stop goes to the run's process, after its start on the channel.
@@ -1539,7 +1563,8 @@ export function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, 
       // runs to that cut and the margin its booking takes, when that is later than its own.
       const releaseBy = loopDeps.releaseBy?.();
       const told = channel.call("loop", "stop", releaseBy === undefined ? [reason] : [reason, releaseBy]).catch(() => undefined);
-      const grace = reason.kind === "command" ? commandGraceMs(loopDeps.releaseBoundMs ?? releaseBoundMs()) : Math.max(STOP_GRACE_MS / 3, releaseBy === undefined ? 0 : releaseBy - Date.now() + RELEASE_MARGIN_MS);
+      const margin = loopDeps.releaseMarginMs ?? RELEASE_MARGIN_MS;
+      const grace = reason.kind === "command" ? commandGraceMs(loopDeps.releaseBoundMs ?? releaseBoundMs(), margin) : Math.max(STOP_GRACE_MS / 3, releaseBy === undefined ? 0 : releaseBy - Date.now() + margin);
       let timer: NodeJS.Timeout | undefined;
       const late = await Promise.race([told.then(() => false), new Promise<boolean>((resolve) => (timer = setTimeout(() => resolve(true), grace)))]);
       clearTimeout(timer);
