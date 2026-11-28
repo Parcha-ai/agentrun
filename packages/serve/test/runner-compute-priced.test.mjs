@@ -329,7 +329,10 @@ test("the same run books the same seconds and the same money on the runner's own
     const { server, row, interval } = await stretchRun(t, { where });
     assert.equal(row.state, "ended", `${where}: the run ran: ${JSON.stringify(row)}`);
     const usage = await runUsageOverStore(server, RUN);
-    const lines = usage.lines.filter((line) => line.meter === "compute_time").map((line) => [line.resource, line.basis, line.quantity, line.usd]);
+    // What was booked: its seconds, and each line's basis and money. A line's quantity is the interval's span, whose end
+    // is written by whichever deletes the computer first: the claim's let-go, on this test's clock, or the run end's
+    // sweep (run-end-computers.ts), on the wall clock. What is booked is on the meter's clock alone.
+    const lines = usage.lines.filter((line) => line.meter === "compute_time").map((line) => [line.resource, line.basis, line.usd]);
     return { bookedMs: interval?.bookedMs, lines };
   };
   const own = await read("runner");
