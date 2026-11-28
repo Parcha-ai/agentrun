@@ -146,7 +146,7 @@ for (const [label, answer] of [
 test("a search answer that is not JSON: charged at the hold, no crash", async () => {
   const { w, booked } = firecrawlWeb(() => new Response("<html>not json</html>", { status: 200, headers: { "content-type": "text/html" } }));
   const { answer } = await w.search({ objective: "Find the Fed's 2024 report", queries: ["fed report"] }, { n: 4 });
-  assert.ok("error" in answer, JSON.stringify(answer));
+  assert.equal(answer.error, "Firecrawl's search answered nothing this server reads", "an unreadable answer, not a thrown parse");
   assert.deepEqual(booked, [{ name: "Firecrawl's search", hold: credits(2), usd: credits(2) }]);
 });
 
