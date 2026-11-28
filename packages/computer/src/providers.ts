@@ -6,7 +6,7 @@
 // A provider is built from its options alone, create(options), its key included: the library reads no environment
 // (README, Settings). The caller owns its settings' names: serve passes its own (DAYTONA_API_KEY, MODAL_TOKEN_ID, ...),
 // and the conformance CLI's modules read their COMPUTER_<ID>_* names and pass them in.
-import type { DialKit, RunFolder } from "./conformance/types.js";
+import type { Clock, DialKit, RunFolder } from "./conformance/types.js";
 import type { ProviderDescriptor } from "./descriptor.js";
 import { DESCRIPTORS } from "./descriptors/index.js";
 import type { MachineHost } from "./host.js";
@@ -19,9 +19,9 @@ export type ProviderEnv = Readonly<Record<string, string | undefined>>;
 /**
  * What a conformance module exports, the CLI's contract for a module given by path too: createProvider(), and optionally
  * createDriftedProvider() for the drift case, conformanceImage() for a run that names no image, conformanceNotes for
- * the report, mountFor() for the mount cases, dialKit() for a dial host, and settingsFromEnv(env), the provider's options it reads from the
- * environment by its COMPUTER_<ID>_* names, with ENV, those names by role. The CLI passes each function its options,
- * which a module may ignore.
+ * the report, conformanceClock for a host that keeps its own time, mountFor() for the mount cases, dialKit() for a dial
+ * host, and settingsFromEnv(env), the provider's options it reads from the environment by its COMPUTER_<ID>_* names,
+ * with ENV, those names by role. The CLI passes each function its options, which a module may ignore.
  */
 export interface ConformanceModule {
 	createProvider(options?: object): ComputerProvider | Promise<ComputerProvider>;
@@ -31,6 +31,12 @@ export interface ConformanceModule {
 	/** The run's image when --image names none; `signal` is the run's own (Ctrl-C), for one that makes or registers it. */
 	conformanceImage?(options?: object, context?: { signal?: AbortSignal }): string | Promise<string>;
 	conformanceNotes?: string[];
+	/**
+	 * The clock the run reads and waits on, where the provider's timers run on one other than the wall clock (a fake
+	 * host's): the deadline case then waits on it rather than in real time. It reads no earlier than the clock the
+	 * provider stamps a computer's deadline with. Without it, the wall clock: a vendor's provider exports none.
+	 */
+	conformanceClock?: Clock;
 	/** For a host whose machines dial (facts.connect "dial"): the server they dial, for provider.dial-token. */
 	dialKit?(options?: object): DialKit | Promise<DialKit>;
 	/**

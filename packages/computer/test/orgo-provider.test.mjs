@@ -164,6 +164,7 @@ test("Orgo create: the computer in the workspace, computerd uploaded and install
 	assert.equal(created.value.name, record.name);
 	assert.match(record.name, /^computer-[0-9a-f]{12}-r[a-z2-7]{16}-e3-d[0-9a-z]+$/);
 	assert.deepEqual(record.asked, { workspace_id: WORKSPACE, name: record.name, os: "linux", ram: 4, cpu: 1, ends_in_hours: 1 });
+	assert.deepEqual(created.value.resources, { cpus: 1, memoryMb: 4096 }, "the size Orgo's answer says it ran: its computer's time is priced by it");
 	const ops = channel.calls.map(({ op, kind }) => (kind ? `${op} ${kind}` : op));
 	assert.deepEqual(ops.slice(0, 9), ["upload", "run install", "run orgo-x11", "run orgo-labels", "run orgo-ports", "run orgo-lockdown", "run orgo-primary-sync", "start init", "stdio stdio"]);
 	// Every path socket of Orgo's desktop is made root's alone before any tool runs, but the display's own: the tools reach
@@ -197,6 +198,39 @@ test("Orgo create: the computer in the workspace, computerd uploaded and install
 	assert.deepEqual(api.routes(), [`GET /workspaces/${WORKSPACE}`, "POST /computers", `GET /workspaces/${WORKSPACE}`, `GET /workspaces/${WORKSPACE}`], "Orgo's REST is the lookup of the request's computer, the create, and the workspace read again after Orgo's answer and once the computer is up; the rest is the channel");
 	for (const request of api.requests) keyless({ ...request, headers: { ...request.headers, authorization: undefined } }, `${request.method} ${request.path}`);
 	secretless(created, "create's result");
+});
+
+test("Orgo create: the computer's size is the one Orgo's answer says it ran (ram in GB, cpu in vCPUs), over the size asked; the size asked where the answer leaves one out", async () => {
+	// Orgo ran it at another size than the one asked: its answer is the size billed.
+	const other = setup({}, { api: { gives: () => ({ ram: 8, cpu: 2 }) } });
+	const bigger = await other.provider.create(SPEC, newRequest());
+	assert.equal(bigger.ok, true, JSON.stringify(bigger));
+	assert.deepEqual(only(other.api).asked.ram, 4);
+	assert.deepEqual(bigger.value.resources, { cpus: 2, memoryMb: 8192 });
+	// An answer with no size: the size asked, which Orgo runs or refuses (400), never another.
+	const silent = setup({}, { api: { gives: () => ({ ram: undefined, cpu: undefined }) } });
+	const asked = await silent.provider.create({ ...SPEC, cpus: 2, memoryMb: 16_384 }, newRequest());
+	assert.equal(asked.ok, true, JSON.stringify(asked));
+	assert.deepEqual(asked.value.resources, { cpus: 2, memoryMb: 16_384 });
+	// A retry of the same request finds its computer by name and answers the size the listing says it runs.
+	const api = fakeOrgoApi({ gives: () => ({ ram: 16, cpu: 4 }) });
+	const channel = fakeOrgoChannel();
+	const options = { apiKey: KEY, workspaceId: WORKSPACE, apiUrl: API, fetch: api.fetch, channel, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS };
+	const request = newRequest();
+	const first = await create(options).create(SPEC, request);
+	assert.equal(first.ok, true, JSON.stringify(first));
+	const again = await create(options).create(SPEC, request);
+	assert.equal(again.ok, true, JSON.stringify(again));
+	assert.equal(again.value.id, first.value.id);
+	assert.deepEqual(again.value.resources, { cpus: 4, memoryMb: 16_384 });
+	// A retry whose read of the computer fails answers that failure, never the size it asked for in the read's place.
+	const refusing = async (url, init) => {
+		const { pathname } = new URL(String(url));
+		if ((init?.method ?? "GET") === "GET" && pathname.endsWith(`/computers/${first.value.id}`)) return new Response(JSON.stringify({ error: "forbidden" }), { status: 403, headers: { "content-type": "application/json" } });
+		return api.fetch(url, init);
+	};
+	const unread = await create({ ...options, fetch: refusing }).create(SPEC, request);
+	assert.equal(unread.ok, false, JSON.stringify(unread));
 });
 
 test("Orgo create: a computer Orgo answers creating is waited for until it runs; the start goes through a named session when asked", async () => {

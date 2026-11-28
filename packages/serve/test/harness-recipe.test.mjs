@@ -6,7 +6,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, st
 import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
-import { agent, call, claimsAfterRow, clientOwnerSession, FAUX, follow, scratch, serve, startInProcessRunner, startRun, storeBytes, withEnv } from "./support.mjs";
+import { agent, call, claimsAfterRow, clientOwnerSession, FAST_BEATS, FAUX, follow, scratch, serve, startInProcessRunner, startRun, storeBytes, withEnv } from "./support.mjs";
 import { firings } from "./trigger-support.mjs";
 import { findPlanted, plantedValue } from "./fixtures/planted-secrets.mjs";
 import { storeOn } from "./store-helpers.mjs";
@@ -1919,7 +1919,7 @@ test("a run's process on its owner's sign-in (a plan-billed recipe, no key saved
   assert.equal((await signIn(file, data)).status, 0);
   await noteChecked(data, file);
   const lines = [];
-  const server = await serve(t, { data, harnessRecipes: [file], harnessSignIn: true, childRuns: { log: (line) => void lines.push(line) } });
+  const server = await serve(t, { data, harnessRecipes: [file], harnessSignIn: true, childRuns: { log: (line) => void lines.push(line) }, runnerTiming: FAST_BEATS });
   const person = await startRun(server.api, "on-sign-in", "Reply with the word ready.", { harness: "model-agent", model: "model-agent/default" });
   const ran = await follow(server.api, person.run_id, ["completed", "failed"], { deadlineMs: 120_000 });
   assert.equal(ran.last.status, "completed", JSON.stringify(ran.last));
@@ -1947,7 +1947,7 @@ test("a run's process on its owner's sign-in, its run stopped while queued: a tr
   const person = await startRun(server.api, "stopped-first", "Reply with the word ready.", { harness: "model-agent", model: "model-agent/default" });
   await sendCommand(server.store, person.run_id, { kind: "stop", body: {} });
   // Closed here, before serve()'s own teardown (its after-hook runs first).
-  const runner = await startInProcessRunner(server.data, { data: server.data, faux: FAUX, mcpOwn: server.own, harnessRecipes: [file], harnessSignIn: true, childRuns });
+  const runner = await startInProcessRunner(server.data, { data: server.data, faux: FAUX, mcpOwn: server.own, harnessRecipes: [file], harnessSignIn: true, childRuns, runnerTiming: FAST_BEATS });
   try {
     for (let row = await server.store.runs.get(person.run_id); !(row.state === "stopped" && row.runner === null); row = await server.store.runs.get(person.run_id)) await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal((await server.store.runs.get(person.run_id)).outcome, "stopped");

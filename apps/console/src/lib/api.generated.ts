@@ -4487,6 +4487,7 @@ export interface operations {
       cost_usd: number;
       unpriced_requests: number;
       tokens_unknown_requests: number;
+      time_unknown_requests: number;
       days: {
         day: string;
         requests: number;

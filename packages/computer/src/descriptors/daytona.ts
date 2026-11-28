@@ -107,6 +107,8 @@ export const DAYTONA = defineProvider({
 	settings: [{ name: "daytonaConnect", option: "connect" }],
 	connect: "either",
 	metered: true,
+	// Its create answers the size the vendor runs the computer at (resources), which its time is priced by.
+	sized: true,
 	// No mount by default: on Daytona's hosted cloud, Archil's client (0.10.1) mounts on its container sandboxes, but
 	// nothing reads its /dev/fuse after, so the first statx of the folder hangs, on every kernel and mount shape tried
 	// (live, 11-14). An Archil mount is refused in these words, before any request. A self-hosted Daytona target whose
