@@ -118,8 +118,11 @@ type Service = {
 /** A command as the exec pieces hold it: its socket, its events not yet read and their bytes, and its exit once read. */
 type Exec = { socket: NorthflankSocket; queue: FramedEvent[]; queued: number; closed: boolean; exit?: number; failure?: Error; drain?: ReturnType<typeof setTimeout>; wake: () => void };
 
-/** Northflank's deployment statuses (S) as the adapter's; a service that expired is paused, so stopped. */
-const STATES: Readonly<Record<string, Machine["state"]>> = { PENDING: "starting", IN_PROGRESS: "starting", COMPLETED: "running", FAILED: "gone" };
+/**
+ * Northflank's deployment statuses (S) as the adapter's; a service that expired is paused, so stopped. A FAILED one is
+ * stopped too, not gone: the service is still there, and only a listed computer reaches the janitor's delete.
+ */
+const STATES: Readonly<Record<string, Machine["state"]>> = { PENDING: "starting", IN_PROGRESS: "starting", COMPLETED: "running", FAILED: "stopped" };
 
 /** The annotations as a map of strings: S types them "string or object". */
 function annotationsOf(value: unknown): Record<string, string> {
