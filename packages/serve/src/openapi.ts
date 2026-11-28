@@ -198,6 +198,7 @@ const WRAPPED: Json = closed({
   cost_usd: { type: "number", minimum: 0, description: "The list price of the requests that could be priced; `unpriced_requests` counts those that could not." },
   unpriced_requests: COUNT,
   tokens_unknown_requests: { ...COUNT, description: "Requests whose session recorded no tokens for them (Cursor's CLI keeps none): `tokens` holds none of theirs, so when it is all of `requests` the year's tokens are unknown, not zero." },
+  time_unknown_requests: { ...COUNT, description: "Requests whose time is only their session's start (Cursor's CLI keeps no message times): `hours`, `weekdays` and `days` count them at that start, and `active_ms` holds none of their time, so when it is all of `requests` the year's time at work is unknown, not zero." },
   days: { type: "array", description: "Each local day with a request, ascending.", items: closed({ day: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" }, requests: COUNT, tokens: COUNT }) },
   hours: { type: "array", minItems: 24, maxItems: 24, items: COUNT, description: "Requests by local hour of the day." },
   weekdays: { type: "array", minItems: 7, maxItems: 7, items: COUNT, description: "Requests by local weekday, Sunday first." },

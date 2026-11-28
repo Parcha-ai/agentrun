@@ -271,6 +271,11 @@ export interface ClaimComputer {
   /** The computer outlives the run: a person's paired computer or the agent's own (a persistent setting), never deleted
    *  when the run ends, so the model is never told it is (computerFilesNote). */
   readonly outlives?: true;
+  /** Where the run's sandbox, desktop or phone reaches, where that is less than the internet (its spec's network,
+   *  computer-deps.ts networkOf): "none", nowhere; a list, those hosts alone. The model is told so once
+   *  (computerReachNote). Absent: an open network, a paired computer (a person's own, whose network is theirs), a
+   *  browser, or a computer --faux's launch made. */
+  readonly reach?: Reach;
   /** The kind of computer a park of this claim keeps (`park`): a desktop, a phone or a sandbox the claim made through its
    *  provider, or took back from an earlier claim's park. Absent: a park lets the computer go as the run's end does. */
   readonly keeps?: KeptKind;
@@ -294,6 +299,13 @@ export interface ClaimComputer {
    *  after it takes the row off. Absent: the park writes the row itself. */
   keepRow?(): Promise<boolean>;
 }
+
+/** Where a computer reaches, where that is less than the internet: "none", nowhere; a list, those hosts alone. */
+export type Reach = "none" | { readonly allow: readonly string[] };
+
+/** Where a computer made with `network` reaches (Reach): none for an open network, or none named. */
+const reachOf = (network: ComputerSpec["network"] | undefined): Reach | undefined =>
+  network === "none" ? "none" : typeof network === "object" && network !== null ? { allow: [...network.allow] } : undefined;
 
 /** The kinds of computer a claim makes the run fresh. */
 export type MadeKind = "desktop" | "sandbox" | "phone";
@@ -1024,6 +1036,8 @@ export async function computerForClaim(
   let outlives = false;
   /** This claim started the computer (ClaimComputer.fresh). */
   let startedHere = false;
+  /** Where the computer made, or taken back, reaches (ClaimComputer.reach). */
+  let reach: Reach | undefined;
   const now = deps.now ?? Date.now;
   /** The store's clock (the deadlines': the database's on Postgres), the one a kept computer's `until` is stamped and
    *  judged by everywhere (computer-kept.ts Kept.until), never this runner's own. */
@@ -1082,21 +1096,32 @@ export async function computerForClaim(
   };
   /** What a computer of `kind` from `entry` is made with under this claim, but its mount: the deps' spec, within what
    *  `provider` declares it makes, from the image it prepares (readyImage) or the spec's, under the claim's labels. */
-  const specOf = async (entry: ProviderEntry, provider: ComputerProvider, kind: ComputerSettingKind, configuration: KindCapabilities, signal: AbortSignal | undefined, gpu?: ComputerSpec["gpu"]): Promise<ComputerSpec> => {
-    // What this provider makes, as it declares it: the spec asks for one of its networks, within its lifetime
-    // (computer-deps.ts computerSpecOf).
+  /** What the run asks of a computer from `provider`: what the launch allows, within what the provider declares it makes
+   *  (its networks, its lifetime: computer-deps.ts computerSpecOf). */
+  const runOf = (provider: ComputerProvider): ComputerRun => {
     const { network: networks, maxLifetimeMs } = provider.capabilities();
-    const run: ComputerRun = {
+    return {
       ...(launch.boxAllow === undefined ? {} : { boxAllow: launch.boxAllow }),
       ...(launch.boxAllowSet ? { boxAllowSet: true as const } : {}),
       ...(networks ? { networks } : {}),
       ...(typeof maxLifetimeMs === "number" ? { maxLifetimeMs } : {}),
     };
+  };
+  /** Where a computer of `kind` from `provider` made under this launch reaches (ClaimComputer.reach): the spec's network,
+   *  read without its image. A spec this server refuses now says nothing. */
+  const reachSpec = (entry: ProviderEntry, provider: ComputerProvider, kind: MadeKind, configuration: KindCapabilities): Reach | undefined => {
+    try {
+      return reachOf(deps.spec(entry, kind, runOf(provider), configuration.image).network);
+    } catch {
+      return undefined;
+    }
+  };
+  const specOf = async (entry: ProviderEntry, provider: ComputerProvider, kind: ComputerSettingKind, configuration: KindCapabilities, signal: AbortSignal | undefined, gpu?: ComputerSpec["gpu"]): Promise<ComputerSpec> => {
     // A provider that declares it prepares its own image (its prepareImage(): its recipe built when the engine lacks it,
     // an image by name pulled) does so first, and the computer starts from the tag it answers: the recipe's tag is in no
     // registry, so a run of it unbuilt would be refused. The spec comes first, so a setting it refuses builds nothing. A
     // configuration that names its image starts from it, else the kind's default.
-    const asked = deps.spec(entry, kind as Exclude<ComputerSettingKind, "none">, run, configuration.image);
+    const asked = deps.spec(entry, kind as Exclude<ComputerSettingKind, "none">, runOf(provider), configuration.image);
     const ready = await readyImage(entry, provider, signal, deps.onImageWait);
     const image = ready ?? asked.image;
     if (image === undefined) throw new Error(`${entry.label} names no image for its ${kind} computer and prepares none`);
@@ -1265,6 +1290,8 @@ export async function computerForClaim(
         const again = record.kind === "sandbox" ? lostAware(taken, renewalOf(provider, entry, () => specOf(entry, provider, kind, configuration, deps.signal, gpu), folder)) : taken;
         keepable = { provider, entry: entry.id, kind: record.kind, computer: again, pinned: pinnedHere(entry, configuration), epoch: record.epoch, disk: record.disk };
         ownKind = record.kind;
+        // Made under this launch by the claim that parked it, so with the network this claim's spec asks.
+        reach = reachSpec(entry, provider, record.kind, configuration);
         const screen = record.kind === "sandbox" ? undefined : record.kind;
         made = { id: again.id, machine: again.machine, ...(again.watch && screen ? { watch: again.watch, gone: goneOf(provider, again.id, runLabels(launch.runId, record.epoch), screen) } : {}) };
         madeBy = entry;
@@ -1301,6 +1328,8 @@ export async function computerForClaim(
       const provider = pairedRow ? pairedProvider(pairedRow, deps.attached?.hub, deps.attached?.relay, launch.claim as Claim | undefined) : await vendorProvider(entry, keys, configuration);
       outlives = pairedRow !== undefined || persistent === true;
       const spec: ComputerSpec = { ...(await specOf(entry, provider, kind, configuration, signal, gpu)), ...(mount ? { mount } : {}) };
+      // A paired computer is a person's own, its network theirs: the spec's network says nothing of it.
+      reach = !pairedRow && kind !== "browser" ? reachOf(spec.network) : undefined;
       // A browser makes nothing here: the run's browser tool opens each session through it, so a session lives (and is
       // booked) only while the tool holds it.
       if (kind === "browser") {
@@ -1545,6 +1574,7 @@ export async function computerForClaim(
     ...(ownKind ? { made: ownKind } : {}),
     ...(startedHere ? { fresh: true as const } : {}),
     ...(outlives ? { outlives: true as const } : {}),
+    ...(reach && runComputer && runComputer.kind !== "browser" ? { reach } : {}),
     ...(keeps ? { keeps: keeps.kind } : {}),
     ...(meter ? { settle: () => meter.stopAll() } : {}),
     release,

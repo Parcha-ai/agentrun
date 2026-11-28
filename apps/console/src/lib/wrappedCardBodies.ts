@@ -136,7 +136,7 @@ const hours: BodyOf = (data) => {
     ...(hour === undefined ? {} : { figure: { value: hourWords(hour), unit: "busiest hour" } }),
     rows: [
       ...(weekday === undefined ? [] : [{ label: "Busiest day", value: WEEKDAY_NAMES[weekday]! }]),
-      { label: "Time at work", value: hoursAtWork(data.active_ms) },
+      { label: "Time at work", value: data.requests > 0 && data.time_unknown_requests >= data.requests ? "Unknown" : hoursAtWork(data.active_ms) },
       { label: "Days at work", value: count(data.days.length) },
     ],
     charts: [
