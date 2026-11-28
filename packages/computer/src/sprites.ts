@@ -68,14 +68,21 @@ const BACKLOG_BYTES = 1024 * 1024;
 const AFTER_DISCONNECT = "10s";
 /** The exec socket's frames (D exec): the first byte names the stream. */
 const FRAME = { stdin: 0, stdout: 1, stderr: 2, exit: 3, eof: 4 } as const;
+/**
+ * The output a command may have waiting, read off its socket and not yet taken: at it the exec ends. The socket has
+ * no flow control and Fly keeps no position to read on from, so a reader that stops would otherwise make this process
+ * hold all of it. framedExec takes output as fast as its caller reads; the most the adapter or the bench reads in one
+ * go is a file through exec (10 MiB, under 14 MiB as base64), so 64 MiB is several times that and still a bound.
+ */
+const QUEUE_BYTES = 64 * 1024 * 1024;
 
 /** A sprite as the API answers it (S SpriteInfo), as far as this host reads it. */
 type Sprite = { name: string; status?: string; labels?: string[]; created_at?: string };
 /**
- * A command as the exec pieces hold it: its socket, its events not yet read, and its session once Fly names it (named
- * settles then, or when the socket closes first).
+ * A command as the exec pieces hold it: its socket, its events not yet read and their output's bytes, and its session
+ * once Fly names it (named settles then, or when the socket closes first).
  */
-type Exec = { socket: SpritesSocket; queue: FramedEvent[]; closed: boolean; failure?: Error; session?: string; named: Promise<void>; wake: () => void };
+type Exec = { socket: SpritesSocket; queue: FramedEvent[]; queued: number; closed: boolean; failure?: Error; session?: string; named: Promise<void>; wake: () => void };
 
 /** Fly's statuses: cold and warm are a sprite asleep, which the next exec wakes. */
 const STATES: Readonly<Record<string, Machine["state"]>> = { running: "running", warm: "running", cold: "running" };
@@ -213,9 +220,19 @@ class SpritesHost implements MachineHost {
 		const socket = this.#webSocket(url.href, { headers: { Authorization: `Bearer ${this.#token}` } });
 		socket.binaryType = "arraybuffer";
 		let named!: () => void;
-		const exec: Exec = { socket, queue: [], closed: false, named: new Promise<void>((done) => (named = done)), wake: () => {} };
-		const push = (event: FramedEvent) => {
+		const exec: Exec = { socket, queue: [], queued: 0, closed: false, named: new Promise<void>((done) => (named = done)), wake: () => {} };
+		const push = (event: FramedEvent, bytes = 0) => {
+			if (exec.closed) return;
 			exec.queue.push(event);
+			exec.queued += bytes;
+			if (exec.queued >= QUEUE_BYTES) {
+				// What is waiting goes, and the events end in this error once framedExec next reads them.
+				exec.failure ??= new Error(`the command's output not read passed ${QUEUE_BYTES / 1024 / 1024} MiB, so the exec ended: its reader stopped reading`);
+				exec.queue.length = 0;
+				exec.queued = 0;
+				exec.closed = true;
+				socket.close(1000);
+			}
 			exec.wake();
 		};
 		let opened!: (failure?: Error) => void;
@@ -233,7 +250,7 @@ class SpritesHost implements MachineHost {
 			const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : undefined;
 			if (bytes === undefined || bytes.length === 0) return;
 			const payload = Buffer.from(bytes.buffer, bytes.byteOffset + 1, bytes.length - 1);
-			if (bytes[0] === FRAME.stdout || bytes[0] === FRAME.stderr) push({ stream: bytes[0] === FRAME.stdout ? "stdout" : "stderr", base64: payload.toString("base64") });
+			if (bytes[0] === FRAME.stdout || bytes[0] === FRAME.stderr) push({ stream: bytes[0] === FRAME.stdout ? "stdout" : "stderr", base64: payload.toString("base64") }, payload.length);
 			else if (bytes[0] === FRAME.exit) push({ exit: payload[0] ?? 0 });
 		});
 		socket.addEventListener("error", (event) => {
@@ -265,6 +282,7 @@ class SpritesHost implements MachineHost {
 			for (;;) {
 				const event = exec.queue.shift();
 				if (event !== undefined) {
+					if ("base64" in event) exec.queued -= Buffer.byteLength(event.base64, "base64");
 					yield event;
 					if ("exit" in event) return;
 					continue;
