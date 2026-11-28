@@ -111,6 +111,36 @@ test("a Python script whose call is stopped while it starts runs no step of the 
   await until(async () => !running(killed[0]), "the worker is gone", 5_000);
 });
 
+test("a Python script's worker process holds none of the server's environment", { skip: process.platform !== "linux" && "reads /proc" }, async () => {
+  const sentinel = "AGENTRUN_TEST_SENTINEL";
+  process.env[sentinel] = "not-a-secret";
+  const seen = [];
+  try {
+    // While the script waits on its call, its worker is this process's `monty` child: what it was started with.
+    const nested = {
+      call: async () => {
+        for (const pid of childrenOf(process.pid)) {
+          if (readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0")[0].split("/").pop() !== "monty") continue;
+          seen.push(readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").filter(Boolean).map((pair) => pair.slice(0, pair.indexOf("="))));
+        }
+        return { text: "ran", fresh: true };
+      },
+      memo: async (_key, value) => value,
+    };
+    const answer = await runPython('await tools.read_file({})\nreturn "done"', TOOLS, nested, new AbortController().signal);
+    assert.equal(answer.structured, "done", answer.text);
+  } finally {
+    delete process.env[sentinel];
+  }
+  // The script's worker, and any the pool started beside it.
+  assert.ok(seen.length >= 1, "its worker, found while the script ran");
+  assert.ok(seen.every((names) => !names.includes(sentinel)), "the sentinel set in the server's environment is in no worker's");
+  assert.deepEqual(seen, seen.map(() => []), `each worker starts with an empty environment (they held: ${JSON.stringify(seen)})`);
+});
+
+/** The pids of process `pid`'s children (Linux). */
+const childrenOf = (pid) => readdirSync(`/proc/${pid}/task`).flatMap((task) => readFileSync(`/proc/${pid}/task/${task}/children`, "utf8").trim().split(/\s+/).filter(Boolean));
+
 /** Whether process `pid` runs: on Linux not a zombie (dead, waiting to be reaped), elsewhere any process at all. */
 function running(pid) {
   try {
