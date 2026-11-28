@@ -44,7 +44,7 @@ Vercel's (`src/vercel.ts`), Fly.io Sprites' (`src/sprites.ts`), InstaBox's (`src
 | [DigitalOcean MicroVMs](https://docs.digitalocean.com/products/microvms) | a microVM running one OCI image | blocked (the idle pause can't be switched off; exec would also need a shim of ours over the pty console) | about 300 if the pause could be switched off | [packed labels][pl], [prepareImage][pi] |
 | [Fly Machines](https://docs.fly.io/machines/api/machines-resource) | KVM microVMs from an OCI image | blocked (`exec`: answers once the command ends) | n/a | none |
 | [Fly.io Sprites](https://docs.fly.io/sprites) | persistent Linux VMs that sleep when idle | built (`src/sprites.ts`, a sandbox alone: no image or snapshot a create can name, so no desktop or Archil; `extend` left out; unverified until the live run: amd64, a label string's 64 bytes, a taken name's 409, root and its network namespace, 75 s of exec silence, an exec keeping a sprite awake) | 304, built | [framedExec][fe], [packed labels][pl] |
-| [Freestyle VMs](https://www.freestyle.sh/docs/vms.md) | Linux VMs | built (`src/freestyle.ts`, a dial sandbox: its SSH gateway publishes no host key to pin and its exec answers once the command ends, so one exec as root starts agentrun-dial, the boot env its env, and the VM dials AgentRun; the box image's snapshot built once in the account; unverified until the live run: exec's env and a setsid process outliving the call, a taken slug's 409, a deleted VM's 404, the metadata filter, amd64 and root's network namespace, `install.sh` on the Ubuntu 24.04 base) | 442, built | [dial-out][dl], [packed labels][pl], [backstopAt][bs], [prepareImage][pi] |
+| [Freestyle VMs](https://www.freestyle.sh/docs/vms.md) | Linux VMs | built (`src/freestyle.ts`, a dial sandbox: its SSH gateway publishes no host key to pin and its exec answers once the command ends, so one exec as root starts agentrun-dial, the boot env its env, and the VM dials AgentRun; prepareImage builds the box image's snapshot on freestyle/ubuntu once per account; `install.sh` stops on Ubuntu 24.04 at `firefox-esr` (measured with Docker); unverified until the live run: exec's env and a setsid process outliving the call, a taken slug's 409, a deleted VM's 404, the metadata filter, amd64 and root's network namespace) | 573, built | [dial-out][dl], [packed labels][pl], [backstopAt][bs], [prepareImage][pi] |
 | [Google Agent Platform sandboxes](https://docs.cloud.google.com/gemini-enterprise-agent-platform/scale/sandbox?hl=en) | Google-managed gVisor containers | blocked (`exec`: one-shot, not root) | n/a | none |
 | [Google GKE Agent Sandbox](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/agent-sandbox) | gVisor pods on the user's cluster | needs a workaround (a Kubernetes client and GKE auth in the host; unverified: root makes a network namespace under GKE's gVisor, the exec stream has no idle cut) | 300-380 | [framedExec][fe], [packed labels][pl], [prepareImage][pi] |
 | [Hugging Face Sandboxes](https://huggingface.co/docs/huggingface_hub/main/concepts/sandbox) | a VM per Job | blocked (network fence: no nested namespaces, per the vendor's docs) | about 240 if the fence held | [ssh-exec][se], [packed labels][pl], [backstopAt][bs], [prepareImage][pi] |
@@ -276,16 +276,24 @@ provider spec.
   (`autoDeleteSeconds: 0`) and never restarted, and the janitor ends it at its deadline
   ([lifecycle](https://www.freestyle.sh/docs/vms/lifecycle.md)). A 409 create is a taken slug or no capacity: the
   slug's read tells them apart.
-- **Image:** the box image's snapshot in the key's account, `agentrun-box-<recipe hash>`, which
-  [prepareImage](PROVIDERS.md#wire-it-up) names and the operator builds once on Freestyle's Ubuntu base
-  ([base snapshots](https://www.freestyle.sh/docs/vms/base-snapshots.md)); there is no OCI import, and no create field
-  makes a snapshot public.
-- **Built:** `src/freestyle.ts`, key `FREESTYLE_API_KEY`; its tests run on a fake of the REST API, through the dial to
-  the daemon's hello and the provider's Core cases. No `exec`, `upload` or `extend`.
-- **Open:** unverified until the live run: exec-await's env reaching its command as root, and a process it detached
-  living on after the call; a call that asks no background request answered inline; a taken slug's 409; a deleted VM's
-  404; the metadata filter matching every pair; amd64 and root's `unshare -n`; the public-egress rule resolving names;
-  `install.sh` on the Ubuntu 24.04 base.
+- **Image:** the box image's snapshot in the key's account, slug `agentrun-box-<recipe hash>`.
+  [prepareImage](PROVIDERS.md#wire-it-up) finds it, or builds it once the way Morph's is built: boot Freestyle's Ubuntu
+  base ([base snapshots](https://www.freestyle.sh/docs/vms/base-snapshots.md)), run `install.sh` detached, poll its exit
+  file, and snapshot the VM. There is no OCI import, and no create field makes a snapshot public.
+- **Built:** `src/freestyle.ts`, key `FREESTYLE_API_KEY`. Its tests run on a fake of the REST API, through the dial to
+  the daemon's hello, the provider's Core cases and the snapshot build. No `exec`, `upload` or `extend`.
+- **Open:** `install.sh` stops on Ubuntu 24.04. Measured with Docker's `ubuntu:24.04`: `packages` passes, then `desktop`
+  stops on `firefox-esr`, which Ubuntu doesn't package.
+- **Unverified until the live run:**
+  - exec-await's env reaching its command as root;
+  - a process exec-await detached living on after the call;
+  - a call that asks for no background request being answered inline;
+  - a taken slug's 409;
+  - a deleted VM's 404;
+  - the metadata filter matching every pair;
+  - amd64 and root's `unshare -n`;
+  - the public-egress rule resolving names;
+  - a VM booted from a snapshot of a running VM.
 
 ### Google
 

@@ -519,14 +519,24 @@ so nothing reaches into a VM. Its API names no env and no command a VM runs at b
 image's snapshot, waits for it to read `running`, and starts `agentrun-dial` under `setsid` in one `exec-await` as
 root, with the boot env as that command's own env: the launch script on disk holds no token, and the env stays in the
 creating process for `redial`, which another process can't do. The labels are packed into the VM's metadata, and
-`list` filters by them. `dialLog`, `dialExit` and `redial` read and rerun the same files as Render's. The image is the
-box image's snapshot in the key's account, `agentrun-box-<recipe hash>`, which `prepareImage()` names with no call.
+`list` filters by them. `dialLog`, `dialExit` and `redial` read and rerun the same files as Render's. Once the POST has
+made the VM, a later step's failure deletes it by its id, and is never a refusal, which would tell the adapter nothing
+was made. Output that echoes the token is shown as `<AGENTRUN_ATTACH_TOKEN>` in an error.
 
-- **Gap: the operator builds Freestyle's box snapshot.** Boot `freestyle/ubuntu`, run `install.sh` as root, and snapshot
-  the VM (`POST /v5/vms/{id}/snapshot` with the slug `prepareImage()` names). `install.sh` is written for Debian
-  (`python:3.12-slim`), and on Ubuntu 24.04 two of its steps stop as they stand: `packages` refuses an image with a
-  sudoers file, and `desktop` installs `firefox-esr`, which Ubuntu doesn't package. Until `install.sh` builds on that
-  base, the snapshot is unverified, and so is a `prepareImage()` that builds it in code.
+The image is the box image's snapshot in the key's account, slug `agentrun-box-<recipe hash>`. `prepareImage()` finds
+it, or builds it once the way Morph's is built:
+- boot `freestyle/ubuntu`;
+- upload the recipe's files;
+- start `install.sh` detached as root, then read its exit file through `exec-await` until it's there (an install runs
+  past exec-await's 300 s);
+- snapshot the VM under that slug (`POST /v5/vms/{id}/snapshot`).
+
+The build VM is deleted on every path, and has a two-hour `ttlSeconds` besides. A slug another build took first is the
+snapshot every caller answers.
+
+- **Gap: `install.sh` stops on Freestyle's Ubuntu 24.04 base.** Measured with Docker's `ubuntu:24.04`: `packages`
+  passes, then `desktop` stops at its `apt-get install`. `firefox-esr` has no Ubuntu package, and its checks name it
+  too. Until the recipe installs a browser Ubuntu has, a live build fails at that step, in its log's words.
 
 #### Worked example: Fly Machines
 
@@ -559,8 +569,8 @@ COMPUTER_FLY_API_TOKEN=… COMPUTER_FLY_APP=agentrun-computers-<org slug> AGENTR
 Render's is `COMPUTER_RENDER_API_KEY=… COMPUTER_RENDER_WORKSPACE_ID=tea-… AGENTRUN_PUBLIC_URL=https://… PORT=8080 node
 packages/serve/scripts/dial-conformance.mjs --provider render`, with `COMPUTER_RENDER_IMAGE` naming a build of your own
 in place of the box build. Freestyle's is `AGENTRUN_COMPUTER_LIVE_FREESTYLE=1 COMPUTER_FREESTYLE_API_KEY=… AGENTRUN_PUBLIC_URL=https://… PORT=8080 node
-packages/serve/scripts/dial-conformance.mjs --provider freestyle`, with `COMPUTER_FREESTYLE_IMAGE` naming a snapshot
-of your own in place of the box snapshot.
+packages/serve/scripts/dial-conformance.mjs --provider freestyle`. It finds or builds the box snapshot first, unless
+`COMPUTER_FREESTYLE_IMAGE` names a snapshot of your own.
 
 `COMPUTER_FLY_KIND=desktop` runs the desktop suite (unset, linux); Cloudflare, Modal and Daytona's modules read `COMPUTER_CLOUDFLARE_KIND`, `COMPUTER_MODAL_KIND` and `COMPUTER_DAYTONA_KIND` the same way.
 

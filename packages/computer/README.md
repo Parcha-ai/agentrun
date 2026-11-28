@@ -3468,21 +3468,24 @@ import { providerFor } from "@parcha/agentrun-computer";
 
 // The key is the caller's to pass (serve's FREESTYLE_API_KEY); the machines dial the server's public address.
 const freestyle = await providerFor("freestyle", { apiKey, dial: { url: publicUrl, tokens, hub } });
-const image = await freestyle.prepareImage(); // agentrun-box-<recipe hash>, the box image's snapshot in the account
+const image = await freestyle.prepareImage(); // the sh- id of agentrun-box-<recipe hash>, found or built in the account
 ```
 
-A Freestyle computer is a [Freestyle](https://www.freestyle.sh/docs/vms.md) VM, with a kernel of its own, from the box
-image's snapshot in the key's account, `agentrun-box-<recipe hash>` (`prepareImage()` names it with no call), or another
-snapshot by its `sh-` id or slug, or a public one as `{owner}/{slug}`; Freestyle's base snapshots (`freestyle/...`) have
-no `agentrun-dial` and are refused. Build the box snapshot once as [PROVIDERS.md](PROVIDERS.md#machines-that-dial-in)
-says. It is a sandbox alone, and its machines dial the server (facts.connect `"dial"`): Freestyle's exec answers once
+A Freestyle computer is a [Freestyle](https://www.freestyle.sh/docs/vms.md) VM with a kernel of its own. It starts from
+one of:
+- the box image's snapshot in the key's account, slug `agentrun-box-<recipe hash>`;
+- another snapshot, by its `sh-` id or its slug;
+- a public snapshot, as `{owner}/{slug}`.
+
+Freestyle's base snapshots (`freestyle/...`) have no `agentrun-dial`, so they're refused. `prepareImage()` finds the box
+snapshot, or builds it once on `freestyle/ubuntu`, as [PROVIDERS.md](PROVIDERS.md#machines-that-dial-in) says. It is a sandbox alone, and its machines dial the server (facts.connect `"dial"`): Freestyle's exec answers once
 the command ends, and its SSH gateway publishes no host key to pin. Freestyle runs on the shared machine-host adapter:
 `src/freestyle.ts` is its `MachineHost`, over the Freestyle API (`https://api.freestyle.sh/v5`, `Authorization: Bearer
 <key>`) with `fetch` and the shared REST client, no SDK.
 
 | MachineHost | Freestyle |
 | --- | --- |
-| `create` | `POST /v5/vms` with the request's name as `slug`, the snapshot as `snapshotId`, the packed labels as `metadata`, `ttlSeconds` at the backstop, `autoDeleteSeconds: 0`, `automaticRestart: false` and a firewall that allows public egress; a 409 is a taken slug where the slug reads a VM (`exists`), else no capacity (`limit`). Then `GET /v5/vms/{id}` until it reads `running`, and one `POST /v5/vms/{id}/exec-await` as root that writes the launch script and starts `agentrun-dial` under `setsid`, with the boot env as the command's env, never sent again once it may have run; a VM made by a create that fails after is deleted |
+| `create` | `POST /v5/vms` with the request's name as `slug`, the snapshot as `snapshotId`, the packed labels as `metadata`, `ttlSeconds` at the backstop, `autoDeleteSeconds: 0`, `automaticRestart: false` and a firewall that allows public egress; a 409 is a taken slug where the slug reads a VM (`exists`), else no capacity (`limit`). Then `GET /v5/vms/{id}` until it reads `running`, and one `POST /v5/vms/{id}/exec-await` as root that writes the launch script and starts `agentrun-dial` under `setsid`, with the boot env as the command's env, never sent again once it may have run. A create that fails after the POST deletes the VM by its id, and its error is never a refusal |
 | `get` | `GET /v5/vms/{id}`: starting is starting, running is running, pausing, paused and stopped are stopped, another state stopped with a why; a 404 is none |
 | `list` | `GET /v5/vms?metadata=<name>:<value>,...`, every page by `offset`, then the asked labels kept here |
 | `delete` | `DELETE /v5/vms/{id}`, a 404 done |
@@ -3490,13 +3493,25 @@ the command ends, and its SSH gateway publishes no host key to pin. Freestyle ru
 
 No `exec` or `upload` (the machine dials) and no `extend` (the janitor moves the deadline label). `check()` takes a
 snapshot by id or slug or a public `{owner}/{slug}` and no size (a VM has its snapshot's). `LIMIT_EXCEEDED` is a
-`limit`; `UNAUTHORIZED` and `FORBIDDEN` are `denied`. The daemon user can't be uid 1000, the VM user's.
+`limit`; `UNAUTHORIZED` and `FORBIDDEN` are `denied`. The daemon user can't be uid 1000, the VM user's. Every call,
+retries included, ends at its caller's bound or abort. Output that echoes the dial token never reaches an error: it's
+shown as `<AGENTRUN_ATTACH_TOKEN>`.
 
-Unverified until the live run: exec-await's env reaching its command, run as root, and a process it detached with
-`setsid` living on after the call; a call that asks no background request answered inline; a taken slug answering 409,
-and a 409 with no VM under the slug meaning no capacity; a deleted VM reading 404; the metadata filter matching every
-pair; metadata keys taking the packed names; the VM being amd64 with its own kernel, where root makes a network
-namespace; the public-egress rule letting the VM resolve names; and the box image building on the Ubuntu 24.04 base.
+`install.sh` doesn't build on Ubuntu 24.04 yet. Measured with Docker's `ubuntu:24.04`, its `desktop` step stops on
+`firefox-esr`, which Ubuntu doesn't package, so a live `prepareImage()` fails at that step in its log's words.
+
+Unverified until the live run:
+- exec-await's env reaches its command, run as root;
+- a process exec-await detached with `setsid` lives on after the call;
+- a call that asks for no background request is answered inline;
+- a taken slug answers 409, and a 409 with no VM under the slug means no capacity;
+- a deleted VM reads 404;
+- the metadata filter matches every pair, and metadata keys take the packed names;
+- the VM is amd64 with its own kernel, where root makes a network namespace;
+- the public-egress rule lets the VM resolve names;
+- a command of some 20 KB is taken whole;
+- a VM booted from a snapshot of a running VM starts `agentrun-dial` cleanly;
+- a snapshot found by its slug is ready to boot.
 
 ## Conformance
 
