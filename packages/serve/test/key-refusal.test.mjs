@@ -4,13 +4,15 @@
 // found"}}), on a direct provider, and on serve's gateway. A pi run through a loopback gateway that answers 401 ends
 // with those words as its error.
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { test } from "node:test";
 import { agent, follow, serve, withEnv } from "./support.mjs";
 import { readCost, redactedAnswer, redactedCall } from "../dist/key-refusal.js";
-import { marksOf, OPEN_OSC, scanned, shownIn } from "../dist/redact/match.js";
+import { marksOf, scanned, shownIn } from "../dist/redact/match.js";
 import { CALL_RESULT_CHARS, scrubUrls } from "../dist/timeline/index.js";
 import { cut } from "../dist/timeline/util.js";
+import { COSTLY, COSTLY_PARTS, fill, PIECE, PY_HEAD, PY_REST, READ_MOST, READING, sparse, VALUE, WORK, wrapped } from "./fixtures/key-refusal-work.mjs";
 import { coverTally, uncovered } from "./fixtures/marks-cover.mjs";
 
 const KEY = `not-a-secret-${"openrouter-key"}`;
@@ -110,7 +112,6 @@ for (const [what, text] of Object.entries(NOT_REFUSALS)) {
 // Python's "\x20" is a space to the view that reads a single-quoted dict through Python's escapes, so padding of it
 // between a held value's head and its rest is nothing there: the read past a call's stop, and the tail of a run too long
 // to read, count it as the view does, and the value reads whole.
-const [PY_HEAD, PY_REST] = [["Wc3M", "hT8q", "Lz5N", "rB1v"].join(""), ["Xe6K", "pJ4d", "Ys9G", "fA2u"].join("")];
 const PY_PAD = String.raw`\x20`.repeat(60);
 
 test("kr-7: a held value split at a call's stop in a single-quoted string, Python's \\x20 padding past the read after the stop, is withheld", () => {
@@ -199,7 +200,6 @@ const CONTROL_PADS = [
   ["raw braille blanks", "\u2800".repeat(300), "json"],
   ["JSON's \\ud800", String.raw`\ud800`.repeat(300), "json"],
 ];
-const wrapped = (kind, body) => (kind === "python" ? `{'a': '${body}'}` : kind === "json in json" ? `{"a": "[\\"${body}\\"]"}` : `{"a": "${body}"}`);
 
 for (const [what, pad, kind] of CONTROL_PADS) {
   test(`kr-9 (${what}): a held value split at a call's stop, control padding past the read after the stop, is withheld`, () => {
@@ -349,36 +349,8 @@ test("the read after a run's head reads each title through the decodings that op
   assert.deepEqual(over, []);
 });
 
-// What the reads cost. A read for the head or the tail of a run too long to read, or past a call's stop (key-refusal.ts
-// peek, tailOf), reads its stretch through every view from every place its join can start, so padding every view reads
-// apart and shows little of costs it hundreds of characters per character. It gives up, and the text is withheld, once
-// it has visited its budget (READ_BUDGET, 356 pieces), checked after each reading: one view's reading of one stretch of
-// at most a piece, which visits at most READING per character of it. So one read visits at most its budget and one
-// reading more, READ_MOST, and as a run is read only where it is longer than a piece, at most twice, the reads of a text
-// visit at most READS_PER_CHARACTER per character of it: 2 x (356 + 175) x 8,192 / 8,193, about 1,061.9. That is over
-// the matcher's bound (WORK, redact-contract.test.mjs) by construction, so the bound on a text's whole cost, the reads
-// and the matcher's own work together, is measured below, on the texts the reads cost most on. READING is measured, not
-// built in: the test below holds it.
-const PIECE = 8192;
-const BUDGET = 356;
-const READING = 175;
-const READ_MOST = (BUDGET + READING) * PIECE;
-const READS_PER_CHARACTER = (2 * READ_MOST) / (PIECE + 1);
-const WORK = 1024;
-const ZWSP = "\u200b";
-// Every decoder's family, so every view reads what follows.
-const FAMILIES = String.raw`%41+\n\\xA&#65;'"\x41` + "\u001b[m";
-const fill = (unit, size) => unit.repeat(Math.ceil(size / unit.length)).slice(0, size);
-/** A run of `length` characters that every view reads apart and shows one character of in 39: `pad` between letters. */
-const sparse = (length, pad = ZWSP) => {
-  let text = FAMILIES;
-  while (text.length < length) text += `${pad.repeat(Math.max(1, Math.floor(38 / pad.length)))}a`;
-  return text.slice(0, length);
-};
-/** Runs of 8,300 such characters, one after another, about `size` characters in all. */
-const runs = (size, pad) => Array.from({ length: Math.max(1, Math.round(size / 8301)) }, () => sparse(8300, pad)).join(" ");
-const VALUE = `${PY_HEAD}${PY_REST}`;
-
+// What the reads cost, and the bounds on it (READING, READ_MOST, WORK), are set out in fixtures/key-refusal-work.mjs,
+// beside the texts the reads cost most on. READING is measured, not built in: this test holds it.
 test("one reading of a stretch visits at most READING characters per character of it, read as if it starts inside every kind of terminal sequence, folded or not", () => {
   const over = [];
   let most = 0;
@@ -403,64 +375,18 @@ test("one reading of a stretch visits at most READING characters per character o
   assert.ok(most > READING - 1, `the most measured, ${most.toFixed(1)}, is READING`);
 });
 
-// The texts the reads cost most on, 32 KiB to 512 KiB, each read through an answer and a call's result: runs of padding
-// every view reads apart (zero-width spaces, and the same as JSON's escapes written twice, as HTML references and
-// percent-encoded, which the marks walk reads most), and a call's stop inside an OSC title never ended, so the read past
-// it reads each view also as the title's own (shownIn's `open`). Runs of apostrophes between Hangul fillers read
-// main's join of each stretch too (its quotes paired otherwise), and runs of empty literals joined by "+" read the
-// values' pass with the operators left out. Each is withheld whole; each visits at most WORK per character in all,
-// each of its reads at most READ_MOST, and its reads at most READS_PER_CHARACTER per character.
-// The matcher's own worst texts read no run and stop no read: DENSE (redact-contract.test.mjs) is in for its total, and
-// k100 for its reads alone. k100 (prose's apostrophe, then JSON strings each holding 100 single-quoted strings joined by
-// "+") visits 1,453.7, 1,465.6 and 1,465.2 per character of an answer here, with no read, over WORK by the matcher's own
-// work: main (120f072308) visits the same. DENSE past a call's stop (after 200 characters of prose, so a call's stop
-// falls in it) puts the read past the stop on the characters the matcher costs most on: that read visits 31,180
-// characters, at 356 pieces as at 92. Written in a JSON string, an answer visits 972.1, 1,008.6 and 1,009.4 per
-// character, with no read, as main does.
-const DENSE = ["q8Vx", "R2mT"].join("");
-const ALL_FAMILIES_STRING = String.raw`"%41+&#65;\"\\x41\\'",`;
-const K100 = `${ALL_FAMILIES_STRING}${`x's "{${"'q8VxR2mT'+".repeat(100)}}"+\\\n`.repeat(4)}`;
-const COSTLY = [
-  ["runs of zero-width spaces", (size) => runs(size)],
-  ["runs of zero-width spaces in a JSON string", (size) => wrapped("json", runs(size))],
-  ["runs of JSON's \\u200b written twice", (size) => runs(size, String.raw`\\u200b`)],
-  ["runs of HTML's &#8203;", (size) => runs(size, "&#8203;")],
-  ["runs of percent-encoded zero-width spaces", (size) => runs(size, "%E2%80%8B")],
-  ["a call's stop inside an OSC title never ended", (size) => wrapped("json", `${"word ".repeat(1000)}${FAMILIES} \u001b]0;${fill(`${ZWSP.repeat(37)}a `, size - 5040)}`), true],
-  ["DENSE", (size) => fill(`${ALL_FAMILIES_STRING}${`"${DENSE}",`.repeat(370)}`, size), false, [DENSE]],
-  ["k100", (size) => fill(K100, size), false, [DENSE], "reads only"],
-  ["DENSE past a call's stop", (size) => `${"word ".repeat(40)}${fill(`${ALL_FAMILIES_STRING}${`"${DENSE}",`.repeat(370)}`, size - 200)}`, false, [DENSE]],
-  ["DENSE in a JSON string past a call's stop", (size) => `{"a": "${"word ".repeat(40)}${fill(`${ALL_FAMILIES_STRING}${`\\"${DENSE}\\",`.repeat(370)}`, size - 210)}"}`, false, [DENSE]],
-  ["runs of apostrophes between Hangul fillers", (size) => runs(size, "\u3164'\u3164")],
-  ["runs of empty literals joined by +", (size) => runs(size, "''+")],
-];
-const READS = {
-  "an answer": (text, values) => redactedAnswer(text, values),
-  "a call's result": (text, values) => cut(redactedCall(text, values, CALL_RESULT_CHARS, scrubUrls), CALL_RESULT_CHARS),
-  "a call's result shown to 200": (text, values) => redactedCall(text, values, 200),
-};
-test("the texts the reads cost most on visit at most WORK characters per character, each read at most READ_MOST, 32 KiB to 512 KiB", (t) => {
-  const over = [];
-  for (const size of [32 * 1024, 128 * 1024, 512 * 1024])
-    for (const [what, make, stop, values = [VALUE], readsOnly] of COSTLY) {
-      const text = make(size);
-      // The prefixed reading runs: the read past the stop starts inside the title.
-      if (stop) assert.ok(marksOf(text).openAt(PIECE) & OPEN_OSC, what);
-      for (const [reader, read] of Object.entries(READS)) {
-        scanned.chars = 0;
-        readCost.chars = 0;
-        readCost.most = 0;
-        const out = read(text, values);
-        const [total, reads] = [scanned.chars / text.length, readCost.chars / text.length];
-        t.diagnostic(`${size / 1024} KiB, ${what}, ${reader}: ${total.toFixed(1)} per character, reads ${reads.toFixed(1)}, most one read ${readCost.most.toFixed(0)}`);
-        if (!readsOnly && total > WORK) over.push(`${size}, ${what}, ${reader}: ${total.toFixed(1)} per character`);
-        if (reads > READS_PER_CHARACTER || readCost.most > READ_MOST) over.push(`${size}, ${what}, ${reader}: reads ${reads.toFixed(1)}, one ${readCost.most}`);
-        // Withheld whole where the read gives up: every read of the runs, and the read past the stop in the title.
-        const gives = values[0] === VALUE && (!stop || reader === "a call's result shown to 200");
-        if (gives && out !== "[redacted]") over.push(`${size}, ${what}, ${reader}: shown`);
-      }
-    }
-  assert.deepEqual(over, []);
+// The work count of the texts the reads cost most on (fixtures/key-refusal-work.mjs) runs in parts, one test file each
+// (key-refusal-work-<k>.test.mjs): together they read every text, each in exactly one part.
+test("the texts the reads cost most on: the work count's parts read every text exactly once, each part file its own part", () => {
+  const files = readdirSync(new URL(".", import.meta.url)).filter((file) => /^key-refusal-work-\d+\.test\.mjs$/.test(file));
+  assert.deepEqual(files.sort(), Array.from({ length: COSTLY_PARTS.length }, (_, i) => `key-refusal-work-${i + 1}.test.mjs`).sort());
+  for (const file of files) {
+    const k = Number(file.match(/\d+/)[0]);
+    const text = readFileSync(new URL(file, import.meta.url), "utf8");
+    assert.deepEqual([...text.matchAll(/costlyWork\(t, (\d+)\)|costlyPartName\((\d+)\)/g)].map((m) => Number(m[1] ?? m[2])), [k, k], file);
+  }
+  assert.deepEqual(COSTLY_PARTS.flat().sort(), COSTLY.map(([what]) => what).sort());
+  assert.ok(COSTLY_PARTS.every((part) => part.length > 0));
 });
 
 // A call's stop after prose, then a run too long to read of padding every view reads apart. With a lead-in of 8,092
