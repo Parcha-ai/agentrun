@@ -69,13 +69,25 @@ function failureOf(lib: Monty, error: unknown): string | undefined {
   return undefined;
 }
 
+/** Whether loading Monty failed because a package is not installed: Monty itself, or its binary for this platform (none
+ *  for musl at 1.6.0), whose loader throws with each failed require's MODULE_NOT_FOUND chained as its cause. */
+function notInstalled(error: unknown): boolean {
+  if ((error as { code?: unknown } | null)?.code === "ERR_MODULE_NOT_FOUND") return true;
+  let cause = (error as { cause?: unknown } | null)?.cause;
+  if (cause === undefined) return false;
+  for (; cause !== undefined; cause = (cause as { cause?: unknown }).cause) {
+    if ((cause as { code?: unknown } | null)?.code !== "MODULE_NOT_FOUND") return false;
+  }
+  return true;
+}
+
 /** Run `script` in Monty over `tools`, each call a nested call answered in the order the script made them. */
 export async function runPython(script: string, tools: readonly HostTool[], nested: NestedCalls, signal: AbortSignal): Promise<ScriptAnswer> {
   let lib: Monty;
   try {
     lib = await monty();
   } catch (error) {
-    const why = (error as { code?: unknown } | null)?.code === "ERR_MODULE_NOT_FOUND" ? `this install lacks the optional package ${MONTY_PACKAGE} (npm installs it with the server unless optional dependencies are left out)` : `${MONTY_PACKAGE} did not load: ${error instanceof Error ? error.message : String(error)}`;
+    const why = notInstalled(error) ? `this install lacks the optional package ${MONTY_PACKAGE} or its build for this platform (npm installs both with the server on glibc Linux and macOS, x64 or arm64, and on Windows x64, unless optional dependencies are left out)` : `${MONTY_PACKAGE} did not load: ${(error instanceof Error ? error.message : String(error)).replace(/\.+$/, "")}`;
     return { text: `${CODEMODE} can't run Python here: ${why}. Write the script in JavaScript instead. Nothing was run.`, isError: true };
   }
   let pool: Awaited<ReturnType<Monty["Monty"]["create"]>>;
