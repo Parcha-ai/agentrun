@@ -2503,6 +2503,42 @@ test("a session resumed after the plan judged it (its file, a subagent's or its 
   assert.deepEqual((await rowsOf(store)).map((r) => r.importedFrom.session).sort(), [48, 49, 50, 51].map(sessionId).sort());
 });
 
+test("a session resumed while the import reads it (written after its live check, before it is saved) is left out as live, never saved as done", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const mine = join(at, "code", "mine");
+  mkdirSync(mine, { recursive: true });
+  const file = claudeSession(at, mine, 61);
+  const h = { at, temp: join(root, "tmp") };
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  const plan = await planImport(options(h), store);
+  assert.deepEqual(plan.skipped, [], "ended when planned");
+  // The write phase begins (each run's live check, then its read): the first open of the session file from then on is its
+  // read, and the person resumes the session then, one more message of theirs.
+  const fs = createRequire(import.meta.url)("node:fs/promises");
+  const open = fs.open;
+  let writing = false;
+  let resumed = false;
+  const opened = t.mock.method(fs, "open", async (path, ...rest) => {
+    const handle = await open(path, ...rest);
+    if (writing && !resumed && path === file) {
+      resumed = true;
+      appendFileSync(file, `${readFileSync(file, "utf8").split("\n").find((line) => line.includes('"type":"user"'))}\n`);
+    }
+    return handle;
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    opened.mock.restore();
+    syncBuiltinESMExports();
+  });
+  const report = await runImport(store, plan, options(h, { onProgress: (phase) => void (phase === "write" && (writing = true)) }));
+  assert.equal(resumed, true, "resumed during the run's read");
+  assert.deepEqual(report.skipped.map((s) => [s.kind, s.what]), [["live", file]]);
+  assert.deepEqual(await rowsOf(store), [], "not saved as done, which every later import would hold as unchanged");
+});
+
 test("a run the import leaves out (a subagent live, or one over the cap found after the session was read) holds none of the session's records: a resumed session that copies them is imported with them", async (t) => {
   for (const why of ["live", "large"]) {
     const root = await scratch(t);
