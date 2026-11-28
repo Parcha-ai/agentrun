@@ -16,7 +16,7 @@ import { checkMount, readBackOf, WORKSPACE, type MountSpec } from "@parcha/agent
 
 The package root holds the protocol, the registry and the descriptors, and loads no provider: a provider loads by its
 id (`providerFor(id, options)`, which imports that one provider's file), or from its subpath (`/docker`, `/daytona`,
-`/modal`, `/e2b`, `/orgo`, `/orgo-desktop`, `/phone-harness`, `/browserbase`, `/kernel`, `/local-chrome`, `/boxd`, `/smolcloud`, `/groundbox`, `/vercel`, `/sprites`). A provider's
+`/modal`, `/e2b`, `/orgo`, `/orgo-desktop`, `/phone-harness`, `/browserbase`, `/kernel`, `/local-chrome`, `/boxd`, `/smolcloud`, `/groundbox`, `/vercel`, `/sprites`, `/instabox`). A provider's
 option types (`DockerProviderOptions`, `ModalProviderOptions` and the like) come from its subpath too, not the root.
 
 The package carries the daemon for Linux amd64 and arm64 in `dist/`, so a provider runs it with no Go on the host. A
@@ -456,7 +456,7 @@ in the kernel's tool registry, keyed by these groups.
   | docker | Docker | sandbox, desktop | none | bind | no |
   | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET`, `DAYTONA_ARCHIL_EGRESS`, `DAYTONA_ATTACH_EGRESS`, `DAYTONA_LISTED_MS` (optional) | none (`unmounted`: archil); archil with `DAYTONA_ARCHIL_EGRESS` (`mountsWith`) | yes |
   | modal | Modal | sandbox | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | archil | yes |
-  | e2b | E2B | sandbox, desktop | `E2B_API_KEY` | archil | yes |
+  | e2b | E2B | sandbox, desktop | `E2B_API_KEY`; `AGENTRUN_E2B_DOMAIN`, `AGENTRUN_E2B_API_URL`, `AGENTRUN_E2B_TEMPLATE` (optional) | archil | yes |
   | orgo | Orgo | desktop (Linux; Windows and macOS with `os`) | `ORGO_API_KEY` | none | yes |
   | phone-harness | Phone harness | phone | `PHONE_HARNESS_API_KEY` | none | yes |
   | browserbase | Browserbase | browser | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | none | yes |
@@ -681,6 +681,8 @@ live under:
   | `AGENTRUN_BOX_APP` | Modal's `app` (serve's default, `agentrun`, when unset) |
   | `AGENTRUN_DOCKER_IMAGE` | Docker's `image` option, `{ image: <name> }` (unset: the provider's own recipe); `docker.image()` makes it ready and gives the tag a computer's spec names |
   | `E2B_API_KEY` | E2B's `apiKey`: serve's new name for the E2B box |
+  | `AGENTRUN_E2B_DOMAIN`, `AGENTRUN_E2B_API_URL` | E2B's `domain` and `apiUrl` (unset: `e2b.app`, and `https://api.<domain>`) |
+  | `AGENTRUN_E2B_TEMPLATE` | E2B's `template`, which its `prepareImage()` answers (unset: the box template); E2B's `imageEnv` too |
   | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | Browserbase's `apiKey`, `projectId`: the names pi-browser reads today |
   | `KERNEL_API_KEY` | Kernel's `apiKey`: the name pi-browser reads today |
   | `BOXD_API_KEY`, `BOXD_ORG`, `BOXD_REGION` | boxd's `apiKey`, `org` and `region` (unset: the key's own org, the API's home region) |
@@ -688,6 +690,7 @@ live under:
   | `GROUNDBOX_API_KEY` | Groundbox's `apiKey` |
   | `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` | Vercel Sandbox's `token`, `teamId` and `projectId`, all required |
   | `SPRITES_TOKEN` | Fly Sprites' `token`: the name Fly's own CLI reads |
+  | `INSTABOX_API_KEY` | InstaBox's `apiKey`: the name InstaBox's own CLI and SDK read |
 
 - **the conformance CLI and the live harness** (`src/conformance/`: the CLI, each provider's conformance module and the
   sweeps) read their own `COMPUTER_<ID>_*` names, the ones the live scripts set, through each module's
@@ -856,7 +859,7 @@ key.
   package's own build, bound read-only with its `package.json`. It is on the provider's egress bridge alone (below),
   publishes no port, and runs as the computer's uid:gid with a read-only root, `--cap-drop ALL`, `no-new-privileges`, 256 MiB, 64
   pids, half a CPU (a fixed quota, not the computer's own cpus), 1024 open files and a bounded log. Its argv holds the list (or `--open public`), the computer's deadline (it ends itself then), this machine's own
-  public addresses (refused as `this-host`), and `egress.hint`, the words a refusal adds (printable ASCII).
+  public addresses (refused as `this-host`), `egress.hint`, the words a refusal adds (printable ASCII), and `--max-tunnels` when `egress.maxTunnels` is set.
   `EGRESS_IMAGE` is the one place its digest is written. `create` pulls it at the first allow computer when the host
   lacks it (see Lifetime), so a host with no registry access pulls it ahead, reading the name from this package:
   `docker pull "$(node --input-type=module -e 'import { EGRESS_IMAGE } from "@parcha/agentrun-computer"; console.log(EGRESS_IMAGE)')"`
@@ -893,7 +896,9 @@ key.
   leaves the host; an IP literal outside a listed CIDR of its own family; any port but 80 and 443; a listed name or
   address that is private, loopback, link-local, metadata, multicast or reserved, in any form it is written (decimal,
   octal, hex, IPv4-mapped, NAT64, 6to4), or one of this machine's own; a Host header that names another host than the
-  URI; SOCKS5 BIND and UDP ASSOCIATE; an HTTP upgrade; past 64 connections open at once or 20,000 in all. A name is
+  URI; SOCKS5 BIND and UDP ASSOCIATE; an HTTP upgrade; past its cap of connections open at once (64 unless
+  `egress.maxTunnels` sets a whole number from 1 to 256: the proxy's 1024 open files hold two per connection; anything
+  else is refused when the provider is made) or 20,000 in all; past the cap a new one is answered 429. A name is
   resolved once, every answer is checked, and the checked address is the one dialled, so rebinding a name between the
   check and the dial reaches nothing new; a redirect reaches the client as sent and is never followed. A log line holds
   the host, port, address and class, never a path, query or header. A refusal reads `403 <host> is not on this box's
@@ -921,7 +926,8 @@ key.
   deadline, runs while the computer runs, is hardened and bounded as above (its memory and swap, pids limit, private
   IPC and cgroup namespaces, and json-file log of 1m and 2 files included) with exactly its volume and code, and whose
   argv holds the list (or `--open public`) and refuses every one of the Docker host's own addresses the provider
-  requires now (more is fine). Anything less is `{ other: "network allow, but its egress proxy ... <why>" }` (or
+  requires now (more is fine), and whose `--max-tunnels`, if any, is a cap create gives (1 to 256), whatever the cap is
+  set to now, so a changed setting leaves running proxies as they are. Anything less is `{ other: "network allow, but its egress proxy ... <why>" }` (or
   `network open, ...`). **A crashed proxy** is not
   restarted: the computer then reaches nothing, its network reads back `other` ("is not running"), and `attach` refuses
   it, so a caller makes a new computer. `list` reads every listed computer's proxy in one more inspect.
@@ -1071,7 +1077,9 @@ const made = await docker.create({ image: image.value, lifetimeMs: 600_000, netw
     built.
 - `DockerProvider`'s `image` option is that source; the default is `{ recipe: DOCKER_RECIPE }`, the provider's own
   image (`DEFAULT_DOCKER_IMAGE`): `python:3.12-slim` pinned by its index digest (`DOCKER_BASE`), with git, curl,
-  nodejs, npm, ripgrep and socat from apt. `docker.image({ signal?, timeoutMs?, onWait? })` is `ensureImage` of it with the
+  xz-utils, ripgrep and socat from apt, and Node.js with its npm in `/usr/local` from the release's own tarball
+  (`DOCKER_NODE_VERSION`, checked against `DOCKER_NODE_SHA256` for the host's architecture before it is unpacked), the
+  release the box image and serve's own image run. `docker.image({ signal?, timeoutMs?, onWait? })` is `ensureImage` of it with the
   provider's docker CLI. A source that is neither throws at construction, in words.
 - **The docker CLI gets only what it reads.** The provider reads no environment: its `env` option is the host's (serve
   passes its own values of the docker descriptor's `hostEnv`), and every docker call it makes (`dockerArch`,
@@ -1975,7 +1983,8 @@ option, never the key. It reads no setting from the environment (see [Settings](
 `E2B_API_KEY`, and the conformance module the `COMPUTER_E2B_API_KEY` it reads, never `E2B_API_KEY`, whose value may be
 another team's on a shared host. The SDK reads `E2B_API_KEY`, `E2B_DOMAIN`, `E2B_API_URL` and `E2B_DEBUG` from
 `process.env` whenever it is not given them (`index.mjs:1140-1152`, `1177-1191`), so every call is given the key, the
-domain (`options.domain`, default `e2b.app`), the API URL `https://api.<domain>` and `debug: false` explicitly: with
+domain (`options.domain`, default `e2b.app`), the API URL (`options.apiUrl`, default `https://api.<domain>`) and
+`debug: false` explicitly: with
 debug on, the SDK fakes a create and skips a kill (`index.mjs:5402`, `6021-6024`). The SDK also takes
 `E2B_SANDBOX_URL` when it is given no sandbox URL, and no option clears it (`index.mjs:1152`, `1183-1185`): it would
 send every call into a sandbox, the upload and the bridge with it, there. So the provider refuses to start while it is
@@ -1986,6 +1995,34 @@ Every call is also given `httpVersion: "1.1"`, which wins over `E2B_HTTP_VERSION
 HTTP/2 otherwise, and when an idle HTTP/2 session times out it throws on a stream with no `error` listener, which ends
 the whole process. A unit test points the real SDK, given the provider's options, at a local server that prefers HTTP/2
 and reads HTTP/1.1 arriving.
+
+### Other clouds, and the operator's template
+
+Three options, each filled by serve's setting of the same row (optional keys of E2B's descriptor, none a secret), point
+the provider at a cloud that speaks E2B's API, with the stock SDK, or at a template of the operator's own:
+
+| option | serve's setting | what it is | unset |
+| --- | --- | --- | --- |
+| `domain` | `AGENTRUN_E2B_DOMAIN` | the cloud's domain: each sandbox's envd is under it, and so is the API unless `apiUrl` names another | `e2b.app` |
+| `apiUrl` | `AGENTRUN_E2B_API_URL` | the API's URL, for a cloud whose API is not `https://api.<domain>`: https, with no login, query or fragment, since the key goes to it; another is refused, naming the setting, before any call | `https://api.<domain>` |
+| `template` | `AGENTRUN_E2B_TEMPLATE` | the template `prepareImage()` answers, so every computer, sandbox or desktop, starts from it; E2B's descriptor names it as its `imageEnv` too, so serve takes an agent's `computer.image` that names it | the box template |
+
+`apiKey` stays `E2B_API_KEY`, the key of whichever cloud the domain names. The SDK sends every call through one proxy,
+so it is given the process's proxy unless `NO_PROXY` exempts the whole domain and a given API URL's host too. The box
+template is public on E2B's own cloud alone; on another, a template of `box/Dockerfile` built on that cloud, named in
+`AGENTRUN_E2B_TEMPLATE`, is the one with Archil's client, which a Mode 2 folder mounts.
+
+The clouds whose docs say they speak E2B's API, and what each needs. None of them is run live yet:
+
+| cloud | settings | status |
+| --- | --- | --- |
+| Maritime | `AGENTRUN_E2B_DOMAIN=sb.mtm.sh` | not yet run live |
+| Orble | `AGENTRUN_E2B_DOMAIN=orble.tech`; it can't build templates, so `AGENTRUN_E2B_TEMPLATE` names one it has | not yet run live |
+| SUFY | `AGENTRUN_E2B_API_URL=https://us-south-1-sandbox.sufyapi.com` | not yet run live |
+| Alibaba Cloud Agent Sandbox | `AGENTRUN_E2B_DOMAIN=<region>.sandbox.aliyuncs.com` and `AGENTRUN_E2B_API_URL`, the API URL its docs give for the region | not yet run live |
+| PPIO | `AGENTRUN_E2B_DOMAIN=sandbox.ppio.cn`; its docs set `E2B_VALIDATE_API_KEY=false`, which e2b@2.63.0 never reads (it checks no key's form) | not yet run live |
+| UCloud | `AGENTRUN_E2B_DOMAIN=cn-wlcb.sandbox.ucloudai.com` | not yet run live |
+| Tencent Cloud Agent Runtime | `AGENTRUN_E2B_DOMAIN`, the endpoint its docs give | not yet run live |
 
 ### How the daemon gets in, and how it is reached
 
@@ -3384,6 +3421,45 @@ Unverified until the live run: the arch (amd64); a label string's room (64 bytes
 user being root or having passwordless sudo, and root making a network namespace; no vendor agent on TCP; the exec
 socket holding 75 s of silence with no ping; and a sprite with an exec running never going to sleep.
 
+## InstaBox
+
+```ts
+import { providerFor } from "@parcha/agentrun-computer";
+
+// The key is the caller's to pass (serve's INSTABOX_API_KEY).
+const instabox = await providerFor("instabox", { apiKey });
+const made = await instabox.create({ image: "minimal", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
+```
+
+An InstaBox computer is an [InstaBox](https://instabox.sh/llms-full.txt) machine: a Firecracker microVM from one of
+InstaBox's templates (`"minimal"` by default, or `agent-browser`, `universal`) or a snapshot of the key's workspace, by
+name or `sn_` id. It is a sandbox alone: a create names no image of ours, so there is no desktop and no Archil mount.
+InstaBox runs on the shared machine-host adapter ([PROVIDERS.md](PROVIDERS.md)): `src/instabox.ts` is its
+`MachineHost`, over the InstaBox API (`https://api.instabox.sh`, `X-API-Key: <key>`) with `fetch` and the shared REST
+client, and over SSH with the host's `ssh2` package, as Agent37 and Morph (no SDK). A computer needs a paid plan: it
+switches off InstaBox's idle pause and maximum run, which the free plan refuses (a 403 `spec_not_allowed`, a `refused`
+in those words).
+
+| MachineHost | InstaBox |
+| --- | --- |
+| `create` | `POST /v1/machines` under an `Idempotency-Key` of the request, with its name, the template (`templateId`) or snapshot (`snapshotId`), the size, the packed labels as `metadata`, `deleteAfterSeconds` at the backstop, `autoSuspendAfterSeconds: 0`, `maxRunMinutes: -1`, no vault and no secrets; the answer's `machineId` is the id |
+| `get` | `GET /v1/machines/{id}`: creating, starting and resuming are starting, running is running once `runtime.ready`, stopping, stopped, suspending and suspended are stopped, deleting and error gone (error in its `lastError` words); a 404 or a `deleted` record is none |
+| `list` | `GET /v1/machines?metadata=<name>:<value>`, every page, then the asked labels kept here and a `deleted` record left out |
+| `delete` | `DELETE /v1/machines/{id}` with `X-Confirm-Delete: <id>` and a fresh `Idempotency-Key`, a 404 done, a `409 operation_conflict` sent again within the call's bound; then the machine's SSH connections end |
+| `exec` | SSH through InstaBox's gateway with `SshExec`, logged in as a token from `POST /v1/machines/{id}/ssh-tokens` (the username, SSH's none auth), the gateway's host key pinned to the token's `hostKeyFingerprint`, which is required: a token answer with none, or one not `SHA256:` and 43 characters of unpadded base64, is refused before any connection, so the token never leaves; the machine's user, `user`, with passwordless sudo; a held token the gateway refuses is let go and another minted, once, and execs refused on the same token share its replacement; the mint is shared by the execs that ask at once and stopped by none of them, each waiting on it within its own time and signal |
+
+No `upload` (InstaBox's file API writes as the machine's user, not root, so the adapter sends the daemon through exec's
+stdin) and no `extend` (the janitor moves the deadline label). `check()` takes a template id or a snapshot's name or
+id, and the sizes InstaBox offers: 2, 4, 8, 16 or 32 vCPUs with 2048 MB each, one alone taking the other's match. A
+rate, quota, concurrency or capacity cap (`rate_limited`, `quota_exceeded`, `concurrency_limit`, `no_capacity`,
+`machine_cooldown`) is a `limit`; `missing_scope` and `permission_denied` are `denied`. The daemon user can't be uid
+1000, the machine user's.
+
+Unverified until the live run: the gateway taking the token as the username with SSH's none auth; its host key being one
+ssh2 verifies, whose sha256 is `hostKeyFingerprint`; a taken name answering 409; a deleted machine reading 404 or a
+`deleted` record; sshd's port 22 being the one vendor listener; `minimal` being on every paid plan; the 8 KiB metadata
+bound counting compact JSON; a silent SSH channel holding 75 s; and root making a network namespace.
+
 ## Conformance
 
 A provider for another vendor passes the same suite as Docker's, with one command. The suite is data: each case in
@@ -3488,6 +3564,10 @@ provider, or a conformance module's:
   folder on the host for a bind, the disk's file API for Archil. `undefined` for a kind it cannot make. The runner
   closes each folder when its case ends. `--provider docker` gives a bind of a new folder under the temp directory,
   owned by the provider's user. Without this export the mount cases skip in words.
+- `export const conformanceClock`, for a host whose timers run on a clock of its own (a fake host's): `{ now(), sleep(ms) }`,
+  the run's clock, which the deadline case reads and waits on, so a 45 s lifetime is waited out on it rather than in
+  real time. It reads no earlier than the clock the provider stamps a deadline with. A vendor's module exports none:
+  its run waits on the wall clock. `packages/serve/scripts/dial-conformance.mjs` takes it the same way.
 
 Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2):
 

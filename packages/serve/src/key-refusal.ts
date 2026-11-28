@@ -92,17 +92,17 @@ const ANSWER_PIECE = 8192;
  *  from every place its join can start, so padding every view reads apart and shows little of costs it hundreds of
  *  characters per character of the stretch. Checked after each reading (one view's, over one stretch of at most a
  *  piece), so a read visits at most this and one reading more: the costliest reading measured visits 174.8 characters
- *  per character of its stretch (READING in key-refusal.test.mjs, 175). 356 pieces is a ruled budget, not one derived
- *  from a measure. The worst cost measured, every view's readings of a stretch read with no sequence open, over the
+ *  per character of its stretch (READING in test/fixtures/key-refusal-work.mjs, 175, held by key-refusal.test.mjs). 356
+ *  pieces is a ruled budget, not one derived from a measure. The worst cost measured, every view's readings of a stretch read with no sequence open, over the
  *  contract's adversarial texts and the padding the cost test reads, is 392.7 characters per character, on adversarial
  *  padding (every family the views decode, then zero-width spaces). A read that goes over the budget withholds the
  *  text, as it does within a piece of that padding. A run is read only where it is longer than a piece, at most twice
  *  (its head and its tail), so the reads cost at most 2 x (356 + 175) pieces over a piece and one character, about
  *  1,062 per character of the text. That is
- *  over the matcher's bound (WORK in redact-contract.test.mjs) by construction; measured, the reads and the matcher's
- *  own work together stay under it on the texts the reads cost most on (key-refusal.test.mjs). No read of the tests'
- *  prose, JSON and logs reaches it, nor of the padding corpora's texts the matcher shows. Spending it only ever
- *  withholds: a read that stops gives undefined, never a shorter stretch. */
+ *  over the matcher's bound (WORK in test/fixtures/redact-work.mjs) by construction; measured, the reads and the
+ *  matcher's own work together stay under it on the texts the reads cost most on (key-refusal-work-<k>.test.mjs). No
+ *  read of the tests' prose, JSON and logs reaches it, nor of the padding corpora's texts the matcher shows. Spending
+ *  it only ever withholds: a read that stops gives undefined, never a shorter stretch. */
 const READ_BUDGET = 356 * ANSWER_PIECE;
 
 /** The stretches a read for `count` characters tries, shortest first: 4 × `count` + 64 characters where that is

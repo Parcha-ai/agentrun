@@ -182,7 +182,7 @@ export type DefinitionInput = {
     mode: "runner";
   } | {
     mode: "sandbox";
-    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel" | "sprites";
+    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel" | "sprites" | "instabox";
   };
   computer?: {
     kind: "none" | "sandbox" | "desktop" | "phone" | "browser";
@@ -825,7 +825,7 @@ export type Run = {
     mode: "runner";
   } | {
     mode: "sandbox";
-    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel" | "sprites";
+    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel" | "sprites" | "instabox";
   };
   computer?: {
     kind: "sandbox" | "desktop" | "phone" | "browser";
@@ -1195,7 +1195,7 @@ export type Capabilities = {
   places: {
     modes: Array<"runner" | "sandbox">;
     boxes: Array<{
-      id: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel" | "sprites";
+      id: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel" | "sprites" | "instabox";
       available: boolean;
       state: "ready" | "unavailable";
       reason?: string;
@@ -1207,7 +1207,7 @@ export type Capabilities = {
       mode: "runner";
     } | {
       mode: "sandbox";
-      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel" | "sprites";
+      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox" | "vercel" | "sprites" | "instabox";
     } | null;
     default_reason?: string;
     allow: Array<string>;
@@ -7742,6 +7742,8 @@ export type GetWrappedResponse = {
   };
   cost_usd: number;
   unpriced_requests: number;
+  tokens_unknown_requests: number;
+  time_unknown_requests: number;
   days: Array<{
     day: string;
     requests: number;
@@ -7755,6 +7757,7 @@ export type GetWrappedResponse = {
     sessions: number;
     requests: number;
     tokens: number;
+    tokens_unknown_requests: number;
     sources: Array<string>;
   }>;
   models: Array<{
@@ -7763,6 +7766,7 @@ export type GetWrappedResponse = {
     tokens: number;
     cost_usd: number;
     unpriced_requests: number;
+    tokens_unknown_requests: number;
   }>;
   sources: Array<{
     source: string;

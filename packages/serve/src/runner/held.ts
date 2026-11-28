@@ -22,6 +22,8 @@ import type { RunModelKey } from "../store/seal.js";
 import type { EndOfRunKept, EndOfRunTurn } from "./loop-contract.js";
 import type { LearnedFirst } from "./learned-first.js";
 import type { ProjectCheckpoint } from "../source-sync/checkpoints.js";
+import type { PaidBooking } from "../paid-calls.js";
+import type { Refusal } from "@parcha/agentrun-kernel";
 
 /** One MCP tool of the claim, its call made by the runner (mcp-run.ts mcpForClaim), with what the gate reads of it. */
 export interface HeldMcpTool {
@@ -57,6 +59,14 @@ export interface HeldMcpAsk {
  *  is. The run, its epoch, its folder, its mode and its revision are the runner's own reads of the claim. */
 export interface HeldComputerAsk {
   readonly hadComputer: () => Promise<boolean>;
+  /** The run's one ledger, which lives in the run's process (ComputeLedger less `judges`, whose answer can't cross the
+   *  channel at once: `judged` says when it turns true): the runner's meter of the claim's computers books their time on
+   *  it, as computerForClaim's in-process caller hands it (ComputerForClaimDeps.compute). Absent: a run with no ledger,
+   *  whose computers' time is on the usage read alone. */
+  readonly compute?: { readonly paid: PaidBooking; readonly pause?: (refusal: Refusal) => Promise<void>; readonly judged: () => Promise<void> };
+  /** Stops the run for good in its words (ComputerForClaimDeps.stopRun): a lost sandbox past its bound ends the run from
+   *  any caller, one outside a tool call too. */
+  readonly stopRun?: (words: string) => Promise<void>;
   readonly turnedOff?: string;
   readonly signal?: AbortSignal;
   readonly say?: (words: string) => void;

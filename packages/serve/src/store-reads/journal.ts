@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import type { Context } from "@earendil-works/chord/context";
 import type { EntryLike, SideSpend, TimelineEvent, TimelineOptions } from "../timeline/index.js";
-import { CALL_ENDED_WITH_RUN, CALL_REFUSED, CAPS, costLabel, endedOnTurnEndingTool, FEEDBACK_SUFFIX, isFeedbackRow, isMessageRow, timelineOf, TOOL_COST, toolCallWords } from "../timeline/index.js";
+import { CALL_ENDED_WITH_RUN, CALL_REFUSED, CAPS, endedOnTurnEndingTool, FEEDBACK_SUFFIX, isFeedbackRow, isMessageRow, timelineOf, TOOL_COST, toolCallWords, usageWords } from "../timeline/index.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { wireName } from "../catalog.js";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
@@ -244,7 +244,7 @@ export async function runTimeline(store: Store, runId: string, context: Context,
   // the run's rows are rendered again with those names' catalog names, so each is labelled by its own.
   const hashed = hashedMcp(catalog?.values() ?? []);
   const rendered = hashed.size ? render(hashed) : first;
-  const priced = booked ? bookedUsage(rendered, entries, options) : withFreeUsage(rendered, entries);
+  const priced = booked ? bookedUsage(rendered, entries, options) : withFreeUsage(rendered, entries, options);
   // An imported run's usage row says the cost its run reads (costOfRun), never a sum of its transcript's unpriced requests.
   const run = await store.runs.get(runId);
   const rows = run?.importedFrom ? importedUsage(priced, run, options) : priced;
@@ -267,7 +267,7 @@ function importedUsage(rows: readonly TimelineEvent[], run: Pick<RunRow, "costUs
   if (row.usage.usd === usd && row.usage.so_far_usd === undefined && (!estimated || row.usage.free === true)) return [...rows];
   const spent = usd === null ? "unknown" : `${usd === 0 ? "$0" : `$${usd.toFixed(4)}`}${estimated ? " est." : ""}`;
   const notMetered = row.usage.not_metered ?? 0;
-  const summary = `${costLabel(options.ended === true)}: ${spent} over ${requests} model request${requests === 1 ? "" : "s"}${toolCallWords(0, notMetered)}`;
+  const summary = usageWords(options, spent, `${requests} model request${requests === 1 ? "" : "s"}${toolCallWords(0, notMetered)}`);
   const usage = { usd, requests, ...(notMetered ? { not_metered: notMetered } : {}) };
   return rows.map((each, i) => (i === at ? { ...row, summary, usage } : each));
 }
@@ -362,12 +362,12 @@ function sideOf(entries: readonly EntryLike[]): SideSpend | undefined {
 }
 
 /** A pi run's `rows` whose every request its booking marked free (bookedSpend's `free`) and that cost $0: its usage row
- *  says why (FREE_COST). Any other is as rendered. */
-function withFreeUsage(rows: readonly TimelineEvent[], entries: readonly EntryLike[]): TimelineEvent[] {
+ *  says why (FREE_COST), unless its words say no cost (TimelineOptions.costWords). Any other is as rendered. */
+function withFreeUsage(rows: readonly TimelineEvent[], entries: readonly EntryLike[], options: TimelineOptions): TimelineEvent[] {
   const at = rows.findLastIndex((row) => row.kind === "usage");
   const row = rows[at];
   if (!row || row.usage?.usd !== 0 || bookedSpend(entries, "model").free !== true) return [...rows];
-  const summary = (row.summary ?? "").replace(/^([^:]+): .+? over /, `$1: ${FREE_COST} over `);
+  const summary = options.costWords === false ? row.summary : (row.summary ?? "").replace(/^([^:]+): .+? over /, `$1: ${FREE_COST} over `);
   return rows.map((each, i) => (i === at ? { ...row, summary, usage: { ...row.usage!, free: true as const } } : each));
 }
 
@@ -404,10 +404,10 @@ function bookedUsage(rows: readonly TimelineEvent[], entries: readonly EntryLike
   const notMetered = at >= 0 ? (rows[at]!.usage?.not_metered ?? 0) : 0;
   const calls = toolCallWords(paid.requests, notMetered);
   const summary = nativeAggregate
-    ? `${costLabel(options.ended === true)}: ${spent}; native model request count unavailable${calls}`
+    ? usageWords(options, spent, `native model request count unavailable${calls}`, "; ")
     : unbooked
-    ? `${costLabel(options.ended === true)}: unknown, its model's requests were not metered${calls}`
-    : `${costLabel(options.ended === true)}: ${spent} over ${model.requests} model request${model.requests === 1 ? "" : "s"}${calls}`;
+    ? usageWords(options, "unknown", `its model's requests were not metered${calls}`, ", ")
+    : usageWords(options, spent, `${model.requests} model request${model.requests === 1 ? "" : "s"}${calls}`);
   // Its so-far figures whenever the words say them: while the cost is unknown, and beside a bound (its exact part and holds).
   const usage = { usd, requests: nativeAggregate ? null : model.requests, ...(cost.so_far_usd !== undefined && cost.unpriced !== undefined ? { so_far_usd: cost.so_far_usd, unpriced: cost.unpriced } : {}), ...(notMetered ? { not_metered: notMetered } : {}), ...(free ? { free: true as const } : {}), ...(cost.upper_bound ? { upper_bound: true as const } : {}) };
   const last = rows[rows.length - 1];

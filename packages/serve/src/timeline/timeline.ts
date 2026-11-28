@@ -206,6 +206,8 @@ export const chargedTool = (row: TimelineEvent): string | undefined =>
  *  told after the note's "AgentRun server note:" label). A row of its own, the server's ("AgentRun: …", labelled once);
  *  no request, no cost. */
 export const CAP_WRAPUP = "agentrun.cap_wrapup";
+/** A dollar cap's wrap-up row with no cost words (TimelineOptions.costWords): what it says in place of the told amount. */
+export const CAP_WRAPUP_UNPRICED = "Near this run's spend cap; the model was told to wrap up.";
 /** A tool call the spend cap's wrap-up refused (serve's wrap-up.ts, the runner's gate): `callId` and the cap it was
  *  refused under (`capUsd`), on the run's root. The call's own refused row is its result's; this one is data only, for the
  *  run's view (`stopped_for`, `budget_refused_calls`): no row, no request, no cost. A call refused twice (a replay) is
@@ -301,6 +303,9 @@ export type TimelineOptions = {
   /** The run has ended (completed, failed, cancelled): its usage row says its cost ("Cost: …"), never what it has cost
    *  "so far". A run settled and not ended (paused, its process let go) keeps "Cost so far". */
   ended?: boolean;
+  /** false: a billing row's words say no cost (usageWords, toolCostWords), for a host in front that prices the run
+   *  itself (AGENTRUN_NO_COST_WORDS); its `usage` is the same. Default true. */
+  costWords?: boolean;
   /** The clock for retry and poll waits; live only. */
   now?: () => number;
   /** How a row names a file path a call gave (`path`, `file_path`) or saved: a host's name for it, such as one relative
@@ -747,8 +752,8 @@ function amount(usd: number): string {
   for (let digits = 2; digits < 6; digits++) if (Number(usd.toFixed(digits)) === Number(usd.toFixed(6))) return `$${usd.toFixed(digits)}`;
   return `$${usd.toFixed(6)}`;
 }
-/** What a reply the cap's clamp cut short says. */
-const clampSaid = (clamp: Clamp) => `The reply stopped at ${clamp.tokens.toLocaleString("en-US")} tokens: all that the ${amount(clamp.leftUsd)} left of the run's ${amount(clamp.capUsd)} cap could buy.`;
+/** What a reply the cap's clamp cut short says; with no cost words (TimelineOptions.costWords), no amount. */
+const clampSaid = (clamp: Clamp, costWords: boolean) => `The reply stopped at ${clamp.tokens.toLocaleString("en-US")} tokens: all that ${costWords ? `the ${amount(clamp.leftUsd)} left of the run's ${amount(clamp.capUsd)} cap` : "was left of the run's cap"} could buy.`;
 /** The message of a result that is only the harness's diagnostics block (`<harness>`, then `[error] …` lines), as a
  *  call that threw or named a tool its run does not offer answers: its first error's, else its first line's, without
  *  the severity. Undefined for any other text, whose own first line says what happened. */
@@ -1030,8 +1035,11 @@ function createProjector(options: TimelineOptions) {
     if (entry.kind === CAP_WRAPUP || entry.kind === COMPUTER_NOTE || entry.kind === BROWSERS_UNHELD) {
       // What the run's model was told near its cap, or after its computer was replaced: the server's row (`origin:
       // "server"`, in the words of its other rows), no request, no cost, and no message any turn took (its id ends in
-      // NOTE_SUFFIX, which isMessageRow passes over).
-      const words = str(obj(entry.data)?.words);
+      // NOTE_SUFFIX, which isMessageRow passes over). A dollar cap's note (it names `capUsd`) with no cost words says
+      // the run neared its cap, no amount; the model was told the note as written.
+      const data = obj(entry.data);
+      const told = str(data?.words);
+      const words = told && entry.kind === CAP_WRAPUP && data?.capUsd !== undefined && options.costWords === false ? CAP_WRAPUP_UNPRICED : told;
       if (words) add(make("phase", conv, `${base}${NOTE_SUFFIX}`, { summary: `AgentRun: ${words}`, text: words, origin: "server" }));
       return out;
     }
@@ -1053,7 +1061,7 @@ function createProjector(options: TimelineOptions) {
       const charge = typeof usd === "number" && Number.isFinite(usd) ? usd : null;
       const call = tool === BROWSER_CHARGE ? browserCallOf(data) : undefined;
       if (call) touch(foldCharge(call.use, charge));
-      else add(make("phase", conv, base, { summary: `Tool cost: ${by} charged ${amount} for ${tool}`, tool_name: tool, tool_use_id: str(data?.call) ?? null, usage: { usd: charge, requests: 0 } }));
+      else add(make("phase", conv, base, { summary: toolCostWords(options, by, amount, tool), tool_name: tool, tool_use_id: str(data?.call) ?? null, usage: { usd: charge, requests: 0 } }));
     } else if (metered === "unmetered") {
       // A call with no price: shown, never counted in the cost.
       const data = obj(entry.data);
@@ -1102,7 +1110,7 @@ function createProjector(options: TimelineOptions) {
         }
         // A reply that stopped at the output its request's cap limited it to says so, with the numbers.
         const clamp = metered === "answer" && message.stopReason === "length" ? meter.clamp() : undefined;
-        if (clamp) add(make("phase", conv, `${base}:clamp`, { summary: clampSaid(clamp) }));
+        if (clamp) add(make("phase", conv, `${base}:clamp`, { summary: clampSaid(clamp, options.costWords !== false) }));
         blocks.forEach((block, index) => {
           const [id, name] = [str(block.id), str(block.name)];
           if (block.type !== "toolCall" || !id || !name) return;
@@ -1301,7 +1309,7 @@ function createProjector(options: TimelineOptions) {
     const spent = usd !== null ? `${upper_bound ? "at most " : ""}${dollars(usd)}` : so_far_usd !== undefined && unpriced !== undefined ? `${dollars(so_far_usd)} known, ${unpriced} not priced,` : "unknown";
     return make("usage", root, `${root}:usage`, {
       // A run whose only request its cap refused sent none, and says so; otherwise what is known so far (costsofar/1).
-      summary: requests === 0 && !charges ? "no model request sent" : `${costLabel(options.ended === true)}: ${spent} over ${requests} model request${requests === 1 ? "" : "s"}${paid}`,
+      summary: requests === 0 && !charges ? "no model request sent" : usageWords(options, spent, `${requests} model request${requests === 1 ? "" : "s"}${paid}`),
       // The contract's TimelineUsage and its costsofar/1 fields, while the cost is unknown: no other of the meter's reaches it.
       usage: { usd, requests, ...(so_far_usd !== undefined && unpriced !== undefined ? { so_far_usd, unpriced } : {}), ...(not_metered ? { not_metered } : {}), ...(upper_bound ? { upper_bound } : {}) },
     });
@@ -1324,6 +1332,13 @@ function createProjector(options: TimelineOptions) {
 export const COST_SO_FAR = "Cost so far";
 export const COST_ENDED = "Cost";
 export const costLabel = (ended: boolean): string => (ended ? COST_ENDED : COST_SO_FAR);
+/** A usage row's words: its cost after its label, then `joint` and what it counted ("Cost: $0.0040 over 2 model
+ *  requests"); with `costWords` false, what it counted alone ("2 model requests"). */
+export const usageWords = (options: Pick<TimelineOptions, "ended" | "costWords">, spent: string, counted: string, joint = " over "): string =>
+  options.costWords === false ? counted : `${costLabel(options.ended === true)}: ${spent}${joint}${counted}`;
+/** A paid tool's charge row's words: who charged what for which tool; with `costWords` false, the tool and who charged. */
+export const toolCostWords = (options: Pick<TimelineOptions, "costWords">, by: string, amount: string, tool: string): string =>
+  options.costWords === false ? `${tool} via ${by}` : `Tool cost: ${by} charged ${amount} for ${tool}`;
 /** What a failed model request's row adds when no price came back for it. */
 const UNPRICED_FAILURE = " (its cost is unknown: the provider sent no price and may still bill it)";
 /** The usage row's words after its model requests: its paid tool calls (`charges`) and its tool calls with no price

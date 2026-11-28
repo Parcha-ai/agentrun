@@ -106,6 +106,19 @@ const listedHost = (names: readonly string[], host: string): boolean => {
 /** The ports a list opens: plain HTTP and HTTPS. */
 export const LISTED_PORTS: readonly number[] = [80, 443];
 
+/** Connections open at once through one computer's proxy when its operator sets no cap (`maxTunnels`). */
+export const DEFAULT_MAX_TUNNELS = 64;
+/** The highest cap an operator may set: a tunnel holds two open files (the computer's side and the host's), and the
+ *  proxy container is held to 1024, with room left for its own. */
+export const MAX_TUNNELS_CEILING = 256;
+
+/** `text` as a tunnel cap, a whole number from 1 to MAX_TUNNELS_CEILING written in digits alone, else undefined. */
+export function maxTunnelsOf(text: string): number | undefined {
+	if (!/^[1-9][0-9]{0,2}$/.test(text)) return undefined;
+	const value = Number(text);
+	return value <= MAX_TUNNELS_CEILING ? value : undefined;
+}
+
 /** What the proxy container's entry (egress-main.ts) logs once its socket listens: the provider waits for it. */
 export const EGRESS_READY = "egress ready";
 

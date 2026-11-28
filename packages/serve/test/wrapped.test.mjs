@@ -13,6 +13,7 @@ import { randomBytes } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import { agent, call, cookieOf, follow, serve, withEnv } from "./support.mjs";
+import { cursorChat } from "./fixtures/import-sessions.mjs";
 
 const WORDS = "Fixture prompt, never reported.";
 const stamp = (iso) => ({ timestamp: iso, sessionId: "00000000-0000-4000-8000-000000000001", cwd: "/work/wrapped-fixture", isSidechain: false });
@@ -61,6 +62,33 @@ test("GET /wrapped reads the year under the home: tokens, days, hours, models, h
   assert.deepEqual([was.sessions, was.turns, was.requests], [1, 1, 1]);
   const text = JSON.stringify(body) + JSON.stringify(was);
   for (const leak of [WORDS, "/work/wrapped-fixture", "wrapped-fixture", home, "00000000-0000-4000"]) assert.equal(text.includes(leak), false, leak);
+});
+
+test("GET /wrapped says a Cursor-only year's tokens are unknown, not zero: tokens_unknown_requests on the year, its harness and its model", { timeout: 120_000 }, async (t) => {
+  const home = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-wrapped-cursor-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  cursorChat(home, "/work/cursor-fixture", 1);
+  const { api } = await serve(t, { sessionsHome: { home } });
+  const year = (await api("GET", "/wrapped")).body.year;
+  const { status, body } = await api("GET", `/wrapped?year=${year}`);
+  assert.equal(status, 200, JSON.stringify(body));
+  assert.ok(body.requests > 0, JSON.stringify(body));
+  assert.equal(body.tokens_unknown_requests, body.requests, "every request's tokens unknown");
+  assert.deepEqual(body.harnesses.map((h) => [h.harness, h.requests, h.tokens_unknown_requests]), [["cursor", body.requests, body.requests]]);
+  assert.deepEqual(body.models.map((m) => [m.requests, m.tokens_unknown_requests]), [[body.requests, body.requests]]);
+});
+
+test("GET /wrapped says a Cursor-only year's time is unknown, not zero: time_unknown_requests on the year", { timeout: 120_000 }, async (t) => {
+  const home = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-wrapped-cursor-time-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  cursorChat(home, "/work/cursor-fixture", 1);
+  const { api } = await serve(t, { sessionsHome: { home } });
+  const year = (await api("GET", "/wrapped")).body.year;
+  const { status, body } = await api("GET", `/wrapped?year=${year}`);
+  assert.equal(status, 200, JSON.stringify(body));
+  assert.ok(body.requests > 0, JSON.stringify(body));
+  assert.equal(body.time_unknown_requests, body.requests, "every request's time unknown");
+  assert.equal(body.active_ms, 0);
 });
 
 test("GET /wrapped sums the cache the import kept on the year's runs: hit rate, breaks and extra cost by cause; null with none", { timeout: 120_000 }, async (t) => {

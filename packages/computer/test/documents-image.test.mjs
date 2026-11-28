@@ -25,7 +25,10 @@ const aptOf = (text) => [...text.replace(/\\\n/g, " ").matchAll(/apt-get install
 test("it starts from the default recipe's base, pinned by the same digest, is one stage, and has every program the default recipe installs", () => {
   assert.deepEqual(INSTRUCTIONS.filter((line) => line.startsWith("FROM ")), [`FROM ${DOCKER_BASE}`]);
   const ours = aptOf(RUNS);
-  for (const name of aptOf(DOCKER_RECIPE)) assert.ok(ours.includes(name), `${name} is installed`);
+  // xz-utils is the default recipe's to unpack Node's tarball; this image's node and npm are Debian's, which its npm
+  // install at the header's instant was pinned with.
+  for (const name of aptOf(DOCKER_RECIPE)) if (name !== "xz-utils") assert.ok(ours.includes(name), `${name} is installed`);
+  assert.ok(ours.includes("nodejs") && ours.includes("npm"), "node and npm, as the default image has");
 });
 
 test("its Debian packages come from snapshot.debian.org over https at one instant, never from the live mirror", () => {

@@ -25,7 +25,7 @@ const { openMcpRow, saveMcpServer } = await import("../dist/mcp-store.js");
 const { inWorkspace, WORKSPACE } = await import("../dist/workspace-scope.js");
 const { MCP_SERVER_NAME } = await import("../dist/tool-names.js");
 const { mcpSourceKey } = await import("../dist/mcp-sources.js");
-const { workspaceWriteRefused } = await import("../dist/mcp-secret-writes.js");
+const { tokenWriteOverWords, workspaceWriteRefused } = await import("../dist/mcp-secret-writes.js");
 const { API_ONLY_MCP_ORIGINS_KEY, offApiOnlyMcpOrigins } = await import("../dist/mcp-api-only-origins.js");
 const { composioMadeKey } = await import("../dist/store/mcp-record-keys.js");
 const { storedMade } = await import("../dist/composio-made.js");
@@ -294,10 +294,42 @@ test("a workspace's write is refused over a row of its name the token did not sa
   const request = { params: ["github"], store: view, apiOnly: true, workspace: W1 };
   assert.equal(await inWorkspace(W1, () => workspaceWriteRefused(undefined, request)), true, "no token's mark: refused");
   assert.deepEqual(request.seen, { auth: "none", sealed: false, changedAt: null });
+  assert.equal(request.words, tokenWriteOverWords("github", false, true), "refused in the token's write-over words");
   const row = await store.mcp.server(mcpRowKey("github", W1));
   await store.settings.put(mcpSourceKey(mcpRowKey("github", W1)), storedSource({ source: "url", toolkit: null }, row, false, true));
-  assert.equal(await inWorkspace(W1, () => workspaceWriteRefused(undefined, { ...request })), false, "the token's own: let through");
+  const own = { params: ["github"], store: view, apiOnly: true, workspace: W1 };
+  assert.equal(await inWorkspace(W1, () => workspaceWriteRefused(undefined, own)), false, "the token's own: let through");
+  assert.equal(own.words, undefined, "a write let through carries no refusal words");
   assert.equal(await inWorkspace(W1, () => workspaceWriteRefused(undefined, { ...request, params: ["new-name"] })), false, "a new name: let through");
+});
+
+test("the token's write-over words name the server and why: it keeps a credential, or the token did not save it; only where an owner's session is, they send the caller to it", () => {
+  const tail = "so the token can't save over it or remove it. Use another name";
+  assert.equal(tokenWriteOverWords("github", true), `The MCP server github keeps a credential, ${tail}, or change it from the owner's signed-in session.`);
+  assert.equal(tokenWriteOverWords("github", false), `The MCP server github was not saved by the API token, ${tail}, or change it from the owner's signed-in session.`);
+  // An API-only server has no owner's session and no console: the words end at what its caller can do.
+  assert.equal(tokenWriteOverWords("github", true, true), `The MCP server github keeps a credential, ${tail}.`);
+  assert.equal(tokenWriteOverWords("github", false, true), `The MCP server github was not saved by the API token, ${tail}.`);
+});
+
+// Every route that judges a token's write over a saved server refuses it in the one helper's words (tokenWriteOverWords),
+// in a workspace as outside one: never the secret-write words, since the body sent no secret.
+test("a workspace's save and delete over a row of its name the token did not save are 403 in the token's write-over words, not the secret-write words, and the row stays", async (t) => {
+  const s = await setup(t);
+  const store = s.server.store;
+  await store.mcp.put({ name: mcpRowKey("github", W1), url: s.one.fake.url, auth: "none", tools: [] });
+  const before = await store.mcp.server(mcpRowKey("github", W1));
+  for (const [method, body] of [["PUT", perRun(s.one.fake.url)], ["DELETE", undefined]]) {
+    const refused = await s.w1(method, "/settings/mcp-servers/github", body);
+    assert.equal(refused.status, 403, `${method}: ${JSON.stringify(refused.body)}`);
+    const message = String(refused.body.error?.message);
+    assert.equal(message, tokenWriteOverWords("github", false, true), method);
+    assert.equal(message.includes(SECRET_WRITE_REFUSAL), false, `${method}: ${message}`);
+    // An API-only server has no owner's session and serves no console: the refusal sends the caller to neither.
+    assert.doesNotMatch(message, /signed-in session|console/, method);
+    assert.equal(refused.body.error?.details?.console_url, undefined, method);
+  }
+  assert.deepEqual(await store.mcp.server(mcpRowKey("github", W1)), before, "the row is unchanged");
 });
 
 test("the operator's MCP origins hold a workspace's sealed server: one at an origin taken off the list can't be used, nothing sent; the owner's, and a Composio key read from the environment (none sealed), are as they were", async () => {
@@ -549,6 +581,18 @@ test("a workspace's Composio save is per_run on the toolkit's own auth config: a
   }
   assert.deepEqual(s.composio.calls, [], "nothing reached Composio");
   assert.equal(await s.server.store.mcp.server(mcpRowKey("mail", W1)), undefined);
+});
+
+test("a workspace's Composio save over a row of its name the token did not save is 403 in the same write-over words as its save and delete, nothing sent to Composio, and the row stays", async (t) => {
+  const s = await composioSetup(t);
+  const store = s.server.store;
+  await store.mcp.put({ name: mcpRowKey("mail", W1), url: `${s.composio.mcpOrigin}/v3/mcp/srv_hand/mcp`, auth: "headers", tools: [ADD_TOOL], sealed: null });
+  const before = await store.mcp.server(mcpRowKey("mail", W1));
+  const refused = await s.w1("PUT", "/settings/mcp-servers/mail/composio", PER_RUN);
+  assert.equal(refused.status, 403, JSON.stringify(refused.body));
+  assert.equal(refused.body.error?.message, tokenWriteOverWords("mail", false, true));
+  assert.deepEqual(s.composio.calls, [], "nothing reached Composio");
+  assert.deepEqual(await store.mcp.server(mcpRowKey("mail", W1)), before, "the row is unchanged");
 });
 
 test("the owner's shared servers still guard a workspace: its run is refused a binding to the owner's Composio user, and its save the auth config an owner's server stands on", async (t) => {

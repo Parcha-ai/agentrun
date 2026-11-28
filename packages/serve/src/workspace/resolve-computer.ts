@@ -204,6 +204,8 @@ type HereFields = {
   readonly prepareImage?: boolean;
   /** Its descriptor's imageEnv has a value here: the operator names the image every computer of it starts from. */
   readonly imageNamed?: true;
+  /** That image, where the reader had the value (registryHere): a setting that names it selects as one that names none. */
+  readonly namedImage?: string;
 };
 
 /** `entry` as this server has it, by `set` (whether a key, or a setting of this server, has a value here): with the
@@ -237,16 +239,30 @@ const hereNames = (entry: HereFields): string[] => [...Object.values(entry.mount
 
 /** `registry` with each provider as this server has it (entryHere), reading only the names an entry's mountsWith or
  *  imageEnv names, by `valueOf` (key-meta.ts keyReader: the environment's value, else the saved key), and the options
- *  its server settings give, by `optionsOf` (settingOptions; absent: none). A value of whitespace alone is none. */
+ *  its server settings give, by `optionsOf` (settingOptions; absent: none), and the image its imageEnv names here, trimmed
+ *  (namedImage: E2B's AGENTRUN_E2B_TEMPLATE). A value of whitespace alone is none. */
 export async function registryHere<Registry extends { readonly PROVIDERS: readonly ProviderEntry[] }>(registry: Registry, valueOf: (name: string) => Promise<string | undefined>, optionsOf?: (provider: string) => Readonly<Record<string, unknown>>): Promise<Registry> {
   const names = [...new Set(registry.PROVIDERS.flatMap(hereNames))];
-  const set = new Set((await Promise.all(names.map(async (name) => ((await valueOf(name))?.trim() ? name : "")))).filter((name) => name !== ""));
-  return { ...registry, PROVIDERS: registry.PROVIDERS.map((entry) => entryHere(entry, (name) => set.has(name), optionsOf?.(entry.id))) };
+  const values = new Map((await Promise.all(names.map(async (name) => [name, (await valueOf(name))?.trim() ?? ""] as const))).filter(([, value]) => value !== ""));
+  return {
+    ...registry,
+    PROVIDERS: registry.PROVIDERS.map((entry) => {
+      const here = entryHere(entry, (name) => values.has(name), optionsOf?.(entry.id));
+      const image = entry.imageEnv === undefined ? undefined : values.get(entry.imageEnv);
+      return image === undefined ? here : { ...here, namedImage: image };
+    }),
+  };
 }
 
 /** Whether a computer of `entry` that mounts the owner's Archil disk has Archil's image in the owner's vendor account:
  *  its provider prepares it (prepareImage), or the operator names it here (imageNamed, entryHere). */
 const archilImageHere = (entry: HereFields): boolean => entry.prepareImage === true || entry.imageNamed === true;
+
+/** The image a setting's configuration is selected by on `entry` (configurationOf): none where the setting names the
+ *  image the operator names here (namedImage), which every computer of the provider starts from; else the setting's. */
+const selectingImage = (entry: HereFields, image: string | undefined): string | undefined => (image !== undefined && image === entry.namedImage ? undefined : image);
+/** The operator's image here (namedImage), as a list of none or one. */
+const namedImages = (entry: HereFields): string[] => (entry.namedImage === undefined ? [] : [entry.namedImage]);
 
 /** The kind of the run's folder a sandbox or a desktop of `entry` with files and exec holds in `mode`, or undefined for
  *  none. Mode 1: a bind of this machine. Mode 2: an Archil mount where the provider takes one and Archil's image is here
@@ -388,7 +404,7 @@ function selectedFor(setting: ComputerSetting, registry: Pick<KindRegistry, "SET
   const kind = setting.kind as ComputerSettingKind;
   if (kind === "none" || !Object.hasOwn(registry.SETTING_KINDS, kind)) return undefined;
   const entry = registry.PROVIDERS.find((one) => one.id === setting.provider);
-  const configuration = entry && configurationOf(servingOf(registry, entry, kind), setting.image, entry.defaultImage?.[kind]);
+  const configuration = entry && configurationOf(servingOf(registry, entry, kind), selectingImage(entry, setting.image), entry.defaultImage?.[kind]);
   return entry && configuration ? { kind, entry, configuration } : undefined;
 }
 
@@ -495,10 +511,10 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
     return { refused: `${entry.label} gives no ${kind} computer${why.length > 0 ? `: ${why.join("; ")}` : ""}. Pick ${pick}` };
   }
   // The configuration the setting's image selects: one the provider does not offer for the kind is refused, naming those
-  // it does.
-  const configuration = configurationOf(serving, setting.image, entry.defaultImage?.[kind]);
+  // it does, the operator's image here first (namedImage: one that names it selects as one that names none).
+  const configuration = configurationOf(serving, selectingImage(entry, setting.image), entry.defaultImage?.[kind]);
   if (!configuration) {
-    const images = imagesOf(serving, entry.defaultImage?.[kind]);
+    const images = [...namedImages(entry), ...imagesOf(serving, entry.defaultImage?.[kind])];
     const offers = images.length === 0 ? `offers no ${kind} image to choose: remove the image` : `offers the ${kind} image${images.length === 1 ? "" : "s"} ${images.join(", ")}: pick one`;
     // A configuration its descriptor parks (built, not offered yet): refused saying so, never as an unknown image.
     const parked = entry.parked?.find((one) => one.image === setting.image);

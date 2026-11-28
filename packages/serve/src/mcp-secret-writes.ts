@@ -84,7 +84,7 @@ export async function tokenWriteOverRefused(_body: unknown, request: SecretReque
   if (!was) return false;
   const sealed = was.sealed !== null && was.sealed !== undefined;
   if (!sealed && savedByToken(await store.settings.get(mcpSourceKey(name)), was.createdAt)) return false;
-  request.words = tokenWriteOverWords(name, sealed);
+  request.words = tokenWriteOverWords(name, sealed, request.apiOnly === true);
   return true;
 }
 
@@ -93,7 +93,7 @@ export async function tokenWriteOverRefused(_body: unknown, request: SecretReque
  *  workspace, so it opens in no other row) and handed only to its own agents' runs, and no other workspace and no owner
  *  reaches it, so its token saves, replaces and removes its credential. The write lands only while the row's credential
  *  is still the one read here (request.seen), as every token write's does. What address a save may name is the save's
- *  own check (api-only.ts apiOnlyMcpSave). */
+ *  own check (api-only.ts apiOnlyMcpSave). Its refusal is in tokenWriteOverWords, as tokenWriteOverRefused's is. */
 export async function workspaceWriteRefused(_body: unknown, request: SecretRequest): Promise<boolean> {
   const [name] = request.params;
   if (!name) return false;
@@ -101,13 +101,17 @@ export async function workspaceWriteRefused(_body: unknown, request: SecretReque
   const was = await store.mcp.server(name);
   request.seen = credentialMark(was);
   if (!was) return false;
-  return !savedByToken(await store.settings.get(mcpSourceKey(name)), was.createdAt);
+  if (savedByToken(await store.settings.get(mcpSourceKey(name)), was.createdAt)) return false;
+  request.words = tokenWriteOverWords(name, false, request.apiOnly === true);
+  return true;
 }
 
-/** The words tokenWriteOverRefused's refusal gets: it names the saved server the write would land on and why the token
- *  may not write it (it keeps a credential, or the token did not save it), since the body may hold no secret at all. */
-export const tokenWriteOverWords = (name: string, sealed: boolean): string =>
-  `The MCP server ${name} ${sealed ? "keeps a credential" : "was not saved by the API token"}, so the token can't save over it or remove it. Use another name, or change it from the owner's signed-in session.`;
+/** The words a token's refused write over a saved server gets, on every route that judges one (tokenWriteOverRefused,
+ *  workspaceWriteRefused): it names the server the write would land on and why the token may not write it (it keeps a
+ *  credential, or the token did not save it), since the body may hold no secret at all. Only a server with an owner's
+ *  session sends the caller there; an API-only one (`apiOnly`) has none, so its words end at another name. */
+export const tokenWriteOverWords = (name: string, sealed: boolean, apiOnly = false): string =>
+  `The MCP server ${name} ${sealed ? "keeps a credential" : "was not saved by the API token"}, so the token can't save over it or remove it. Use another name${apiOnly ? "" : ", or change it from the owner's signed-in session"}.`;
 
 /** MCP's operations the one gate reads: the predicates above decide each request. */
 export const MCP_SECRET_OPERATIONS = ["saveMcpServer", "startMcpOAuth", "putMcpPrivateHosts", "deleteMcpServer"] as const;

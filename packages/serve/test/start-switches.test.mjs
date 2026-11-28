@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { serve, withEnv } from "./support.mjs";
 
-const NAMES = ["AGENTRUN_MCP_ALLOW_LOOPBACK", "AGENTRUN_WEBHOOK_PRIVATE_TARGETS", "AGENTRUN_PRIVATE_HOSTS", "AGENTRUN_BOX_ALLOW", "AGENTRUN_BOX_CPUS", "AGENTRUN_BOX_MEMORY", "AGENTRUN_BOX_PIDS", "AGENTRUN_API_ONLY_MCP_ORIGINS", "AGENTRUN_API_ONLY_WORKSPACE_MCP_PUBLIC_HTTPS"];
+const NAMES = ["AGENTRUN_MCP_ALLOW_LOOPBACK", "AGENTRUN_WEBHOOK_PRIVATE_TARGETS", "AGENTRUN_PRIVATE_HOSTS", "AGENTRUN_BOX_ALLOW", "AGENTRUN_BOX_CPUS", "AGENTRUN_BOX_MEMORY", "AGENTRUN_BOX_PIDS", "AGENTRUN_BOX_MAX_TUNNELS", "AGENTRUN_API_ONLY_MCP_ORIGINS", "AGENTRUN_API_ONLY_WORKSPACE_MCP_PUBLIC_HTTPS"];
 
 /** Each switch's on and value, by name, in the order capabilities list them. */
 const read = (switches) => Object.entries(switches).map(([name, { on, value }]) => [name, on, value]);
@@ -27,7 +27,7 @@ test("capabilities list the start-time switches: each off, with no value, on a s
 });
 
 test("capabilities list the start-time switches as the server was started: on, with the value it read", async (t) => {
-  withEnv(t, { AGENTRUN_WEBHOOK_PRIVATE_TARGETS: "1", AGENTRUN_PRIVATE_HOSTS: "10.20.0.0/16", AGENTRUN_BOX_ALLOW: "PyPI.org, *.pythonhosted.org", AGENTRUN_BOX_MEMORY: "512m" }, NAMES);
+  withEnv(t, { AGENTRUN_WEBHOOK_PRIVATE_TARGETS: "1", AGENTRUN_PRIVATE_HOSTS: "10.20.0.0/16", AGENTRUN_BOX_ALLOW: "PyPI.org, *.pythonhosted.org", AGENTRUN_BOX_MEMORY: "512m", AGENTRUN_BOX_MAX_TUNNELS: "128" }, NAMES);
   // The CLI turns mcpLoopback on from AGENTRUN_MCP_ALLOW_LOOPBACK=1 (cli.ts); the server reads its option.
   const { api } = await serve(t, { runner: false, mcpLoopback: true });
   const caps = await api("GET", "/capabilities");
@@ -40,6 +40,7 @@ test("capabilities list the start-time switches as the server was started: on, w
     ["AGENTRUN_BOX_CPUS", false, null],
     ["AGENTRUN_BOX_MEMORY", true, "512m"],
     ["AGENTRUN_BOX_PIDS", false, null],
+    ["AGENTRUN_BOX_MAX_TUNNELS", true, "128"],
     // A full server holds no API-only list: off.
     ["AGENTRUN_API_ONLY_MCP_ORIGINS", false, null],
     ["AGENTRUN_API_ONLY_WORKSPACE_MCP_PUBLIC_HTTPS", false, null],

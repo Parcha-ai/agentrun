@@ -4,22 +4,26 @@
 // that more parts follow. The model reads the cut in words too: the line after the JSON of the part no part follows.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { PUBLIC_MAX_BYTES, READ_MAX_CHARS } from "@parcha/pi-browser";
+import { PUBLIC_MAX_BYTES, READ_MAX_CHARS, readPage } from "@parcha/pi-browser";
 import { HTML_READ_CHARS, PAGE_MAX_BYTES, webFetchText } from "../dist/index.js";
-import { webFetch } from "./support.mjs";
+import { guard, webFetch } from "./support.mjs";
 
 const URL_ = "http://public.example/big";
 /** The line after a part's JSON, as the model reads it after the page. */
 const where = (page) => webFetchText(page).slice(JSON.stringify(page).length + 1) || undefined;
 /** What the part no part follows says of a page cut before it was read: where it was cut, readPage's own bound. */
 const CUT = "The page was cut at 1,000,000 characters of HTML before reading; the rest wasn't read.";
-const net = (html) => ({ lookup: async () => ["93.184.216.34"], fetchImpl: async () => new Response(html, { status: 200, headers: { "content-type": "text/html; charset=utf-8" } }) });
+/** serve's guard, its readPage given no deadline: these pages are read to test the cut, and a loaded runner that ran the
+ *  conversion past readPage's own (READ_DEADLINE_MS) would read them as plain text, the heading without its "# ". The
+ *  longest timer Node keeps (2^31 - 1 ms); readPage clears it when the conversion answers. */
+const unhurried = { ...guard, html: (html, url, options) => readPage(html, url, { ...options, deadlineMs: 2 ** 31 - 1 }) };
+const net = (html) => ({ guard: unhurried, lookup: async () => ["93.184.216.34"], fetchImpl: async () => new Response(html, { status: 200, headers: { "content-type": "text/html; charset=utf-8" } }) });
 
 test("a page whose HTML was cut before it was read gives the page's whole length in html_chars and no original_chars, in one part, and its line says where it was cut", async () => {
   const html = `<html><head><title>Big</title></head><body><h1>Big page</h1>${'<div class="row"><span class="cell"></span></div>\n'.repeat(30_000)}<p>The end.</p></body></html>`;
   const page = await webFetch(URL_, net(html));
   assert.equal(page.ok, true, page.error);
-  assert.deepEqual([page.via, "truncated" in page, page.html_chars, "original_chars" in page], ["direct", false, html.length, false], "its text is one part: none follows");
+  assert.deepEqual([page.via, "truncated" in page, page.html_chars, "original_chars" in page, "converted" in page], ["direct", false, html.length, false, false], "its text is one part, converted to markdown: none follows");
   assert.match(page.text, /^# Big page/);
   assert.ok(!page.text.includes("The end."), "past the cut");
   assert.equal(READ_MAX_CHARS, 1_000_000, "readPage's bound, which the line names");
@@ -39,7 +43,7 @@ test("a cut page read in parts to its end: every part gives html_chars and none 
   for (let offset = 0, i = 0; i < 100; i += 1) {
     const page = await webFetch(URL_, { ...net(html), offset, maxChars: 50_000 });
     assert.equal(page.ok, true, page.error);
-    assert.deepEqual([page.html_chars, "original_chars" in page], [html.length, false], `part ${i}`);
+    assert.deepEqual([page.html_chars, "original_chars" in page, "converted" in page], [html.length, false, false], `part ${i}, converted to markdown`);
     parts.push(page);
     if (!page.truncated) { assert.equal("next_offset" in page, false, "the last part names no next"); break; }
     assert.equal(page.next_offset, offset + page.chars, `part ${i} names where the next begins`);
@@ -61,8 +65,8 @@ test("a cut page read in parts from the run's pages: fetched once, every part gi
   const pages = new Map();
   const parts = [];
   for (let offset = 0, i = 0; i < 100; i += 1) {
-    const page = await webFetch(URL_, { lookup, fetchImpl: counted, pages, offset, maxChars: 50_000 });
-    assert.deepEqual([page.ok, page.html_chars, "original_chars" in page], [true, html.length, false], `part ${i}`);
+    const page = await webFetch(URL_, { guard: unhurried, lookup, fetchImpl: counted, pages, offset, maxChars: 50_000 });
+    assert.deepEqual([page.ok, page.html_chars, "original_chars" in page, "converted" in page], [true, html.length, false, false], `part ${i}, converted to markdown`);
     parts.push(page);
     if (!page.truncated) break;
     offset = page.next_offset;

@@ -427,3 +427,18 @@ test("--walk alone walks the template of deploy/README.md's button, and none whi
   assert.equal(buttonCode(`${BUTTON_MARK}\n${buttonLine("abc-12")}\n`), "abc-12");
   assert.equal(buttonCode(`${BUTTON_MARK}\n${BUTTON_PLACEHOLDER}\n`), undefined);
 });
+
+// Railway's published template (agentrun-1) is older than template.json: it has no RAILWAY_DEPLOYMENT_DRAINING_SECONDS, so
+// Railway's default (0 s) stops the server at once on a redeploy, and the daily walk's "Railway (hosted)" row fails on the
+// difference. Until it is republished (in Railway's template editor, on the workspace's account), every place that sends
+// people to it says so and gives the one variable to set, at template.json's value. Once the walk is green again, drop
+// these notes and this test together.
+test("while the published template is being republished, each place that sends people to it says so and names the draining variable to set, at template.json's value", async () => {
+  const draining = renderValue(service.variables.RAILWAY_DEPLOYMENT_DRAINING_SECONDS.defaultValue, { domain: "x" });
+  assert.equal(draining, "45");
+  for (const path of ["README.md", "deploy/README.md", "docs/SKILL.md"]) {
+    const text = (await read(path)).replace(/\s+/g, " ");
+    assert.match(text, /published template is being republished/i, `${path} says the published template is being republished`);
+    assert.ok(text.includes(`\`RAILWAY_DEPLOYMENT_DRAINING_SECONDS\` to \`${draining}\``), `${path} names the variable and ${draining}`);
+  }
+});

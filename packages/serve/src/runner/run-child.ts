@@ -31,7 +31,7 @@ const channel = new Channel(socket, {
   // The runner closed the channel (the loop's end answered) or is gone: nothing of the run's goes on but a lost create's
   // recovery under way here (its browser released, to its own bound and the release's margin: recoveriesDone), then the
   // process exits. Its trace is the runner's to send (postedTracing): nothing here waits on a collector.
-  onClose: () => void recoveriesDone(Date.now(), 0, Infinity).finally(() => setImmediate(() => process.exit(0))),
+  onClose: () => void recoveriesDone(Date.now(), 0, Infinity, releaseMarginMs).finally(() => setImmediate(() => process.exit(0))),
   // Each call carries the ledger of the tool call it is made in: what the runner does for it (an MCP tool's call, a
   // computer's) books on the run's one ledger, as it would in the run's own process.
   context: carriedLedger,
@@ -83,6 +83,8 @@ function remoteJournal(claim: Claim): Journal {
 let loop: Loop | undefined;
 /** When the runner's close cuts the claim's tool hosts' release (LoopDeps.releaseBy), as its stop or closing said. */
 let releaseBy: number | undefined;
+/** The runner's margin on the release (LoopDeps.releaseMarginMs), once its start said one: a recovery's at the close too. */
+let releaseMarginMs: number | undefined;
 let made!: (loop: Loop) => void;
 const loopMade = new Promise<Loop>((resolve) => (made = resolve));
 
@@ -92,6 +94,7 @@ channel.expose("loop", async (method, args) => {
     case "start": {
       if (loop) throw new Error("the run's process runs one claim");
       const init = args[0] as ChildInit;
+      releaseMarginMs = init.releaseMarginMs;
       const held = channel.remote<Held>("held");
       setHeld(held);
       // Store.readJournal answers at once (a reader, its reads asynchronous): the process's own reader, each read one call.
@@ -112,6 +115,7 @@ channel.expose("loop", async (method, args) => {
         live: (reader) => void (read = reader),
         redact: heldRedactor(processSecretRedactor()),
         ...(init.releaseBoundMs === undefined ? {} : { releaseBoundMs: init.releaseBoundMs }),
+        ...(init.releaseMarginMs === undefined ? {} : { releaseMarginMs: init.releaseMarginMs }),
         releaseBy: () => releaseBy,
       };
       // Its runner counted the harness's key rows before it made this process (staysInRunner): never again here.

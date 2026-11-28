@@ -7,7 +7,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { BOXD, BOXD_DEFAULT_IMAGE } from "./descriptors/boxd.js";
 import { DEADLINE_LABEL, show } from "./drift.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
-import { CALL_SLACK_MS, codeOfError, orThrow, race, runChecked, until } from "./hosted/process.js";
+import { CALL_SLACK_MS, codeOfError, orThrow, pause, race, runChecked, until } from "./hosted/process.js";
 import { HostedProvider, type HostedOptions, mayHaveMade } from "./hosted/provider.js";
 import { httpsBase } from "./hosted/rest.js";
 import { shellLine } from "./hosted/scripts.js";
@@ -157,6 +157,8 @@ const BUILD_TTL_S = 2 * 60 * 60;
 const BUILD_POLL_MS = 2_000;
 /** The most a build machine's cleanup waits for it to read gone. */
 const GONE_MS = 120_000;
+/** The pause before a wait for a machine boxd read not found just after its create, as the SDK's own wait polls. */
+const NOT_YET_MS = 500;
 
 /** The error with words added to its message (one that cannot be written stays as it was): the error is what the caller gets. */
 function withWords(error: unknown, words: string): unknown {
@@ -211,7 +213,8 @@ class BoxdHost implements MachineHost {
 	/**
 	 * An isolated machine (on none of the org's networks) with no standby, which would freeze a quiet computer. Once it is
 	 * ready: nothing out (the allowlist ["none"]) and no hibernation, since boxd's idle timers watch traffic and a computer
-	 * may have none. A step after the machine exists that throws an error the adapter reads as a create that may have made
+	 * may have none. A not found while boxd comes to read the new machine is waited past (#ready). A step after the
+	 * machine exists that throws an error the adapter reads as a create that may have made
 	 * one (mayHaveMade: vendor, timeout) is the adapter's to clean up: it sweeps the request's name, finds this machine and
 	 * deletes it (a timeout's once this call settles). Deleted here first, the sweep would find none and keep listing, and
 	 * delete a second create's machine of the same request instead. A refusal (limit, denied, ...) the adapter reads as a
@@ -232,7 +235,7 @@ class BoxdHost implements MachineHost {
 			deleteAfter: Math.ceil((Date.parse(req.backstopAt) - Date.now()) / 1000),
 		});
 		try {
-			await this.machines.waitUntilReady(made.id, { timeout: ctx.timeoutMs });
+			await this.#ready(made.id, ctx.timeoutMs, ctx.signal);
 			await this.machines.setEgressAllow(made.id, ["none"]);
 			await this.machines.setAutoHibernateTimeout(made.id, 0);
 		} catch (error) {
@@ -240,6 +243,34 @@ class BoxdHost implements MachineHost {
 			throw await this.#unmade(made.id, error);
 		}
 		return { id: made.id };
+	}
+
+	/**
+	 * waitUntilReady on a machine create just answered with, within ms, through boxd's not found: boxd can read such a
+	 * machine as not found for a moment (live creates read "VM not found" about a second in, and a delete by id right
+	 * after read not found too while the machine was there), so a not found is waited past, NOT_YET_MS apart. One still
+	 * not found when ms run out is a timeout: the adapter's sweep by name settles it, where a delete by id would read not
+	 * found and leave it. The first wait takes ms whole, each one after it what is left. A cancel is read before each wait
+	 * (pause ends early on one, it doesn't throw), so none starts after it: an aborted build's wait would otherwise run on
+	 * while its machine is deleted.
+	 */
+	async #ready(id: string, ms: number, signal?: AbortSignal): Promise<void> {
+		const end = Date.now() + ms;
+		let timeout = ms;
+		for (;;) {
+			if (signal?.aborted) throw new HostError("aborted", `the wait for the machine ${id} was aborted`);
+			try {
+				await this.machines.waitUntilReady(id, { timeout });
+				return;
+			} catch (error) {
+				if (codeOf(error) !== "not_found") throw error;
+				if (Date.now() + NOT_YET_MS >= end) {
+					throw new HostError("timeout", `boxd made the machine ${id}, then read it not found until the wait for it ended (${error instanceof Error ? error.message : String(error)})`);
+				}
+				await pause(NOT_YET_MS, signal);
+				timeout = Math.max(1, end - Date.now());
+			}
+		}
 	}
 
 	/** The machine a failed create made, deleted by its id; the step's own error comes back, the delete's outcome in its message. */
@@ -346,7 +377,7 @@ class BoxdHost implements MachineHost {
 		});
 		ids.add(made.id);
 		const ms = Math.max(1, end - Date.now());
-		orThrow(await race(this, this.machines.waitUntilReady(made.id, { timeout: ms }), `the build machine ${made.id}'s start`, ms + CALL_SLACK_MS, signal));
+		orThrow(await race(this, this.#ready(made.id, ms, signal), `the build machine ${made.id}'s start`, ms + CALL_SLACK_MS, signal));
 		const what = `the desktop recipe (mousepad) on the build machine ${made.id}`;
 		await runChecked(this, made.id, ["sudo", "-n", "sh", "-c", DESKTOP_RECIPE], { ms: Math.max(1, end - Date.now()), signal, what });
 		await this.snapshots.create(made.id, name);

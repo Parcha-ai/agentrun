@@ -2,7 +2,7 @@
 // each one paid request (fees.ts firecrawlFeeOf) through the run's Pay, on a bearer token. Its settings are typed, each
 // with a default (FIRECRAWL_DEFAULTS); a setting it does not take is refused when the Web is made. A 401 refuses the key
 // for the run; a 403 refuses one request only (Firecrawl answers it for a page, as for a prompt injection it found).
-import { firecrawlFeeOf, type Pay } from "../fees.js";
+import { firecrawlChargeOf, firecrawlFeeOf, type Pay } from "../fees.js";
 import { clip, markdownRead, type Read, TITLE_CAP } from "../page.js";
 import { defineProvider, type ProviderRun, settingsOf } from "../provider.js";
 import { type Failed, failed, failure, type Hit, type Limit, retryAfterMs, type SearchAsk, type Searched, searchArgs, snippetOf, waitOf } from "../search.js";
@@ -18,7 +18,9 @@ export const FIRECRAWL_KEYED_MS = 60_000;
  *  - `tbs`: a search's time filter in Firecrawl's words ("qdr:d" the past day, "qdr:w" the past week, ...); unset, none;
  *  - `includeDomains` or `excludeDomains` (not both): the hostnames a search keeps to or leaves out;
  *  - `country`: the country a search is made from, ISO 3166-1 alpha-2; unset, Firecrawl's own (US);
- *  - `highlights`: each result's description is its query-relevant highlight; unset, Firecrawl's own (true). */
+ *  - `highlights`: each result's description is its query-relevant highlight; unset, Firecrawl's own (true);
+ *  - `pdfMaxPages`: the most pages of a PDF a web_fetch parses, and is held for (1 credit a page), 1 to 10,000; unset,
+ *    no cap: a PDF is read whole, and a fetch is held at Firecrawl's most, 10,000 pages (fees.ts firecrawlFeeOf). */
 export type FirecrawlSettings = {
   onlyMainContent?: boolean;
   maxAgeMs?: number;
@@ -27,6 +29,7 @@ export type FirecrawlSettings = {
   excludeDomains?: string[];
   country?: string;
   highlights?: boolean;
+  pdfMaxPages?: number;
 };
 export const FIRECRAWL_DEFAULTS = Object.freeze({ onlyMainContent: true } as const);
 
@@ -38,6 +41,7 @@ const FIRECRAWL_CHECKS: Readonly<Record<keyof FirecrawlSettings, Check>> = {
   excludeDomains: domains(100),
   country: matching(/^[A-Z]{2}$/, "a two-letter country code, such as \"US\""),
   highlights: yesNo,
+  pdfMaxPages: wholeIn(1, 10_000),
 };
 export function firecrawlSettingsProblems(settings: unknown): string[] {
   const problems = settingsProblems("Firecrawl", settings, FIRECRAWL_CHECKS);
@@ -47,13 +51,16 @@ export function firecrawlSettingsProblems(settings: unknown): string[] {
 }
 
 /** Firecrawl on `apiKey`, each request paid through `pay`. */
-export const firecrawlClient = (apiKey: string, send: typeof fetch = fetch, pay?: Pay, base: string = FIRECRAWL_API_URL): Keyed => keyedClient({ who: "Firecrawl", base, headers: { authorization: `Bearer ${apiKey}` }, feeOf: firecrawlFeeOf, timeoutMs: FIRECRAWL_KEYED_MS, refuseOn: [401] }, send, pay);
+export const firecrawlClient = (apiKey: string, send: typeof fetch = fetch, pay?: Pay, base: string = FIRECRAWL_API_URL): Keyed => keyedClient({ who: "Firecrawl", base, headers: { authorization: `Bearer ${apiKey}` }, feeOf: firecrawlFeeOf, chargeOf: firecrawlChargeOf, timeoutMs: FIRECRAWL_KEYED_MS, refuseOn: [401] }, send, pay);
 
 /** How many of a search's queries Firecrawl is sent: one request each, at once. */
 export const FIRECRAWL_QUERIES_MAX = 3;
-/** The scrape a Firecrawl search asks of each result, as Firecrawl's guidance for agents asks: its page as markdown, its
- *  main content alone unless `settings` say otherwise (each a scrape, priced by fees.ts firecrawlFeeOf). */
+/** The scrape keyless Firecrawl's search asks of each result, as Firecrawl's guidance for agents asks: its page as
+ *  markdown, its main content alone unless `settings` say otherwise. A keyed search asks none (firecrawlSearchBody). */
 export const firecrawlScrapeOptions = (settings: FirecrawlSettings = {}) => ({ formats: ["markdown"], onlyMainContent: settings.onlyMainContent ?? FIRECRAWL_DEFAULTS.onlyMainContent });
+/** How a keyed web_fetch has Firecrawl read a page: on its basic proxy (the one priced here), a PDF to `pages` at most
+ *  when a cap is set (pdfMaxPages), else whole. */
+const keyedRead = (pages: number | undefined) => ({ proxy: "basic", ...(pages === undefined ? {} : { parsers: [{ type: "pdf", maxPages: pages }] }) });
 
 /** Firecrawl's search rows, an answer's `data` or its `data.web`, as hits: each row whose url parses, its snippet its
  *  page's markdown, else its description; undefined where the answer holds no rows this server reads. */
@@ -106,12 +113,13 @@ export function firecrawlMerged(provider: "firecrawl" | "firecrawl-keyless", { o
   return { answer: { provider, objective, queries, results }, ...held };
 }
 
-/** The /v2/search request for `query`, `n` results, under `settings`: each result scraped (firecrawlScrapeOptions). */
+/** The /v2/search request for `query`, `n` results, under `settings`. It asks no scrape of its results: each result's
+ *  snippet is Firecrawl's description of it (its query-relevant highlight unless `highlights` is false), as Exa's
+ *  highlights and Parallel's excerpts are, and the search is Firecrawl's 2 credits per 10 results alone. */
 export function firecrawlSearchBody(query: string, n: number, settings: FirecrawlSettings = {}): Record<string, unknown> {
   return {
     query,
     limit: n,
-    scrapeOptions: firecrawlScrapeOptions(settings),
     ...(settings.tbs ? { tbs: settings.tbs } : {}),
     ...(settings.includeDomains ? { includeDomains: settings.includeDomains } : {}),
     ...(settings.excludeDomains ? { excludeDomains: settings.excludeDomains } : {}),
@@ -135,23 +143,26 @@ export async function firecrawlSearched(args: Record<string, unknown>, client: K
   return firecrawlMerged("firecrawl", ask, each);
 }
 
-/** The /v2/scrape request for `url` under `settings`: markdown alone. */
+/** The /v2/scrape request for `url` under `settings`: markdown alone, on the basic proxy, a PDF to pdfMaxPages when set. */
 export function firecrawlScrapeBody(url: string, settings: FirecrawlSettings = {}): Record<string, unknown> {
-  return { url, formats: ["markdown"], onlyMainContent: settings.onlyMainContent ?? FIRECRAWL_DEFAULTS.onlyMainContent, ...(settings.maxAgeMs === undefined ? {} : { maxAge: settings.maxAgeMs }) };
+  return { url, formats: ["markdown"], onlyMainContent: settings.onlyMainContent ?? FIRECRAWL_DEFAULTS.onlyMainContent, ...(settings.maxAgeMs === undefined ? {} : { maxAge: settings.maxAgeMs }), ...keyedRead(settings.pdfMaxPages) };
 }
 
 /** A page Firecrawl scraped for `url` (`page`, its scrape's `{markdown, metadata}`, keyed or keyless alike) as a Read:
  *  the url it ended at (metadata's url, else its sourceURL, else `url`), its title (a list's first string), its status.
- *  Firecrawl names no cut, so the text is read as the whole page's; no markdown is no text, and a page whose status is
+ *  A PDF Firecrawl parsed only part of (metadata numPages below totalPages) says so at the head of its text, and is
+ *  read as cut; any other page's text is read as the whole page's. No markdown is no text, and a page whose status is
  *  not 2xx is no read. */
 export function firecrawlPageOf(url: string, page: { markdown?: unknown; metadata?: unknown }): Read | Failed {
   if (typeof page.markdown !== "string" || page.markdown.trim() === "") return failed("not_text", "NO_TEXT", "Firecrawl's fetch answered no page text");
-  const meta = (typeof page.metadata === "object" && page.metadata !== null ? page.metadata : {}) as { title?: unknown; sourceURL?: unknown; url?: unknown; statusCode?: unknown };
+  const meta = (typeof page.metadata === "object" && page.metadata !== null ? page.metadata : {}) as { title?: unknown; sourceURL?: unknown; url?: unknown; statusCode?: unknown; numPages?: unknown; totalPages?: unknown };
   const final = [meta.url, meta.sourceURL].find((one): one is string => typeof one === "string" && URL.canParse(one)) ?? url;
   const status = typeof meta.statusCode === "number" && Number.isInteger(meta.statusCode) ? meta.statusCode : 200;
   if (status < 200 || status > 299) return failed("error", `PAGE_${status}`, `Firecrawl's fetch: the page answered ${status}`);
   const title = typeof meta.title === "string" ? meta.title : Array.isArray(meta.title) && typeof meta.title[0] === "string" ? meta.title[0] : "";
-  return markdownRead(final, title, page.markdown, true, status);
+  const whole = (n: unknown): n is number => typeof n === "number" && Number.isInteger(n) && n > 0;
+  const cut = whole(meta.numPages) && whole(meta.totalPages) && meta.numPages < meta.totalPages ? `[PDF: pages 1-${meta.numPages} of ${meta.totalPages} were read; pages ${meta.numPages + 1}-${meta.totalPages} are not in this text]\n\n` : "";
+  return markdownRead(final, title, cut + page.markdown, !cut, status);
 }
 
 /** The page at `url` scraped through `client` under `settings` (firecrawlPageOf), or why there is none. */
