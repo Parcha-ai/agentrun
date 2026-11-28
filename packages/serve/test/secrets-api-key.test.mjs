@@ -98,7 +98,11 @@ test("a key the server makes is cut by the same shape, in a learned note and in 
     // A run's views cut by the values the server holds; it holds none of this key, and the shape still finds it.
     assert.equal(redacted(text, ["a-value-the-server-holds"]), want, "a run's view");
     assert.equal(redactedAnswer(text, ["a-value-the-server-holds"]), want, "a run's answer");
-    // With no scheme or parameter name beside it, the key's own shape alone finds it.
-    assert.deepEqual(secretShapes(`the app sends ${api_key} on each call`), [KIND]);
+    // With no scheme or parameter name beside it, the key's own shape alone finds it. Another shape may read a run
+    // inside it too: the kinds are every shape a text holds, as a Slack token inside a URL's credential parameter is.
+    assert.ok(secretShapes(`the app sends ${api_key} on each call`).includes(KIND), api_key);
   }
+  // The fixed key holds an sk- key's run after its prefix's "_": both kinds are read, and the one key is one cut.
+  assert.deepEqual(secretShapes(`the app sends ${made[0]} on each call`), ["sk- key", KIND]);
+  assert.equal(cut(`the app sends ${made[0]} on each call`), "the app sends [redacted] on each call");
 });
