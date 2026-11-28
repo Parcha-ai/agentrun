@@ -56,7 +56,8 @@ const MONO = "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, m
 const SANS = "'Schibsted Grotesk', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif";
 /** A character's advance as a share of the font size, to fit a line: exact for a monospace font, a wide average for sans. */
 const ADVANCE = { mono: 0.6, sans: 0.56 } as const;
-const MAX_ROWS = 6;
+/** The most rows a card draws: a body with more loses the rest. */
+export const MAX_ROWS = 6;
 const MAX_CHARTS = 2;
 /** The most bars of one chart the alt reads (a year by day): a screen reader reads the rest as a count. */
 const ALT_BARS = 365;

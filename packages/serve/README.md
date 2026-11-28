@@ -614,6 +614,7 @@ AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1 to allow it, only on a machine you alone use`
 | `AGENTRUN_PRIVATE_HOSTS` | Bounds the private-network hosts an owner may allow an MCP server or a calendar on (Settings → MCP servers): `none` allows none (and only an empty list can be saved), or a comma list of address ranges (`10.20.0.0/16,fd12:3456::/32`) every listed host's address must also fall in. Loopback, link-local (cloud metadata) and this machine's addresses stay refused whatever it says. A value that is neither reads as `none` | unset: the owner's list holds | On a server or runner many customers share, an owner's list would reach the operator's own private network: set `none` there, on the server and on each runner (each process holds to its own) |
 | `AGENTRUN_BOX_ALLOW` | The hosts a run's computer may reach: a comma list, or `none` ([A run in a Docker box](#a-run-in-a-docker-box)) | the package registries and GitHub | A run's network is the operator's policy, not a caller's |
 | `AGENTRUN_BOX_CPUS`, `AGENTRUN_BOX_MEMORY`, `AGENTRUN_BOX_PIDS` | A Docker computer's size ([Computers](#computers)) | 2 CPUs, 4 GiB, 1,024 processes | The machine's capacity is the operator's |
+| `AGENTRUN_BOX_MAX_TUNNELS` | How many connections a Docker computer's egress proxy holds open at once, from 1 to 256; past that a new one is answered 429 ([Computers](#computers)) | 64 | The machine's capacity is the operator's |
 
 On a server the installer runs as a service, `agentrun service install --env AGENTRUN_MCP_ALLOW_LOOPBACK=1 --env
 AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` saves the two yes-or-no switches in the service and restarts it; `--env KEY=` takes
@@ -624,7 +625,7 @@ one off.
 A sandbox agent's `bash` runs in a box, a machine apart from this server. Docker is the default box and the only one offered
 with no setup: a Docker container made for each run, which binds the run's `work/` and nothing else. Every other provider
 whose sandbox can hold the run's folder is a box too: `daytona`, `modal`, `e2b`, `agent37`, `morph`, `cloudflare`, `fly`,
-`boxd`, `groundbox`, `vercel` and `sprites`. Such a box runs on a sandbox computer from that provider, offered once `AGENTRUN_BOXES` lists it
+`boxd`, `groundbox`, `vercel`, `sprites` and `instabox`. Such a box runs on a sandbox computer from that provider, offered once `AGENTRUN_BOXES` lists it
 and the keys its computer provider needs are set (the environment, or Settings → Computers): `AGENTRUN_BOXES=docker,e2b`
 with `E2B_API_KEY` set offers both. A box is a provider that serves a sandbox, takes the run's folder (a bind, an Archil
 mount or a synced folder), starts with no image named and keeps to the allow-list or has no network; Orgo (desktops), the
@@ -1036,7 +1037,7 @@ Settings → Computers. The kind says what the agent is given, and the provider 
 | Kind | What the agent gets | Providers |
 |---|---|---|
 | `none` | The run's folder alone: no computer, and no provider (`{"kind": "none"}`) | |
-| `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b`, `boxd`, `smolcloud`, `groundbox`, `vercel`, `sprites`, `cloudflare` (through a relay Worker you deploy) |
+| `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b`, `boxd`, `smolcloud`, `groundbox`, `vercel`, `sprites`, `instabox`, `cloudflare` (through a relay Worker you deploy) |
 | `desktop` | The computer's tools (`computer_observe`, `computer_act`, `computer_screenshot`), the computer as `codemode`'s `computer`, and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo`, `boxd`, `groundbox`, or [a paired computer](#a-persons-own-computer) by its id |
 | `phone` | A rented Android, through the same computer tools | `phone-harness` |
 | `browser` | A hosted browser (the browser tools) | `browserbase`, `kernel` |
@@ -1114,7 +1115,7 @@ key each restart, the old one left on the workspace), `MORPH_API_KEY`, `ORGO_API
 `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, `KERNEL_API_KEY`, `BOXD_API_KEY` (with `BOXD_ORG` and
 `BOXD_REGION` optional), `SMOLCLOUD_API_KEY`, `GROUNDBOX_API_KEY`, `CLOUDFLARE_RELAY_URL` and `CLOUDFLARE_RELAY_TOKEN` (the relay Worker's,
 `packages/computer/relays/cloudflare`), `FLY_API_TOKEN` and `FLY_APP`, `RENDER_API_KEY` and `RENDER_WORKSPACE_ID`, `VERCEL_TOKEN` with `VERCEL_TEAM_ID`
-and `VERCEL_PROJECT_ID`, and `SPRITES_TOKEN`; Docker takes none.
+and `VERCEL_PROJECT_ID`, `SPRITES_TOKEN`, and `INSTABOX_API_KEY`; Docker takes none.
 `GET /v2/computers/running` lists every run still going (queued, working, paused or waiting on its person) whose agent
 has a computer, newest first, each as `GET /v2/runs/{run_id}` answers it: its `computer` says the kind and provider,
 `starting`, `ready` or `taken_over` while its owner drives it, and a held run's hold. The runs list carries no
@@ -1133,6 +1134,12 @@ and the Docker provider runs the container with them (`--cpu-quota`, `--memory` 
 They apply to Docker computers only: a vendor's computer (Daytona, Modal, E2B, Orgo, a phone, a hosted browser) is the
 size its provider makes it, and is never given them. A value the Docker provider refuses stops the server's start, in
 the provider's words.
+
+**A Docker computer's egress connections.** A Docker computer whose network is open or a list reaches it through its
+own egress proxy, which holds 64 connections open at once and answers a new one past that with 429.
+`AGENTRUN_BOX_MAX_TUNNELS` sets the cap, a whole number from 1 to 256 (the proxy's 1024 open files hold two per
+connection); the claim gives it to the Docker provider as `egress.maxTunnels`, which a running proxy keeps. Any other
+value stops the server's start, in words naming the setting.
 
 **What a sandbox needs.** A sandbox may list the programs its agent's work needs on the box's PATH:
 `"computer": {"kind": "sandbox", "provider": "docker", "needs": ["chrome", "ffmpeg", "ffprobe", "hyperframes"]}`, 1 to
@@ -1734,6 +1741,15 @@ which may spend. The skip's warning names the trigger and says how to turn it of
 is saved, before any run, so a template that grants them is still refused at its apply (409 at
 `secrets.MONID_API_KEY`) where the server has none. A run can still bring its own monid key to use in place of the
 server's.
+
+**Timeline rows without cost words: `AGENTRUN_NO_COST_WORDS=1`.** For a backend that prices runs its own way. Off, a
+run's Timeline says its cost in words, as before: "Cost: $0.0624 over 2 model requests and 1 paid tool call", "Tool
+cost: fal charged $0.0600 for mcp:fal/run_model", "Spent $0.06, $0.02 over the run's cap of $0.04". With `1`, the
+served Timeline (`GET /v2/runs/{id}/timeline`, its stream, and the run's export) says the same rows with no figure:
+"2 model requests and 1 paid tool call", "mcp:fal/run_model via fal", "Over the run's cap", and a reply the cap cut
+short "…: all that was left of the run's cap could buy.". A dollar cap's wrap-up note reads "Near this run's spend cap;
+the model was told to wrap up." (the model is told the note with its amount, as before). Each row's `usage` is
+unchanged either way, so a reader that shows a cost reads it there.
 
 ### Direct Particle-1
 
@@ -3641,9 +3657,11 @@ An agent whose definition says `checkout: pull_request` starts each run a GitHub
 checkout of it, made by the server at each claim before the first turn ([runner/pr-checkout.ts](src/runner/pr-checkout.ts)).
 It reads the repository, number, head and base from the server's own payload tag, only on a run a github trigger started
 (its launch's input origin) and never from anyone's words, and runs one
-command on the run's folder (a process here in Mode 1, Archil's exec in Mode 2): `git init repo`, a fetch of the head and
-the base 50 commits deep, deepened until their merge base is in (about 3,200 commits at most), then a detached checkout
-of the head, with refs `pr/head`, `pr/base` and `pr/merge-base`. The fetch takes an installation token minted for that
+command on the run's folder (a process here in Mode 1, Archil's exec in Mode 2): `git init` in a private folder of that
+machine's own `/tmp`, a fetch of the head and the base 50 commits deep, deepened until their merge base is in (about
+3,200 commits at most), then the repository moved into `repo/` and a detached checkout of the head, with refs `pr/head`,
+`pr/base` and `pr/merge-base`. The fetch never runs in the run's folder, so no `.git/config` there decides where it
+goes, and it always verifies TLS and goes through no proxy. The fetch takes an installation token minted for that
 one repository with `permissions: {contents: "read"}` alone, handed to the command on its stdin and turned there into an
 `Authorization` header in git's environment, scoped to GitHub's site; it is never in argv, `.git/config`, the remote's
 URL (`https://github.com/<owner>/<repo>.git`), the run's folder, the agent's environment or a log line, and it is revoked
@@ -4195,7 +4213,9 @@ refused as a server never saved. A save in a workspace is of an address at the o
 (`AGENTRUN_API_ONLY_MCP_ORIGINS`): `per_run` (each run hands its own in `mcp_auth`), or `headers` or `bearer`, whose
 credential is sealed in the workspace's own row and sent by its own agents' runs alone (a re-save that sends none keeps
 it); or a per-run Composio save (`user_id: "per_run"`, no `auth_config_id`, else `422 not_allowed`) whose key the install
-names (`api_key_env`). Anything else is the refused route's `404`, before anything is sent. The token with no header still
+names (`api_key_env`). Anything else is the refused route's `404`, before anything is sent. A save or delete over a row
+of its name that its token did not save is `403`, in the words every token write over a saved server gets: they name the
+server and say the token did not save it. The token with no header still
 writes no credential. One of a workspace's sealed servers at an origin taken off the list can't be used, as a token's
 `per_run` one can't: a run already going when the list changes stops sending its credential at its next call, and its
 preview or refresh by name is the refused route's `404`, nothing sent. A run started on a workspace's agent, by its

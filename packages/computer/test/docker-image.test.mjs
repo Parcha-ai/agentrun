@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import * as index from "../dist/index.js";
 import * as image from "../dist/docker/image.js";
@@ -13,7 +14,7 @@ import { create, DockerProvider } from "../dist/docker.js";
 import { createProvider, DOCKER_ENV, settingsFromEnv } from "../dist/conformance/docker.js";
 import { alive, fakeImageDocker, until } from "./fake-image-docker.mjs";
 
-const { DEFAULT_DOCKER_IMAGE, DOCKER_RECIPE, DOCKER_RECIPE_HAS, ensureImage, IMAGE_REPOSITORY, IMAGE_TIMEOUT_MS, RECIPE_LABEL, recipeHash, recipeTag } = index;
+const { DEFAULT_DOCKER_IMAGE, DOCKER_NODE_SHA256, DOCKER_NODE_VERSION, DOCKER_RECIPE, DOCKER_RECIPE_HAS, ensureImage, IMAGE_REPOSITORY, IMAGE_TIMEOUT_MS, RECIPE_LABEL, recipeHash, recipeTag } = index;
 
 const RECIPE = "FROM alpine:3.20\nRUN echo one > /one\n";
 const HASH = createHash("sha256").update(RECIPE).digest("hex");
@@ -44,13 +45,32 @@ test("the names: the repository, the label and the bound; no env setting of its 
 	assert.equal(recipeTag(RECIPE), TAG);
 });
 
-test("the default recipe is serve's box recipe, moved: python:3.12-slim pinned by its digest, one FROM, git, curl, nodejs, npm, ripgrep and socat from apt; its tag is DEFAULT_DOCKER_IMAGE", () => {
+test("the default recipe is serve's box recipe, moved: python:3.12-slim pinned by its digest, one FROM, git, curl, ripgrep and socat from apt, Node from nodejs.org; its tag is DEFAULT_DOCKER_IMAGE", () => {
 	assert.match(DOCKER_RECIPE, /^FROM python:3\.12-slim@sha256:[0-9a-f]{64}\n/, "the base pinned by its digest");
 	assert.equal([...DOCKER_RECIPE.matchAll(/^FROM /gm)].length, 1, "one FROM");
-	assert.match(DOCKER_RECIPE, /apt-get install -y --no-install-recommends git curl ca-certificates nodejs npm ripgrep socat \\\n && rm -rf \/var\/lib\/apt\/lists\/\*\n$/);
+	assert.match(DOCKER_RECIPE, /\nRUN apt-get update \\\n && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git curl ca-certificates xz-utils ripgrep socat \\\n && rm -rf \/var\/lib\/apt\/lists\/\*\nRUN /);
 	assert.equal(DOCKER_RECIPE_HAS, "python, git, curl, node, npm, rg", "serve's words for it, unchanged");
 	assert.equal(DEFAULT_DOCKER_IMAGE, recipeTag(DOCKER_RECIPE));
 	assert.match(DEFAULT_DOCKER_IMAGE, /^agentrun-computer:[0-9a-f]{12}$/);
+});
+
+test("the default recipe's Node is the server image's release, checked against its sha256 for each architecture before it is unpacked, the same as the box image's and the media image's", () => {
+	const serve = readFileSync(new URL("../../serve/docker/Dockerfile", import.meta.url), "utf8");
+	assert.equal(DOCKER_NODE_VERSION, serve.match(/^ARG NODE_VERSION=(\S+)$/m)?.[1], "the server image's Node");
+	for (const sum of Object.values(DOCKER_NODE_SHA256)) assert.match(sum, /^[0-9a-f]{64}$/);
+	assert.ok(DOCKER_RECIPE.includes(`amd64) arch=x64; sum=${DOCKER_NODE_SHA256.amd64} ;;`), "x64's tarball on amd64");
+	assert.ok(DOCKER_RECIPE.includes(`arm64) arch=arm64; sum=${DOCKER_NODE_SHA256.arm64} ;;`), "arm64's on arm64");
+	assert.ok(DOCKER_RECIPE.includes(`curl -fsSLo "/tmp/$file" "https://nodejs.org/dist/v${DOCKER_NODE_VERSION}/$file"`));
+	const summed = DOCKER_RECIPE.indexOf('echo "$sum  /tmp/$file" | sha256sum -c -;');
+	const unpacked = DOCKER_RECIPE.indexOf('tar -xJf "/tmp/$file" -C /usr/local --strip-components=1 --no-same-owner;');
+	assert.ok(summed > 0 && summed < unpacked, "checked before unpacked");
+	assert.match(DOCKER_RECIPE, /node --version; npm --version\n$/, "the build fails without node and npm");
+	const box = readFileSync(new URL("../box/install.sh", import.meta.url), "utf8");
+	assert.match(box, new RegExp(`^NODE_VERSION=${DOCKER_NODE_VERSION.replace(/\./g, "\\.")}$`, "m"));
+	assert.match(box, new RegExp(`^NODE_SHA256_AMD64=${DOCKER_NODE_SHA256.amd64}$`, "m"));
+	assert.match(box, new RegExp(`^NODE_SHA256_ARM64=${DOCKER_NODE_SHA256.arm64}$`, "m"));
+	const media = readFileSync(new URL("../media/Dockerfile", import.meta.url), "utf8");
+	assert.ok(media.includes(`amd64) arch=x64; sum=${DOCKER_NODE_SHA256.amd64} ;;`) && media.includes(`https://nodejs.org/dist/v${DOCKER_NODE_VERSION}/`));
 });
 
 test("a recipe is built on first use, once, on stdin with no context, tagged with its hash and labelled with it; found again with that hash, it is ready with no build", async () => {

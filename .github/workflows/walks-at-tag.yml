@@ -1,0 +1,69 @@
+name: Walks at tag
+# Each time a walk finishes, the table of the walks at the release it ran for (scripts/walks-at-tag.mjs): install, Helm,
+# self-host and ways in, each with its run, result and failed jobs, in the job summary, and the one issue
+# "walks at <tag>: <walks> not green", opened or moved to the tag while red and closed at green. Nothing happens to the
+# issue while a walk is still running, so the last walk to finish decides it, and only the newest release tag drives it
+# (an older tag's walk finishing late or rerun leaves it alone). A walk run for a pull request, or for a
+# commit no release tag names, finds no tag and stops there. A dispatch prints the table for any tag and leaves the
+# issue alone. The workflow file and script are main's (workflow_run runs the default branch's), and the run's name and
+# sha reach the script through env, read only as a release tag that exists.
+run-name: ${{ github.event_name == 'workflow_run' && format('Walks at tag, after {0}', github.event.workflow_run.name) || ' ' }}
+
+on:
+  workflow_run:
+    workflows: ['Install walk', 'Helm walk', 'Self-host walk', 'Ways in daily']
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag, e.g. v0.1.0-beta.68'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# One at a time, in order: two walks finishing together never both open the issue.
+concurrency:
+  group: walks-at-tag
+  cancel-in-progress: false
+
+jobs:
+  table:
+    name: the walks at the tag, and the issue
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.event != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24.22.3'
+      - name: The tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          EVENT: ${{ github.event.workflow_run.event }}
+          TITLE: ${{ github.event.workflow_run.display_title }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: node scripts/walks-at-tag.mjs --find-tag >> "$GITHUB_OUTPUT"
+      - name: The table
+        if: steps.tag.outputs.tag != '' && github.event_name == 'workflow_dispatch'
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: node scripts/walks-at-tag.mjs "$TAG"
+      - name: The table, and the issue
+        if: steps.tag.outputs.tag != '' && github.event_name == 'workflow_run'
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: node scripts/walks-at-tag.mjs "$TAG" --issue

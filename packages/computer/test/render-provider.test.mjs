@@ -661,7 +661,27 @@ test("a request made already, asked again with another epoch or run, finds its s
 		assert.equal(again.ok, false, `${what}: refused, never a second sandbox`);
 		assert.equal(again.error.code, "exists", `${what}: ${again.error.message}`);
 		assert.deepEqual(live(), [`${first.value.name}-r${runHash("run-1")}-e2`], `${what}: the first sandbox alone, still running`);
+		assert.equal(render.calls.filter(({ method, url }) => method === "POST" && url.pathname === "/v1/sandboxes").length, 1, `${what}: no second sandbox was asked of Render`);
 	}
+});
+
+test("a create reads the workspace's pages twice, at its first check and at its last convergence; its first look after its POST asks Render for its sandbox's whole name, one page", async () => {
+	const dial = dialServer();
+	const daemonPath = fileURLToPath(import.meta.url);
+	const render = fakeRender({ start: (sandbox, script) => bootDial({ ...sandbox.env, AGENTRUN_ATTACH_URL: /AGENTRUN_ATTACH_URL='([^']*)'/.exec(script)[1] }, dial, { daemon: readFileSync(daemonPath) }) });
+	// Others' sandboxes, three pages of 100.
+	for (let i = 0; i < 250; i++) plant(render, `sbx-other${String(i).padStart(12, "0")}`, `someone-else-${i}`);
+	const options = { dial, daemonPath, timeouts: { pollMs: 1, listedStableMs: 0 } };
+	const spec = { image: BUILD, lifetimeMs: 600_000, network: "none", labels: { "agentrun.run": "run-1", "agentrun.epoch": "2" } };
+	const created = await provider(render, options).create(spec, { requestId: "render-pages" });
+	assert.equal(created.ok, true, created.ok ? "" : `${created.error.code}: ${created.error.message}`);
+	const whole = `${created.value.name}-r${runHash("run-1")}-e2`;
+	const calls = render.calls.filter(({ method, url }) => (method === "GET" && url.pathname === "/v1/sandboxes") || (method === "POST" && url.pathname === "/v1/sandboxes"));
+	const post = calls.findIndex(({ method }) => method === "POST");
+	const pages = calls.filter(({ method, url }) => method === "GET" && url.searchParams.get("name") === null);
+	assert.equal(pages.length, 2 * 3, `the workspace's 3 pages, read twice (${pages.length} pages)`);
+	assert.equal(calls.slice(0, post).length, 3, "the first check, before the POST, reads every page");
+	assert.equal(calls[post + 1]?.url.searchParams.get("name"), whole, "the first look after the POST asks for the whole name");
 });
 
 test("a sweep by name whose run and epoch are known, of a sandbox whose guest can't answer, reads no file: the name proves them", async () => {

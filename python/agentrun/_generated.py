@@ -1646,7 +1646,7 @@ class DefinitionPlace1(TypedDict):
 
 class DefinitionPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox", "vercel", "sprites"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox", "vercel", "sprites", "instabox"]
 
 
 class _DefinitionComputerRequired(TypedDict):
@@ -2155,7 +2155,7 @@ class DefinitionInputPlace1(TypedDict):
 
 class DefinitionInputPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox", "vercel", "sprites"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox", "vercel", "sprites", "instabox"]
 
 
 class _DefinitionInputComputerRequired(TypedDict):
@@ -6161,7 +6161,7 @@ class RunPlace1(TypedDict):
 
 class RunPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox", "vercel", "sprites"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox", "vercel", "sprites", "instabox"]
 
 
 class _RunComputerRequired(TypedDict):
@@ -9204,7 +9204,7 @@ class CapabilitiesPlaces(_CapabilitiesPlacesRequired, total=False):
 
 
 class _CapabilitiesPlacesBoxesItemRequired(TypedDict):
-    id: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox", "vercel", "sprites"]
+    id: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox", "vercel", "sprites", "instabox"]
     available: bool
     state: Literal["ready", "unavailable"]
 
@@ -9222,7 +9222,7 @@ class CapabilitiesPlacesDefaultPlace1(TypedDict):
 
 class CapabilitiesPlacesDefaultPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox", "vercel", "sprites"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox", "vercel", "sprites", "instabox"]
 
 
 class _CapabilitiesHarnessesItemRequired(TypedDict):
@@ -12318,6 +12318,7 @@ class GetWrappedResponse(TypedDict):
     tokens: GetWrappedResponseTokens
     cost_usd: float
     unpriced_requests: int
+    tokens_unknown_requests: int
     days: list[GetWrappedResponseDaysItem]
     hours: list[int]
     weekdays: list[int]
@@ -12349,6 +12350,7 @@ class GetWrappedResponseHarnessesItem(TypedDict):
     sessions: int
     requests: int
     tokens: int
+    tokens_unknown_requests: int
     sources: list[str]
 
 
@@ -12358,6 +12360,7 @@ class GetWrappedResponseModelsItem(TypedDict):
     tokens: int
     cost_usd: float
     unpriced_requests: int
+    tokens_unknown_requests: int
 
 
 class GetWrappedResponseSourcesItem(TypedDict):

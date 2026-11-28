@@ -16,7 +16,7 @@ import { checkMount, readBackOf, WORKSPACE, type MountSpec } from "@parcha/agent
 
 The package root holds the protocol, the registry and the descriptors, and loads no provider: a provider loads by its
 id (`providerFor(id, options)`, which imports that one provider's file), or from its subpath (`/docker`, `/daytona`,
-`/modal`, `/e2b`, `/orgo`, `/orgo-desktop`, `/phone-harness`, `/browserbase`, `/kernel`, `/local-chrome`, `/boxd`, `/smolcloud`, `/groundbox`, `/vercel`, `/sprites`). A provider's
+`/modal`, `/e2b`, `/orgo`, `/orgo-desktop`, `/phone-harness`, `/browserbase`, `/kernel`, `/local-chrome`, `/boxd`, `/smolcloud`, `/groundbox`, `/vercel`, `/sprites`, `/instabox`). A provider's
 option types (`DockerProviderOptions`, `ModalProviderOptions` and the like) come from its subpath too, not the root.
 
 The package carries the daemon for Linux amd64 and arm64 in `dist/`, so a provider runs it with no Go on the host. A
@@ -690,6 +690,7 @@ live under:
   | `GROUNDBOX_API_KEY` | Groundbox's `apiKey` |
   | `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` | Vercel Sandbox's `token`, `teamId` and `projectId`, all required |
   | `SPRITES_TOKEN` | Fly Sprites' `token`: the name Fly's own CLI reads |
+  | `INSTABOX_API_KEY` | InstaBox's `apiKey`: the name InstaBox's own CLI and SDK read |
 
 - **the conformance CLI and the live harness** (`src/conformance/`: the CLI, each provider's conformance module and the
   sweeps) read their own `COMPUTER_<ID>_*` names, the ones the live scripts set, through each module's
@@ -858,7 +859,7 @@ key.
   package's own build, bound read-only with its `package.json`. It is on the provider's egress bridge alone (below),
   publishes no port, and runs as the computer's uid:gid with a read-only root, `--cap-drop ALL`, `no-new-privileges`, 256 MiB, 64
   pids, half a CPU (a fixed quota, not the computer's own cpus), 1024 open files and a bounded log. Its argv holds the list (or `--open public`), the computer's deadline (it ends itself then), this machine's own
-  public addresses (refused as `this-host`), and `egress.hint`, the words a refusal adds (printable ASCII).
+  public addresses (refused as `this-host`), `egress.hint`, the words a refusal adds (printable ASCII), and `--max-tunnels` when `egress.maxTunnels` is set.
   `EGRESS_IMAGE` is the one place its digest is written. `create` pulls it at the first allow computer when the host
   lacks it (see Lifetime), so a host with no registry access pulls it ahead, reading the name from this package:
   `docker pull "$(node --input-type=module -e 'import { EGRESS_IMAGE } from "@parcha/agentrun-computer"; console.log(EGRESS_IMAGE)')"`
@@ -895,7 +896,9 @@ key.
   leaves the host; an IP literal outside a listed CIDR of its own family; any port but 80 and 443; a listed name or
   address that is private, loopback, link-local, metadata, multicast or reserved, in any form it is written (decimal,
   octal, hex, IPv4-mapped, NAT64, 6to4), or one of this machine's own; a Host header that names another host than the
-  URI; SOCKS5 BIND and UDP ASSOCIATE; an HTTP upgrade; past 64 connections open at once or 20,000 in all. A name is
+  URI; SOCKS5 BIND and UDP ASSOCIATE; an HTTP upgrade; past its cap of connections open at once (64 unless
+  `egress.maxTunnels` sets a whole number from 1 to 256: the proxy's 1024 open files hold two per connection; anything
+  else is refused when the provider is made) or 20,000 in all; past the cap a new one is answered 429. A name is
   resolved once, every answer is checked, and the checked address is the one dialled, so rebinding a name between the
   check and the dial reaches nothing new; a redirect reaches the client as sent and is never followed. A log line holds
   the host, port, address and class, never a path, query or header. A refusal reads `403 <host> is not on this box's
@@ -923,7 +926,8 @@ key.
   deadline, runs while the computer runs, is hardened and bounded as above (its memory and swap, pids limit, private
   IPC and cgroup namespaces, and json-file log of 1m and 2 files included) with exactly its volume and code, and whose
   argv holds the list (or `--open public`) and refuses every one of the Docker host's own addresses the provider
-  requires now (more is fine). Anything less is `{ other: "network allow, but its egress proxy ... <why>" }` (or
+  requires now (more is fine), and whose `--max-tunnels`, if any, is a cap create gives (1 to 256), whatever the cap is
+  set to now, so a changed setting leaves running proxies as they are. Anything less is `{ other: "network allow, but its egress proxy ... <why>" }` (or
   `network open, ...`). **A crashed proxy** is not
   restarted: the computer then reaches nothing, its network reads back `other` ("is not running"), and `attach` refuses
   it, so a caller makes a new computer. `list` reads every listed computer's proxy in one more inspect.
@@ -1073,7 +1077,9 @@ const made = await docker.create({ image: image.value, lifetimeMs: 600_000, netw
     built.
 - `DockerProvider`'s `image` option is that source; the default is `{ recipe: DOCKER_RECIPE }`, the provider's own
   image (`DEFAULT_DOCKER_IMAGE`): `python:3.12-slim` pinned by its index digest (`DOCKER_BASE`), with git, curl,
-  nodejs, npm, ripgrep and socat from apt. `docker.image({ signal?, timeoutMs?, onWait? })` is `ensureImage` of it with the
+  xz-utils, ripgrep and socat from apt, and Node.js with its npm in `/usr/local` from the release's own tarball
+  (`DOCKER_NODE_VERSION`, checked against `DOCKER_NODE_SHA256` for the host's architecture before it is unpacked), the
+  release the box image and serve's own image run. `docker.image({ signal?, timeoutMs?, onWait? })` is `ensureImage` of it with the
   provider's docker CLI. A source that is neither throws at construction, in words.
 - **The docker CLI gets only what it reads.** The provider reads no environment: its `env` option is the host's (serve
   passes its own values of the docker descriptor's `hostEnv`), and every docker call it makes (`dockerArch`,
@@ -3414,6 +3420,45 @@ a concurrency cap (`concurrent_sprite_limit_exceeded`) is a `limit`.
 Unverified until the live run: the arch (amd64); a label string's room (64 bytes); a taken name answering 409; the exec
 user being root or having passwordless sudo, and root making a network namespace; no vendor agent on TCP; the exec
 socket holding 75 s of silence with no ping; and a sprite with an exec running never going to sleep.
+
+## InstaBox
+
+```ts
+import { providerFor } from "@parcha/agentrun-computer";
+
+// The key is the caller's to pass (serve's INSTABOX_API_KEY).
+const instabox = await providerFor("instabox", { apiKey });
+const made = await instabox.create({ image: "minimal", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
+```
+
+An InstaBox computer is an [InstaBox](https://instabox.sh/llms-full.txt) machine: a Firecracker microVM from one of
+InstaBox's templates (`"minimal"` by default, or `agent-browser`, `universal`) or a snapshot of the key's workspace, by
+name or `sn_` id. It is a sandbox alone: a create names no image of ours, so there is no desktop and no Archil mount.
+InstaBox runs on the shared machine-host adapter ([PROVIDERS.md](PROVIDERS.md)): `src/instabox.ts` is its
+`MachineHost`, over the InstaBox API (`https://api.instabox.sh`, `X-API-Key: <key>`) with `fetch` and the shared REST
+client, and over SSH with the host's `ssh2` package, as Agent37 and Morph (no SDK). A computer needs a paid plan: it
+switches off InstaBox's idle pause and maximum run, which the free plan refuses (a 403 `spec_not_allowed`, a `refused`
+in those words).
+
+| MachineHost | InstaBox |
+| --- | --- |
+| `create` | `POST /v1/machines` under an `Idempotency-Key` of the request, with its name, the template (`templateId`) or snapshot (`snapshotId`), the size, the packed labels as `metadata`, `deleteAfterSeconds` at the backstop, `autoSuspendAfterSeconds: 0`, `maxRunMinutes: -1`, no vault and no secrets; the answer's `machineId` is the id |
+| `get` | `GET /v1/machines/{id}`: creating, starting and resuming are starting, running is running once `runtime.ready`, stopping, stopped, suspending and suspended are stopped, deleting and error gone (error in its `lastError` words); a 404 or a `deleted` record is none |
+| `list` | `GET /v1/machines?metadata=<name>:<value>`, every page, then the asked labels kept here and a `deleted` record left out |
+| `delete` | `DELETE /v1/machines/{id}` with `X-Confirm-Delete: <id>` and a fresh `Idempotency-Key`, a 404 done, a `409 operation_conflict` sent again within the call's bound; then the machine's SSH connections end |
+| `exec` | SSH through InstaBox's gateway with `SshExec`, logged in as a token from `POST /v1/machines/{id}/ssh-tokens` (the username, SSH's none auth), the gateway's host key pinned to the token's `hostKeyFingerprint`, which is required: a token answer with none, or one not `SHA256:` and 43 characters of unpadded base64, is refused before any connection, so the token never leaves; the machine's user, `user`, with passwordless sudo; a held token the gateway refuses is let go and another minted, once, and execs refused on the same token share its replacement; the mint is shared by the execs that ask at once and stopped by none of them, each waiting on it within its own time and signal |
+
+No `upload` (InstaBox's file API writes as the machine's user, not root, so the adapter sends the daemon through exec's
+stdin) and no `extend` (the janitor moves the deadline label). `check()` takes a template id or a snapshot's name or
+id, and the sizes InstaBox offers: 2, 4, 8, 16 or 32 vCPUs with 2048 MB each, one alone taking the other's match. A
+rate, quota, concurrency or capacity cap (`rate_limited`, `quota_exceeded`, `concurrency_limit`, `no_capacity`,
+`machine_cooldown`) is a `limit`; `missing_scope` and `permission_denied` are `denied`. The daemon user can't be uid
+1000, the machine user's.
+
+Unverified until the live run: the gateway taking the token as the username with SSH's none auth; its host key being one
+ssh2 verifies, whose sha256 is `hostKeyFingerprint`; a taken name answering 409; a deleted machine reading 404 or a
+`deleted` record; sshd's port 22 being the one vendor listener; `minimal` being on every paid plan; the 8 KiB metadata
+bound counting compact JSON; a silent SSH channel holding 75 s; and root making a network namespace.
 
 ## Conformance
 

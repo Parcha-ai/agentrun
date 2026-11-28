@@ -5,6 +5,9 @@ const textOf = (message) => (typeof message?.content === "string" ? message.cont
 /** A user message that is only a `<system-reminder>` (the spend cap's wrap-up note): the server's words, which a model
  *  reads as an aside, never as the person's. The replies below count and quote the person's messages only. */
 export const isReminder = (message) => message?.role === "user" && /^<system-reminder>[\s\S]*<\/system-reminder>$/.test(textOf(message).trim());
+/** A user message's text as the person wrote it: the server's `<system-reminder>` notes the host adds to it (a spend cap's
+ *  wrap-up, the computer's notes) taken out, as a model reads them apart from the person's words. */
+export const personText = (message) => textOf(message).replace(/\s*<system-reminder>[\s\S]*?<\/system-reminder>/g, "");
 /** The person's messages: the user messages that are not a reminder. */
 export const personOf = (context) => context.messages.filter((m) => m.role === "user" && !isReminder(m));
 

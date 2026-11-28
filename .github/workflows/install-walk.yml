@@ -1,9 +1,11 @@
 name: Install walk
+run-name: ${{ github.event_name == 'workflow_run' && format('Install walk at {0}', github.event.workflow_run.head_branch) || ' ' }}
 
 # The installer (packages/agentrun/install.sh) and `agentrun service` on fresh machines with no Node.js on PATH
 # (packages/agentrun/test/install-walk.sh): an Ubuntu container with no service manager, x64 and arm64; an Ubuntu VM with a
 # systemd user session; a macOS runner with launchd in its Aqua session. On a pull request or push it installs this
-# checkout's launcher, packed; after a release, the published one. The container also walks --tailscale with a fake
+# checkout's launcher, packed; after a release, the published one, from the tag's scripts (each checkout falls back to the
+# publish's commit), and the run is named for the tag. The container also walks --tailscale with a fake
 # tailscale (packages/agentrun/test/fake-tailscale.sh): no tailnet, no secret. No model is called. Not a required check.
 # The first-run jobs walk the setup prompt's own lines (docs/SKILL.md) from the installer to a finished first run on a
 # local model (walk-model.mjs, a fake Ollama the server lists and runs itself), the time against the bar (5 minutes) in the job summary: a
@@ -76,7 +78,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.ref || github.event.workflow_run.head_sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: '24.22.3'
@@ -118,7 +120,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.ref || github.event.workflow_run.head_sha }}
       - uses: actions/download-artifact@v4
         if: ${{ needs.pack.outputs.package != '' }}
         with:
@@ -145,7 +147,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.ref || github.event.workflow_run.head_sha }}
       - name: Walk
         env:
           BUILD: ${{ github.event_name != 'workflow_run' && '--build' || '' }}
@@ -173,7 +175,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.ref || github.event.workflow_run.head_sha }}
       - uses: actions/download-artifact@v4
         if: ${{ needs.pack.outputs.package != '' }}
         with:

@@ -6,6 +6,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { catalogOf } from "../dist/index.js";
 import { anthropicUsage, at, claudeAnswer, claudeFile, claudeUser, piFile, piMeta, piUser, tempHome, wrappedHome, writeJsonl } from "./fixtures.mjs";
+import { buildChat } from "./fixtures/cursor/fixture.mjs";
 
 const WORDS = "Fixture prompt, never reported.";
 const answer = (n, i, usage = anthropicUsage(100, 10, 50, 5), model = "claude-fixture-1") => claudeAnswer({ uuid: `a${n}`, msg: `m${n}`, req: `r${n}`, usage, i, model });
@@ -109,6 +110,26 @@ test("a request with no usage (pi leaves it off an aborted one) is unpriced, and
   assert.ok(wrapped.cost > 0);
 });
 
+test("a request whose session records no tokens (Cursor keeps none) is counted as tokens unknown, by harness and model too, never as zero tokens known", async (t) => {
+  const tz = process.env.TZ;
+  process.env.TZ = "UTC";
+  t.after(() => (tz === undefined ? delete process.env.TZ : (process.env.TZ = tz)));
+  const home = await tempHome(t);
+  await buildChat(join(home, ".cursor"));
+  const cursorOnly = await wrappedHome(home, 2026, { catalog: false });
+  assert.ok(cursorOnly.requests > 0, "the chat's answers are requests");
+  assert.equal(cursorOnly.tokensUnknownRequests, cursorOnly.requests, "a Cursor-only year: every request's tokens are unknown");
+  assert.deepEqual(cursorOnly.harnesses.map((h) => [h.harness, h.requests, h.tokensUnknownRequests]), [["cursor", cursorOnly.requests, cursorOnly.requests]]);
+  assert.deepEqual(cursorOnly.models.map((m) => [m.requests, m.tokensUnknownRequests]), [[cursorOnly.requests, cursorOnly.requests]]);
+  // A pi session beside it: its requests carry usage, so they are not counted; an aborted one with none is.
+  const aborted = { type: "message", timestamp: at(40), message: { role: "assistant", provider: "fx", model: "fx-model", content: [], stopReason: "aborted", timestamp: Date.parse(at(40)) } };
+  await writeJsonl(piFile(home), [piMeta(), piUser(WORDS, 1), piAnswer(30), aborted]);
+  const both = await wrappedHome(home, 2026, { catalog: false });
+  assert.equal(both.tokensUnknownRequests, cursorOnly.requests + 1);
+  assert.deepEqual(both.harnesses.find((h) => h.harness === "pi")?.tokensUnknownRequests, 1);
+  assert.deepEqual(both.models.find((m) => m.model === "fx/fx-model")?.tokensUnknownRequests, 1);
+});
+
 test("a model the catalog does not list leaves its requests with tokens unpriced, and its zero-token requests are not counted as unpriced", async (t) => {
   const home = await tempHome(t);
   await writeJsonl(claudeFile(home), [claudeUser({ uuid: "u1", text: WORDS, i: 0 }), answer(1, 10, anthropicUsage(0, 0, 0, 0), "claude-unlisted"), answer(2, 20, anthropicUsage(5, 5, 0, 0), "claude-unlisted")]);
@@ -136,7 +157,7 @@ test("harnesses are the ones of the readers it is given, not only the built-in o
     }),
   };
   const wrapped = await wrappedHome(home, 2026, { sources: ["own"], readers: { own }, catalog: false });
-  assert.deepEqual(wrapped.harnesses, [{ harness: "own-harness", sessions: 1, requests: 1, tokens: 10 }]);
+  assert.deepEqual(wrapped.harnesses, [{ harness: "own-harness", sessions: 1, requests: 1, tokens: 10, tokensUnknownRequests: 0 }]);
 });
 
 test("the report holds no prompt, path or project, only numbers and names", async (t) => {

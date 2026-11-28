@@ -83,7 +83,7 @@ test("the code-review package reads whole: its review skill with the rules besid
   assert.match(review.skills["review/SKILL.md"], /You never\s+edit, build, install, run the repository's code or tests, commit or push/);
   for (const guide of ["REVIEWER.md", "DEEP.md"]) assert.match(review.skills[`review/${guide}`], /you post nothing: answer with the JSON below/, `${guide}: a reviewer answers, the agent posts`);
   for (const path of Object.keys(review.skills).filter((x) => x.endsWith(".md"))) assert.ok(Buffer.byteLength(review.skills[path]) <= 8192, `${path}: at most 8 KB, read whole on every review`);
-  assert.deepEqual([review.output, review.evals, review.triggers, review.secrets], [{ schema: "skills/review/findings.schema.json" }, ["clean-refactor", "diff-no-head", "injection", "mentions-defused", "never-flag", "null-name", "off-by-one", "other-repo", "pasted-by-reference", "re-review", "re-review-open", "repo-rule", "two-defects"], [PULL_REQUESTS], []]);
+  assert.deepEqual([review.output, review.evals, review.triggers, review.secrets], [{ schema: "skills/review/findings.schema.json" }, ["clean-refactor", "diff-no-head", "injection", "mentions-defused", "never-flag", "null-name", "off-by-one", "other-repo", "pasted-by-reference", "re-review", "re-review-force-push", "re-review-near-dismissed", "re-review-open", "repo-rule", "two-defects"], [PULL_REQUESTS], []]);
   assert.deepEqual([review.displayName, review.tools, review.mcp], ["Code review: ${parameters.owner}/${parameters.repo}", ["read", "bash", "subagent"], [{ source: "github", toolkit: "github", tools: GITHUB_TOOLS, required: false, reason: "Reads the pull request and the repo through GitHub, and posts one COMMENT review with the findings. Every call is held to this one repository. It never approves, requests changes or resolves a thread.", allow: GITHUB_READS, pin: REVIEW_PINS }]]);
   assert.match(review.instructions, /\$\{parameters\.owner\}\/\$\{parameters\.repo\}/, "placeholders stay unfilled until an apply");
 });
@@ -255,7 +255,7 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   }
   assert.deepEqual(Object.fromEntries(listed.body.templates.map((x) => [x.name, x.approvals_default])), { "agent-scout": "never", "code-review": "never", "code-review-composio": "never", "inbound-lead": "never", kyb: "ask", "market-monitor": "never", "release-notes": "never" }, "a template whose job runs on triggers runs unattended by default, and so does agent-scout, which the server starts for a scan and which writes nothing");
   const review = listed.body.templates.find((x) => x.name === "code-review");
-  assert.deepEqual([review.version, review.secrets, review.skills, review.evals, review.parameters.required],["0.4.0", [], ["review"], ["clean-refactor", "diff-no-head", "injection", "mentions-defused", "never-flag", "null-name", "off-by-one", "other-repo", "pasted-by-reference", "re-review", "re-review-open", "repo-rule", "two-defects"], ["owner", "repo"]]);
+  assert.deepEqual([review.version, review.secrets, review.skills, review.evals, review.parameters.required],["0.4.0", [], ["review"], ["clean-refactor", "diff-no-head", "injection", "mentions-defused", "never-flag", "null-name", "off-by-one", "other-repo", "pasted-by-reference", "re-review", "re-review-force-push", "re-review-near-dismissed", "re-review-open", "repo-rule", "two-defects"], ["owner", "repo"]]);
 
   const applied = await api("POST", "/templates/code-review/apply", { parameters: AGENTRUN });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));

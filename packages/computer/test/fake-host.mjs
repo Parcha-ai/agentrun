@@ -10,6 +10,7 @@ import { DEADLINE_LABEL } from "../dist/drift.js";
 import { HostError } from "../dist/host.js";
 import { EGRESS_POLICY as POLICY, EGRESS_RELAY as RELAY } from "../dist/hosted/network.js";
 import { MAX_CHUNK_BYTES, PROTOCOL_VERSION } from "../dist/protocol.js";
+import { tarOf } from "../dist/tar.js";
 import { GOOD_PREFLIGHT, mountsOf, rootVerb } from "./fake-archil.mjs";
 import { scriptOfWords } from "./fake-shell.mjs";
 import { netDevText } from "./net-dev.mjs";
@@ -133,7 +134,9 @@ const START = Date.now();
  *    read-stage script copies a file as the daemon's user, "ok", "fail" (it reads none) or "short" (its copy one byte
  *    short, as a file that changed since the daemon read it); a test may give a machine links (m.links, a Map of a
  *    symlinked directory's path to its target), which a file's open follows (opened): the daemon's, after it cleans the
- *    path as computerd does, and read-stage's cat, which opens the path as given;
+ *    path as computerd does, and read-stage's cat, which opens the path as given; treeStage: how tree-stage makes a
+ *    pull's tar as the daemon's user, "ok" (the daemon's own tar), "fail" (it makes none) or "big" (cut off at its
+ *    file-size limit); the daemon's tar.pull and tree-stage both give tarOfPath's archive;
  *  - timer: "ok" (extend moves the end and the deadline label: the vendor's timer, or with lifetime janitor the label
  *    alone, rounded up to a whole second), "limit" (extend throws a HostError limit, nothing moves), or "none" (a host
  *    with no extend);
@@ -169,6 +172,7 @@ export function fakeHost({
 	fileApi = true,
 	download = false,
 	stage = "ok",
+	treeStage = "ok",
 	onStep = () => {},
 	archil = {},
 	timer = "ok",
@@ -186,7 +190,7 @@ export function fakeHost({
 } = {}) {
 	const machines = new Map();
 	const held = [];
-	const fake = { machines, calls: [], events: [], requests: [], rootRuns: [], syncs: [], uploads: [], stages: [], downloads: [] };
+	const fake = { machines, calls: [], events: [], requests: [], rootRuns: [], syncs: [], uploads: [], stages: [], treeStages: [], downloads: [] };
 	let waitingBridges = notListening;
 	const step = async (name, ctx, machine) => {
 		fake.calls.push([name, machine?.id]);
@@ -290,6 +294,27 @@ export function fakeHost({
 			const length = params.length ?? MAX_CHUNK_BYTES;
 			const data = bytes.subarray(offset, offset + length);
 			return result({ data: data.toString("base64"), eof: data.length < length || offset + data.length >= bytes.length, size: bytes.length });
+		}
+		if (method === "tar.pull.begin") {
+			const tar = tarOfPath(m, params.path);
+			if (tar === undefined) return error("not_found", `${params.path}: no such file or directory`);
+			m.pulls ??= new Map();
+			m.pullCount = (m.pullCount ?? 0) + 1;
+			const id = `pull-${m.pullCount}`;
+			m.pulls.set(id, { tar, read: 0 });
+			return result({ id });
+		}
+		if (method === "tar.pull.read") {
+			const pull = m.pulls?.get(params.id);
+			if (pull === undefined) return error("not_found", `no pull "${params.id}" on this connection: it ended, or was never begun`);
+			const size = params.maxBytes ?? MAX_CHUNK_BYTES;
+			const data = pull.tar.subarray(pull.read, pull.read + size);
+			pull.read += data.length;
+			return result({ data: data.toString("base64"), eof: data.length < size });
+		}
+		if (method === "tar.pull.end") {
+			m.pulls?.delete(params.id);
+			return result({});
 		}
 		if (method === "files.stat") {
 			if (params.path === "/proc/self/cwd") return result({ path: params.path, type: "symlink", target: m.box.cwd });
@@ -540,6 +565,20 @@ export function fakeHost({
 				const bytes = m.files.get(opened(m, path));
 				if (stage === "fail" || bytes === undefined) return proc.exit(1, `cat: ${path}: Permission denied\n`);
 				m.files.set(copy, Buffer.from(stage === "short" ? bytes.subarray(0, -1) : bytes));
+				proc.exit(0);
+			});
+			return proc;
+		}
+		if (kind === "tree-stage") {
+			// tree-stage: [uid, gid, path, copy, blocks]: the pull's tar as the daemon's user makes it, written to a path of root's.
+			const [uid, gid, path, copy, blocks] = script.args;
+			queueMicrotask(() => {
+				fake.treeStages.push({ machine: m.id, uid, gid, path, copy, blocks: Number(blocks) });
+				const tar = tarOfPath(m, path);
+				if (treeStage === "fail" || tar === undefined) return proc.exit(1, `find: '${path}': Permission denied\n`);
+				// Its file-size limit, as ulimit -f holds tar to it: a tar past `blocks` 512-byte blocks fails.
+				if (treeStage === "big" || tar.length > Number(blocks) * 512) return proc.exit(1, "File size limit exceeded\n");
+				m.files.set(copy, tar);
 				proc.exit(0);
 			});
 			return proc;
@@ -798,4 +837,34 @@ export function fakeHost({
 	fake.live = () => [...machines.values()].filter((m) => !m.deleted);
 	fake.creates = () => fake.calls.filter(([name]) => name === "create").length;
 	return fake;
+}
+
+/**
+ * The tar computerd's tar.pull gives of path in m: a file one entry named for it; a directory (a path some file of m is
+ * under) its entries named relative to it, each directory before what it holds; else undefined. Read-stage copies are
+ * not the machine's files.
+ */
+/** The mtime of every entry tarOfPath writes: one fixed second, so an archive made twice is the same bytes. */
+const FAKE_MTIME = 1_700_000_000;
+
+export function tarOfPath(m, path) {
+	const bytes = m.files.get(path);
+	if (bytes !== undefined) return tarOf([{ name: posix.basename(path), type: "file", mode: 0o644, body: bytes, mtime: FAKE_MTIME }]);
+	const below = [...m.files.keys()].filter((each) => each.startsWith(`${path}/`)).sort();
+	if (below.length === 0) return undefined;
+	const entries = [];
+	const dirs = new Set();
+	for (const each of below) {
+		const rel = each.slice(path.length + 1);
+		const parts = rel.split("/");
+		for (let depth = 1; depth < parts.length; depth++) {
+			const dir = parts.slice(0, depth).join("/");
+			if (!dirs.has(dir)) {
+				dirs.add(dir);
+				entries.push({ name: `${dir}/`, type: "dir", mode: 0o755, mtime: FAKE_MTIME });
+			}
+		}
+		entries.push({ name: rel, type: "file", mode: 0o644, body: m.files.get(each), mtime: FAKE_MTIME });
+	}
+	return tarOf(entries);
 }
