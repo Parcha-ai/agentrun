@@ -202,9 +202,11 @@ which would read the arguments again.
 a run and does the same. Its exit code says how it stopped: 0 completed, 1 failed or cancelled, 8 it waits on a person
 (a question, its spend cap, a stopped turn, a paused workflow run), with a line on stderr saying what to do next, such as
 `runs message RUN_ID --content "..."` to answer. `--timeout SECONDS` stops waiting after that long and exits 1; the run
-goes on. `runs timeline RUN_ID --follow` prints the timeline as it changes, one page per line (NDJSON): upsert its
-`rows` by `id`, delete its `drop` ids, and drop everything first on a page with `reset: true`. It resumes a dropped
-connection where it left off and ends when the run ends, 0 completed, 1 failed or cancelled.
+goes on. `runs timeline RUN_ID --follow` prints the timeline as it changes. On a terminal it prints one line per row
+(its time, kind and what it says, the run's text without control characters) and the run's status as it changes. Piped,
+it prints one page per line (NDJSON): upsert its `rows` by `id`, delete its `drop` ids, and drop everything first on a
+page with `reset: true`. It resumes a dropped connection where it left off and ends when the run ends, 0 completed, 1
+failed or cancelled.
 
 The TypeScript client for this server is `@parcha/agentrun-client` (packages/client), and the Python client is
 `parcha-agentrun` (python/).

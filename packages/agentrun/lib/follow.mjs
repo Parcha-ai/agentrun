@@ -33,7 +33,7 @@ export const FLAGS = {
   },
   getTimeline: {
     options: { follow: { type: "boolean" } },
-    help: [["--follow", "the timeline as it changes, one page per line (NDJSON), until the run ends; resumes a dropped connection"]],
+    help: [["--follow", "the timeline as it changes, until the run ends; resumes a dropped connection. On a terminal one line per row, piped one page per line (NDJSON)"]],
   },
 };
 
@@ -202,6 +202,61 @@ async function* events(body, heard) {
   }
 }
 
+/** The longest line `rowLine` prints, in characters; a longer one is cut and ends with an ellipsis. */
+const LINE_MAX = 200;
+/** Characters a row's text loses before it reaches a terminal: C0 and C1 controls (escape sequences among them), line
+ *  and paragraph separators, and bidirectional overrides and isolates, each run of them one space. */
+const UNPRINTABLE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]+/g;
+/** A row's text made safe to print on one line: the run's text (a model's, a tool's, a person's) never moves the cursor
+ *  or recolours the terminal. */
+const printable = (text) => String(text).replace(UNPRINTABLE, " ").replace(/ {2,}/g, " ").trim();
+const money = (usd) => `$${usd.toFixed(4)}`;
+
+/** A timeline row as one line for a person: its time (UTC, to the second), the subagent that wrote it when one did, its
+ *  kind, and what it says. A tool call names its tool and input, a tool result its tool, `ok` or `failed`, and output, a
+ *  usage row its dollars when priced; any other row its summary, else its text. */
+export function rowLine(row) {
+  const time = typeof row.timestamp === "string" && /T\d\d:\d\d:\d\d/.test(row.timestamp) ? row.timestamp.slice(11, 19) : "--:--:--";
+  const what =
+    row.kind === "tool_use"
+      ? [row.tool_name, row.tool_input_preview]
+      : row.kind === "tool_result"
+        ? [row.tool_name, row.tool_status === "success" ? "ok" : row.tool_status, row.tool_result_preview]
+        : row.kind === "usage" && typeof row.usage?.usd === "number"
+          ? [money(row.usage.usd), row.summary]
+          : [row.summary ?? row.text];
+  const parts = [row.agent_label && `[${row.agent_label}]`, row.kind, ...what].filter((part) => typeof part === "string" && part !== "").map(printable).filter(Boolean);
+  const line = `${time}  ${parts.join("  ")}`;
+  return line.length > LINE_MAX ? `${line.slice(0, LINE_MAX - 1)}\u2026` : line;
+}
+
+/** The run's status as a line for a person, and on the final page its cost when it has one. */
+const statusLine = (page) => {
+  const cost = page.final && typeof page.cost?.usd === "number" ? `, ${money(page.cost.usd)} (${printable(page.cost.basis)})` : "";
+  return `${" ".repeat(8)}  run ${printable(page.status ?? "unknown")}${cost}`;
+};
+
+/** `--follow`'s printer on a terminal: a row's line when the row comes and again only when its line changes (a row keeps
+ *  its id when the server changes it), so a reconnect or a `reset` that sends rows again prints none of them twice; a
+ *  dropped row stays on the screen, as anything printed does. */
+function forPerson(stdout) {
+  const printed = new Map();
+  let said;
+  return (page) => {
+    for (const row of Array.isArray(page.rows) ? page.rows : []) {
+      if (!isObject(row)) continue;
+      const line = rowLine(row);
+      if (printed.get(row.id) === line) continue;
+      printed.set(row.id, line);
+      stdout.write(`${line}\n`);
+    }
+    if (page.status !== said || page.final) {
+      said = page.status;
+      stdout.write(`${statusLine(page)}\n`);
+    }
+  };
+}
+
 /** `runs timeline RUN_ID --follow`: the route's event stream, each `rows` event's page as one line of JSON on stdout, as
  *  the server sent it (its rows, its drops, `reset` when the rows held are to go first). A dropped connection, or the
  *  server's `end` with `reason: reconnect`, or a stream silent past three keepalives, reconnects with `Last-Event-ID`, so
@@ -209,9 +264,12 @@ async function* events(body, heard) {
  *  in a row, exit 3. It ends with the server's `end` with `reason: terminal`, which comes right after the first page with
  *  `final: true`: exit 0 when the run completed, 1 when it failed or was cancelled. A run that waits on a person keeps
  *  the stream open, as the server does. `path` is the route with its query (`after` is where it starts), and `headers`
- *  the command's (its `--last-event-id` wins over `after`, as the route says). */
+ *  the command's (its `--last-event-id` wins over `after`, as the route says). On a terminal it prints for a person
+ *  instead: each row as one line (`rowLine`) when it comes and again when its line changes, and the run's status when it
+ *  changes and on the final page. */
 export async function followTimeline(client, path, headers = {}) {
   const { "Last-Event-ID": from, ...rest } = headers;
+  const show = client.io.stdout.isTTY === true ? forPerson(client.io.stdout) : (page) => client.io.stdout.write(`${JSON.stringify(page)}\n`);
   let reached = false;
   let last = from;
   let retryMs = 0;
@@ -243,7 +301,7 @@ export async function followTimeline(client, path, headers = {}) {
         }
         if (event === "rows") {
           const page = json.value;
-          client.io.stdout.write(`${JSON.stringify(page)}\n`);
+          show(page);
           status = page.status;
           progress = true;
         }
